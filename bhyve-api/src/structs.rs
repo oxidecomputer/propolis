@@ -1,6 +1,20 @@
 use libc::size_t;
 use std::os::raw::{c_int, c_uint, c_void};
 
+// 3:0 - segment type
+/// Descriptor type flag (0 = system, 1 = code/data)
+pub const SEG_ACCESS_S: u32 = 1 << 4;
+// 6:5 - DPL
+/// Segment present
+pub const SEG_ACCESS_P: u32 = 1 << 7;
+// 11:8 reserved
+/// Available for use by system software
+pub const SEG_ACCESS_AVAIL: u32 = 1 << 12;
+pub const SEG_ACCESS_L: u32 = 1 << 13;
+pub const SEG_ACCESS_DB: u32 = 1 << 14;
+pub const SEG_ACCESS_G: u32 = 1 << 15;
+pub const SEG_ACCESS_UNUSABLE: u32 = 1 << 16;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct seg_desc {

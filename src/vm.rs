@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::ptr;
 
 use bhyve_api;
+use bhyve_api::{vm_reg_name, SEG_ACCESS_S, SEG_ACCESS_P};
 use libc;
 
 pub fn create_vm(name: &str) -> Result<VmHdl> {
@@ -178,17 +179,79 @@ impl VcpuHdl {
             regval: val,
         };
 
-        vm_ioctl(&self.fp, bhyve_api::VM_MMAP_MEMSEG, &mut regcmd)?;
+        vm_ioctl(&self.fp, bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
         Ok(())
     }
-    pub fn get_reg(&mut self, reg: bhyve_api::vm_reg_name) -> Result<u64> {
-        let mut regcmd = bhyve_api::vm_register {
+    pub fn set_segreg(
+        &mut self,
+        reg: bhyve_api::vm_reg_name,
+        seg: &bhyve_api::seg_desc,
+    ) -> Result<()> {
+        let mut desc = bhyve_api::vm_seg_desc {
             cpuid: self.id,
             regnum: reg as i32,
-            regval: 0,
+            desc: *seg,
         };
 
-        vm_ioctl(&self.fp, bhyve_api::VM_MMAP_MEMSEG, &mut regcmd)?;
-        Ok(regcmd.regval)
+        vm_ioctl(&self.fp, bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
+        Ok(())
+    }
+    pub fn reboot_state(&mut self) -> Result<()> {
+        self.set_reg(vm_reg_name::VM_REG_GUEST_CR0, 0x6000_0010)?;
+        self.set_reg(vm_reg_name::VM_REG_GUEST_RFLAGS, 0x0000_0002)?;
+        self.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0x0000_fff0)?;
+
+        let cs_desc = bhyve_api::seg_desc {
+            base: 0xffff_0000,
+            limit: 0xffff,
+            // Present, R/W, Accessed
+            access: SEG_ACCESS_P | SEG_ACCESS_S | 0x3,
+        };
+        self.set_segreg(vm_reg_name::VM_REG_GUEST_CS, &cs_desc)?;
+        self.set_reg(vm_reg_name::VM_REG_GUEST_CS, 0xf000)?;
+
+        let data_desc = bhyve_api::seg_desc {
+            base: 0x0000_0000,
+            limit: 0xffff,
+            // Present, R/W, Accessed
+            access: SEG_ACCESS_P | SEG_ACCESS_S | 0x3,
+        };
+        let data_segs = [
+            vm_reg_name::VM_REG_GUEST_ES,
+            vm_reg_name::VM_REG_GUEST_SS,
+            vm_reg_name::VM_REG_GUEST_DS,
+            vm_reg_name::VM_REG_GUEST_FS,
+            vm_reg_name::VM_REG_GUEST_GS,
+        ];
+        for seg in &data_segs {
+            self.set_segreg(*seg, &data_desc)?;
+            self.set_reg(*seg, 0)?;
+        }
+
+        let gidtr_desc = bhyve_api::seg_desc {
+            base: 0x0000_0000,
+            limit: 0xffff,
+            access: 0,
+        };
+        self.set_segreg(vm_reg_name::VM_REG_GUEST_GDTR, &gidtr_desc)?;
+        self.set_segreg(vm_reg_name::VM_REG_GUEST_IDTR, &gidtr_desc)?;
+
+        let ldtr_desc = bhyve_api::seg_desc {
+            base: 0x0000_0000,
+            limit: 0xffff,
+            // LDT present
+            access: SEG_ACCESS_P | 0b0010,
+        };
+        self.set_segreg(vm_reg_name::VM_REG_GUEST_LDTR, &ldtr_desc)?;
+
+        let tr_desc = bhyve_api::seg_desc {
+            base: 0x0000_0000,
+            limit: 0xffff,
+            // TSS32 busy
+            access: SEG_ACCESS_P | 0b1011,
+        };
+        self.set_segreg(vm_reg_name::VM_REG_GUEST_TR, &tr_desc)?;
+
+        Ok(())
     }
 }

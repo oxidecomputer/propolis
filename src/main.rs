@@ -42,5 +42,9 @@ fn main() {
 
     init_bootrom(&mut vm, &opts.rom);
 
+    let mut vcpu0 = vm.vcpu(0);
+
+    vcpu0.reboot_state().unwrap();
+
     drop(vm);
 }

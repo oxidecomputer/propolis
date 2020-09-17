@@ -1,5 +1,6 @@
 #[repr(C)]
 #[allow(non_camel_case_types, unused)]
+#[derive(Copy, Clone, Debug)]
 pub enum vm_reg_name {
     VM_REG_GUEST_RAX,
     VM_REG_GUEST_RBX,
