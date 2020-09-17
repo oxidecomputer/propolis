@@ -97,6 +97,11 @@ pub struct vm_exit_msr {
     pub wval: u64,
 }
 
+pub const PROT_READ: u8 = 0x1;
+pub const PROT_WRITE: u8 = 0x2;
+pub const PROT_EXEC: u8 = 0x4;
+pub const PROT_ALL: u8 = PROT_READ | PROT_WRITE | PROT_EXEC;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_memmap {
@@ -113,13 +118,14 @@ pub const VM_MEMMAP_F_WIRED: c_int = 0x01;
 pub const VM_MEMMAP_F_IOMMU: c_int = 0x02;
 
 const SPECNAMELEN: usize = 255; // max length of devicename
+pub const SEG_NAME_LEN: usize = SPECNAMELEN + 1;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_memseg {
     pub segid: c_int,
     pub len: size_t,
-    pub name: [u8; SPECNAMELEN + 1],
+    pub name: [u8; SEG_NAME_LEN],
 }
 
 #[repr(C)]
