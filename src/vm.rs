@@ -1,16 +1,20 @@
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 
 use bhyve_api;
 use libc;
 
-struct VmHdl(File);
+pub struct VmHdl(File);
 
-fn create_vm(name: &str) -> Result<VmHdl> {
-    let ctl = File::open(bhyve_api::VMM_CTL_PATH)?;
+pub fn create_vm(name: &str) -> Result<VmHdl> {
+    let ctl = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_EXCL)
+        .open(bhyve_api::VMM_CTL_PATH)?;
     let namestr = CString::new(name).or_else(|_x| Err(Error::from_raw_os_error(libc::EINVAL)))?;
     let nameptr = namestr.as_ptr();
     let ctlfd = ctl.as_raw_fd();
@@ -39,7 +43,6 @@ fn create_vm(name: &str) -> Result<VmHdl> {
     let mut vmpath = PathBuf::from(bhyve_api::VMM_PATH_PREFIX);
     vmpath.push(name);
 
-    let fp = File::open(vmpath)?;
+    let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
     Ok(VmHdl(fp))
 }
-

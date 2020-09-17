@@ -3,5 +3,9 @@ mod vm;
 extern crate bhyve_api;
 
 fn main() {
-    println!("Hello, world!");
+
+    let vm = vm::create_vm("testvm").unwrap();
+
+    println!("vm created");
+    drop(vm);
 }
