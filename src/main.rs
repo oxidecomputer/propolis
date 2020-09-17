@@ -1,10 +1,13 @@
 extern crate bhyve_api;
 extern crate pico_args;
+
 mod vm;
+mod exits;
 
 use bhyve_api::vm_reg_name;
 use std::fs::File;
-use vm::{VcpuCtx, VmCtx, VmEntry, VmExitKind};
+use vm::{VcpuCtx, VmCtx, VmEntry};
+use exits::VmExitKind;
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -40,6 +43,9 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
         match exit.kind {
             VmExitKind::Bogus => {
                 next_entry = VmEntry::Run
+            },
+            VmExitKind::Inout(io) => {
+                panic!("unhandled inout: {:?}", io);
             },
             _ => {
                 panic!("unrecognized exit: {:?}", exit.kind)

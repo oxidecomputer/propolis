@@ -1,4 +1,3 @@
-use std::convert::TryFrom;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Result, Write};
@@ -10,8 +9,10 @@ use std::ptr;
 use std::sync::Arc;
 
 use bhyve_api;
-use bhyve_api::{vm_entry_cmds, vm_exit, vm_exitcode, vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
+use bhyve_api::{vm_entry_cmds, vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
 use libc;
+
+use crate::exits::*;
 
 pub fn create_vm(name: &str) -> Result<VmCtx> {
     let ctl = OpenOptions::new()
@@ -301,38 +302,6 @@ impl VmEntry {
             cmd: raw_cmd as u32,
             u: Default::default(),
             exit_data: exit_ptr as *mut c_void,
-        }
-    }
-}
-
-pub struct VmExit {
-    pub rip: u64,
-    pub inst_len: u8,
-    pub kind: VmExitKind,
-}
-impl From<&vm_exit> for VmExit {
-    fn from(exit: &vm_exit) -> Self {
-        VmExit {
-            rip: exit.rip,
-            inst_len: exit.inst_length as u8,
-            kind: VmExitKind::from(exit),
-        }
-    }
-}
-#[derive(Debug)]
-pub enum VmExitKind {
-    Bogus,
-    Unknown(i32),
-}
-impl From<&vm_exit> for VmExitKind {
-    fn from(exit: &vm_exit) -> Self {
-        let code = match vm_exitcode::try_from(exit.exitcode) {
-            Err(_) => return VmExitKind::Unknown(exit.exitcode),
-            Ok(c) => c,
-        };
-        match code {
-            vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
-            c => VmExitKind::Unknown(c as i32),
         }
     }
 }
