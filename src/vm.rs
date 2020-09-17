@@ -1,16 +1,19 @@
+use std::convert::TryFrom;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::os::raw::c_void;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::Arc;
 
 use bhyve_api;
-use bhyve_api::{vm_reg_name, SEG_ACCESS_S, SEG_ACCESS_P};
+use bhyve_api::{vm_entry_cmds, vm_exit, vm_exitcode, vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
 use libc;
 
-pub fn create_vm(name: &str) -> Result<VmHdl> {
+pub fn create_vm(name: &str) -> Result<VmCtx> {
     let ctl = OpenOptions::new()
         .write(true)
         .custom_flags(libc::O_EXCL)
@@ -44,7 +47,9 @@ pub fn create_vm(name: &str) -> Result<VmHdl> {
     vmpath.push(name);
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
-    Ok(VmHdl { fp })
+    Ok(VmCtx {
+        fp: Arc::new(VmHdl(fp)),
+    })
 }
 
 #[repr(u8)]
@@ -54,12 +59,18 @@ enum VmMemsegs {
     SEG_BOOTROM,
 }
 
-pub struct VmHdl {
-    fp: File,
+pub struct VmHdl(File);
+impl VmHdl {
+    fn fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
 }
 
-fn vm_ioctl<T>(fp: &File, cmd: i32, data: *mut T) -> Result<i32> {
-    let fd = fp.as_raw_fd();
+pub struct VmCtx {
+    fp: Arc<VmHdl>,
+}
+
+fn vm_ioctl<T>(fd: RawFd, cmd: i32, data: *mut T) -> Result<i32> {
     let res = unsafe { libc::ioctl(fd, cmd, data) };
     if res == -1 {
         Err(Error::last_os_error())
@@ -68,7 +79,10 @@ fn vm_ioctl<T>(fp: &File, cmd: i32, data: *mut T) -> Result<i32> {
     }
 }
 
-impl VmHdl {
+impl VmCtx {
+    fn fd(&self) -> RawFd {
+        self.fp.fd()
+    }
     pub fn setup_memory(&mut self, size: u64) -> Result<()> {
         let segid = VmMemsegs::SEG_LOWMEM as i32;
         let mut seg = bhyve_api::vm_memseg {
@@ -76,7 +90,7 @@ impl VmHdl {
             len: size as usize,
             name: [0u8; bhyve_api::SEG_NAME_LEN],
         };
-        vm_ioctl(&self.fp, bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
+        vm_ioctl(self.fd(), bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
         self.map_memseg(segid, 0, size as usize, 0, bhyve_api::PROT_ALL)
     }
 
@@ -90,7 +104,7 @@ impl VmHdl {
 
         let mut name = &mut seg.name[..];
         name.write("bootrom".as_bytes())?;
-        vm_ioctl(&self.fp, bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
+        vm_ioctl(self.fd(), bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
 
         // map the bootrom so the first instruction lines up at 0xfffffff0
         let gpa = 0x1_0000_0000 - len as u64;
@@ -110,14 +124,14 @@ impl VmHdl {
             offset: 0,
         };
         // find the devmem offset
-        vm_ioctl(&self.fp, bhyve_api::VM_DEVMEM_GETOFFSET, &mut devoff)?;
+        vm_ioctl(self.fd(), bhyve_api::VM_DEVMEM_GETOFFSET, &mut devoff)?;
         let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
                 len,
                 libc::PROT_WRITE,
                 libc::MAP_SHARED,
-                self.fp.as_raw_fd(),
+                self.fd(),
                 devoff.offset,
             )
         };
@@ -142,13 +156,12 @@ impl VmHdl {
         res
     }
 
-    pub fn vcpu(&self, id: i32) -> VcpuHdl {
+    pub fn vcpu(&self, id: i32) -> VcpuCtx {
         assert!(id >= 0 && id < bhyve_api::VM_MAXCPU as i32);
-        let fp = unsafe {
-            // just cheat and clone via the raw fd for now
-            File::from_raw_fd(self.fp.as_raw_fd())
-        };
-        VcpuHdl { fp, id }
+        VcpuCtx {
+            fp: self.fp.clone(),
+            id,
+        }
     }
 
     fn map_memseg(&mut self, id: i32, gpa: u64, len: usize, off: u64, prot: u8) -> Result<()> {
@@ -161,17 +174,20 @@ impl VmHdl {
             prot: prot as i32,
             flags: 0,
         };
-        vm_ioctl(&self.fp, bhyve_api::VM_MMAP_MEMSEG, &mut map)?;
+        vm_ioctl(self.fd(), bhyve_api::VM_MMAP_MEMSEG, &mut map)?;
         Ok(())
     }
 }
 
-pub struct VcpuHdl {
-    fp: File,
+pub struct VcpuCtx {
+    fp: Arc<VmHdl>,
     id: i32,
 }
 
-impl VcpuHdl {
+impl VcpuCtx {
+    fn fd(&self) -> RawFd {
+        self.fp.fd()
+    }
     pub fn set_reg(&mut self, reg: bhyve_api::vm_reg_name, val: u64) -> Result<()> {
         let mut regcmd = bhyve_api::vm_register {
             cpuid: self.id,
@@ -179,7 +195,7 @@ impl VcpuHdl {
             regval: val,
         };
 
-        vm_ioctl(&self.fp, bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
+        vm_ioctl(self.fd(), bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
         Ok(())
     }
     pub fn set_segreg(
@@ -193,13 +209,12 @@ impl VcpuHdl {
             desc: *seg,
         };
 
-        vm_ioctl(&self.fp, bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
+        vm_ioctl(self.fd(), bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
         Ok(())
     }
     pub fn reboot_state(&mut self) -> Result<()> {
         self.set_reg(vm_reg_name::VM_REG_GUEST_CR0, 0x6000_0010)?;
         self.set_reg(vm_reg_name::VM_REG_GUEST_RFLAGS, 0x0000_0002)?;
-        self.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0x0000_fff0)?;
 
         let cs_desc = bhyve_api::seg_desc {
             base: 0xffff_0000,
@@ -253,5 +268,65 @@ impl VcpuHdl {
         self.set_segreg(vm_reg_name::VM_REG_GUEST_TR, &tr_desc)?;
 
         Ok(())
+    }
+    pub fn run(&mut self, entry: &VmEntry) -> Result<VmExit> {
+        let mut exit: bhyve_api::vm_exit = Default::default();
+        let mut entry = entry.to_raw(self.id, &mut exit);
+        match vm_ioctl(self.fd(), bhyve_api::VM_RUN, &mut entry) {
+            Err(e) => {
+                return Err(e);
+            }
+            Ok(_) => {}
+        }
+        Ok(VmExit::from(&exit))
+    }
+}
+
+pub enum VmEntry {
+    Run,
+}
+impl VmEntry {
+    fn to_raw(&self, cpuid: i32, exit_ptr: *mut bhyve_api::vm_exit) -> bhyve_api::vm_entry {
+        let raw_cmd = match self {
+            VmEntry::Run => vm_entry_cmds::VEC_DEFAULT,
+        };
+        bhyve_api::vm_entry {
+            cpuid,
+            cmd: raw_cmd as u32,
+            u: Default::default(),
+            exit_data: exit_ptr as *mut c_void,
+        }
+    }
+}
+
+pub struct VmExit {
+    pub rip: u64,
+    pub inst_len: u8,
+    pub kind: VmExitKind,
+}
+impl From<&vm_exit> for VmExit {
+    fn from(exit: &vm_exit) -> Self {
+        VmExit {
+            rip: exit.rip,
+            inst_len: exit.inst_length as u8,
+            kind: VmExitKind::from(exit),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum VmExitKind {
+    Bogus,
+    Unknown(i32),
+}
+impl From<&vm_exit> for VmExitKind {
+    fn from(exit: &vm_exit) -> Self {
+        let code = match vm_exitcode::try_from(exit.exitcode) {
+            Err(_) => return VmExitKind::Unknown(exit.exitcode),
+            Ok(c) => c,
+        };
+        match code {
+            vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
+            c => VmExitKind::Unknown(c as i32),
+        }
     }
 }

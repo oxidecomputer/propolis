@@ -49,7 +49,7 @@ pub struct vm_mmio {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct vm_exit {
     pub exitcode: c_int,
     pub inst_length: c_int,
@@ -77,6 +77,14 @@ pub union vm_exit_payload {
     empty: [u64; 6],
 }
 
+impl Default for vm_exit_payload {
+    fn default() -> Self {
+        Self {
+            empty: [0u64; 6]
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union vm_entry_payload {
@@ -84,6 +92,14 @@ pub union vm_entry_payload {
     pub mmio: vm_mmio,
     // sized to zero entire union
     empty: [u64; 3],
+}
+
+impl Default for vm_entry_payload {
+    fn default() -> Self {
+        Self {
+            empty: [0u64; 3]
+        }
+    }
 }
 
 #[repr(C)]

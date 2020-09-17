@@ -2,8 +2,9 @@ extern crate bhyve_api;
 extern crate pico_args;
 mod vm;
 
+use bhyve_api::vm_reg_name;
 use std::fs::File;
-use vm::VmHdl;
+use vm::{VcpuCtx, VmCtx, VmEntry, VmExitKind};
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -16,13 +17,10 @@ fn parse_args() -> Opts {
     let mut args = pico_args::Arguments::from_env();
     let rom: String = args.value_from_str("-r").unwrap();
     let vmname: String = args.free().unwrap().pop().unwrap();
-    Opts {
-        rom,
-        vmname,
-    }
+    Opts { rom, vmname }
 }
 
-fn init_bootrom(vm: &mut VmHdl, rom: &str) {
+fn init_bootrom(vm: &mut VmCtx, rom: &str) {
     let mut fp = File::open(rom).unwrap();
     let len = fp.metadata().unwrap().len();
     if len & PAGE_OFFSET != 0 {
@@ -30,6 +28,24 @@ fn init_bootrom(vm: &mut VmHdl, rom: &str) {
     }
     vm.setup_bootrom(len as usize).unwrap();
     vm.populate_bootrom(&mut fp, len as usize).unwrap();
+}
+
+fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
+    cpu.set_reg(vm_reg_name::VM_REG_GUEST_RIP, start_rip)
+        .unwrap();
+    let mut next_entry = VmEntry::Run;
+    loop {
+        let exit = cpu.run(&next_entry).unwrap();
+        println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
+        match exit.kind {
+            VmExitKind::Bogus => {
+                next_entry = VmEntry::Run
+            },
+            _ => {
+                panic!("unrecognized exit: {:?}", exit.kind)
+            }
+        }
+    }
 }
 
 fn main() {
@@ -45,6 +61,8 @@ fn main() {
     let mut vcpu0 = vm.vcpu(0);
 
     vcpu0.reboot_state().unwrap();
+
+    run_loop(&mut vcpu0, 0xfff0);
 
     drop(vm);
 }

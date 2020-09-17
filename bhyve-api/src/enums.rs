@@ -1,3 +1,5 @@
+use num_enum::TryFromPrimitive;
+
 #[repr(C)]
 #[allow(non_camel_case_types, unused)]
 #[derive(Copy, Clone, Debug)]
@@ -52,6 +54,7 @@ pub enum vm_reg_name {
 
 #[repr(i32)]
 #[allow(non_camel_case_types, unused)]
+#[derive(TryFromPrimitive)]
 pub enum vm_exitcode {
     VM_EXITCODE_INOUT,
     VM_EXITCODE_VMX,
