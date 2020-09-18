@@ -114,8 +114,8 @@ impl VmHdl {
             libc::mmap(
                 ptr::null_mut(),
                 len,
-                libc::PROT_READ,
-                0,
+                libc::PROT_WRITE,
+                libc::MAP_SHARED,
                 self.fp.as_raw_fd(),
                 devoff.offset,
             )
