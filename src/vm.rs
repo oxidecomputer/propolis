@@ -269,6 +269,12 @@ impl VcpuCtx {
 
         Ok(())
     }
+    pub fn activate(&mut self) -> Result<()> {
+        let mut cpu = self.id;
+
+        vm_ioctl(self.fd(), bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
+        Ok(())
+    }
     pub fn run(&mut self, entry: &VmEntry) -> Result<VmExit> {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);

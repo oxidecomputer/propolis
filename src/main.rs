@@ -61,6 +61,7 @@ fn main() {
     let mut vcpu0 = vm.vcpu(0);
 
     vcpu0.reboot_state().unwrap();
+    vcpu0.activate().unwrap();
 
     run_loop(&mut vcpu0, 0xfff0);
 
