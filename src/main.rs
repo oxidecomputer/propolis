@@ -1,13 +1,13 @@
 extern crate bhyve_api;
 extern crate pico_args;
 
-mod vm;
 mod exits;
+mod vm;
 
 use bhyve_api::vm_reg_name;
+use exits::*;
 use std::fs::File;
-use vm::{VcpuCtx, VmCtx, VmEntry};
-use exits::VmExitKind;
+use vm::{VcpuCtx, VmCtx};
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -41,15 +41,24 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
         let exit = cpu.run(&next_entry).unwrap();
         println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
         match exit.kind {
-            VmExitKind::Bogus => {
-                next_entry = VmEntry::Run
-            },
+            VmExitKind::Bogus => next_entry = VmEntry::Run,
             VmExitKind::Inout(io) => {
-                panic!("unhandled inout: {:?}", io);
-            },
-            _ => {
-                panic!("unrecognized exit: {:?}", exit.kind)
+                match io {
+                    InoutReq::Out(io, val) => {
+                        println!(
+                            "nop-ed IO out - port:{:x} len:{} val:{:x}",
+                            io.port, io.bytes, val
+                        );
+                        next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
+                        // nop io output
+                    }
+                    InoutReq::In(io) => {
+                        // fail input
+                        panic!("unhandled IO in - port:{:x} len:{}", io.port, io.bytes);
+                    }
+                }
             }
+            _ => panic!("unrecognized exit: {:?}", exit.kind),
         }
     }
 }

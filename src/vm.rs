@@ -1,7 +1,6 @@
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Result, Write};
-use std::os::raw::c_void;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
@@ -9,7 +8,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use bhyve_api;
-use bhyve_api::{vm_entry_cmds, vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
+use bhyve_api::{vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
 use libc;
 
 use crate::exits::*;
@@ -61,7 +60,7 @@ enum VmMemsegs {
 }
 
 pub struct VmHdl {
-    inner: File
+    inner: File,
 }
 impl VmHdl {
     fn fd(&self) -> RawFd {
@@ -123,7 +122,8 @@ impl VmCtx {
             offset: 0,
         };
         // find the devmem offset
-        self.hdl.ioctl(bhyve_api::VM_DEVMEM_GETOFFSET, &mut devoff)?;
+        self.hdl
+            .ioctl(bhyve_api::VM_DEVMEM_GETOFFSET, &mut devoff)?;
         let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -289,19 +289,3 @@ impl VcpuCtx {
     }
 }
 
-pub enum VmEntry {
-    Run,
-}
-impl VmEntry {
-    fn to_raw(&self, cpuid: i32, exit_ptr: *mut bhyve_api::vm_exit) -> bhyve_api::vm_entry {
-        let raw_cmd = match self {
-            VmEntry::Run => vm_entry_cmds::VEC_DEFAULT,
-        };
-        bhyve_api::vm_entry {
-            cpuid,
-            cmd: raw_cmd as u32,
-            u: Default::default(),
-            exit_data: exit_ptr as *mut c_void,
-        }
-    }
-}
