@@ -49,7 +49,7 @@ pub fn create_vm(name: &str) -> Result<VmCtx> {
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
     Ok(VmCtx {
-        fp: Arc::new(VmHdl(fp)),
+        hdl: Arc::new(VmHdl { inner: fp }),
     })
 }
 
@@ -60,30 +60,28 @@ enum VmMemsegs {
     SEG_BOOTROM,
 }
 
-pub struct VmHdl(File);
+pub struct VmHdl {
+    inner: File
+}
 impl VmHdl {
     fn fd(&self) -> RawFd {
-        self.0.as_raw_fd()
+        self.inner.as_raw_fd()
+    }
+    pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
+        let res = unsafe { libc::ioctl(self.fd(), cmd, data) };
+        if res == -1 {
+            Err(Error::last_os_error())
+        } else {
+            Ok(res)
+        }
     }
 }
 
 pub struct VmCtx {
-    fp: Arc<VmHdl>,
-}
-
-fn vm_ioctl<T>(fd: RawFd, cmd: i32, data: *mut T) -> Result<i32> {
-    let res = unsafe { libc::ioctl(fd, cmd, data) };
-    if res == -1 {
-        Err(Error::last_os_error())
-    } else {
-        Ok(res)
-    }
+    hdl: Arc<VmHdl>,
 }
 
 impl VmCtx {
-    fn fd(&self) -> RawFd {
-        self.fp.fd()
-    }
     pub fn setup_memory(&mut self, size: u64) -> Result<()> {
         let segid = VmMemsegs::SEG_LOWMEM as i32;
         let mut seg = bhyve_api::vm_memseg {
@@ -91,7 +89,7 @@ impl VmCtx {
             len: size as usize,
             name: [0u8; bhyve_api::SEG_NAME_LEN],
         };
-        vm_ioctl(self.fd(), bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
+        self.hdl.ioctl(bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
         self.map_memseg(segid, 0, size as usize, 0, bhyve_api::PROT_ALL)
     }
 
@@ -105,7 +103,7 @@ impl VmCtx {
 
         let mut name = &mut seg.name[..];
         name.write("bootrom".as_bytes())?;
-        vm_ioctl(self.fd(), bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
+        self.hdl.ioctl(bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
 
         // map the bootrom so the first instruction lines up at 0xfffffff0
         let gpa = 0x1_0000_0000 - len as u64;
@@ -125,14 +123,14 @@ impl VmCtx {
             offset: 0,
         };
         // find the devmem offset
-        vm_ioctl(self.fd(), bhyve_api::VM_DEVMEM_GETOFFSET, &mut devoff)?;
+        self.hdl.ioctl(bhyve_api::VM_DEVMEM_GETOFFSET, &mut devoff)?;
         let ptr = unsafe {
             libc::mmap(
                 ptr::null_mut(),
                 len,
                 libc::PROT_WRITE,
                 libc::MAP_SHARED,
-                self.fd(),
+                self.hdl.fd(),
                 devoff.offset,
             )
         };
@@ -160,9 +158,13 @@ impl VmCtx {
     pub fn vcpu(&self, id: i32) -> VcpuCtx {
         assert!(id >= 0 && id < bhyve_api::VM_MAXCPU as i32);
         VcpuCtx {
-            fp: self.fp.clone(),
+            hdl: self.get_hdl(),
             id,
         }
+    }
+
+    pub fn get_hdl(&self) -> Arc<VmHdl> {
+        self.hdl.clone()
     }
 
     fn map_memseg(&mut self, id: i32, gpa: u64, len: usize, off: u64, prot: u8) -> Result<()> {
@@ -175,20 +177,17 @@ impl VmCtx {
             prot: prot as i32,
             flags: 0,
         };
-        vm_ioctl(self.fd(), bhyve_api::VM_MMAP_MEMSEG, &mut map)?;
+        self.hdl.ioctl(bhyve_api::VM_MMAP_MEMSEG, &mut map)?;
         Ok(())
     }
 }
 
 pub struct VcpuCtx {
-    fp: Arc<VmHdl>,
+    hdl: Arc<VmHdl>,
     id: i32,
 }
 
 impl VcpuCtx {
-    fn fd(&self) -> RawFd {
-        self.fp.fd()
-    }
     pub fn set_reg(&mut self, reg: bhyve_api::vm_reg_name, val: u64) -> Result<()> {
         let mut regcmd = bhyve_api::vm_register {
             cpuid: self.id,
@@ -196,7 +195,7 @@ impl VcpuCtx {
             regval: val,
         };
 
-        vm_ioctl(self.fd(), bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
+        self.hdl.ioctl(bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
         Ok(())
     }
     pub fn set_segreg(
@@ -210,7 +209,8 @@ impl VcpuCtx {
             desc: *seg,
         };
 
-        vm_ioctl(self.fd(), bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
+        self.hdl
+            .ioctl(bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
         Ok(())
     }
     pub fn reboot_state(&mut self) -> Result<()> {
@@ -273,13 +273,13 @@ impl VcpuCtx {
     pub fn activate(&mut self) -> Result<()> {
         let mut cpu = self.id;
 
-        vm_ioctl(self.fd(), bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
+        self.hdl.ioctl(bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
         Ok(())
     }
     pub fn run(&mut self, entry: &VmEntry) -> Result<VmExit> {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);
-        match vm_ioctl(self.fd(), bhyve_api::VM_RUN, &mut entry) {
+        match self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry) {
             Err(e) => {
                 return Err(e);
             }
