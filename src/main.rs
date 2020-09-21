@@ -1,13 +1,20 @@
+extern crate aspace;
 extern crate bhyve_api;
 extern crate pico_args;
 
+mod devices;
 mod exits;
+mod inout;
 mod vm;
 
 use bhyve_api::vm_reg_name;
 use exits::*;
 use std::fs::File;
 use vm::{VcpuCtx, VmCtx};
+
+use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
+use inout::InoutBus;
+use std::sync::Arc;
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -37,27 +44,26 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
     cpu.set_reg(vm_reg_name::VM_REG_GUEST_RIP, start_rip)
         .unwrap();
     let mut next_entry = VmEntry::Run;
+
+    let mut bus_pio = InoutBus::new();
+    let com1 = Arc::new(LpcUart::new(COM1_IRQ));
+    bus_pio.register(COM1_PORT, COM1_PORT + 7, com1.clone());
+
     loop {
         let exit = cpu.run(&next_entry).unwrap();
         println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
         match exit.kind {
             VmExitKind::Bogus => next_entry = VmEntry::Run,
-            VmExitKind::Inout(io) => {
-                match io {
-                    InoutReq::Out(io, val) => {
-                        println!(
-                            "nop-ed IO out - port:{:x} len:{} val:{:x}",
-                            io.port, io.bytes, val
-                        );
-                        next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
-                        // nop io output
-                    }
-                    InoutReq::In(io) => {
-                        // fail input
-                        panic!("unhandled IO in - port:{:x} len:{}", io.port, io.bytes);
-                    }
+            VmExitKind::Inout(io) => match io {
+                InoutReq::Out(io, val) => {
+                    bus_pio.handle_out(io.port, io.bytes, val);
+                    next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
                 }
-            }
+                InoutReq::In(io) => {
+                    let val = bus_pio.handle_in(io.port, io.bytes);
+                    next_entry = VmEntry::InoutComplete(InoutRes::In(io, val));
+                }
+            },
             _ => panic!("unrecognized exit: {:?}", exit.kind),
         }
     }
