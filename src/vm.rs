@@ -13,6 +13,7 @@ use libc;
 
 use crate::exits::*;
 
+#[cfg(target_os = "illumos")]
 pub fn create_vm(name: &str) -> Result<VmCtx> {
     let ctl = OpenOptions::new()
         .write(true)
@@ -51,6 +52,10 @@ pub fn create_vm(name: &str) -> Result<VmCtx> {
         hdl: Arc::new(VmHdl { inner: fp }),
     })
 }
+#[cfg(not(target_os = "illumos"))]
+pub fn create_vm(name: &str) -> Result<VmCtx> {
+    Err(Error::new(ErrorKind::Other, "illumos required"))
+}
 
 #[repr(u8)]
 #[allow(non_camel_case_types)]
@@ -66,6 +71,7 @@ impl VmHdl {
     fn fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
+    #[cfg(target_os = "illumos")]
     pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
         let res = unsafe { libc::ioctl(self.fd(), cmd, data) };
         if res == -1 {
@@ -73,6 +79,10 @@ impl VmHdl {
         } else {
             Ok(res)
         }
+    }
+    #[cfg(not(target_os = "illumos"))]
+    pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
+        Err(Error::new(ErrorKind::Other, "illumos required"))
     }
 }
 
@@ -288,4 +298,3 @@ impl VcpuCtx {
         Ok(VmExit::from(&exit))
     }
 }
-
