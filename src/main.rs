@@ -15,8 +15,8 @@ use bhyve_api::vm_reg_name;
 use exits::*;
 use vm::{VcpuCtx, VmCtx};
 
-use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use devices::rtc::Rtc;
+use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use inout::InoutBus;
 use pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
 

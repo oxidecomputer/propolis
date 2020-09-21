@@ -17,9 +17,7 @@ struct PciBusState {
 impl PciBus {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(PciBusState {
-                pio_cfg_addr: 0
-            })
+            state: Mutex::new(PciBusState { pio_cfg_addr: 0 }),
         }
     }
 }
@@ -31,13 +29,15 @@ fn read_inval(data: &mut [u8]) {
 }
 
 fn do_cfg_read(addr: u32) {
-        let offset = addr & 0xff;
-        let func = (addr & 0x700) >> 8;
-        let device = (addr & 0xf800) >> 11;
-        let bus = (addr & 0xff0000) >> 16;
-        println!("cfgread bus:{} device:{} func:{} off:{:x}", bus, device, func, offset);
+    let offset = addr & 0xff;
+    let func = (addr & 0x700) >> 8;
+    let device = (addr & 0xf800) >> 11;
+    let bus = (addr & 0xff0000) >> 16;
+    println!(
+        "cfgread bus:{} device:{} func:{} off:{:x}",
+        bus, device, func, offset
+    );
 }
-
 
 impl InoutDev for PciBus {
     fn pio_out(&self, port: u16, off: u16, data: &[u8]) {
@@ -59,7 +59,7 @@ impl InoutDev for PciBus {
         }
     }
     fn pio_in(&self, port: u16, off: u16, data: &mut [u8]) {
-        if off != 0  {
+        if off != 0 {
             // demand aligned/sized access
             read_inval(data);
             return;

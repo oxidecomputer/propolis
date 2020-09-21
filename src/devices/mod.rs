@@ -1,2 +1,2 @@
-pub mod uart;
 pub mod rtc;
+pub mod uart;

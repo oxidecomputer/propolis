@@ -17,7 +17,8 @@ impl Rtc {
     pub fn set_time(ctx: &VmCtx) -> Result<()> {
         let mut time: u64 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap().as_secs();
+            .unwrap()
+            .as_secs();
         ctx.borrow_hdl()
             .ioctl(bhyve_api::VM_RTC_SETTIME, &mut time)?;
         Ok(())
