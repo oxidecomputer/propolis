@@ -2,8 +2,8 @@ use aspace::ASpace;
 use std::sync::Arc;
 
 pub trait InoutDev {
-    fn pio_out(&self, off: u16, data: &[u8]);
-    fn pio_in(&self, off: u16, data: &mut [u8]);
+    fn pio_out(&self, port: u16, off: u16, data: &[u8]);
+    fn pio_in(&self, port: u16, off: u16, data: &mut [u8]);
 }
 
 type InoutDevHdl = Arc<dyn InoutDev>;
@@ -33,8 +33,8 @@ impl InoutBus {
             4 => &buf[0..],
             _ => panic!(),
         };
-        if let Some((off, dev)) = self.lookup(port) {
-            dev.pio_out(off, data);
+        if let Some((port, off, dev)) = self.lookup(port) {
+            dev.pio_out(port, off, data);
         } else {
             println!(
                 "unhandled IO out - port:{:x} len:{} val:{:x}",
@@ -51,8 +51,8 @@ impl InoutBus {
             4 => &mut buf[0..],
             _ => panic!(),
         };
-        if let Some((off, dev)) = self.lookup(port) {
-            dev.pio_in(off, data);
+        if let Some((port, off, dev)) = self.lookup(port) {
+            dev.pio_in(port, off, data);
         } else {
             println!("unhandled IO out - port:{:x} len:{}", port, bytes);
         }
@@ -60,9 +60,9 @@ impl InoutBus {
         u32::from_le_bytes(buf)
     }
 
-    fn lookup(&self, port: u16) -> Option<(u16, &InoutDevHdl)> {
+    fn lookup(&self, port: u16) -> Option<(u16, u16, &InoutDevHdl)> {
         match self.map.region_at(port as usize) {
-            Ok((start, _end, hdl)) => Some((port - start as u16, hdl)),
+            Ok((start, _end, hdl)) => Some((start as u16, port - start as u16, hdl)),
             _ => None,
         }
     }

@@ -6,6 +6,7 @@ mod devices;
 mod exits;
 mod inout;
 mod vm;
+mod pci;
 
 use bhyve_api::vm_reg_name;
 use exits::*;
@@ -14,6 +15,7 @@ use vm::{VcpuCtx, VmCtx};
 
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use inout::InoutBus;
+use pci::{PciBus, PORT_PCI_CONFIG_DATA, PORT_PCI_CONFIG_ADDR};
 use std::sync::Arc;
 
 const PAGE_OFFSET: u64 = 0xfff;
@@ -48,6 +50,9 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
     let mut bus_pio = InoutBus::new();
     let com1 = Arc::new(LpcUart::new(COM1_IRQ));
     bus_pio.register(COM1_PORT, COM1_PORT + 7, com1.clone());
+    let bus_pci = Arc::new(PciBus::new());
+    bus_pio.register(PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_ADDR + 3, bus_pci.clone());
+    bus_pio.register(PORT_PCI_CONFIG_DATA, PORT_PCI_CONFIG_DATA + 3, bus_pci.clone());
 
     loop {
         let exit = cpu.run(&next_entry).unwrap();
