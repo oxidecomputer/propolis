@@ -30,6 +30,15 @@ fn read_inval(data: &mut [u8]) {
     }
 }
 
+fn do_cfg_read(addr: u32) {
+        let offset = addr & 0xff;
+        let func = (addr & 0x700) >> 8;
+        let device = (addr & 0xf800) >> 11;
+        let bus = (addr & 0xff0000) >> 16;
+        println!("cfgread bus:{} device:{} func:{} off:{:x}", bus, device, func, offset);
+}
+
+
 impl InoutDev for PciBus {
     fn pio_out(&self, port: u16, off: u16, data: &[u8]) {
         if off != 0 || data.len() != 4 {
@@ -50,7 +59,7 @@ impl InoutDev for PciBus {
         }
     }
     fn pio_in(&self, port: u16, off: u16, data: &mut [u8]) {
-        if off != 0 || data.len() != 4 {
+        if off != 0  {
             // demand aligned/sized access
             read_inval(data);
             return;
@@ -62,6 +71,7 @@ impl InoutDev for PciBus {
                 data.copy_from_slice(&buf);
             }
             PORT_PCI_CONFIG_DATA => {
+                do_cfg_read(hdl.pio_cfg_addr);
                 // assume no devices for now
                 read_inval(data);
             }

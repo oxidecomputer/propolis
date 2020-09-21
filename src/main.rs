@@ -56,9 +56,12 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
 
     loop {
         let exit = cpu.run(&next_entry).unwrap();
-        println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
+        //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
         match exit.kind {
-            VmExitKind::Bogus => next_entry = VmEntry::Run,
+            VmExitKind::Bogus => {
+                //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
+                next_entry = VmEntry::Run
+            },
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
                     bus_pio.handle_out(io.port, io.bytes, val);

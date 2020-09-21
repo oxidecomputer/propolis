@@ -21,6 +21,17 @@ impl LpcUart {
     }
 }
 
+use std::io::Write;
+
+fn handle_out(uart: &mut Uart) {
+    if uart.is_readable() {
+        let stdout = std::io::stdout();
+        let mut hdl = stdout.lock();
+        let buf = uart.data_read().unwrap();
+        hdl.write(&[buf]).unwrap();
+    }
+}
+
 impl InoutDev for LpcUart {
     fn pio_out(&self, _port: u16, off: u16, data: &[u8]) {
         assert!(off <= MAX_OFF);
@@ -28,6 +39,7 @@ impl InoutDev for LpcUart {
 
         let mut state = self.inner.lock().unwrap();
         state.reg_write(off as u8, data[0]);
+        handle_out(&mut *state);
     }
     fn pio_in(&self, _port: u16, off: u16, data: &mut [u8]) {
         assert!(off <= MAX_OFF);
