@@ -177,6 +177,10 @@ impl VmCtx {
         self.hdl.clone()
     }
 
+    pub fn borrow_hdl(&self) -> &VmHdl {
+        &self.hdl
+    }
+
     fn map_memseg(&mut self, id: i32, gpa: u64, len: usize, off: u64, prot: u8) -> Result<()> {
         assert!(off <= i64::MAX as u64);
         let mut map = bhyve_api::vm_memmap {

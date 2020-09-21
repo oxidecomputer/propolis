@@ -218,3 +218,10 @@ pub struct vm_lapic_irq {
 pub struct vm_ioapic_irq {
     pub irq: c_int,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_rtc_data {
+    pub offset: i32,
+    pub value: u8,
+}

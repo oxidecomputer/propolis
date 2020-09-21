@@ -5,18 +5,20 @@ extern crate pico_args;
 mod devices;
 mod exits;
 mod inout;
-mod vm;
 mod pci;
+mod vm;
+
+use std::fs::File;
+use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
 use exits::*;
-use std::fs::File;
 use vm::{VcpuCtx, VmCtx};
 
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
+use devices::rtc::Rtc;
 use inout::InoutBus;
-use pci::{PciBus, PORT_PCI_CONFIG_DATA, PORT_PCI_CONFIG_ADDR};
-use std::sync::Arc;
+use pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -51,8 +53,16 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
     let com1 = Arc::new(LpcUart::new(COM1_IRQ));
     bus_pio.register(COM1_PORT, COM1_PORT + 7, com1.clone());
     let bus_pci = Arc::new(PciBus::new());
-    bus_pio.register(PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_ADDR + 3, bus_pci.clone());
-    bus_pio.register(PORT_PCI_CONFIG_DATA, PORT_PCI_CONFIG_DATA + 3, bus_pci.clone());
+    bus_pio.register(
+        PORT_PCI_CONFIG_ADDR,
+        PORT_PCI_CONFIG_ADDR + 3,
+        bus_pci.clone(),
+    );
+    bus_pio.register(
+        PORT_PCI_CONFIG_DATA,
+        PORT_PCI_CONFIG_DATA + 3,
+        bus_pci.clone(),
+    );
 
     loop {
         let exit = cpu.run(&next_entry).unwrap();
@@ -61,7 +71,7 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
             VmExitKind::Bogus => {
                 //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
                 next_entry = VmEntry::Run
-            },
+            }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
                     bus_pio.handle_out(io.port, io.bytes, val);
@@ -82,10 +92,14 @@ fn main() {
 
     let mut vm = vm::create_vm(&opts.vmname).unwrap();
 
+    let lowmem: usize = 512 * 1024 * 1024;
     println!("vm {} created", &opts.vmname);
-    vm.setup_memory(512 * 1024 * 1024).unwrap();
+    vm.setup_memory(lowmem as u64).unwrap();
 
     init_bootrom(&mut vm, &opts.rom);
+
+    Rtc::set_time(&vm).unwrap();
+    Rtc::store_memory_sizing(&vm, lowmem, None).unwrap();
 
     let mut vcpu0 = vm.vcpu(0);
 
