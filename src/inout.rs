@@ -54,7 +54,7 @@ impl InoutBus {
         if let Some((port, off, dev)) = self.lookup(port) {
             dev.pio_in(port, off, data);
         } else {
-            println!("unhandled IO out - port:{:x} len:{}", port, bytes);
+            println!("unhandled IO in - port:{:x} len:{}", port, bytes);
         }
 
         u32::from_le_bytes(buf)
