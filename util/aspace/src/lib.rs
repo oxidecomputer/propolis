@@ -75,7 +75,7 @@ impl<T> ASpace<T> {
             return Err(Error::OutOfRange);
         }
         match self.map.range((Unbounded, Included(&point))).next_back() {
-            Some((start, ent)) if ent.0 > point => Ok((*start, ent.0, &ent.1)),
+            Some((start, ent)) if ent.0 >= point => Ok((*start, ent.0, &ent.1)),
             _ => Err(Error::NotFound),
         }
     }
@@ -203,12 +203,17 @@ mod tests {
 
         assert_eq!(s.region_at(0x100), Ok(ent[0]));
         assert_eq!(s.region_at(0x110), Ok(ent[0]));
+        assert_eq!(s.region_at(0x1ff), Ok(ent[0]));
         assert_eq!(s.region_at(0x1050), Ok(ent[1]));
         assert_eq!(s.region_at(0x1100), Ok(ent[2]));
         assert_eq!(s.region_at(0x1150), Ok(ent[2]));
+        assert_eq!(s.region_at(0x11ff), Ok(ent[2]));
         assert_eq!(s.region_at(0x1250), Ok(ent[3]));
+        assert_eq!(s.region_at(0x12ff), Ok(ent[3]));
         assert_eq!(s.region_at(0x2990), Ok(ent[4]));
+        assert_eq!(s.region_at(0x2fff), Ok(ent[4]));
         assert_eq!(s.region_at(0xfff0), Ok(ent[5]));
+        assert_eq!(s.region_at(end), Ok(ent[5]));
 
         assert_eq!(s.region_at(0), Err(Error::NotFound));
         assert_eq!(s.region_at(0x200), Err(Error::NotFound));
