@@ -15,11 +15,11 @@ pub struct Rtc {}
 
 impl Rtc {
     pub fn set_time(ctx: &VmCtx) -> Result<()> {
-        let time = SystemTime::now()
+        let mut time: u64 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
+            .unwrap().as_secs();
         ctx.borrow_hdl()
-            .ioctl(bhyve_api::VM_RTC_SETTIME, time.as_secs() as *mut c_void)?;
+            .ioctl(bhyve_api::VM_RTC_SETTIME, &mut time)?;
         Ok(())
     }
 
