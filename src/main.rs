@@ -1,4 +1,3 @@
-extern crate aspace;
 extern crate bhyve_api;
 extern crate pico_args;
 
@@ -7,6 +6,7 @@ mod exits;
 mod inout;
 mod pci;
 mod vm;
+mod util;
 
 use std::fs::File;
 use std::sync::Arc;

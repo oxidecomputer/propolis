@@ -10,4 +10,3 @@ edition = "2018"
 libc = "0.2"
 pico-args = "0.3"
 bhyve_api = { path = "bhyve-api" }
-aspace = { path = "util/aspace" }

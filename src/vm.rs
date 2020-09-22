@@ -53,7 +53,7 @@ pub fn create_vm(name: &str) -> Result<VmCtx> {
     })
 }
 #[cfg(not(target_os = "illumos"))]
-pub fn create_vm(name: &str) -> Result<VmCtx> {
+pub fn create_vm(_name: &str) -> Result<VmCtx> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
 }
 
@@ -81,7 +81,7 @@ impl VmHdl {
         }
     }
     #[cfg(not(target_os = "illumos"))]
-    pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
+    pub fn ioctl<T>(&self, _cmd: i32, _data: *mut T) -> Result<i32> {
         Err(Error::new(ErrorKind::Other, "illumos required"))
     }
 }

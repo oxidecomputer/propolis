@@ -1,7 +1,0 @@
-[package]
-name = "aspace"
-version = "0.1.0"
-authors = ["Patrick Mooney <pmooney@pfmooney.com>"]
-edition = "2018"
-
-[dependencies]

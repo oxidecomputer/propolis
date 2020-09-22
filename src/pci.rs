@@ -28,6 +28,7 @@ impl PciBDF {
 
 #[repr(packed)]
 #[derive(Default)]
+#[allow(dead_code)]
 struct PciHeader {
     vendor_id: u16,
     device_id: u16,
