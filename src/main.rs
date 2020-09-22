@@ -18,7 +18,7 @@ use vm::{VcpuCtx, VmCtx};
 use devices::rtc::Rtc;
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use inout::InoutBus;
-use pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
+use pci::{PciBus, PciDev, PciBDF, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -51,8 +51,10 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
 
     let mut bus_pio = InoutBus::new();
     let com1 = Arc::new(LpcUart::new(COM1_IRQ));
-    bus_pio.register(COM1_PORT, COM1_PORT + 7, com1.clone());
     let bus_pci = Arc::new(PciBus::new());
+    let lpc_pcidev = PciDev::new(0x8086, 0x7000, 0x06, 0x01);
+
+    bus_pio.register(COM1_PORT, COM1_PORT + 7, com1.clone());
     bus_pio.register(
         PORT_PCI_CONFIG_ADDR,
         PORT_PCI_CONFIG_ADDR + 3,
@@ -63,6 +65,7 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
         PORT_PCI_CONFIG_DATA + 3,
         bus_pci.clone(),
     );
+    bus_pci.register(PciBDF::new(0, 31, 0), lpc_pcidev);
 
     loop {
         let exit = cpu.run(&next_entry).unwrap();
