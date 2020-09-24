@@ -5,8 +5,8 @@ mod devices;
 mod exits;
 mod inout;
 mod pci;
-mod vm;
 mod util;
+mod vm;
 
 use std::fs::File;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use vm::{VcpuCtx, VmCtx};
 use devices::rtc::Rtc;
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use inout::InoutBus;
-use pci::{PciBus, PciDev, PciBDF, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
+use pci::{PciBDF, PciBus, PciDev, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -54,17 +54,9 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
     let bus_pci = Arc::new(PciBus::new());
     let lpc_pcidev = PciDev::new(0x8086, 0x7000, 0x06, 0x01);
 
-    bus_pio.register(COM1_PORT, COM1_PORT + 7, com1.clone());
-    bus_pio.register(
-        PORT_PCI_CONFIG_ADDR,
-        PORT_PCI_CONFIG_ADDR + 3,
-        bus_pci.clone(),
-    );
-    bus_pio.register(
-        PORT_PCI_CONFIG_DATA,
-        PORT_PCI_CONFIG_DATA + 3,
-        bus_pci.clone(),
-    );
+    bus_pio.register(COM1_PORT, 8, com1.clone());
+    bus_pio.register(PORT_PCI_CONFIG_ADDR, 4, bus_pci.clone());
+    bus_pio.register(PORT_PCI_CONFIG_DATA, 4, bus_pci.clone());
     bus_pci.register(PciBDF::new(0, 31, 0), lpc_pcidev);
 
     loop {

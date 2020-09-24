@@ -19,9 +19,9 @@ impl InoutBus {
         }
     }
 
-    pub fn register(&mut self, start: u16, end: u16, dev: InoutDevHdl) {
+    pub fn register(&mut self, start: u16, len: u16, dev: InoutDevHdl) {
         self.map
-            .register(start as usize, end as usize, dev)
+            .register(start as usize, len as usize, dev)
             .unwrap();
     }
 
@@ -62,7 +62,7 @@ impl InoutBus {
 
     fn lookup(&self, port: u16) -> Option<(u16, u16, &InoutDevHdl)> {
         match self.map.region_at(port as usize) {
-            Ok((start, _end, hdl)) => Some((start as u16, port - start as u16, hdl)),
+            Ok((start, _len, hdl)) => Some((start as u16, port - start as u16, hdl)),
             _ => None,
         }
     }
