@@ -1,5 +1,7 @@
 extern crate bhyve_api;
 extern crate pico_args;
+#[macro_use]
+extern crate bitflags;
 
 mod devices;
 mod exits;
