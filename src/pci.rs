@@ -120,6 +120,7 @@ impl PciState {
         match id {
             PciCfgReg::VendorId => buf.copy_from_slice(&u16::to_le_bytes(self.vendor_id)),
             PciCfgReg::DeviceId => buf.copy_from_slice(&u16::to_le_bytes(self.device_id)),
+            PciCfgReg::Command => buf.copy_from_slice(&u16::to_le_bytes(self.command)),
             PciCfgReg::Class => buf[0] = self.class,
             PciCfgReg::Subclass => buf[0] = self.subclass,
             PciCfgReg::IntrLine => buf[0] = self.intr_line,
