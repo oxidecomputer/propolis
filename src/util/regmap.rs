@@ -57,6 +57,15 @@ where
         }
     }
 
+    pub fn set_partial_handlers(
+        &mut self,
+        read: Option<PartialReadFunc<ID, CTX>>,
+        write: Option<PartialWriteFunc<ID, CTX>>,
+    ) {
+        self.partial_read_handler = read;
+        self.partial_write_handler = write;
+    }
+
     pub fn define(&mut self, start: usize, len: usize, id: ID) {
         self.define_with_flags(start, len, id, Flags::DEFAULT)
     }
