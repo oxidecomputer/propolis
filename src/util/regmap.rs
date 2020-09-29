@@ -2,30 +2,17 @@ use std::ops::Bound::Included;
 
 use super::aspace::ASpace;
 
-type ReadFunc<ID, CTX> = fn(ctx: &mut CTX, id: ID, buf: &mut [u8]);
-type WriteFunc<ID, CTX> = fn(ctx: &mut CTX, id: ID, buf: &[u8]);
+type ReadFunc<ID, BE> = fn(be: &BE, id: &ID, foff: usize, outb: &mut [u8]);
+type WriteFunc<ID, BE> = fn(be: &BE, id: &ID, foff: usize, inb: &[u8]);
 
-type PartialReadFunc<ID, CTX> = fn(ctx: &mut CTX, id: ID, off: usize, buf: &mut [u8]);
-type PartialWriteFunc<ID, CTX> = fn(ctx: &mut CTX, id: ID, off: usize, buf: &[u8]);
-
-struct RegDef<ID>
-where
-    ID: Clone + Copy,
-{
+struct RegDef<ID> {
     id: ID,
     flags: Flags,
 }
 
-pub struct RegMap<ID, CTX>
-where
-    ID: Clone + Copy,
-{
+pub struct RegMap<ID> {
     len: usize,
     space: ASpace<RegDef<ID>>,
-    read_handler: ReadFunc<ID, CTX>,
-    write_handler: WriteFunc<ID, CTX>,
-    partial_read_handler: Option<PartialReadFunc<ID, CTX>>,
-    partial_write_handler: Option<PartialWriteFunc<ID, CTX>>,
 }
 
 bitflags! {
@@ -38,32 +25,20 @@ bitflags! {
     }
 }
 
-impl<ID, CTX> RegMap<ID, CTX>
-where
-    ID: Clone + Copy,
-{
-    pub fn new(
-        len: usize,
-        read_handler: ReadFunc<ID, CTX>,
-        write_handler: WriteFunc<ID, CTX>,
-    ) -> Self {
+struct RegXfer<'a, ID> {
+    reg: &'a RegDef<ID>,
+    reg_len: usize,
+    offset: usize,
+    skip_front: usize,
+    split_back: usize,
+}
+
+impl<ID> RegMap<ID> {
+    pub fn new(len: usize) -> Self {
         Self {
             len,
             space: ASpace::new(0, len - 1),
-            read_handler,
-            write_handler,
-            partial_read_handler: None,
-            partial_write_handler: None,
         }
-    }
-
-    pub fn set_partial_handlers(
-        &mut self,
-        read: Option<PartialReadFunc<ID, CTX>>,
-        write: Option<PartialWriteFunc<ID, CTX>>,
-    ) {
-        self.partial_read_handler = read;
-        self.partial_write_handler = write;
     }
 
     pub fn define(&mut self, start: usize, len: usize, id: ID) {
@@ -71,194 +46,182 @@ where
     }
 
     pub fn define_with_flags(&mut self, start: usize, len: usize, id: ID, flags: Flags) {
-        // XXX do proper error handling
-        if flags.contains(Flags::NO_READ_EXTEND) {
-            assert!(self.partial_read_handler.is_some());
-        }
-        if flags.contains(Flags::NO_WRITE_EXTEND) {
-            assert!(self.partial_write_handler.is_some());
-        }
-
         self.space
             .register(start, len, RegDef { id, flags })
             .unwrap();
     }
 
-    pub fn read(&self, offset: usize, buf: &mut [u8], ctx: &mut CTX) {
+    pub fn in_ctx<'b, BE>(
+        &self,
+        read_handler: ReadFunc<ID, BE>,
+        write_handler: WriteFunc<ID, BE>,
+        be: &'b BE,
+    ) -> TransferCtx<'_, 'b, ID, BE> {
+        TransferCtx {
+            map: &self,
+            be,
+            read_handler,
+            write_handler,
+        }
+    }
+
+    pub fn read<BE>(&self, offset: usize, buf: &mut [u8], be: &BE, f: ReadFunc<ID, BE>) {
         assert!(buf.len() != 0);
         assert!(offset + buf.len() - 1 < self.len);
 
-        let last_position = offset + buf.len() - 1;
-        let mut position = offset;
-        let mut active_buf = buf;
+        let buf_len = buf.len();
+        self.iterate_transfers(offset, buf_len, |xfer: &RegXfer<ID>| {
+            let buf_xfer = &mut buf[xfer.skip_front..xfer.split_back];
 
-        for (reg_start, reg_len, reg) in self
-            .space
-            .covered_by((Included(offset), Included(last_position)))
-        {
-            match Coverage::calculate(reg_start, reg_len, position, active_buf.len()) {
-                Coverage::Full => {
-                    debug_assert!(position == reg_start);
-
-                    let (copy_buf, remain) = active_buf.split_at_mut(reg_len);
-                    self.do_read(reg, reg_len, 0, copy_buf, ctx);
-                    position += reg_len;
-                    active_buf = remain;
-                }
-                Coverage::OverlapFront => {
-                    debug_assert!(position == reg_start);
-
-                    self.do_read(reg, reg_len, 0, active_buf, ctx);
-                    position += active_buf.len();
-                    active_buf = &mut [];
-                }
-                Coverage::OverlapBack(split) => {
-                    debug_assert!(position > reg_start);
-
-                    let (copy_buf, remain) = active_buf.split_at_mut(split);
-                    self.do_read(reg, reg_len, position - reg_start, copy_buf, ctx);
-                    position += copy_buf.len();
-                    active_buf = remain;
-                }
-                Coverage::Middling => {
-                    debug_assert!(position != reg_start);
-
-                    self.do_read(reg, reg_len, position - reg_start, active_buf, ctx);
-                    position += active_buf.len();
-                    active_buf = &mut [];
-                }
-            }
-        }
-        debug_assert!(position - 1 == last_position);
+            debug_assert!(buf_xfer.len() != 0);
+            Self::reg_read(xfer.reg, xfer.reg_len, xfer.offset, buf_xfer, be, f);
+        })
     }
 
-    pub fn write(&self, offset: usize, buf: &[u8], ctx: &mut CTX) {
-        assert!(buf.len() != 0);
-        assert!(offset + buf.len() < self.len);
-
-        let last_position = offset + buf.len() - 1;
-        let mut position = offset;
-        let mut active_buf = buf;
-
-        for (reg_start, reg_len, reg) in self
-            .space
-            .covered_by((Included(offset), Included(last_position)))
-        {
-            match Coverage::calculate(reg_start, reg_len, position, active_buf.len()) {
-                Coverage::Full => {
-                    debug_assert!(position == reg_start);
-                    let (copy_buf, remain) = active_buf.split_at(reg_len);
-                    self.do_write(reg, reg_len, 0, copy_buf, ctx);
-                    position += reg_len;
-                    active_buf = remain;
-                }
-                Coverage::OverlapFront => {
-                    debug_assert!(position == reg_start);
-                    self.do_write(reg, reg_len, 0, active_buf, ctx);
-                    position += active_buf.len();
-                    active_buf = &mut [];
-                }
-                Coverage::OverlapBack(split) => {
-                    debug_assert!(position > reg_start);
-                    let (copy_buf, remain) = active_buf.split_at(split);
-                    self.do_write(reg, reg_len, position - reg_start, copy_buf, ctx);
-                    position += copy_buf.len();
-                    active_buf = remain;
-                }
-                Coverage::Middling => {
-                    debug_assert!(position != reg_start);
-                    self.do_write(reg, reg_len, position - reg_start, active_buf, ctx);
-                    position += active_buf.len();
-                    active_buf = &mut [];
-                }
-            }
-        }
-        debug_assert!(position - 1 == last_position);
-    }
-
-    fn do_read(
+    pub fn write<BE>(
         &self,
+        offset: usize,
+        buf: &[u8],
+        be: &BE,
+        wf: WriteFunc<ID, BE>,
+        rf: ReadFunc<ID, BE>,
+    ) {
+        assert!(buf.len() != 0);
+        assert!(offset + buf.len() - 1 < self.len);
+
+        let buf_len = buf.len();
+        self.iterate_transfers(offset, buf_len, |xfer| {
+            let buf_xfer = &buf[xfer.skip_front..xfer.split_back];
+
+            debug_assert!(buf_xfer.len() != 0);
+            Self::reg_write(xfer.reg, xfer.reg_len, xfer.offset, buf_xfer, be, wf, rf);
+        })
+    }
+
+    fn reg_read<BE>(
         reg: &RegDef<ID>,
         reg_len: usize,
         copy_off: usize,
         copy_buf: &mut [u8],
-        ctx: &mut CTX,
+        be: &BE,
+        read_handler: ReadFunc<ID, BE>,
     ) {
-        let read_handler = self.read_handler;
         if reg.flags.contains(Flags::NO_READ_EXTEND) && reg_len != copy_buf.len() {
-            let partial_read = self.partial_read_handler.unwrap();
-            partial_read(ctx, reg.id, copy_off, copy_buf);
+            read_handler(be, &reg.id, copy_off, copy_buf);
         } else if reg_len == copy_buf.len() {
-            read_handler(ctx, reg.id, copy_buf);
+            read_handler(be, &reg.id, 0, copy_buf);
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
-            read_handler(ctx, reg.id, &mut scratch);
+            read_handler(be, &reg.id, 0, &mut scratch);
             copy_buf.copy_from_slice(&scratch[copy_off..(copy_off + copy_buf.len())]);
         }
     }
 
-    fn do_write(
-        &self,
+    fn reg_write<BE>(
         reg: &RegDef<ID>,
         reg_len: usize,
         copy_off: usize,
         copy_buf: &[u8],
-        ctx: &mut CTX,
+        be: &BE,
+        write_handler: WriteFunc<ID, BE>,
+        read_handler: ReadFunc<ID, BE>,
     ) {
-        let write_handler = self.write_handler;
         if reg.flags.contains(Flags::NO_WRITE_EXTEND) && reg_len != copy_buf.len() {
-            let partial_write = self.partial_write_handler.unwrap();
-            partial_write(ctx, reg.id, copy_off, copy_buf);
+            write_handler(be, &reg.id, copy_off, copy_buf);
         } else if reg_len == copy_buf.len() {
-            write_handler(ctx, reg.id, copy_buf);
+            write_handler(be, &reg.id, 0, copy_buf);
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
-                let read_handler = self.read_handler;
-                read_handler(ctx, reg.id, &mut scratch);
+                read_handler(be, &reg.id, 0, &mut scratch);
             }
             &mut scratch[copy_off..(copy_off + copy_buf.len())].copy_from_slice(copy_buf);
 
-            write_handler(ctx, reg.id, &scratch);
+            write_handler(be, &reg.id, 0, &scratch);
+        }
+    }
+
+    fn iterate_transfers<F>(&self, offset: usize, len: usize, mut do_xfer: F)
+    where
+        F: FnMut(&RegXfer<'_, ID>),
+    {
+        let last_position = offset + len - 1;
+        let mut position = offset;
+
+        // how much of the transfer length is remaining (or conversely, been consumed)
+        let mut remain = len;
+        let mut consumed = 0;
+
+        assert!(len != 0);
+        assert!(last_position < self.len);
+
+        for (reg_start, reg_len, reg) in self
+            .space
+            .covered_by((Included(offset), Included(last_position)))
+        {
+            let mut skip_front = 0;
+            let mut split_back = 0;
+            let mut reg_offset = 0;
+
+            if position == reg_start {
+                if remain > reg_len {
+                    split_back = remain - reg_len;
+                }
+            } else if position < reg_start {
+                debug_assert!(position + remain > reg_start);
+                let skip = reg_start - position;
+
+                skip_front = skip;
+                if remain - skip > reg_len {
+                    split_back = skip + reg_len;
+                }
+            } else {
+                // position > reg_start
+                let offset = position - reg_start;
+
+                reg_offset = offset;
+                if offset + remain > reg_len {
+                    split_back = reg_len - offset;
+                }
+            }
+
+            let xfer_len = remain - (skip_front + split_back);
+            debug_assert!(xfer_len <= reg_len);
+
+            do_xfer(&RegXfer {
+                reg,
+                reg_len,
+                offset: reg_offset,
+                skip_front: consumed + skip_front,
+                split_back: consumed + split_back,
+            });
+
+            position += reg_offset + skip_front + xfer_len;
+            consumed += skip_front + xfer_len;
+            remain -= skip_front + xfer_len;
         }
     }
 }
 
-enum Coverage {
-    /// Buffer covers entire register (and possibly beyond)
-    Full,
-    /// Buffer starts at front of register but falls short of its end
-    OverlapFront,
-    /// Buffer begins in middle of register and extends to (or past) the end
-    OverlapBack(usize),
-    /// Buffer shorter than register and contained within
-    Middling,
+pub struct TransferCtx<'a, 'b, ID, BE> {
+    map: &'a RegMap<ID>,
+    be: &'b BE,
+    read_handler: ReadFunc<ID, BE>,
+    write_handler: WriteFunc<ID, BE>,
 }
 
-impl Coverage {
-    fn calculate(reg_start: usize, reg_len: usize, buf_start: usize, buf_len: usize) -> Self {
-        debug_assert!(buf_start >= reg_start);
-
-        if buf_start == reg_start {
-            if buf_len >= reg_len {
-                Coverage::Full
-            } else {
-                Coverage::OverlapFront
-            }
-        } else {
-            let offset = buf_start - reg_start;
-
-            if offset + buf_len >= reg_len {
-                Coverage::OverlapBack(reg_len - offset)
-            } else {
-                Coverage::Middling
-            }
-        }
+impl<'a, 'b, ID, BE> TransferCtx<'a, 'b, ID, BE> {
+    pub fn read(&self, offset: usize, outb: &mut [u8]) {
+        self.map.read(offset, outb, self.be, self.read_handler)
+    }
+    pub fn write(&self, offset: usize, inb: &[u8]) {
+        self.map
+            .write(offset, inb, self.be, self.write_handler, self.read_handler)
     }
 }

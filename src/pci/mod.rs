@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use crate::inout::InoutDev;
 use crate::util::regmap::{Flags, RegMap};
@@ -104,7 +104,7 @@ static CFG_LAYOUT: [(PciCfgReg, u8, u8); 28] = [
     (PciCfgReg::MaxLatency, OFF_CFG_MAXLATENCY, 1),
 ];
 
-fn pci_cfg_regmap<CTX>(map: &mut RegMap<PciCfgReg, CTX>) {
+fn pci_cfg_regmap(map: &mut RegMap<PciCfgReg>) {
     for reg in CFG_LAYOUT.iter() {
         if reg.0 != PciCfgReg::Reserved {
             map.define(reg.1 as usize, reg.2 as usize, reg.0)
@@ -122,83 +122,32 @@ fn pci_cfg_regmap<CTX>(map: &mut RegMap<PciCfgReg, CTX>) {
 }
 
 #[derive(Default)]
-#[allow(dead_code)]
 struct PciState {
-    vendor_id: u16,
-    device_id: u16,
-    class: u8,
-    subclass: u8,
     command: u16,
     intr_line: u8,
     intr_pin: u8,
 }
 
-impl PciState {
-    fn cfg_read(&mut self, id: PciCfgReg, buf: &mut [u8]) {
-        match id {
-            PciCfgReg::VendorId => buf.copy_from_slice(&u16::to_le_bytes(self.vendor_id)),
-            PciCfgReg::DeviceId => buf.copy_from_slice(&u16::to_le_bytes(self.device_id)),
-            PciCfgReg::Command => buf.copy_from_slice(&u16::to_le_bytes(self.command)),
-            PciCfgReg::Class => buf[0] = self.class,
-            PciCfgReg::Subclass => buf[0] = self.subclass,
-            PciCfgReg::IntrLine => buf[0] = self.intr_line,
-            PciCfgReg::IntrPin => buf[0] = self.intr_pin,
-            _ => {
-                println!("Unhandled read {:?}", id);
-                buf.iter_mut().for_each(|b| *b = 0);
-            }
-        }
-    }
-
-    fn cfg_write(&mut self, id: PciCfgReg, buf: &[u8]) {
-        match id {
-            PciCfgReg::Command => {
-                let new = u16::from_le_bytes(buf.try_into().unwrap());
-                // mask all bits but io/mmio/busmaster enable and INTx disable
-                self.command = new & REG_MASK_CMD
-            }
-            PciCfgReg::IntrLine => {
-                self.intr_line = buf[0];
-            }
-            PciCfgReg::IntrPin => {
-                self.intr_pin = buf[0];
-            }
-            _ => {
-                println!("Unhandled write {:?}", id);
-                // discard all other writes
-            }
-        }
-    }
-
-    fn cfg_partial_read(&mut self, id: PciCfgReg, _off: usize, buf: &mut [u8]) {
-        assert!(id == PciCfgReg::Reserved);
-        buf.iter_mut().for_each(|b| *b = 0);
-    }
-
-    fn cfg_partial_write(&mut self, id: PciCfgReg, _off: usize, _buf: &[u8]) {
-        assert!(id == PciCfgReg::Reserved);
-    }
-}
-
 pub struct PciDev {
+    vendor_id: u16,
+    device_id: u16,
+    class: u8,
+    subclass: u8,
     header: Mutex<PciState>,
-    regmap: RegMap<PciCfgReg, PciState>,
+    regmap: RegMap<PciCfgReg>,
 }
+
 impl PciDev {
     pub fn new(vendor_id: u16, device_id: u16, class: u8, subclass: u8) -> Self {
-        let mut regmap = RegMap::new(0x40, PciState::cfg_read, PciState::cfg_write);
-        regmap.set_partial_handlers(
-            Some(PciState::cfg_partial_read),
-            Some(PciState::cfg_partial_write),
-        );
+        let mut regmap = RegMap::new(0x40);
         pci_cfg_regmap(&mut regmap);
 
         Self {
+            vendor_id,
+            device_id,
+            class,
+            subclass,
             header: Mutex::new(PciState {
-                vendor_id,
-                device_id,
-                class,
-                subclass,
                 command: 0x0004, //busmaster enable
                 intr_line: 0xff,
                 intr_pin: 0x00,
@@ -208,21 +157,69 @@ impl PciDev {
     }
 
     fn cfg_read(&self, offset: u8, data: &mut [u8]) {
-        let off = offset as usize;
-
-        // XXX be picky for now
-        assert!(off + data.len() <= 0x40);
-        let mut header = self.header.lock().unwrap();
-        self.regmap.read(off, data, &mut header);
+        self.regmap
+            .in_ctx(Self::cfg_std_read, Self::cfg_std_write, self)
+            .read(offset as usize, data);
     }
 
     fn cfg_write(&self, offset: u8, data: &[u8]) {
-        let off = offset as usize;
+        self.regmap
+            .in_ctx(Self::cfg_std_read, Self::cfg_std_write, self)
+            .write(offset as usize, data);
+    }
 
-        // XXX be picky for now
-        assert!(off + data.len() <= 0x40);
-        let mut header = self.header.lock().unwrap();
-        self.regmap.write(off, data, &mut header);
+    fn cfg_std_read(&self, id: &PciCfgReg, foff: usize, outb: &mut [u8]) {
+        // Only the reserved space is configured to skip buffering for unaligned access.
+        assert!(foff == 0 || *id == PciCfgReg::Reserved);
+
+        match id {
+            PciCfgReg::VendorId => outb.copy_from_slice(&u16::to_le_bytes(self.vendor_id)),
+            PciCfgReg::DeviceId => outb.copy_from_slice(&u16::to_le_bytes(self.device_id)),
+            PciCfgReg::Class => outb[0] = self.class,
+            PciCfgReg::Subclass => outb[0] = self.subclass,
+
+            PciCfgReg::Command => {
+                let state = self.header.lock().unwrap();
+                outb.copy_from_slice(&u16::to_le_bytes(state.command))
+            }
+            PciCfgReg::IntrLine => {
+                let state = self.header.lock().unwrap();
+                outb[0] = state.intr_line;
+            }
+            PciCfgReg::IntrPin => {
+                let state = self.header.lock().unwrap();
+                outb[0] = state.intr_pin;
+            }
+            PciCfgReg::Reserved => {
+                outb.iter_mut().for_each(|b| *b = 0);
+            }
+            _ => {
+                println!("Unhandled read {:?}", id);
+                outb.iter_mut().for_each(|b| *b = 0);
+            }
+        }
+    }
+
+    fn cfg_std_write(&self, id: &PciCfgReg, foff: usize, inb: &[u8]) {
+        // Only the reserved space is configured to skip buffering for unaligned access.
+        assert!(foff == 0 || *id == PciCfgReg::Reserved);
+
+        let mut state = self.header.lock().unwrap();
+        match id {
+            PciCfgReg::Command => {
+                let new = u16::from_le_bytes(inb.try_into().unwrap());
+                // mask all bits but io/mmio/busmaster enable and INTx disable
+                state.command = new & REG_MASK_CMD
+            }
+            PciCfgReg::IntrLine => {
+                state.intr_line = inb[0];
+            }
+            PciCfgReg::Reserved => {}
+            _ => {
+                println!("Unhandled write {:?}", id);
+                // discard all other writes
+            }
+        }
     }
 }
 
