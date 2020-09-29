@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex};
 use crate::inout::InoutDev;
 use crate::util::regmap::{Flags, RegMap};
 
+mod bits;
+use bits::*;
+
 pub const PORT_PCI_CONFIG_ADDR: u16 = 0xcf8;
 pub const PORT_PCI_CONFIG_DATA: u16 = 0xcfc;
 
@@ -41,7 +44,7 @@ enum PciCfgReg {
     LatencyTimer,
     HeaderType,
     Bist,
-    Bar(u8),
+    Bar(BarN),
     CardbusPtr,
     SubVendorId,
     SubDeviceId,
@@ -54,36 +57,51 @@ enum PciCfgReg {
     MaxLatency,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum BarN {
+    BAR0,
+    BAR1,
+    BAR2,
+    BAR3,
+    BAR4,
+    BAR5,
+}
+
 // register layout info
 static CFG_LAYOUT: [(PciCfgReg, u8, u8); 28] = [
-    (PciCfgReg::VendorId, 0x00, 2),
-    (PciCfgReg::DeviceId, 0x02, 2),
-    (PciCfgReg::Command, 0x04, 2),
-    (PciCfgReg::Status, 0x06, 2),
-    (PciCfgReg::RevisionId, 0x08, 1),
-    (PciCfgReg::ProgIf, 0x09, 1),
-    (PciCfgReg::Subclass, 0x0a, 1),
-    (PciCfgReg::Class, 0x0b, 1),
-    (PciCfgReg::CacheLineSize, 0x0c, 1),
-    (PciCfgReg::LatencyTimer, 0x0d, 1),
-    (PciCfgReg::HeaderType, 0x0e, 1),
-    (PciCfgReg::Bist, 0x0f, 1),
-    (PciCfgReg::Bar(0), 0x10, 4),
-    (PciCfgReg::Bar(1), 0x14, 4),
-    (PciCfgReg::Bar(2), 0x18, 4),
-    (PciCfgReg::Bar(3), 0x1c, 4),
-    (PciCfgReg::Bar(4), 0x20, 4),
-    (PciCfgReg::Bar(5), 0x24, 4),
-    (PciCfgReg::CardbusPtr, 0x28, 4),
-    (PciCfgReg::SubVendorId, 0x2c, 2),
-    (PciCfgReg::SubDeviceId, 0x2e, 2),
-    (PciCfgReg::ExpansionRomAddr, 0x30, 4),
-    (PciCfgReg::CapPtr, 0x34, 1),
-    (PciCfgReg::Reserved, 0x35, 7),
-    (PciCfgReg::IntrLine, 0x3c, 1),
-    (PciCfgReg::IntrPin, 0x3d, 1),
-    (PciCfgReg::MinGrant, 0x3e, 1),
-    (PciCfgReg::MaxLatency, 0x3f, 1),
+    (PciCfgReg::VendorId, OFF_CFG_VENDORID, 2),
+    (PciCfgReg::DeviceId, OFF_CFG_DEVICEID, 2),
+    (PciCfgReg::Command, OFF_CFG_COMMAND, 2),
+    (PciCfgReg::Status, OFF_CFG_STATUS, 2),
+    (PciCfgReg::RevisionId, OFF_CFG_REVISIONID, 1),
+    (PciCfgReg::ProgIf, OFF_CFG_PROGIF, 1),
+    (PciCfgReg::Subclass, OFF_CFG_SUBCLASS, 1),
+    (PciCfgReg::Class, OFF_CFG_CLASS, 1),
+    (PciCfgReg::CacheLineSize, OFF_CFG_CACHELINESZ, 1),
+    (PciCfgReg::LatencyTimer, OFF_CFG_LATENCYTIMER, 1),
+    (PciCfgReg::HeaderType, OFF_CFG_HEADERTYPE, 1),
+    (PciCfgReg::Bist, OFF_CFG_BIST, 1),
+    (PciCfgReg::Bar(BarN::BAR0), OFF_CFG_BAR0, 4),
+    (PciCfgReg::Bar(BarN::BAR1), OFF_CFG_BAR1, 4),
+    (PciCfgReg::Bar(BarN::BAR2), OFF_CFG_BAR2, 4),
+    (PciCfgReg::Bar(BarN::BAR3), OFF_CFG_BAR3, 4),
+    (PciCfgReg::Bar(BarN::BAR4), OFF_CFG_BAR4, 4),
+    (PciCfgReg::Bar(BarN::BAR5), OFF_CFG_BAR5, 4),
+    (PciCfgReg::CardbusPtr, OFF_CFG_CARDBUSPTR, 4),
+    (PciCfgReg::SubVendorId, OFF_CFG_SUBVENDORID, 2),
+    (PciCfgReg::SubDeviceId, OFF_CFG_SUBDEVICEID, 2),
+    (PciCfgReg::ExpansionRomAddr, OFF_CFG_EXPROMADDR, 4),
+    (PciCfgReg::CapPtr, OFF_CFG_CAPPTR, 1),
+    // Reserved bytes between CapPtr and IntrLine [0x35-0x3c)
+    (
+        PciCfgReg::Reserved,
+        OFF_CFG_RESERVED,
+        OFF_CFG_INTRLINE - OFF_CFG_RESERVED,
+    ),
+    (PciCfgReg::IntrLine, OFF_CFG_INTRLINE, 1),
+    (PciCfgReg::IntrPin, OFF_CFG_INTRPIN, 1),
+    (PciCfgReg::MinGrant, OFF_CFG_MINGRANT, 1),
+    (PciCfgReg::MaxLatency, OFF_CFG_MAXLATENCY, 1),
 ];
 
 fn pci_cfg_regmap<CTX>(map: &mut RegMap<PciCfgReg, CTX>) {
@@ -137,7 +155,7 @@ impl PciState {
             PciCfgReg::Command => {
                 let new = u16::from_le_bytes(buf.try_into().unwrap());
                 // mask all bits but io/mmio/busmaster enable and INTx disable
-                self.command = new & 0b0100_00000111
+                self.command = new & REG_MASK_CMD
             }
             PciCfgReg::IntrLine => {
                 self.intr_line = buf[0];
