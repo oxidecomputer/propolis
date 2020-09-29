@@ -9,5 +9,6 @@ edition = "2018"
 [dependencies]
 libc = "0.2"
 pico-args = "0.3"
-bhyve_api = { path = "bhyve-api" }
 bitflags = "1.2"
+byteorder = "1"
+bhyve_api = { path = "bhyve-api" }

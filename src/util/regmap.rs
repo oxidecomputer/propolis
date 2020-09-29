@@ -51,11 +51,11 @@ impl<ID> RegMap<ID> {
             .unwrap();
     }
 
-    pub fn in_ctx<'b, BE>(
+    pub fn with_ctx<'b, BE>(
         &self,
+        be: &'b BE,
         read_handler: ReadFunc<ID, BE>,
         write_handler: WriteFunc<ID, BE>,
-        be: &'b BE,
     ) -> TransferCtx<'_, 'b, ID, BE> {
         TransferCtx {
             map: &self,

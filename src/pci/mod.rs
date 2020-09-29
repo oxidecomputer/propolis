@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use crate::inout::InoutDev;
 use crate::util::regmap::{Flags, RegMap};
 
+use byteorder::{ByteOrder, LE};
+
 mod bits;
 use bits::*;
 
@@ -128,7 +130,7 @@ struct PciState {
     intr_pin: u8,
 }
 
-pub struct PciDev {
+pub struct PciDevInst {
     vendor_id: u16,
     device_id: u16,
     class: u8,
@@ -137,7 +139,7 @@ pub struct PciDev {
     regmap: RegMap<PciCfgReg>,
 }
 
-impl PciDev {
+impl PciDevInst {
     pub fn new(vendor_id: u16, device_id: u16, class: u8, subclass: u8) -> Self {
         let mut regmap = RegMap::new(0x40);
         pci_cfg_regmap(&mut regmap);
@@ -148,7 +150,7 @@ impl PciDev {
             class,
             subclass,
             header: Mutex::new(PciState {
-                command: 0x0004, //busmaster enable
+                command: 0x0000,
                 intr_line: 0xff,
                 intr_pin: 0x00,
             }),
@@ -158,13 +160,13 @@ impl PciDev {
 
     fn cfg_read(&self, offset: u8, data: &mut [u8]) {
         self.regmap
-            .in_ctx(Self::cfg_std_read, Self::cfg_std_write, self)
+            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
             .read(offset as usize, data);
     }
 
     fn cfg_write(&self, offset: u8, data: &[u8]) {
         self.regmap
-            .in_ctx(Self::cfg_std_read, Self::cfg_std_write, self)
+            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
             .write(offset as usize, data);
     }
 
@@ -173,14 +175,14 @@ impl PciDev {
         assert!(foff == 0 || *id == PciCfgReg::Reserved);
 
         match id {
-            PciCfgReg::VendorId => outb.copy_from_slice(&u16::to_le_bytes(self.vendor_id)),
-            PciCfgReg::DeviceId => outb.copy_from_slice(&u16::to_le_bytes(self.device_id)),
+            PciCfgReg::VendorId => LE::write_u16(outb, self.vendor_id),
+            PciCfgReg::DeviceId => LE::write_u16(outb, self.device_id),
             PciCfgReg::Class => outb[0] = self.class,
             PciCfgReg::Subclass => outb[0] = self.subclass,
 
             PciCfgReg::Command => {
                 let state = self.header.lock().unwrap();
-                outb.copy_from_slice(&u16::to_le_bytes(state.command))
+                LE::write_u16(outb, state.command);
             }
             PciCfgReg::IntrLine => {
                 let state = self.header.lock().unwrap();
@@ -207,7 +209,7 @@ impl PciDev {
         let mut state = self.header.lock().unwrap();
         match id {
             PciCfgReg::Command => {
-                let new = u16::from_le_bytes(inb.try_into().unwrap());
+                let new = LE::read_u16(inb);
                 // mask all bits but io/mmio/busmaster enable and INTx disable
                 state.command = new & REG_MASK_CMD
             }
@@ -229,7 +231,7 @@ pub struct PciBus {
 
 struct PciBusState {
     pio_cfg_addr: u32,
-    devices: Vec<(PciBDF, PciDev)>,
+    devices: Vec<(PciBDF, PciDevInst)>,
 }
 
 impl PciBusState {
@@ -263,7 +265,7 @@ impl PciBusState {
         }
     }
 
-    fn register(&mut self, bdf: PciBDF, dev: PciDev) {
+    fn register(&mut self, bdf: PciBDF, dev: PciDevInst) {
         // XXX strict fail for now
         assert!(!self.devices.iter().find(|(sbdf, _)| sbdf == &bdf).is_some());
         self.devices.push((bdf, dev));
@@ -280,7 +282,7 @@ impl PciBus {
         }
     }
 
-    pub fn register(&self, bdf: PciBDF, dev: PciDev) {
+    pub fn register(&self, bdf: PciBDF, dev: PciDevInst) {
         let mut hdl = self.state.lock().unwrap();
         hdl.register(bdf, dev);
     }
