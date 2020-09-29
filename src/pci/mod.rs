@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::inout::InoutDev;
 use crate::util::regmap::{Flags, RegMap};
@@ -30,6 +30,11 @@ impl PciBDF {
 
         Self { bus, dev, func }
     }
+}
+
+pub trait PciEndpoint {
+    fn cfg_read(&self, offset: u8, data: &mut [u8]);
+    fn cfg_write(&self, offset: u8, data: &[u8]);
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -130,17 +135,18 @@ struct PciState {
     intr_pin: u8,
 }
 
-pub struct PciDevInst {
+pub struct PciDevInst<I> {
     vendor_id: u16,
     device_id: u16,
     class: u8,
     subclass: u8,
     header: Mutex<PciState>,
     regmap: RegMap<PciCfgReg>,
+    devimpl: I
 }
 
-impl PciDevInst {
-    pub fn new(vendor_id: u16, device_id: u16, class: u8, subclass: u8) -> Self {
+impl<I> PciDevInst<I> {
+    pub fn new(vendor_id: u16, device_id: u16, class: u8, subclass: u8, i: I) -> Self {
         let mut regmap = RegMap::new(0x40);
         pci_cfg_regmap(&mut regmap);
 
@@ -155,19 +161,8 @@ impl PciDevInst {
                 intr_pin: 0x00,
             }),
             regmap,
+            devimpl: i
         }
-    }
-
-    fn cfg_read(&self, offset: u8, data: &mut [u8]) {
-        self.regmap
-            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
-            .read(offset as usize, data);
-    }
-
-    fn cfg_write(&self, offset: u8, data: &[u8]) {
-        self.regmap
-            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
-            .write(offset as usize, data);
     }
 
     fn cfg_std_read(&self, id: &PciCfgReg, foff: usize, outb: &mut [u8]) {
@@ -225,13 +220,39 @@ impl PciDevInst {
     }
 }
 
+impl<I> PciEndpoint for PciDevInst<I> {
+    fn cfg_read(&self, offset: u8, data: &mut [u8]) {
+        self.regmap
+            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
+            .read(offset as usize, data);
+    }
+
+    fn cfg_write(&self, offset: u8, data: &[u8]) {
+        self.regmap
+            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
+            .write(offset as usize, data);
+    }
+}
+
+pub trait DevImpl {
+    fn bar_read(&self, bar: BarN, offset: usize, outb: &mut [u8]) {
+        panic!("unexpected BAR read: {:?} @ {} {}", bar, offset, outb.len());
+    }
+    fn bar_write(&self, bar: BarN, offset: usize, inb: &[u8]) {
+        panic!("unexpected BAR write: {:?} @ {} {}", bar, offset, inb.len());
+    }
+    // TODO
+    // fn cap_read(&self);
+    // fn cap_write(&self);
+}
+
 pub struct PciBus {
     state: Mutex<PciBusState>,
 }
 
 struct PciBusState {
     pio_cfg_addr: u32,
-    devices: Vec<(PciBDF, PciDevInst)>,
+    devices: Vec<(PciBDF, Arc<dyn PciEndpoint>)>,
 }
 
 impl PciBusState {
@@ -265,7 +286,7 @@ impl PciBusState {
         }
     }
 
-    fn register(&mut self, bdf: PciBDF, dev: PciDevInst) {
+    fn register(&mut self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         // XXX strict fail for now
         assert!(!self.devices.iter().find(|(sbdf, _)| sbdf == &bdf).is_some());
         self.devices.push((bdf, dev));
@@ -282,7 +303,7 @@ impl PciBus {
         }
     }
 
-    pub fn register(&self, bdf: PciBDF, dev: PciDevInst) {
+    pub fn register(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
         hdl.register(bdf, dev);
     }

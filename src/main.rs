@@ -47,6 +47,9 @@ fn init_bootrom(vm: &mut VmCtx, rom: &str) {
     vm.populate_bootrom(&mut fp, len as usize).unwrap();
 }
 
+struct PciLpcImpl;
+impl pci::DevImpl for PciLpcImpl {}
+
 fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
     cpu.set_reg(vm_reg_name::VM_REG_GUEST_RIP, start_rip)
         .unwrap();
@@ -55,12 +58,12 @@ fn run_loop(cpu: &mut VcpuCtx, start_rip: u64) {
     let mut bus_pio = InoutBus::new();
     let com1 = Arc::new(LpcUart::new(COM1_IRQ));
     let bus_pci = Arc::new(PciBus::new());
-    let lpc_pcidev = PciDevInst::new(0x8086, 0x7000, 0x06, 0x01);
+    let lpc_pcidev = PciDevInst::new(0x8086, 0x7000, 0x06, 0x01, PciLpcImpl {});
 
     bus_pio.register(COM1_PORT, 8, com1.clone());
     bus_pio.register(PORT_PCI_CONFIG_ADDR, 4, bus_pci.clone());
     bus_pio.register(PORT_PCI_CONFIG_DATA, 4, bus_pci.clone());
-    bus_pci.register(PciBDF::new(0, 31, 0), lpc_pcidev);
+    bus_pci.register(PciBDF::new(0, 31, 0), Arc::new(lpc_pcidev));
 
     loop {
         let exit = cpu.run(&next_entry).unwrap();
