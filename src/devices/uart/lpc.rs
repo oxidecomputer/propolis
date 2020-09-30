@@ -1,5 +1,5 @@
 use super::base::Uart;
-use crate::inout::InoutDev;
+use crate::pio::PioDev;
 use std::sync::Mutex;
 
 pub const COM1_IRQ: u8 = 4;
@@ -32,7 +32,7 @@ fn handle_out(uart: &mut Uart) {
     }
 }
 
-impl InoutDev for LpcUart {
+impl PioDev for LpcUart {
     fn pio_out(&self, _port: u16, off: u16, data: &[u8]) {
         assert!(off <= MAX_OFF);
         assert!(data.len() != 0);

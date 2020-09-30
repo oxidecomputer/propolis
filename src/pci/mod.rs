@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 
-use crate::inout::InoutDev;
+use crate::pio::PioDev;
 use crate::util::regmap::{Flags, RegMap};
 
 use byteorder::{ByteOrder, LE};
@@ -142,7 +142,7 @@ pub struct PciDevInst<I> {
     subclass: u8,
     header: Mutex<PciState>,
     regmap: RegMap<PciCfgReg>,
-    devimpl: I
+    devimpl: I,
 }
 
 impl<I> PciDevInst<I> {
@@ -161,7 +161,7 @@ impl<I> PciDevInst<I> {
                 intr_pin: 0x00,
             }),
             regmap,
-            devimpl: i
+            devimpl: i,
         }
     }
 
@@ -329,7 +329,7 @@ fn cfg_addr_parse(addr: u32) -> Option<(PciBDF, u8)> {
     }
 }
 
-impl InoutDev for PciBus {
+impl PioDev for PciBus {
     fn pio_out(&self, port: u16, off: u16, data: &[u8]) {
         let mut hdl = self.state.lock().unwrap();
         match port {
