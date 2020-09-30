@@ -10,7 +10,7 @@ use bhyve_api;
 use libc;
 
 #[cfg(target_os = "illumos")]
-pub fn create_vm(name: &str) -> Result<VmHdl> {
+pub fn create_vm(name: &str) -> Result<VmmHdl> {
     let ctl = OpenOptions::new()
         .write(true)
         .custom_flags(libc::O_EXCL)
@@ -44,7 +44,7 @@ pub fn create_vm(name: &str) -> Result<VmHdl> {
     vmpath.push(name);
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
-    VmHdl { inner: fp }
+    Ok(VmmHdl { inner: fp })
 }
 #[cfg(not(target_os = "illumos"))]
 pub fn create_vm(_name: &str) -> Result<VmmHdl> {
