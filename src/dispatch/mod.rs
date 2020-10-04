@@ -31,6 +31,22 @@ impl Dispatcher {
         self.tasks.lock().unwrap().push((name, hdl));
         Ok(())
     }
+    pub fn spawn_vcpu(&self, vcpu: VcpuHdl, func: fn(DispCtx, VcpuHdl)) -> Result<()>
+    {
+        let ctx = DispCtx::new(self.mctx.clone());
+        let name = format!("vcpu-{}", vcpu.cpuid());
+        let hdl = Builder::new().name(name.clone()).spawn(move || {
+            func(ctx, vcpu);
+        })?;
+        self.tasks.lock().unwrap().push((name, hdl));
+        Ok(())
+    }
+    pub fn join(&self) {
+        let mut tasks = self.tasks.lock().unwrap();
+        for (_name, joinhdl) in tasks.drain(..) {
+            joinhdl.join().unwrap()
+        }
+    }
 }
 
 pub struct DispCtx {

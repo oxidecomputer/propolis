@@ -22,7 +22,8 @@ use bhyve_api::vm_reg_name;
 use exits::*;
 use machine::{Machine, MachineCtx};
 use vcpu::VcpuHdl;
-use crate::pio::PioDev;
+use pio::PioDev;
+use dispatch::*;
 
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use pci::{PciBDF, PciDevInst};
@@ -44,10 +45,11 @@ fn parse_args() -> Opts {
 struct PciLpcImpl;
 impl pci::DevImpl for PciLpcImpl {}
 
-fn run_loop(cpu: &mut VcpuHdl, mctx: MachineCtx) {
+fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
+    let mctx = &dctx.mctx;
     let mut next_entry = VmEntry::Run;
     loop {
-        let exit = cpu.run(&next_entry).unwrap();
+        let exit = vcpu.run(&next_entry).unwrap();
         //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
         match exit.kind {
             VmExitKind::Bogus => {
@@ -109,7 +111,11 @@ fn main() {
     vcpu0.activate().unwrap();
     vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
 
-    run_loop(&mut vcpu0, mctx);
+    let dispatch = Dispatcher::new(mctx);
+
+    dispatch.spawn_vcpu(vcpu0, run_loop).unwrap();
+
+    dispatch.join();
 
     drop(vm);
 }
