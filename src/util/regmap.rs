@@ -29,8 +29,8 @@ struct RegXfer<'a, ID> {
     reg: &'a RegDef<ID>,
     reg_len: usize,
     offset: usize,
-    skip_front: usize,
-    split_back: usize,
+    skip_front_idx: usize,
+    split_back_idx: usize,
 }
 
 impl<ID> RegMap<ID> {
@@ -71,7 +71,7 @@ impl<ID> RegMap<ID> {
 
         let buf_len = buf.len();
         self.iterate_transfers(offset, buf_len, |xfer: &RegXfer<ID>| {
-            let buf_xfer = &mut buf[xfer.skip_front..xfer.split_back];
+            let buf_xfer = &mut buf[xfer.skip_front_idx..xfer.split_back_idx];
 
             debug_assert!(buf_xfer.len() != 0);
             Self::reg_read(xfer.reg, xfer.reg_len, xfer.offset, buf_xfer, be, f);
@@ -91,7 +91,7 @@ impl<ID> RegMap<ID> {
 
         let buf_len = buf.len();
         self.iterate_transfers(offset, buf_len, |xfer| {
-            let buf_xfer = &buf[xfer.skip_front..xfer.split_back];
+            let buf_xfer = &buf[xfer.skip_front_idx..xfer.split_back_idx];
 
             debug_assert!(buf_xfer.len() != 0);
             Self::reg_write(xfer.reg, xfer.reg_len, xfer.offset, buf_xfer, be, wf, rf);
@@ -179,7 +179,7 @@ impl<ID> RegMap<ID> {
 
                 skip_front = skip;
                 if remain - skip > reg_len {
-                    split_back = skip + reg_len;
+                    split_back = remain - (skip + reg_len);
                 }
             } else {
                 // position > reg_start
@@ -187,7 +187,7 @@ impl<ID> RegMap<ID> {
 
                 reg_offset = offset;
                 if offset + remain > reg_len {
-                    split_back = reg_len - offset;
+                    split_back = offset + remain - reg_len;
                 }
             }
 
@@ -198,8 +198,8 @@ impl<ID> RegMap<ID> {
                 reg,
                 reg_len,
                 offset: reg_offset,
-                skip_front: consumed + skip_front,
-                split_back: consumed + split_back,
+                skip_front_idx: consumed + skip_front,
+                split_back_idx: consumed + skip_front + xfer_len,
             });
 
             position += reg_offset + skip_front + xfer_len;
