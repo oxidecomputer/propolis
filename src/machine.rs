@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::devices::rtc::Rtc;
 use crate::pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
-use crate::pio::PioBus;
+use crate::pio::{PioBus, PioDev};
 use crate::util::aspace::ASpace;
 use crate::util::regmap::{Flags, RegMap};
 use crate::vcpu::VcpuHdl;
@@ -128,21 +128,32 @@ impl Machine {
 
     pub fn wire_pci_root(&self) {
         self.bus_pio
-            .register(PORT_PCI_CONFIG_ADDR, 4, self.pci_root.clone());
+            .register(PORT_PCI_CONFIG_ADDR, 4, &(self.pci_root.clone() as Arc<dyn PioDev>));
         self.bus_pio
-            .register(PORT_PCI_CONFIG_DATA, 4, self.pci_root.clone());
+            .register(PORT_PCI_CONFIG_DATA, 4, &(self.pci_root.clone() as Arc<dyn PioDev>));
+    }
+}
+
+#[derive(Clone)]
+pub struct MachineCtx {
+    vm: Arc<Machine>,
+}
+
+impl MachineCtx {
+    pub fn new(vm: &Arc<Machine>) -> Self {
+        Self { vm: vm.clone() }
     }
 
     pub fn with_pio<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&PioBus) -> R,
     {
-        f(&self.bus_pio)
+        f(&self.vm.bus_pio)
     }
     pub fn with_pci<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&PciBus) -> R,
     {
-        f(&self.pci_root)
+        f(&self.vm.pci_root)
     }
 }

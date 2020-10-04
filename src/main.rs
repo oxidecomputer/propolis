@@ -5,9 +5,11 @@ extern crate bitflags;
 extern crate byteorder;
 
 mod devices;
+mod dispatch;
 mod exits;
 mod machine;
 mod pci;
+#[macro_use]
 mod pio;
 mod util;
 mod vcpu;
@@ -18,8 +20,9 @@ use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
 use exits::*;
-use machine::Machine;
+use machine::{Machine, MachineCtx};
 use vcpu::VcpuHdl;
+use crate::pio::PioDev;
 
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use pci::{PciBDF, PciDevInst};
@@ -41,9 +44,7 @@ fn parse_args() -> Opts {
 struct PciLpcImpl;
 impl pci::DevImpl for PciLpcImpl {}
 
-fn run_loop(cpu: &mut VcpuHdl, start_rip: u64, vm: &Machine) {
-    cpu.set_reg(vm_reg_name::VM_REG_GUEST_RIP, start_rip)
-        .unwrap();
+fn run_loop(cpu: &mut VcpuHdl, mctx: MachineCtx) {
     let mut next_entry = VmEntry::Run;
     loop {
         let exit = cpu.run(&next_entry).unwrap();
@@ -55,11 +56,11 @@ fn run_loop(cpu: &mut VcpuHdl, start_rip: u64, vm: &Machine) {
             }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
-                    vm.with_pio(|b| b.handle_out(io.port, io.bytes, val));
+                    mctx.with_pio(|b| b.handle_out(io.port, io.bytes, val));
                     next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
                 }
                 InoutReq::In(io) => {
-                    let val = vm.with_pio(|b| b.handle_in(io.port, io.bytes));
+                    let val = mctx.with_pio(|b| b.handle_in(io.port, io.bytes));
                     next_entry = VmEntry::InoutComplete(InoutRes::In(io, val));
                 }
             },
@@ -94,18 +95,21 @@ fn main() {
 
     vm.wire_pci_root();
 
-    let com1 = Arc::new(LpcUart::new(COM1_IRQ));
-    vm.with_pio(|pio| pio.register(COM1_PORT, 8, com1.clone()));
+    let mctx = MachineCtx::new(&vm);
+
+    let com1 = LpcUart::new(COM1_IRQ);
+    mctx.with_pio(|pio| pio.register(COM1_PORT, 8, pio_dyn!(com1.clone())));
 
     let lpc_pcidev = PciDevInst::new(0x8086, 0x7000, 0x06, 0x01, PciLpcImpl {});
-    vm.with_pci(|pci| pci.register(PciBDF::new(0, 31, 0), Arc::new(lpc_pcidev)));
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), Arc::new(lpc_pcidev)));
 
     let mut vcpu0 = vm.vcpu(0);
 
     vcpu0.reboot_state().unwrap();
     vcpu0.activate().unwrap();
+    vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
 
-    run_loop(&mut vcpu0, 0xfff0, &vm);
+    run_loop(&mut vcpu0, mctx);
 
     drop(vm);
 }

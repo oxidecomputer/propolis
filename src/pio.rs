@@ -1,7 +1,7 @@
 use crate::util::aspace::ASpace;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
-pub trait PioDev {
+pub trait PioDev: Send + Sync {
     fn pio_out(&self, port: u16, off: u16, data: &[u8]);
     fn pio_in(&self, port: u16, off: u16, data: &mut [u8]);
 }
@@ -9,7 +9,7 @@ pub trait PioDev {
 type PioDevHdl = Arc<dyn PioDev>;
 
 pub struct PioBus {
-    map: Mutex<ASpace<PioDevHdl>>,
+    map: Mutex<ASpace<Weak<dyn PioDev>>>,
 }
 
 impl PioBus {
@@ -19,11 +19,12 @@ impl PioBus {
         }
     }
 
-    pub fn register(&self, start: u16, len: u16, dev: PioDevHdl) {
+    pub fn register(&self, start: u16, len: u16, dev: &PioDevHdl) {
+        let weak = Arc::downgrade(dev);
         self.map
             .lock()
             .unwrap()
-            .register(start as usize, len as usize, dev)
+            .register(start as usize, len as usize, weak)
             .unwrap();
     }
 
@@ -60,12 +61,19 @@ impl PioBus {
         F: FnOnce(u16, u16, &PioDevHdl),
     {
         let map = self.map.lock().unwrap();
-        match map.region_at(port as usize) {
-            Ok((start, _len, hdl)) => {
-                f(start as u16, port - start as u16, hdl);
-                true
-            }
-            _ => false,
+        if let Ok((start, _len, weak)) = map.region_at(port as usize) {
+            let dev = Weak::upgrade(weak).unwrap();
+            // unlock map before entering handler
+            drop(map);
+            f(start as u16, port - start as u16, &dev);
+            true
+        } else {
+            false
         }
     }
+}
+
+// Make the casting easier for trait objects
+macro_rules! pio_dyn {
+    ($e: expr) => { &($e as Arc<dyn PioDev>) }
 }

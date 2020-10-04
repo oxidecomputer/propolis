@@ -32,7 +32,7 @@ impl PciBDF {
     }
 }
 
-pub trait PciEndpoint {
+pub trait PciEndpoint: Send + Sync {
     fn cfg_read(&self, offset: u8, data: &mut [u8]);
     fn cfg_write(&self, offset: u8, data: &[u8]);
 }
@@ -135,7 +135,7 @@ struct PciState {
     intr_pin: u8,
 }
 
-pub struct PciDevInst<I> {
+pub struct PciDevInst<I: Send> {
     vendor_id: u16,
     device_id: u16,
     class: u8,
@@ -145,7 +145,7 @@ pub struct PciDevInst<I> {
     devimpl: I,
 }
 
-impl<I> PciDevInst<I> {
+impl<I: Send> PciDevInst<I> {
     pub fn new(vendor_id: u16, device_id: u16, class: u8, subclass: u8, i: I) -> Self {
         let mut regmap = RegMap::new(0x40);
         pci_cfg_regmap(&mut regmap);
@@ -220,7 +220,7 @@ impl<I> PciDevInst<I> {
     }
 }
 
-impl<I> PciEndpoint for PciDevInst<I> {
+impl<I: Send + Sync> PciEndpoint for PciDevInst<I> {
     fn cfg_read(&self, offset: u8, data: &mut [u8]) {
         self.regmap
             .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
@@ -303,7 +303,7 @@ impl PciBus {
         }
     }
 
-    pub fn register(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
+    pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
         hdl.register(bdf, dev);
     }

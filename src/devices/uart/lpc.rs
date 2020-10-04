@@ -1,6 +1,6 @@
 use super::base::Uart;
 use crate::pio::PioDev;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub const COM1_IRQ: u8 = 4;
 pub const COM1_PORT: u16 = 0x3f8;
@@ -13,11 +13,11 @@ pub struct LpcUart {
 }
 
 impl LpcUart {
-    pub fn new(irq: u8) -> Self {
-        Self {
+    pub fn new(irq: u8) -> Arc<Self> {
+        Arc::new(Self {
             irq,
             inner: Mutex::new(Uart::new()),
-        }
+        })
     }
 }
 

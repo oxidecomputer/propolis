@@ -16,6 +16,10 @@ impl VcpuHdl {
         Self { hdl, id }
     }
 
+    pub fn cpuid(&self) -> i32 {
+        self.id
+    }
+
     pub fn set_reg(&mut self, reg: bhyve_api::vm_reg_name, val: u64) -> Result<()> {
         let mut regcmd = bhyve_api::vm_register {
             cpuid: self.id,
