@@ -229,14 +229,20 @@ impl Uart {
     }
 
     fn next_intr(&self) -> u8 {
-        if self.reg_intr_enable & IER_ELSI != 0 && self.reg_line_status & LSR_OE != 0 {
+        if self.reg_intr_enable & IER_ELSI != 0
+            && self.reg_line_status & LSR_OE != 0
+        {
             // This ignores Parity Error, Framing Error, and Break
             ISRC_RLS
-        } else if self.reg_intr_enable & IER_ERBFI != 0 && self.reg_line_status & LSR_DR != 0 {
+        } else if self.reg_intr_enable & IER_ERBFI != 0
+            && self.reg_line_status & LSR_DR != 0
+        {
             ISRC_DR
         } else if self.reg_intr_enable & IER_ETBEI != 0 && self.thre_intr {
             ISRC_THRE
-        } else if self.reg_intr_enable & IER_EDSSI != 0 && self.reg_modem_status != 0 {
+        } else if self.reg_intr_enable & IER_EDSSI != 0
+            && self.reg_modem_status != 0
+        {
             // This ignores that MSR is fixed to 0
             ISRC_MDM
         } else {
@@ -286,10 +292,7 @@ struct Fifo {
 
 impl Fifo {
     fn new(max_len: usize) -> Self {
-        Fifo {
-            len: max_len,
-            buf: VecDeque::with_capacity(max_len),
-        }
+        Fifo { len: max_len, buf: VecDeque::with_capacity(max_len) }
     }
     fn write(&mut self, data: u8) -> bool {
         if self.buf.len() < self.len {

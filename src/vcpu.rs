@@ -20,7 +20,11 @@ impl VcpuHdl {
         self.id
     }
 
-    pub fn set_reg(&mut self, reg: bhyve_api::vm_reg_name, val: u64) -> Result<()> {
+    pub fn set_reg(
+        &mut self,
+        reg: bhyve_api::vm_reg_name,
+        val: u64,
+    ) -> Result<()> {
         let mut regcmd = bhyve_api::vm_register {
             cpuid: self.id,
             regnum: reg as i32,
@@ -41,8 +45,7 @@ impl VcpuHdl {
             desc: *seg,
         };
 
-        self.hdl
-            .ioctl(bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
+        self.hdl.ioctl(bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
         Ok(())
     }
     pub fn reboot_state(&mut self) -> Result<()> {
@@ -76,11 +79,8 @@ impl VcpuHdl {
             self.set_reg(*seg, 0)?;
         }
 
-        let gidtr_desc = bhyve_api::seg_desc {
-            base: 0x0000_0000,
-            limit: 0xffff,
-            access: 0,
-        };
+        let gidtr_desc =
+            bhyve_api::seg_desc { base: 0x0000_0000, limit: 0xffff, access: 0 };
         self.set_segreg(vm_reg_name::VM_REG_GUEST_GDTR, &gidtr_desc)?;
         self.set_segreg(vm_reg_name::VM_REG_GUEST_IDTR, &gidtr_desc)?;
 

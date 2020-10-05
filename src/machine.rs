@@ -63,8 +63,7 @@ impl Machine {
         let segid = Memseg::LowMem as i32;
         self.hdl.create_memseg(segid, size, None)?;
         let mut pmap = self.map_physmem.lock().unwrap();
-        self.hdl
-            .map_memseg(segid, 0, size, 0, bhyve_api::PROT_ALL)?;
+        self.hdl.map_memseg(segid, 0, size, 0, bhyve_api::PROT_ALL)?;
         pmap.register(0, size, ()).unwrap();
 
         Ok(())
@@ -127,10 +126,16 @@ impl Machine {
     }
 
     pub fn wire_pci_root(&self) {
-        self.bus_pio
-            .register(PORT_PCI_CONFIG_ADDR, 4, &(self.pci_root.clone() as Arc<dyn PioDev>));
-        self.bus_pio
-            .register(PORT_PCI_CONFIG_DATA, 4, &(self.pci_root.clone() as Arc<dyn PioDev>));
+        self.bus_pio.register(
+            PORT_PCI_CONFIG_ADDR,
+            4,
+            &(self.pci_root.clone() as Arc<dyn PioDev>),
+        );
+        self.bus_pio.register(
+            PORT_PCI_CONFIG_DATA,
+            4,
+            &(self.pci_root.clone() as Arc<dyn PioDev>),
+        );
     }
 }
 

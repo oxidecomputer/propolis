@@ -14,9 +14,7 @@ pub struct PioBus {
 
 impl PioBus {
     pub fn new() -> Self {
-        Self {
-            map: Mutex::new(ASpace::new(0, u16::MAX as usize)),
-        }
+        Self { map: Mutex::new(ASpace::new(0, u16::MAX as usize)) }
     }
 
     pub fn register(&self, start: u16, len: u16, dev: &PioDevHdl) {
@@ -75,5 +73,7 @@ impl PioBus {
 
 // Make the casting easier for trait objects
 macro_rules! pio_dyn {
-    ($e: expr) => { &($e as Arc<dyn PioDev>) }
+    ($e: expr) => {
+        &($e as Arc<dyn PioDev>)
+    };
 }

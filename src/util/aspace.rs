@@ -26,26 +26,23 @@ impl<T> ASpace<T> {
     /// Create a instance with inclusive range [`start`, `end`]
     pub fn new(start: usize, end: usize) -> ASpace<T> {
         assert!(start < end);
-        Self {
-            start,
-            end,
-            map: BTreeMap::new(),
-        }
+        Self { start, end, map: BTreeMap::new() }
     }
 
     /// Register an inclusive region [`start`, `end`]
-    pub fn register(&mut self, start: usize, len: usize, item: T) -> Result<()> {
+    pub fn register(
+        &mut self,
+        start: usize,
+        len: usize,
+        item: T,
+    ) -> Result<()> {
         let end = safe_end(start, len).ok_or(Error::BadLength)?;
         if start < self.start || start > self.end || end > self.end {
             return Err(Error::OutOfRange);
         }
 
         // Do any entries conflict with the registration?
-        if self
-            .covered_by((Included(start), Included(end)))
-            .next()
-            .is_some()
-        {
+        if self.covered_by((Included(start), Included(end))).next().is_some() {
             return Err(Error::Conflict);
         }
 
@@ -67,7 +64,9 @@ impl<T> ASpace<T> {
         if point < self.start || point > self.end {
             return Err(Error::OutOfRange);
         }
-        if let Some((start, ent)) = self.map.range((Unbounded, Included(&point))).next_back() {
+        if let Some((start, ent)) =
+            self.map.range((Unbounded, Included(&point))).next_back()
+        {
             if safe_end(*start, ent.0).unwrap() >= point {
                 return Ok((*start, ent.0, &ent.1));
             }
@@ -77,9 +76,7 @@ impl<T> ASpace<T> {
 
     /// Get an iterator for items in the space, sorted by starting point
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter {
-            inner: self.map.iter(),
-        }
+        Iter { inner: self.map.iter() }
     }
 
     /// Get iterator for regions which are (partially or totally) covered by a range
@@ -111,9 +108,7 @@ impl<T> ASpace<T> {
             Excluded(a) => Excluded(*a),
             Included(a) => Included(*a),
         };
-        Range {
-            inner: self.map.range((fixed_front, tail)),
-        }
+        Range { inner: self.map.range((fixed_front, tail)) }
     }
 }
 

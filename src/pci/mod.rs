@@ -146,7 +146,13 @@ pub struct PciDevInst<I: Send> {
 }
 
 impl<I: Send> PciDevInst<I> {
-    pub fn new(vendor_id: u16, device_id: u16, class: u8, subclass: u8, i: I) -> Self {
+    pub fn new(
+        vendor_id: u16,
+        device_id: u16,
+        class: u8,
+        subclass: u8,
+        i: I,
+    ) -> Self {
         let mut regmap = RegMap::new(0x40);
         pci_cfg_regmap(&mut regmap);
 
@@ -257,7 +263,9 @@ struct PciBusState {
 
 impl PciBusState {
     fn cfg_read(&self, bdf: &PciBDF, offset: u8, data: &mut [u8]) {
-        if let Some((_, dev)) = self.devices.iter().find(|(sbdf, _)| sbdf == bdf) {
+        if let Some((_, dev)) =
+            self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
+        {
             dev.cfg_read(offset, data);
             println!(
                 "cfgread bus:{} device:{} func:{} off:{:x}, data:{:?}",
@@ -272,7 +280,9 @@ impl PciBusState {
         }
     }
     fn cfg_write(&self, bdf: &PciBDF, offset: u8, data: &[u8]) {
-        if let Some((_, dev)) = self.devices.iter().find(|(sbdf, _)| sbdf == bdf) {
+        if let Some((_, dev)) =
+            self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
+        {
             println!(
                 "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:?}",
                 bdf.bus, bdf.dev, bdf.func, offset, data
@@ -336,7 +346,8 @@ impl PioDev for PciBus {
             PORT_PCI_CONFIG_ADDR => {
                 if data.len() == 4 && off == 0 {
                     // XXX expect aligned/sized reads
-                    hdl.pio_cfg_addr = u32::from_le_bytes(data.try_into().unwrap());
+                    hdl.pio_cfg_addr =
+                        u32::from_le_bytes(data.try_into().unwrap());
                 }
             }
             PORT_PCI_CONFIG_DATA => {

@@ -13,9 +13,7 @@ impl<T: SelfArc> Default for SelfArcCell<T> {
 
 impl<T: SelfArc> SelfArcCell<T> {
     pub fn new() -> Self {
-        Self {
-            inner: UnsafeCell::new(None),
-        }
+        Self { inner: UnsafeCell::new(None) }
     }
     fn set(this: &mut Arc<T>) {
         // SAFETY: Our exclusive access to the UnsafeCell is ensured by the Arc::get_mut() call.

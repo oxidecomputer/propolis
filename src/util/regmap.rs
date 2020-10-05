@@ -35,20 +35,21 @@ struct RegXfer<'a, ID> {
 
 impl<ID> RegMap<ID> {
     pub fn new(len: usize) -> Self {
-        Self {
-            len,
-            space: ASpace::new(0, len - 1),
-        }
+        Self { len, space: ASpace::new(0, len - 1) }
     }
 
     pub fn define(&mut self, start: usize, len: usize, id: ID) {
         self.define_with_flags(start, len, id, Flags::DEFAULT)
     }
 
-    pub fn define_with_flags(&mut self, start: usize, len: usize, id: ID, flags: Flags) {
-        self.space
-            .register(start, len, RegDef { id, flags })
-            .unwrap();
+    pub fn define_with_flags(
+        &mut self,
+        start: usize,
+        len: usize,
+        id: ID,
+        flags: Flags,
+    ) {
+        self.space.register(start, len, RegDef { id, flags }).unwrap();
     }
 
     pub fn with_ctx<'b, BE>(
@@ -57,15 +58,16 @@ impl<ID> RegMap<ID> {
         read_handler: ReadFunc<ID, BE>,
         write_handler: WriteFunc<ID, BE>,
     ) -> TransferCtx<'_, 'b, ID, BE> {
-        TransferCtx {
-            map: &self,
-            be,
-            read_handler,
-            write_handler,
-        }
+        TransferCtx { map: &self, be, read_handler, write_handler }
     }
 
-    pub fn read<BE>(&self, offset: usize, buf: &mut [u8], be: &BE, f: ReadFunc<ID, BE>) {
+    pub fn read<BE>(
+        &self,
+        offset: usize,
+        buf: &mut [u8],
+        be: &BE,
+        f: ReadFunc<ID, BE>,
+    ) {
         assert!(buf.len() != 0);
         assert!(offset + buf.len() - 1 < self.len);
 
@@ -74,7 +76,14 @@ impl<ID> RegMap<ID> {
             let buf_xfer = &mut buf[xfer.skip_front_idx..xfer.split_back_idx];
 
             debug_assert!(buf_xfer.len() != 0);
-            Self::reg_read(xfer.reg, xfer.reg_len, xfer.offset, buf_xfer, be, f);
+            Self::reg_read(
+                xfer.reg,
+                xfer.reg_len,
+                xfer.offset,
+                buf_xfer,
+                be,
+                f,
+            );
         })
     }
 
@@ -94,7 +103,15 @@ impl<ID> RegMap<ID> {
             let buf_xfer = &buf[xfer.skip_front_idx..xfer.split_back_idx];
 
             debug_assert!(buf_xfer.len() != 0);
-            Self::reg_write(xfer.reg, xfer.reg_len, xfer.offset, buf_xfer, be, wf, rf);
+            Self::reg_write(
+                xfer.reg,
+                xfer.reg_len,
+                xfer.offset,
+                buf_xfer,
+                be,
+                wf,
+                rf,
+            );
         })
     }
 
@@ -106,7 +123,9 @@ impl<ID> RegMap<ID> {
         be: &BE,
         read_handler: ReadFunc<ID, BE>,
     ) {
-        if reg.flags.contains(Flags::NO_READ_EXTEND) && reg_len != copy_buf.len() {
+        if reg.flags.contains(Flags::NO_READ_EXTEND)
+            && reg_len != copy_buf.len()
+        {
             read_handler(be, &reg.id, copy_off, copy_buf);
         } else if reg_len == copy_buf.len() {
             read_handler(be, &reg.id, 0, copy_buf);
@@ -116,7 +135,9 @@ impl<ID> RegMap<ID> {
 
             debug_assert!(scratch.len() == reg_len);
             read_handler(be, &reg.id, 0, &mut scratch);
-            copy_buf.copy_from_slice(&scratch[copy_off..(copy_off + copy_buf.len())]);
+            copy_buf.copy_from_slice(
+                &scratch[copy_off..(copy_off + copy_buf.len())],
+            );
         }
     }
 
@@ -129,7 +150,9 @@ impl<ID> RegMap<ID> {
         write_handler: WriteFunc<ID, BE>,
         read_handler: ReadFunc<ID, BE>,
     ) {
-        if reg.flags.contains(Flags::NO_WRITE_EXTEND) && reg_len != copy_buf.len() {
+        if reg.flags.contains(Flags::NO_WRITE_EXTEND)
+            && reg_len != copy_buf.len()
+        {
             write_handler(be, &reg.id, copy_off, copy_buf);
         } else if reg_len == copy_buf.len() {
             write_handler(be, &reg.id, 0, copy_buf);
@@ -141,7 +164,8 @@ impl<ID> RegMap<ID> {
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
                 read_handler(be, &reg.id, 0, &mut scratch);
             }
-            &mut scratch[copy_off..(copy_off + copy_buf.len())].copy_from_slice(copy_buf);
+            &mut scratch[copy_off..(copy_off + copy_buf.len())]
+                .copy_from_slice(copy_buf);
 
             write_handler(be, &reg.id, 0, &scratch);
         }
@@ -161,9 +185,8 @@ impl<ID> RegMap<ID> {
         assert!(len != 0);
         assert!(last_position < self.len);
 
-        for (reg_start, reg_len, reg) in self
-            .space
-            .covered_by((Included(offset), Included(last_position)))
+        for (reg_start, reg_len, reg) in
+            self.space.covered_by((Included(offset), Included(last_position)))
         {
             let mut skip_front = 0;
             let mut split_back = 0;
@@ -221,7 +244,12 @@ impl<'a, 'b, ID, BE> TransferCtx<'a, 'b, ID, BE> {
         self.map.read(offset, outb, self.be, self.read_handler)
     }
     pub fn write(&self, offset: usize, inb: &[u8]) {
-        self.map
-            .write(offset, inb, self.be, self.write_handler, self.read_handler)
+        self.map.write(
+            offset,
+            inb,
+            self.be,
+            self.write_handler,
+            self.read_handler,
+        )
     }
 }

@@ -15,7 +15,8 @@ pub fn create_vm(name: &str) -> Result<VmmHdl> {
         .write(true)
         .custom_flags(libc::O_EXCL)
         .open(bhyve_api::VMM_CTL_PATH)?;
-    let namestr = CString::new(name).or_else(|_x| Err(Error::from_raw_os_error(libc::EINVAL)))?;
+    let namestr = CString::new(name)
+        .or_else(|_x| Err(Error::from_raw_os_error(libc::EINVAL)))?;
     let nameptr = namestr.as_ptr();
     let ctlfd = ctl.as_raw_fd();
 
@@ -26,7 +27,8 @@ pub fn create_vm(name: &str) -> Result<VmmHdl> {
             return Err(err);
         }
         // try to nuke(!) the existing vm
-        let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, nameptr) };
+        let res =
+            unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, nameptr) };
         if res != 0 {
             let err = Error::last_os_error();
             if err.kind() != ErrorKind::NotFound {
@@ -34,7 +36,8 @@ pub fn create_vm(name: &str) -> Result<VmmHdl> {
             }
         }
         // attempt to create in its presumed absence
-        let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, nameptr) };
+        let res =
+            unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, nameptr) };
         if res != 0 {
             return Err(Error::last_os_error());
         }
@@ -80,7 +83,12 @@ impl VmmHdl {
         Err(Error::new(ErrorKind::Other, "illumos required"))
     }
 
-    pub fn create_memseg(&self, segid: i32, size: usize, segname: Option<&str>) -> Result<()> {
+    pub fn create_memseg(
+        &self,
+        segid: i32,
+        size: usize,
+        segname: Option<&str>,
+    ) -> Result<()> {
         let mut seg = bhyve_api::vm_memseg {
             segid,
             len: size,
@@ -151,10 +159,7 @@ impl VmmHdl {
     }
 
     pub fn rtc_write(&self, offset: u8, value: u8) -> Result<()> {
-        let mut data = bhyve_api::vm_rtc_data {
-            offset: offset as i32,
-            value,
-        };
+        let mut data = bhyve_api::vm_rtc_data { offset: offset as i32, value };
         self.ioctl(bhyve_api::VM_RTC_WRITE, &mut data)?;
         Ok(())
     }

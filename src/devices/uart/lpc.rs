@@ -14,10 +14,7 @@ pub struct LpcUart {
 
 impl LpcUart {
     pub fn new(irq: u8) -> Arc<Self> {
-        Arc::new(Self {
-            irq,
-            inner: Mutex::new(Uart::new()),
-        })
+        Arc::new(Self { irq, inner: Mutex::new(Uart::new()) })
     }
 }
 

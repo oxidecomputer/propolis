@@ -1,11 +1,11 @@
-use std::io::Result;
-use std::sync::{Mutex, Arc};
-use std::thread::{Builder, JoinHandle, Thread};
 use std::fmt::format;
+use std::io::Result;
+use std::sync::{Arc, Mutex};
+use std::thread::{Builder, JoinHandle, Thread};
 
-use crate::vcpu::VcpuHdl;
 use crate::machine::MachineCtx;
 use crate::pio::PioBus;
+use crate::vcpu::VcpuHdl;
 
 pub struct Dispatcher {
     mctx: MachineCtx,
@@ -14,13 +14,15 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     pub fn new(mctx: MachineCtx) -> Self {
-        Self {
-            mctx,
-            tasks: Mutex::new(Vec::new()),
-        }
+        Self { mctx, tasks: Mutex::new(Vec::new()) }
     }
 
-    pub fn spawn<D>(&self, name: String, data: D, func: fn(DispCtx, D)) -> Result<()>
+    pub fn spawn<D>(
+        &self,
+        name: String,
+        data: D,
+        func: fn(DispCtx, D),
+    ) -> Result<()>
     where
         D: Send + 'static,
     {
@@ -31,8 +33,11 @@ impl Dispatcher {
         self.tasks.lock().unwrap().push((name, hdl));
         Ok(())
     }
-    pub fn spawn_vcpu(&self, vcpu: VcpuHdl, func: fn(DispCtx, VcpuHdl)) -> Result<()>
-    {
+    pub fn spawn_vcpu(
+        &self,
+        vcpu: VcpuHdl,
+        func: fn(DispCtx, VcpuHdl),
+    ) -> Result<()> {
         let ctx = DispCtx::new(self.mctx.clone());
         let name = format!("vcpu-{}", vcpu.cpuid());
         let hdl = Builder::new().name(name.clone()).spawn(move || {

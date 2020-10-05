@@ -1,7 +1,9 @@
 use std::convert::TryFrom;
 use std::os::raw::c_void;
 
-use bhyve_api::{vm_entry, vm_entry_cmds, vm_entry_payload, vm_exit, vm_exitcode};
+use bhyve_api::{
+    vm_entry, vm_entry_cmds, vm_entry_payload, vm_exit, vm_exitcode,
+};
 
 pub struct VmExit {
     pub rip: u64,
@@ -46,10 +48,7 @@ impl From<&vm_exit> for VmExitKind {
             vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
             vm_exitcode::VM_EXITCODE_INOUT => {
                 let inout = unsafe { &exit.u.inout };
-                let port = IoPort {
-                    port: inout.port,
-                    bytes: inout.bytes,
-                };
+                let port = IoPort { port: inout.port, bytes: inout.bytes };
                 if inout.flags & bhyve_api::INOUT_IN != 0 {
                     VmExitKind::Inout(InoutReq::In(port))
                 } else {

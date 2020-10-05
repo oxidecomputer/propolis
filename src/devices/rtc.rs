@@ -21,7 +21,11 @@ impl Rtc {
         )
     }
 
-    pub fn store_memory_sizing(hdl: &VmmHdl, lowmem: usize, highmem: Option<usize>) -> Result<()> {
+    pub fn store_memory_sizing(
+        hdl: &VmmHdl,
+        lowmem: usize,
+        highmem: Option<usize>,
+    ) -> Result<()> {
         assert!(lowmem >= MEM_BASE);
 
         // physical memory below 4GB (less 16MB base) in 64k chunks

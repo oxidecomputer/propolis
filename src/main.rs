@@ -19,11 +19,11 @@ use std::fs::File;
 use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
+use dispatch::*;
 use exits::*;
 use machine::{Machine, MachineCtx};
-use vcpu::VcpuHdl;
 use pio::PioDev;
-use dispatch::*;
+use vcpu::VcpuHdl;
 
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use pci::{PciBDF, PciDevInst};
@@ -103,7 +103,9 @@ fn main() {
     mctx.with_pio(|pio| pio.register(COM1_PORT, 8, pio_dyn!(com1.clone())));
 
     let lpc_pcidev = PciDevInst::new(0x8086, 0x7000, 0x06, 0x01, PciLpcImpl {});
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), Arc::new(lpc_pcidev)));
+    mctx.with_pci(|pci| {
+        pci.attach(PciBDF::new(0, 31, 0), Arc::new(lpc_pcidev))
+    });
 
     let mut vcpu0 = vm.vcpu(0);
 
