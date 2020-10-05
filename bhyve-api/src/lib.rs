@@ -1,5 +1,5 @@
-mod ioctls;
 mod enums;
+mod ioctls;
 mod structs;
 
 pub use enums::*;

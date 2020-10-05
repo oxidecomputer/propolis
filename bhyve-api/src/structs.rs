@@ -79,9 +79,7 @@ pub union vm_exit_payload {
 
 impl Default for vm_exit_payload {
     fn default() -> Self {
-        Self {
-            empty: [0u64; 6]
-        }
+        Self { empty: [0u64; 6] }
     }
 }
 
@@ -96,9 +94,7 @@ pub union vm_entry_payload {
 
 impl Default for vm_entry_payload {
     fn default() -> Self {
-        Self {
-            empty: [0u64; 3]
-        }
+        Self { empty: [0u64; 3] }
     }
 }
 
