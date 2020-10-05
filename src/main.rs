@@ -113,8 +113,9 @@ fn main() {
     vcpu0.activate().unwrap();
     vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
 
-    let dispatch = Dispatcher::new(mctx);
+    let mut dispatch = Dispatcher::new(mctx);
 
+    dispatch.spawn_events().unwrap();
     dispatch.spawn_vcpu(vcpu0, run_loop).unwrap();
 
     dispatch.join();
