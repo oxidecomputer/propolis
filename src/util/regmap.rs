@@ -1,9 +1,10 @@
 use std::ops::Bound::Included;
 
 use super::aspace::ASpace;
+use crate::types::*;
 
-type ReadFunc<ID, BE> = fn(be: &BE, id: &ID, foff: usize, outb: &mut [u8]);
-type WriteFunc<ID, BE> = fn(be: &BE, id: &ID, foff: usize, inb: &[u8]);
+type ReadFunc<ID, OBJ> = fn(obj: &OBJ, id: &ID, ro: &mut ReadOp);
+type WriteFunc<ID, OBJ> = fn(obj: &OBJ, id: &ID, wo: &WriteOp);
 
 struct RegDef<ID> {
     id: ID,
@@ -52,122 +53,104 @@ impl<ID> RegMap<ID> {
         self.space.register(start, len, RegDef { id, flags }).unwrap();
     }
 
-    pub fn with_ctx<'b, BE>(
+    pub fn with_ctx<'b, OBJ>(
         &self,
-        be: &'b BE,
-        read_handler: ReadFunc<ID, BE>,
-        write_handler: WriteFunc<ID, BE>,
-    ) -> TransferCtx<'_, 'b, ID, BE> {
-        TransferCtx { map: &self, be, read_handler, write_handler }
+        obj: &'b OBJ,
+        read_handler: ReadFunc<ID, OBJ>,
+        write_handler: WriteFunc<ID, OBJ>,
+    ) -> TransferCtx<'_, 'b, ID, OBJ> {
+        TransferCtx { map: &self, obj, read_handler, write_handler }
     }
 
-    pub fn read<BE>(
-        &self,
-        offset: usize,
-        buf: &mut [u8],
-        be: &BE,
-        f: ReadFunc<ID, BE>,
-    ) {
-        assert!(buf.len() != 0);
-        assert!(offset + buf.len() - 1 < self.len);
+    pub fn read<OBJ>(&self, ro: &mut ReadOp, obj: &OBJ, f: ReadFunc<ID, OBJ>) {
+        assert!(ro.buf.len() != 0);
+        assert!(ro.offset + ro.buf.len() - 1 < self.len);
 
-        let buf_len = buf.len();
-        self.iterate_transfers(offset, buf_len, |xfer: &RegXfer<ID>| {
+        let buf_len = ro.buf.len();
+        let buf = &mut ro.buf;
+        self.iterate_transfers(ro.offset, buf_len, |xfer: &RegXfer<ID>| {
             let buf_xfer = &mut buf[xfer.skip_front_idx..xfer.split_back_idx];
+            let mut copy_op = ReadOp::new(xfer.offset, buf_xfer);
 
-            debug_assert!(buf_xfer.len() != 0);
-            Self::reg_read(
-                xfer.reg,
-                xfer.reg_len,
-                xfer.offset,
-                buf_xfer,
-                be,
-                f,
-            );
+            debug_assert!(copy_op.buf.len() != 0);
+            Self::reg_read(xfer.reg, xfer.reg_len, &mut copy_op, obj, f);
         })
     }
 
-    pub fn write<BE>(
+    pub fn write<OBJ>(
         &self,
-        offset: usize,
-        buf: &[u8],
-        be: &BE,
-        wf: WriteFunc<ID, BE>,
-        rf: ReadFunc<ID, BE>,
+        wo: &WriteOp,
+        obj: &OBJ,
+        wf: WriteFunc<ID, OBJ>,
+        rf: ReadFunc<ID, OBJ>,
     ) {
-        assert!(buf.len() != 0);
-        assert!(offset + buf.len() - 1 < self.len);
+        assert!(wo.buf.len() != 0);
+        assert!(wo.offset + wo.buf.len() - 1 < self.len);
 
-        let buf_len = buf.len();
-        self.iterate_transfers(offset, buf_len, |xfer| {
+        let buf_len = wo.buf.len();
+        let buf = wo.buf;
+        self.iterate_transfers(wo.offset, buf_len, |xfer| {
             let buf_xfer = &buf[xfer.skip_front_idx..xfer.split_back_idx];
+            let copy_op = WriteOp::new(xfer.offset, buf_xfer);
 
             debug_assert!(buf_xfer.len() != 0);
-            Self::reg_write(
-                xfer.reg,
-                xfer.reg_len,
-                xfer.offset,
-                buf_xfer,
-                be,
-                wf,
-                rf,
-            );
+            Self::reg_write(xfer.reg, xfer.reg_len, &copy_op, obj, wf, rf);
         })
     }
 
-    fn reg_read<BE>(
+    fn reg_read<OBJ>(
         reg: &RegDef<ID>,
         reg_len: usize,
-        copy_off: usize,
-        copy_buf: &mut [u8],
-        be: &BE,
-        read_handler: ReadFunc<ID, BE>,
+        copy_op: &mut ReadOp,
+        obj: &OBJ,
+        read_handler: ReadFunc<ID, OBJ>,
     ) {
         if reg.flags.contains(Flags::NO_READ_EXTEND)
-            && reg_len != copy_buf.len()
+            && reg_len != copy_op.buf.len()
         {
-            read_handler(be, &reg.id, copy_off, copy_buf);
-        } else if reg_len == copy_buf.len() {
-            read_handler(be, &reg.id, 0, copy_buf);
+            read_handler(obj, &reg.id, copy_op);
+        } else if reg_len == copy_op.buf.len() {
+            debug_assert!(copy_op.offset == 0);
+            read_handler(obj, &reg.id, copy_op);
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
-            read_handler(be, &reg.id, 0, &mut scratch);
-            copy_buf.copy_from_slice(
-                &scratch[copy_off..(copy_off + copy_buf.len())],
+            read_handler(obj, &reg.id, &mut ReadOp::new(0, &mut scratch));
+            copy_op.buf.copy_from_slice(
+                &scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())],
             );
         }
     }
 
-    fn reg_write<BE>(
+    fn reg_write<OBJ>(
         reg: &RegDef<ID>,
         reg_len: usize,
-        copy_off: usize,
-        copy_buf: &[u8],
-        be: &BE,
-        write_handler: WriteFunc<ID, BE>,
-        read_handler: ReadFunc<ID, BE>,
+        copy_op: &WriteOp,
+        obj: &OBJ,
+        write_handler: WriteFunc<ID, OBJ>,
+        read_handler: ReadFunc<ID, OBJ>,
     ) {
         if reg.flags.contains(Flags::NO_WRITE_EXTEND)
-            && reg_len != copy_buf.len()
+            && reg_len != copy_op.buf.len()
         {
-            write_handler(be, &reg.id, copy_off, copy_buf);
-        } else if reg_len == copy_buf.len() {
-            write_handler(be, &reg.id, 0, copy_buf);
+            write_handler(obj, &reg.id, copy_op);
+        } else if reg_len == copy_op.buf.len() {
+            debug_assert!(copy_op.offset == 0);
+            write_handler(obj, &reg.id, copy_op);
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
-                read_handler(be, &reg.id, 0, &mut scratch);
+                read_handler(obj, &reg.id, &mut ReadOp::new(0, &mut scratch));
             }
-            &mut scratch[copy_off..(copy_off + copy_buf.len())]
-                .copy_from_slice(copy_buf);
+            &mut scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())]
+                .copy_from_slice(copy_op.buf);
 
-            write_handler(be, &reg.id, 0, &scratch);
+            write_handler(obj, &reg.id, &WriteOp::new(0, &scratch));
         }
     }
 
@@ -232,24 +215,18 @@ impl<ID> RegMap<ID> {
     }
 }
 
-pub struct TransferCtx<'a, 'b, ID, BE> {
+pub struct TransferCtx<'a, 'b, ID, OBJ> {
     map: &'a RegMap<ID>,
-    be: &'b BE,
-    read_handler: ReadFunc<ID, BE>,
-    write_handler: WriteFunc<ID, BE>,
+    obj: &'b OBJ,
+    read_handler: ReadFunc<ID, OBJ>,
+    write_handler: WriteFunc<ID, OBJ>,
 }
 
-impl<'a, 'b, ID, BE> TransferCtx<'a, 'b, ID, BE> {
-    pub fn read(&self, offset: usize, outb: &mut [u8]) {
-        self.map.read(offset, outb, self.be, self.read_handler)
+impl<'a, 'b, ID, OBJ> TransferCtx<'a, 'b, ID, OBJ> {
+    pub fn read(&self, ro: &mut ReadOp) {
+        self.map.read(ro, self.obj, self.read_handler)
     }
-    pub fn write(&self, offset: usize, inb: &[u8]) {
-        self.map.write(
-            offset,
-            inb,
-            self.be,
-            self.write_handler,
-            self.read_handler,
-        )
+    pub fn write(&self, wo: &WriteOp) {
+        self.map.write(wo, self.obj, self.write_handler, self.read_handler)
     }
 }

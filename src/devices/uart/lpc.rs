@@ -1,11 +1,13 @@
+use std::sync::{Arc, Mutex};
+
 use super::base::Uart;
 use crate::pio::PioDev;
-use std::sync::{Arc, Mutex};
+use crate::types::*;
 
 pub const COM1_IRQ: u8 = 4;
 pub const COM1_PORT: u16 = 0x3f8;
 
-const MAX_OFF: u16 = 7;
+const MAX_OFF: u8 = 7;
 
 pub struct LpcUart {
     irq: u8,
@@ -30,19 +32,19 @@ fn handle_out(uart: &mut Uart) {
 }
 
 impl PioDev for LpcUart {
-    fn pio_out(&self, _port: u16, off: u16, data: &[u8]) {
-        assert!(off <= MAX_OFF);
-        assert!(data.len() != 0);
+    fn pio_out(&self, _port: u16, wo: &WriteOp) {
+        assert!(wo.offset as u8 <= MAX_OFF);
+        assert!(wo.buf.len() != 0);
 
         let mut state = self.inner.lock().unwrap();
-        state.reg_write(off as u8, data[0]);
+        state.reg_write(wo.offset as u8, wo.buf[0]);
         handle_out(&mut *state);
     }
-    fn pio_in(&self, _port: u16, off: u16, data: &mut [u8]) {
-        assert!(off <= MAX_OFF);
-        assert!(data.len() != 0);
+    fn pio_in(&self, _port: u16, ro: &mut ReadOp) {
+        assert!(ro.offset as u8 <= MAX_OFF);
+        assert!(ro.buf.len() != 0);
 
         let mut state = self.inner.lock().unwrap();
-        data[0] = state.reg_read(off as u8);
+        ro.buf[0] = state.reg_read(ro.offset as u8);
     }
 }

@@ -11,6 +11,7 @@ mod machine;
 mod pci;
 #[macro_use]
 mod pio;
+mod types;
 mod util;
 mod vcpu;
 mod vm;

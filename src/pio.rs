@@ -1,9 +1,11 @@
-use crate::util::aspace::ASpace;
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::types::*;
+use crate::util::aspace::ASpace;
+
 pub trait PioDev: Send + Sync {
-    fn pio_out(&self, port: u16, off: u16, data: &[u8]);
-    fn pio_in(&self, port: u16, off: u16, data: &mut [u8]);
+    fn pio_in(&self, port: u16, ro: &mut ReadOp);
+    fn pio_out(&self, port: u16, wo: &WriteOp);
 }
 
 type PioDevHdl = Arc<dyn PioDev>;
@@ -34,7 +36,9 @@ impl PioBus {
             4 => &buf[0..],
             _ => panic!(),
         };
-        if !self.do_pio(port, |p, o, dev| dev.pio_out(p, o, data)) {
+        if !self.do_pio(port, |p, o, dev| {
+            dev.pio_out(p, &WriteOp::new(o as usize, data))
+        }) {
             println!("unhandled IO out - port:{:x} len:{}", port, bytes);
         }
     }
@@ -47,7 +51,9 @@ impl PioBus {
             4 => &mut buf[0..],
             _ => panic!(),
         };
-        if !self.do_pio(port, |p, o, dev| dev.pio_in(p, o, data)) {
+        if !self.do_pio(port, |p, o, dev| {
+            dev.pio_in(p, &mut ReadOp::new(o as usize, data))
+        }) {
             println!("unhandled IO in - port:{:x} len:{}", port, bytes);
         }
 

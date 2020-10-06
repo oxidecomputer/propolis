@@ -1,7 +1,7 @@
-use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 
 use crate::pio::PioDev;
+use crate::types::*;
 use crate::util::regmap::{Flags, RegMap};
 
 use byteorder::{ByteOrder, LE};
@@ -33,8 +33,8 @@ impl PciBDF {
 }
 
 pub trait PciEndpoint: Send + Sync {
-    fn cfg_read(&self, offset: u8, data: &mut [u8]);
-    fn cfg_write(&self, offset: u8, data: &[u8]);
+    fn cfg_read(&self, ro: &mut ReadOp);
+    fn cfg_write(&self, wo: &WriteOp);
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -171,10 +171,11 @@ impl<I: Send> PciDevInst<I> {
         }
     }
 
-    fn cfg_std_read(&self, id: &PciCfgReg, foff: usize, outb: &mut [u8]) {
+    fn cfg_std_read(&self, id: &PciCfgReg, ro: &mut ReadOp) {
         // Only the reserved space is configured to skip buffering for unaligned access.
-        assert!(foff == 0 || *id == PciCfgReg::Reserved);
+        assert!(ro.offset == 0 || *id == PciCfgReg::Reserved);
 
+        let outb = &mut ro.buf;
         match id {
             PciCfgReg::VendorId => LE::write_u16(outb, self.vendor_id),
             PciCfgReg::DeviceId => LE::write_u16(outb, self.device_id),
@@ -203,10 +204,11 @@ impl<I: Send> PciDevInst<I> {
         }
     }
 
-    fn cfg_std_write(&self, id: &PciCfgReg, foff: usize, inb: &[u8]) {
+    fn cfg_std_write(&self, id: &PciCfgReg, wo: &WriteOp) {
         // Only the reserved space is configured to skip buffering for unaligned access.
-        assert!(foff == 0 || *id == PciCfgReg::Reserved);
+        assert!(wo.offset == 0 || *id == PciCfgReg::Reserved);
 
+        let inb = wo.buf;
         let mut state = self.header.lock().unwrap();
         match id {
             PciCfgReg::Command => {
@@ -227,16 +229,16 @@ impl<I: Send> PciDevInst<I> {
 }
 
 impl<I: Send + Sync> PciEndpoint for PciDevInst<I> {
-    fn cfg_read(&self, offset: u8, data: &mut [u8]) {
+    fn cfg_read(&self, ro: &mut ReadOp) {
         self.regmap
             .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
-            .read(offset as usize, data);
+            .read(ro);
     }
 
-    fn cfg_write(&self, offset: u8, data: &[u8]) {
+    fn cfg_write(&self, wo: &WriteOp) {
         self.regmap
             .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
-            .write(offset as usize, data);
+            .write(wo);
     }
 }
 
@@ -262,36 +264,36 @@ struct PciBusState {
 }
 
 impl PciBusState {
-    fn cfg_read(&self, bdf: &PciBDF, offset: u8, data: &mut [u8]) {
+    fn cfg_read(&self, bdf: &PciBDF, ro: &mut ReadOp) {
         if let Some((_, dev)) =
             self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
         {
-            dev.cfg_read(offset, data);
+            dev.cfg_read(ro);
             println!(
                 "cfgread bus:{} device:{} func:{} off:{:x}, data:{:?}",
-                bdf.bus, bdf.dev, bdf.func, offset, data
+                bdf.bus, bdf.dev, bdf.func, ro.offset, ro.buf
             );
         } else {
             println!(
                 "unhandled cfgread bus:{} device:{} func:{} off:{:x}",
-                bdf.bus, bdf.dev, bdf.func, offset
+                bdf.bus, bdf.dev, bdf.func, ro.offset
             );
-            read_inval(data);
+            read_inval(ro.buf);
         }
     }
-    fn cfg_write(&self, bdf: &PciBDF, offset: u8, data: &[u8]) {
+    fn cfg_write(&self, bdf: &PciBDF, wo: &WriteOp) {
         if let Some((_, dev)) =
             self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
         {
             println!(
                 "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:?}",
-                bdf.bus, bdf.dev, bdf.func, offset, data
+                bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
             );
-            dev.cfg_write(offset, data);
+            dev.cfg_write(wo);
         } else {
             println!(
                 "unhandled cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:?}",
-                bdf.bus, bdf.dev, bdf.func, offset, data
+                bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
             );
         }
     }
@@ -340,19 +342,21 @@ fn cfg_addr_parse(addr: u32) -> Option<(PciBDF, u8)> {
 }
 
 impl PioDev for PciBus {
-    fn pio_out(&self, port: u16, off: u16, data: &[u8]) {
+    fn pio_out(&self, port: u16, wo: &WriteOp) {
         let mut hdl = self.state.lock().unwrap();
         match port {
             PORT_PCI_CONFIG_ADDR => {
-                if data.len() == 4 && off == 0 {
+                if wo.buf.len() == 4 && wo.offset == 0 {
                     // XXX expect aligned/sized reads
-                    hdl.pio_cfg_addr =
-                        u32::from_le_bytes(data.try_into().unwrap());
+                    hdl.pio_cfg_addr = LE::read_u32(wo.buf);
                 }
             }
             PORT_PCI_CONFIG_DATA => {
                 if let Some((bdf, cfg_off)) = cfg_addr_parse(hdl.pio_cfg_addr) {
-                    hdl.cfg_write(&bdf, cfg_off + off as u8, data);
+                    hdl.cfg_write(
+                        &bdf,
+                        &WriteOp::new(wo.offset + cfg_off as usize, wo.buf),
+                    );
                 }
             }
             _ => {
@@ -360,23 +364,25 @@ impl PioDev for PciBus {
             }
         }
     }
-    fn pio_in(&self, port: u16, off: u16, data: &mut [u8]) {
+    fn pio_in(&self, port: u16, ro: &mut ReadOp) {
         let hdl = self.state.lock().unwrap();
         match port {
             PORT_PCI_CONFIG_ADDR => {
-                let buf = u32::to_le_bytes(hdl.pio_cfg_addr);
-                if data.len() == 4 && off == 0 {
+                if ro.buf.len() == 4 && ro.offset == 0 {
                     // XXX expect aligned/sized reads
-                    data.copy_from_slice(&buf);
+                    LE::write_u32(ro.buf, hdl.pio_cfg_addr);
                 } else {
-                    read_inval(data);
+                    read_inval(ro.buf);
                 }
             }
             PORT_PCI_CONFIG_DATA => {
                 if let Some((bdf, cfg_off)) = cfg_addr_parse(hdl.pio_cfg_addr) {
-                    hdl.cfg_read(&bdf, cfg_off + off as u8, data);
+                    hdl.cfg_read(
+                        &bdf,
+                        &mut ReadOp::new(ro.offset + cfg_off as usize, ro.buf),
+                    );
                 } else {
-                    read_inval(data);
+                    read_inval(ro.buf);
                 }
             }
             _ => {
