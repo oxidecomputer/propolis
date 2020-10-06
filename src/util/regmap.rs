@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ops::Bound::Included;
 
 use super::aspace::ASpace;
@@ -63,7 +64,7 @@ impl<ID> RegMap<ID> {
     }
 
     pub fn read<OBJ>(&self, ro: &mut ReadOp, obj: &OBJ, f: ReadFunc<ID, OBJ>) {
-        assert!(ro.buf.len() != 0);
+        assert!(!ro.buf.is_empty());
         assert!(ro.offset + ro.buf.len() - 1 < self.len);
 
         let buf_len = ro.buf.len();
@@ -72,7 +73,7 @@ impl<ID> RegMap<ID> {
             let buf_xfer = &mut buf[xfer.skip_front_idx..xfer.split_back_idx];
             let mut copy_op = ReadOp::new(xfer.offset, buf_xfer);
 
-            debug_assert!(copy_op.buf.len() != 0);
+            debug_assert!(!copy_op.buf.is_empty());
             Self::reg_read(xfer.reg, xfer.reg_len, &mut copy_op, obj, f);
         })
     }
@@ -84,7 +85,7 @@ impl<ID> RegMap<ID> {
         wf: WriteFunc<ID, OBJ>,
         rf: ReadFunc<ID, OBJ>,
     ) {
-        assert!(wo.buf.len() != 0);
+        assert!(!wo.buf.is_empty());
         assert!(wo.offset + wo.buf.len() - 1 < self.len);
 
         let buf_len = wo.buf.len();
@@ -93,7 +94,7 @@ impl<ID> RegMap<ID> {
             let buf_xfer = &buf[xfer.skip_front_idx..xfer.split_back_idx];
             let copy_op = WriteOp::new(xfer.offset, buf_xfer);
 
-            debug_assert!(buf_xfer.len() != 0);
+            debug_assert!(!copy_op.buf.is_empty());
             Self::reg_write(xfer.reg, xfer.reg_len, &copy_op, obj, wf, rf);
         })
     }
@@ -147,7 +148,7 @@ impl<ID> RegMap<ID> {
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
                 read_handler(obj, &reg.id, &mut ReadOp::new(0, &mut scratch));
             }
-            &mut scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())]
+            scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())]
                 .copy_from_slice(copy_op.buf);
 
             write_handler(obj, &reg.id, &WriteOp::new(0, &scratch));
@@ -175,28 +176,30 @@ impl<ID> RegMap<ID> {
             let mut split_back = 0;
             let mut reg_offset = 0;
 
-            if position == reg_start {
-                if remain > reg_len {
-                    split_back = remain - reg_len;
+            match position.cmp(&reg_start) {
+                Ordering::Equal => {
+                    if remain > reg_len {
+                        split_back = remain - reg_len;
+                    }
                 }
-            } else if position < reg_start {
-                debug_assert!(position + remain > reg_start);
-                let skip = reg_start - position;
+                Ordering::Less => {
+                    debug_assert!(position + remain > reg_start);
+                    let skip = reg_start - position;
 
-                skip_front = skip;
-                if remain - skip > reg_len {
-                    split_back = remain - (skip + reg_len);
+                    skip_front = skip;
+                    if remain - skip > reg_len {
+                        split_back = remain - (skip + reg_len);
+                    }
                 }
-            } else {
-                // position > reg_start
-                let offset = position - reg_start;
+                Ordering::Greater => {
+                    let offset = position - reg_start;
 
-                reg_offset = offset;
-                if offset + remain > reg_len {
-                    split_back = offset + remain - reg_len;
+                    reg_offset = offset;
+                    if offset + remain > reg_len {
+                        split_back = offset + remain - reg_len;
+                    }
                 }
-            }
-
+            };
             let xfer_len = remain - (skip_front + split_back);
             debug_assert!(xfer_len <= reg_len);
 

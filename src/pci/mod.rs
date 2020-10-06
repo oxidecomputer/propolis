@@ -300,7 +300,7 @@ impl PciBusState {
 
     fn register(&mut self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         // XXX strict fail for now
-        assert!(!self.devices.iter().find(|(sbdf, _)| sbdf == &bdf).is_some());
+        assert!(!self.devices.iter().any(|(sbdf, _)| sbdf == &bdf));
         self.devices.push((bdf, dev));
     }
 }

@@ -98,7 +98,7 @@ impl VmmHdl {
             let name_raw = name.as_bytes();
 
             assert!(name_raw.len() < bhyve_api::SEG_NAME_LEN);
-            (&mut seg.name[..]).write(name_raw)?;
+            (&mut seg.name[..]).write_all(name_raw)?;
         }
         self.ioctl(bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
         Ok(())

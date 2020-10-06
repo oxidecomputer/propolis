@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::types::*;
 use crate::util::aspace::ASpace;
 
+use byteorder::{ByteOrder, LE};
+
 pub trait PioDev: Send + Sync {
     fn pio_in(&self, port: u16, ro: &mut ReadOp);
     fn pio_out(&self, port: u16, wo: &WriteOp);
@@ -36,9 +38,10 @@ impl PioBus {
             4 => &buf[0..],
             _ => panic!(),
         };
-        if !self.do_pio(port, |p, o, dev| {
+        let handled = self.do_pio(port, |p, o, dev| {
             dev.pio_out(p, &WriteOp::new(o as usize, data))
-        }) {
+        });
+        if !handled {
             println!("unhandled IO out - port:{:x} len:{}", port, bytes);
         }
     }
@@ -51,13 +54,14 @@ impl PioBus {
             4 => &mut buf[0..],
             _ => panic!(),
         };
-        if !self.do_pio(port, |p, o, dev| {
+        let handled = self.do_pio(port, |p, o, dev| {
             dev.pio_in(p, &mut ReadOp::new(o as usize, data))
-        }) {
+        });
+        if !handled {
             println!("unhandled IO in - port:{:x} len:{}", port, bytes);
         }
 
-        u32::from_le_bytes(buf)
+        LE::read_u32(&buf)
     }
 
     fn do_pio<F>(&self, port: u16, f: F) -> bool
