@@ -28,9 +28,15 @@ pub const OFF_CFG_INTRPIN: u8 = 0x3d;
 pub const OFF_CFG_MINGRANT: u8 = 0x3e;
 pub const OFF_CFG_MAXLATENCY: u8 = 0x3f;
 
+pub const LEN_CFG_STD: usize = 0x40;
+
 pub const REG_CMD_IO_EN: u16 = 0b1;
 pub const REG_CMD_MMIO_EN: u16 = 0b10;
 pub const REG_CMD_BUSMSTR_EN: u16 = 0b100;
 pub const REG_CMD_INTX_DIS: u16 = 0b100_00000000;
 pub const REG_MASK_CMD: u16 =
     REG_CMD_IO_EN | REG_CMD_MMIO_EN | REG_CMD_BUSMSTR_EN | REG_CMD_INTX_DIS;
+
+pub const BAR_TYPE_IO: u32 = 0b01;
+pub const BAR_TYPE_MEM: u32 = 0b000;
+pub const BAR_TYPE_MEM64: u32 = 0b100;

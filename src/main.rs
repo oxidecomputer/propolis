@@ -27,7 +27,7 @@ use pio::PioDev;
 use vcpu::VcpuHdl;
 
 use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
-use pci::{PciBDF, PciDevInst};
+use pci::PciBDF;
 
 const PAGE_OFFSET: u64 = 0xfff;
 
@@ -44,7 +44,7 @@ fn parse_args() -> Opts {
 }
 
 struct PciLpcImpl;
-impl pci::DevImpl for PciLpcImpl {}
+impl pci::Device for PciLpcImpl {}
 
 fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
     let mctx = &dctx.mctx;
@@ -103,10 +103,18 @@ fn main() {
     let com1 = LpcUart::new(COM1_IRQ);
     mctx.with_pio(|pio| pio.register(COM1_PORT, 8, pio_dyn!(com1.clone())));
 
-    let lpc_pcidev = PciDevInst::new(0x8086, 0x7000, 0x06, 0x01, PciLpcImpl {});
-    mctx.with_pci(|pci| {
-        pci.attach(PciBDF::new(0, 31, 0), Arc::new(lpc_pcidev))
-    });
+    let lpc_dev = pci::Builder::new(pci::Ident {
+        vendor_id: 0x8086,
+        device_id: 0x7000,
+        class: 0x06,
+        subclass: 0x01,
+        sub_vendor_id: 0,
+        sub_device_id: 0,
+    })
+    // BAR, just for kicks
+    //.add_bar_io(pci::BarN::BAR0, 0x100)
+    .finish(PciLpcImpl {});
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), lpc_dev));
 
     let mut vcpu0 = vm.vcpu(0);
 
