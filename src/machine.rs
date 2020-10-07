@@ -2,6 +2,7 @@ use std::io::{Read, Result};
 use std::sync::{Arc, Mutex};
 
 use crate::devices::rtc::Rtc;
+use crate::intr_pins::IsaPIC;
 use crate::pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
 use crate::pio::{PioBus, PioDev};
 use crate::util::aspace::ASpace;
@@ -11,6 +12,7 @@ use crate::vm::VmmHdl;
 
 // XXX: need some arb limit for now
 const MAX_PHYSMEM: usize = 0x1_0000_0000;
+const LEGACY_PIC_PINS: u8 = 32;
 
 #[repr(u8)]
 enum Memseg {
@@ -28,6 +30,7 @@ pub struct Machine {
     bus_mmio: Mutex<ASpace<()>>,
     bus_pio: PioBus,
     pci_root: Arc<PciBus>,
+    isa_pic: Arc<IsaPIC>,
 }
 
 impl Machine {
@@ -41,6 +44,8 @@ impl Machine {
             cpus.push(Some(VcpuHdl::from_vmhdl(arc_hdl.clone(), n as i32)));
         }
 
+        let pic = IsaPIC::new(LEGACY_PIC_PINS, arc_hdl.clone());
+        let pci_root = Arc::new(PciBus::new(Arc::downgrade(&pic)));
         Arc::new(Self {
             hdl: arc_hdl,
             max_cpu,
@@ -50,7 +55,8 @@ impl Machine {
             map_physmem: Mutex::new(ASpace::new(0, MAX_PHYSMEM)),
             bus_mmio: Mutex::new(ASpace::new(0, MAX_PHYSMEM)),
             bus_pio: PioBus::new(),
-            pci_root: Arc::new(PciBus::new()),
+            pci_root,
+            isa_pic: pic,
         })
     }
 
@@ -136,6 +142,10 @@ impl Machine {
             4,
             &(self.pci_root.clone() as Arc<dyn PioDev>),
         );
+    }
+
+    pub fn setup_legacy_interrupts(&self) {
+        // TODO: certain interrupts expect to be level-triggered
     }
 }
 

@@ -217,6 +217,21 @@ pub struct vm_ioapic_irq {
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
+pub struct vm_isa_irq {
+    pub atpic_irq: c_int,
+    pub ioapic_irq: c_int,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_isa_irq_trigger {
+    pub atpic_irq: c_int,
+    /// Trigger mode: 0 - Edge triggered, Non-0 - Level triggered
+    pub trigger: c_int,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
 pub struct vm_rtc_data {
     pub offset: i32,
     pub value: u8,

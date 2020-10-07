@@ -1,5 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
+use crate::intr_pins::{IsaPIC, IsaPin};
 use crate::pio::PioDev;
 use crate::types::*;
 
@@ -24,6 +25,15 @@ pub struct PciBDF {
     func: u8,
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub enum INTxPin {
+    INTA = 1,
+    INTB = 2,
+    INTC = 3,
+    INTD = 4,
+}
+
 impl PciBDF {
     pub fn new(bus: u8, dev: u8, func: u8) -> Self {
         assert!(dev <= MASK_DEV);
@@ -36,10 +46,12 @@ impl PciBDF {
 pub trait PciEndpoint: Send + Sync {
     fn cfg_read(&self, ro: &mut ReadOp);
     fn cfg_write(&self, wo: &WriteOp);
+    fn attach(&self, lintr: Option<(INTxPin, IsaPin)>);
 }
 
 pub struct PciBus {
     state: Mutex<PciBusState>,
+    pic: Weak<IsaPIC>,
 }
 
 struct PciBusState {
@@ -54,7 +66,7 @@ impl PciBusState {
         {
             dev.cfg_read(ro);
             println!(
-                "cfgread bus:{} device:{} func:{} off:{:x}, data:{:?}",
+                "cfgread bus:{} device:{} func:{} off:{:x}, data:{:x?}",
                 bdf.bus, bdf.dev, bdf.func, ro.offset, ro.buf
             );
         } else {
@@ -70,13 +82,13 @@ impl PciBusState {
             self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
         {
             println!(
-                "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:?}",
+                "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
                 bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
             );
             dev.cfg_write(wo);
         } else {
             println!(
-                "unhandled cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:?}",
+                "unhandled cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
                 bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
             );
         }
@@ -90,18 +102,36 @@ impl PciBusState {
 }
 
 impl PciBus {
-    pub fn new() -> Self {
+    pub fn new(pic: Weak<IsaPIC>) -> Self {
         Self {
             state: Mutex::new(PciBusState {
                 pio_cfg_addr: 0,
                 devices: Vec::new(),
             }),
+            pic,
         }
+    }
+
+    fn route_lintr(&self, bdf: &PciBDF) -> (INTxPin, IsaPin) {
+        let pic = Weak::upgrade(&self.pic).unwrap();
+        let intx_pin = match (bdf.func + 1) % 4 {
+            1 => INTxPin::INTA,
+            2 => INTxPin::INTB,
+            3 => INTxPin::INTC,
+            4 => INTxPin::INTD,
+            _ => panic!(),
+        };
+        // Existing c-bhyve formula: 16 + (4 + slot + INTxPin) % 8
+        let pin_route = 16 + ((4 + bdf.dev + intx_pin as u8) % 8);
+        let pin = pic.pin_handle(pin_route).unwrap();
+        (intx_pin, pin)
     }
 
     pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
-        hdl.register(bdf, dev);
+        hdl.register(bdf.clone(), dev.clone());
+        // XXX: do unconditionally for now
+        dev.attach(Some(self.route_lintr(&bdf)));
     }
 }
 

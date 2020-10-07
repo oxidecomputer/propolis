@@ -2,8 +2,10 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use super::bits::*;
-use super::PciEndpoint;
+use super::{PciEndpoint, INTxPin};
+use crate::dispatch::DispCtx;
 use crate::types::*;
+use crate::intr_pins::{IsaPin, IntrPin};
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
 
@@ -119,9 +121,13 @@ pub struct Ident {
     pub sub_device_id: u16,
 }
 
-struct Header {
-    command: u16,
-    intr_line: u8,
+#[derive(Default)]
+struct State {
+    reg_command: u16,
+    reg_intr_line: u8,
+    reg_intr_pin: u8,
+
+    lintr_pin: Option<IsaPin>,
 }
 
 #[derive(Copy, Clone)]
@@ -210,9 +216,8 @@ impl Bars {
 
 pub struct DeviceInst<I: Send> {
     ident: Ident,
-    intr_pin: u8,
 
-    header: Mutex<Header>,
+    state: Mutex<State>,
     bars: Mutex<Bars>,
 
     sa_cell: SelfArcCell<Self>,
@@ -225,8 +230,10 @@ impl<I: Send> DeviceInst<I> {
         Self {
             sa_cell: SelfArcCell::new(),
             ident,
-            intr_pin: 0x00,
-            header: Mutex::new(Header { command: 0, intr_line: 0xff }),
+            state: Mutex::new(State {
+                reg_intr_line: 0xff,
+                ..Default::default()
+            }),
             bars: Mutex::new(bars),
             inner: i,
         }
@@ -249,12 +256,14 @@ impl<I: Send> DeviceInst<I> {
             }
 
             StdCfgReg::Command => {
-                LE::write_u16(buf, self.header.lock().unwrap().command)
+                LE::write_u16(buf, self.state.lock().unwrap().reg_command)
             }
             StdCfgReg::IntrLine => {
-                buf[0] = self.header.lock().unwrap().intr_line
+                buf[0] = self.state.lock().unwrap().reg_intr_line
             }
-            StdCfgReg::IntrPin => buf[0] = self.intr_pin,
+            StdCfgReg::IntrPin => {
+                buf[0] = self.state.lock().unwrap().reg_intr_pin
+            }
             StdCfgReg::Bar(bar) => {
                 LE::write_u32(buf, self.bars.lock().unwrap().read(*bar))
             }
@@ -280,10 +289,10 @@ impl<I: Send> DeviceInst<I> {
             StdCfgReg::Command => {
                 let val = LE::read_u16(buf);
                 // XXX: wire up change handling
-                self.header.lock().unwrap().command = val & REG_MASK_CMD;
+                self.state.lock().unwrap().reg_command = val & REG_MASK_CMD;
             }
             StdCfgReg::IntrLine => {
-                self.header.lock().unwrap().intr_line = buf[0];
+                self.state.lock().unwrap().reg_intr_line = buf[0];
             }
             StdCfgReg::Bar(bar) => {
                 let val = LE::read_u32(buf);
@@ -296,6 +305,7 @@ impl<I: Send> DeviceInst<I> {
             }
         }
     }
+
 }
 
 impl<I: Send + Sync> PciEndpoint for DeviceInst<I> {
@@ -310,11 +320,43 @@ impl<I: Send + Sync> PciEndpoint for DeviceInst<I> {
             .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
             .write(wo);
     }
+    fn attach(&self, lintr: Option<(INTxPin, IsaPin)>) {
+        let mut state = self.state.lock().unwrap();
+        if let Some((intx, isa_pin)) = lintr {
+            state.reg_intr_pin = intx as u8;
+            state.reg_intr_line = isa_pin.get_pin();
+            state.lintr_pin = Some(isa_pin);
+        }
+    }
 }
 
 impl<I: Sized + Send> SelfArc for DeviceInst<I> {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
         &self.sa_cell
+    }
+}
+
+pub struct DeviceCtx<'a, 'b> {
+    state: &'a Mutex<State>,
+    dctx: &'b DispCtx,
+}
+impl<'a, 'b> DeviceCtx<'a, 'b> {
+    fn new(state: &'a Mutex<State>, dctx: &'b DispCtx) -> Self {
+        Self { state, dctx }
+    }
+
+    pub fn set_lintr(&self, level: bool) {
+        let mut state = self.state.lock().unwrap();
+        if state.reg_intr_pin == 0 {
+            return;
+        }
+        // XXX: heed INTxDIS
+        let pin = state.lintr_pin.as_mut().unwrap();
+        if level {
+            pin.assert();
+        } else {
+            pin.deassert();
+        }
     }
 }
 
@@ -342,13 +384,19 @@ pub trait Device: Send {
 
 pub struct Builder<I> {
     ident: Ident,
+    need_lintr: bool,
     bars: [Option<BarDefine>; 6],
     _phantom: PhantomData<I>,
 }
 
 impl<I: Device> Builder<I> {
     pub fn new(ident: Ident) -> Self {
-        Self { ident, bars: [None; 6], _phantom: PhantomData }
+        Self {
+            ident,
+            need_lintr: false,
+            bars: [None; 6],
+            _phantom: PhantomData,
+        }
     }
 
     pub fn add_bar_io(mut self, bar: BarN, size: u16) -> Self {
@@ -382,6 +430,10 @@ impl<I: Device> Builder<I> {
 
         self.bars[idx] = Some(BarDefine::Mmio64(size));
         self.bars[idx + 1] = Some(BarDefine::Mmio64High);
+        self
+    }
+    pub fn add_lintr(mut self) -> Self {
+        self.need_lintr = true;
         self
     }
 

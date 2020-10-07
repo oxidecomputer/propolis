@@ -70,7 +70,7 @@ impl VmmHdl {
         self.inner.as_raw_fd()
     }
     #[cfg(target_os = "illumos")]
-    pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
+    pub fn ioctl_res<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
         let res = unsafe { libc::ioctl(self.fd(), cmd, data) };
         if res == -1 {
             Err(Error::last_os_error())
@@ -79,8 +79,12 @@ impl VmmHdl {
         }
     }
     #[cfg(not(target_os = "illumos"))]
-    pub fn ioctl<T>(&self, _cmd: i32, _data: *mut T) -> Result<i32> {
+    pub fn ioctl_res<T>(&self, _cmd: i32, _data: *mut T) -> Result<i32> {
         Err(Error::new(ErrorKind::Other, "illumos required"))
+    }
+    pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<()> {
+        self.ioctl_res(cmd, data)?;
+        Ok(())
     }
 
     pub fn create_memseg(
@@ -100,8 +104,7 @@ impl VmmHdl {
             assert!(name_raw.len() < bhyve_api::SEG_NAME_LEN);
             (&mut seg.name[..]).write_all(name_raw)?;
         }
-        self.ioctl(bhyve_api::VM_ALLOC_MEMSEG, &mut seg)?;
-        Ok(())
+        self.ioctl(bhyve_api::VM_ALLOC_MEMSEG, &mut seg)
     }
 
     pub fn map_memseg(
@@ -122,8 +125,7 @@ impl VmmHdl {
             prot: prot as i32,
             flags: 0,
         };
-        self.ioctl(bhyve_api::VM_MMAP_MEMSEG, &mut map)?;
-        Ok(())
+        self.ioctl(bhyve_api::VM_MMAP_MEMSEG, &mut map)
     }
 
     pub fn devmem_offset(&self, segid: i32, offset: usize) -> Result<usize> {
@@ -154,13 +156,73 @@ impl VmmHdl {
 
     pub fn rtc_settime(&self, unix_time: u64) -> Result<()> {
         let mut time: u64 = unix_time;
-        self.ioctl(bhyve_api::VM_RTC_SETTIME, &mut time)?;
-        Ok(())
+        self.ioctl(bhyve_api::VM_RTC_SETTIME, &mut time)
     }
-
     pub fn rtc_write(&self, offset: u8, value: u8) -> Result<()> {
         let mut data = bhyve_api::vm_rtc_data { offset: offset as i32, value };
-        self.ioctl(bhyve_api::VM_RTC_WRITE, &mut data)?;
-        Ok(())
+        self.ioctl(bhyve_api::VM_RTC_WRITE, &mut data)
+    }
+
+    pub fn isa_assert_irq(
+        &self,
+        pic_irq: u8,
+        ioapic_irq: Option<u8>,
+    ) -> Result<()> {
+        let mut data = bhyve_api::vm_isa_irq {
+            atpic_irq: pic_irq as i32,
+            ioapic_irq: ioapic_irq.map(|x| x as i32).unwrap_or(-1),
+        };
+        self.ioctl(bhyve_api::VM_ISA_ASSERT_IRQ, &mut data)
+    }
+    pub fn isa_deassert_irq(
+        &self,
+        pic_irq: u8,
+        ioapic_irq: Option<u8>,
+    ) -> Result<()> {
+        let mut data = bhyve_api::vm_isa_irq {
+            atpic_irq: pic_irq as i32,
+            ioapic_irq: ioapic_irq.map(|x| x as i32).unwrap_or(-1),
+        };
+        self.ioctl(bhyve_api::VM_ISA_DEASSERT_IRQ, &mut data)
+    }
+    pub fn isa_pulse_irq(
+        &self,
+        pic_irq: u8,
+        ioapic_irq: Option<u8>,
+    ) -> Result<()> {
+        let mut data = bhyve_api::vm_isa_irq {
+            atpic_irq: pic_irq as i32,
+            ioapic_irq: ioapic_irq.map(|x| x as i32).unwrap_or(-1),
+        };
+        self.ioctl(bhyve_api::VM_ISA_PULSE_IRQ, &mut data)
+    }
+    pub fn isa_set_trigger_mode(
+        &self,
+        vec: u8,
+        level_mode: bool,
+    ) -> Result<()> {
+        let mut data = bhyve_api::vm_isa_irq_trigger {
+            atpic_irq: vec as i32,
+            trigger: if level_mode { 1 } else { 0 },
+        };
+        self.ioctl(bhyve_api::VM_ISA_SET_IRQ_TRIGGER, &mut data)
+    }
+
+    pub fn ioapic_assert_irq(&self, irq: u8) -> Result<()> {
+        let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
+        self.ioctl(bhyve_api::VM_IOAPIC_ASSERT_IRQ, &mut data)
+    }
+    pub fn ioapic_deassert_irq(&self, irq: u8) -> Result<()> {
+        let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
+        self.ioctl(bhyve_api::VM_IOAPIC_DEASSERT_IRQ, &mut data)
+    }
+    pub fn ioapic_pulse_irq(&self, irq: u8) -> Result<()> {
+        let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
+        self.ioctl(bhyve_api::VM_IOAPIC_PULSE_IRQ, &mut data)
+    }
+    pub fn ioapic_pin_count(&self) -> Result<u8> {
+        let mut data = 0u32;
+        self.ioctl(bhyve_api::VM_IOAPIC_PINCOUNT, &mut data)?;
+        Ok(data as u8)
     }
 }

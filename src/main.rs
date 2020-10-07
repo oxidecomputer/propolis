@@ -7,6 +7,7 @@ extern crate byteorder;
 mod devices;
 mod dispatch;
 mod exits;
+mod intr_pins;
 mod machine;
 mod pci;
 #[macro_use]
@@ -113,6 +114,7 @@ fn main() {
     })
     // BAR, just for kicks
     //.add_bar_io(pci::BarN::BAR0, 0x100)
+    .add_lintr()
     .finish(PciLpcImpl {});
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), lpc_dev));
 
