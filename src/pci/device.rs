@@ -221,6 +221,7 @@ impl Bars {
 
 pub struct DeviceInst<I: Send> {
     ident: Ident,
+    lintr_req: bool,
     cfg_space: RegMap<CfgReg>,
 
     state: Mutex<State>,
@@ -235,6 +236,7 @@ impl<I: Device> DeviceInst<I> {
     fn new(ident: Ident, cfg_space: RegMap<CfgReg>, bars: Bars, i: I) -> Self {
         Self {
             ident,
+            lintr_req: false,
             cfg_space,
             state: Mutex::new(State {
                 reg_intr_line: 0xff,
@@ -352,11 +354,13 @@ impl<I: Device> PciEndpoint for DeviceInst<I> {
             .write(wo);
     }
     fn attach(&self, lintr: Option<(INTxPin, IsaPin)>) {
-        let mut state = self.state.lock().unwrap();
-        if let Some((intx, isa_pin)) = lintr {
-            state.reg_intr_pin = intx as u8;
-            state.reg_intr_line = isa_pin.get_pin();
-            state.lintr_pin = Some(isa_pin);
+        if self.lintr_req {
+            let mut state = self.state.lock().unwrap();
+            if let Some((intx, isa_pin)) = lintr {
+                state.reg_intr_pin = intx as u8;
+                state.reg_intr_line = isa_pin.get_pin();
+                state.lintr_pin = Some(isa_pin);
+            }
         }
     }
 }
@@ -412,7 +416,7 @@ pub trait Device: Send + Sync {
 
 pub struct Builder<I> {
     ident: Ident,
-    need_lintr: bool,
+    lintr_req: bool,
     bars: [Option<BarDefine>; 6],
     cfgmap: RegMap<CfgReg>,
     _phantom: PhantomData<I>,
@@ -427,7 +431,7 @@ impl<I: Device> Builder<I> {
         cfgmap.define(0, LEN_CFG_STD, CfgReg::Std);
         Self {
             ident,
-            need_lintr: false,
+            lintr_req: false,
             bars: [None; 6],
             cfgmap,
             _phantom: PhantomData,
@@ -468,7 +472,7 @@ impl<I: Device> Builder<I> {
         self
     }
     pub fn add_lintr(mut self) -> Self {
-        self.need_lintr = true;
+        self.lintr_req = true;
         self
     }
     pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
@@ -486,9 +490,12 @@ impl<I: Device> Builder<I> {
 
     pub fn finish(self, inner: I) -> Arc<DeviceInst<I>> {
         let bars = self.generate_bars();
-        let mut inst =
-            Arc::new(DeviceInst::new(self.ident, self.cfgmap, bars, inner));
-        SelfArc::self_arc_init(&mut inst);
-        inst
+
+        let mut inst = DeviceInst::new(self.ident, self.cfgmap, bars, inner);
+        inst.lintr_req = self.lintr_req;
+
+        let mut done = Arc::new(inst);
+        SelfArc::self_arc_init(&mut done);
+        done
     }
 }

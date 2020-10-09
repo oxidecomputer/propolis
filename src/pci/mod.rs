@@ -130,7 +130,8 @@ impl PciBus {
     pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
         hdl.register(bdf, dev.clone());
-        // XXX: do unconditionally for now
+        // XXX: device will ignore lintr pin if it is not needed
+        // this could be streamlined in the future
         dev.attach(Some(self.route_lintr(&bdf)));
     }
 }

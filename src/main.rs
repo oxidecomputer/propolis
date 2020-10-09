@@ -93,11 +93,13 @@ fn main() {
 
     vm.wire_pci_root();
 
+    let pci_hostbridge = devices::piix4::Piix4HostBridge::new();
     let pci_lpc =
         vm.create_lpc(|pic, pio| devices::lpc::Piix3Bhyve::new(pic, pio));
     pci_lpc.with_inner(|lpc| lpc.set_pir_defaults());
 
     let mctx = MachineCtx::new(&vm);
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));
 
     let mut vcpu0 = vm.vcpu(0);
