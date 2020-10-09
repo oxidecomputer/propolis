@@ -144,8 +144,11 @@ impl Machine {
         );
     }
 
-    pub fn setup_legacy_interrupts(&self) {
-        // TODO: certain interrupts expect to be level-triggered
+    pub fn create_lpc<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Arc<IsaPIC>, &PioBus) -> R,
+    {
+        f(&self.isa_pic, &self.bus_pio)
     }
 }
 

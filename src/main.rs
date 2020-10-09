@@ -10,7 +10,6 @@ mod exits;
 mod intr_pins;
 mod machine;
 mod pci;
-#[macro_use]
 mod pio;
 mod types;
 mod util;
@@ -24,10 +23,8 @@ use bhyve_api::vm_reg_name;
 use dispatch::*;
 use exits::*;
 use machine::{Machine, MachineCtx};
-use pio::PioDev;
 use vcpu::VcpuHdl;
 
-use devices::uart::{LpcUart, COM1_IRQ, COM1_PORT};
 use pci::PciBDF;
 
 const PAGE_OFFSET: u64 = 0xfff;
@@ -43,9 +40,6 @@ fn parse_args() -> Opts {
     let vmname: String = args.free().unwrap().pop().unwrap();
     Opts { rom, vmname }
 }
-
-struct PciLpcImpl;
-impl pci::Device for PciLpcImpl {}
 
 fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
     let mctx = &dctx.mctx;
@@ -99,24 +93,12 @@ fn main() {
 
     vm.wire_pci_root();
 
+    let pci_lpc =
+        vm.create_lpc(|pic, pio| devices::lpc::Piix3Bhyve::new(pic, pio));
+    pci_lpc.with_inner(|lpc| lpc.set_pir_defaults());
+
     let mctx = MachineCtx::new(&vm);
-
-    let com1 = LpcUart::new(COM1_IRQ);
-    mctx.with_pio(|pio| pio.register(COM1_PORT, 8, pio_dyn!(com1.clone())));
-
-    let lpc_dev = pci::Builder::new(pci::Ident {
-        vendor_id: 0x8086,
-        device_id: 0x7000,
-        class: 0x06,
-        subclass: 0x01,
-        sub_vendor_id: 0,
-        sub_device_id: 0,
-    })
-    // BAR, just for kicks
-    //.add_bar_io(pci::BarN::BAR0, 0x100)
-    .add_lintr()
-    .finish(PciLpcImpl {});
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), lpc_dev));
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));
 
     let mut vcpu0 = vm.vcpu(0);
 

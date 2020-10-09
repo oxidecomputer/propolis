@@ -129,7 +129,7 @@ impl PciBus {
 
     pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
-        hdl.register(bdf.clone(), dev.clone());
+        hdl.register(bdf, dev.clone());
         // XXX: do unconditionally for now
         dev.attach(Some(self.route_lintr(&bdf)));
     }

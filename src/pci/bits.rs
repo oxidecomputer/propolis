@@ -28,6 +28,7 @@ pub const OFF_CFG_INTRPIN: u8 = 0x3d;
 pub const OFF_CFG_MINGRANT: u8 = 0x3e;
 pub const OFF_CFG_MAXLATENCY: u8 = 0x3f;
 
+pub const LEN_CFG: usize = 0x100;
 pub const LEN_CFG_STD: usize = 0x40;
 
 pub const REG_CMD_IO_EN: u16 = 0b1;

@@ -14,6 +14,7 @@ struct RegDef<ID> {
 
 pub struct RegMap<ID> {
     len: usize,
+    default_flags: Flags,
     space: ASpace<RegDef<ID>>,
 }
 
@@ -37,11 +38,14 @@ struct RegXfer<'a, ID> {
 
 impl<ID> RegMap<ID> {
     pub fn new(len: usize) -> Self {
-        Self { len, space: ASpace::new(0, len - 1) }
+        Self::new_with_flags(len, Flags::DEFAULT)
+    }
+    pub fn new_with_flags(len: usize, default_flags: Flags) -> Self {
+        Self { len, default_flags, space: ASpace::new(0, len - 1) }
     }
 
     pub fn define(&mut self, start: usize, len: usize, id: ID) {
-        self.define_with_flags(start, len, id, Flags::DEFAULT)
+        self.define_with_flags(start, len, id, self.default_flags)
     }
 
     pub fn define_with_flags(

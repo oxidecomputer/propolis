@@ -2,15 +2,20 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use super::bits::*;
-use super::{PciEndpoint, INTxPin};
+use super::{INTxPin, PciEndpoint};
 use crate::dispatch::DispCtx;
+use crate::intr_pins::{IntrPin, IsaPin};
 use crate::types::*;
-use crate::intr_pins::{IsaPin, IntrPin};
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
 
 use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
+
+enum CfgReg {
+    Std,
+    Custom,
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum StdCfgReg {
@@ -216,6 +221,7 @@ impl Bars {
 
 pub struct DeviceInst<I: Send> {
     ident: Ident,
+    cfg_space: RegMap<CfgReg>,
 
     state: Mutex<State>,
     bars: Mutex<Bars>,
@@ -225,20 +231,47 @@ pub struct DeviceInst<I: Send> {
     inner: I,
 }
 
-impl<I: Send> DeviceInst<I> {
-    fn new(ident: Ident, bars: Bars, i: I) -> Self {
+impl<I: Device> DeviceInst<I> {
+    fn new(ident: Ident, cfg_space: RegMap<CfgReg>, bars: Bars, i: I) -> Self {
         Self {
-            sa_cell: SelfArcCell::new(),
             ident,
+            cfg_space,
             state: Mutex::new(State {
                 reg_intr_line: 0xff,
                 ..Default::default()
             }),
             bars: Mutex::new(bars),
+            sa_cell: SelfArcCell::new(),
             inner: i,
         }
     }
+    pub fn with_inner<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce(&I) -> T,
+    {
+        f(&self.inner)
+    }
 
+    fn cfg_map_read(&self, id: &CfgReg, ro: &mut ReadOp) {
+        match id {
+            CfgReg::Std => {
+                STD_CFG_MAP
+                    .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
+                    .read(ro);
+            }
+            CfgReg::Custom => self.inner.cfg_read(ro),
+        }
+    }
+    fn cfg_map_write(&self, id: &CfgReg, wo: &WriteOp) {
+        match id {
+            CfgReg::Std => {
+                STD_CFG_MAP
+                    .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
+                    .write(wo);
+            }
+            CfgReg::Custom => self.inner.cfg_write(wo),
+        }
+    }
     fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp) {
         assert!(ro.offset == 0 || *id == StdCfgReg::Reserved);
 
@@ -280,7 +313,6 @@ impl<I: Send> DeviceInst<I> {
             }
         }
     }
-
     fn cfg_std_write(&self, id: &StdCfgReg, wo: &WriteOp) {
         assert!(wo.offset == 0 || *id == StdCfgReg::Reserved);
 
@@ -305,19 +337,18 @@ impl<I: Send> DeviceInst<I> {
             }
         }
     }
-
 }
 
-impl<I: Send + Sync> PciEndpoint for DeviceInst<I> {
+impl<I: Device> PciEndpoint for DeviceInst<I> {
     fn cfg_read(&self, ro: &mut ReadOp) {
-        STD_CFG_MAP
-            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
+        self.cfg_space
+            .with_ctx(self, Self::cfg_map_read, Self::cfg_map_write)
             .read(ro);
     }
 
     fn cfg_write(&self, wo: &WriteOp) {
-        STD_CFG_MAP
-            .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
+        self.cfg_space
+            .with_ctx(self, Self::cfg_map_read, Self::cfg_map_write)
             .write(wo);
     }
     fn attach(&self, lintr: Option<(INTxPin, IsaPin)>) {
@@ -360,22 +391,19 @@ impl<'a, 'b> DeviceCtx<'a, 'b> {
     }
 }
 
-pub trait Device: Send {
+pub trait Device: Send + Sync {
     fn bar_read(&self, bar: BarN, ro: &mut ReadOp) {
-        panic!(
-            "unexpected BAR read: {:?} @ {} {}",
-            bar,
-            ro.offset,
-            ro.buf.len()
-        );
+        unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset)
     }
     fn bar_write(&self, bar: BarN, wo: &WriteOp) {
-        panic!(
-            "unexpected BAR write: {:?} @ {} {}",
-            bar,
-            wo.offset,
-            wo.buf.len()
-        );
+        unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset)
+    }
+
+    fn cfg_read(&self, ro: &mut ReadOp) {
+        unimplemented!("CFG read @ {:x}", ro.offset)
+    }
+    fn cfg_write(&self, wo: &WriteOp) {
+        unimplemented!("CFG write @ {:x}", wo.offset)
     }
     // TODO
     // fn cap_read(&self);
@@ -386,15 +414,22 @@ pub struct Builder<I> {
     ident: Ident,
     need_lintr: bool,
     bars: [Option<BarDefine>; 6],
+    cfgmap: RegMap<CfgReg>,
     _phantom: PhantomData<I>,
 }
 
 impl<I: Device> Builder<I> {
     pub fn new(ident: Ident) -> Self {
+        let mut cfgmap = RegMap::new_with_flags(
+            LEN_CFG,
+            Flags::NO_READ_EXTEND | Flags::NO_WRITE_EXTEND,
+        );
+        cfgmap.define(0, LEN_CFG_STD, CfgReg::Std);
         Self {
             ident,
             need_lintr: false,
             bars: [None; 6],
+            cfgmap,
             _phantom: PhantomData,
         }
     }
@@ -436,6 +471,10 @@ impl<I: Device> Builder<I> {
         self.need_lintr = true;
         self
     }
+    pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
+        self.cfgmap.define(offset as usize, len as usize, CfgReg::Custom);
+        self
+    }
 
     fn generate_bars(&self) -> Bars {
         let mut bars = Bars::new();
@@ -447,7 +486,8 @@ impl<I: Device> Builder<I> {
 
     pub fn finish(self, inner: I) -> Arc<DeviceInst<I>> {
         let bars = self.generate_bars();
-        let mut inst = Arc::new(DeviceInst::new(self.ident, bars, inner));
+        let mut inst =
+            Arc::new(DeviceInst::new(self.ident, self.cfgmap, bars, inner));
         SelfArc::self_arc_init(&mut inst);
         inst
     }

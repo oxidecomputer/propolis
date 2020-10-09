@@ -54,15 +54,35 @@ impl IsaPIC {
         this
     }
 
-    pub fn set_irq_atpic(&self, pin: u8, irq: u8) {
+    pub fn set_irq_atpic(&self, pin: u8, irq: Option<u8>) {
         assert!(pin < self.capacity);
-        assert!(pin < 16);
 
         let mut pins = self.pins.lock().unwrap();
         let mut entry = &mut pins[pin as usize];
-        // XXX: handle irq reassignment
-        assert!(entry.level == 0);
-        entry.atpic_irq = Some(irq);
+        match (entry.atpic_irq, irq) {
+            (Some(old), Some(new)) if old != new => {
+                // XXX: does not handle sharing properly today
+                if entry.level != 0 {
+                    self.hdl.isa_deassert_irq(old, None).unwrap();
+                    self.hdl.isa_assert_irq(new, None).unwrap();
+                }
+                entry.atpic_irq = Some(new)
+            }
+            (Some(old), None) => {
+                if entry.level != 0 {
+                    self.hdl.isa_deassert_irq(old, None).unwrap()
+                }
+                entry.atpic_irq = None;
+            }
+            (None, Some(new)) => {
+                let mut entry = &mut pins[pin as usize];
+                if entry.level != 0 {
+                    self.hdl.isa_assert_irq(new, None).unwrap()
+                }
+                entry.atpic_irq = Some(new)
+            }
+            _ => {}
+        }
     }
 
     pub fn pin_irq(&self, pin: u8, op: PinOp) {
@@ -154,6 +174,13 @@ pub struct IsaPin {
 impl IsaPin {
     pub fn get_pin(&self) -> u8 {
         self.pin
+    }
+    pub fn set(&mut self, assert: bool) {
+        if assert {
+            self.assert()
+        } else {
+            self.deassert()
+        }
     }
 }
 

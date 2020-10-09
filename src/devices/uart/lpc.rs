@@ -1,26 +1,24 @@
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::base::Uart;
+use crate::intr_pins::IsaPin;
 use crate::pio::PioDev;
 use crate::types::*;
 
-pub const COM1_IRQ: u8 = 4;
-pub const COM1_PORT: u16 = 0x3f8;
+pub const REGISTER_LEN: usize = 8;
 
-const MAX_OFF: u8 = 7;
-
-pub struct LpcUart {
-    irq: u8,
-    inner: Mutex<Uart>,
+pub struct LpcUart(Mutex<Inner>);
+struct Inner {
+    uart: Uart,
+    irq_pin: IsaPin,
 }
 
 impl LpcUart {
-    pub fn new(irq: u8) -> Arc<Self> {
-        Arc::new(Self { irq, inner: Mutex::new(Uart::new()) })
+    pub fn new(irq_pin: IsaPin) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(Inner { uart: Uart::new(), irq_pin })))
     }
 }
-
-use std::io::Write;
 
 fn handle_out(uart: &mut Uart) {
     if uart.is_readable() {
@@ -33,18 +31,20 @@ fn handle_out(uart: &mut Uart) {
 
 impl PioDev for LpcUart {
     fn pio_out(&self, _port: u16, wo: &WriteOp) {
-        assert!(wo.offset as u8 <= MAX_OFF);
+        assert!(wo.offset < REGISTER_LEN);
         assert!(!wo.buf.is_empty());
 
-        let mut state = self.inner.lock().unwrap();
-        state.reg_write(wo.offset as u8, wo.buf[0]);
-        handle_out(&mut *state);
+        let mut this = self.0.lock().unwrap();
+        this.uart.reg_write(wo.offset as u8, wo.buf[0]);
+        handle_out(&mut this.uart);
     }
     fn pio_in(&self, _port: u16, ro: &mut ReadOp) {
-        assert!(ro.offset as u8 <= MAX_OFF);
+        assert!(ro.offset < REGISTER_LEN);
         assert!(!ro.buf.is_empty());
 
-        let mut state = self.inner.lock().unwrap();
-        ro.buf[0] = state.reg_read(ro.offset as u8);
+        let mut this = self.0.lock().unwrap();
+        ro.buf[0] = this.uart.reg_read(ro.offset as u8);
+        let intr_active = this.uart.intr_state();
+        this.irq_pin.set(intr_active);
     }
 }

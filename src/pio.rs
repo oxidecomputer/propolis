@@ -80,10 +80,3 @@ impl PioBus {
         }
     }
 }
-
-// Make the casting easier for trait objects
-macro_rules! pio_dyn {
-    ($e: expr) => {
-        &($e as Arc<dyn PioDev>)
-    };
-}
