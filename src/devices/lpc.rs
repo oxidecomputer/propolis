@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::devices::uart::{LpcUart, REGISTER_LEN};
+use crate::devices::uart::{LpcUart, REGISTER_LEN, UartSock};
 use crate::intr_pins::IsaPIC;
 use crate::pci;
 use crate::pio::{PioBus, PioDev};
@@ -22,35 +22,36 @@ pub struct Piix3Bhyve {
     reg_pir: Mutex<[u8; 8]>,
     pic: Weak<IsaPIC>,
     uart_com1: Arc<LpcUart>,
-    uart_com2: Arc<LpcUart>,
+    // uart_com2: Arc<LpcUart>,
 }
 impl Piix3Bhyve {
     pub fn new(
         pic: &Arc<IsaPIC>,
         pio_bus: &PioBus,
+        com1_sock: Arc<UartSock>,
     ) -> Arc<pci::DeviceInst<Self>> {
-        let com1 = LpcUart::new(pic.pin_handle(COM1_IRQ).unwrap());
-        let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
+        let com1 = LpcUart::new(com1_sock, pic.pin_handle(COM1_IRQ).unwrap());
+        // let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
 
         // UART interrupts mapped the same on ioapic and atpic
         pic.set_irq_atpic(COM1_IRQ, Some(COM1_IRQ));
-        pic.set_irq_atpic(COM2_IRQ, Some(COM2_IRQ));
+        // pic.set_irq_atpic(COM2_IRQ, Some(COM2_IRQ));
         pio_bus.register(
             COM1_PORT,
             REGISTER_LEN as u16,
             &(com1.clone() as Arc<dyn PioDev>),
         );
-        pio_bus.register(
-            COM2_PORT,
-            REGISTER_LEN as u16,
-            &(com2.clone() as Arc<dyn PioDev>),
-        );
+        // pio_bus.register(
+        //     COM2_PORT,
+        //     REGISTER_LEN as u16,
+        //     &(com2.clone() as Arc<dyn PioDev>),
+        // );
 
         let this = Self {
             reg_pir: Mutex::new([0u8; 8]),
             pic: Arc::downgrade(pic),
             uart_com1: com1,
-            uart_com2: com2,
+            // uart_com2: com2,
         };
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,

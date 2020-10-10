@@ -2,12 +2,13 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::types::*;
 use crate::util::aspace::ASpace;
+use crate::dispatch::DispCtx;
 
 use byteorder::{ByteOrder, LE};
 
 pub trait PioDev: Send + Sync {
-    fn pio_in(&self, port: u16, ro: &mut ReadOp);
-    fn pio_out(&self, port: u16, wo: &WriteOp);
+    fn pio_in(&self, port: u16, ro: &mut ReadOp, ctx: &DispCtx);
+    fn pio_out(&self, port: u16, wo: &WriteOp, ctx: &DispCtx);
 }
 
 type PioDevHdl = Arc<dyn PioDev>;
@@ -30,7 +31,7 @@ impl PioBus {
             .unwrap();
     }
 
-    pub fn handle_out(&self, port: u16, bytes: u8, val: u32) {
+    pub fn handle_out(&self, port: u16, bytes: u8, val: u32, ctx: &DispCtx) {
         let buf = val.to_le_bytes();
         let data = match bytes {
             1 => &buf[0..1],
@@ -39,14 +40,14 @@ impl PioBus {
             _ => panic!(),
         };
         let handled = self.do_pio(port, |p, o, dev| {
-            dev.pio_out(p, &WriteOp::new(o as usize, data))
+            dev.pio_out(p, &WriteOp::new(o as usize, data), ctx)
         });
         if !handled {
             println!("unhandled IO out - port:{:x} len:{}", port, bytes);
         }
     }
 
-    pub fn handle_in(&self, port: u16, bytes: u8) -> u32 {
+    pub fn handle_in(&self, port: u16, bytes: u8, ctx: &DispCtx) -> u32 {
         let mut buf = [0xffu8; 4];
         let data = match bytes {
             1 => &mut buf[0..1],
@@ -55,7 +56,7 @@ impl PioBus {
             _ => panic!(),
         };
         let handled = self.do_pio(port, |p, o, dev| {
-            dev.pio_in(p, &mut ReadOp::new(o as usize, data))
+            dev.pio_in(p, &mut ReadOp::new(o as usize, data), ctx)
         });
         if !handled {
             println!("unhandled IO in - port:{:x} len:{}", port, bytes);

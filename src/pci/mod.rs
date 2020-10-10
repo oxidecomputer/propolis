@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::intr_pins::{IsaPIC, IsaPin};
 use crate::pio::PioDev;
 use crate::types::*;
+use crate::dispatch::DispCtx;
 
 use byteorder::{ByteOrder, LE};
 
@@ -157,7 +158,7 @@ fn cfg_addr_parse(addr: u32) -> Option<(PciBDF, u8)> {
 }
 
 impl PioDev for PciBus {
-    fn pio_out(&self, port: u16, wo: &WriteOp) {
+    fn pio_out(&self, port: u16, wo: &WriteOp, _ctx: &DispCtx) {
         let mut hdl = self.state.lock().unwrap();
         match port {
             PORT_PCI_CONFIG_ADDR => {
@@ -179,7 +180,7 @@ impl PioDev for PciBus {
             }
         }
     }
-    fn pio_in(&self, port: u16, ro: &mut ReadOp) {
+    fn pio_in(&self, port: u16, ro: &mut ReadOp, _ctx: &DispCtx) {
         let hdl = self.state.lock().unwrap();
         match port {
             PORT_PCI_CONFIG_ADDR => {

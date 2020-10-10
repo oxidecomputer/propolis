@@ -7,7 +7,7 @@ use crate::machine::MachineCtx;
 use crate::pio::PioBus;
 use crate::vcpu::VcpuHdl;
 
-mod event_disp;
+pub mod event_disp;
 mod event_ports;
 
 use event_disp::{EventCtx, EventDispatch};
@@ -79,6 +79,12 @@ impl Dispatcher {
         for (_name, joinhdl) in tasks.drain(..) {
             joinhdl.join().unwrap()
         }
+    }
+    pub fn with_ctx<F>(&self, f: F)
+        where F: FnOnce(&DispCtx)
+    {
+        let ctx = DispCtx::new(self.mctx.clone(), self.event_dispatch.clone());
+        f(&ctx)
     }
 }
 

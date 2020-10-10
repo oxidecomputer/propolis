@@ -17,6 +17,7 @@ mod vcpu;
 mod vm;
 
 use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
@@ -54,11 +55,11 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
             }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
-                    mctx.with_pio(|b| b.handle_out(io.port, io.bytes, val));
+                    mctx.with_pio(|b| b.handle_out(io.port, io.bytes, val, &dctx));
                     next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
                 }
                 InoutReq::In(io) => {
-                    let val = mctx.with_pio(|b| b.handle_in(io.port, io.bytes));
+                    let val = mctx.with_pio(|b| b.handle_in(io.port, io.bytes, &dctx));
                     next_entry = VmEntry::InoutComplete(InoutRes::In(io, val));
                 }
             },
@@ -90,15 +91,24 @@ fn main() {
     }
 
     vm.initalize_rtc(lowmem).unwrap();
-
     vm.wire_pci_root();
 
+    let mctx = MachineCtx::new(&vm);
+    let mut dispatch = Dispatcher::new(mctx.clone());
+    dispatch.spawn_events().unwrap();
+
     let pci_hostbridge = devices::piix4::Piix4HostBridge::new();
-    let pci_lpc =
-        vm.create_lpc(|pic, pio| devices::lpc::Piix3Bhyve::new(pic, pio));
+
+    let com1_sock = devices::uart::UartSock::bind(Path::new("./ttya")).unwrap();
+    dispatch.with_ctx(|ctx| {
+        com1_sock.accept_ready(ctx);
+    });
+
+    let pci_lpc = vm.create_lpc(|pic, pio| {
+        devices::lpc::Piix3Bhyve::new(pic, pio, Arc::clone(&com1_sock))
+    });
     pci_lpc.with_inner(|lpc| lpc.set_pir_defaults());
 
-    let mctx = MachineCtx::new(&vm);
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));
 
@@ -108,12 +118,11 @@ fn main() {
     vcpu0.activate().unwrap();
     vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
 
-    let mut dispatch = Dispatcher::new(mctx);
+    // Wait until someone connects to ttya
+    com1_sock.wait_for_connect();
 
-    dispatch.spawn_events().unwrap();
     dispatch.spawn_vcpu(vcpu0, run_loop).unwrap();
 
     dispatch.join();
-
     drop(vm);
 }

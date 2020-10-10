@@ -7,7 +7,7 @@ use crate::dispatch::DispCtx;
 
 const EPORT_NOTIFY_USER: usize = 0;
 
-type SubId = usize;
+pub type SubId = usize;
 
 pub struct EventDispatch {
     eport: EventPort,
@@ -34,9 +34,11 @@ impl Inner {
         for (id, sub) in self.fd_add.drain() {
             let events = FdEvents::from_bits_truncate(sub.events);
             eport.associate(EventObj::Fd(sub.fd, events), id).unwrap();
+            self.fd_subs.insert(id, sub);
         }
-        for (_id, sub) in self.fd_del.drain() {
+        for (id, sub) in self.fd_del.drain() {
             eport.dissociate(EventObj::Fd(sub.fd, FdEvents::empty())).unwrap();
+            self.fd_subs.remove(&id);
         }
     }
 }
