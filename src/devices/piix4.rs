@@ -10,9 +10,7 @@ impl Piix4HostBridge {
             vendor_id: 0x8086,
             device_id: 0x1237,
             class: 0x06,
-            subclass: 0x00,
-            sub_vendor_id: 0,
-            sub_device_id: 0,
+            ..Default::default()
         })
         .finish(Self {})
     }

@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::dispatch::DispCtx;
 use crate::intr_pins::{IsaPIC, IsaPin};
 use crate::pio::PioDev;
 use crate::types::*;
-use crate::dispatch::DispCtx;
 
 use byteorder::{ByteOrder, LE};
 
@@ -19,7 +19,7 @@ const MASK_FUNC: u8 = 0x07;
 const MASK_DEV: u8 = 0x1f;
 const MASK_BUS: u8 = 0xff;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct PciBDF {
     bus: u8,
     dev: u8,
@@ -45,9 +45,13 @@ impl PciBDF {
 }
 
 pub trait PciEndpoint: Send + Sync {
-    fn cfg_read(&self, ro: &mut ReadOp);
-    fn cfg_write(&self, wo: &WriteOp);
-    fn attach(&self, lintr: Option<(INTxPin, IsaPin)>);
+    fn cfg_rw(&self, op: &mut RWOp<'_, '_>, ctx: &DispCtx);
+    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPin, IsaPin));
+    fn place_bars(
+        &self,
+        place_bar: &mut dyn FnMut(BarN, &BarDefine) -> u64,
+        ctx: &DispCtx,
+    );
 }
 
 pub struct PciBus {
@@ -61,11 +65,11 @@ struct PciBusState {
 }
 
 impl PciBusState {
-    fn cfg_read(&self, bdf: &PciBDF, ro: &mut ReadOp) {
+    fn cfg_read(&self, bdf: &PciBDF, ro: &mut ReadOp, ctx: &DispCtx) {
         if let Some((_, dev)) =
             self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
         {
-            dev.cfg_read(ro);
+            dev.cfg_rw(&mut RWOp::Read(ro), ctx);
             println!(
                 "cfgread bus:{} device:{} func:{} off:{:x}, data:{:x?}",
                 bdf.bus, bdf.dev, bdf.func, ro.offset, ro.buf
@@ -78,7 +82,7 @@ impl PciBusState {
             read_inval(ro.buf);
         }
     }
-    fn cfg_write(&self, bdf: &PciBDF, wo: &WriteOp) {
+    fn cfg_write(&self, bdf: &PciBDF, wo: &WriteOp, ctx: &DispCtx) {
         if let Some((_, dev)) =
             self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
         {
@@ -86,7 +90,7 @@ impl PciBusState {
                 "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
                 bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
             );
-            dev.cfg_write(wo);
+            dev.cfg_rw(&mut RWOp::Write(wo), ctx);
         } else {
             println!(
                 "unhandled cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
@@ -131,9 +135,29 @@ impl PciBus {
     pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
         hdl.register(bdf, dev.clone());
-        // XXX: device will ignore lintr pin if it is not needed
-        // this could be streamlined in the future
-        dev.attach(Some(self.route_lintr(&bdf)));
+        let get_lintr = || self.route_lintr(&bdf);
+        dev.attach(&get_lintr);
+    }
+
+    pub fn place_bars(&self, ctx: &DispCtx) {
+        let mut state = self.state.lock().unwrap();
+        // XXX: hack up positioning for now
+        let mut pio_pos = 0xc000;
+        for (bdf, dev) in state.devices.iter() {
+            dev.place_bars(
+                &mut |bar, def| match def {
+                    BarDefine::Pio(sz) => {
+                        let mask = *sz as u64 - 1;
+                        let aligned = pio_pos + mask & !mask;
+                        pio_pos = aligned + *sz as u64;
+                        println!("placing {:?} {:?} @ {:x}", bdf, bar, aligned);
+                        aligned
+                    }
+                    _ => todo!("wire up MMIO later"),
+                },
+                ctx,
+            );
+        }
     }
 }
 
@@ -158,7 +182,7 @@ fn cfg_addr_parse(addr: u32) -> Option<(PciBDF, u8)> {
 }
 
 impl PioDev for PciBus {
-    fn pio_out(&self, port: u16, wo: &WriteOp, _ctx: &DispCtx) {
+    fn pio_out(&self, port: u16, _ident: usize, wo: &WriteOp, ctx: &DispCtx) {
         let mut hdl = self.state.lock().unwrap();
         match port {
             PORT_PCI_CONFIG_ADDR => {
@@ -172,6 +196,7 @@ impl PioDev for PciBus {
                     hdl.cfg_write(
                         &bdf,
                         &WriteOp::new(wo.offset + cfg_off as usize, wo.buf),
+                        ctx,
                     );
                 }
             }
@@ -180,7 +205,7 @@ impl PioDev for PciBus {
             }
         }
     }
-    fn pio_in(&self, port: u16, ro: &mut ReadOp, _ctx: &DispCtx) {
+    fn pio_in(&self, port: u16, _ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
         let hdl = self.state.lock().unwrap();
         match port {
             PORT_PCI_CONFIG_ADDR => {
@@ -196,6 +221,7 @@ impl PioDev for PciBus {
                     hdl.cfg_read(
                         &bdf,
                         &mut ReadOp::new(ro.offset + cfg_off as usize, ro.buf),
+                        ctx,
                     );
                 } else {
                     read_inval(ro.buf);

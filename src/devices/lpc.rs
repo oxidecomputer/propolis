@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::devices::uart::{LpcUart, REGISTER_LEN, UartSock};
+use crate::devices::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::intr_pins::IsaPIC;
 use crate::pci;
 use crate::pio::{PioBus, PioDev};
@@ -36,15 +36,19 @@ impl Piix3Bhyve {
         // UART interrupts mapped the same on ioapic and atpic
         pic.set_irq_atpic(COM1_IRQ, Some(COM1_IRQ));
         // pic.set_irq_atpic(COM2_IRQ, Some(COM2_IRQ));
-        pio_bus.register(
-            COM1_PORT,
-            REGISTER_LEN as u16,
-            &(com1.clone() as Arc<dyn PioDev>),
-        );
+        pio_bus
+            .register(
+                COM1_PORT,
+                REGISTER_LEN as u16,
+                Arc::downgrade(&com1) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
         // pio_bus.register(
         //     COM2_PORT,
         //     REGISTER_LEN as u16,
-        //     &(com2.clone() as Arc<dyn PioDev>),
+        //     Arc::downgrade(&com2) as Weak<dyn PioDev>,
+        //     0,
         // );
 
         let this = Self {
@@ -58,8 +62,7 @@ impl Piix3Bhyve {
             device_id: 0x7000,
             class: 0x06,
             subclass: 0x01,
-            sub_vendor_id: 0,
-            sub_device_id: 0,
+            ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
         .finish(this)

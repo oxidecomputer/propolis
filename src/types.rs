@@ -17,3 +17,10 @@ impl<'a> WriteOp<'a> {
         Self { offset, buf }
     }
 }
+
+pub enum RWOp<'a, 'b> {
+    Read(&'a mut ReadOp<'b>),
+    Write(&'a WriteOp<'b>),
+}
+
+pub struct GuestAddr(pub u64);

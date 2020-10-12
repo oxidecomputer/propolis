@@ -4,9 +4,6 @@ use std::ops::Bound::Included;
 use super::aspace::ASpace;
 use crate::types::*;
 
-type ReadFunc<ID, OBJ> = fn(obj: &OBJ, id: &ID, ro: &mut ReadOp);
-type WriteFunc<ID, OBJ> = fn(obj: &OBJ, id: &ID, wo: &WriteOp);
-
 struct RegDef<ID> {
     id: ID,
     flags: Flags,
@@ -14,7 +11,6 @@ struct RegDef<ID> {
 
 pub struct RegMap<ID> {
     len: usize,
-    default_flags: Flags,
     space: ASpace<RegDef<ID>>,
 }
 
@@ -25,6 +21,8 @@ bitflags! {
         const NO_READ_EXTEND = 0b00000001;
         const NO_WRITE_EXTEND = 0b00000010;
         const NO_READ_MOD_WRITE = 0b00000100;
+        const PASSTHRU = Self::NO_READ_EXTEND.bits() |
+            Self::NO_WRITE_EXTEND.bits();
     }
 }
 
@@ -38,14 +36,11 @@ struct RegXfer<'a, ID> {
 
 impl<ID> RegMap<ID> {
     pub fn new(len: usize) -> Self {
-        Self::new_with_flags(len, Flags::DEFAULT)
-    }
-    pub fn new_with_flags(len: usize, default_flags: Flags) -> Self {
-        Self { len, default_flags, space: ASpace::new(0, len - 1) }
+        Self { len, space: ASpace::new(0, len - 1) }
     }
 
     pub fn define(&mut self, start: usize, len: usize, id: ID) {
-        self.define_with_flags(start, len, id, self.default_flags)
+        self.define_with_flags(start, len, id, Flags::DEFAULT)
     }
 
     pub fn define_with_flags(
@@ -58,16 +53,10 @@ impl<ID> RegMap<ID> {
         self.space.register(start, len, RegDef { id, flags }).unwrap();
     }
 
-    pub fn with_ctx<'b, OBJ>(
-        &self,
-        obj: &'b OBJ,
-        read_handler: ReadFunc<ID, OBJ>,
-        write_handler: WriteFunc<ID, OBJ>,
-    ) -> TransferCtx<'_, 'b, ID, OBJ> {
-        TransferCtx { map: &self, obj, read_handler, write_handler }
-    }
-
-    pub fn read<OBJ>(&self, ro: &mut ReadOp, obj: &OBJ, f: ReadFunc<ID, OBJ>) {
+    pub fn read<RF>(&self, ro: &mut ReadOp, mut f: RF)
+    where
+        RF: FnMut(&ID, &mut ReadOp),
+    {
         assert!(!ro.buf.is_empty());
         assert!(ro.offset + ro.buf.len() - 1 < self.len);
 
@@ -78,17 +67,15 @@ impl<ID> RegMap<ID> {
             let mut copy_op = ReadOp::new(xfer.offset, buf_xfer);
 
             debug_assert!(!copy_op.buf.is_empty());
-            Self::reg_read(xfer.reg, xfer.reg_len, &mut copy_op, obj, f);
+            Self::reg_read(xfer.reg, xfer.reg_len, &mut copy_op, &mut f);
         })
     }
 
-    pub fn write<OBJ>(
-        &self,
-        wo: &WriteOp,
-        obj: &OBJ,
-        wf: WriteFunc<ID, OBJ>,
-        rf: ReadFunc<ID, OBJ>,
-    ) {
+    pub fn write<RF, WF>(&self, wo: &WriteOp, mut wf: WF, mut rf: RF)
+    where
+        WF: FnMut(&ID, &WriteOp),
+        RF: FnMut(&ID, &mut ReadOp),
+    {
         assert!(!wo.buf.is_empty());
         assert!(wo.offset + wo.buf.len() - 1 < self.len);
 
@@ -99,63 +86,81 @@ impl<ID> RegMap<ID> {
             let copy_op = WriteOp::new(xfer.offset, buf_xfer);
 
             debug_assert!(!copy_op.buf.is_empty());
-            Self::reg_write(xfer.reg, xfer.reg_len, &copy_op, obj, wf, rf);
+            Self::reg_write(xfer.reg, xfer.reg_len, &copy_op, &mut wf, &mut rf);
         })
     }
 
-    fn reg_read<OBJ>(
+    pub fn service<RF, WF>(&self, op: &mut RWOp<'_, '_>, rf: RF, wf: WF)
+    where
+        RF: FnMut(&ID, &mut ReadOp),
+        WF: FnMut(&ID, &WriteOp),
+    {
+        match op {
+            RWOp::Read(ro) => {
+                self.read(*ro, rf);
+            }
+            RWOp::Write(wo) => {
+                self.write(*wo, wf, rf);
+            }
+        }
+    }
+
+    fn reg_read<RF>(
         reg: &RegDef<ID>,
         reg_len: usize,
         copy_op: &mut ReadOp,
-        obj: &OBJ,
-        read_handler: ReadFunc<ID, OBJ>,
-    ) {
+        read_handler: &mut RF,
+    ) where
+        RF: FnMut(&ID, &mut ReadOp),
+    {
         if reg.flags.contains(Flags::NO_READ_EXTEND)
             && reg_len != copy_op.buf.len()
         {
-            read_handler(obj, &reg.id, copy_op);
+            read_handler(&reg.id, copy_op);
         } else if reg_len == copy_op.buf.len() {
             debug_assert!(copy_op.offset == 0);
-            read_handler(obj, &reg.id, copy_op);
+            read_handler(&reg.id, copy_op);
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
-            read_handler(obj, &reg.id, &mut ReadOp::new(0, &mut scratch));
+            read_handler(&reg.id, &mut ReadOp::new(0, &mut scratch));
             copy_op.buf.copy_from_slice(
                 &scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())],
             );
         }
     }
 
-    fn reg_write<OBJ>(
+    fn reg_write<RF, WF>(
         reg: &RegDef<ID>,
         reg_len: usize,
         copy_op: &WriteOp,
-        obj: &OBJ,
-        write_handler: WriteFunc<ID, OBJ>,
-        read_handler: ReadFunc<ID, OBJ>,
-    ) {
+        write_handler: &mut WF,
+        read_handler: &mut RF,
+    ) where
+        WF: FnMut(&ID, &WriteOp),
+        RF: FnMut(&ID, &mut ReadOp),
+    {
         if reg.flags.contains(Flags::NO_WRITE_EXTEND)
             && reg_len != copy_op.buf.len()
         {
-            write_handler(obj, &reg.id, copy_op);
+            write_handler(&reg.id, copy_op);
         } else if reg_len == copy_op.buf.len() {
             debug_assert!(copy_op.offset == 0);
-            write_handler(obj, &reg.id, copy_op);
+            write_handler(&reg.id, copy_op);
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
-                read_handler(obj, &reg.id, &mut ReadOp::new(0, &mut scratch));
+                read_handler(&reg.id, &mut ReadOp::new(0, &mut scratch));
             }
             scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())]
                 .copy_from_slice(copy_op.buf);
 
-            write_handler(obj, &reg.id, &WriteOp::new(0, &scratch));
+            write_handler(&reg.id, &WriteOp::new(0, &scratch));
         }
     }
 
@@ -221,19 +226,39 @@ impl<ID> RegMap<ID> {
         }
     }
 }
+impl<ID: Copy + Eq> RegMap<ID> {
+    pub fn create_packed(
+        size: usize,
+        regdef: &[(ID, usize)],
+        resv_reg: Option<ID>,
+    ) -> Self {
+        let mut map = RegMap::new(size);
+        let mut off = 0;
+        for reg in regdef.iter() {
+            let (id, reg_size) = (reg.0, reg.1);
+            let flags = match resv_reg.as_ref() {
+                Some(resv) if *resv == id => {
+                    Flags::NO_READ_EXTEND | Flags::NO_WRITE_EXTEND
+                }
+                _ => Flags::DEFAULT,
+            };
+            map.define_with_flags(off, reg_size, id, flags);
+            off += reg_size;
+        }
+        assert_eq!(size, off);
 
-pub struct TransferCtx<'a, 'b, ID, OBJ> {
-    map: &'a RegMap<ID>,
-    obj: &'b OBJ,
-    read_handler: ReadFunc<ID, OBJ>,
-    write_handler: WriteFunc<ID, OBJ>,
-}
-
-impl<'a, 'b, ID, OBJ> TransferCtx<'a, 'b, ID, OBJ> {
-    pub fn read(&self, ro: &mut ReadOp) {
-        self.map.read(ro, self.obj, self.read_handler)
+        map
     }
-    pub fn write(&self, wo: &WriteOp) {
-        self.map.write(wo, self.obj, self.write_handler, self.read_handler)
+    pub fn create_packed_passthru(size: usize, regdef: &[(ID, usize)]) -> Self {
+        let mut map = RegMap::new(size);
+        let mut off = 0;
+        for reg in regdef.iter() {
+            let (id, reg_size) = (reg.0, reg.1);
+            map.define_with_flags(off, reg_size, id, Flags::PASSTHRU);
+            off += reg_size;
+        }
+        assert_eq!(size, off);
+
+        map
     }
 }

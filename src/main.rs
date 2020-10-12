@@ -55,11 +55,14 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
             }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
-                    mctx.with_pio(|b| b.handle_out(io.port, io.bytes, val, &dctx));
+                    mctx.with_pio(|b| {
+                        b.handle_out(io.port, io.bytes, val, &dctx)
+                    });
                     next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
                 }
                 InoutReq::In(io) => {
-                    let val = mctx.with_pio(|b| b.handle_in(io.port, io.bytes, &dctx));
+                    let val = mctx
+                        .with_pio(|b| b.handle_in(io.port, io.bytes, &dctx));
                     next_entry = VmEntry::InoutComplete(InoutRes::In(io, val));
                 }
             },
@@ -111,6 +114,15 @@ fn main() {
 
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));
+
+    let vioblk = devices::virtio::VirtioBlock::new(0x100);
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 4, 0), vioblk));
+
+    // with all pci devices attached, place their BARs
+    dispatch.with_ctx(|ctx| {
+        // hacky nesting
+        ctx.mctx.with_pci(|pci| pci.place_bars(ctx));
+    });
 
     let mut vcpu0 = vm.vcpu(0);
 

@@ -63,7 +63,7 @@ impl SelfArc for LpcUart {
 }
 
 impl PioDev for LpcUart {
-    fn pio_out(&self, _port: u16, wo: &WriteOp, ctx: &DispCtx) {
+    fn pio_out(&self, _port: u16, _ident: usize, wo: &WriteOp, ctx: &DispCtx) {
         assert!(wo.offset < REGISTER_LEN);
         assert!(!wo.buf.is_empty());
 
@@ -72,7 +72,13 @@ impl PioDev for LpcUart {
         drop(this);
         self.event_update(ctx);
     }
-    fn pio_in(&self, _port: u16, ro: &mut ReadOp, ctx: &DispCtx) {
+    fn pio_in(
+        &self,
+        _port: u16,
+        _ident: usize,
+        ro: &mut ReadOp,
+        ctx: &DispCtx,
+    ) {
         assert!(ro.offset < REGISTER_LEN);
         assert!(!ro.buf.is_empty());
 
@@ -196,9 +202,12 @@ impl UartSock {
         }
     }
     pub fn wait_for_connect(&self) {
-        self.cv
+        let guard = self
+            .cv
             .wait_while(self.inner.lock().unwrap(), |s| s.client.is_none())
             .unwrap();
+        // inner mutex uneeded afterwards
+        drop(guard);
     }
     fn on_readable(&self, outer: Weak<LpcUart>, cb: fn(&LpcUart, &DispCtx)) {
         let mut this = self.inner.lock().unwrap();

@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
@@ -5,12 +6,14 @@ use super::bits::*;
 use super::{INTxPin, PciEndpoint};
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IntrPin, IsaPin};
+use crate::pio::PioDev;
 use crate::types::*;
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
 
 use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
+use num_enum::TryFromPrimitive;
 
 enum CfgReg {
     Std,
@@ -44,8 +47,8 @@ enum StdCfgReg {
     MaxLatency,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum BarN {
     BAR0 = 0,
     BAR1,
@@ -56,7 +59,7 @@ pub enum BarN {
 }
 
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
-enum BarDefine {
+pub enum BarDefine {
     Pio(u16),
     Mmio(u32),
     Mmio64(u64),
@@ -66,83 +69,72 @@ enum BarDefine {
 lazy_static! {
     static ref STD_CFG_MAP: RegMap<StdCfgReg> = {
         let layout = [
-            (StdCfgReg::VendorId, OFF_CFG_VENDORID, 2),
-            (StdCfgReg::DeviceId, OFF_CFG_DEVICEID, 2),
-            (StdCfgReg::Command, OFF_CFG_COMMAND, 2),
-            (StdCfgReg::Status, OFF_CFG_STATUS, 2),
-            (StdCfgReg::RevisionId, OFF_CFG_REVISIONID, 1),
-            (StdCfgReg::ProgIf, OFF_CFG_PROGIF, 1),
-            (StdCfgReg::Subclass, OFF_CFG_SUBCLASS, 1),
-            (StdCfgReg::Class, OFF_CFG_CLASS, 1),
-            (StdCfgReg::CacheLineSize, OFF_CFG_CACHELINESZ, 1),
-            (StdCfgReg::LatencyTimer, OFF_CFG_LATENCYTIMER, 1),
-            (StdCfgReg::HeaderType, OFF_CFG_HEADERTYPE, 1),
-            (StdCfgReg::Bist, OFF_CFG_BIST, 1),
-            (StdCfgReg::Bar(BarN::BAR0), OFF_CFG_BAR0, 4),
-            (StdCfgReg::Bar(BarN::BAR1), OFF_CFG_BAR1, 4),
-            (StdCfgReg::Bar(BarN::BAR2), OFF_CFG_BAR2, 4),
-            (StdCfgReg::Bar(BarN::BAR3), OFF_CFG_BAR3, 4),
-            (StdCfgReg::Bar(BarN::BAR4), OFF_CFG_BAR4, 4),
-            (StdCfgReg::Bar(BarN::BAR5), OFF_CFG_BAR5, 4),
-            (StdCfgReg::CardbusPtr, OFF_CFG_CARDBUSPTR, 4),
-            (StdCfgReg::SubVendorId, OFF_CFG_SUBVENDORID, 2),
-            (StdCfgReg::SubDeviceId, OFF_CFG_SUBDEVICEID, 2),
-            (StdCfgReg::ExpansionRomAddr, OFF_CFG_EXPROMADDR, 4),
-            (StdCfgReg::CapPtr, OFF_CFG_CAPPTR, 1),
-            // Reserved bytes between CapPtr and IntrLine [0x35-0x3c)
-            (
-                StdCfgReg::Reserved,
-                OFF_CFG_RESERVED,
-                OFF_CFG_INTRLINE - OFF_CFG_RESERVED,
-            ),
-            (StdCfgReg::IntrLine, OFF_CFG_INTRLINE, 1),
-            (StdCfgReg::IntrPin, OFF_CFG_INTRPIN, 1),
-            (StdCfgReg::MinGrant, OFF_CFG_MINGRANT, 1),
-            (StdCfgReg::MaxLatency, OFF_CFG_MAXLATENCY, 1),
+            (StdCfgReg::VendorId, 2),
+            (StdCfgReg::DeviceId, 2),
+            (StdCfgReg::Command, 2),
+            (StdCfgReg::Status, 2),
+            (StdCfgReg::RevisionId, 1),
+            (StdCfgReg::ProgIf, 1),
+            (StdCfgReg::Subclass, 1),
+            (StdCfgReg::Class, 1),
+            (StdCfgReg::CacheLineSize, 1),
+            (StdCfgReg::LatencyTimer, 1),
+            (StdCfgReg::HeaderType, 1),
+            (StdCfgReg::Bist, 1),
+            (StdCfgReg::Bar(BarN::BAR0), 4),
+            (StdCfgReg::Bar(BarN::BAR1), 4),
+            (StdCfgReg::Bar(BarN::BAR2), 4),
+            (StdCfgReg::Bar(BarN::BAR3), 4),
+            (StdCfgReg::Bar(BarN::BAR4), 4),
+            (StdCfgReg::Bar(BarN::BAR5), 4),
+            (StdCfgReg::CardbusPtr, 4),
+            (StdCfgReg::SubVendorId, 2),
+            (StdCfgReg::SubDeviceId, 2),
+            (StdCfgReg::ExpansionRomAddr, 4),
+            (StdCfgReg::CapPtr, 1),
+            (StdCfgReg::Reserved, 7),
+            (StdCfgReg::IntrLine, 1),
+            (StdCfgReg::IntrPin, 1),
+            (StdCfgReg::MinGrant, 1),
+            (StdCfgReg::MaxLatency, 1),
         ];
-        let mut map = RegMap::new(LEN_CFG_STD);
-        for reg in layout.iter() {
-            let (id, off, size) = (reg.0, reg.1 as usize, reg.2 as usize);
-            let flags = match id {
-                StdCfgReg::Reserved => {
-                    // The reserved section is empty, so the register does not
-                    // need a buffer padded to its own size for reads or writes.
-                    Flags::NO_READ_EXTEND | Flags::NO_WRITE_EXTEND
-                }
-                _ => Flags::DEFAULT,
-            };
-            map.define_with_flags(off, size, id, flags);
-        }
-        map
+        RegMap::create_packed(LEN_CFG_STD, &layout, Some(StdCfgReg::Reserved))
     };
 }
 
+#[derive(Default)]
 pub struct Ident {
     pub vendor_id: u16,
     pub device_id: u16,
     pub class: u8,
     pub subclass: u8,
+    pub prog_if: u8,
+    pub revision_id: u8,
     pub sub_vendor_id: u16,
     pub sub_device_id: u16,
 }
 
 #[derive(Default)]
 struct State {
-    reg_command: u16,
+    reg_command: RegCmd,
     reg_intr_line: u8,
     reg_intr_pin: u8,
 
     lintr_pin: Option<IsaPin>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Default)]
+struct BarState {
+    addr: u64,
+    registered: bool,
+}
 struct BarEntry {
     define: Option<BarDefine>,
-    addr: u64,
+    state: Mutex<BarState>,
 }
-impl Default for BarEntry {
-    fn default() -> Self {
-        Self { define: None, addr: 0 }
+impl BarEntry {
+    fn new() -> Self {
+        Self { define: None, state: Mutex::new(Default::default()) }
     }
 }
 
@@ -152,80 +144,137 @@ struct Bars {
 
 impl Bars {
     fn new() -> Self {
-        Self { entries: [Default::default(); 6] }
+        Self {
+            entries: [
+                BarEntry::new(),
+                BarEntry::new(),
+                BarEntry::new(),
+                BarEntry::new(),
+                BarEntry::new(),
+                BarEntry::new(),
+            ],
+        }
     }
-    fn read(&self, bar: BarN) -> u32 {
+    fn reg_read(&self, bar: BarN) -> u32 {
         let idx = bar as usize;
         let ent = &self.entries[idx];
         if ent.define.is_none() {
             return 0;
         }
+        let state = ent.state.lock().unwrap();
         match ent.define.as_ref().unwrap() {
-            BarDefine::Pio(_) => ent.addr as u32 | BAR_TYPE_IO,
-            BarDefine::Mmio(_) => ent.addr as u32 | BAR_TYPE_MEM,
-            BarDefine::Mmio64(_) => ent.addr as u32 | BAR_TYPE_MEM64,
+            BarDefine::Pio(_) => state.addr as u32 | BAR_TYPE_IO,
+            BarDefine::Mmio(_) => state.addr as u32 | BAR_TYPE_MEM,
+            BarDefine::Mmio64(_) => state.addr as u32 | BAR_TYPE_MEM64,
             BarDefine::Mmio64High => {
-                assert!(idx > 0);
-                let prev = self.entries[idx - 1];
+                assert_ne!(idx, 0);
+                drop(state);
+                let prev = self.entries[idx - 1].state.lock().unwrap();
                 (prev.addr >> 32) as u32
             }
         }
     }
-    fn write(&mut self, bar: BarN, val: u32) {
+    fn reg_write<F>(&self, bar: BarN, val: u32, register: F)
+    where
+        F: Fn(&BarDefine, u64, u64) -> bool,
+    {
         let idx = bar as usize;
         if self.entries[idx].define.is_none() {
             return;
         }
-        let mut ent = &mut self.entries[idx];
-        let old = match ent.define.as_ref().unwrap() {
+        let mut ent = &self.entries[idx];
+        let mut state = self.entries[idx].state.lock().unwrap();
+        let (old, mut state) = match ent.define.as_ref().unwrap() {
             BarDefine::Pio(size) => {
                 let mask = !(size - 1) as u32;
-                let old = ent.addr;
-                ent.addr = (val & mask) as u64;
-                old
+                let old = state.addr;
+                state.addr = (val & mask) as u64;
+                (old, state)
             }
             BarDefine::Mmio(size) => {
                 let mask = !(size - 1);
-                let old = ent.addr;
-                ent.addr = (val & mask) as u64;
-                old
+                let old = state.addr;
+                state.addr = (val & mask) as u64;
+                (old, state)
             }
             BarDefine::Mmio64(size) => {
-                let old = ent.addr;
+                let old = state.addr;
                 let mask = !(size - 1) as u32;
                 let low = old as u32 & mask;
-                ent.addr = (old & (0xffffffff << 32)) | low as u64;
-                old
+                state.addr = (old & (0xffffffff << 32)) | low as u64;
+                (old, state)
             }
             BarDefine::Mmio64High => {
                 assert!(idx > 0);
-                ent = &mut self.entries[idx - 1];
+                drop(state);
+                ent = &self.entries[idx - 1];
+                let mut state = ent.state.lock().unwrap();
                 let size = match ent.define.as_ref().unwrap() {
                     BarDefine::Mmio64(sz) => sz,
                     _ => panic!(),
                 };
                 let mask = !(size - 1);
-                let old = ent.addr;
-                ent.addr = ((val as u64) << 32) & mask | (old & 0xffffffff);
-                old
+                let old = state.addr;
+                state.addr = ((val as u64) << 32) & mask | (old & 0xffffffff);
+                (old, state)
             }
         };
-        println!(
-            "bar write {:x?} {:x} -> {:x}",
-            *ent.define.as_ref().unwrap(),
-            old,
-            ent.addr
-        );
+        if state.registered && old != state.addr {
+            // attempt to register BAR at new location
+            state.registered =
+                register(ent.define.as_ref().unwrap(), old, state.addr);
+        }
+        println!("bar write {:x?} {:x} -> {:x}", bar, old, state.addr);
+    }
+    fn change_registrations<F>(&self, changef: F)
+    where
+        F: Fn(BarN, &BarDefine, u64, bool) -> bool,
+    {
+        self.for_each(|barn, def| {
+            let mut state = self.entries[barn as usize].state.lock().unwrap();
+            state.registered = changef(barn, def, state.addr, state.registered);
+        });
+    }
+    fn for_each<F>(&self, mut f: F)
+    where
+        F: FnMut(BarN, &BarDefine),
+    {
+        for (n, bar) in
+            self.entries.iter().enumerate().filter(|(n, b)| b.define.is_some())
+        {
+            let barn = BarN::try_from(n as u8).unwrap();
+            f(barn, bar.define.as_ref().unwrap());
+        }
+    }
+    fn place(&self, bar: BarN, addr: u64) {
+        let idx = bar as usize;
+        assert!(self.entries[idx].define.is_some());
+
+        let ent = &self.entries[idx].define.as_ref().unwrap();
+        let mut state = self.entries[idx].state.lock().unwrap();
+        match ent {
+            BarDefine::Pio(_) => {
+                assert!(addr <= u16::MAX as u64);
+            }
+            BarDefine::Mmio(_) => {
+                assert!(addr <= u32::MAX as u64);
+            }
+            BarDefine::Mmio64(_) => {}
+            BarDefine::Mmio64High => panic!(),
+        }
+        // initial BAR placement is a necessary step prior to registration
+        assert!(!state.registered);
+        state.addr = addr;
     }
 }
 
-pub struct DeviceInst<I: Send> {
+pub struct DeviceInst<I: Send + 'static> {
     ident: Ident,
     lintr_req: bool,
     cfg_space: RegMap<CfgReg>,
 
     state: Mutex<State>,
-    bars: Mutex<Bars>,
+    bars: Bars,
 
     sa_cell: SelfArcCell<Self>,
 
@@ -242,7 +291,7 @@ impl<I: Device> DeviceInst<I> {
                 reg_intr_line: 0xff,
                 ..Default::default()
             }),
-            bars: Mutex::new(bars),
+            bars,
             sa_cell: SelfArcCell::new(),
             inner: i,
         }
@@ -254,27 +303,7 @@ impl<I: Device> DeviceInst<I> {
         f(&self.inner)
     }
 
-    fn cfg_map_read(&self, id: &CfgReg, ro: &mut ReadOp) {
-        match id {
-            CfgReg::Std => {
-                STD_CFG_MAP
-                    .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
-                    .read(ro);
-            }
-            CfgReg::Custom => self.inner.cfg_read(ro),
-        }
-    }
-    fn cfg_map_write(&self, id: &CfgReg, wo: &WriteOp) {
-        match id {
-            CfgReg::Std => {
-                STD_CFG_MAP
-                    .with_ctx(self, Self::cfg_std_read, Self::cfg_std_write)
-                    .write(wo);
-            }
-            CfgReg::Custom => self.inner.cfg_write(wo),
-        }
-    }
-    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp) {
+    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, ctx: &DispCtx) {
         assert!(ro.offset == 0 || *id == StdCfgReg::Reserved);
 
         let buf = &mut ro.buf;
@@ -289,9 +318,24 @@ impl<I: Device> DeviceInst<I> {
             StdCfgReg::SubDeviceId => {
                 LE::write_u16(buf, self.ident.sub_device_id)
             }
+            StdCfgReg::ProgIf => buf[0] = self.ident.prog_if,
+            StdCfgReg::RevisionId => buf[0] = self.ident.revision_id,
 
             StdCfgReg::Command => {
-                LE::write_u16(buf, self.state.lock().unwrap().reg_command)
+                let val = self.state.lock().unwrap().reg_command.bits();
+                LE::write_u16(buf, val);
+            }
+            StdCfgReg::Status => {
+                let mut val = RegStatus::empty();
+                if self.lintr_req {
+                    let state = self.state.lock().unwrap();
+                    if let Some(pin) = state.lintr_pin.as_ref() {
+                        if pin.is_asserted() {
+                            val.insert(RegStatus::INTR_STATUS);
+                        }
+                    }
+                }
+                LE::write_u16(buf, val.bits());
             }
             StdCfgReg::IntrLine => {
                 buf[0] = self.state.lock().unwrap().reg_intr_line
@@ -299,9 +343,7 @@ impl<I: Device> DeviceInst<I> {
             StdCfgReg::IntrPin => {
                 buf[0] = self.state.lock().unwrap().reg_intr_pin
             }
-            StdCfgReg::Bar(bar) => {
-                LE::write_u32(buf, self.bars.lock().unwrap().read(*bar))
-            }
+            StdCfgReg::Bar(bar) => LE::write_u32(buf, self.bars.reg_read(*bar)),
             StdCfgReg::ExpansionRomAddr => {
                 // no rom for now
                 LE::write_u32(buf, 0);
@@ -315,53 +357,188 @@ impl<I: Device> DeviceInst<I> {
             }
         }
     }
-    fn cfg_std_write(&self, id: &StdCfgReg, wo: &WriteOp) {
+    fn cfg_std_write(&self, id: &StdCfgReg, wo: &WriteOp, ctx: &DispCtx) {
         assert!(wo.offset == 0 || *id == StdCfgReg::Reserved);
 
         let buf = wo.buf;
         match id {
             StdCfgReg::Command => {
-                let val = LE::read_u16(buf);
-                // XXX: wire up change handling
-                self.state.lock().unwrap().reg_command = val & REG_MASK_CMD;
+                let new = RegCmd::from_bits_truncate(LE::read_u16(buf));
+                self.reg_cmd_write(new, ctx);
             }
             StdCfgReg::IntrLine => {
                 self.state.lock().unwrap().reg_intr_line = buf[0];
             }
             StdCfgReg::Bar(bar) => {
                 let val = LE::read_u32(buf);
-                self.bars.lock().unwrap().write(*bar, val);
+                let state = self.state.lock().unwrap();
+                self.bars.reg_write(*bar, val, |def, old, new| {
+                    // fail move for now
+                    match def {
+                        BarDefine::Pio(sz) => {
+                            if !state.reg_command.contains(RegCmd::IO_EN) {
+                                // pio mappings are disabled via cmd reg
+                                return false;
+                            }
+                            ctx.mctx.with_pio(|bus| {
+                                // We know this was previously registered
+                                let (dev, old_bar) =
+                                    bus.unregister(old as u16).unwrap();
+                                assert_eq!(old_bar, *bar as usize);
+                                bus.register(
+                                    new as u16,
+                                    *sz,
+                                    dev,
+                                    *bar as usize,
+                                )
+                                .is_err()
+                            })
+                        }
+                        _ => {
+                            if !state.reg_command.contains(RegCmd::IO_EN) {
+                                // pio mappings are disabled via cmd reg
+                                return false;
+                            }
+                            todo!("wire up MMIO later")
+                        }
+                    }
+                });
             }
-            StdCfgReg::Reserved => {}
+            StdCfgReg::VendorId
+            | StdCfgReg::DeviceId
+            | StdCfgReg::Class
+            | StdCfgReg::Subclass
+            | StdCfgReg::SubVendorId
+            | StdCfgReg::SubDeviceId
+            | StdCfgReg::ProgIf
+            | StdCfgReg::RevisionId
+            | StdCfgReg::Reserved => {
+                // ignore writes to RO fields
+            }
             _ => {
                 println!("Unhandled write {:?}", id);
                 // discard all other writes
             }
         }
     }
+    fn reg_cmd_write(&self, val: RegCmd, ctx: &DispCtx) {
+        let mut state = self.state.lock().unwrap();
+        let diff = val ^ state.reg_command;
+        if diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
+            // change bar mapping state
+            self.bars.change_registrations(|bar, def, addr, registered| {
+                match def {
+                    BarDefine::Pio(sz) => {
+                        if registered && !val.contains(RegCmd::IO_EN) {
+                            // unregister
+                            ctx.mctx.with_pio(|bus| {
+                                bus.unregister(addr as u16).unwrap();
+                            });
+                            false
+                        } else if !registered && val.contains(RegCmd::IO_EN) {
+                            // register
+                            ctx.mctx.with_pio(|bus| {
+                                bus.register(
+                                    addr as u16,
+                                    *sz as u16,
+                                    self.self_weak(),
+                                    bar as usize,
+                                )
+                                .is_ok()
+                            })
+                        } else {
+                            registered
+                        }
+                    }
+                    _ => todo!("wire up MMIO later"),
+                }
+            });
+        }
+        if diff.intersects(RegCmd::INTX_DIS) {
+            // toggle lintr state
+        }
+        state.reg_command = val;
+    }
 }
 
 impl<I: Device> PciEndpoint for DeviceInst<I> {
-    fn cfg_read(&self, ro: &mut ReadOp) {
-        self.cfg_space
-            .with_ctx(self, Self::cfg_map_read, Self::cfg_map_write)
-            .read(ro);
+    fn cfg_rw(&self, op: &mut RWOp, ctx: &DispCtx) {
+        self.cfg_space.service(
+            op,
+            |id, ro| match id {
+                CfgReg::Std => {
+                    STD_CFG_MAP
+                        .read(ro, |id, ro| self.cfg_std_read(id, ro, ctx));
+                }
+                CfgReg::Custom => self.inner.cfg_read(ro),
+            },
+            |id, wo| match id {
+                CfgReg::Std => {
+                    STD_CFG_MAP.write(
+                        wo,
+                        |id, wo| self.cfg_std_write(id, wo, ctx),
+                        |id, ro| self.cfg_std_read(id, ro, ctx),
+                    );
+                }
+                CfgReg::Custom => self.inner.cfg_write(wo),
+            },
+        );
+    }
+    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPin, IsaPin)) {
+        let mut state = self.state.lock().unwrap();
+        if self.lintr_req {
+            let (intx, isa_pin) = get_lintr();
+            state.reg_intr_pin = intx as u8;
+            state.reg_intr_line = isa_pin.get_pin();
+            state.lintr_pin = Some(isa_pin);
+        }
     }
 
-    fn cfg_write(&self, wo: &WriteOp) {
-        self.cfg_space
-            .with_ctx(self, Self::cfg_map_read, Self::cfg_map_write)
-            .write(wo);
-    }
-    fn attach(&self, lintr: Option<(INTxPin, IsaPin)>) {
-        if self.lintr_req {
-            let mut state = self.state.lock().unwrap();
-            if let Some((intx, isa_pin)) = lintr {
-                state.reg_intr_pin = intx as u8;
-                state.reg_intr_line = isa_pin.get_pin();
-                state.lintr_pin = Some(isa_pin);
-            }
+    fn place_bars(
+        &self,
+        place_bar: &mut dyn FnMut(BarN, &BarDefine) -> u64,
+        ctx: &DispCtx,
+    ) {
+        self.bars.for_each(|bar, def| {
+            let addr = place_bar(bar, def);
+            self.bars.place(bar, addr);
+        });
+        let state = self.state.lock().unwrap();
+        if state.reg_command.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
+            self.bars.change_registrations(|bar, def, addr, registered| {
+                assert!(!registered);
+                match def {
+                    BarDefine::Pio(sz) => {
+                        if state.reg_command.intersects(RegCmd::IO_EN) {
+                            ctx.mctx.with_pio(|bus| {
+                                bus.register(
+                                    addr as u16,
+                                    *sz as u16,
+                                    self.self_weak(),
+                                    bar as usize,
+                                )
+                                .is_ok()
+                            })
+                        } else {
+                            false
+                        }
+                    }
+                    _ => todo!("wire up MMIO later"),
+                }
+            });
         }
+    }
+}
+
+impl<I: Device> PioDev for DeviceInst<I> {
+    fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
+        let bar = BarN::try_from(ident as u8).unwrap();
+        self.inner.bar_read(bar, ro);
+    }
+
+    fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx) {
+        let bar = BarN::try_from(ident as u8).unwrap();
+        self.inner.bar_write(bar, wo);
     }
 }
 
@@ -424,11 +601,8 @@ pub struct Builder<I> {
 
 impl<I: Device> Builder<I> {
     pub fn new(ident: Ident) -> Self {
-        let mut cfgmap = RegMap::new_with_flags(
-            LEN_CFG,
-            Flags::NO_READ_EXTEND | Flags::NO_WRITE_EXTEND,
-        );
-        cfgmap.define(0, LEN_CFG_STD, CfgReg::Std);
+        let mut cfgmap = RegMap::new(LEN_CFG);
+        cfgmap.define_with_flags(0, LEN_CFG_STD, CfgReg::Std, Flags::PASSTHRU);
         Self {
             ident,
             lintr_req: false,
@@ -476,7 +650,12 @@ impl<I: Device> Builder<I> {
         self
     }
     pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
-        self.cfgmap.define(offset as usize, len as usize, CfgReg::Custom);
+        self.cfgmap.define_with_flags(
+            offset as usize,
+            len as usize,
+            CfgReg::Custom,
+            Flags::PASSTHRU,
+        );
         self
     }
 

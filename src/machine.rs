@@ -1,12 +1,11 @@
 use std::io::{Read, Result};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::devices::rtc::Rtc;
 use crate::intr_pins::IsaPIC;
 use crate::pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
 use crate::pio::{PioBus, PioDev};
 use crate::util::aspace::ASpace;
-use crate::util::regmap::{Flags, RegMap};
 use crate::vcpu::VcpuHdl;
 use crate::vm::VmmHdl;
 
@@ -132,16 +131,22 @@ impl Machine {
     }
 
     pub fn wire_pci_root(&self) {
-        self.bus_pio.register(
-            PORT_PCI_CONFIG_ADDR,
-            4,
-            &(self.pci_root.clone() as Arc<dyn PioDev>),
-        );
-        self.bus_pio.register(
-            PORT_PCI_CONFIG_DATA,
-            4,
-            &(self.pci_root.clone() as Arc<dyn PioDev>),
-        );
+        self.bus_pio
+            .register(
+                PORT_PCI_CONFIG_ADDR,
+                4,
+                Arc::downgrade(&self.pci_root) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
+        self.bus_pio
+            .register(
+                PORT_PCI_CONFIG_DATA,
+                4,
+                Arc::downgrade(&self.pci_root) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
     }
 
     pub fn create_lpc<F, R>(&self, f: F) -> R

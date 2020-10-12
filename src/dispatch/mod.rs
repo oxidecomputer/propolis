@@ -81,7 +81,8 @@ impl Dispatcher {
         }
     }
     pub fn with_ctx<F>(&self, f: F)
-        where F: FnOnce(&DispCtx)
+    where
+        F: FnOnce(&DispCtx),
     {
         let ctx = DispCtx::new(self.mctx.clone(), self.event_dispatch.clone());
         f(&ctx)

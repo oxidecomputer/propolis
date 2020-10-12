@@ -12,4 +12,5 @@ pico-args = "0.3"
 bitflags = "1.2"
 byteorder = "1"
 lazy_static = "1.4"
+num_enum = "0.5"
 bhyve_api = { path = "bhyve-api" }

@@ -52,9 +52,9 @@ impl<T> ASpace<T> {
     }
 
     /// Unregister region which begins at `start`
-    pub fn unregister(&mut self, start: usize) -> Result<()> {
+    pub fn unregister(&mut self, start: usize) -> Result<T> {
         match self.map.remove(&start) {
-            Some(_) => Ok(()),
+            Some((len, item)) => Ok(item),
             None => Err(Error::NotFound),
         }
     }

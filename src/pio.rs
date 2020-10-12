@@ -1,20 +1,19 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::dispatch::DispCtx;
 use crate::types::*;
 use crate::util::aspace::ASpace;
-use crate::dispatch::DispCtx;
+pub use crate::util::aspace::{Error, Result};
 
 use byteorder::{ByteOrder, LE};
 
 pub trait PioDev: Send + Sync {
-    fn pio_in(&self, port: u16, ro: &mut ReadOp, ctx: &DispCtx);
-    fn pio_out(&self, port: u16, wo: &WriteOp, ctx: &DispCtx);
+    fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx);
+    fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx);
 }
 
-type PioDevHdl = Arc<dyn PioDev>;
-
 pub struct PioBus {
-    map: Mutex<ASpace<Weak<dyn PioDev>>>,
+    map: Mutex<ASpace<(Weak<dyn PioDev>, usize)>>,
 }
 
 impl PioBus {
@@ -22,13 +21,21 @@ impl PioBus {
         Self { map: Mutex::new(ASpace::new(0, u16::MAX as usize)) }
     }
 
-    pub fn register(&self, start: u16, len: u16, dev: &PioDevHdl) {
-        let weak = Arc::downgrade(dev);
-        self.map
-            .lock()
-            .unwrap()
-            .register(start as usize, len as usize, weak)
-            .unwrap();
+    pub fn register(
+        &self,
+        start: u16,
+        len: u16,
+        dev: Weak<dyn PioDev>,
+        ident: usize,
+    ) -> Result<()> {
+        self.map.lock().unwrap().register(
+            start as usize,
+            len as usize,
+            (dev, ident),
+        )
+    }
+    pub fn unregister(&self, start: u16) -> Result<(Weak<dyn PioDev>, usize)> {
+        self.map.lock().unwrap().unregister(start as usize)
     }
 
     pub fn handle_out(&self, port: u16, bytes: u8, val: u32, ctx: &DispCtx) {
@@ -39,8 +46,8 @@ impl PioBus {
             4 => &buf[0..],
             _ => panic!(),
         };
-        let handled = self.do_pio(port, |p, o, dev| {
-            dev.pio_out(p, &WriteOp::new(o as usize, data), ctx)
+        let handled = self.do_pio(port, |p, o, dev, ident| {
+            dev.pio_out(p, ident, &WriteOp::new(o as usize, data), ctx)
         });
         if !handled {
             println!("unhandled IO out - port:{:x} len:{}", port, bytes);
@@ -55,8 +62,8 @@ impl PioBus {
             4 => &mut buf[0..],
             _ => panic!(),
         };
-        let handled = self.do_pio(port, |p, o, dev| {
-            dev.pio_in(p, &mut ReadOp::new(o as usize, data), ctx)
+        let handled = self.do_pio(port, |p, o, dev, ident| {
+            dev.pio_in(p, ident, &mut ReadOp::new(o as usize, data), ctx)
         });
         if !handled {
             println!("unhandled IO in - port:{:x} len:{}", port, bytes);
@@ -67,14 +74,15 @@ impl PioBus {
 
     fn do_pio<F>(&self, port: u16, f: F) -> bool
     where
-        F: FnOnce(u16, u16, &PioDevHdl),
+        F: FnOnce(u16, u16, &Arc<dyn PioDev>, usize),
     {
         let map = self.map.lock().unwrap();
-        if let Ok((start, _len, weak)) = map.region_at(port as usize) {
+        if let Ok((start, _len, (weak, ident))) = map.region_at(port as usize) {
             let dev = Weak::upgrade(weak).unwrap();
+            let identv = *ident;
             // unlock map before entering handler
             drop(map);
-            f(start as u16, port - start as u16, &dev);
+            f(start as u16, port - start as u16, &dev, identv);
             true
         } else {
             false
