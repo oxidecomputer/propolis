@@ -3,9 +3,9 @@ use std::io::Result;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{Builder, JoinHandle, Thread};
 
-use crate::machine::MachineCtx;
 use crate::pio::PioBus;
 use crate::vcpu::VcpuHdl;
+use crate::vmm::MachineCtx;
 
 pub mod event_disp;
 mod event_ports;

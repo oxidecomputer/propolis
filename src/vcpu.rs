@@ -2,7 +2,7 @@ use std::io::Result;
 use std::sync::Arc;
 
 use crate::exits::{VmEntry, VmExit};
-use crate::vm::VmmHdl;
+use crate::vmm::VmmHdl;
 
 use bhyve_api::{vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
 

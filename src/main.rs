@@ -4,31 +4,33 @@ extern crate pico_args;
 extern crate bitflags;
 extern crate byteorder;
 
+mod common;
 mod devices;
 mod dispatch;
 mod exits;
 mod intr_pins;
-mod machine;
 mod pci;
 mod pio;
-mod types;
 mod util;
 mod vcpu;
-mod vm;
+mod vmm;
 
 use std::fs::File;
+use std::io::{Error, ErrorKind, Read, Result};
 use std::path::Path;
 use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
 use dispatch::*;
 use exits::*;
-use machine::{Machine, MachineCtx};
 use vcpu::VcpuHdl;
+use vmm::{Machine, MachineCtx};
 
 use pci::PciBDF;
 
 const PAGE_OFFSET: u64 = 0xfff;
+// Arbitrary ROM limit for now
+const MAX_ROM_SIZE: usize = 0x20_0000;
 
 struct Opts {
     rom: String,
@@ -71,27 +73,76 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
     }
 }
 
+use vmm::{Builder, Prot};
+
+fn build_vm(name: &str, lowmem: usize) -> Result<Arc<Machine>> {
+    let vm = Builder::new(name, true)?
+        .max_cpus(1)?
+        .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
+        .add_rom_region(
+            0x1_0000_0000 - MAX_ROM_SIZE,
+            MAX_ROM_SIZE,
+            Prot::READ | Prot::EXEC,
+            "bootrom",
+        )?
+        .add_mmio_region(0xc0000000 as usize, 0x20000000 as usize, "dev32")?
+        .add_mmio_region(0xe0000000 as usize, 0x10000000 as usize, "pcicfg")?
+        .add_mmio_region(
+            vmm::MAX_SYSMEM,
+            vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
+            "dev64",
+        )?
+        .finalize()?;
+    Ok(vm)
+}
+
+fn open_bootrom(path: &str) -> Result<(File, usize)> {
+    let mut fp = File::open(path)?;
+    let len = fp.metadata()?.len();
+    if len & PAGE_OFFSET != 0 {
+        Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "rom {} length {:x} not aligned to {:x}",
+                path,
+                len,
+                PAGE_OFFSET + 1
+            ),
+        ))
+    } else {
+        Ok((fp, len as usize))
+    }
+}
+
 fn main() {
     let opts = parse_args();
 
-    let hdl = vm::create_vm(&opts.vmname).unwrap();
+    let lowmem: usize = 512 * 1024 * 1024;
+
+    let vm = build_vm(&opts.vmname, lowmem).unwrap();
     println!("vm {} created", &opts.vmname);
 
-    let vm = Machine::new(hdl, 1);
-
-    let lowmem: usize = 512 * 1024 * 1024;
-    vm.setup_lowmem(lowmem).unwrap();
-
-    // Setup bootrom
-    {
-        let mut fp = File::open(&opts.rom).unwrap();
-        let len = fp.metadata().unwrap().len();
-        if len & PAGE_OFFSET != 0 {
-            panic!("bad rom length {}", len);
+    let (mut romfp, rom_len) = open_bootrom(&opts.rom).unwrap();
+    vm.populate_rom("bootrom", |ptr, region_len| {
+        if region_len < rom_len {
+            return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
         }
-        vm.setup_bootrom(len as usize).unwrap();
-        vm.populate_bootrom(&mut fp, len as usize).unwrap();
-    }
+        let offset = region_len - rom_len;
+        unsafe {
+            let write_ptr = ptr.as_ptr().offset(offset as isize);
+            let buf = std::slice::from_raw_parts_mut(write_ptr, rom_len);
+            match romfp.read(buf) {
+                Ok(n) if n == rom_len => Ok(()),
+                Ok(_) => {
+                    // TODO: handle short read
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+    })
+    .unwrap();
+    drop(romfp);
 
     vm.initalize_rtc(lowmem).unwrap();
     vm.wire_pci_root();

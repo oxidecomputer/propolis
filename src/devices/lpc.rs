@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::common::*;
 use crate::devices::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::intr_pins::IsaPIC;
 use crate::pci;
 use crate::pio::{PioBus, PioDev};
-use crate::types::*;
 
 const PIR_OFFSET: usize = 0x60;
 const PIR_LEN: usize = 8;

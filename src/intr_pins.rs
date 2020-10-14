@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::util::self_arc::*;
-use crate::vm::VmmHdl;
+use crate::vmm::VmmHdl;
 
 pub trait IntrPin {
     fn assert(&mut self);

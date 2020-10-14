@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IsaPIC, IsaPin};
 use crate::pio::PioDev;
-use crate::types::*;
 
 use byteorder::{ByteOrder, LE};
 

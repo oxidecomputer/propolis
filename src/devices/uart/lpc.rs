@@ -6,11 +6,11 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::base::Uart;
+use crate::common::*;
 use crate::dispatch::event_disp::{EventTargetFd, SubId};
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IsaPin;
 use crate::pio::PioDev;
-use crate::types::*;
 use crate::util::self_arc::*;
 
 // XXX: raw event usage for now

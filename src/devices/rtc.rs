@@ -1,7 +1,7 @@
 use std::io::Result;
 use std::time::SystemTime;
 
-use crate::vm::VmmHdl;
+use crate::vmm::VmmHdl;
 
 const MEM_CHUNK: usize = 64 * 1024;
 const MEM_BASE: usize = 16 * 1024 * 1024;

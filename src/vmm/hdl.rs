@@ -5,12 +5,13 @@ use std::io::{Error, ErrorKind, Result, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
+use std::ptr::NonNull;
 
 use bhyve_api;
 use libc;
 
 #[cfg(target_os = "illumos")]
-pub fn create_vm(name: &str) -> Result<VmmHdl> {
+pub fn create_vm(name: &str, force: bool) -> Result<VmmHdl> {
     let ctl = OpenOptions::new()
         .write(true)
         .custom_flags(libc::O_EXCL)
@@ -24,6 +25,8 @@ pub fn create_vm(name: &str) -> Result<VmmHdl> {
     if res != 0 {
         let err = Error::last_os_error();
         if err.kind() != ErrorKind::AlreadyExists {
+            return Err(err);
+        } else if !force {
             return Err(err);
         }
         // try to nuke(!) the existing vm
@@ -47,10 +50,10 @@ pub fn create_vm(name: &str) -> Result<VmmHdl> {
     vmpath.push(name);
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
-    Ok(VmmHdl { inner: fp })
+    Ok(VmmHdl { inner: fp, name: name.to_string() })
 }
 #[cfg(not(target_os = "illumos"))]
-pub fn create_vm(_name: &str) -> Result<VmmHdl> {
+pub fn create_vm(_name: &str, _force: bool) -> Result<VmmHdl> {
     {
         // suppress unused warnings
         let mut _oo = OpenOptions::new();
@@ -62,8 +65,47 @@ pub fn create_vm(_name: &str) -> Result<VmmHdl> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
 }
 
+#[cfg(target_os = "illumos")]
+pub fn destroy_vm(name: &str) -> Result<()> {
+    let ctl = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_EXCL)
+        .open(bhyve_api::VMM_CTL_PATH)?;
+    let namestr = CString::new(name)
+        .or_else(|_x| Err(Error::from_raw_os_error(libc::EINVAL)))?;
+    let nameptr = namestr.as_ptr();
+    let ctlfd = ctl.as_raw_fd();
+
+    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, nameptr) };
+    if res != 0 {
+        let err = Error::last_os_error();
+        if err.kind() == ErrorKind::NotFound {
+            return Ok(());
+        }
+        return Err(err);
+    }
+    Ok(())
+}
+#[cfg(not(target_os = "illumos"))]
+pub fn destroy_vm(_name: &str) -> Result<()> {
+    Ok(())
+}
+
+bitflags! {
+    pub struct Prot: u8 {
+        const NONE = 0;
+        const READ = bhyve_api::PROT_READ as u8;
+        const WRITE = bhyve_api::PROT_WRITE as u8;
+        const EXEC = bhyve_api::PROT_EXEC as u8;
+        const ALL = (bhyve_api::PROT_READ
+                    | bhyve_api::PROT_WRITE
+                    | bhyve_api::PROT_EXEC) as u8;
+    }
+}
+
 pub struct VmmHdl {
     inner: File,
+    name: String,
 }
 impl VmmHdl {
     fn fd(&self) -> RawFd {
@@ -113,7 +155,7 @@ impl VmmHdl {
         gpa: usize,
         len: usize,
         segoff: usize,
-        prot: u8,
+        prot: Prot,
     ) -> Result<()> {
         assert!(segoff <= i64::MAX as usize);
 
@@ -122,7 +164,7 @@ impl VmmHdl {
             segid,
             segoff: segoff as i64,
             len,
-            prot: prot as i32,
+            prot: prot.bits() as i32,
             flags: 0,
         };
         self.ioctl(bhyve_api::VM_MMAP_MEMSEG, &mut map)
@@ -152,6 +194,28 @@ impl VmmHdl {
             return Err(Error::last_os_error());
         }
         Ok(ptr)
+    }
+    pub unsafe fn mmap_guest_mem(
+        &self,
+        offset: usize,
+        size: usize,
+        prot: Prot,
+        map_at: Option<NonNull<u8>>,
+    ) -> Result<NonNull<u8>> {
+        let (map_addr, add_flags) = if let Some(addr) = map_at {
+            (addr.as_ptr() as *mut libc::c_void, libc::MAP_FIXED)
+        } else {
+            (ptr::null_mut(), 0)
+        };
+        let ptr = libc::mmap(
+            map_addr,
+            size,
+            prot.bits() as i32,
+            libc::MAP_SHARED | add_flags,
+            self.fd(),
+            offset as i64,
+        ) as *mut u8;
+        NonNull::new(ptr).ok_or(Error::last_os_error())
     }
 
     pub fn rtc_settime(&self, unix_time: u64) -> Result<()> {
@@ -224,5 +288,9 @@ impl VmmHdl {
         let mut data = 0u32;
         self.ioctl(bhyve_api::VM_IOAPIC_PINCOUNT, &mut data)?;
         Ok(data as u8)
+    }
+
+    pub fn destroy(&mut self) -> Result<()> {
+        destroy_vm(&self.name)
     }
 }

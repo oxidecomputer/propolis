@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use super::bits::*;
 use super::{INTxPin, PciEndpoint};
+use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IntrPin, IsaPin};
 use crate::pio::PioDev;
-use crate::types::*;
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
 
@@ -462,27 +462,19 @@ impl<I: Device> DeviceInst<I> {
 }
 
 impl<I: Device> PciEndpoint for DeviceInst<I> {
-    fn cfg_rw(&self, op: &mut RWOp, ctx: &DispCtx) {
-        self.cfg_space.service(
-            op,
-            |id, ro| match id {
-                CfgReg::Std => {
-                    STD_CFG_MAP
-                        .read(ro, |id, ro| self.cfg_std_read(id, ro, ctx));
-                }
-                CfgReg::Custom => self.inner.cfg_read(ro),
+    fn cfg_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
+        self.cfg_space.process(rwo, |id, rwo| match id {
+            CfgReg::Std => {
+                STD_CFG_MAP.process(rwo, |id, rwo| match rwo {
+                    RWOp::Read(ro) => self.cfg_std_read(id, ro, ctx),
+                    RWOp::Write(wo) => self.cfg_std_write(id, wo, ctx),
+                });
+            }
+            CfgReg::Custom => match rwo {
+                RWOp::Read(ro) => self.inner.cfg_read(ro),
+                RWOp::Write(wo) => self.inner.cfg_write(wo),
             },
-            |id, wo| match id {
-                CfgReg::Std => {
-                    STD_CFG_MAP.write(
-                        wo,
-                        |id, wo| self.cfg_std_write(id, wo, ctx),
-                        |id, ro| self.cfg_std_read(id, ro, ctx),
-                    );
-                }
-                CfgReg::Custom => self.inner.cfg_write(wo),
-            },
-        );
+        });
     }
     fn attach(&self, get_lintr: &dyn Fn() -> (INTxPin, IsaPin)) {
         let mut state = self.state.lock().unwrap();
@@ -533,12 +525,12 @@ impl<I: Device> PciEndpoint for DeviceInst<I> {
 impl<I: Device> PioDev for DeviceInst<I> {
     fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
         let bar = BarN::try_from(ident as u8).unwrap();
-        self.inner.bar_read(bar, ro);
+        self.inner.bar_rw(bar, &mut RWOp::Read(ro), ctx);
     }
 
     fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx) {
         let bar = BarN::try_from(ident as u8).unwrap();
-        self.inner.bar_write(bar, wo);
+        self.inner.bar_rw(bar, &mut RWOp::Write(wo), ctx);
     }
 }
 
@@ -573,11 +565,15 @@ impl<'a, 'b> DeviceCtx<'a, 'b> {
 }
 
 pub trait Device: Send + Sync {
-    fn bar_read(&self, bar: BarN, ro: &mut ReadOp) {
-        unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset)
-    }
-    fn bar_write(&self, bar: BarN, wo: &WriteOp) {
-        unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset)
+    fn bar_rw(&self, bar: BarN, rwo: &mut RWOp, ctx: &DispCtx) {
+        match rwo {
+            RWOp::Read(ro) => {
+                unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset)
+            }
+            RWOp::Write(wo) => {
+                unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset)
+            }
+        }
     }
 
     fn cfg_read(&self, ro: &mut ReadOp) {
