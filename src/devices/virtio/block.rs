@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::block::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::pci;
@@ -9,6 +10,7 @@ use super::pci::PciVirtio;
 use super::queue::{Chain, VirtQueue};
 use super::VirtioDevice;
 
+use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
 const VIRTIO_DEV_BLOCK: u16 = 0x1001;
@@ -23,41 +25,43 @@ const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
 const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
-pub struct VirtioBlock {}
+/// Sizing for virtio-block is specified in 512B sectors
+const SECTOR_SZ: usize = 512;
+
+pub struct VirtioBlock {
+    bdev: Arc<dyn BlockDev<Request>>,
+}
 impl VirtioBlock {
-    pub fn new(queue_size: u16) -> Arc<pci::DeviceInst<PciVirtio<Self>>> {
-        PciVirtio::new(queue_size, 1, Self {})
+    pub fn new(
+        queue_size: u16,
+        bdev: Arc<dyn BlockDev<Request>>,
+    ) -> Arc<pci::DeviceInst<PciVirtio<Self>>> {
+        PciVirtio::new(queue_size, 1, Self { bdev })
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
+        let info = self.bdev.inquire();
+        let total_bytes = info.total_size * info.block_size as u64;
         match id {
-            BlockReg::Capacity => {}
-            BlockReg::SizeMax => {}
-            BlockReg::SegMax => {}
-            BlockReg::GeoCyl => {}
-            BlockReg::GeoHeads => {}
-            BlockReg::GeoSectors => {}
-            BlockReg::BlockSize => {}
-            BlockReg::TopoPhysExp => {}
-            BlockReg::TopoAlignOff => {}
-            BlockReg::TopoMinIoSz => {}
-            BlockReg::TopoOptIoSz => {}
-            BlockReg::Writeback => {}
-            BlockReg::MaxDiscardSectors => {}
-            BlockReg::MaxDiscardSeg => {}
-            BlockReg::DiscardSectorAlign => {}
-            BlockReg::MaxZeroSectors => {}
-            BlockReg::MaxZeroSeg => {}
-            BlockReg::ZeroMayUnmap => {}
+            BlockReg::Capacity => {
+                LE::write_u64(ro.buf, total_bytes / SECTOR_SZ as u64);
+            }
+            BlockReg::SegMax => {
+                // XXX: only one seg per transfer allowed for now
+                LE::write_u32(ro.buf, 1);
+            }
+            BlockReg::BlockSize => LE::write_u32(ro.buf, info.block_size),
             BlockReg::Unused => {
                 for b in ro.buf.iter_mut() {
                     *b = 0;
                 }
             }
-        }
-        // XXX: all zeroes for now
-        for b in ro.buf.iter_mut() {
-            *b = 0;
+            _ => {
+                // XXX: all zeroes for now
+                for b in ro.buf.iter_mut() {
+                    *b = 0;
+                }
+            }
         }
     }
 }
@@ -86,11 +90,17 @@ impl VirtioDevice for VirtioBlock {
         (VIRTIO_DEV_BLOCK, 0x01)
     }
 
-    fn queue_notify(&self, qid: u16, vq: &VirtQueue, ctx: &DispCtx) {
+    fn queue_notify(&self, qid: u16, vq: &Arc<VirtQueue>, ctx: &DispCtx) {
         let mem = &ctx.mctx.memctx();
-        let mut chain = Chain::with_capacity(4);
 
-        while let Some(len) = vq.pop_avail(&mut chain, mem) {
+        loop {
+            let mut chain = Chain::with_capacity(4);
+            let clen = vq.pop_avail(&mut chain, mem);
+            if clen.is_none() {
+                break;
+            }
+
+            let len = clen.unwrap();
             println!("chain len {}: {:?}", len, &chain);
             let mut breq = VbReq::default();
             if !chain.read(&mut breq, mem) {
@@ -98,8 +108,28 @@ impl VirtioDevice for VirtioBlock {
             }
             println!("breq {:?}", &breq);
             match breq.rtype {
-                // VIRTIO_BLK_T_IN => { }
-                // VIRTIO_BLK_T_OUT => { }
+                VIRTIO_BLK_T_IN => {
+                    // should be (blocksize * 512) + 1 remaining write bytes
+                    let remain = chain.remain_write_bytes();
+                    let blocks = (remain - 1) / SECTOR_SZ;
+
+                    self.bdev.enqueue(Request::new_read(
+                        chain,
+                        Arc::clone(vq),
+                        breq.sector as usize * SECTOR_SZ,
+                        blocks * SECTOR_SZ,
+                    ));
+                }
+                VIRTIO_BLK_T_OUT => {
+                    // should be (blocksize * 512) remaining read bytes
+                    let blocks = chain.remain_read_bytes() / SECTOR_SZ;
+                    self.bdev.enqueue(Request::new_write(
+                        chain,
+                        Arc::clone(vq),
+                        breq.sector as usize * SECTOR_SZ,
+                        blocks * SECTOR_SZ,
+                    ));
+                }
                 _ => {
                     // try to set the status byte to failed
                     let remain = chain.remain_write_bytes();
@@ -107,10 +137,90 @@ impl VirtioDevice for VirtioBlock {
                         chain.write_skip(remain - 1);
                         chain.write(&VIRTIO_BLK_S_UNSUPP, mem);
                     }
+                    vq.push_used(&mut chain, mem);
                 }
             }
-            vq.push_used(&mut chain, mem);
         }
+    }
+}
+
+pub struct Request {
+    op: BlockOp,
+    off: usize,
+    xfer_size: usize,
+    xfer_left: usize,
+    chain: Chain,
+    vq: Arc<VirtQueue>,
+}
+impl Request {
+    fn new_read(
+        chain: Chain,
+        vq: Arc<VirtQueue>,
+        off: usize,
+        size: usize,
+    ) -> Self {
+        assert_eq!(chain.remain_write_bytes(), size + 1);
+        Self {
+            op: BlockOp::Read,
+            off,
+            xfer_size: size,
+            xfer_left: size,
+            chain,
+            vq,
+        }
+    }
+    fn new_write(
+        chain: Chain,
+        vq: Arc<VirtQueue>,
+        off: usize,
+        size: usize,
+    ) -> Self {
+        assert_eq!(chain.remain_read_bytes(), size);
+        assert_eq!(chain.remain_write_bytes(), 1);
+        Self {
+            op: BlockOp::Write,
+            off,
+            xfer_size: size,
+            xfer_left: size,
+            chain,
+            vq,
+        }
+    }
+}
+impl BlockReq for Request {
+    fn oper(&self) -> BlockOp {
+        self.op
+    }
+
+    fn offset(&self) -> usize {
+        self.off
+    }
+    fn complete(mut self, res: BlockResult, ctx: &DispCtx) {
+        assert_eq!(self.chain.remain_write_bytes(), 1);
+        let mem = &ctx.mctx.memctx();
+        match res {
+            BlockResult::Success => self.chain.write(&VIRTIO_BLK_S_OK, mem),
+            BlockResult::Failure => self.chain.write(&VIRTIO_BLK_S_IOERR, mem),
+            BlockResult::Unsupported => {
+                self.chain.write(&VIRTIO_BLK_S_UNSUPP, mem)
+            }
+        };
+        self.vq.push_used(&mut self.chain, mem);
+    }
+
+    fn next_buf(&mut self) -> Option<GuestRegion> {
+        if self.xfer_left == 0 {
+            return None;
+        }
+        let res = match self.op {
+            BlockOp::Read => self.chain.writable_buf(self.xfer_left),
+            BlockOp::Write => self.chain.readable_buf(self.xfer_left),
+        };
+        if let Some(region) = res.as_ref() {
+            assert!(self.xfer_left >= region.1);
+            self.xfer_left -= region.1;
+        }
+        res
     }
 }
 

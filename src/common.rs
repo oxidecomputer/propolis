@@ -27,6 +27,8 @@ pub enum RWOp<'a, 'b> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct GuestAddr(pub u64);
+#[derive(Copy, Clone, Debug)]
+pub struct GuestRegion(pub GuestAddr, pub usize);
 
 impl Add<usize> for GuestAddr {
     type Output = Self;

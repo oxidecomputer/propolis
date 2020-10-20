@@ -1,9 +1,9 @@
 use std::convert::TryFrom;
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use super::bits::*;
-use super::{INTxPin, PciEndpoint};
+use super::{INTxPinID, PciEndpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IntrPin, IsaPin};
@@ -121,6 +121,8 @@ struct State {
     reg_intr_pin: u8,
 
     lintr_pin: Option<IsaPin>,
+
+    update_in_progress: bool,
 }
 
 #[derive(Default)]
@@ -275,6 +277,7 @@ pub struct DeviceInst<I: Send + 'static> {
 
     state: Mutex<State>,
     bars: Bars,
+    cond: Condvar,
 
     sa_cell: SelfArcCell<Self>,
 
@@ -287,11 +290,15 @@ impl<I: Device> DeviceInst<I> {
             ident,
             lintr_req: false,
             cfg_space,
+
             state: Mutex::new(State {
                 reg_intr_line: 0xff,
+                reg_command: RegCmd::INTX_DIS,
                 ..Default::default()
             }),
             bars,
+            cond: Condvar::new(),
+
             sa_cell: SelfArcCell::new(),
             inner: i,
         }
@@ -301,6 +308,31 @@ impl<I: Device> DeviceInst<I> {
         F: FnOnce(&I) -> T,
     {
         f(&self.inner)
+    }
+
+    /// Certain device state changes might incur notification calls to the inner
+    /// state which could trigger conflicting lock ordering.  In such cases, the
+    /// process is done in two stages: the state update (under lock) and the
+    /// notification (outside the lock) with protection provided against other
+    /// such updates which might race.
+    fn state_two_step(
+        &self,
+        mut state: MutexGuard<State>,
+        update: impl FnOnce(&mut State),
+        after: impl FnOnce(),
+    ) -> MutexGuard<State> {
+        state = self.cond.wait_while(state, |s| s.update_in_progress).unwrap();
+        update(&mut state);
+        state.update_in_progress = true;
+        drop(state);
+
+        after();
+
+        let mut state = self.state.lock().unwrap();
+        assert!(state.update_in_progress);
+        state.update_in_progress = false;
+        self.cond.notify_all();
+        state
     }
 
     fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, ctx: &DispCtx) {
@@ -454,10 +486,27 @@ impl<I: Device> DeviceInst<I> {
                 }
             });
         }
+
+        // special handling required for INTx enable/disable
         if diff.intersects(RegCmd::INTX_DIS) {
-            // toggle lintr state
+            let disabled = val.contains(RegCmd::INTX_DIS);
+            // XXX: handle msi-x and friends
+            let mode = match disabled {
+                true => IntrMode::Disabled,
+                false => IntrMode::INTxPin,
+            };
+            state = self.state_two_step(
+                state,
+                |state| state.reg_command = val,
+                || {
+                    // inner is notified of mode change w/o state locked
+                    self.inner.intr_mode_change(mode)
+                },
+            );
+            drop(state);
+        } else {
+            state.reg_command = val;
         }
-        state.reg_command = val;
     }
 }
 
@@ -476,7 +525,7 @@ impl<I: Device> PciEndpoint for DeviceInst<I> {
             },
         });
     }
-    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPin, IsaPin)) {
+    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, IsaPin)) {
         let mut state = self.state.lock().unwrap();
         if self.lintr_req {
             let (intx, isa_pin) = get_lintr();
@@ -540,28 +589,31 @@ impl<I: Sized + Send> SelfArc for DeviceInst<I> {
     }
 }
 
-pub struct DeviceCtx<'a, 'b> {
-    state: &'a Mutex<State>,
-    dctx: &'b DispCtx,
+pub struct INTxPin<D: Device + 'static> {
+    outer: Weak<DeviceInst<D>>,
 }
-impl<'a, 'b> DeviceCtx<'a, 'b> {
-    fn new(state: &'a Mutex<State>, dctx: &'b DispCtx) -> Self {
-        Self { state, dctx }
+impl<D: Device + 'static> INTxPin<D> {
+    fn new(outer: Weak<DeviceInst<D>>) -> Self {
+        Self { outer }
     }
+    pub fn assert(&self) {
+        self.with_pin(|pin| pin.assert());
+    }
+    pub fn deassert(&self) {
+        self.with_pin(|pin| pin.deassert());
+    }
+    fn with_pin(&self, f: impl FnOnce(&mut IsaPin)) {
+        if let Some(dev) = Weak::upgrade(&self.outer) {
+            let mut state = dev.state.lock().unwrap();
+            f(state.lintr_pin.as_mut().unwrap());
+        }
+    }
+}
 
-    pub fn set_lintr(&self, level: bool) {
-        let mut state = self.state.lock().unwrap();
-        if state.reg_intr_pin == 0 {
-            return;
-        }
-        // XXX: heed INTxDIS
-        let pin = state.lintr_pin.as_mut().unwrap();
-        if level {
-            pin.assert();
-        } else {
-            pin.deassert();
-        }
-    }
+pub enum IntrMode {
+    Disabled,
+    INTxPin,
+    MSIX,
 }
 
 pub trait Device: Send + Sync {
@@ -582,6 +634,7 @@ pub trait Device: Send + Sync {
     fn cfg_write(&self, wo: &WriteOp) {
         unimplemented!("CFG write @ {:x}", wo.offset)
     }
+    fn intr_mode_change(&self, mode: IntrMode) {}
     // TODO
     // fn cap_read(&self);
     // fn cap_write(&self);

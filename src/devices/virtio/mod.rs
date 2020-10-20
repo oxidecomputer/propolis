@@ -1,4 +1,6 @@
-mod block;
+use std::sync::Arc;
+
+pub mod block;
 mod pci;
 mod queue;
 
@@ -14,5 +16,5 @@ pub trait VirtioDevice: Send + Sync {
     fn device_get_features(&self) -> u32;
     fn device_set_features(&self, feat: u32);
     fn device_id_and_class() -> (u16, u8);
-    fn queue_notify(&self, qid: u16, vq: &VirtQueue, ctx: &DispCtx);
+    fn queue_notify(&self, qid: u16, vq: &Arc<VirtQueue>, ctx: &DispCtx);
 }

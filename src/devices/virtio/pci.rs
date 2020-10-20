@@ -52,7 +52,7 @@ pub struct PciVirtio<D: VirtioDevice> {
     state: Mutex<VirtioState>,
     queue_size: u16,
     num_queues: u16,
-    queues: Vec<VirtQueue>,
+    queues: Vec<Arc<VirtQueue>>,
 }
 impl<D: VirtioDevice> PciVirtio<D> {
     fn map_for_device() -> RegMap<VirtioTop> {
@@ -76,7 +76,7 @@ impl<D: VirtioDevice> PciVirtio<D> {
 
         let mut queues = Vec::new();
         for _ in 0..num_queues {
-            queues.push(VirtQueue::new(queue_size));
+            queues.push(Arc::new(VirtQueue::new(queue_size)));
         }
 
         let this = Self {

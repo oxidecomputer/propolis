@@ -4,7 +4,7 @@ use std::mem::size_of;
 use std::ptr::{copy_nonoverlapping, NonNull};
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::common::GuestAddr;
+use crate::common::{GuestAddr, GuestRegion};
 use crate::devices::rtc::Rtc;
 use crate::intr_pins::IsaPIC;
 use crate::pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
@@ -228,6 +228,15 @@ impl<'a> MemCtx<'a> {
         } else {
             None
         }
+    }
+
+    pub fn raw_writable(&self, region: &GuestRegion) -> Option<*mut u8> {
+        let ptr = self.region_covered(region.0, region.1, Prot::WRITE)?;
+        Some(ptr.as_ptr())
+    }
+    pub fn raw_readable(&self, region: &GuestRegion) -> Option<*const u8> {
+        let ptr = self.region_covered(region.0, region.1, Prot::READ)?;
+        Some(ptr.as_ptr() as *const u8)
     }
 
     fn region_covered(

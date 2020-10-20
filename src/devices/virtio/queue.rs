@@ -370,6 +370,20 @@ impl Chain {
         });
         total == item_sz
     }
+    pub fn readable_buf(&mut self, limit: usize) -> Option<GuestRegion> {
+        if limit == 0 || self.read_stat.bytes_remain == 0 {
+            return None;
+        }
+
+        let mut res: Option<GuestRegion> = None;
+        self.for_remaining_type(true, |addr, blen| {
+            let to_consume = usize::min(blen, limit);
+
+            res = Some(GuestRegion(addr, to_consume));
+            (to_consume, false)
+        });
+        res
+    }
     pub fn write<T: Copy>(&mut self, item: &T, mem: &MemCtx) -> bool {
         let item_sz = mem::size_of::<T>();
         if (self.write_stat.bytes_remain as usize) < item_sz {
@@ -416,9 +430,26 @@ impl Chain {
         });
         true
     }
+    pub fn writable_buf(&mut self, limit: usize) -> Option<GuestRegion> {
+        if limit == 0 || self.write_stat.bytes_remain == 0 {
+            return None;
+        }
+
+        let mut res: Option<GuestRegion> = None;
+        self.for_remaining_type(false, |addr, blen| {
+            let to_consume = usize::min(blen, limit);
+
+            res = Some(GuestRegion(addr, to_consume));
+            (to_consume, false)
+        });
+        res
+    }
 
     pub fn remain_write_bytes(&self) -> usize {
         self.write_stat.bytes_remain as usize
+    }
+    pub fn remain_read_bytes(&self) -> usize {
+        self.read_stat.bytes_remain as usize
     }
 
     fn for_remaining_type<F>(&mut self, is_read: bool, mut f: F) -> usize

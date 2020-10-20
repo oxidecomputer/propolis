@@ -4,6 +4,7 @@ extern crate pico_args;
 extern crate bitflags;
 extern crate byteorder;
 
+mod block;
 mod common;
 mod devices;
 mod dispatch;
@@ -35,13 +36,15 @@ const MAX_ROM_SIZE: usize = 0x20_0000;
 struct Opts {
     rom: String,
     vmname: String,
+    blockdev: Option<String>,
 }
 
 fn parse_args() -> Opts {
     let mut args = pico_args::Arguments::from_env();
     let rom: String = args.value_from_str("-r").unwrap();
+    let blockdev: Option<String> = args.opt_value_from_str("-b").unwrap();
     let vmname: String = args.free().unwrap().pop().unwrap();
-    Opts { rom, vmname }
+    Opts { rom, vmname, blockdev }
 }
 
 fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
@@ -166,8 +169,19 @@ fn main() {
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));
 
-    let vioblk = devices::virtio::VirtioBlock::new(0x100);
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 4, 0), vioblk));
+    if let Some(bpath) = opts.blockdev.as_ref() {
+        let plain: Arc<block::PlainBdev<devices::virtio::block::Request>> =
+            block::PlainBdev::new(bpath).unwrap();
+
+        let vioblk = devices::virtio::VirtioBlock::new(
+            0x100,
+            Arc::clone(&plain)
+                as Arc<dyn block::BlockDev<devices::virtio::block::Request>>,
+        );
+        mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 4, 0), vioblk));
+
+        plain.start_dispatch("bdev thread".to_string(), &dispatch);
+    }
 
     // with all pci devices attached, place their BARs
     dispatch.with_ctx(|ctx| {

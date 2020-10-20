@@ -28,7 +28,7 @@ pub struct PciBDF {
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
-pub enum INTxPin {
+pub enum INTxPinID {
     INTA = 1,
     INTB = 2,
     INTC = 3,
@@ -46,7 +46,7 @@ impl PciBDF {
 
 pub trait PciEndpoint: Send + Sync {
     fn cfg_rw(&self, op: &mut RWOp<'_, '_>, ctx: &DispCtx);
-    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPin, IsaPin));
+    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, IsaPin));
     fn place_bars(
         &self,
         place_bar: &mut dyn FnMut(BarN, &BarDefine) -> u64,
@@ -117,13 +117,13 @@ impl PciBus {
         }
     }
 
-    fn route_lintr(&self, bdf: &PciBDF) -> (INTxPin, IsaPin) {
+    fn route_lintr(&self, bdf: &PciBDF) -> (INTxPinID, IsaPin) {
         let pic = Weak::upgrade(&self.pic).unwrap();
         let intx_pin = match (bdf.func + 1) % 4 {
-            1 => INTxPin::INTA,
-            2 => INTxPin::INTB,
-            3 => INTxPin::INTC,
-            4 => INTxPin::INTD,
+            1 => INTxPinID::INTA,
+            2 => INTxPinID::INTB,
+            3 => INTxPinID::INTC,
+            4 => INTxPinID::INTD,
             _ => panic!(),
         };
         // Existing c-bhyve formula: 16 + (4 + slot + INTxPin) % 8
