@@ -20,6 +20,18 @@ impl VcpuHdl {
         self.id
     }
 
+    pub fn set_default_capabs(&mut self) -> Result<()> {
+        // Enable exit-on-HLT so the host CPU does not spin in VM context when
+        // the guest enters a HLT instruction.
+        let mut cap = bhyve_api::vm_capability {
+            cpuid: self.id,
+            captype: bhyve_api::vm_cap_type::VM_CAP_HALT_EXIT as i32,
+            capval: 1,
+            allcpus: 0,
+        };
+        self.hdl.ioctl(bhyve_api::VM_SET_CAPABILITY, &mut cap)
+    }
+
     pub fn set_reg(
         &mut self,
         reg: bhyve_api::vm_reg_name,

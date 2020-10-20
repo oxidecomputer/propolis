@@ -244,3 +244,12 @@ pub struct vm_rtc_data {
     pub offset: i32,
     pub value: u8,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_capability {
+    pub cpuid: c_int,
+    pub captype: c_int,
+    pub capval: c_int,
+    pub allcpus: c_int,
+}

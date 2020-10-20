@@ -91,3 +91,13 @@ pub enum vm_entry_cmds {
     VEC_COMPLETE_MMIO,
     VEC_COMPLETE_INOUT,
 }
+
+#[repr(i32)]
+#[allow(non_camel_case_types, unused)]
+pub enum vm_cap_type {
+    VM_CAP_HALT_EXIT,
+    VM_CAP_MTRAP_EXIT,
+    VM_CAP_PAUSE_EXIT,
+    VM_CAP_ENABLE_INVPCID,
+    VM_CAP_BPT_EXIT,
+}

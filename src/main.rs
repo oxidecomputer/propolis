@@ -228,6 +228,7 @@ fn main() {
 
     let mut vcpu0 = vm.vcpu(0);
 
+    vcpu0.set_default_capabs().unwrap();
     vcpu0.reboot_state().unwrap();
     vcpu0.activate().unwrap();
     vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
