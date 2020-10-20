@@ -29,7 +29,7 @@ impl Piix3Bhyve {
         pic: &Arc<IsaPIC>,
         pio_bus: &PioBus,
         com1_sock: Arc<UartSock>,
-    ) -> Arc<pci::DeviceInst<Self>> {
+    ) -> Arc<pci::DeviceInst> {
         let com1 = LpcUart::new(com1_sock, pic.pin_handle(COM1_IRQ).unwrap());
         // let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
 
@@ -57,6 +57,10 @@ impl Piix3Bhyve {
             uart_com1: com1,
             // uart_com2: com2,
         };
+
+        // Make configurable later
+        this.set_pir_defaults();
+
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,
             device_id: 0x7000,
@@ -65,7 +69,7 @@ impl Piix3Bhyve {
             ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
-        .finish(this)
+        .finish(Box::new(this))
     }
 
     fn write_pir(&self, pic: &IsaPIC, idx: usize, val: u8) {

@@ -201,7 +201,6 @@ fn main() {
     let pci_lpc = vm.create_lpc(|pic, pio| {
         devices::lpc::Piix3Bhyve::new(pic, pio, Arc::clone(&com1_sock))
     });
-    pci_lpc.with_inner(|lpc| lpc.set_pir_defaults());
 
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));

@@ -46,7 +46,7 @@ impl VirtioState {
     }
 }
 
-pub struct PciVirtio<D: VirtioDevice> {
+pub struct PciVirtio<D: VirtioDevice + 'static> {
     dev: D,
     map: RegMap<VirtioTop>,
     state: Mutex<VirtioState>,
@@ -54,7 +54,7 @@ pub struct PciVirtio<D: VirtioDevice> {
     num_queues: u16,
     queues: Vec<Arc<VirtQueue>>,
 }
-impl<D: VirtioDevice> PciVirtio<D> {
+impl<D: VirtioDevice + 'static> PciVirtio<D> {
     fn map_for_device() -> RegMap<VirtioTop> {
         let dev_sz = D::device_cfg_size();
         // XXX: Shortened for no-msix
@@ -71,7 +71,7 @@ impl<D: VirtioDevice> PciVirtio<D> {
         queue_size: u16,
         num_queues: u16,
         inner: D,
-    ) -> Arc<pci::DeviceInst<Self>> {
+    ) -> Arc<pci::DeviceInst> {
         assert!(queue_size > 1 && queue_size.is_power_of_two());
 
         let mut queues = Vec::new();
@@ -98,7 +98,7 @@ impl<D: VirtioDevice> PciVirtio<D> {
         })
         .add_bar_io(pci::BarN::BAR0, 0x200)
         .add_lintr()
-        .finish(this)
+        .finish(Box::new(this))
     }
 
     fn legacy_read(&self, id: &LegacyReg, ro: &mut ReadOp, _ctx: &DispCtx) {

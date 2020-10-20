@@ -35,7 +35,7 @@ impl VirtioBlock {
     pub fn new(
         queue_size: u16,
         bdev: Arc<dyn BlockDev<Request>>,
-    ) -> Arc<pci::DeviceInst<PciVirtio<Self>>> {
+    ) -> Arc<pci::DeviceInst> {
         PciVirtio::new(queue_size, 1, Self { bdev })
     }
 

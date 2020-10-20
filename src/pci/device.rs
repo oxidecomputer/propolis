@@ -270,7 +270,7 @@ impl Bars {
     }
 }
 
-pub struct DeviceInst<I: Send + 'static> {
+pub struct DeviceInst {
     ident: Ident,
     lintr_req: bool,
     cfg_space: RegMap<CfgReg>,
@@ -281,11 +281,16 @@ pub struct DeviceInst<I: Send + 'static> {
 
     sa_cell: SelfArcCell<Self>,
 
-    inner: I,
+    inner: Box<dyn Device>,
 }
 
-impl<I: Device> DeviceInst<I> {
-    fn new(ident: Ident, cfg_space: RegMap<CfgReg>, bars: Bars, i: I) -> Self {
+impl DeviceInst {
+    fn new(
+        ident: Ident,
+        cfg_space: RegMap<CfgReg>,
+        bars: Bars,
+        i: Box<dyn Device>,
+    ) -> Self {
         Self {
             ident,
             lintr_req: false,
@@ -302,12 +307,6 @@ impl<I: Device> DeviceInst<I> {
             sa_cell: SelfArcCell::new(),
             inner: i,
         }
-    }
-    pub fn with_inner<F, T>(&self, f: F) -> T
-    where
-        F: FnOnce(&I) -> T,
-    {
-        f(&self.inner)
     }
 
     /// Certain device state changes might incur notification calls to the inner
@@ -510,7 +509,7 @@ impl<I: Device> DeviceInst<I> {
     }
 }
 
-impl<I: Device> PciEndpoint for DeviceInst<I> {
+impl PciEndpoint for DeviceInst {
     fn cfg_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
         self.cfg_space.process(rwo, |id, rwo| match id {
             CfgReg::Std => {
@@ -577,7 +576,7 @@ impl<I: Device> PciEndpoint for DeviceInst<I> {
     }
 }
 
-impl<I: Device> PioDev for DeviceInst<I> {
+impl PioDev for DeviceInst {
     fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
         let bar = BarN::try_from(ident as u8).unwrap();
         self.inner.bar_rw(bar, &mut RWOp::Read(ro), ctx);
@@ -589,17 +588,17 @@ impl<I: Device> PioDev for DeviceInst<I> {
     }
 }
 
-impl<I: Sized + Send> SelfArc for DeviceInst<I> {
+impl SelfArc for DeviceInst {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
         &self.sa_cell
     }
 }
 
-pub struct INTxPin<D: Device + 'static> {
-    outer: Weak<DeviceInst<D>>,
+pub struct INTxPin {
+    outer: Weak<DeviceInst>,
 }
-impl<D: Device + 'static> INTxPin<D> {
-    fn new(outer: Weak<DeviceInst<D>>) -> Self {
+impl INTxPin {
+    fn new(outer: Weak<DeviceInst>) -> Self {
         Self { outer }
     }
     pub fn assert(&self) {
@@ -622,7 +621,7 @@ pub enum IntrMode {
     MSIX,
 }
 
-pub trait Device: Send + Sync {
+pub trait Device: Send + Sync + 'static {
     fn bar_rw(&self, bar: BarN, rwo: &mut RWOp, ctx: &DispCtx) {
         match rwo {
             RWOp::Read(ro) => {
@@ -654,7 +653,7 @@ pub struct Builder<I> {
     _phantom: PhantomData<I>,
 }
 
-impl<I: Device> Builder<I> {
+impl<I: Device + 'static> Builder<I> {
     pub fn new(ident: Ident) -> Self {
         let mut cfgmap = RegMap::new(LEN_CFG);
         cfgmap.define_with_flags(0, LEN_CFG_STD, CfgReg::Std, Flags::PASSTHRU);
@@ -722,10 +721,15 @@ impl<I: Device> Builder<I> {
         bars
     }
 
-    pub fn finish(self, inner: I) -> Arc<DeviceInst<I>> {
+    pub fn finish(self, inner: Box<I>) -> Arc<DeviceInst> {
         let bars = self.generate_bars();
 
-        let mut inst = DeviceInst::new(self.ident, self.cfgmap, bars, inner);
+        let mut inst = DeviceInst::new(
+            self.ident,
+            self.cfgmap,
+            bars,
+            inner as Box<dyn Device>,
+        );
         inst.lintr_req = self.lintr_req;
 
         let mut done = Arc::new(inst);
