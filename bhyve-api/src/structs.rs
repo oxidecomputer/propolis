@@ -49,6 +49,13 @@ pub struct vm_mmio {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_rwmsr {
+    pub code: u32,
+    pub wval: u64,
+}
+
+#[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct vm_exit {
     pub exitcode: c_int,
@@ -71,6 +78,7 @@ pub struct vm_entry {
 pub union vm_exit_payload {
     pub inout: vm_inout,
     pub mmio: vm_mmio,
+    pub msr: vm_rwmsr,
     pub vmx: vm_exit_vmx,
     pub svm: vm_exit_svm,
     // sized to zero entire union

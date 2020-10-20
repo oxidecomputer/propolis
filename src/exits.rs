@@ -33,9 +33,30 @@ pub enum InoutReq {
 }
 
 #[derive(Debug)]
+pub struct MmioReadReq {
+    pub addr: u64,
+    pub bytes: u8,
+}
+#[derive(Debug)]
+pub struct MmioWriteReq {
+    pub addr: u64,
+    pub data: u64,
+    pub bytes: u8,
+}
+
+#[derive(Debug)]
+pub enum MmioReq {
+    Read(MmioReadReq),
+    Write(MmioWriteReq),
+}
+
+#[derive(Debug)]
 pub enum VmExitKind {
     Bogus,
     Inout(InoutReq),
+    Mmio(MmioReq),
+    Rdmsr(u32),
+    Wrmsr(u32, u64),
     Unknown(i32),
 }
 impl From<&vm_exit> for VmExitKind {
@@ -55,6 +76,29 @@ impl From<&vm_exit> for VmExitKind {
                     VmExitKind::Inout(InoutReq::Out(port, inout.eax))
                 }
             }
+            vm_exitcode::VM_EXITCODE_RDMSR => {
+                let msr = unsafe { &exit.u.msr };
+                VmExitKind::Rdmsr(msr.code)
+            }
+            vm_exitcode::VM_EXITCODE_WRMSR => {
+                let msr = unsafe { &exit.u.msr };
+                VmExitKind::Wrmsr(msr.code, msr.wval)
+            }
+            vm_exitcode::VM_EXITCODE_MMIO => {
+                let mmio = unsafe { &exit.u.mmio };
+                if mmio.read != 0 {
+                    VmExitKind::Mmio(MmioReq::Read(MmioReadReq {
+                        addr: mmio.gpa,
+                        bytes: mmio.bytes,
+                    }))
+                } else {
+                    VmExitKind::Mmio(MmioReq::Write(MmioWriteReq {
+                        addr: mmio.gpa,
+                        data: mmio.data,
+                        bytes: mmio.bytes,
+                    }))
+                }
+            }
             c => VmExitKind::Unknown(c as i32),
         }
     }
@@ -65,9 +109,25 @@ pub enum InoutRes {
     Out(IoPort),
 }
 
+pub struct MmioReadRes {
+    pub addr: u64,
+    pub data: u64,
+    pub bytes: u8,
+}
+pub struct MmioWriteRes {
+    pub addr: u64,
+    pub bytes: u8,
+}
+
+pub enum MmioRes {
+    Read(MmioReadRes),
+    Write(MmioWriteRes),
+}
+
 pub enum VmEntry {
     Run,
     InoutComplete(InoutRes),
+    MmioComplete(MmioRes),
 }
 impl VmEntry {
     pub fn to_raw(&self, cpuid: i32, exit_ptr: *mut vm_exit) -> vm_entry {
@@ -90,6 +150,19 @@ impl VmEntry {
                 payload.inout.port = io.port;
                 payload.inout.bytes = io.bytes;
                 vm_entry_cmds::VEC_COMPLETE_INOUT
+            }
+            VmEntry::MmioComplete(res) => {
+                let (addr, bytes) = match res {
+                    MmioRes::Read(read) => {
+                        payload.mmio.read = 1;
+                        payload.mmio.data = read.data;
+                        (read.addr, read.bytes)
+                    }
+                    MmioRes::Write(write) => (write.addr, write.bytes),
+                };
+                payload.mmio.gpa = addr;
+                payload.mmio.bytes = bytes;
+                vm_entry_cmds::VEC_COMPLETE_MMIO
             }
         };
         vm_entry {

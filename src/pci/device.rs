@@ -17,7 +17,7 @@ use num_enum::TryFromPrimitive;
 
 enum CfgReg {
     Std,
-    Custom,
+    Custom(u8),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -519,9 +519,15 @@ impl<I: Device> PciEndpoint for DeviceInst<I> {
                     RWOp::Write(wo) => self.cfg_std_write(id, wo, ctx),
                 });
             }
-            CfgReg::Custom => match rwo {
-                RWOp::Read(ro) => self.inner.cfg_read(ro),
-                RWOp::Write(wo) => self.inner.cfg_write(wo),
+            CfgReg::Custom(coff) => match rwo {
+                RWOp::Read(ro) => self.inner.cfg_read(&mut ReadOp::new(
+                    ro.offset + *coff as usize,
+                    ro.buf,
+                )),
+                RWOp::Write(wo) => self.inner.cfg_write(&mut WriteOp::new(
+                    wo.offset + *coff as usize,
+                    wo.buf,
+                )),
             },
         });
     }
@@ -702,7 +708,7 @@ impl<I: Device> Builder<I> {
         self.cfgmap.define_with_flags(
             offset as usize,
             len as usize,
-            CfgReg::Custom,
+            CfgReg::Custom(offset),
             Flags::PASSTHRU,
         );
         self

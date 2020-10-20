@@ -71,6 +71,43 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
                     next_entry = VmEntry::InoutComplete(InoutRes::In(io, val));
                 }
             },
+            VmExitKind::Mmio(mmio) => match mmio {
+                MmioReq::Read(read) => {
+                    println!(
+                        "unhandled mmio read {:x} {}",
+                        read.addr, read.bytes
+                    );
+                    next_entry =
+                        VmEntry::MmioComplete(MmioRes::Read(MmioReadRes {
+                            addr: read.addr,
+                            bytes: read.bytes,
+                            // XXX fake read for now
+                            data: 0,
+                        }));
+                }
+                MmioReq::Write(write) => {
+                    println!(
+                        "unhandled mmio write {:x} {} {:x}",
+                        write.addr, write.bytes, write.data
+                    );
+                    next_entry =
+                        VmEntry::MmioComplete(MmioRes::Write(MmioWriteRes {
+                            addr: write.addr,
+                            bytes: write.bytes,
+                        }));
+                }
+            },
+            VmExitKind::Rdmsr(msr) => {
+                println!("rdmsr({:x})", msr);
+                // XXX just emulate with 0 for now
+                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
+                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
+                next_entry = VmEntry::Run
+            }
+            VmExitKind::Wrmsr(msr, val) => {
+                println!("wrmsr({:x}, {:x})", msr, val);
+                next_entry = VmEntry::Run
+            }
             _ => panic!("unrecognized exit: {:?}", exit.kind),
         }
     }

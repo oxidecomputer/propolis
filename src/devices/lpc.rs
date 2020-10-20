@@ -101,7 +101,7 @@ impl pci::Device for Piix3Bhyve {
         assert!(ro.offset >= PIR_OFFSET && ro.offset + ro.buf.len() < PIR_END);
         let off = ro.offset - PIR_OFFSET;
         let reg = self.reg_pir.lock().unwrap();
-        ro.buf.copy_from_slice(&reg[off..ro.buf.len()]);
+        ro.buf.copy_from_slice(&reg[off..(off + ro.buf.len())]);
     }
     fn cfg_write(&self, wo: &WriteOp) {
         assert!(wo.offset >= PIR_OFFSET && wo.offset + wo.buf.len() < PIR_END);
