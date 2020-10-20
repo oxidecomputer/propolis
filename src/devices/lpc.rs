@@ -69,7 +69,7 @@ impl Piix3Bhyve {
             ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
-        .finish(Box::new(this))
+        .finish_plain(this)
     }
 
     fn write_pir(&self, pic: &IsaPIC, idx: usize, val: u8) {

@@ -3,12 +3,16 @@ use std::num::Wrapping;
 use std::sync::atomic::{fence, Ordering};
 use std::sync::Mutex;
 
+use super::VirtioIntr;
 use crate::common::*;
 use crate::vmm::MemCtx;
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 const VIRTQ_DESC_F_INDIRECT: u16 = 4;
+
+const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
+const VRING_USED_F_NO_NOTIFY: u16 = 1;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -19,7 +23,7 @@ struct VqdDesc {
     next: u16,
 }
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct VqdUsed {
     id: u32,
     len: u32,
@@ -53,11 +57,13 @@ impl VqAvail {
         if let Some(idx) = mem.read::<u16>(self.gpa_idx) {
             let ndesc = Wrapping(idx) - self.cur_avail_idx;
             if ndesc.0 != 0 && ndesc.0 < rsize {
-                let addr =
-                    self.gpa_ring + (ndesc.0 as usize * mem::size_of::<u16>());
+                let read_idx = self.cur_avail_idx.0 & (rsize - 1);
                 self.cur_avail_idx += Wrapping(1);
+
                 fence(Ordering::Acquire);
-                return mem.read(addr);
+                let addr =
+                    self.gpa_ring + (read_idx as usize * mem::size_of::<u16>());
+                return mem.read(addr)
             }
         }
         None
@@ -80,17 +86,24 @@ struct VqUsed {
     gpa_idx: GuestAddr,
     gpa_ring: GuestAddr,
     used_idx: Wrapping<u16>,
+    interrupt: Option<Box<dyn VirtioIntr>>,
 }
 impl VqUsed {
     fn write_used(&mut self, id: u16, len: u32, rsize: u16, mem: &MemCtx) {
-        let used = VqdUsed { id: id as u32, len };
-        self.used_idx += Wrapping(1);
         let idx = self.used_idx.0 & (rsize - 1);
+        self.used_idx += Wrapping(1);
         let desc_addr =
-            self.gpa_ring + (idx as usize & mem::size_of::<VqdUsed>());
+            self.gpa_ring + (idx as usize * mem::size_of::<VqdUsed>());
+
+        let used = VqdUsed { id: id as u32, len };
         mem.write(desc_addr, &used);
+
         fence(Ordering::Release);
-        mem.write(self.gpa_idx, &idx);
+        mem.write(self.gpa_idx, &self.used_idx.0);
+    }
+    fn suppress_intr(&self, mem: &MemCtx) -> bool {
+        let flags: u16 = mem.read(self.gpa_flags).unwrap();
+        flags & VRING_AVAIL_F_NO_INTERRUPT != 0
     }
 }
 
@@ -128,18 +141,22 @@ impl VirtQueue {
                 gpa_idx: GuestAddr(0),
                 gpa_ring: GuestAddr(0),
                 used_idx: Wrapping(0),
+                interrupt: None,
             }),
         }
     }
-    fn reset(&self) {
+    pub(super) fn reset(&self) {
         let mut state = self.ctrl.lock().unwrap();
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
 
+        // XXX verify no outstanding chains
         state.status = VqStatus::Init;
         state.gpa_desc = GuestAddr(0);
         avail.valid = false;
         used.valid = false;
+        avail.cur_avail_idx = Wrapping(0);
+        used.used_idx = Wrapping(0);
     }
     pub fn map_legacy(&self, addr: u64) -> bool {
         assert_eq!(addr & (LEGACY_QALIGN - 1), 0);
@@ -271,7 +288,15 @@ impl VirtQueue {
         // XXX: for now, just go off of the write stats
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         used.write_used(id, len, self.size, mem);
+        if !used.suppress_intr(mem) {
+            used.interrupt.as_ref().map(|i| i.notify());
+        }
         chain.reset();
+    }
+
+    pub(super) fn set_interrupt(&self, intr: Box<dyn VirtioIntr>) {
+        let mut used = self.used.lock().unwrap();
+        used.interrupt = Some(intr)
     }
 }
 

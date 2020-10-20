@@ -1,11 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak, MutexGuard};
 
 use super::queue::VirtQueue;
-use super::VirtioDevice;
+use super::{VirtioDevice, VirtioIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::pci;
 use crate::util::regmap::RegMap;
+use crate::util::self_arc::*;
 
 use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
@@ -34,6 +35,7 @@ struct VirtioState {
     queue_sel: u16,
     nego_feat: u32,
     isr_status: u8,
+    lintr_pin: Option<pci::INTxPin>,
 }
 impl VirtioState {
     fn new() -> Self {
@@ -42,23 +44,27 @@ impl VirtioState {
             queue_sel: 0,
             nego_feat: 0,
             isr_status: 0,
+            lintr_pin: None,
         }
     }
 }
 
 pub struct PciVirtio<D: VirtioDevice + 'static> {
-    dev: D,
     map: RegMap<VirtioTop>,
     state: Mutex<VirtioState>,
     queue_size: u16,
     num_queues: u16,
     queues: Vec<Arc<VirtQueue>>,
+
+    sa_cell: SelfArcCell<Self>,
+
+    dev: D,
 }
 impl<D: VirtioDevice + 'static> PciVirtio<D> {
     fn map_for_device() -> RegMap<VirtioTop> {
         let dev_sz = D::device_cfg_size();
         // XXX: Shortened for no-msix
-        let legacy_sz = 0x16;
+        let legacy_sz = 0x14;
         let layout = [
             (VirtioTop::LegacyConfig, legacy_sz),
             (VirtioTop::DeviceConfig, dev_sz),
@@ -79,14 +85,26 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
             queues.push(Arc::new(VirtQueue::new(queue_size)));
         }
 
-        let this = Self {
-            dev: inner,
+        let mut this = Arc::new(Self {
             map: Self::map_for_device(),
             state: Mutex::new(VirtioState::new()),
             queue_size,
             num_queues,
             queues,
-        };
+
+            dev: inner,
+
+            sa_cell: SelfArcCell::new(),
+        });
+        SelfArc::self_arc_init(&mut this);
+
+        for queue in this.queues.iter() {
+            queue.set_interrupt(Box::new(QueueIntr {
+                action: IntrAction::Isr,
+                outer: this.self_weak(),
+            }));
+        }
+
         let (id, class) = D::device_id_and_class();
         pci::Builder::new(pci::Ident {
             vendor_id: VIRTIO_VENDOR,
@@ -98,7 +116,7 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
         })
         .add_bar_io(pci::BarN::BAR0, 0x200)
         .add_lintr()
-        .finish(Box::new(this))
+        .finish_arc(this)
     }
 
     fn legacy_read(&self, id: &LegacyReg, ro: &mut ReadOp, _ctx: &DispCtx) {
@@ -134,8 +152,13 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
             }
             LegacyReg::IsrStatus => {
                 let mut state = self.state.lock().unwrap();
-                ro.buf[0] = state.isr_status;
-                state.isr_status = 0;
+                let isr = state.isr_status;
+                if isr != 0 {
+                    // reading ISR Status clears it as well
+                    state.isr_status = 0;
+                    state.lintr_pin.as_ref().map(|i| i.deassert());
+                }
+                ro.buf[0] = isr;
             }
             _ => {
                 // no msix for now
@@ -189,9 +212,13 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
     }
     fn set_status(&self, status: u8) {
         let mut state = self.state.lock().unwrap();
-        // XXX: do more?
         let val = Status::from_bits_truncate(status);
-        state.status = val;
+        if val == Status::RESET && state.status != Status::RESET {
+            self.device_reset(state)
+        } else {
+            // XXX: better device status FSM
+            state.status = val;
+        }
     }
     fn queue_notify(&self, queue: u16, ctx: &DispCtx) {
         println!("notify virtqueue {}", queue);
@@ -199,7 +226,31 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
             self.dev.queue_notify(queue, vq, ctx);
         }
     }
+    fn device_reset(&self, mut state: MutexGuard<VirtioState>) {
+        for queue in self.queues.iter() {
+            queue.reset();
+        }
+        state.nego_feat = 0;
+        state.queue_sel = 0;
+        state.isr_status = 0;
+        state.status = Status::RESET;
+    }
+
+    fn raise_isr(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.isr_status |= 1;
+        if let Some(pin) = state.lintr_pin.as_ref() {
+            pin.assert()
+        }
+    }
 }
+
+impl<D: VirtioDevice> SelfArc for PciVirtio<D> {
+    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
+        &self.sa_cell
+    }
+}
+
 impl<D: VirtioDevice> pci::Device for PciVirtio<D> {
     fn bar_rw(&self, bar: pci::BarN, rwo: &mut RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
@@ -212,6 +263,51 @@ impl<D: VirtioDevice> pci::Device for PciVirtio<D> {
             }
             VirtioTop::DeviceConfig => self.dev.device_cfg_rw(rwo),
         });
+    }
+    fn intr_mode_change(&self, mode: pci::IntrMode) {
+        match mode {
+            pci::IntrMode::Disabled => {
+                let mut state = self.state.lock().unwrap();
+                if let Some(pin) = std::mem::replace(&mut state.lintr_pin, None)
+                {
+                    pin.deassert();
+                }
+            }
+            pci::IntrMode::INTxPin(pin) => {
+                let mut state = self.state.lock().unwrap();
+                assert!(state.lintr_pin.is_none());
+                if state.isr_status != 0 {
+                    pin.assert();
+                }
+                state.lintr_pin = Some(pin);
+            }
+            pci::IntrMode::MSIX => {
+                todo!("add msix support");
+            }
+        }
+    }
+}
+
+enum IntrAction {
+    Isr,
+    Msi,
+}
+
+struct QueueIntr<D: VirtioDevice> {
+    action: IntrAction,
+    outer: Weak<PciVirtio<D>>,
+}
+
+impl<D: VirtioDevice> VirtioIntr for QueueIntr<D> {
+    fn notify(&self) {
+        match self.action {
+            IntrAction::Isr => {
+                if let Some(dev) = Weak::upgrade(&self.outer) {
+                    dev.raise_isr();
+                }
+            }
+            IntrAction::Msi => todo!("wire up MSI"),
+        }
     }
 }
 

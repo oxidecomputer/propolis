@@ -12,7 +12,7 @@ impl Piix4HostBridge {
             class: 0x06,
             ..Default::default()
         })
-        .finish(Box::new(Self {}))
+        .finish_plain(Self {})
     }
 }
 impl pci::Device for Piix4HostBridge {}

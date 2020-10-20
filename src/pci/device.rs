@@ -270,6 +270,11 @@ impl Bars {
     }
 }
 
+enum BoxOrArc {
+    Boxed(Box<dyn Device>),
+    Arced(Arc<dyn Device>),
+}
+
 pub struct DeviceInst {
     ident: Ident,
     lintr_req: bool,
@@ -281,7 +286,7 @@ pub struct DeviceInst {
 
     sa_cell: SelfArcCell<Self>,
 
-    inner: Box<dyn Device>,
+    inner: BoxOrArc,
 }
 
 impl DeviceInst {
@@ -289,7 +294,7 @@ impl DeviceInst {
         ident: Ident,
         cfg_space: RegMap<CfgReg>,
         bars: Bars,
-        i: Box<dyn Device>,
+        i: BoxOrArc,
     ) -> Self {
         Self {
             ident,
@@ -306,6 +311,13 @@ impl DeviceInst {
 
             sa_cell: SelfArcCell::new(),
             inner: i,
+        }
+    }
+
+    fn inner_ref(&self) -> &dyn Device {
+        match &self.inner {
+            BoxOrArc::Boxed(b) => b.as_ref(),
+            BoxOrArc::Arced(a) => a.as_ref(),
         }
     }
 
@@ -492,14 +504,14 @@ impl DeviceInst {
             // XXX: handle msi-x and friends
             let mode = match disabled {
                 true => IntrMode::Disabled,
-                false => IntrMode::INTxPin,
+                false => IntrMode::INTxPin(INTxPin::new(self.self_weak())),
             };
             state = self.state_two_step(
                 state,
                 |state| state.reg_command = val,
                 || {
                     // inner is notified of mode change w/o state locked
-                    self.inner.intr_mode_change(mode)
+                    self.inner_ref().intr_mode_change(mode)
                 },
             );
             drop(state);
@@ -519,14 +531,13 @@ impl PciEndpoint for DeviceInst {
                 });
             }
             CfgReg::Custom(coff) => match rwo {
-                RWOp::Read(ro) => self.inner.cfg_read(&mut ReadOp::new(
+                RWOp::Read(ro) => self.inner_ref().cfg_read(&mut ReadOp::new(
                     ro.offset + *coff as usize,
                     ro.buf,
                 )),
-                RWOp::Write(wo) => self.inner.cfg_write(&mut WriteOp::new(
-                    wo.offset + *coff as usize,
-                    wo.buf,
-                )),
+                RWOp::Write(wo) => self.inner_ref().cfg_write(
+                    &mut WriteOp::new(wo.offset + *coff as usize, wo.buf),
+                ),
             },
         });
     }
@@ -579,12 +590,12 @@ impl PciEndpoint for DeviceInst {
 impl PioDev for DeviceInst {
     fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
         let bar = BarN::try_from(ident as u8).unwrap();
-        self.inner.bar_rw(bar, &mut RWOp::Read(ro), ctx);
+        self.inner_ref().bar_rw(bar, &mut RWOp::Read(ro), ctx);
     }
 
     fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx) {
         let bar = BarN::try_from(ident as u8).unwrap();
-        self.inner.bar_rw(bar, &mut RWOp::Write(wo), ctx);
+        self.inner_ref().bar_rw(bar, &mut RWOp::Write(wo), ctx);
     }
 }
 
@@ -594,6 +605,7 @@ impl SelfArc for DeviceInst {
     }
 }
 
+#[derive(Clone)]
 pub struct INTxPin {
     outer: Weak<DeviceInst>,
 }
@@ -607,6 +619,9 @@ impl INTxPin {
     pub fn deassert(&self) {
         self.with_pin(|pin| pin.deassert());
     }
+    pub fn pulse(&self) {
+        self.with_pin(|pin| pin.pulse());
+    }
     fn with_pin(&self, f: impl FnOnce(&mut IsaPin)) {
         if let Some(dev) = Weak::upgrade(&self.outer) {
             let mut state = dev.state.lock().unwrap();
@@ -617,7 +632,7 @@ impl INTxPin {
 
 pub enum IntrMode {
     Disabled,
-    INTxPin,
+    INTxPin(INTxPin),
     MSIX,
 }
 
@@ -721,15 +736,20 @@ impl<I: Device + 'static> Builder<I> {
         bars
     }
 
-    pub fn finish(self, inner: Box<I>) -> Arc<DeviceInst> {
+    pub fn finish_arc(self, inner: Arc<I>) -> Arc<DeviceInst> {
+        self.do_finish(BoxOrArc::Arced(inner as Arc<dyn Device>))
+    }
+    pub fn finish_box(self, inner: Box<I>) -> Arc<DeviceInst> {
+        self.do_finish(BoxOrArc::Boxed(inner as Box<dyn Device>))
+    }
+    pub fn finish_plain(self, inner: I) -> Arc<DeviceInst> {
+        self.do_finish(BoxOrArc::Boxed(Box::new(inner) as Box<dyn Device>))
+    }
+
+    fn do_finish(self, inner: BoxOrArc) -> Arc<DeviceInst> {
         let bars = self.generate_bars();
 
-        let mut inst = DeviceInst::new(
-            self.ident,
-            self.cfgmap,
-            bars,
-            inner as Box<dyn Device>,
-        );
+        let mut inst = DeviceInst::new(self.ident, self.cfgmap, bars, inner);
         inst.lintr_req = self.lintr_req;
 
         let mut done = Arc::new(inst);

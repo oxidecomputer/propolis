@@ -32,11 +32,13 @@ pub trait BlockReq: Send + Sync + 'static {
     fn complete(self, res: BlockResult, ctx: &DispCtx);
 }
 
+#[derive(Debug)]
 pub struct BlockInquiry {
     /// Device size in blocks (see below)
     pub total_size: u64,
     /// Size (in bytes) per block
     pub block_size: u32,
+    pub writable: bool,
 }
 
 pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
@@ -82,7 +84,6 @@ impl<R: BlockReq> PlainBdev<R> {
     fn raw_init(&mut self) {
         // TODO: query block size, write cache, discard, etc
         assert!(!self.is_raw);
-        self.block_size = 0x1000;
         let len = self.fp.metadata().unwrap().len() as usize;
         self.sectors = len / self.block_size;
     }
@@ -172,6 +173,7 @@ impl<R: BlockReq> BlockDev<R> for PlainBdev<R> {
         BlockInquiry {
             total_size: self.sectors as u64,
             block_size: self.block_size as u32,
+            writable: !self.is_ro,
         }
     }
 }
