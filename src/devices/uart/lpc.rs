@@ -48,7 +48,6 @@ impl LpcUart {
             if let Some(v) = self.sock.read(ctx) {
                 this.uart.data_write(v);
             } else {
-                self.sock.notify_readable(ctx);
                 break;
             }
         }
@@ -180,13 +179,14 @@ impl UartSock {
         if this.client.is_none() {
             None
         } else {
+            let marked_readable = this.state == SockState::Readable;
             let csock = this.client.as_mut().unwrap();
             let mut val = [0u8];
             if let Err(e) = csock.read(&mut val) {
                 if e.kind() != ErrorKind::WouldBlock {
                     // drop the connection
                     this.client = None;
-                } else {
+                } else if marked_readable {
                     let sub = ctx.event.subscribe_fd(
                         csock.as_raw_fd(),
                         POLLIN as i32,
@@ -213,19 +213,6 @@ impl UartSock {
         let mut this = self.inner.lock().unwrap();
         this.on_readable = Some((outer, cb));
     }
-    pub fn notify_readable(&self, ctx: &DispCtx) {
-        let mut this = self.inner.lock().unwrap();
-        if this.state == SockState::Readable {
-            let client_fd = this.client.as_ref().unwrap().as_raw_fd();
-            let sub = ctx.event.subscribe_fd(
-                client_fd,
-                POLLIN as i32,
-                self.self_weak(),
-                0,
-            );
-            this.state = SockState::WaitRead(sub);
-        }
-    }
 }
 impl EventTargetFd for UartSock {
     fn event_handle_fd(
@@ -240,6 +227,8 @@ impl EventTargetFd for UartSock {
             SockState::WaitClient(_) => {
                 assert!(fd == this.server.as_raw_fd());
                 let (sock, _addr) = this.server.accept().unwrap();
+                // XXX: handle error?
+                sock.set_nonblocking(true).unwrap();
                 let client_fd = sock.as_raw_fd();
                 this.client = Some(sock);
                 let sub = ctx.event.subscribe_fd(
