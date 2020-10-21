@@ -77,10 +77,12 @@ impl Machine {
                 MapKind::Rom(_, _) => ent.name == name,
                 _ => false,
             })
-            .ok_or(Error::new(
-                ErrorKind::NotFound,
-                format!("rom {} not found", name),
-            ))?;
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!("rom {} not found", name),
+                )
+            })?;
         assert!(ent.dev_map.is_some());
         let ptr = ent.dev_map.as_ref().unwrap().lock().unwrap();
         func(*ptr, len)
@@ -257,10 +259,7 @@ impl<'a> MemCtx<'a> {
                     if prot.contains(need_prot) {
                         let base = ent.guest_map.as_ref().unwrap();
                         let res = unsafe {
-                            NonNull::new(
-                                base.as_ptr().offset(req_offset as isize),
-                            )
-                            .unwrap()
+                            NonNull::new(base.as_ptr().add(req_offset)).unwrap()
                         };
                         return Some(res);
                     }
@@ -281,7 +280,7 @@ pub struct MemMany<T: Copy> {
 impl<T: Copy> MemMany<T> {
     pub fn get(&self, pos: usize) -> Option<T> {
         if pos < self.count {
-            let val = unsafe { self.ptr.offset(pos as isize).read_unaligned() };
+            let val = unsafe { self.ptr.add(pos).read_unaligned() };
             Some(val)
         } else {
             None
@@ -338,7 +337,9 @@ impl Builder {
                 len,
                 (MapKind::SysMem(segid, prot), name.to_string()),
             )
-            .or(Err(Error::new(ErrorKind::AlreadyExists, "addr conflict")))?;
+            .map_err(|_| {
+                Error::new(ErrorKind::AlreadyExists, "addr conflict")
+            })?;
         Ok(self)
     }
     pub fn add_rom_region(
@@ -359,7 +360,9 @@ impl Builder {
         self.hdl().map_memseg(segid, start, len, 0, prot)?;
         self.memmap
             .register(start, len, (MapKind::Rom(segid, prot), name.to_string()))
-            .or(Err(Error::new(ErrorKind::AlreadyExists, "addr conflict")))?;
+            .map_err(|_| {
+                Error::new(ErrorKind::AlreadyExists, "addr conflict")
+            })?;
         Ok(self)
     }
     pub fn add_mmio_region(
@@ -370,7 +373,9 @@ impl Builder {
     ) -> Result<Self> {
         self.memmap
             .register(start, len, (MapKind::MmioReserve, name.to_string()))
-            .or(Err(Error::new(ErrorKind::AlreadyExists, "addr conflict")))?;
+            .map_err(|_| {
+                Error::new(ErrorKind::AlreadyExists, "addr conflict")
+            })?;
         Ok(self)
     }
     pub fn max_cpus(mut self, max: u8) -> Result<Self> {
@@ -383,17 +388,13 @@ impl Builder {
     }
 
     fn last_sysmem_addr(&self) -> Result<usize> {
-        let last_mem_seg =
-            self.memmap
-                .iter()
-                .filter(|(_addr, _len, (ent, _name))| {
-                    if let MapKind::SysMem(_, _) = ent {
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .last();
+        let last_mem_seg = self
+            .memmap
+            .iter()
+            .filter(|(_addr, _len, (ent, _name))| {
+                matches!(ent, MapKind::SysMem(_, _))
+            })
+            .last();
         if let Some((start, len, (_, _))) = last_mem_seg {
             Ok(start + len)
         } else {
@@ -427,8 +428,7 @@ impl Builder {
             let (guest_map, dev_map) = match *ent {
                 MapKind::SysMem(_, prot) => {
                     let ptr = unsafe {
-                        let addr =
-                            guard_space.offset((GUARD_LEN + start) as isize);
+                        let addr = guard_space.add(GUARD_LEN + start);
 
                         hdl.mmap_guest_mem(
                             start,
@@ -441,8 +441,7 @@ impl Builder {
                 }
                 MapKind::Rom(segid, _) => {
                     let ptr = unsafe {
-                        let addr =
-                            guard_space.offset((GUARD_LEN + start) as isize);
+                        let addr = guard_space.add(GUARD_LEN + start);
 
                         // Only PROT_READ makes sense for normal ROM access
                         hdl.mmap_guest_mem(

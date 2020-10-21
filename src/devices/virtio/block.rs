@@ -25,17 +25,16 @@ const VIRTIO_BLK_S_OK: u8 = 0;
 const VIRTIO_BLK_S_IOERR: u8 = 1;
 const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
-const VIRTIO_BLK_F_SIZE_MAX: u32 = (1 << 1);
-const VIRTIO_BLK_F_SEG_MAX: u32 = (1 << 2);
-const VIRTIO_BLK_F_GEOMETRY: u32 = (1 << 4);
-const VIRTIO_BLK_F_RO: u32 = (1 << 5);
-const VIRTIO_BLK_F_BLK_SIZE: u32 = (1 << 6);
-const VIRTIO_BLK_F_FLUSH: u32 = (1 << 9);
-const VIRTIO_BLK_F_TOPOLOGY: u32 = (1 << 10);
-const VIRTIO_BLK_F_CONFIG_WCE: u32 = (1 << 11);
-const VIRTIO_BLK_F_DISCARD: u32 = (1 << 13);
-const VIRTIO_BLK_F_WRITE_ZEROES: u32 = (1 << 14);
-
+const VIRTIO_BLK_F_SIZE_MAX: u32 = 1 << 1;
+const VIRTIO_BLK_F_SEG_MAX: u32 = 1 << 2;
+const VIRTIO_BLK_F_GEOMETRY: u32 = 1 << 4;
+const VIRTIO_BLK_F_RO: u32 = 1 << 5;
+const VIRTIO_BLK_F_BLK_SIZE: u32 = 1 << 6;
+const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
+const VIRTIO_BLK_F_TOPOLOGY: u32 = 1 << 10;
+const VIRTIO_BLK_F_CONFIG_WCE: u32 = 1 << 11;
+const VIRTIO_BLK_F_DISCARD: u32 = 1 << 13;
+const VIRTIO_BLK_F_WRITE_ZEROES: u32 = 1 << 14;
 
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;

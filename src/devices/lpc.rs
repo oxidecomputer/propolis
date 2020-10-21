@@ -101,18 +101,23 @@ impl Piix3Bhyve {
     }
 }
 impl pci::Device for Piix3Bhyve {
-    fn cfg_read(&self, ro: &mut ReadOp) {
-        assert!(ro.offset >= PIR_OFFSET && ro.offset + ro.buf.len() < PIR_END);
-        let off = ro.offset - PIR_OFFSET;
-        let reg = self.reg_pir.lock().unwrap();
-        ro.buf.copy_from_slice(&reg[off..(off + ro.buf.len())]);
-    }
-    fn cfg_write(&self, wo: &WriteOp) {
-        assert!(wo.offset >= PIR_OFFSET && wo.offset + wo.buf.len() < PIR_END);
-        if let Some(pic) = Weak::upgrade(&self.pic) {
-            let off = wo.offset - PIR_OFFSET;
-            for (i, val) in wo.buf.iter().enumerate() {
-                self.write_pir(&pic, i + off, *val);
+    fn cfg_rw(&self, region: u8, rwo: &mut RWOp) {
+        assert_eq!(region as usize, PIR_OFFSET);
+        assert!(rwo.offset() + rwo.len() <= PIR_END - PIR_OFFSET);
+
+        match rwo {
+            RWOp::Read(ro) => {
+                let off = ro.offset;
+                let reg = self.reg_pir.lock().unwrap();
+                ro.buf.copy_from_slice(&reg[off..(off + ro.buf.len())]);
+            }
+            RWOp::Write(wo) => {
+                if let Some(pic) = Weak::upgrade(&self.pic) {
+                    let off = wo.offset;
+                    for (i, val) in wo.buf.iter().enumerate() {
+                        self.write_pir(&pic, i + off, *val);
+                    }
+                }
             }
         }
     }

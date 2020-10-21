@@ -63,7 +63,7 @@ impl VqAvail {
                 fence(Ordering::Acquire);
                 let addr =
                     self.gpa_ring + (read_idx as usize * mem::size_of::<u16>());
-                return mem.read(addr)
+                return mem.read(addr);
             }
         }
         None

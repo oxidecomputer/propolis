@@ -24,6 +24,20 @@ pub enum RWOp<'a, 'b> {
     Read(&'a mut ReadOp<'b>),
     Write(&'a WriteOp<'b>),
 }
+impl RWOp<'_, '_> {
+    pub fn offset(&self) -> usize {
+        match self {
+            RWOp::Read(ro) => ro.offset,
+            RWOp::Write(wo) => wo.offset,
+        }
+    }
+    pub fn len(&self) -> usize {
+        match self {
+            RWOp::Read(ro) => ro.buf.len(),
+            RWOp::Write(wo) => wo.buf.len(),
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct GuestAddr(pub u64);

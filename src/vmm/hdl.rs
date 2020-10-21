@@ -215,7 +215,7 @@ impl VmmHdl {
             self.fd(),
             offset as i64,
         ) as *mut u8;
-        NonNull::new(ptr).ok_or(Error::last_os_error())
+        NonNull::new(ptr).ok_or_else(Error::last_os_error)
     }
 
     pub fn rtc_settime(&self, unix_time: u64) -> Result<()> {

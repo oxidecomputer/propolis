@@ -169,7 +169,7 @@ fn main() {
         }
         let offset = region_len - rom_len;
         unsafe {
-            let write_ptr = ptr.as_ptr().offset(offset as isize);
+            let write_ptr = ptr.as_ptr().add(offset);
             let buf = std::slice::from_raw_parts_mut(write_ptr, rom_len);
             match romfp.read(buf) {
                 Ok(n) if n == rom_len => Ok(()),

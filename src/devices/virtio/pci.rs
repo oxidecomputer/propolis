@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, Weak, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use super::queue::VirtQueue;
 use super::{VirtioDevice, VirtioIntr};

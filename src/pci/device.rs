@@ -530,15 +530,7 @@ impl PciEndpoint for DeviceInst {
                     RWOp::Write(wo) => self.cfg_std_write(id, wo, ctx),
                 });
             }
-            CfgReg::Custom(coff) => match rwo {
-                RWOp::Read(ro) => self.inner_ref().cfg_read(&mut ReadOp::new(
-                    ro.offset + *coff as usize,
-                    ro.buf,
-                )),
-                RWOp::Write(wo) => self.inner_ref().cfg_write(
-                    &mut WriteOp::new(wo.offset + *coff as usize, wo.buf),
-                ),
-            },
+            CfgReg::Custom(region) => self.inner_ref().cfg_rw(*region, rwo),
         });
     }
     fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, IsaPin)) {
@@ -648,11 +640,15 @@ pub trait Device: Send + Sync + 'static {
         }
     }
 
-    fn cfg_read(&self, ro: &mut ReadOp) {
-        unimplemented!("CFG read @ {:x}", ro.offset)
-    }
-    fn cfg_write(&self, wo: &WriteOp) {
-        unimplemented!("CFG write @ {:x}", wo.offset)
+    fn cfg_rw(&self, region: u8, rwo: &mut RWOp) {
+        match rwo {
+            RWOp::Read(ro) => {
+                unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset)
+            }
+            RWOp::Write(wo) => {
+                unimplemented!("CFG write ({:x} @ {:x})", region, wo.offset)
+            }
+        }
     }
     fn intr_mode_change(&self, mode: IntrMode) {}
     // TODO

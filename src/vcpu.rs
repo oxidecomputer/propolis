@@ -123,12 +123,7 @@ impl VcpuHdl {
     pub fn run(&mut self, entry: &VmEntry) -> Result<VmExit> {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);
-        match self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry) {
-            Err(e) => {
-                return Err(e);
-            }
-            Ok(_) => {}
-        }
+        let _res = self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)?;
         Ok(VmExit::from(&exit))
     }
 }
