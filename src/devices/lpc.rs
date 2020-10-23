@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
+use crate::devices::ps2ctrl::PS2Ctrl;
 use crate::devices::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::intr_pins::IsaPIC;
 use crate::pci;
@@ -23,6 +24,7 @@ pub struct Piix3Bhyve {
     pic: Weak<IsaPIC>,
     uart_com1: Arc<LpcUart>,
     // uart_com2: Arc<LpcUart>,
+    ps2_ctrl: Arc<PS2Ctrl>,
 }
 impl Piix3Bhyve {
     pub fn new(
@@ -51,11 +53,15 @@ impl Piix3Bhyve {
         //     0,
         // );
 
+        let ps2_ctrl = PS2Ctrl::create();
+        ps2_ctrl.attach(pio_bus, pic);
+
         let this = Self {
             reg_pir: Mutex::new([0u8; 8]),
             pic: Arc::downgrade(pic),
             uart_com1: com1,
             // uart_com2: com2,
+            ps2_ctrl,
         };
 
         // Make configurable later
