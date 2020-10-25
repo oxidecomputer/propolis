@@ -145,6 +145,12 @@ impl MachineCtx {
     {
         f(&self.vm.pci_root)
     }
+    pub fn with_hdl<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&VmmHdl) -> R,
+    {
+        f(&self.vm.hdl)
+    }
     pub fn memctx<'a>(&'a self) -> MemCtx<'a> {
         MemCtx::new(&self)
     }

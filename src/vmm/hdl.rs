@@ -290,6 +290,10 @@ impl VmmHdl {
         Ok(data as u8)
     }
 
+    pub fn pmtmr_locate(&self, port: u16) -> Result<()> {
+        self.ioctl(bhyve_api::VM_PMTMR_LOCATE, port as *mut usize)
+    }
+
     pub fn destroy(&mut self) -> Result<()> {
         destroy_vm(&self.name)
     }

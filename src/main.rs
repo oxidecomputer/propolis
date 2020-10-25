@@ -202,8 +202,21 @@ fn main() {
         devices::lpc::Piix3Bhyve::new(pic, pio, Arc::clone(&com1_sock))
     });
 
+    let pci_pm = devices::lpc::Piix3PM::create(&mctx);
+
     mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 31, 0), pci_lpc));
+
+    // OVMF-style registration
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 1, 0), pci_lpc));
+    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 1, 3), pci_pm));
+
+    let dbg = mctx.with_pio(|pio| {
+        let debug = std::fs::File::create("debug.out").unwrap();
+        devices::qemu::debug::QemuDebugPort::create(
+            Some(Box::new(debug) as Box<dyn std::io::Write + Send>),
+            pio,
+        )
+    });
 
     if let Some(bpath) = opts.blockdev.as_ref() {
         let plain: Arc<block::PlainBdev<devices::virtio::block::Request>> =
