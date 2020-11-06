@@ -12,14 +12,18 @@ pub struct QemuDebugPort {
     out: Option<Mutex<Box<dyn Write + Send>>>,
 }
 impl QemuDebugPort {
-    pub fn create(outf: Option<Box<dyn Write + Send>>, pio: &PioBus) -> Arc<Self> {
+    pub fn create(
+        outf: Option<Box<dyn Write + Send>>,
+        pio: &PioBus,
+    ) -> Arc<Self> {
         let this = Arc::new(Self { out: outf.map(Mutex::new) });
         pio.register(
             QEMU_DEBUG_IOPORT,
             1,
             Arc::downgrade(&this) as Weak<dyn PioDev>,
             0,
-        );
+        )
+        .unwrap();
         this
     }
 }

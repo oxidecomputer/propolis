@@ -238,6 +238,12 @@ fn main() {
         ctx.mctx.with_pci(|pci| pci.place_bars(ctx));
     });
 
+    let fwcfg = mctx.with_pio(|pio| devices::qemu::fwcfg::FwCfg::create(pio));
+    fwcfg.add_legacy(
+        devices::qemu::fwcfg::LegacyId::SmpCpuCount,
+        devices::qemu::fwcfg::FixedItem::new_u32(1),
+    );
+
     let mut vcpu0 = vm.vcpu(0);
 
     vcpu0.set_default_capabs().unwrap();
