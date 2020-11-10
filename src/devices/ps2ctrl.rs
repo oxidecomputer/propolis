@@ -11,8 +11,8 @@ const PS2_PORT_DATA: u16 = 0x60;
 const PS2_PORT_CMD: u16 = 0x64;
 const PS2_PORT_STATUS: u16 = 0x64;
 
-const PS2_IRQ_PRI: u8 = 0x1;
-const PS2_IRQ_AUX: u8 = 0x12;
+const PS2_IRQ_PRI: u8 = 1;
+const PS2_IRQ_AUX: u8 = 12;
 
 bitflags! {
     #[derive(Default)]
@@ -591,7 +591,8 @@ impl PS2Mouse {
                     self.resp(PS2M_R_ACK);
                 }
                 PS2M_CMD_SCALING1_SET | PS2M_CMD_SCALING2_SET => {
-                    self.status.set(PS2MStatus::SCALE2, v == PS2M_CMD_SCALING2_SET);
+                    self.status
+                        .set(PS2MStatus::SCALE2, v == PS2M_CMD_SCALING2_SET);
                     self.resp(PS2M_R_ACK);
                 }
 

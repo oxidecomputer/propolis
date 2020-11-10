@@ -234,6 +234,7 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
         state.queue_sel = 0;
         state.isr_status = 0;
         state.status = Status::RESET;
+        state.lintr_pin.as_ref().map(|pin| pin.deassert());
     }
 
     fn raise_isr(&self) {

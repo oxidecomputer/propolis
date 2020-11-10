@@ -88,7 +88,7 @@ impl Piix3Bhyve {
     fn write_pir(&self, pic: &IsaPIC, idx: usize, val: u8) {
         let mut regs = self.reg_pir.lock().unwrap();
         if regs[idx] != val {
-            let disabled = (val & PIR_MASK_DISABLE) == 0;
+            let disabled = (val & PIR_MASK_DISABLE) != 0;
             let irq = val & PIR_MASK_IRQ;
 
             // XXX better integrate with PCI interrupt routing
