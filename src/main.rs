@@ -64,12 +64,12 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
                     mctx.with_pio(|b| {
                         b.handle_out(io.port, io.bytes, val, &dctx)
                     });
-                    next_entry = VmEntry::InoutComplete(InoutRes::Out(io));
+                    next_entry = VmEntry::InoutFulfill(InoutRes::Out(io));
                 }
                 InoutReq::In(io) => {
                     let val = mctx
                         .with_pio(|b| b.handle_in(io.port, io.bytes, &dctx));
-                    next_entry = VmEntry::InoutComplete(InoutRes::In(io, val));
+                    next_entry = VmEntry::InoutFulfill(InoutRes::In(io, val));
                 }
             },
             VmExitKind::Mmio(mmio) => match mmio {
@@ -78,7 +78,7 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
                         b.handle_read(read.addr as usize, read.bytes, &dctx)
                     });
                     next_entry =
-                        VmEntry::MmioComplete(MmioRes::Read(MmioReadRes {
+                        VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
                             addr: read.addr,
                             bytes: read.bytes,
                             data: val,
@@ -94,7 +94,7 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
                         )
                     });
                     next_entry =
-                        VmEntry::MmioComplete(MmioRes::Write(MmioWriteRes {
+                        VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
                             addr: write.addr,
                             bytes: write.bytes,
                         }));
@@ -283,6 +283,7 @@ fn main() {
     vcpu0.set_default_capabs().unwrap();
     vcpu0.reboot_state().unwrap();
     vcpu0.activate().unwrap();
+    vcpu0.set_run_state(bhyve_api::VRS_RUN).unwrap();
     vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
 
     // Wait until someone connects to ttya

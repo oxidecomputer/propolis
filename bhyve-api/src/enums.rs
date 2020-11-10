@@ -66,9 +66,9 @@ pub enum vm_exitcode {
     VM_EXITCODE_PAUSE,
     VM_EXITCODE_PAGING,
     VM_EXITCODE_INST_EMUL,
-    VM_EXITCODE_SPINUP_AP,
+    VM_EXITCODE_RUN_STATE,
     VM_EXITCODE_MMIO_EMUL,
-    VM_EXITCODE_RUNBLOCK,
+    VM_EXITCODE_DEPRECATED,
     VM_EXITCODE_IOAPIC_EOI,
     VM_EXITCODE_SUSPENDED,
     VM_EXITCODE_MMIO,
@@ -85,11 +85,18 @@ pub enum vm_exitcode {
 
 #[repr(u32)]
 #[allow(non_camel_case_types, unused)]
+pub enum vcpu_reset_kind {
+    VRK_RESET = 0,
+    VRK_INIT = 1,
+}
+
+#[repr(u32)]
+#[allow(non_camel_case_types, unused)]
 pub enum vm_entry_cmds {
     VEC_DEFAULT = 0,
     VEC_DISCARD_INSTR,
-    VEC_COMPLETE_MMIO,
-    VEC_COMPLETE_INOUT,
+    VEC_FULFILL_MMIO,
+    VEC_FULFILL_INOUT,
 }
 
 #[repr(i32)]

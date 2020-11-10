@@ -32,6 +32,9 @@ pub const VM_GET_INTINFO: i32 = VMM_CPU_IOC_BASE | 0x12;
 pub const VM_RESTART_INSTRUCTION: i32 = VMM_CPU_IOC_BASE | 0x13;
 pub const VM_SET_KERNEMU_DEV: i32 = VMM_CPU_IOC_BASE | 0x14;
 pub const VM_GET_KERNEMU_DEV: i32 = VMM_CPU_IOC_BASE | 0x15;
+pub const VM_RESET_CPU: i32 = VMM_CPU_IOC_BASE | 0x16;
+pub const VM_GET_RUN_STATE: i32 = VMM_CPU_IOC_BASE | 0x17;
+pub const VM_SET_RUN_STATE: i32 = VMM_CPU_IOC_BASE | 0x18;
 
 // Operations requiring write-locking the VM
 pub const VM_REINIT: i32 = VMM_LOCK_IOC_BASE | 0x01;

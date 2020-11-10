@@ -253,3 +253,26 @@ pub struct vm_capability {
     pub capval: c_int,
     pub allcpus: c_int,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_vcpu_reset {
+    pub cpuid: c_int,
+    // kind values defined in vcpu_reset_kind
+    pub kind: u32,
+}
+
+// bit definitions for vm_run_state`state
+pub const VRS_INIT: u32 = 1 << 0;
+pub const VRS_RUN: u32 = 1 << 1;
+pub const VRS_PEND_SIPI: u32 = 1 << 14;
+pub const VRS_PEND_INIT: u32 = 1 << 15;
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_run_state {
+    pub cpuid: c_int,
+    pub state: u32,
+    pub sipi_vector: u8,
+    pub _pad: [u8; 3],
+}

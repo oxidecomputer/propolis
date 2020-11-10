@@ -10,8 +10,8 @@ interface presented by the bhyve kernel component, running on recent illumos
 bits is required.
 
 At a minimum, the build must include the fix for
-[12989](https://www.illumos.org/issues/12989). (Present since commit
-[e0c0d44](https://github.com/illumos/illumos-gate/commit/e0c0d44e917080841514d0dd031a696c74e8c435))
+[13275](https://www.illumos.org/issues/13275). (Present since commit
+[2606939](https://github.com/illumos/illumos-gate/commit/2606939d92dd3044a9851b2930ebf533c3c03892))
 
 ## Running
 

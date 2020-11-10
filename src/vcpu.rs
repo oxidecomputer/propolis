@@ -4,8 +4,6 @@ use std::sync::Arc;
 use crate::exits::{VmEntry, VmExit};
 use crate::vmm::VmmHdl;
 
-use bhyve_api::{vm_reg_name, SEG_ACCESS_P, SEG_ACCESS_S};
-
 pub struct VcpuHdl {
     hdl: Arc<VmmHdl>,
     id: i32,
@@ -61,56 +59,12 @@ impl VcpuHdl {
         Ok(())
     }
     pub fn reboot_state(&mut self) -> Result<()> {
-        self.set_reg(vm_reg_name::VM_REG_GUEST_CR0, 0x6000_0010)?;
-        self.set_reg(vm_reg_name::VM_REG_GUEST_RFLAGS, 0x0000_0002)?;
-
-        let cs_desc = bhyve_api::seg_desc {
-            base: 0xffff_0000,
-            limit: 0xffff,
-            // Present, R/W, Accessed
-            access: SEG_ACCESS_P | SEG_ACCESS_S | 0x3,
+        let mut vvr = bhyve_api::vm_vcpu_reset {
+            cpuid: self.id,
+            kind: bhyve_api::vcpu_reset_kind::VRK_RESET as u32,
         };
-        self.set_segreg(vm_reg_name::VM_REG_GUEST_CS, &cs_desc)?;
-        self.set_reg(vm_reg_name::VM_REG_GUEST_CS, 0xf000)?;
 
-        let data_desc = bhyve_api::seg_desc {
-            base: 0x0000_0000,
-            limit: 0xffff,
-            // Present, R/W, Accessed
-            access: SEG_ACCESS_P | SEG_ACCESS_S | 0x3,
-        };
-        let data_segs = [
-            vm_reg_name::VM_REG_GUEST_ES,
-            vm_reg_name::VM_REG_GUEST_SS,
-            vm_reg_name::VM_REG_GUEST_DS,
-            vm_reg_name::VM_REG_GUEST_FS,
-            vm_reg_name::VM_REG_GUEST_GS,
-        ];
-        for seg in &data_segs {
-            self.set_segreg(*seg, &data_desc)?;
-            self.set_reg(*seg, 0)?;
-        }
-
-        let gidtr_desc =
-            bhyve_api::seg_desc { base: 0x0000_0000, limit: 0xffff, access: 0 };
-        self.set_segreg(vm_reg_name::VM_REG_GUEST_GDTR, &gidtr_desc)?;
-        self.set_segreg(vm_reg_name::VM_REG_GUEST_IDTR, &gidtr_desc)?;
-
-        let ldtr_desc = bhyve_api::seg_desc {
-            base: 0x0000_0000,
-            limit: 0xffff,
-            // LDT present
-            access: SEG_ACCESS_P | 0b0010,
-        };
-        self.set_segreg(vm_reg_name::VM_REG_GUEST_LDTR, &ldtr_desc)?;
-
-        let tr_desc = bhyve_api::seg_desc {
-            base: 0x0000_0000,
-            limit: 0xffff,
-            // TSS32 busy
-            access: SEG_ACCESS_P | 0b1011,
-        };
-        self.set_segreg(vm_reg_name::VM_REG_GUEST_TR, &tr_desc)?;
+        self.hdl.ioctl(bhyve_api::VM_RESET_CPU, &mut vvr)?;
 
         Ok(())
     }
@@ -118,6 +72,16 @@ impl VcpuHdl {
         let mut cpu = self.id;
 
         self.hdl.ioctl(bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
+        Ok(())
+    }
+    pub fn set_run_state(&mut self, state: u32) -> Result<()> {
+        let mut state = bhyve_api::vm_run_state {
+            cpuid: self.id,
+            state,
+            sipi_vector: 0,
+            ..Default::default()
+        };
+        self.hdl.ioctl(bhyve_api::VM_SET_RUN_STATE, &mut state)?;
         Ok(())
     }
     pub fn run(&mut self, entry: &VmEntry) -> Result<VmExit> {

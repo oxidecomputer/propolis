@@ -126,15 +126,15 @@ pub enum MmioRes {
 
 pub enum VmEntry {
     Run,
-    InoutComplete(InoutRes),
-    MmioComplete(MmioRes),
+    InoutFulfill(InoutRes),
+    MmioFulFill(MmioRes),
 }
 impl VmEntry {
     pub fn to_raw(&self, cpuid: i32, exit_ptr: *mut vm_exit) -> vm_entry {
         let mut payload = vm_entry_payload::default();
         let cmd = match self {
             VmEntry::Run => vm_entry_cmds::VEC_DEFAULT,
-            VmEntry::InoutComplete(res) => {
+            VmEntry::InoutFulfill(res) => {
                 let io = match res {
                     InoutRes::In(io, val) => {
                         payload.inout.flags = bhyve_api::INOUT_IN;
@@ -149,9 +149,9 @@ impl VmEntry {
                 };
                 payload.inout.port = io.port;
                 payload.inout.bytes = io.bytes;
-                vm_entry_cmds::VEC_COMPLETE_INOUT
+                vm_entry_cmds::VEC_FULFILL_INOUT
             }
-            VmEntry::MmioComplete(res) => {
+            VmEntry::MmioFulFill(res) => {
                 let (addr, bytes) = match res {
                     MmioRes::Read(read) => {
                         payload.mmio.read = 1;
@@ -162,7 +162,7 @@ impl VmEntry {
                 };
                 payload.mmio.gpa = addr;
                 payload.mmio.bytes = bytes;
-                vm_entry_cmds::VEC_COMPLETE_MMIO
+                vm_entry_cmds::VEC_FULFILL_MMIO
             }
         };
         vm_entry {
