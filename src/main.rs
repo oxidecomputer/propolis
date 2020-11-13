@@ -22,6 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
+use devices::chipset::Chipset;
 use dispatch::*;
 use exits::*;
 use vcpu::VcpuHdl;
@@ -185,30 +186,23 @@ fn main() {
     drop(romfp);
 
     vm.initalize_rtc(lowmem).unwrap();
-    vm.wire_pci_root();
 
     let mctx = MachineCtx::new(&vm);
     let mut dispatch = Dispatcher::new(mctx.clone());
     dispatch.spawn_events().unwrap();
-
-    let pci_hostbridge = devices::piix4::Piix4HostBridge::new();
 
     let com1_sock = devices::uart::UartSock::bind(Path::new("./ttya")).unwrap();
     dispatch.with_ctx(|ctx| {
         com1_sock.accept_ready(ctx);
     });
 
-    let pci_lpc = vm.create_lpc(|pic, pio| {
-        devices::lpc::Piix3Bhyve::new(pic, pio, Arc::clone(&com1_sock))
+    let chipset = mctx.with_pio(|pio| {
+        devices::chipset::i440fx::I440Fx::new(
+            vm.get_hdl(),
+            pio,
+            Arc::clone(&com1_sock),
+        )
     });
-
-    let pci_pm = devices::lpc::Piix3PM::create(&mctx);
-
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 0, 0), pci_hostbridge));
-
-    // OVMF-style registration
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 1, 0), pci_lpc));
-    mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 1, 3), pci_pm));
 
     let dbg = mctx.with_pio(|pio| {
         let debug = std::fs::File::create("debug.out").unwrap();
@@ -227,16 +221,14 @@ fn main() {
             Arc::clone(&plain)
                 as Arc<dyn block::BlockDev<devices::virtio::block::Request>>,
         );
-        mctx.with_pci(|pci| pci.attach(PciBDF::new(0, 4, 0), vioblk));
+        chipset.pci_attach(PciBDF::new(0, 4, 0), vioblk);
 
         plain.start_dispatch("bdev thread".to_string(), &dispatch);
     }
 
-    // with all pci devices attached, place their BARs
-    dispatch.with_ctx(|ctx| {
-        // hacky nesting
-        ctx.mctx.with_pci(|pci| pci.place_bars(ctx));
-    });
+    // with all pci devices attached, place their BARs and wire up access to PCI
+    // configuration space
+    dispatch.with_ctx(|ctx| chipset.pci_finalize(ctx));
 
     let fwcfg = mctx.with_pio(|pio| devices::qemu::fwcfg::FwCfg::create(pio));
     fwcfg.add_legacy(

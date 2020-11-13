@@ -1,50 +1,199 @@
 use std::sync::{Arc, Mutex, Weak};
 
+use super::Chipset;
 use crate::common::*;
 use crate::devices::ps2ctrl::PS2Ctrl;
 use crate::devices::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::dispatch::DispCtx;
-use crate::intr_pins::IsaPIC;
-use crate::pci;
+use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
+use crate::pci::{self, INTxPinID, PciBDF};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
-use crate::vmm::MachineCtx;
+use crate::vmm::VmmHdl;
 
 use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
+const LEGACY_PIC_PINS: u8 = 32;
+
+pub struct I440Fx {
+    pci_bus: Arc<pci::PciBus>,
+    pic: Arc<LegacyPIC>,
+
+    lnk_pins: [Arc<LNKPin>; 4],
+    sci_pin: Arc<LNKPin>,
+}
+impl I440Fx {
+    pub fn new(
+        hdl: Arc<VmmHdl>,
+        pio: &PioBus,
+        com1_sock: Arc<UartSock>,
+    ) -> Arc<Self> {
+        let pic = LegacyPIC::new(Arc::clone(&hdl));
+
+        let sci_pin = Arc::new(LNKPin::new());
+        sci_pin.reassign(pic.pin_handle(SCI_IRQ));
+
+        let this = Arc::new(Self {
+            pic,
+            pci_bus: Arc::new(pci::PciBus::new()),
+
+            lnk_pins: [
+                Arc::new(LNKPin::new()),
+                Arc::new(LNKPin::new()),
+                Arc::new(LNKPin::new()),
+                Arc::new(LNKPin::new()),
+            ],
+            sci_pin,
+        });
+
+        let hbdev = Piix4HostBridge::new();
+        let lpcdev =
+            Piix3Lpc::new(Arc::downgrade(&this), &this.pic, pio, com1_sock);
+        let pmdev = Piix3PM::create(hdl.as_ref(), pio);
+
+        this.pci_bus.attach(PciBDF::new(0, 0, 0), hbdev);
+        this.pci_bus.attach(PciBDF::new(0, 1, 0), lpcdev);
+        this.pci_bus.attach(PciBDF::new(0, 1, 3), pmdev);
+        this
+    }
+
+    fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
+        assert!(idx <= 3);
+        self.lnk_pins[idx].reassign(irq.and_then(|i| self.pic.pin_handle(i)));
+    }
+
+    fn route_lintr(&self, bdf: &PciBDF) -> (INTxPinID, Arc<dyn IntrPin>) {
+        let intx_pin = match (bdf.func() + 1) % 4 {
+            1 => INTxPinID::INTA,
+            2 => INTxPinID::INTB,
+            3 => INTxPinID::INTC,
+            4 => INTxPinID::INTD,
+            _ => panic!(),
+        };
+        // D->A->B->C starting at 0:0.0
+        let pin_route = (bdf.dev() + intx_pin as u8 + 2) % 4;
+        (
+            intx_pin,
+            Arc::clone(&self.lnk_pins[pin_route as usize]) as Arc<dyn IntrPin>,
+        )
+    }
+}
+impl Chipset for I440Fx {
+    fn pci_attach(&self, bdf: PciBDF, dev: Arc<dyn pci::PciEndpoint>) {
+        dev.attach(&|| self.route_lintr(&bdf));
+        self.pci_bus.attach(bdf, dev);
+    }
+    fn pci_finalize(&self, ctx: &DispCtx) {
+        let bus = Arc::downgrade(&self.pci_bus) as Weak<dyn PioDev>;
+        ctx.mctx.with_pio(|pio| {
+            let bus2 = Weak::clone(&bus);
+            pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, bus, 0).unwrap();
+            pio.register(pci::PORT_PCI_CONFIG_DATA, 4, bus2, 0).unwrap();
+        });
+        self.pci_bus.place_bars(ctx);
+    }
+}
+
+struct LNKPin {
+    inner: Mutex<LNKPinInner>,
+}
+struct LNKPinInner {
+    asserted: bool,
+    pin: Option<LegacyPin>,
+}
+impl LNKPin {
+    fn new() -> Self {
+        Self { inner: Mutex::new(LNKPinInner { asserted: false, pin: None }) }
+    }
+    fn reassign(&self, new_pin: Option<LegacyPin>) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(old_pin) = inner.pin.as_ref() {
+            if inner.asserted {
+                old_pin.deassert()
+            }
+        }
+
+        if let Some(pin) = new_pin.as_ref() {
+            if inner.asserted {
+                pin.assert()
+            }
+        }
+        inner.pin = new_pin;
+    }
+}
+impl IntrPin for LNKPin {
+    fn assert(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.asserted = true;
+        inner.pin.as_ref().map(|pin| pin.assert());
+    }
+    fn deassert(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.asserted = false;
+        inner.pin.as_ref().map(|pin| pin.deassert());
+    }
+    fn pulse(&self) {
+        let inner = self.inner.lock().unwrap();
+        inner.pin.as_ref().map(|pin| pin.pulse());
+    }
+    fn is_asserted(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.asserted
+    }
+}
+
 const PIR_OFFSET: usize = 0x60;
-const PIR_LEN: usize = 8;
+const PIR_LEN: usize = 4;
 const PIR_END: usize = PIR_OFFSET + PIR_LEN;
 
 const PIR_MASK_DISABLE: u8 = 0x80;
 const PIR_MASK_IRQ: u8 = 0x0f;
+
+const SCI_IRQ: u8 = 0x9;
+
+fn valid_pir_irq(irq: u8) -> bool {
+    // Existing ACPI tables allow 3-7, 9-12, 14-15
+    matches!(irq, 3..=7 | 9..=12 | 14 | 15)
+}
+
+struct Piix4HostBridge {}
+impl Piix4HostBridge {
+    pub fn new() -> Arc<pci::DeviceInst> {
+        pci::Builder::new(pci::Ident {
+            vendor_id: 0x8086,
+            device_id: 0x1237,
+            class: 0x06,
+            ..Default::default()
+        })
+        .finish_plain(Self {})
+    }
+}
+impl pci::Device for Piix4HostBridge {}
 
 const COM1_PORT: u16 = 0x3f8;
 const COM2_PORT: u16 = 0x2f8;
 const COM1_IRQ: u8 = 4;
 const COM2_IRQ: u8 = 3;
 
-pub struct Piix3Bhyve {
-    reg_pir: Mutex<[u8; 8]>,
-    pic: Weak<IsaPIC>,
+pub struct Piix3Lpc {
+    reg_pir: Mutex<[u8; PIR_LEN]>,
     uart_com1: Arc<LpcUart>,
     // uart_com2: Arc<LpcUart>,
     ps2_ctrl: Arc<PS2Ctrl>,
+    chipset: Weak<I440Fx>,
 }
-impl Piix3Bhyve {
+impl Piix3Lpc {
     pub fn new(
-        pic: &Arc<IsaPIC>,
+        chipset: Weak<I440Fx>,
+        pic: &LegacyPIC,
         pio_bus: &PioBus,
         com1_sock: Arc<UartSock>,
     ) -> Arc<pci::DeviceInst> {
         let com1 = LpcUart::new(com1_sock, pic.pin_handle(COM1_IRQ).unwrap());
         // let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
 
-        // UART interrupts mapped the same on ioapic and atpic
-        pic.set_irq_atpic(COM1_IRQ, Some(COM1_IRQ));
-        // pic.set_irq_atpic(COM2_IRQ, Some(COM2_IRQ));
         pio_bus
             .register(
                 COM1_PORT,
@@ -64,15 +213,12 @@ impl Piix3Bhyve {
         ps2_ctrl.attach(pio_bus, pic);
 
         let this = Self {
-            reg_pir: Mutex::new([0u8; 8]),
-            pic: Arc::downgrade(pic),
+            reg_pir: Mutex::new([0u8; PIR_LEN]),
             uart_com1: com1,
             // uart_com2: com2,
             ps2_ctrl,
+            chipset,
         };
-
-        // Make configurable later
-        this.set_pir_defaults();
 
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,
@@ -85,35 +231,26 @@ impl Piix3Bhyve {
         .finish_plain(this)
     }
 
-    fn write_pir(&self, pic: &IsaPIC, idx: usize, val: u8) {
+    fn write_pir(&self, idx: usize, val: u8) {
+        assert!(idx < PIR_LEN);
+
         let mut regs = self.reg_pir.lock().unwrap();
         if regs[idx] != val {
             let disabled = (val & PIR_MASK_DISABLE) != 0;
             let irq = val & PIR_MASK_IRQ;
 
             // XXX better integrate with PCI interrupt routing
-            if !disabled && Self::valid_irq(irq) {
-                pic.set_irq_atpic(16 + idx as u8, Some(irq));
+            let chipset = Weak::upgrade(&self.chipset).unwrap();
+            if !disabled && valid_pir_irq(irq) {
+                chipset.set_lnk_route(idx, Some(irq));
             } else {
-                pic.set_irq_atpic(16 + idx as u8, None);
+                chipset.set_lnk_route(idx, None);
             }
             regs[idx] = val;
         }
     }
-    fn valid_irq(irq: u8) -> bool {
-        // Existing ACPI tables allow 3-7, 9-12, 14-15
-        matches!(irq, 3..=7 | 9..=12 | 14 | 15)
-    }
-
-    pub fn set_pir_defaults(&self) {
-        let pic = Weak::upgrade(&self.pic).unwrap();
-        let default_irqs: &[u8] = &[5, 6, 9, 10, 11, 12, 14, 15];
-        for (idx, irq) in default_irqs.iter().enumerate() {
-            self.write_pir(&pic, idx, *irq);
-        }
-    }
 }
-impl pci::Device for Piix3Bhyve {
+impl pci::Device for Piix3Lpc {
     fn cfg_rw(&self, region: u8, rwo: &mut RWOp) {
         assert_eq!(region as usize, PIR_OFFSET);
         assert!(rwo.offset() + rwo.len() <= PIR_END - PIR_OFFSET);
@@ -125,11 +262,9 @@ impl pci::Device for Piix3Bhyve {
                 ro.buf.copy_from_slice(&reg[off..(off + ro.buf.len())]);
             }
             RWOp::Write(wo) => {
-                if let Some(pic) = Weak::upgrade(&self.pic) {
-                    let off = wo.offset;
-                    for (i, val) in wo.buf.iter().enumerate() {
-                        self.write_pir(&pic, i + off, *val);
-                    }
+                let off = wo.offset;
+                for (i, val) in wo.buf.iter().enumerate() {
+                    self.write_pir(i + off, *val);
                 }
             }
         }
@@ -219,7 +354,7 @@ pub struct Piix3PM {
     sa_cell: SelfArcCell<Self>,
 }
 impl Piix3PM {
-    pub fn create(mctx: &MachineCtx) -> Arc<pci::DeviceInst> {
+    pub fn create(hdl: &VmmHdl, pio: &PioBus) -> Arc<pci::DeviceInst> {
         let regs = PMRegs::default();
         let mut this = Arc::new(Self {
             regs: Mutex::new(regs),
@@ -228,17 +363,14 @@ impl Piix3PM {
         SelfArc::self_arc_init(&mut this);
 
         // XXX: static registration for now
-        mctx.with_pio(|pio_bus| {
-            pio_bus
-                .register(
-                    PMBASE_DEFAULT,
-                    PMBASE_LEN,
-                    Arc::downgrade(&this) as Weak<dyn PioDev>,
-                    0,
-                )
-                .unwrap();
-        });
-        mctx.with_hdl(|hdl| hdl.pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap());
+        pio.register(
+            PMBASE_DEFAULT,
+            PMBASE_LEN,
+            Arc::downgrade(&this) as Weak<dyn PioDev>,
+            0,
+        )
+        .unwrap();
+        hdl.pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap();
 
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,

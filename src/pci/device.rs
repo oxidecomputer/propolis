@@ -6,7 +6,7 @@ use super::bits::*;
 use super::{INTxPinID, PciEndpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::intr_pins::{IntrPin, IsaPin};
+use crate::intr_pins::IntrPin;
 use crate::pio::PioDev;
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
@@ -120,7 +120,7 @@ struct State {
     reg_intr_line: u8,
     reg_intr_pin: u8,
 
-    lintr_pin: Option<IsaPin>,
+    lintr_pin: Option<Arc<dyn IntrPin>>,
 
     update_in_progress: bool,
 }
@@ -533,12 +533,11 @@ impl PciEndpoint for DeviceInst {
             CfgReg::Custom(region) => self.inner_ref().cfg_rw(*region, rwo),
         });
     }
-    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, IsaPin)) {
+    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>)) {
         let mut state = self.state.lock().unwrap();
         if self.lintr_req {
             let (intx, isa_pin) = get_lintr();
             state.reg_intr_pin = intx as u8;
-            state.reg_intr_line = isa_pin.get_pin();
             state.lintr_pin = Some(isa_pin);
         }
     }
@@ -614,10 +613,10 @@ impl INTxPin {
     pub fn pulse(&self) {
         self.with_pin(|pin| pin.pulse());
     }
-    fn with_pin(&self, f: impl FnOnce(&mut IsaPin)) {
+    fn with_pin(&self, f: impl FnOnce(&dyn IntrPin)) {
         if let Some(dev) = Weak::upgrade(&self.outer) {
             let mut state = dev.state.lock().unwrap();
-            f(state.lintr_pin.as_mut().unwrap());
+            f(state.lintr_pin.as_ref().unwrap().as_ref());
         }
     }
 }

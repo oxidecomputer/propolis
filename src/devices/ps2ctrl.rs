@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::intr_pins::{IsaPIC, IsaPin};
+use crate::intr_pins::{LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 
 const PS2_PORT_DATA: u16 = 0x60;
@@ -92,8 +92,8 @@ struct PS2State {
     pri_port: PS2Kbd,
     aux_port: PS2Mouse,
 
-    pri_pin: Option<IsaPin>,
-    aux_pin: Option<IsaPin>,
+    pri_pin: Option<LegacyPin>,
+    aux_pin: Option<LegacyPin>,
 }
 impl PS2State {
     fn pri_avail(&self) -> bool {
@@ -113,7 +113,7 @@ impl PS2Ctrl {
     pub fn create() -> Arc<Self> {
         Arc::new(Self { state: Mutex::new(PS2State::default()) })
     }
-    pub fn attach(self: &Arc<Self>, bus: &PioBus, pic: &IsaPIC) {
+    pub fn attach(self: &Arc<Self>, bus: &PioBus, pic: &LegacyPIC) {
         let data_ref = Arc::downgrade(self) as Weak<dyn PioDev>;
         let cmd_ref = Weak::clone(&data_ref);
         bus.register(PS2_PORT_DATA, 1, data_ref, 0).unwrap();
@@ -253,13 +253,13 @@ impl PS2Ctrl {
         val.bits()
     }
     fn update_intr(&self, state: &mut PS2State) {
-        let pri_pin = state.pri_pin.as_mut().unwrap();
-        pri_pin.set(
+        let pri_pin = state.pri_pin.as_ref().unwrap();
+        pri_pin.set_state(
             state.ctrl_cfg.contains(CtrlCfg::PRI_INTR_EN)
                 && state.pri_port.has_output(),
         );
-        let aux_pin = state.aux_pin.as_mut().unwrap();
-        aux_pin.set(
+        let aux_pin = state.aux_pin.as_ref().unwrap();
+        aux_pin.set_state(
             state.ctrl_cfg.contains(CtrlCfg::AUX_INTR_EN)
                 && state.aux_port.has_output(),
         );

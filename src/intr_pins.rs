@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::util::self_arc::*;
 use crate::vmm::VmmHdl;
 
-pub trait IntrPin {
-    fn assert(&mut self);
-    fn deassert(&mut self);
+pub trait IntrPin: Send + Sync + 'static {
+    fn assert(&self);
+    fn deassert(&self);
     fn is_asserted(&self) -> bool;
-    fn pulse(&mut self) {
+    fn pulse(&self) {
         if !self.is_asserted() {
             self.assert();
             self.deassert();
@@ -21,194 +21,131 @@ pub enum PinOp {
     Pulse,
 }
 
-pub struct IsaPIC {
+pub struct LegacyPIC {
     sa_cell: SelfArcCell<Self>,
-    capacity: u8,
-    pins: Mutex<Vec<IsaEntry>>,
+    inner: Mutex<Inner>,
     hdl: Arc<VmmHdl>,
 }
 
-#[derive(Default)]
-struct IsaEntry {
-    ioapic_irq: u8,
-    atpic_irq: Option<u8>,
-    atpic_disable: bool,
-    level: usize,
+struct Inner {
+    pins: [Entry; 16],
 }
 
-impl IsaPIC {
-    pub fn new(capacity: u8, hdl: Arc<VmmHdl>) -> Arc<Self> {
-        assert!(capacity == hdl.ioapic_pin_count().unwrap());
-        let mut entries = Vec::with_capacity(capacity as usize);
-        for idx in 0..capacity {
-            entries
-                .push(IsaEntry { ioapic_irq: idx as u8, ..Default::default() });
+#[derive(Default, Copy, Clone)]
+struct Entry {
+    level: usize,
+}
+impl Entry {
+    fn process_op(&mut self, op: &PinOp) -> bool {
+        match op {
+            PinOp::Assert => {
+                self.level += 1;
+                // Notify if going 0->1
+                self.level == 1
+            }
+            PinOp::Deassert => {
+                assert!(self.level != 0);
+                self.level -= 1;
+                // Notify if going 1->0
+                self.level == 0
+            }
+            PinOp::Pulse => {
+                // Notify if going 0->1->0
+                self.level == 0
+            }
         }
+    }
+}
+
+impl LegacyPIC {
+    pub fn new(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let mut this = Arc::new(Self {
             sa_cell: Default::default(),
-            capacity,
-            pins: Mutex::new(entries),
+            inner: Mutex::new(Inner { pins: [Entry::default(); 16] }),
             hdl,
         });
         SelfArc::self_arc_init(&mut this);
         this
     }
 
-    pub fn set_irq_atpic(&self, pin: u8, irq: Option<u8>) {
-        assert!(pin < self.capacity);
-
-        let mut pins = self.pins.lock().unwrap();
-        let mut entry = &mut pins[pin as usize];
-        match (entry.atpic_irq, irq) {
-            (Some(old), Some(new)) if old != new => {
-                // XXX: does not handle sharing properly today
-                if entry.level != 0 {
-                    self.hdl.isa_deassert_irq(old, None).unwrap();
-                    self.hdl.isa_assert_irq(new, None).unwrap();
-                }
-                entry.atpic_irq = Some(new)
-            }
-            (Some(old), None) => {
-                if entry.level != 0 {
-                    self.hdl.isa_deassert_irq(old, None).unwrap()
-                }
-                entry.atpic_irq = None;
-            }
-            (None, Some(new)) => {
-                let mut entry = &mut pins[pin as usize];
-                if entry.level != 0 {
-                    self.hdl.isa_assert_irq(new, None).unwrap()
-                }
-                entry.atpic_irq = Some(new)
-            }
-            _ => {}
+    pub fn pin_handle(&self, irq: u8) -> Option<LegacyPin> {
+        if irq >= 16 && irq == 2 {
+            return None;
         }
+        Some(LegacyPin::new(irq, self.self_weak()))
     }
 
-    pub fn pin_irq(&self, pin: u8, op: PinOp) {
-        assert!(pin < self.capacity);
+    fn do_irq(&self, op: PinOp, irq: u8) {
+        assert!(irq < 16);
 
-        let mut pins = self.pins.lock().unwrap();
-        let mut entry = &mut pins[pin as usize];
-        match (&op, entry.level) {
-            (PinOp::Assert, 0) => {
-                self.do_pin_irq(entry, op);
-                entry.level = 1;
-            }
-            (PinOp::Deassert, 1) => {
-                self.do_pin_irq(entry, op);
-                entry.level = 0;
-            }
-            (PinOp::Pulse, 0) => {
-                self.do_pin_irq(entry, op);
-            }
-
-            // easy increment/decrement cases
-            (PinOp::Assert, _) => {
-                entry.level += 1;
-            }
-            (PinOp::Deassert, _) => {
-                assert!(entry.level != 0);
-                entry.level -= 1;
-            }
-            (PinOp::Pulse, _) => {
-                // nothing required!
-            }
-        }
-    }
-
-    fn do_pin_irq(&self, entry: &IsaEntry, op: PinOp) {
-        if entry.atpic_irq.is_none() || entry.atpic_disable {
-            let ioapic_irq = entry.ioapic_irq;
+        let mut inner = self.inner.lock().unwrap();
+        if inner.pins[irq as usize].process_op(&op) {
             match op {
                 PinOp::Assert => {
-                    self.hdl.ioapic_assert_irq(ioapic_irq).unwrap();
+                    self.hdl.isa_assert_irq(irq, Some(irq)).unwrap();
                 }
                 PinOp::Deassert => {
-                    self.hdl.ioapic_deassert_irq(ioapic_irq).unwrap();
+                    self.hdl.isa_deassert_irq(irq, Some(irq)).unwrap();
                 }
                 PinOp::Pulse => {
-                    self.hdl.ioapic_pulse_irq(ioapic_irq).unwrap();
-                }
-            }
-        } else {
-            let ioapic_irq = entry.ioapic_irq;
-            let atpic_irq = entry.atpic_irq.clone().unwrap();
-            match op {
-                PinOp::Assert => {
-                    self.hdl
-                        .isa_assert_irq(atpic_irq, Some(ioapic_irq))
-                        .unwrap();
-                }
-                PinOp::Deassert => {
-                    self.hdl
-                        .isa_deassert_irq(atpic_irq, Some(ioapic_irq))
-                        .unwrap();
-                }
-                PinOp::Pulse => {
-                    self.hdl
-                        .isa_pulse_irq(atpic_irq, Some(ioapic_irq))
-                        .unwrap();
+                    self.hdl.isa_pulse_irq(irq, Some(irq)).unwrap();
                 }
             }
         }
-    }
-
-    pub fn pin_handle(&self, pin: u8) -> Option<IsaPin> {
-        assert!(pin < self.capacity);
-        Some(IsaPin { asserted: false, pin, pic: self.self_weak() })
     }
 }
-
-impl SelfArc for IsaPIC {
+impl SelfArc for LegacyPIC {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
         &self.sa_cell
     }
 }
 
-pub struct IsaPin {
-    asserted: bool,
-    pin: u8,
-    pic: Weak<IsaPIC>,
+pub struct LegacyPin {
+    irq: u8,
+    asserted: Mutex<bool>,
+    pic: Weak<LegacyPIC>,
 }
-impl IsaPin {
-    pub fn get_pin(&self) -> u8 {
-        self.pin
+impl LegacyPin {
+    fn new(irq: u8, pic: Weak<LegacyPIC>) -> Self {
+        Self { irq, asserted: Mutex::new(false), pic }
     }
-    pub fn set(&mut self, assert: bool) {
-        if assert {
-            self.assert()
+    pub fn set_state(&self, is_asserted: bool) {
+        if is_asserted {
+            self.assert();
         } else {
-            self.deassert()
+            self.deassert();
         }
     }
 }
-
-impl IntrPin for IsaPin {
-    fn assert(&mut self) {
-        if !self.asserted {
-            self.asserted = true;
+impl IntrPin for LegacyPin {
+    fn assert(&self) {
+        let mut asserted = self.asserted.lock().unwrap();
+        if !*asserted {
+            *asserted = true;
             if let Some(pic) = Weak::upgrade(&self.pic) {
-                pic.pin_irq(self.pin, PinOp::Assert);
+                pic.do_irq(PinOp::Assert, self.irq);
             }
         }
     }
-    fn deassert(&mut self) {
-        if self.asserted {
-            self.asserted = false;
+    fn deassert(&self) {
+        let mut asserted = self.asserted.lock().unwrap();
+        if *asserted {
+            *asserted = false;
             if let Some(pic) = Weak::upgrade(&self.pic) {
-                pic.pin_irq(self.pin, PinOp::Deassert);
+                pic.do_irq(PinOp::Deassert, self.irq);
             }
         }
     }
-    fn pulse(&mut self) {
-        if !self.asserted {
+    fn pulse(&self) {
+        let asserted = self.asserted.lock().unwrap();
+        if !*asserted {
             if let Some(pic) = Weak::upgrade(&self.pic) {
-                pic.pin_irq(self.pin, PinOp::Pulse);
+                pic.do_irq(PinOp::Pulse, self.irq);
             }
         }
     }
     fn is_asserted(&self) -> bool {
-        self.asserted
+        let asserted = self.asserted.lock().unwrap();
+        *asserted
     }
 }

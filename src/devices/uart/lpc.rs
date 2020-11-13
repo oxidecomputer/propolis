@@ -9,7 +9,7 @@ use super::base::Uart;
 use crate::common::*;
 use crate::dispatch::event_disp::{EventTargetFd, SubId};
 use crate::dispatch::DispCtx;
-use crate::intr_pins::IsaPin;
+use crate::intr_pins::{IntrPin, LegacyPin};
 use crate::pio::PioDev;
 use crate::util::self_arc::*;
 
@@ -25,11 +25,11 @@ pub struct LpcUart {
 }
 struct UartState {
     uart: Uart,
-    irq_pin: IsaPin,
+    irq_pin: LegacyPin,
 }
 
 impl LpcUart {
-    pub fn new(sock: Arc<UartSock>, irq_pin: IsaPin) -> Arc<Self> {
+    pub fn new(sock: Arc<UartSock>, irq_pin: LegacyPin) -> Arc<Self> {
         let mut this = Arc::new(Self {
             state: Mutex::new(UartState { uart: Uart::new(), irq_pin }),
             sock,
@@ -51,8 +51,11 @@ impl LpcUart {
                 break;
             }
         }
-        let intr_state = this.uart.intr_state();
-        this.irq_pin.set(intr_state);
+        if this.uart.intr_state() {
+            this.irq_pin.assert()
+        } else {
+            this.irq_pin.deassert()
+        }
     }
 }
 impl SelfArc for LpcUart {

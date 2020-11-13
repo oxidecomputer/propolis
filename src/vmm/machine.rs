@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::{GuestAddr, GuestRegion};
 use crate::devices::rtc::Rtc;
-use crate::intr_pins::IsaPIC;
-use crate::pci::{PciBus, PORT_PCI_CONFIG_ADDR, PORT_PCI_CONFIG_DATA};
-use crate::pio::{PioBus, PioDev};
+use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::VcpuHdl;
 use crate::vmm::{create_vm, Prot, VmmHdl};
@@ -27,8 +25,6 @@ const FLAGS_MAP_GUARD: i32 =
 #[cfg(not(target_os = "illumos"))]
 const FLAGS_MAP_GUARD: i32 =
     libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_NORESERVE;
-
-const LEGACY_PIC_PINS: u8 = 32;
 
 #[derive(Copy, Clone)]
 enum MapKind {
@@ -57,8 +53,6 @@ pub struct Machine {
     map_physmem: ASpace<MapEnt>,
     bus_mmio: Mutex<ASpace<()>>,
     bus_pio: PioBus,
-    pci_root: Arc<PciBus>,
-    isa_pic: Arc<IsaPIC>,
 }
 
 impl Machine {
@@ -96,30 +90,8 @@ impl Machine {
         Ok(())
     }
 
-    pub fn wire_pci_root(&self) {
-        self.bus_pio
-            .register(
-                PORT_PCI_CONFIG_ADDR,
-                4,
-                Arc::downgrade(&self.pci_root) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-        self.bus_pio
-            .register(
-                PORT_PCI_CONFIG_DATA,
-                4,
-                Arc::downgrade(&self.pci_root) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-    }
-
-    pub fn create_lpc<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&Arc<IsaPIC>, &PioBus) -> R,
-    {
-        f(&self.isa_pic, &self.bus_pio)
+    pub fn get_hdl(&self) -> Arc<VmmHdl> {
+        Arc::clone(&self.hdl)
     }
 }
 
@@ -138,12 +110,6 @@ impl MachineCtx {
         F: FnOnce(&PioBus) -> R,
     {
         f(&self.vm.bus_pio)
-    }
-    pub fn with_pci<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&PciBus) -> R,
-    {
-        f(&self.vm.pci_root)
     }
     pub fn with_hdl<F, R>(&self, f: F) -> R
     where
@@ -490,8 +456,6 @@ impl Builder {
             )));
         }
 
-        let pic = IsaPIC::new(LEGACY_PIC_PINS, arc_hdl.clone());
-        let pci_root = Arc::new(PciBus::new(Arc::downgrade(&pic)));
         let machine = Arc::new(Machine {
             hdl: arc_hdl,
             max_cpu: self.max_cpu,
@@ -501,8 +465,6 @@ impl Builder {
             map_physmem: map,
             bus_mmio: Mutex::new(ASpace::new(0, MAX_PHYSMEM)),
             bus_pio: PioBus::new(),
-            pci_root,
-            isa_pic: pic,
         });
         Ok(machine)
     }

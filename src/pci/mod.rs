@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::intr_pins::{IsaPIC, IsaPin};
+use crate::intr_pins::IntrPin;
 use crate::pio::PioDev;
 
 use byteorder::{ByteOrder, LE};
@@ -21,9 +21,26 @@ const MASK_BUS: u8 = 0xff;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct PciBDF {
-    bus: u8,
-    dev: u8,
-    func: u8,
+    inner_bus: u8,
+    inner_dev: u8,
+    inner_func: u8,
+}
+impl PciBDF {
+    pub fn new(bus: u8, dev: u8, func: u8) -> Self {
+        assert!(dev <= MASK_DEV);
+        assert!(func <= MASK_FUNC);
+
+        Self { inner_bus: bus, inner_dev: dev, inner_func: func }
+    }
+    pub fn bus(&self) -> u8 {
+        self.inner_bus
+    }
+    pub fn dev(&self) -> u8 {
+        self.inner_dev
+    }
+    pub fn func(&self) -> u8 {
+        self.inner_func
+    }
 }
 
 #[repr(u8)]
@@ -35,18 +52,9 @@ pub enum INTxPinID {
     INTD = 4,
 }
 
-impl PciBDF {
-    pub fn new(bus: u8, dev: u8, func: u8) -> Self {
-        assert!(dev <= MASK_DEV);
-        assert!(func <= MASK_FUNC);
-
-        Self { bus, dev, func }
-    }
-}
-
 pub trait PciEndpoint: Send + Sync {
     fn cfg_rw(&self, op: &mut RWOp<'_, '_>, ctx: &DispCtx);
-    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, IsaPin));
+    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>));
     fn place_bars(
         &self,
         place_bar: &mut dyn FnMut(BarN, &BarDefine) -> u64,
@@ -56,7 +64,6 @@ pub trait PciEndpoint: Send + Sync {
 
 pub struct PciBus {
     state: Mutex<PciBusState>,
-    pic: Weak<IsaPIC>,
 }
 
 struct PciBusState {
@@ -72,12 +79,19 @@ impl PciBusState {
             dev.cfg_rw(&mut RWOp::Read(ro), ctx);
             println!(
                 "cfgread bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                bdf.bus, bdf.dev, bdf.func, ro.offset, ro.buf
+                bdf.bus(),
+                bdf.dev(),
+                bdf.func(),
+                ro.offset,
+                ro.buf
             );
         } else {
             println!(
                 "unhandled cfgread bus:{} device:{} func:{} off:{:x}",
-                bdf.bus, bdf.dev, bdf.func, ro.offset
+                bdf.bus(),
+                bdf.dev(),
+                bdf.func(),
+                ro.offset
             );
             read_inval(ro.buf);
         }
@@ -88,13 +102,17 @@ impl PciBusState {
         {
             println!(
                 "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
+                bdf.bus(),
+                bdf.dev(),
+                bdf.func(),
+                wo.offset,
+                wo.buf
             );
             dev.cfg_rw(&mut RWOp::Write(wo), ctx);
         } else {
             println!(
                 "unhandled cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                bdf.bus, bdf.dev, bdf.func, wo.offset, wo.buf
+                bdf.bus(), bdf.dev(), bdf.func(), wo.offset, wo.buf
             );
         }
     }
@@ -107,36 +125,18 @@ impl PciBusState {
 }
 
 impl PciBus {
-    pub fn new(pic: Weak<IsaPIC>) -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(PciBusState {
                 pio_cfg_addr: 0,
                 devices: Vec::new(),
             }),
-            pic,
         }
-    }
-
-    fn route_lintr(&self, bdf: &PciBDF) -> (INTxPinID, IsaPin) {
-        let pic = Weak::upgrade(&self.pic).unwrap();
-        let intx_pin = match (bdf.func + 1) % 4 {
-            1 => INTxPinID::INTA,
-            2 => INTxPinID::INTB,
-            3 => INTxPinID::INTC,
-            4 => INTxPinID::INTD,
-            _ => panic!(),
-        };
-        // Existing c-bhyve formula: 16 + (4 + slot + INTxPin) % 8
-        let pin_route = 16 + ((4 + bdf.dev + intx_pin as u8) % 8);
-        let pin = pic.pin_handle(pin_route).unwrap();
-        (intx_pin, pin)
     }
 
     pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
         let mut hdl = self.state.lock().unwrap();
         hdl.register(bdf, dev.clone());
-        let get_lintr = || self.route_lintr(&bdf);
-        dev.attach(&get_lintr);
     }
 
     pub fn place_bars(&self, ctx: &DispCtx) {
