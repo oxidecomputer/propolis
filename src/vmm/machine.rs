@@ -5,7 +5,7 @@ use std::ptr::{copy_nonoverlapping, NonNull};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::{GuestAddr, GuestRegion};
-use crate::devices::rtc::Rtc;
+use crate::hw::rtc::Rtc;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::VcpuHdl;

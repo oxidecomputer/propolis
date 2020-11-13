@@ -6,11 +6,10 @@ extern crate byteorder;
 
 mod block;
 mod common;
-mod devices;
 mod dispatch;
 mod exits;
+mod hw;
 mod intr_pins;
-mod pci;
 mod pio;
 mod util;
 mod vcpu;
@@ -22,13 +21,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
-use devices::chipset::Chipset;
 use dispatch::*;
 use exits::*;
+use hw::chipset::Chipset;
+use hw::pci::PciBDF;
 use vcpu::VcpuHdl;
 use vmm::{Machine, MachineCtx};
-
-use pci::PciBDF;
 
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
@@ -191,13 +189,13 @@ fn main() {
     let mut dispatch = Dispatcher::new(mctx.clone());
     dispatch.spawn_events().unwrap();
 
-    let com1_sock = devices::uart::UartSock::bind(Path::new("./ttya")).unwrap();
+    let com1_sock = hw::uart::UartSock::bind(Path::new("./ttya")).unwrap();
     dispatch.with_ctx(|ctx| {
         com1_sock.accept_ready(ctx);
     });
 
     let chipset = mctx.with_pio(|pio| {
-        devices::chipset::i440fx::I440Fx::new(
+        hw::chipset::i440fx::I440Fx::new(
             vm.get_hdl(),
             pio,
             Arc::clone(&com1_sock),
@@ -206,20 +204,20 @@ fn main() {
 
     let dbg = mctx.with_pio(|pio| {
         let debug = std::fs::File::create("debug.out").unwrap();
-        devices::qemu::debug::QemuDebugPort::create(
+        hw::qemu::debug::QemuDebugPort::create(
             Some(Box::new(debug) as Box<dyn std::io::Write + Send>),
             pio,
         )
     });
 
     if let Some(bpath) = opts.blockdev.as_ref() {
-        let plain: Arc<block::PlainBdev<devices::virtio::block::Request>> =
+        let plain: Arc<block::PlainBdev<hw::virtio::block::Request>> =
             block::PlainBdev::new(bpath).unwrap();
 
-        let vioblk = devices::virtio::VirtioBlock::new(
+        let vioblk = hw::virtio::VirtioBlock::new(
             0x100,
             Arc::clone(&plain)
-                as Arc<dyn block::BlockDev<devices::virtio::block::Request>>,
+                as Arc<dyn block::BlockDev<hw::virtio::block::Request>>,
         );
         chipset.pci_attach(PciBDF::new(0, 4, 0), vioblk);
 
@@ -230,10 +228,10 @@ fn main() {
     // configuration space
     dispatch.with_ctx(|ctx| chipset.pci_finalize(ctx));
 
-    let fwcfg = mctx.with_pio(|pio| devices::qemu::fwcfg::FwCfg::create(pio));
+    let fwcfg = mctx.with_pio(|pio| hw::qemu::fwcfg::FwCfg::create(pio));
     fwcfg.add_legacy(
-        devices::qemu::fwcfg::LegacyId::SmpCpuCount,
-        devices::qemu::fwcfg::FixedItem::new_u32(1),
+        hw::qemu::fwcfg::LegacyId::SmpCpuCount,
+        hw::qemu::fwcfg::FixedItem::new_u32(1),
     );
 
     let mut vcpu0 = vm.vcpu(0);

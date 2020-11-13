@@ -2,11 +2,11 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::Chipset;
 use crate::common::*;
-use crate::devices::ps2ctrl::PS2Ctrl;
-use crate::devices::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::dispatch::DispCtx;
+use crate::hw::pci::{self, INTxPinID, PciBDF};
+use crate::hw::ps2ctrl::PS2Ctrl;
+use crate::hw::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
-use crate::pci::{self, INTxPinID, PciBDF};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;

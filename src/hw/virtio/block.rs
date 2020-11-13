@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::block::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::pci;
+use crate::hw::pci;
 use crate::util::regmap::RegMap;
 
 use super::pci::PciVirtio;

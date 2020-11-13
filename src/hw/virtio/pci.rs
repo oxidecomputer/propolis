@@ -4,7 +4,7 @@ use super::queue::VirtQueue;
 use super::{VirtioDevice, VirtioIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::pci;
+use crate::hw::pci;
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 

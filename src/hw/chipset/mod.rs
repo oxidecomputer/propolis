@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::dispatch::DispCtx;
-use crate::pci::{PciBDF, PciEndpoint};
+use crate::hw::pci::{PciBDF, PciEndpoint};
 
 pub mod i440fx;
 
