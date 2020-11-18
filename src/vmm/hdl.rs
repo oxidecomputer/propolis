@@ -290,6 +290,11 @@ impl VmmHdl {
         Ok(data as u8)
     }
 
+    pub fn lapic_msi(&self, addr: u64, msg: u64) -> Result<()> {
+        let mut data = bhyve_api::vm_lapic_msi { addr, msg };
+        self.ioctl(bhyve_api::VM_LAPIC_MSI, &mut data)
+    }
+
     pub fn pmtmr_locate(&self, port: u16) -> Result<()> {
         self.ioctl(bhyve_api::VM_PMTMR_LOCATE, port as *mut usize)
     }

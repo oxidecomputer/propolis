@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex, Weak};
 
-use super::Chipset;
+use super::{BarPlacer, Chipset};
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::hw::pci::{self, INTxPinID, PciBDF};
+use crate::hw::pci::{self, INTxPinID, PioCfgDecoder, BDF};
 use crate::hw::ps2ctrl::PS2Ctrl;
 use crate::hw::uart::{LpcUart, UartSock, REGISTER_LEN};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
@@ -18,11 +18,14 @@ use lazy_static::lazy_static;
 const LEGACY_PIC_PINS: u8 = 32;
 
 pub struct I440Fx {
-    pci_bus: Arc<pci::PciBus>,
     pic: Arc<LegacyPIC>,
+    pci_bus: Mutex<pci::Bus>,
+    pci_cfg: PioCfgDecoder,
 
     lnk_pins: [Arc<LNKPin>; 4],
     sci_pin: Arc<LNKPin>,
+
+    sa_cell: SelfArcCell<Self>,
 }
 impl I440Fx {
     pub fn new(
@@ -35,9 +38,10 @@ impl I440Fx {
         let sci_pin = Arc::new(LNKPin::new());
         sci_pin.reassign(pic.pin_handle(SCI_IRQ));
 
-        let this = Arc::new(Self {
+        let mut this = Arc::new(Self {
             pic,
-            pci_bus: Arc::new(pci::PciBus::new()),
+            pci_bus: Mutex::new(pci::Bus::new()),
+            pci_cfg: PioCfgDecoder::new(),
 
             lnk_pins: [
                 Arc::new(LNKPin::new()),
@@ -46,16 +50,20 @@ impl I440Fx {
                 Arc::new(LNKPin::new()),
             ],
             sci_pin,
+
+            sa_cell: SelfArcCell::new(),
         });
+        SelfArc::self_arc_init(&mut this);
 
         let hbdev = Piix4HostBridge::new();
         let lpcdev =
             Piix3Lpc::new(Arc::downgrade(&this), &this.pic, pio, com1_sock);
         let pmdev = Piix3PM::create(hdl.as_ref(), pio);
 
-        this.pci_bus.attach(PciBDF::new(0, 0, 0), hbdev);
-        this.pci_bus.attach(PciBDF::new(0, 1, 0), lpcdev);
-        this.pci_bus.attach(PciBDF::new(0, 1, 3), pmdev);
+        this.pci_attach(BDF::new(0, 0, 0), hbdev);
+        this.pci_attach(BDF::new(0, 1, 0), lpcdev);
+        this.pci_attach(BDF::new(0, 1, 3), pmdev);
+
         this
     }
 
@@ -64,7 +72,7 @@ impl I440Fx {
         self.lnk_pins[idx].reassign(irq.and_then(|i| self.pic.pin_handle(i)));
     }
 
-    fn route_lintr(&self, bdf: &PciBDF) -> (INTxPinID, Arc<dyn IntrPin>) {
+    fn route_lintr(&self, bdf: &BDF) -> (INTxPinID, Arc<dyn IntrPin>) {
         let intx_pin = match (bdf.func() + 1) % 4 {
             1 => INTxPinID::INTA,
             2 => INTxPinID::INTB,
@@ -79,20 +87,93 @@ impl I440Fx {
             Arc::clone(&self.lnk_pins[pin_route as usize]) as Arc<dyn IntrPin>,
         )
     }
+    fn place_bars(&self) {
+        let bus = self.pci_bus.lock().unwrap();
+
+        let mut bar_placer = BarPlacer::new();
+        bar_placer.add_avail_pio(0xc000, 0x4000);
+        bar_placer.add_avail_mmio(0xe0000000, 0x10000000);
+
+        for (slot, func, dev) in bus.iter() {
+            dev.bar_for_each(&mut |bar, def| {
+                bar_placer.add_bar((slot, func, bar), def);
+            });
+        }
+        let remain = bar_placer.place(|(slot, func, bar), addr| {
+            println!(
+                "placing {:?} @ {:x} for 0:{:x}:{:x}",
+                bar, addr, slot, func
+            );
+            let dev = bus.device_at(slot, func).unwrap();
+            dev.bar_place(bar, addr as u64);
+        });
+        if let Some((pio, mmio)) = remain {
+            panic!("Unfulfilled BAR allocations! pio:{} mmio:{}", pio, mmio);
+        }
+    }
 }
 impl Chipset for I440Fx {
-    fn pci_attach(&self, bdf: PciBDF, dev: Arc<dyn pci::PciEndpoint>) {
+    fn pci_attach(&self, bdf: BDF, dev: Arc<dyn pci::Endpoint>) {
+        assert!(bdf.bus() == 0);
+
         dev.attach(&|| self.route_lintr(&bdf));
-        self.pci_bus.attach(bdf, dev);
+        let mut bus = self.pci_bus.lock().unwrap();
+        bus.attach(bdf.dev(), bdf.func(), dev);
     }
     fn pci_finalize(&self, ctx: &DispCtx) {
-        let bus = Arc::downgrade(&self.pci_bus) as Weak<dyn PioDev>;
+        let cfg_pio = self.self_weak() as Weak<dyn PioDev>;
         ctx.mctx.with_pio(|pio| {
-            let bus2 = Weak::clone(&bus);
-            pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, bus, 0).unwrap();
-            pio.register(pci::PORT_PCI_CONFIG_DATA, 4, bus2, 0).unwrap();
+            let cfg_pio2 = Weak::clone(&cfg_pio);
+            pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, cfg_pio, 0).unwrap();
+            pio.register(pci::PORT_PCI_CONFIG_DATA, 4, cfg_pio2, 0).unwrap();
         });
-        self.pci_bus.place_bars(ctx);
+        self.place_bars();
+    }
+}
+impl PioDev for I440Fx {
+    fn pio_rw(&self, port: u16, ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+        match port {
+            pci::PORT_PCI_CONFIG_ADDR => {
+                self.pci_cfg.service_addr(rwo);
+            }
+            pci::PORT_PCI_CONFIG_DATA => {
+                self.pci_cfg.service_data(rwo, |bdf, rwo| {
+                    if bdf.bus() != 0 {
+                        return None;
+                    }
+                    let bus = self.pci_bus.lock().unwrap();
+                    if let Some(dev) = bus.device_at(bdf.dev(), bdf.func()) {
+                        let dev = Arc::clone(dev);
+                        drop(bus);
+                        dev.cfg_rw(rwo, ctx);
+                        let opname = match rwo {
+                            RWOp::Read(_) => "cfgread",
+                            RWOp::Write(_) => "cfgwrite",
+                        };
+                        println!(
+                            "{} bus:{} device:{} func:{} off:{:x}, data:{:x?}",
+                            opname,
+                            bdf.bus(),
+                            bdf.dev(),
+                            bdf.func(),
+                            rwo.offset(),
+                            rwo.buf()
+                        );
+                        Some(())
+                    } else {
+                        None
+                    }
+                });
+            }
+            _ => {
+                panic!();
+            }
+        }
+    }
+}
+impl SelfArc for I440Fx {
+    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
+        &self.sa_cell
     }
 }
 
@@ -418,11 +499,15 @@ impl pci::Device for Piix3PM {
     }
 }
 impl PioDev for Piix3PM {
-    fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
-        println!("unhandled PM read {:x}", ro.offset);
-    }
-    fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx) {
-        println!("unhandled PM write {:x}", wo.offset);
+    fn pio_rw(&self, port: u16, ident: usize, rwop: &mut RWOp, ctx: &DispCtx) {
+        match rwop {
+            RWOp::Read(ro) => {
+                println!("unhandled PM read {:x}", ro.offset);
+            }
+            RWOp::Write(wo) => {
+                println!("unhandled PM write {:x}", wo.offset);
+            }
+        }
     }
 }
 impl SelfArc for Piix3PM {

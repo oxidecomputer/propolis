@@ -37,6 +37,12 @@ impl RWOp<'_, '_> {
             RWOp::Write(wo) => wo.buf.len(),
         }
     }
+    pub fn buf(&self) -> &[u8] {
+        match self {
+            RWOp::Read(ro) => ro.buf,
+            RWOp::Write(wo) => wo.buf,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -63,3 +69,10 @@ pub const PAGE_SIZE: usize = 0x1000;
 pub const PAGE_OFFSET: usize = 0xfff;
 pub const PAGE_MASK: usize = usize::MAX - PAGE_OFFSET;
 pub const PAGE_SHIFT: usize = 12;
+
+pub fn round_up_p2(val: usize, to: usize) -> usize {
+    assert!(to.is_power_of_two());
+    assert!(to != 0);
+
+    val.checked_add(to - 1).unwrap() & !(to - 1)
+}

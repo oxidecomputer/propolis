@@ -10,6 +10,7 @@ mod dispatch;
 mod exits;
 mod hw;
 mod intr_pins;
+mod mmio;
 mod pio;
 mod util;
 mod vcpu;
@@ -24,7 +25,7 @@ use bhyve_api::vm_reg_name;
 use dispatch::*;
 use exits::*;
 use hw::chipset::Chipset;
-use hw::pci::PciBDF;
+use hw::pci;
 use vcpu::VcpuHdl;
 use vmm::{Machine, MachineCtx};
 
@@ -72,23 +73,25 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
             },
             VmExitKind::Mmio(mmio) => match mmio {
                 MmioReq::Read(read) => {
-                    println!(
-                        "unhandled mmio read {:x} {}",
-                        read.addr, read.bytes
-                    );
+                    let val = mctx.with_mmio(|b| {
+                        b.handle_read(read.addr as usize, read.bytes, &dctx)
+                    });
                     next_entry =
                         VmEntry::MmioComplete(MmioRes::Read(MmioReadRes {
                             addr: read.addr,
                             bytes: read.bytes,
-                            // XXX fake read for now
-                            data: 0,
+                            data: val,
                         }));
                 }
                 MmioReq::Write(write) => {
-                    println!(
-                        "unhandled mmio write {:x} {} {:x}",
-                        write.addr, write.bytes, write.data
-                    );
+                    mctx.with_mmio(|b| {
+                        b.handle_write(
+                            write.addr as usize,
+                            write.bytes,
+                            write.data,
+                            &dctx,
+                        )
+                    });
                     next_entry =
                         VmEntry::MmioComplete(MmioRes::Write(MmioWriteRes {
                             addr: write.addr,
@@ -219,7 +222,7 @@ fn main() {
             Arc::clone(&plain)
                 as Arc<dyn block::BlockDev<hw::virtio::block::Request>>,
         );
-        chipset.pci_attach(PciBDF::new(0, 4, 0), vioblk);
+        chipset.pci_attach(pci::BDF::new(0, 4, 0), vioblk);
 
         plain.start_dispatch("bdev thread".to_string(), &dispatch);
     }

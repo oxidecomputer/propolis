@@ -8,8 +8,7 @@ pub use crate::util::aspace::{Error, Result};
 use byteorder::{ByteOrder, LE};
 
 pub trait PioDev: Send + Sync {
-    fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx);
-    fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx);
+    fn pio_rw(&self, port: u16, ident: usize, rwop: &mut RWOp, ctx: &DispCtx);
 }
 
 pub struct PioBus {
@@ -47,7 +46,8 @@ impl PioBus {
             _ => panic!(),
         };
         let handled = self.do_pio(port, |p, o, dev, ident| {
-            dev.pio_out(p, ident, &WriteOp::new(o as usize, data), ctx)
+            let wo = WriteOp::new(o as usize, data);
+            dev.pio_rw(p, ident, &mut RWOp::Write(&wo), ctx)
         });
         if !handled {
             println!("unhandled IO out - port:{:x} len:{}", port, bytes);
@@ -63,7 +63,8 @@ impl PioBus {
             _ => panic!(),
         };
         let handled = self.do_pio(port, |p, o, dev, ident| {
-            dev.pio_in(p, ident, &mut ReadOp::new(o as usize, data), ctx)
+            let mut ro = ReadOp::new(o as usize, data);
+            dev.pio_rw(p, ident, &mut RWOp::Read(&mut ro), ctx)
         });
         if !handled {
             println!("unhandled IO in - port:{:x} len:{}", port, bytes);

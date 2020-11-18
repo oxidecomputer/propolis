@@ -3,10 +3,11 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use super::bits::*;
-use super::{INTxPinID, PciEndpoint};
+use super::{Endpoint, INTxPinID};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
+use crate::mmio::MmioDev;
 use crate::pio::PioDev;
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
@@ -18,6 +19,9 @@ use num_enum::TryFromPrimitive;
 enum CfgReg {
     Std,
     Custom(u8),
+    CapId(u8),
+    CapNext(u8),
+    CapBody(u8),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -230,11 +234,15 @@ impl Bars {
     }
     fn change_registrations<F>(&self, changef: F)
     where
-        F: Fn(BarN, &BarDefine, u64, bool) -> bool,
+        F: Fn(BarN, &BarDefine, u64, bool) -> Option<bool>,
     {
         self.for_each(|barn, def| {
             let mut state = self.entries[barn as usize].state.lock().unwrap();
-            state.registered = changef(barn, def, state.addr, state.registered);
+            if let Some(new_reg_state) =
+                changef(barn, def, state.addr, state.registered)
+            {
+                state.registered = new_reg_state;
+            }
         });
     }
     fn for_each<F>(&self, mut f: F)
@@ -275,10 +283,17 @@ enum BoxOrArc {
     Arced(Arc<dyn Device>),
 }
 
+struct Cap {
+    id: u8,
+    offset: u8,
+}
+
 pub struct DeviceInst {
     ident: Ident,
     lintr_req: bool,
     cfg_space: RegMap<CfgReg>,
+    msix_cfg: Option<Arc<MsixCfg>>,
+    caps: Vec<Cap>,
 
     state: Mutex<State>,
     bars: Bars,
@@ -293,6 +308,8 @@ impl DeviceInst {
     fn new(
         ident: Ident,
         cfg_space: RegMap<CfgReg>,
+        msix_cfg: Option<Arc<MsixCfg>>,
+        caps: Vec<Cap>,
         bars: Bars,
         i: BoxOrArc,
     ) -> Self {
@@ -300,6 +317,8 @@ impl DeviceInst {
             ident,
             lintr_req: false,
             cfg_space,
+            msix_cfg,
+            caps,
 
             state: Mutex::new(State {
                 reg_intr_line: 0xff,
@@ -321,29 +340,29 @@ impl DeviceInst {
         }
     }
 
-    /// Certain device state changes might incur notification calls to the inner
-    /// state which could trigger conflicting lock ordering.  In such cases, the
-    /// process is done in two stages: the state update (under lock) and the
-    /// notification (outside the lock) with protection provided against other
-    /// such updates which might race.
-    fn state_two_step(
+    /// State changes which result in a new interrupt mode for the device incur
+    /// a notification which could trigger deadlock if normal lock-ordering was
+    /// used.  In such cases, the process is done in two stages: the state
+    /// update (under lock) and the notification (outside the lock) with
+    /// protection provided against other such updates which might race.
+    fn affects_intr_mode(
         &self,
         mut state: MutexGuard<State>,
-        update: impl FnOnce(&mut State),
-        after: impl FnOnce(),
-    ) -> MutexGuard<State> {
+        f: impl FnOnce(&mut State),
+    ) {
         state = self.cond.wait_while(state, |s| s.update_in_progress).unwrap();
-        update(&mut state);
+        f(&mut state);
+        let next_mode = self.next_intr_mode(&state);
+
         state.update_in_progress = true;
         drop(state);
-
-        after();
+        // inner is notified of mode change w/o state locked
+        self.inner_ref().interrupt_mode_change(next_mode);
 
         let mut state = self.state.lock().unwrap();
         assert!(state.update_in_progress);
         state.update_in_progress = false;
         self.cond.notify_all();
-        state
     }
 
     fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, ctx: &DispCtx) {
@@ -378,6 +397,9 @@ impl DeviceInst {
                         }
                     }
                 }
+                if self.caps.len() != 0 {
+                    val.insert(RegStatus::CAP_LIST);
+                }
                 LE::write_u16(buf, val.bits());
             }
             StdCfgReg::IntrLine => {
@@ -390,6 +412,13 @@ impl DeviceInst {
             StdCfgReg::ExpansionRomAddr => {
                 // no rom for now
                 LE::write_u32(buf, 0);
+            }
+            StdCfgReg::CapPtr => {
+                if self.caps.len() != 0 {
+                    buf[0] = self.caps[0].offset;
+                } else {
+                    buf[0] = 0;
+                }
             }
             StdCfgReg::Reserved => {
                 buf.iter_mut().for_each(|b| *b = 0);
@@ -437,12 +466,27 @@ impl DeviceInst {
                                 .is_err()
                             })
                         }
-                        _ => {
-                            if !state.reg_command.contains(RegCmd::IO_EN) {
-                                // pio mappings are disabled via cmd reg
+                        BarDefine::Mmio(sz) => {
+                            if !state.reg_command.contains(RegCmd::MMIO_EN) {
+                                // mmio mappings are disabled via cmd reg
                                 return false;
                             }
-                            todo!("wire up MMIO later")
+                            ctx.mctx.with_mmio(|bus| {
+                                // We know this was previously registered
+                                let (dev, old_bar) =
+                                    bus.unregister(old as usize).unwrap();
+                                assert_eq!(old_bar, *bar as usize);
+                                bus.register(
+                                    new as usize,
+                                    *sz as usize,
+                                    dev,
+                                    *bar as usize,
+                                )
+                                .is_err()
+                            })
+                        }
+                        _ => {
+                            todo!("wire up mmio64 later");
                         }
                     }
                 });
@@ -467,61 +511,167 @@ impl DeviceInst {
     fn reg_cmd_write(&self, val: RegCmd, ctx: &DispCtx) {
         let mut state = self.state.lock().unwrap();
         let diff = val ^ state.reg_command;
-        if diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
-            // change bar mapping state
-            self.bars.change_registrations(|bar, def, addr, registered| {
-                match def {
-                    BarDefine::Pio(sz) => {
-                        if registered && !val.contains(RegCmd::IO_EN) {
-                            // unregister
-                            ctx.mctx.with_pio(|bus| {
-                                bus.unregister(addr as u16).unwrap();
-                            });
-                            false
-                        } else if !registered && val.contains(RegCmd::IO_EN) {
-                            // register
-                            ctx.mctx.with_pio(|bus| {
-                                bus.register(
-                                    addr as u16,
-                                    *sz as u16,
-                                    self.self_weak(),
-                                    bar as usize,
-                                )
-                                .is_ok()
-                            })
-                        } else {
-                            registered
-                        }
-                    }
-                    _ => todo!("wire up MMIO later"),
-                }
-            });
-        }
-
-        // special handling required for INTx enable/disable
+        self.update_bar_registration(diff, val, ctx);
         if diff.intersects(RegCmd::INTX_DIS) {
-            let disabled = val.contains(RegCmd::INTX_DIS);
-            // XXX: handle msi-x and friends
-            let mode = match disabled {
-                true => IntrMode::Disabled,
-                false => IntrMode::INTxPin(INTxPin::new(self.self_weak())),
-            };
-            state = self.state_two_step(
-                state,
-                |state| state.reg_command = val,
-                || {
-                    // inner is notified of mode change w/o state locked
-                    self.inner_ref().intr_mode_change(mode)
-                },
-            );
-            drop(state);
+            // special handling required for INTx enable/disable
+            self.affects_intr_mode(state, |state| {
+                state.reg_command = val;
+            });
         } else {
             state.reg_command = val;
         }
     }
+
+    fn next_intr_mode(&self, state: &State) -> IntrMode {
+        if self.msix_cfg.is_some()
+            && self.msix_cfg.as_ref().unwrap().is_enabled()
+        {
+            return IntrMode::MSIX;
+        }
+        if state.lintr_pin.is_some()
+            && !state.reg_command.contains(RegCmd::INTX_DIS)
+        {
+            return IntrMode::INTxPin;
+        }
+
+        IntrMode::Disabled
+    }
+
+    fn update_bar_registration(
+        &self,
+        diff: RegCmd,
+        new: RegCmd,
+        ctx: &DispCtx,
+    ) {
+        if !diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
+            return;
+        }
+
+        self.bars.change_registrations(
+            |bar, def, addr, registered| match def {
+                BarDefine::Pio(sz) => {
+                    if !diff.intersects(RegCmd::IO_EN) {
+                        return None;
+                    }
+
+                    if registered && !new.contains(RegCmd::IO_EN) {
+                        ctx.mctx.with_pio(|bus| {
+                            bus.unregister(addr as u16).unwrap();
+                        });
+                        return Some(false);
+                    } else if !registered && new.contains(RegCmd::IO_EN) {
+                        let reg_attempt = ctx.mctx.with_pio(|bus| {
+                            bus.register(
+                                addr as u16,
+                                *sz as u16,
+                                self.self_weak(),
+                                bar as usize,
+                            )
+                            .is_ok()
+                        });
+                        return Some(reg_attempt);
+                    }
+                    None
+                }
+                BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
+                    if !diff.intersects(RegCmd::MMIO_EN) {
+                        return None;
+                    }
+
+                    let sz = match def {
+                        BarDefine::Mmio(s) => *s as u64,
+                        BarDefine::Mmio64(s) => *s,
+                        _ => panic!(),
+                    };
+
+                    if registered && !new.contains(RegCmd::IO_EN) {
+                        ctx.mctx.with_mmio(|bus| {
+                            bus.unregister(addr as usize).unwrap();
+                        });
+                        return Some(false);
+                    } else if !registered && new.contains(RegCmd::IO_EN) {
+                        let reg_attempt = ctx.mctx.with_mmio(|bus| {
+                            bus.register(
+                                addr as usize,
+                                sz as usize,
+                                self.self_weak(),
+                                bar as usize,
+                            )
+                            .is_ok()
+                        });
+                        return Some(reg_attempt);
+                    }
+
+                    None
+                }
+                _ => todo!("wire up MMIO later"),
+            },
+        );
+    }
+    fn bar_rw(&self, ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+        let bar = BarN::try_from(ident as u8).unwrap();
+        if let Some(msix) = self.msix_cfg.as_ref() {
+            if msix.bar_match(bar) {
+                msix.bar_rw(rwo, ctx);
+                return;
+            }
+        }
+        self.inner_ref().bar_rw(bar, rwo, ctx);
+    }
+
+    fn cfg_cap_rw(&self, id: &CfgReg, rwo: &mut RWOp, ctx: &DispCtx) {
+        match id {
+            CfgReg::CapId(i) => {
+                if let RWOp::Read(ro) = rwo {
+                    ro.buf[0] = self.caps[*i as usize].id
+                }
+            }
+            CfgReg::CapNext(i) => {
+                if let RWOp::Read(ro) = rwo {
+                    let next = *i as usize + 1;
+                    if next < self.caps.len() {
+                        ro.buf[0] = self.caps[next].offset;
+                    } else {
+                        ro.buf[0] = 0;
+                    }
+                }
+            }
+            CfgReg::CapBody(i) => self.do_cap_rw(*i, rwo, ctx),
+
+            // Should be filtered down to only cap regs by now
+            _ => panic!(),
+        }
+    }
+    fn do_cap_rw(&self, idx: u8, rwo: &mut RWOp, ctx: &DispCtx) {
+        assert!(idx < self.caps.len() as u8);
+        // XXX: no fancy capability support for now
+        let cap = &self.caps[idx as usize];
+        match cap.id {
+            CAP_ID_MSIX => {
+                let msix_cfg = self.msix_cfg.as_ref().unwrap();
+                if let RWOp::Write(_) = rwo {
+                    // MSI-X cap writes may result in a change to the interrupt
+                    // mode of the device which requires extra locking concerns.
+                    let state = self.state.lock().unwrap();
+                    self.affects_intr_mode(state, |_state| {
+                        msix_cfg.cfg_rw(rwo, ctx);
+                    });
+                } else {
+                    msix_cfg.cfg_rw(rwo, ctx);
+                }
+            }
+            _ => {
+                println!(
+                    "unhandled cap access id:{:x} off:{:x}",
+                    cap.id,
+                    rwo.offset()
+                );
+            }
+        }
+    }
 }
 
-impl PciEndpoint for DeviceInst {
+impl Endpoint for DeviceInst {
     fn cfg_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
         self.cfg_space.process(rwo, |id, rwo| match id {
             CfgReg::Std => {
@@ -531,6 +681,9 @@ impl PciEndpoint for DeviceInst {
                 });
             }
             CfgReg::Custom(region) => self.inner_ref().cfg_rw(*region, rwo),
+            CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
+                self.cfg_cap_rw(id, rwo, ctx)
+            }
         });
     }
     fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>)) {
@@ -540,53 +693,43 @@ impl PciEndpoint for DeviceInst {
             state.reg_intr_pin = intx as u8;
             state.lintr_pin = Some(isa_pin);
         }
+        drop(state);
+
+        let lintr_pin = match self.lintr_req {
+            true => Some(INTxPin::new(self.self_weak())),
+            false => None,
+        };
+        let msix_hdl = self.msix_cfg.as_ref().map(|msix| MsixHdl::new(msix));
+        self.inner_ref().interrupt_setup(lintr_pin, msix_hdl);
     }
 
-    fn place_bars(
-        &self,
-        place_bar: &mut dyn FnMut(BarN, &BarDefine) -> u64,
-        ctx: &DispCtx,
-    ) {
-        self.bars.for_each(|bar, def| {
-            let addr = place_bar(bar, def);
-            self.bars.place(bar, addr);
-        });
+    fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine)) {
+        self.bars.for_each(cb)
+    }
+
+    fn bar_place(&self, bar: BarN, addr: u64) {
+        // Expect that IO/MMIO is disabled while we are placing BARs
         let state = self.state.lock().unwrap();
-        if state.reg_command.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
-            self.bars.change_registrations(|bar, def, addr, registered| {
-                assert!(!registered);
-                match def {
-                    BarDefine::Pio(sz) => {
-                        if state.reg_command.intersects(RegCmd::IO_EN) {
-                            ctx.mctx.with_pio(|bus| {
-                                bus.register(
-                                    addr as u16,
-                                    *sz as u16,
-                                    self.self_weak(),
-                                    bar as usize,
-                                )
-                                .is_ok()
-                            })
-                        } else {
-                            false
-                        }
-                    }
-                    _ => todo!("wire up MMIO later"),
-                }
-            });
-        }
+        assert!(state.reg_command == RegCmd::INTX_DIS);
+
+        self.bars.place(bar, addr);
     }
 }
 
 impl PioDev for DeviceInst {
-    fn pio_in(&self, port: u16, ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
-        let bar = BarN::try_from(ident as u8).unwrap();
-        self.inner_ref().bar_rw(bar, &mut RWOp::Read(ro), ctx);
+    fn pio_rw(&self, _port: u16, ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+        self.bar_rw(ident, rwo, ctx);
     }
-
-    fn pio_out(&self, port: u16, ident: usize, wo: &WriteOp, ctx: &DispCtx) {
-        let bar = BarN::try_from(ident as u8).unwrap();
-        self.inner_ref().bar_rw(bar, &mut RWOp::Write(wo), ctx);
+}
+impl MmioDev for DeviceInst {
+    fn mmio_rw(
+        &self,
+        _addr: usize,
+        ident: usize,
+        rwo: &mut RWOp,
+        ctx: &DispCtx,
+    ) {
+        self.bar_rw(ident, rwo, ctx);
     }
 }
 
@@ -621,9 +764,10 @@ impl INTxPin {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum IntrMode {
     Disabled,
-    INTxPin(INTxPin),
+    INTxPin,
     MSIX,
 }
 
@@ -649,17 +793,311 @@ pub trait Device: Send + Sync + 'static {
             }
         }
     }
-    fn intr_mode_change(&self, mode: IntrMode) {}
+    fn interrupt_setup(
+        &self,
+        lintr_pin: Option<INTxPin>,
+        msix_hdl: Option<MsixHdl>,
+    ) {
+        // A device model has no reason to request interrupt resources but not
+        // make use of them.
+        assert!(lintr_pin.is_none());
+        assert!(msix_hdl.is_none());
+    }
+    fn interrupt_mode_change(&self, mode: IntrMode) {}
     // TODO
     // fn cap_read(&self);
     // fn cap_write(&self);
 }
 
+enum MsixBarReg {
+    Addr(u16),
+    Data(u16),
+    VecCtrl(u16),
+    Reserved,
+    PBA,
+}
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum MsixCapReg {
+    MsgCtrl,
+    TableOff,
+    PbaOff,
+}
+lazy_static! {
+    static ref CAP_MSIX_MAP: RegMap<MsixCapReg> = {
+        let layout = [
+            (MsixCapReg::MsgCtrl, 2),
+            (MsixCapReg::TableOff, 4),
+            (MsixCapReg::PbaOff, 4),
+        ];
+        RegMap::create_packed(10, &layout, None)
+    };
+}
+
+const MSIX_VEC_MASK: u32 = 1 << 0;
+
+const MSIX_MSGCTRL_ENABLE: u16 = 1 << 15;
+const MSIX_MSGCTRL_FMASK: u16 = 1 << 14;
+
+#[derive(Default)]
+struct MsixEntry {
+    addr: u64,
+    data: u32,
+    mask_vec: bool,
+    mask_func: bool,
+    enabled: bool,
+    pending: bool,
+}
+impl MsixEntry {
+    fn fire(&mut self, ctx: &DispCtx) {
+        if !self.enabled {
+            return;
+        }
+        if self.mask_func || self.mask_vec {
+            self.pending = true;
+            return;
+        }
+        ctx.mctx.with_hdl(|hdl| {
+            hdl.lapic_msi(self.addr, self.data as u64).unwrap()
+        });
+    }
+    fn check_mask(&mut self, ctx: &DispCtx) {
+        if !self.mask_vec && !self.mask_func && self.pending {
+            self.pending = false;
+            ctx.mctx.with_hdl(|hdl| {
+                hdl.lapic_msi(self.addr, self.data as u64).unwrap()
+            });
+        }
+    }
+}
+
+struct MsixCfg {
+    count: u16,
+    bar: BarN,
+    pba_off: u32,
+    map: RegMap<MsixBarReg>,
+    entries: Vec<Mutex<MsixEntry>>,
+    state: Mutex<MsixCfgState>,
+}
+#[derive(Default)]
+struct MsixCfgState {
+    enabled: bool,
+    func_mask: bool,
+}
+impl MsixCfg {
+    fn new(count: u16, bar: BarN) -> (Arc<Self>, usize) {
+        assert!(count > 0 && count <= 2048);
+
+        // Pad table so PBA is on a separate page.  This will allow the guest
+        // to map it separately, should it so choose.
+        let table_size = count as usize * 16;
+        let table_pad = match table_size % PAGE_SIZE {
+            0 => 0,
+            a => PAGE_SIZE - a,
+        };
+
+        // With a maximum vector count, the PBA will not require more than a
+        // page.  For convenience, pad it out to that size.
+        let pba_size = PAGE_SIZE;
+
+        let pba_off = table_size + table_pad;
+        let bar_size = (pba_off + pba_size).next_power_of_two();
+
+        let mut map = RegMap::new(bar_size);
+        let mut off = 0;
+        for i in 0..count {
+            map.define(off, 8, MsixBarReg::Addr(i));
+            map.define(off + 8, 4, MsixBarReg::Data(i));
+            map.define(off + 12, 4, MsixBarReg::VecCtrl(i));
+            off += 16;
+        }
+        map.define_with_flags(
+            off,
+            table_pad,
+            MsixBarReg::Reserved,
+            Flags::PASSTHRU,
+        );
+        off += table_pad;
+        map.define_with_flags(off, pba_size, MsixBarReg::PBA, Flags::PASSTHRU);
+
+        let mut entries = Vec::with_capacity(count as usize);
+        entries.resize_with(count as usize, Default::default);
+
+        let this = Self {
+            count,
+            bar,
+            pba_off: pba_off as u32,
+            map,
+            entries,
+            state: Default::default(),
+        };
+
+        (Arc::new(this), bar_size)
+    }
+    fn bar_match(&self, bar: BarN) -> bool {
+        self.bar == bar
+    }
+    fn bar_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
+        self.map.process(rwo, |id, rwo| match rwo {
+            RWOp::Read(ro) => match id {
+                MsixBarReg::Addr(i) => {
+                    let ent = self.entries[*i as usize].lock().unwrap();
+                    LE::write_u64(ro.buf, ent.addr);
+                }
+                MsixBarReg::Data(i) => {
+                    let ent = self.entries[*i as usize].lock().unwrap();
+                    LE::write_u32(ro.buf, ent.data);
+                }
+                MsixBarReg::VecCtrl(i) => {
+                    let ent = self.entries[*i as usize].lock().unwrap();
+                    let mut val = 0;
+                    if ent.mask_vec {
+                        val |= MSIX_VEC_MASK;
+                    }
+                    LE::write_u32(ro.buf, val);
+                }
+                MsixBarReg::Reserved => {
+                    for b in ro.buf.iter_mut() {
+                        *b = 0;
+                    }
+                }
+                MsixBarReg::PBA => {
+                    self.read_pba(ro);
+                }
+            },
+            RWOp::Write(wo) => match id {
+                MsixBarReg::Addr(i) => {
+                    let mut ent = self.entries[*i as usize].lock().unwrap();
+                    ent.addr = LE::read_u64(wo.buf);
+                }
+                MsixBarReg::Data(i) => {
+                    let mut ent = self.entries[*i as usize].lock().unwrap();
+                    ent.data = LE::read_u32(wo.buf);
+                }
+                MsixBarReg::VecCtrl(i) => {
+                    let mut ent = self.entries[*i as usize].lock().unwrap();
+                    let val = LE::read_u32(wo.buf);
+                    ent.mask_vec = val & MSIX_VEC_MASK != 0;
+                    ent.check_mask(ctx);
+                }
+                MsixBarReg::Reserved | MsixBarReg::PBA => {}
+            },
+        });
+    }
+    fn read_pba(&self, ro: &mut ReadOp) {
+        for (i, b) in ro.buf.iter_mut().enumerate() {
+            let mut val: u8 = 0;
+            for bitpos in 0..8 {
+                let idx = ((i + ro.offset) * 8) + bitpos;
+                if idx < self.count as usize {
+                    let ent = self.entries[idx].lock().unwrap();
+                    if ent.pending {
+                        val |= 1 << bitpos;
+                    }
+                }
+            }
+            *b = val;
+        }
+    }
+    fn cfg_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
+        CAP_MSIX_MAP.process(rwo, |id, rwo| {
+            match rwo {
+                RWOp::Read(ro) => {
+                    match id {
+                        MsixCapReg::MsgCtrl => {
+                            let state = self.state.lock().unwrap();
+                            // low 10 bits hold `count - 1`
+                            let mut val = self.count as u16 - 1;
+                            if state.enabled {
+                                val |= MSIX_MSGCTRL_ENABLE;
+                            }
+                            if state.func_mask {
+                                val |= MSIX_MSGCTRL_FMASK;
+                            }
+                            LE::write_u16(ro.buf, val);
+                        }
+                        MsixCapReg::TableOff => {
+                            // table always at offset 0 for now
+                            LE::write_u32(ro.buf, 0 | self.bar as u8 as u32);
+                        }
+                        MsixCapReg::PbaOff => {
+                            LE::write_u32(
+                                ro.buf,
+                                self.pba_off | self.bar as u8 as u32,
+                            );
+                        }
+                    }
+                }
+                RWOp::Write(wo) => {
+                    match id {
+                        MsixCapReg::MsgCtrl => {
+                            let val = LE::read_u16(wo.buf);
+                            let ena = val & MSIX_MSGCTRL_ENABLE != 0;
+                            let mask = val & MSIX_MSGCTRL_FMASK != 0;
+                            let mut state = self.state.lock().unwrap();
+                            if state.enabled != ena || state.func_mask != mask {
+                                self.each_entry(|ent| {
+                                    ent.mask_func = mask;
+                                    ent.enabled = ena;
+                                    ent.check_mask(ctx);
+                                });
+                            }
+                            state.enabled = ena;
+                            state.func_mask = mask;
+                        }
+                        // only msgctrl can be written
+                        _ => {}
+                    }
+                }
+            }
+        });
+    }
+    fn each_entry(&self, mut cb: impl FnMut(&mut MsixEntry)) {
+        for ent in self.entries.iter() {
+            let mut locked = ent.lock().unwrap();
+            cb(&mut locked)
+        }
+    }
+    fn fire(&self, idx: u16, ctx: &DispCtx) {
+        assert!(idx < self.count);
+        let mut ent = self.entries[idx as usize].lock().unwrap();
+        ent.fire(ctx);
+    }
+    fn is_enabled(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.enabled
+    }
+}
+
+pub struct MsixHdl {
+    cfg: Arc<MsixCfg>,
+}
+impl MsixHdl {
+    fn new(cfg: &Arc<MsixCfg>) -> Self {
+        Self { cfg: Arc::clone(cfg) }
+    }
+    pub fn fire(&self, idx: u16, ctx: &DispCtx) {
+        self.cfg.fire(idx, ctx);
+    }
+    pub fn count(&self) -> u16 {
+        self.cfg.count
+    }
+}
+impl Clone for MsixHdl {
+    fn clone(&self) -> Self {
+        Self { cfg: Arc::clone(&self.cfg) }
+    }
+}
+
 pub struct Builder<I> {
     ident: Ident,
     lintr_req: bool,
+    msix_cfg: Option<Arc<MsixCfg>>,
     bars: [Option<BarDefine>; 6],
     cfgmap: RegMap<CfgReg>,
+
+    cap_next_alloc: usize,
+    caps: Vec<Cap>,
+
     _phantom: PhantomData<I>,
 }
 
@@ -670,8 +1108,14 @@ impl<I: Device + 'static> Builder<I> {
         Self {
             ident,
             lintr_req: false,
+            msix_cfg: None,
             bars: [None; 6],
             cfgmap,
+
+            caps: Vec::new(),
+            // capabilities can start immediately after std cfg area
+            cap_next_alloc: LEN_CFG_STD,
+
             _phantom: PhantomData,
         }
     }
@@ -723,6 +1167,38 @@ impl<I: Device + 'static> Builder<I> {
         self
     }
 
+    fn add_cap_raw(&mut self, id: u8, len: u8) {
+        // XXX: does not pay heed to any custom cfg sections which are added via
+        // the `add_custom_cfg` interface.
+        let end = self.cap_next_alloc + 2 + len as usize;
+        // XXX: on the caller to size properly for alignment requirements
+        assert!(end % 4 == 0);
+        assert!(end <= u8::MAX as usize);
+        let idx = self.caps.len() as u8;
+        self.caps.push(Cap { id, offset: self.cap_next_alloc as u8 });
+        self.cfgmap.define(self.cap_next_alloc, 1, CfgReg::CapId(idx));
+        self.cfgmap.define(self.cap_next_alloc + 1, 1, CfgReg::CapNext(idx));
+        self.cfgmap.define(
+            self.cap_next_alloc + 2,
+            len as usize,
+            CfgReg::CapBody(idx),
+        );
+        self.cap_next_alloc = end;
+    }
+
+    pub fn add_cap_msix(mut self, bar: BarN, count: u16) -> Self {
+        assert!(self.msix_cfg.is_none());
+
+        let (cfg, bar_size) = MsixCfg::new(count, bar);
+
+        assert!(bar_size < u32::MAX as usize);
+        self = self.add_bar_mmio(bar, bar_size as u32);
+        self.msix_cfg = Some(cfg);
+        self.add_cap_raw(CAP_ID_MSIX, 10);
+
+        self
+    }
+
     fn generate_bars(&self) -> Bars {
         let mut bars = Bars::new();
         for (idx, ent) in self.bars.iter().enumerate() {
@@ -744,7 +1220,14 @@ impl<I: Device + 'static> Builder<I> {
     fn do_finish(self, inner: BoxOrArc) -> Arc<DeviceInst> {
         let bars = self.generate_bars();
 
-        let mut inst = DeviceInst::new(self.ident, self.cfgmap, bars, inner);
+        let mut inst = DeviceInst::new(
+            self.ident,
+            self.cfgmap,
+            self.msix_cfg,
+            self.caps,
+            bars,
+            inner,
+        );
         inst.lintr_req = self.lintr_req;
 
         let mut done = Arc::new(inst);

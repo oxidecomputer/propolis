@@ -216,58 +216,48 @@ impl FwCfg {
 }
 
 impl PioDev for FwCfg {
-    fn pio_in(
-        &self,
-        port: u16,
-        _ident: usize,
-        ro: &mut ReadOp,
-        _ctx: &DispCtx,
-    ) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, _ctx: &DispCtx) {
         match port {
-            FW_CFG_IOP_SELECTOR => {
-                if ro.offset == 0 && ro.buf.len() == 2 {
-                    let state = self.pio_state.lock().unwrap();
-                    LE::write_u16(&mut ro.buf, state.selector);
-                }
-            }
-            FW_CFG_IOP_DATA => {
-                let mut state = self.pio_state.lock().unwrap();
-                if ro.buf.len() != 1 || state.finished {
-                    for b in ro.buf.iter_mut() {
-                        *b = 0
+            FW_CFG_IOP_SELECTOR => match rwo {
+                RWOp::Read(ro) => {
+                    if ro.offset == 0 && ro.buf.len() == 2 {
+                        let state = self.pio_state.lock().unwrap();
+                        LE::write_u16(&mut ro.buf, state.selector);
                     }
-                    return;
                 }
-                if let Some(val) = self.read_byte(state.selector, state.offset)
-                {
-                    state.offset += 1;
-                    ro.buf[0] = val;
-                } else {
-                    state.finished = true;
-                    ro.buf[0] = 0;
+                RWOp::Write(wo) => {
+                    if wo.offset == 0 && wo.buf.len() == 2 {
+                        let mut state = self.pio_state.lock().unwrap();
+                        state.selector = LE::read_u16(wo.buf);
+                        state.offset = 0;
+                        state.finished = false;
+                    }
                 }
-            }
-            FW_CFG_IOP_DMA_HI | FW_CFG_IOP_DMA_LO => {
-                // XXX: DMA interface not supported for now
-            }
-            _ => {
-                panic!("unexpected port {:x}", port);
-            }
-        }
-    }
-
-    fn pio_out(&self, port: u16, _ident: usize, wo: &WriteOp, _ctx: &DispCtx) {
-        match port {
-            FW_CFG_IOP_SELECTOR => {
-                if wo.offset == 0 && wo.buf.len() == 2 {
-                    let mut state = self.pio_state.lock().unwrap();
-                    state.selector = LE::read_u16(wo.buf);
-                    state.offset = 0;
-                    state.finished = false;
-                }
-            }
+            },
             FW_CFG_IOP_DATA => {
-                // ignore writes to data area
+                match rwo {
+                    RWOp::Read(ro) => {
+                        let mut state = self.pio_state.lock().unwrap();
+                        if ro.buf.len() != 1 || state.finished {
+                            for b in ro.buf.iter_mut() {
+                                *b = 0
+                            }
+                            return;
+                        }
+                        if let Some(val) =
+                            self.read_byte(state.selector, state.offset)
+                        {
+                            state.offset += 1;
+                            ro.buf[0] = val;
+                        } else {
+                            state.finished = true;
+                            ro.buf[0] = 0;
+                        }
+                    }
+                    RWOp::Write(wo) => {
+                        // XXX: ignore writes to data area
+                    }
+                }
             }
             FW_CFG_IOP_DMA_HI | FW_CFG_IOP_DMA_LO => {
                 // XXX: DMA interface not supported for now

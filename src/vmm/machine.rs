@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::{GuestAddr, GuestRegion};
 use crate::hw::rtc::Rtc;
+use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::VcpuHdl;
@@ -51,7 +52,7 @@ pub struct Machine {
     state_lock: Mutex<()>,
 
     map_physmem: ASpace<MapEnt>,
-    bus_mmio: Mutex<ASpace<()>>,
+    bus_mmio: MmioBus,
     bus_pio: PioBus,
 }
 
@@ -110,6 +111,12 @@ impl MachineCtx {
         F: FnOnce(&PioBus) -> R,
     {
         f(&self.vm.bus_pio)
+    }
+    pub fn with_mmio<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&MmioBus) -> R,
+    {
+        f(&self.vm.bus_mmio)
     }
     pub fn with_hdl<F, R>(&self, f: F) -> R
     where
@@ -463,7 +470,7 @@ impl Builder {
             state_lock: Mutex::new(()),
 
             map_physmem: map,
-            bus_mmio: Mutex::new(ASpace::new(0, MAX_PHYSMEM)),
+            bus_mmio: MmioBus::new(MAX_PHYSMEM),
             bus_pio: PioBus::new(),
         });
         Ok(machine)

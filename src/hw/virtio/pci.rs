@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use super::queue::VirtQueue;
 use super::{VirtioDevice, VirtioIntr};
@@ -17,6 +18,8 @@ const VIRTIO_F_NOTIFY_ON_EMPTY: u32 = 1 << 24;
 const VIRTIO_F_RING_INDIRECT_DESC: u32 = 1 << 28;
 const VIRTIO_F_RING_EVENT_IDX: u32 = 1 << 29;
 
+const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
+
 bitflags! {
     #[derive(Default)]
     pub struct Status: u8 {
@@ -30,53 +33,78 @@ bitflags! {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum IntrMode {
+    IsrOnly,
+    IsrLintr,
+    Msi,
+}
+
 struct VirtioState {
     status: Status,
     queue_sel: u16,
     nego_feat: u32,
     isr_status: u8,
+    intr_mode: IntrMode,
+    intr_mode_updating: bool,
     lintr_pin: Option<pci::INTxPin>,
+    msix_hdl: Option<pci::MsixHdl>,
+    msix_cfg_vec: u16,
+    msix_queue_vec: Vec<u16>,
 }
 impl VirtioState {
-    fn new() -> Self {
+    fn new(num_queues: u16) -> Self {
+        let mut msix_queue_vec = Vec::with_capacity(num_queues as usize);
+        msix_queue_vec
+            .resize_with(num_queues as usize, || VIRTIO_MSI_NO_VECTOR);
         Self {
             status: Status::RESET,
             queue_sel: 0,
             nego_feat: 0,
             isr_status: 0,
+            intr_mode: IntrMode::IsrOnly,
+            intr_mode_updating: false,
             lintr_pin: None,
+            msix_hdl: None,
+            msix_cfg_vec: VIRTIO_MSI_NO_VECTOR,
+            msix_queue_vec,
         }
+    }
+    fn reset(&mut self) {
+        self.status = Status::RESET;
+        self.queue_sel = 0;
+        self.nego_feat = 0;
+        self.isr_status = 0;
+        self.lintr_pin.as_ref().map(|pin| pin.deassert());
+        self.msix_cfg_vec = VIRTIO_MSI_NO_VECTOR;
     }
 }
 
-pub struct PciVirtio<D: VirtioDevice + 'static> {
+pub struct PciVirtio {
     map: RegMap<VirtioTop>,
+    map_nomsix: RegMap<VirtioTop>,
+    /// Quick access to register map for MSIX (true) or non-MSIX (false)
+    map_which: AtomicBool,
+
     state: Mutex<VirtioState>,
+    state_cv: Condvar,
     queue_size: u16,
     num_queues: u16,
     queues: Vec<Arc<VirtQueue>>,
 
     sa_cell: SelfArcCell<Self>,
 
-    dev: D,
+    dev: Box<dyn VirtioDevice>,
 }
-impl<D: VirtioDevice + 'static> PciVirtio<D> {
-    fn map_for_device() -> RegMap<VirtioTop> {
-        let dev_sz = D::device_cfg_size();
-        // XXX: Shortened for no-msix
-        let legacy_sz = 0x14;
-        let layout = [
-            (VirtioTop::LegacyConfig, legacy_sz),
-            (VirtioTop::DeviceConfig, dev_sz),
-        ];
-        let size = dev_sz + legacy_sz;
-        RegMap::create_packed_passthru(size, &layout)
-    }
-
+impl PciVirtio {
     pub fn new(
         queue_size: u16,
         num_queues: u16,
-        inner: D,
+        msix_count: Option<u16>,
+        dev_id: u16,
+        dev_class: u8,
+        cfg_sz: usize,
+        inner: Box<dyn VirtioDevice>,
     ) -> Arc<pci::DeviceInst> {
         assert!(queue_size > 1 && queue_size.is_power_of_two());
 
@@ -85,9 +113,28 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
             queues.push(Arc::new(VirtQueue::new(queue_size)));
         }
 
+        let layout = [
+            (VirtioTop::LegacyConfig, LEGACY_REG_SZ),
+            (VirtioTop::DeviceConfig, cfg_sz),
+        ];
+        let layout_nomsix = [
+            (VirtioTop::LegacyConfig, LEGACY_REG_SZ_NO_MSIX),
+            (VirtioTop::DeviceConfig, cfg_sz),
+        ];
+
         let mut this = Arc::new(Self {
-            map: Self::map_for_device(),
-            state: Mutex::new(VirtioState::new()),
+            map: RegMap::create_packed_passthru(
+                cfg_sz + LEGACY_REG_SZ,
+                &layout,
+            ),
+            map_nomsix: RegMap::create_packed_passthru(
+                cfg_sz + LEGACY_REG_SZ_NO_MSIX,
+                &layout_nomsix,
+            ),
+            map_which: AtomicBool::new(false),
+
+            state: Mutex::new(VirtioState::new(num_queues)),
+            state_cv: Condvar::new(),
             queue_size,
             num_queues,
             queues,
@@ -99,24 +146,25 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
         SelfArc::self_arc_init(&mut this);
 
         for queue in this.queues.iter() {
-            queue.set_interrupt(Box::new(QueueIntr {
-                action: IntrAction::Isr,
-                outer: this.self_weak(),
-            }));
+            queue.set_interrupt(IsrIntr::new(this.self_weak()));
         }
 
-        let (id, class) = D::device_id_and_class();
-        pci::Builder::new(pci::Ident {
+        let mut builder = pci::Builder::new(pci::Ident {
             vendor_id: VIRTIO_VENDOR,
-            device_id: id,
+            device_id: dev_id,
             sub_vendor_id: VIRTIO_VENDOR,
-            sub_device_id: id - 0xfff,
-            class,
+            sub_device_id: dev_id - 0xfff,
+            class: dev_class,
             ..Default::default()
         })
-        .add_bar_io(pci::BarN::BAR0, 0x200)
-        .add_lintr()
-        .finish_arc(this)
+        .add_lintr();
+
+        if let Some(count) = msix_count {
+            builder = builder.add_cap_msix(pci::BarN::BAR1, count);
+        }
+
+        // XXX: properly size the legacy cfg BAR
+        builder.add_bar_io(pci::BarN::BAR0, 0x200).finish_arc(this)
     }
 
     fn legacy_read(&self, id: &LegacyReg, ro: &mut ReadOp, _ctx: &DispCtx) {
@@ -160,8 +208,17 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
                 }
                 ro.buf[0] = isr;
             }
-            _ => {
-                // no msix for now
+            LegacyReg::MsixVectorConfig => {
+                let state = self.state.lock().unwrap();
+                LE::write_u16(ro.buf, state.msix_cfg_vec);
+            }
+            LegacyReg::MsixVectorQueue => {
+                let state = self.state.lock().unwrap();
+                let val = state
+                    .msix_queue_vec
+                    .get(state.queue_sel as usize)
+                    .unwrap_or_else(|| &VIRTIO_MSI_NO_VECTOR);
+                LE::write_u16(ro.buf, *val);
             }
         }
     }
@@ -195,14 +252,44 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
             LegacyReg::DeviceStatus => {
                 self.set_status(wo.buf[0]);
             }
+            LegacyReg::MsixVectorConfig => {
+                let mut state = self.state.lock().unwrap();
+                state.msix_cfg_vec = LE::read_u16(wo.buf);
+            }
+            LegacyReg::MsixVectorQueue => {
+                let mut state = self.state.lock().unwrap();
+                let sel = state.queue_sel as usize;
+                if let Some(queue) = self.queues.get(sel) {
+                    let val = LE::read_u16(wo.buf);
+
+                    if state.intr_mode != IntrMode::Msi {
+                        // Store the vector information for later
+                        state.msix_queue_vec[sel] = val;
+                    } else {
+                        state = self
+                            .state_cv
+                            .wait_while(state, |s| s.intr_mode_updating)
+                            .unwrap();
+                        state.intr_mode_updating = true;
+                        state.msix_queue_vec[sel] = val;
+                        let hdl = state.msix_hdl.as_ref().unwrap().clone();
+
+                        // State lock cannot be held while updating queue
+                        // interrupt handlers due to deadlock possibility.
+                        drop(state);
+                        queue.set_interrupt(MsiIntr::new(hdl, val));
+                        state = self.state.lock().unwrap();
+
+                        state.intr_mode_updating = false;
+                        self.state_cv.notify_all();
+                    }
+                }
+            }
 
             LegacyReg::FeatDevice
             | LegacyReg::QueueSize
             | LegacyReg::IsrStatus => {
                 // Read-only regs
-            }
-            LegacyReg::MsixVectorConfig | LegacyReg::MsixVectorQueue => {
-                unimplemented!("no msix for now")
             }
         }
     }
@@ -230,11 +317,7 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
         for queue in self.queues.iter() {
             queue.reset();
         }
-        state.nego_feat = 0;
-        state.queue_sel = 0;
-        state.isr_status = 0;
-        state.status = Status::RESET;
-        state.lintr_pin.as_ref().map(|pin| pin.deassert());
+        state.reset();
     }
 
     fn raise_isr(&self) {
@@ -244,18 +327,81 @@ impl<D: VirtioDevice + 'static> PciVirtio<D> {
             pin.assert()
         }
     }
+
+    fn set_intr_mode(&self, new_mode: IntrMode) {
+        let mut state = self.state.lock().unwrap();
+        let old_mode = state.intr_mode;
+        if new_mode == old_mode {
+            return;
+        }
+
+        state =
+            self.state_cv.wait_while(state, |s| s.intr_mode_updating).unwrap();
+
+        state.intr_mode_updating = true;
+        match old_mode {
+            IntrMode::IsrLintr => {
+                // When leaving lintr-pin mode, deassert anything on said pin
+                state.lintr_pin.as_ref().map(|pin| pin.deassert());
+            }
+            IntrMode::Msi => {
+                // When leaving MSI mode, re-wire the Isr interrupt handling
+                //
+                // To avoid deadlock, the state lock must be dropped while
+                // updating the interrupts handlers on queues.
+                drop(state);
+                for queue in self.queues.iter() {
+                    queue.set_interrupt(IsrIntr::new(self.self_weak()));
+                }
+                state = self.state.lock().unwrap();
+            }
+            _ => {}
+        }
+
+        state.intr_mode = new_mode;
+        match new_mode {
+            IntrMode::IsrLintr => {
+                state.lintr_pin.as_ref().map(|pin| {
+                    if state.isr_status != 0 {
+                        pin.assert()
+                    }
+                });
+            }
+            IntrMode::Msi => {
+                for (idx, queue) in self.queues.iter().enumerate() {
+                    let vec = *state.msix_queue_vec.get(idx).unwrap();
+                    let hdl = state.msix_hdl.as_ref().unwrap().clone();
+
+                    // State lock cannot be held while updating queue interrupt
+                    // handlers due to deadlock possibility.
+                    drop(state);
+                    queue.set_interrupt(MsiIntr::new(hdl, vec));
+                    state = self.state.lock().unwrap();
+                }
+            }
+            _ => {}
+        }
+        state.intr_mode_updating = false;
+        self.state_cv.notify_all();
+    }
+    fn single_msix_update(&self, mut state: MutexGuard<VirtioState>, idx: u16) {
+    }
 }
 
-impl<D: VirtioDevice> SelfArc for PciVirtio<D> {
+impl SelfArc for PciVirtio {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
         &self.sa_cell
     }
 }
 
-impl<D: VirtioDevice> pci::Device for PciVirtio<D> {
+impl pci::Device for PciVirtio {
     fn bar_rw(&self, bar: pci::BarN, rwo: &mut RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
-        self.map.process(rwo, |id, rwo| match id {
+        let map = match self.map_which.load(Ordering::SeqCst) {
+            false => &self.map_nomsix,
+            true => &self.map,
+        };
+        map.process(rwo, |id, rwo| match id {
             VirtioTop::LegacyConfig => {
                 LEGACY_REGS.process(rwo, |id, rwo| match rwo {
                     RWOp::Read(ro) => self.legacy_read(id, ro, ctx),
@@ -265,49 +411,56 @@ impl<D: VirtioDevice> pci::Device for PciVirtio<D> {
             VirtioTop::DeviceConfig => self.dev.device_cfg_rw(rwo),
         });
     }
-    fn intr_mode_change(&self, mode: pci::IntrMode) {
-        match mode {
-            pci::IntrMode::Disabled => {
-                let mut state = self.state.lock().unwrap();
-                if let Some(pin) = std::mem::replace(&mut state.lintr_pin, None)
-                {
-                    pin.deassert();
-                }
-            }
-            pci::IntrMode::INTxPin(pin) => {
-                let mut state = self.state.lock().unwrap();
-                assert!(state.lintr_pin.is_none());
-                if state.isr_status != 0 {
-                    pin.assert();
-                }
-                state.lintr_pin = Some(pin);
-            }
-            pci::IntrMode::MSIX => {
-                todo!("add msix support");
-            }
+    fn interrupt_setup(
+        &self,
+        lintr_pin: Option<pci::INTxPin>,
+        msix_hdl: Option<pci::MsixHdl>,
+    ) {
+        let mut state = self.state.lock().unwrap();
+        state.lintr_pin = lintr_pin;
+        state.msix_hdl = msix_hdl;
+    }
+    fn interrupt_mode_change(&self, mode: pci::IntrMode) {
+        self.set_intr_mode(match mode {
+            pci::IntrMode::Disabled => IntrMode::IsrOnly,
+            pci::IntrMode::INTxPin => IntrMode::IsrLintr,
+            pci::IntrMode::MSIX => IntrMode::Msi,
+        });
+
+        // Make sure the correct legacy register map is used
+        self.map_which.store(mode == pci::IntrMode::MSIX, Ordering::SeqCst);
+    }
+}
+
+struct IsrIntr {
+    outer: Weak<PciVirtio>,
+}
+impl IsrIntr {
+    fn new(outer: Weak<PciVirtio>) -> Box<Self> {
+        Box::new(Self { outer })
+    }
+}
+impl VirtioIntr for IsrIntr {
+    fn notify(&self, _ctx: &DispCtx) {
+        if let Some(dev) = Weak::upgrade(&self.outer) {
+            dev.raise_isr();
         }
     }
 }
 
-enum IntrAction {
-    Isr,
-    Msi,
+struct MsiIntr {
+    hdl: pci::MsixHdl,
+    index: u16,
 }
-
-struct QueueIntr<D: VirtioDevice> {
-    action: IntrAction,
-    outer: Weak<PciVirtio<D>>,
+impl MsiIntr {
+    fn new(hdl: pci::MsixHdl, index: u16) -> Box<Self> {
+        Box::new(Self { hdl: hdl.clone(), index })
+    }
 }
-
-impl<D: VirtioDevice> VirtioIntr for QueueIntr<D> {
-    fn notify(&self) {
-        match self.action {
-            IntrAction::Isr => {
-                if let Some(dev) = Weak::upgrade(&self.outer) {
-                    dev.raise_isr();
-                }
-            }
-            IntrAction::Msi => todo!("wire up MSI"),
+impl VirtioIntr for MsiIntr {
+    fn notify(&self, ctx: &DispCtx) {
+        if self.index < self.hdl.count() {
+            self.hdl.fire(self.index, ctx);
         }
     }
 }
@@ -317,6 +470,9 @@ enum VirtioTop {
     LegacyConfig,
     DeviceConfig,
 }
+
+const LEGACY_REG_SZ: usize = 0x18;
+const LEGACY_REG_SZ_NO_MSIX: usize = 0x14;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum LegacyReg {
@@ -345,7 +501,6 @@ lazy_static! {
             (LegacyReg::MsixVectorConfig, 2),
             (LegacyReg::MsixVectorQueue, 2),
         ];
-        let size = 0x18;
-        RegMap::create_packed(size, &layout, None)
+        RegMap::create_packed(LEGACY_REG_SZ, &layout, None)
     };
 }

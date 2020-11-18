@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use super::VirtioIntr;
 use crate::common::*;
+use crate::dispatch::DispCtx;
 use crate::vmm::MemCtx;
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
@@ -281,7 +282,7 @@ impl VirtQueue {
         }
         Some(len)
     }
-    pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx) {
+    pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx, ctx: &DispCtx) {
         assert!(chain.idx.is_some());
         let mut used = self.used.lock().unwrap();
         let id = mem::replace(&mut chain.idx, None).unwrap();
@@ -289,7 +290,7 @@ impl VirtQueue {
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         used.write_used(id, len, self.size, mem);
         if !used.suppress_intr(mem) {
-            used.interrupt.as_ref().map(|i| i.notify());
+            used.interrupt.as_ref().map(|i| i.notify(ctx));
         }
         chain.reset();
     }

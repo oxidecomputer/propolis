@@ -65,27 +65,18 @@ impl SelfArc for LpcUart {
 }
 
 impl PioDev for LpcUart {
-    fn pio_out(&self, _port: u16, _ident: usize, wo: &WriteOp, ctx: &DispCtx) {
-        assert!(wo.offset < REGISTER_LEN);
-        assert!(!wo.buf.is_empty());
-
+    fn pio_rw(&self, _port: u16, _ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+        assert!(rwo.offset() < REGISTER_LEN);
+        assert!(rwo.len() != 0);
         let mut this = self.state.lock().unwrap();
-        this.uart.reg_write(wo.offset as u8, wo.buf[0]);
-        drop(this);
-        self.event_update(ctx);
-    }
-    fn pio_in(
-        &self,
-        _port: u16,
-        _ident: usize,
-        ro: &mut ReadOp,
-        ctx: &DispCtx,
-    ) {
-        assert!(ro.offset < REGISTER_LEN);
-        assert!(!ro.buf.is_empty());
-
-        let mut this = self.state.lock().unwrap();
-        ro.buf[0] = this.uart.reg_read(ro.offset as u8);
+        match rwo {
+            RWOp::Read(ro) => {
+                ro.buf[0] = this.uart.reg_read(ro.offset as u8);
+            }
+            RWOp::Write(wo) => {
+                this.uart.reg_write(wo.offset as u8, wo.buf[0]);
+            }
+        }
         drop(this);
         self.event_update(ctx);
     }

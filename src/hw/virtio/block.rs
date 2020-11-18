@@ -36,6 +36,8 @@ const VIRTIO_BLK_F_CONFIG_WCE: u32 = 1 << 11;
 const VIRTIO_BLK_F_DISCARD: u32 = 1 << 13;
 const VIRTIO_BLK_F_WRITE_ZEROES: u32 = 1 << 14;
 
+const VIRTIO_BLK_CFG_SIZE: usize = 0x3c;
+
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
 
@@ -47,7 +49,15 @@ impl VirtioBlock {
         queue_size: u16,
         bdev: Arc<dyn BlockDev<Request>>,
     ) -> Arc<pci::DeviceInst> {
-        PciVirtio::new(queue_size, 1, Self { bdev })
+        PciVirtio::new(
+            queue_size,
+            1,
+            None,
+            VIRTIO_DEV_BLOCK,
+            pci::bits::CLASS_STORAGE,
+            VIRTIO_BLK_CFG_SIZE,
+            Box::new(Self { bdev }),
+        )
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
@@ -77,9 +87,6 @@ impl VirtioBlock {
     }
 }
 impl VirtioDevice for VirtioBlock {
-    fn device_cfg_size() -> usize {
-        0x3c
-    }
     fn device_cfg_rw(&self, rwo: &mut RWOp) {
         BLOCK_DEV_REGS.process(rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.block_cfg_read(id, ro),
@@ -100,11 +107,6 @@ impl VirtioDevice for VirtioBlock {
     }
     fn device_set_features(&self, feat: u32) {
         // XXX: real features
-    }
-
-    fn device_id_and_class() -> (u16, u8) {
-        // block device, storage class
-        (VIRTIO_DEV_BLOCK, 0x01)
     }
 
     fn queue_notify(&self, qid: u16, vq: &Arc<VirtQueue>, ctx: &DispCtx) {
@@ -154,7 +156,7 @@ impl VirtioDevice for VirtioBlock {
                         chain.write_skip(remain - 1);
                         chain.write(&VIRTIO_BLK_S_UNSUPP, mem);
                     }
-                    vq.push_used(&mut chain, mem);
+                    vq.push_used(&mut chain, mem, ctx);
                 }
             }
         }
@@ -222,7 +224,7 @@ impl BlockReq for Request {
                 self.chain.write(&VIRTIO_BLK_S_UNSUPP, mem)
             }
         };
-        self.vq.push_used(&mut self.chain, mem);
+        self.vq.push_used(&mut self.chain, mem, ctx);
     }
 
     fn next_buf(&mut self) -> Option<GuestRegion> {
@@ -295,7 +297,10 @@ lazy_static! {
             (BlockReg::ZeroMayUnmap, 1),
             (BlockReg::Unused, 3),
         ];
-        let size = 0x3c;
-        RegMap::create_packed(size, &layout, Some(BlockReg::Unused))
+        RegMap::create_packed(
+            VIRTIO_BLK_CFG_SIZE,
+            &layout,
+            Some(BlockReg::Unused),
+        )
     };
 }

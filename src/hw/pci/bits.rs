@@ -24,3 +24,15 @@ bitflags! {
 pub const BAR_TYPE_IO: u32 = 0b01;
 pub const BAR_TYPE_MEM: u32 = 0b000;
 pub const BAR_TYPE_MEM64: u32 = 0b100;
+
+pub const CAP_ID_MSI: u8 = 0x05;
+pub const CAP_ID_VENDOR: u8 = 0x09;
+pub const CAP_ID_MSIX: u8 = 0x11;
+
+pub const CLASS_UNCLASSIFIED: u8 = 0;
+pub const CLASS_STORAGE: u8 = 1;
+pub const CLASS_NETWORK: u8 = 2;
+pub const CLASS_DISPLAY: u8 = 3;
+pub const CLASS_MULTIMEDIA: u8 = 4;
+pub const CLASS_MEMORY: u8 = 5;
+pub const CLASS_BRIDGE: u8 = 6;

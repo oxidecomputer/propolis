@@ -1,13 +1,12 @@
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
-use crate::pio::PioDev;
 
 use byteorder::{ByteOrder, LE};
 
-mod bits;
+pub mod bits;
 mod device;
 
 pub use device::*;
@@ -20,12 +19,12 @@ const MASK_DEV: u8 = 0x1f;
 const MASK_BUS: u8 = 0xff;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct PciBDF {
+pub struct BDF {
     inner_bus: u8,
     inner_dev: u8,
     inner_func: u8,
 }
-impl PciBDF {
+impl BDF {
     pub fn new(bus: u8, dev: u8, func: u8) -> Self {
         assert!(dev <= MASK_DEV);
         assert!(func <= MASK_FUNC);
@@ -52,112 +51,88 @@ pub enum INTxPinID {
     INTD = 4,
 }
 
-pub trait PciEndpoint: Send + Sync {
+pub trait Endpoint: Send + Sync {
     fn cfg_rw(&self, op: &mut RWOp<'_, '_>, ctx: &DispCtx);
     fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>));
-    fn place_bars(
-        &self,
-        place_bar: &mut dyn FnMut(BarN, &BarDefine) -> u64,
-        ctx: &DispCtx,
-    );
+    fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine));
+    fn bar_place(&self, bar: BarN, addr: u64);
 }
 
-pub struct PciBus {
-    state: Mutex<PciBusState>,
+pub const SLOTS_PER_BUS: usize = 32;
+pub const FUNCS_PER_SLOT: usize = 8;
+
+#[derive(Default)]
+pub struct Slot {
+    funcs: [Option<Arc<dyn Endpoint>>; FUNCS_PER_SLOT],
 }
-
-struct PciBusState {
-    pio_cfg_addr: u32,
-    devices: Vec<(PciBDF, Arc<dyn PciEndpoint>)>,
-}
-
-impl PciBusState {
-    fn cfg_read(&self, bdf: &PciBDF, ro: &mut ReadOp, ctx: &DispCtx) {
-        if let Some((_, dev)) =
-            self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
-        {
-            dev.cfg_rw(&mut RWOp::Read(ro), ctx);
-            println!(
-                "cfgread bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                bdf.bus(),
-                bdf.dev(),
-                bdf.func(),
-                ro.offset,
-                ro.buf
-            );
-        } else {
-            println!(
-                "unhandled cfgread bus:{} device:{} func:{} off:{:x}",
-                bdf.bus(),
-                bdf.dev(),
-                bdf.func(),
-                ro.offset
-            );
-            read_inval(ro.buf);
-        }
-    }
-    fn cfg_write(&self, bdf: &PciBDF, wo: &WriteOp, ctx: &DispCtx) {
-        if let Some((_, dev)) =
-            self.devices.iter().find(|(sbdf, _)| sbdf == bdf)
-        {
-            println!(
-                "cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                bdf.bus(),
-                bdf.dev(),
-                bdf.func(),
-                wo.offset,
-                wo.buf
-            );
-            dev.cfg_rw(&mut RWOp::Write(wo), ctx);
-        } else {
-            println!(
-                "unhandled cfgwrite bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                bdf.bus(), bdf.dev(), bdf.func(), wo.offset, wo.buf
-            );
-        }
-    }
-
-    fn register(&mut self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
-        // XXX strict fail for now
-        assert!(!self.devices.iter().any(|(sbdf, _)| sbdf == &bdf));
-        self.devices.push((bdf, dev));
+impl Slot {
+    fn new() -> Self {
+        Self { funcs: Default::default() }
     }
 }
 
-impl PciBus {
+#[derive(Default)]
+pub struct Bus {
+    slots: [Slot; SLOTS_PER_BUS],
+}
+
+impl Bus {
     pub fn new() -> Self {
-        Self {
-            state: Mutex::new(PciBusState {
-                pio_cfg_addr: 0,
-                devices: Vec::new(),
-            }),
-        }
+        Self::default()
     }
 
-    pub fn attach(&self, bdf: PciBDF, dev: Arc<dyn PciEndpoint>) {
-        let mut hdl = self.state.lock().unwrap();
-        hdl.register(bdf, dev.clone());
+    pub fn attach(&mut self, slot: u8, func: u8, dev: Arc<dyn Endpoint>) {
+        assert!((slot as usize) < SLOTS_PER_BUS);
+        assert!((func as usize) < FUNCS_PER_SLOT);
+
+        // XXX be strict for now
+        assert!(self.slots[slot as usize].funcs[func as usize].is_none());
+        self.slots[slot as usize].funcs[func as usize] = Some(dev);
     }
 
-    pub fn place_bars(&self, ctx: &DispCtx) {
-        let mut state = self.state.lock().unwrap();
-        // XXX: hack up positioning for now
-        let mut pio_pos = 0xc000;
-        for (bdf, dev) in state.devices.iter() {
-            dev.place_bars(
-                &mut |bar, def| match def {
-                    BarDefine::Pio(sz) => {
-                        let mask = *sz as u64 - 1;
-                        let aligned = pio_pos + mask & !mask;
-                        pio_pos = aligned + *sz as u64;
-                        println!("placing {:?} {:?} @ {:x}", bdf, bar, aligned);
-                        aligned
-                    }
-                    _ => todo!("wire up MMIO later"),
-                },
-                ctx,
-            );
+    pub fn iter(&self) -> Iter {
+        Iter::new(self)
+    }
+
+    pub fn device_at(&self, slot: u8, func: u8) -> Option<&Arc<dyn Endpoint>> {
+        assert!((slot as usize) < SLOTS_PER_BUS);
+        assert!((func as usize) < FUNCS_PER_SLOT);
+
+        self.slots[slot as usize].funcs[func as usize].as_ref()
+    }
+}
+
+pub struct Iter<'a> {
+    bus: &'a Bus,
+    pos: usize,
+}
+impl<'a> Iter<'a> {
+    fn new(bus: &'a Bus) -> Self {
+        Self { bus, pos: 0 }
+    }
+    fn slot_func(&self) -> Option<(usize, usize)> {
+        if self.pos < (SLOTS_PER_BUS * FUNCS_PER_SLOT) as usize {
+            Some((self.pos / FUNCS_PER_SLOT, self.pos & MASK_FUNC as usize))
+        } else {
+            None
         }
+    }
+}
+impl<'a> Iterator for Iter<'a> {
+    type Item = (u8, u8, &'a Arc<dyn Endpoint>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((slot, func)) = self.slot_func() {
+            self.pos += 1;
+            if self.bus.slots[slot].funcs[func].is_some() {
+                return Some((
+                    slot as u8,
+                    func as u8,
+                    self.bus.slots[slot].funcs[func].as_ref().unwrap(),
+                ));
+            }
+        }
+        None
     }
 }
 
@@ -167,7 +142,7 @@ fn read_inval(data: &mut [u8]) {
     }
 }
 
-fn cfg_addr_parse(addr: u32) -> Option<(PciBDF, u8)> {
+fn cfg_addr_parse(addr: u32) -> Option<(BDF, u8)> {
     if addr & 0x80000000 == 0 {
         // Enable bit not set
         None
@@ -177,58 +152,62 @@ fn cfg_addr_parse(addr: u32) -> Option<(PciBDF, u8)> {
         let device = (addr >> 11) as u8 & MASK_DEV;
         let bus = (addr >> 16) as u8 & MASK_BUS;
 
-        Some((PciBDF::new(bus, device, func), offset as u8))
+        Some((BDF::new(bus, device, func), offset as u8))
     }
 }
 
-impl PioDev for PciBus {
-    fn pio_out(&self, port: u16, _ident: usize, wo: &WriteOp, ctx: &DispCtx) {
-        let mut hdl = self.state.lock().unwrap();
-        match port {
-            PORT_PCI_CONFIG_ADDR => {
-                if wo.buf.len() == 4 && wo.offset == 0 {
-                    // XXX expect aligned/sized reads
-                    hdl.pio_cfg_addr = LE::read_u32(wo.buf);
-                }
+pub struct PioCfgDecoder {
+    addr: Mutex<u32>,
+}
+impl PioCfgDecoder {
+    pub fn new() -> Self {
+        Self { addr: Mutex::new(0) }
+    }
+    pub fn service_addr(&self, rwop: &mut RWOp) {
+        if rwop.len() != 4 || rwop.offset() != 0 {
+            // XXX expect aligned/sized reads
+            return;
+        }
+        let mut addr = self.addr.lock().unwrap();
+        match rwop {
+            RWOp::Read(ro) => {
+                LE::write_u32(ro.buf, *addr);
             }
-            PORT_PCI_CONFIG_DATA => {
-                if let Some((bdf, cfg_off)) = cfg_addr_parse(hdl.pio_cfg_addr) {
-                    hdl.cfg_write(
-                        &bdf,
-                        &WriteOp::new(wo.offset + cfg_off as usize, wo.buf),
-                        ctx,
-                    );
-                }
-            }
-            _ => {
-                panic!();
+            RWOp::Write(wo) => {
+                *addr = LE::read_u32(wo.buf);
             }
         }
     }
-    fn pio_in(&self, port: u16, _ident: usize, ro: &mut ReadOp, ctx: &DispCtx) {
-        let hdl = self.state.lock().unwrap();
-        match port {
-            PORT_PCI_CONFIG_ADDR => {
-                if ro.buf.len() == 4 && ro.offset == 0 {
-                    // XXX expect aligned/sized reads
-                    LE::write_u32(ro.buf, hdl.pio_cfg_addr);
-                } else {
-                    read_inval(ro.buf);
+    pub fn service_data<F>(&self, rwop: &mut RWOp, mut cb: F)
+    where
+        F: FnMut(&BDF, &mut RWOp) -> Option<()>,
+    {
+        let locked_addr = self.addr.lock().unwrap();
+        let addr = *locked_addr;
+        drop(locked_addr);
+
+        if let Some((bdf, cfg_off)) = cfg_addr_parse(addr) {
+            let hit = match rwop {
+                RWOp::Read(ro) => cb(
+                    &bdf,
+                    &mut RWOp::Read(&mut ReadOp::new(
+                        ro.offset + cfg_off as usize,
+                        ro.buf,
+                    )),
+                ),
+                RWOp::Write(wo) => cb(
+                    &bdf,
+                    &mut RWOp::Write(&mut WriteOp::new(
+                        wo.offset + cfg_off as usize,
+                        wo.buf,
+                    )),
+                ),
+            };
+            if hit.is_none() {
+                match rwop {
+                    RWOp::Read(ro) => read_inval(ro.buf),
+                    RWOp::Write(_) => {}
                 }
-            }
-            PORT_PCI_CONFIG_DATA => {
-                if let Some((bdf, cfg_off)) = cfg_addr_parse(hdl.pio_cfg_addr) {
-                    hdl.cfg_read(
-                        &bdf,
-                        &mut ReadOp::new(ro.offset + cfg_off as usize, ro.buf),
-                        ctx,
-                    );
-                } else {
-                    read_inval(ro.buf);
-                }
-            }
-            _ => {
-                panic!();
             }
         }
     }

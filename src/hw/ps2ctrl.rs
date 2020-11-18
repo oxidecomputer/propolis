@@ -8,8 +8,7 @@ use crate::intr_pins::{LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 
 const PS2_PORT_DATA: u16 = 0x60;
-const PS2_PORT_CMD: u16 = 0x64;
-const PS2_PORT_STATUS: u16 = 0x64;
+const PS2_PORT_CMD_STATUS: u16 = 0x64;
 
 const PS2_IRQ_PRI: u8 = 1;
 const PS2_IRQ_AUX: u8 = 12;
@@ -117,7 +116,7 @@ impl PS2Ctrl {
         let data_ref = Arc::downgrade(self) as Weak<dyn PioDev>;
         let cmd_ref = Weak::clone(&data_ref);
         bus.register(PS2_PORT_DATA, 1, data_ref, 0).unwrap();
-        bus.register(PS2_PORT_CMD, 1, cmd_ref, 0).unwrap();
+        bus.register(PS2_PORT_CMD_STATUS, 1, cmd_ref, 0).unwrap();
 
         let mut state = self.state.lock().unwrap();
         state.pri_pin = Some(pic.pin_handle(PS2_IRQ_PRI).unwrap());
@@ -266,30 +265,19 @@ impl PS2Ctrl {
     }
 }
 impl PioDev for PS2Ctrl {
-    fn pio_in(
-        &self,
-        port: u16,
-        _ident: usize,
-        ro: &mut ReadOp,
-        _ctx: &DispCtx,
-    ) {
-        assert_eq!(ro.buf.len(), 1);
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, _ctx: &DispCtx) {
+        assert_eq!(rwo.len(), 1);
         match port {
-            PS2_PORT_DATA => ro.buf[0] = self.data_read(),
-            PS2_PORT_STATUS => ro.buf[0] = self.status_read(),
+            PS2_PORT_DATA => match rwo {
+                RWOp::Read(ro) => ro.buf[0] = self.data_read(),
+                RWOp::Write(wo) => self.data_write(wo.buf[0]),
+            },
+            PS2_PORT_CMD_STATUS => match rwo {
+                RWOp::Read(ro) => ro.buf[0] = self.status_read(),
+                RWOp::Write(wo) => self.cmd_write(wo.buf[0]),
+            },
             _ => {
                 panic!("unexpected pio in {:x}", port);
-            }
-        }
-    }
-
-    fn pio_out(&self, port: u16, _ident: usize, wo: &WriteOp, _ctx: &DispCtx) {
-        assert_eq!(wo.buf.len(), 1);
-        match port {
-            PS2_PORT_DATA => self.data_write(wo.buf[0]),
-            PS2_PORT_CMD => self.cmd_write(wo.buf[0]),
-            _ => {
-                panic!("unexpected pio out {:x}", port);
             }
         }
     }
