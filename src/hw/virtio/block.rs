@@ -49,10 +49,15 @@ impl VirtioBlock {
         queue_size: u16,
         bdev: Arc<dyn BlockDev<Request>>,
     ) -> Arc<pci::DeviceInst> {
+        // virtio-block only needs two MSI-X entries for its interrupt needs:
+        // - device config changes
+        // - queue 0 notification
+        let msix_count = Some(2);
+
         PciVirtio::new(
             queue_size,
             1,
-            None,
+            msix_count,
             VIRTIO_DEV_BLOCK,
             pci::bits::CLASS_STORAGE,
             VIRTIO_BLK_CFG_SIZE,
