@@ -92,67 +92,56 @@ impl<R: BlockReq> PlainBdev<R> {
         loop {
             reqs = self.cond.wait_while(reqs, |r| r.is_empty()).unwrap();
             while let Some(mut req) = reqs.pop_front() {
-                let res = self.process_req(&mut req, ctx);
+                let res = match req.oper() {
+                    BlockOp::Read => self.process_read(&mut req, ctx),
+                    BlockOp::Write => self.process_write(&mut req, ctx),
+                };
                 req.complete(res, ctx);
             }
         }
     }
-    fn process_req(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
+    fn process_read(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
         let mem = ctx.mctx.memctx();
 
-        let buf: GuestRegion = match req.oper() {
-            BlockOp::Read => {
-                // XXX: single buf only for prototype
-                let buf = req.next_buf().unwrap();
-                assert!(req.next_buf().is_none());
-                buf
-            }
-            BlockOp::Write => {
-                // XXX: single buf only for prototype
-                let buf = req.next_buf().unwrap();
-                assert!(req.next_buf().is_none());
-                buf
-            }
-        };
-        match req.oper() {
-            BlockOp::Read => {
-                if let Some(rbuf) = mem.raw_writable(&buf) {
-                    let nread = unsafe {
-                        pread(
-                            self.fd,
-                            rbuf as *mut c_void,
-                            buf.1,
-                            req.offset() as i64,
-                        )
-                    };
-                    if nread == -1 {
-                        // XXX: error reporting
-                        return BlockResult::Failure;
-                    }
-                    assert_eq!(nread as usize, buf.1);
-                }
-            }
-            BlockOp::Write => {
-                if self.is_ro {
+        let mut offset = req.offset();
+        while let Some(buf) = req.next_buf() {
+            if let Some(rbuf) = mem.raw_writable(&buf) {
+                let nread = unsafe {
+                    pread(self.fd, rbuf as *mut c_void, buf.1, offset as i64)
+                };
+                if nread == -1 {
+                    // XXX: error reporting
                     return BlockResult::Failure;
                 }
-                if let Some(wbuf) = mem.raw_readable(&buf) {
-                    let nwritten = unsafe {
-                        pwrite(
-                            self.fd,
-                            wbuf as *const c_void,
-                            buf.1,
-                            req.offset() as i64,
-                        )
-                    };
-                    if nwritten == -1 {
-                        // XXX: error reporting
-                        return BlockResult::Failure;
-                    }
-                    assert_eq!(nwritten as usize, buf.1);
-                }
+                assert_eq!(nread as usize, buf.1);
+                offset += buf.1;
+            } else {
+                // XXX: report bad addr
+                return BlockResult::Failure;
             }
-        };
+        }
+        BlockResult::Success
+    }
+    fn process_write(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
+        let mem = ctx.mctx.memctx();
+
+        let mut offset = req.offset();
+        while let Some(buf) = req.next_buf() {
+            if let Some(wbuf) = mem.raw_readable(&buf) {
+                let nwritten = unsafe {
+                    pwrite(self.fd, wbuf as *const c_void, buf.1, offset as i64)
+                };
+                if nwritten == -1 {
+                    // XXX: error reporting
+                    return BlockResult::Failure;
+                }
+                assert_eq!(nwritten as usize, buf.1);
+                offset += buf.1;
+            } else {
+                // XXX: report bad addr
+                return BlockResult::Failure;
+            }
+        }
         BlockResult::Success
     }
     pub fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher) {

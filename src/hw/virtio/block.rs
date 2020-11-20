@@ -73,8 +73,8 @@ impl VirtioBlock {
                 LE::write_u64(ro.buf, total_bytes / SECTOR_SZ as u64);
             }
             BlockReg::SegMax => {
-                // XXX: only one seg per transfer allowed for now
-                LE::write_u32(ro.buf, 1);
+                // XXX: Copy the static limit from qemu for now
+                LE::write_u32(ro.buf, 128 - 2);
             }
             BlockReg::BlockSize => LE::write_u32(ro.buf, info.block_size),
             BlockReg::Unused => {
