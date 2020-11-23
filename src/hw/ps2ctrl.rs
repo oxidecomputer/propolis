@@ -83,7 +83,6 @@ const PS2C_R_PORT_TEST_PASS: u8 = 0x00;
 struct PS2State {
     resp: Option<u8>,
     cmd_prefix: Option<u8>,
-    enable: [bool; 2],
     ctrl_cfg: CtrlCfg,
     ctrl_out_port: CtrlOutPort,
     ram: [u8; 0x1e],
@@ -93,16 +92,6 @@ struct PS2State {
 
     pri_pin: Option<LegacyPin>,
     aux_pin: Option<LegacyPin>,
-}
-impl PS2State {
-    fn pri_avail(&self) -> bool {
-        self.pri_port.has_output()
-            && !self.ctrl_cfg.contains(CtrlCfg::PRI_CLOCK_DIS)
-    }
-    fn aux_avail(&self) -> bool {
-        self.aux_port.has_output()
-            && !self.ctrl_cfg.contains(CtrlCfg::AUX_CLOCK_DIS)
-    }
 }
 
 pub struct PS2Ctrl {
@@ -162,11 +151,11 @@ impl PS2Ctrl {
         if let Some(rval) = state.resp {
             state.resp = None;
             rval
-        } else if state.pri_avail() {
+        } else if state.pri_port.has_output() {
             let rval = state.pri_port.read_output().unwrap();
             self.update_intr(&mut state);
             rval
-        } else if state.aux_avail() {
+        } else if state.aux_port.has_output() {
             let rval = state.aux_port.read_output().unwrap();
             self.update_intr(&mut state);
             rval
@@ -239,10 +228,13 @@ impl PS2Ctrl {
         // Always report unlocked
         let mut val = CtrlStatus::UNLOCKED;
 
-        if state.resp.is_some() || state.pri_avail() || state.aux_avail() {
+        if state.resp.is_some()
+            || state.pri_port.has_output()
+            || state.aux_port.has_output()
+        {
             val.insert(CtrlStatus::OUT_FULL);
         }
-        val.set(CtrlStatus::AUX_FULL, state.aux_avail());
+        val.set(CtrlStatus::AUX_FULL, state.aux_port.has_output());
         val.set(CtrlStatus::CMD_DATA, state.cmd_prefix.is_some());
         val.set(
             CtrlStatus::SYS_FLAG,
@@ -252,9 +244,12 @@ impl PS2Ctrl {
         val.bits()
     }
     fn update_intr(&self, state: &mut PS2State) {
+        // We currently choose to mimic qemu, which gates the keyboard interrupt
+        // with the keyboard-clock-disable in addition to the interrupt enable.
         let pri_pin = state.pri_pin.as_ref().unwrap();
         pri_pin.set_state(
             state.ctrl_cfg.contains(CtrlCfg::PRI_INTR_EN)
+                && !state.ctrl_cfg.contains(CtrlCfg::PRI_CLOCK_DIS)
                 && state.pri_port.has_output(),
         );
         let aux_pin = state.aux_pin.as_ref().unwrap();
