@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 pub mod block;
+pub mod viona;
 mod pci;
 mod queue;
 

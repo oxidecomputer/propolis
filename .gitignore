@@ -1,3 +1,4 @@
 /target
 /bhyve-api/target
+/dladm/target
 **/Cargo.lock

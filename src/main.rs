@@ -1,4 +1,5 @@
 extern crate bhyve_api;
+extern crate dladm;
 extern crate pico_args;
 #[macro_use]
 extern crate bitflags;
