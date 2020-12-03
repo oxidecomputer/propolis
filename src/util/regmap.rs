@@ -166,10 +166,6 @@ impl<ID> RegMap<ID> {
         let last_position = offset + len - 1;
         let mut position = offset;
 
-        // how much of the transfer length is remaining (or conversely, been consumed)
-        let mut remain = len;
-        let mut consumed = 0;
-
         assert!(len != 0);
         assert!(last_position < self.len);
 
@@ -180,6 +176,9 @@ impl<ID> RegMap<ID> {
             let mut split_back = 0;
             let mut reg_offset = 0;
 
+            let consumed = position - offset;
+            let remain = len - consumed;
+
             match position.cmp(&reg_start) {
                 Ordering::Equal => {
                     if remain > reg_len {
@@ -188,19 +187,15 @@ impl<ID> RegMap<ID> {
                 }
                 Ordering::Less => {
                     debug_assert!(position + remain > reg_start);
-                    let skip = reg_start - position;
-
-                    skip_front = skip;
-                    if remain - skip > reg_len {
-                        split_back = remain - (skip + reg_len);
+                    skip_front = reg_start - position;
+                    if remain - skip_front > reg_len {
+                        split_back = remain - (skip_front + reg_len);
                     }
                 }
                 Ordering::Greater => {
-                    let offset = position - reg_start;
-
-                    reg_offset = offset;
-                    if offset + remain > reg_len {
-                        split_back = offset + remain - reg_len;
+                    reg_offset = position - reg_start;
+                    if reg_offset + remain > reg_len {
+                        split_back = reg_offset + remain - reg_len;
                     }
                 }
             };
@@ -215,9 +210,7 @@ impl<ID> RegMap<ID> {
                 split_back_idx: consumed + skip_front + xfer_len,
             });
 
-            position += reg_offset + skip_front + xfer_len;
-            consumed += skip_front + xfer_len;
-            remain -= skip_front + xfer_len;
+            position = reg_start + reg_offset + xfer_len;
         }
     }
 }
@@ -255,5 +248,112 @@ impl<ID: Copy + Eq> RegMap<ID> {
         assert_eq!(size, off);
 
         map
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[derive(Clone, Copy, Eq, PartialEq, Debug)]
+    enum XferDir {
+        Read,
+        Write,
+    }
+    #[derive(Clone, Copy, Eq, PartialEq, Debug)]
+    struct Xfer<ID: Copy + Eq> {
+        dir: XferDir,
+        reg: ID,
+        off: usize,
+        len: usize,
+    }
+    impl<ID: Copy + Eq> Xfer<ID> {
+        fn from_rwo(id: &ID, rwo: &mut RWOp) -> Self {
+            let dir = match rwo {
+                RWOp::Read(_) => XferDir::Read,
+                RWOp::Write(_) => XferDir::Write,
+            };
+            Xfer { dir, reg: *id, off: rwo.offset(), len: rwo.len() }
+        }
+        fn read(id: ID, off: usize, len: usize) -> Self {
+            Xfer { dir: XferDir::Read, reg: id, off, len }
+        }
+        #[allow(unused)]
+        fn write(id: ID, off: usize, len: usize) -> Self {
+            Xfer { dir: XferDir::Write, reg: id, off, len }
+        }
+    }
+
+    fn read(off: usize, len: usize, cb: impl FnOnce(&mut RWOp)) {
+        let mut buf = Vec::with_capacity(len);
+        buf.resize(len, 0);
+        let mut ro = ReadOp::new(off, &mut buf[..]);
+        cb(&mut RWOp::Read(&mut ro))
+    }
+    #[allow(unused)]
+    fn write(off: usize, len: usize, cb: impl FnOnce(&mut RWOp)) {
+        let mut buf = Vec::with_capacity(len);
+        buf.resize(len, 0);
+        let wo = WriteOp::new(off, &buf[..]);
+        cb(&mut RWOp::Write(&wo))
+    }
+    fn drive_reads<ID: Copy + Eq>(
+        xfers: &[(usize, usize)],
+        map: &RegMap<ID>,
+    ) -> Vec<Xfer<ID>> {
+        let mut res = Vec::new();
+
+        for &(off, len) in xfers {
+            read(off, len, |rwo| {
+                map.process(rwo, |id, rwo| res.push(Xfer::from_rwo(id, rwo)))
+            })
+        }
+        res
+    }
+
+    #[test]
+    fn simple() {
+        // Simple map with varied sizing
+        let map = RegMap::create_packed(
+            0x10,
+            &[('a', 1), ('b', 1), ('c', 2), ('d', 4), ('e', 8)],
+            None,
+        );
+        let expected = vec![
+            Xfer::read('a', 0, 1),
+            Xfer::read('b', 0, 1),
+            Xfer::read('c', 0, 2),
+            Xfer::read('d', 0, 4),
+            Xfer::read('e', 0, 8),
+        ];
+        // Each field individually
+        let reads = [(0, 1), (1, 1), (2, 2), (4, 4), (8, 8)];
+        let res = drive_reads(&reads, &map);
+        assert_eq!(res, expected);
+        // One big op, covering all
+        let reads = [(0, 0x10)];
+        let res = drive_reads(&reads, &map);
+        assert_eq!(res, expected);
+    }
+    #[test]
+    fn misaligned() {
+        // Map shaped like virtio-net config with weird offsets due to mac addr
+        let map = RegMap::create_packed(
+            12,
+            &[('a', 6), ('b', 2), ('c', 2), ('d', 2)],
+            None,
+        );
+
+        let expected = vec![
+            Xfer::read('a', 0, 6),
+            Xfer::read('a', 0, 6),
+            Xfer::read('b', 0, 2),
+            Xfer::read('c', 0, 2),
+            Xfer::read('d', 0, 2),
+        ];
+        // Each field individually with 4-byte reads
+        let reads = [(0, 4), (4, 4), (8, 4)];
+        let res = drive_reads(&reads, &map);
+        assert_eq!(res, expected);
     }
 }
