@@ -75,7 +75,9 @@ impl VirtioState {
         self.queue_sel = 0;
         self.nego_feat = 0;
         self.isr_status = 0;
-        self.lintr_pin.as_ref().map(|pin| pin.deassert());
+        if let Some(pin) = self.lintr_pin.as_ref() {
+            pin.deassert();
+        }
         self.msix_cfg_vec = VIRTIO_MSI_NO_VECTOR;
     }
 }
@@ -204,7 +206,9 @@ impl PciVirtio {
                 if isr != 0 {
                     // reading ISR Status clears it as well
                     state.isr_status = 0;
-                    state.lintr_pin.as_ref().map(|i| i.deassert());
+                    if let Some(pin) = state.lintr_pin.as_ref() {
+                        pin.deassert();
+                    }
                 }
                 ro.buf[0] = isr;
             }
@@ -217,7 +221,7 @@ impl PciVirtio {
                 let val = state
                     .msix_queue_vec
                     .get(state.queue_sel as usize)
-                    .unwrap_or_else(|| &VIRTIO_MSI_NO_VECTOR);
+                    .unwrap_or(&VIRTIO_MSI_NO_VECTOR);
                 LE::write_u16(ro.buf, *val);
             }
         }
@@ -342,7 +346,9 @@ impl PciVirtio {
         match old_mode {
             IntrMode::IsrLintr => {
                 // When leaving lintr-pin mode, deassert anything on said pin
-                state.lintr_pin.as_ref().map(|pin| pin.deassert());
+                if let Some(pin) = state.lintr_pin.as_ref() {
+                    pin.deassert();
+                }
             }
             IntrMode::Msi => {
                 // When leaving MSI mode, re-wire the Isr interrupt handling
@@ -361,11 +367,11 @@ impl PciVirtio {
         state.intr_mode = new_mode;
         match new_mode {
             IntrMode::IsrLintr => {
-                state.lintr_pin.as_ref().map(|pin| {
+                if let Some(pin) = state.lintr_pin.as_ref() {
                     if state.isr_status != 0 {
                         pin.assert()
                     }
-                });
+                }
             }
             IntrMode::Msi => {
                 for (idx, queue) in self.queues.iter().enumerate() {
@@ -454,7 +460,7 @@ struct MsiIntr {
 }
 impl MsiIntr {
     fn new(hdl: pci::MsixHdl, index: u16) -> Box<Self> {
-        Box::new(Self { hdl: hdl.clone(), index })
+        Box::new(Self { hdl, index })
     }
 }
 impl VirtioIntr for MsiIntr {

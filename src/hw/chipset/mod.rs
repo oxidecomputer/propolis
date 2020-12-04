@@ -72,10 +72,7 @@ impl<T: Copy + Sized> BarPlacer<T> {
         if pio_remain.is_none() && mmio_remain.is_none() {
             None
         } else {
-            Some((
-                pio_remain.unwrap_or_else(|| 0),
-                mmio_remain.unwrap_or_else(|| 0),
-            ))
+            Some((pio_remain.unwrap_or(0), mmio_remain.unwrap_or(0)))
         }
     }
 
@@ -104,7 +101,7 @@ impl<T: Copy + Sized> BarPlacer<T> {
             addr += offset + sz;
         }
 
-        if bars.len() > 0 {
+        if !bars.is_empty() {
             Some(bars.iter().map(|x| x.1).sum())
         } else {
             None

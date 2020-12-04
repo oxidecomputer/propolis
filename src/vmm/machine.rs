@@ -124,7 +124,7 @@ impl MachineCtx {
     {
         f(&self.vm.hdl)
     }
-    pub fn memctx<'a>(&'a self) -> MemCtx<'a> {
+    pub fn memctx(&self) -> MemCtx<'_> {
         MemCtx::new(&self)
     }
 }

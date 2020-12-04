@@ -208,16 +208,22 @@ impl IntrPin for LNKPin {
     fn assert(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.asserted = true;
-        inner.pin.as_ref().map(|pin| pin.assert());
+        if let Some(pin) = inner.pin.as_ref() {
+            pin.assert();
+        }
     }
     fn deassert(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.asserted = false;
-        inner.pin.as_ref().map(|pin| pin.deassert());
+        if let Some(pin) = inner.pin.as_ref() {
+            pin.deassert();
+        }
     }
     fn pulse(&self) {
         let inner = self.inner.lock().unwrap();
-        inner.pin.as_ref().map(|pin| pin.pulse());
+        if let Some(pin) = inner.pin.as_ref() {
+            pin.pulse();
+        }
     }
     fn is_asserted(&self) -> bool {
         let inner = self.inner.lock().unwrap();

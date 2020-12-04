@@ -5,13 +5,14 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::pio::{PioBus, PioDev};
 
-use byteorder::{ByteOrder, BE, LE};
+use byteorder::{ByteOrder, LE};
 
 const FW_CFG_IOP_SELECTOR: u16 = 0x0510;
 const FW_CFG_IOP_DATA: u16 = 0x0511;
 const FW_CFG_IOP_DMA_HI: u16 = 0x0514;
 const FW_CFG_IOP_DMA_LO: u16 = 0x0518;
 
+#[allow(unused)]
 #[derive(Copy, Clone)]
 pub enum LegacyId {
     Signature = 0x0000,
@@ -160,10 +161,7 @@ impl FwCfg {
             dir: Mutex::new(ItemDir::new()),
         });
 
-        this.add_legacy(
-            LegacyId::Signature,
-            FixedItem::new("QEMU".as_bytes().to_vec()),
-        );
+        this.add_legacy(LegacyId::Signature, FixedItem::new(b"QEMU".to_vec()));
         this.add_legacy(LegacyId::Id, FixedItem::new_u32(FW_CFG_VER_BASE));
 
         this.attach(pio);

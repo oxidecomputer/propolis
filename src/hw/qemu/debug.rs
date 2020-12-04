@@ -38,7 +38,7 @@ impl PioDev for QemuDebugPort {
     ) {
         match rwo {
             RWOp::Read(ro) => {
-                assert!(ro.buf.len() > 0);
+                assert!(!ro.buf.is_empty());
                 ro.buf[0] = QEMU_DEBUG_IDENT;
             }
             RWOp::Write(wo) => {

@@ -4,9 +4,9 @@ use std::sync::Arc;
 mod bits;
 
 pub mod block;
-pub mod viona;
 mod pci;
 mod queue;
+pub mod viona;
 
 use crate::common::*;
 use crate::dispatch::DispCtx;

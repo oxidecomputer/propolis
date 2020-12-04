@@ -290,7 +290,9 @@ impl VirtQueue {
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         used.write_used(id, len, self.size, mem);
         if !used.suppress_intr(mem) {
-            used.interrupt.as_ref().map(|i| i.notify(ctx));
+            if let Some(i) = used.interrupt.as_ref() {
+                i.notify(ctx)
+            }
         }
         chain.reset();
     }

@@ -63,9 +63,7 @@ impl VirtioViona {
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
         match id {
-            NetReg::Mac => {
-                ro.buf.copy_from_slice(&self.mac_addr)
-            }
+            NetReg::Mac => ro.buf.copy_from_slice(&self.mac_addr),
             NetReg::Status => {
                 // Always report link up
                 LE::write_u16(ro.buf, VIRTIO_NET_S_LINK_UP);

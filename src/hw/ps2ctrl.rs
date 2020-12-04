@@ -434,7 +434,7 @@ impl PS2Kbd {
         self.buf.clear();
     }
     fn has_output(&self) -> bool {
-        self.buf.len() != 0
+        !self.buf.is_empty()
     }
     fn read_output(&mut self) -> Option<u8> {
         self.buf.pop_front()
@@ -605,7 +605,7 @@ impl PS2Mouse {
         self.buf.clear();
     }
     fn has_output(&self) -> bool {
-        self.buf.len() != 0
+        !self.buf.is_empty()
     }
     fn read_output(&mut self) -> Option<u8> {
         self.buf.pop_front()

@@ -397,7 +397,7 @@ impl DeviceInst {
                         }
                     }
                 }
-                if self.caps.len() != 0 {
+                if !self.caps.is_empty() {
                     val.insert(RegStatus::CAP_LIST);
                 }
                 LE::write_u16(buf, val.bits());
@@ -414,7 +414,7 @@ impl DeviceInst {
                 LE::write_u32(buf, 0);
             }
             StdCfgReg::CapPtr => {
-                if self.caps.len() != 0 {
+                if !self.caps.is_empty() {
                     buf[0] = self.caps[0].offset;
                 } else {
                     buf[0] = 0;

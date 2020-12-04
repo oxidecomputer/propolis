@@ -1,9 +1,7 @@
-use std::fmt::format;
 use std::io::Result;
-use std::sync::{Arc, Mutex, Weak};
-use std::thread::{Builder, JoinHandle, Thread};
+use std::sync::{Arc, Mutex};
+use std::thread::{Builder, JoinHandle};
 
-use crate::pio::PioBus;
 use crate::vcpu::VcpuHdl;
 use crate::vmm::MachineCtx;
 

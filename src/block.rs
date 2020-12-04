@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
-use std::io::{Error, Result};
+use std::io::Result;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
