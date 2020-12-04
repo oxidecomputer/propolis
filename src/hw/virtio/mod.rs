@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+#[allow(unused)]
+mod bits;
+
 pub mod block;
 pub mod viona;
 mod pci;

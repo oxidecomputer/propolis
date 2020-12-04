@@ -7,6 +7,7 @@ use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::util::regmap::RegMap;
 
+use super::bits::*;
 use super::pci::PciVirtio;
 use super::queue::{Chain, VirtQueue};
 use super::VirtioDevice;
@@ -14,27 +15,6 @@ use super::VirtioDevice;
 use byteorder::{ByteOrder, LE};
 use dladm;
 use lazy_static::lazy_static;
-
-const VIRTIO_DEV_NET: u16 = 0x1000;
-
-const VIRTIO_NET_F_CSUM: u32 = 1 << 0;
-const VIRTIO_NET_F_GUEST_CSUM: u32 = 1 << 1;
-const VIRTIO_NET_F_CTRL_GUEST_OFFLOADS: u32 = 1 << 2;
-const VIRTIO_NET_F_MTU: u32 = 1 << 3;
-const VIRTIO_NET_F_MAC: u32 = 1 << 5;
-const VIRTIO_NET_F_GUEST_TSO4: u32 = 1 << 7;
-const VIRTIO_NET_F_GUEST_TSO6: u32 = 1 << 8;
-const VIRTIO_NET_F_GUEST_ECN: u32 = 1 << 9;
-const VIRTIO_NET_F_GUEST_UFO: u32 = 1 << 10;
-const VIRTIO_NET_F_HOST_TSO4: u32 = 1 << 11;
-const VIRTIO_NET_F_HOST_TSO6: u32 = 1 << 12;
-const VIRTIO_NET_F_HOST_ECN: u32 = 1 << 13;
-const VIRTIO_NET_F_HOST_UFO: u32 = 1 << 14;
-const VIRTIO_NET_F_MGR_RXBUF: u32 = 1 << 15;
-const VIRTIO_NET_F_STATUS: u32 = 1 << 16;
-const VIRTIO_NET_F_CTRL_VQ: u32 = 1 << 17;
-const VIRTIO_NET_F_CTRL_RX: u32 = 1 << 18;
-const VIRTIO_NET_F_CTRL_VLAN: u32 = 1 << 19;
 
 const VIRTIO_NET_S_LINK_UP: u16 = 1 << 0;
 const VIRTIO_NET_S_ANNOUNCE: u16 = 1 << 1;
