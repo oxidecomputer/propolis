@@ -4,9 +4,13 @@ extern crate pico_args;
 #[macro_use]
 extern crate bitflags;
 extern crate byteorder;
+extern crate serde;
+extern crate serde_derive;
+extern crate toml;
 
 mod block;
 mod common;
+mod config;
 mod dispatch;
 mod exits;
 mod hw;
@@ -34,18 +38,14 @@ const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
-struct Opts {
-    rom: String,
-    vmname: String,
-    blockdev: Option<String>,
-}
-
-fn parse_args() -> Opts {
+fn parse_args() -> config::Config {
     let mut args = pico_args::Arguments::from_env();
-    let rom: String = args.value_from_str("-r").unwrap();
-    let blockdev: Option<String> = args.opt_value_from_str("-b").unwrap();
-    let vmname: String = args.free().unwrap().pop().unwrap();
-    Opts { rom, vmname, blockdev }
+    if let Some(cpath) = args.free().ok().map(|mut f| f.pop()).flatten() {
+        config::parse(&cpath)
+    } else {
+        eprintln!("usage: propolis <CONFIG.toml>");
+        std::process::exit(libc::EXIT_FAILURE);
+    }
 }
 
 fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
@@ -118,9 +118,9 @@ fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
 
 use vmm::{Builder, Prot};
 
-fn build_vm(name: &str, lowmem: usize) -> Result<Arc<Machine>> {
+fn build_vm(name: &str, max_cpu: u8, lowmem: usize) -> Result<Arc<Machine>> {
     let vm = Builder::new(name, true)?
-        .max_cpus(1)?
+        .max_cpus(max_cpu)?
         .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
         .add_rom_region(
             0x1_0000_0000 - MAX_ROM_SIZE,
@@ -158,14 +158,16 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
 }
 
 fn main() {
-    let opts = parse_args();
+    let config = parse_args();
 
-    let lowmem: usize = 512 * 1024 * 1024;
+    let vm_name = config.get_name();
+    let lowmem: usize = config.get_mem() * 1024 * 1024;
+    let cpus = config.get_cpus();
 
-    let vm = build_vm(&opts.vmname, lowmem).unwrap();
-    println!("vm {} created", &opts.vmname);
+    let vm = build_vm(vm_name, cpus, lowmem).unwrap();
+    println!("vm {} created", vm_name);
 
-    let (mut romfp, rom_len) = open_bootrom(&opts.rom).unwrap();
+    let (mut romfp, rom_len) = open_bootrom(config.get_bootrom()).unwrap();
     vm.populate_rom("bootrom", |ptr, region_len| {
         if region_len < rom_len {
             return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
@@ -214,18 +216,46 @@ fn main() {
         )
     });
 
-    if let Some(bpath) = opts.blockdev.as_ref() {
-        let plain: Arc<block::PlainBdev<hw::virtio::block::Request>> =
-            block::PlainBdev::new(bpath).unwrap();
+    for (name, dev) in config.devs() {
+        let driver = &dev.driver as &str;
+        let bdf = if driver.starts_with("pci-") {
+            config::parse_bdf(
+                dev.options.get("pci-path").unwrap().as_str().unwrap(),
+            )
+        } else {
+            None
+        };
+        match driver {
+            "pci-virtio-block" => {
+                let disk_path =
+                    dev.options.get("disk").unwrap().as_str().unwrap();
 
-        let vioblk = hw::virtio::VirtioBlock::new(
-            0x100,
-            Arc::clone(&plain)
-                as Arc<dyn block::BlockDev<hw::virtio::block::Request>>,
-        );
-        chipset.pci_attach(pci::BDF::new(0, 4, 0), vioblk);
+                let plain: Arc<block::PlainBdev<hw::virtio::block::Request>> =
+                    block::PlainBdev::new(disk_path).unwrap();
 
-        plain.start_dispatch("bdev thread".to_string(), &dispatch);
+                let vioblk = hw::virtio::VirtioBlock::new(
+                    0x100,
+                    Arc::clone(&plain)
+                        as Arc<dyn block::BlockDev<hw::virtio::block::Request>>,
+                );
+                chipset.pci_attach(bdf.unwrap(), vioblk);
+
+                plain.start_dispatch(format!("bdev-{} thread", name), &dispatch);
+            }
+            "pci-virtio-viona" => {
+                let vnic_name =
+                    dev.options.get("vnic").unwrap().as_str().unwrap();
+
+                let viona =
+                    hw::virtio::viona::VirtioViona::new(vnic_name, 0x100)
+                        .unwrap();
+                chipset.pci_attach(bdf.unwrap(), viona);
+            }
+            _ => {
+                eprintln!("unrecognized driver: {}", name);
+                std::process::exit(libc::EXIT_FAILURE);
+            }
+        }
     }
 
     // with all pci devices attached, place their BARs and wire up access to PCI
@@ -235,8 +265,18 @@ fn main() {
     let fwcfg = mctx.with_pio(|pio| hw::qemu::fwcfg::FwCfg::create(pio));
     fwcfg.add_legacy(
         hw::qemu::fwcfg::LegacyId::SmpCpuCount,
-        hw::qemu::fwcfg::FixedItem::new_u32(1),
+        hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
     );
+
+    // Spin up non-boot CPUs prior to vCPU 0
+    // They will simply block until INIT/SIPI is received
+    for n in 1..cpus {
+        let mut next_vcpu = vm.vcpu(n as i32);
+        next_vcpu.set_default_capabs().unwrap();
+        next_vcpu.reboot_state().unwrap();
+        next_vcpu.activate().unwrap();
+        dispatch.spawn_vcpu(next_vcpu, run_loop).unwrap();
+    }
 
     let mut vcpu0 = vm.vcpu(0);
 

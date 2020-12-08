@@ -31,6 +31,13 @@ impl BDF {
 
         Self { inner_bus: bus, inner_dev: dev, inner_func: func }
     }
+    pub fn try_new(bus: u8, dev: u8, func: u8) -> Option<Self> {
+        if dev <= MASK_DEV && func <= MASK_FUNC {
+            Some(Self::new(bus, dev, func))
+        } else {
+            None
+        }
+    }
     pub fn bus(&self) -> u8 {
         self.inner_bus
     }
