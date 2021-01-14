@@ -102,7 +102,7 @@ impl VirtioDevice for VirtioBlock {
         // XXX: real features
     }
 
-    fn queue_notify(&self, qid: u16, vq: &Arc<VirtQueue>, ctx: &DispCtx) {
+    fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx) {
         let mem = &ctx.mctx.memctx();
 
         loop {

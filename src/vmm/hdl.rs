@@ -7,6 +7,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 
+use crate::util::sys::ioctl;
 use bhyve_api;
 use libc;
 
@@ -108,24 +109,11 @@ pub struct VmmHdl {
     name: String,
 }
 impl VmmHdl {
-    fn fd(&self) -> RawFd {
+    pub fn fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
-    #[cfg(target_os = "illumos")]
-    pub fn ioctl_res<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
-        let res = unsafe { libc::ioctl(self.fd(), cmd, data) };
-        if res == -1 {
-            Err(Error::last_os_error())
-        } else {
-            Ok(res)
-        }
-    }
-    #[cfg(not(target_os = "illumos"))]
-    pub fn ioctl_res<T>(&self, _cmd: i32, _data: *mut T) -> Result<i32> {
-        Err(Error::new(ErrorKind::Other, "illumos required"))
-    }
     pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<()> {
-        self.ioctl_res(cmd, data)?;
+        ioctl(self.fd(), cmd, data)?;
         Ok(())
     }
 

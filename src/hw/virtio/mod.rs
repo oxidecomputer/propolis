@@ -18,9 +18,24 @@ pub trait VirtioDevice: Send + Sync + 'static {
     fn device_cfg_rw(&self, ro: &mut RWOp);
     fn device_get_features(&self) -> u32;
     fn device_set_features(&self, feat: u32);
-    fn queue_notify(&self, qid: u16, vq: &Arc<VirtQueue>, ctx: &DispCtx);
+    fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx);
+
+    fn queue_change(&self, vq: &Arc<VirtQueue>, change: VqChange, ctx: &DispCtx) {}
 }
 
-trait VirtioIntr: Send + 'static {
+pub trait VirtioIntr: Send + 'static {
     fn notify(&self, ctx: &DispCtx);
+    fn read(&self) -> VqIntr;
+}
+
+pub enum VqChange {
+    Reset,
+    Address,
+    IntrCfg,
+}
+pub enum VqIntr {
+    // Pin (lintr) interrupt
+    Pin,
+    // MSI(-X) with address and message
+    MSI(u64, u32),
 }

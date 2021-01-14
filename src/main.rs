@@ -1,9 +1,11 @@
 extern crate bhyve_api;
 extern crate dladm;
-extern crate pico_args;
+extern crate viona_api;
+
 #[macro_use]
 extern crate bitflags;
 extern crate byteorder;
+extern crate pico_args;
 extern crate serde;
 extern crate serde_derive;
 extern crate toml;
@@ -240,14 +242,16 @@ fn main() {
                 );
                 chipset.pci_attach(bdf.unwrap(), vioblk);
 
-                plain.start_dispatch(format!("bdev-{} thread", name), &dispatch);
+                plain
+                    .start_dispatch(format!("bdev-{} thread", name), &dispatch);
             }
             "pci-virtio-viona" => {
                 let vnic_name =
                     dev.options.get("vnic").unwrap().as_str().unwrap();
 
+                let hdl = vm.get_hdl();
                 let viona =
-                    hw::virtio::viona::VirtioViona::new(vnic_name, 0x100)
+                    hw::virtio::viona::VirtioViona::new(vnic_name, 0x100, &hdl)
                         .unwrap();
                 chipset.pci_attach(bdf.unwrap(), viona);
             }

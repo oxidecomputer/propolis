@@ -109,7 +109,8 @@ impl VqUsed {
 }
 
 pub struct VirtQueue {
-    size: u16,
+    pub id: u16,
+    pub size: u16,
     pub(super) ctrl: Mutex<VqControl>,
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
@@ -120,9 +121,10 @@ fn qalign(addr: u64, align: u64) -> u64 {
     (addr + mask) & !mask
 }
 impl VirtQueue {
-    pub fn new(size: u16) -> Self {
+    pub fn new(id: u16, size: u16) -> Self {
         assert!(size.is_power_of_two());
         Self {
+            id,
             size,
             ctrl: Mutex::new(VqControl {
                 status: VqStatus::Init,
@@ -193,6 +195,21 @@ impl VirtQueue {
         used.valid = true;
 
         true
+    }
+    pub fn map_info(&self) -> Option<MapInfo> {
+        let mut state = self.ctrl.lock().unwrap();
+        let mut avail = self.avail.lock().unwrap();
+        let mut used = self.used.lock().unwrap();
+
+        if avail.valid && used.valid {
+            Some(MapInfo {
+                desc_addr: state.gpa_desc.0,
+                avail_addr: avail.gpa_flags.0,
+                used_addr: used.gpa_flags.0,
+            })
+        } else {
+            None
+        }
     }
     pub fn avail_count(&self, mem: &MemCtx) -> u16 {
         let avail = self.avail.lock().unwrap();
@@ -300,6 +317,11 @@ impl VirtQueue {
     pub(super) fn set_interrupt(&self, intr: Box<dyn VirtioIntr>) {
         let mut used = self.used.lock().unwrap();
         used.interrupt = Some(intr)
+    }
+
+    pub fn with_intr(&self, mut f: impl FnMut(Option<&dyn VirtioIntr>)) {
+        let used = self.used.lock().unwrap();
+        f(used.interrupt.as_ref().map(|x| x.as_ref()))
     }
 }
 
@@ -542,4 +564,10 @@ impl Chain {
         stat.bytes_remain -= consumed_total as u32;
         consumed_total
     }
+}
+
+pub struct MapInfo {
+    pub desc_addr: u64,
+    pub avail_addr: u64,
+    pub used_addr: u64,
 }

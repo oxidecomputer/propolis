@@ -1,0 +1,52 @@
+const VNA_IOC: i32 = ((b'V' as i32) << 16) | ((b'C' as i32) << 8);
+pub const VNA_IOC_CREATE: i32 = VNA_IOC | 0x01;
+pub const VNA_IOC_DELETE: i32 = VNA_IOC | 0x02;
+
+pub const VNA_IOC_RING_INIT: i32 = VNA_IOC | 0x10;
+pub const VNA_IOC_RING_RESET: i32 = VNA_IOC | 0x11;
+pub const VNA_IOC_RING_KICK: i32 = VNA_IOC | 0x12;
+pub const VNA_IOC_RING_SET_MSI: i32 = VNA_IOC | 0x13;
+pub const VNA_IOC_RING_INTR_CLR: i32 = VNA_IOC | 0x14;
+
+pub const VNA_IOC_INTR_POLL: i32 = VNA_IOC | 0x20;
+pub const VNA_IOC_SET_FEATURES: i32 = VNA_IOC | 0x21;
+pub const VNA_IOC_GET_FEATURES: i32 = VNA_IOC | 0x22;
+pub const VNA_IOC_SET_NOTIFY_IOP: i32 = VNA_IOC | 0x23;
+
+pub const VIONA_VQ_MAX: u16 = 2;
+pub const VIONA_DEV_PATH: &str = "/dev/viona";
+
+mod structs {
+    #![allow(non_camel_case_types)]
+
+    use super::VIONA_VQ_MAX;
+
+    #[repr(C)]
+    pub struct vioc_create {
+        pub c_linkid: u32,
+        pub c_vmfd: i32,
+    }
+
+    #[repr(C)]
+    pub struct vioc_ring_init {
+        pub ri_index: u16,
+        pub ri_qsize: u16,
+        pub _pad: [u16; 2],
+        pub ri_qaddr: u64,
+    }
+
+    #[repr(C)]
+    pub struct vioc_ring_msi {
+        pub rm_index: u16,
+        pub _pad: [u16; 3],
+        pub rm_addr: u64,
+        pub rm_msg: u64,
+    }
+
+    #[repr(C)]
+    pub struct vioc_intr_poll {
+        pub vip_status: [u32; VIONA_VQ_MAX as usize],
+    }
+}
+
+pub use structs::*;

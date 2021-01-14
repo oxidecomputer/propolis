@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use super::queue::VirtQueue;
-use super::{VirtioDevice, VirtioIntr};
+use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
@@ -111,8 +111,8 @@ impl PciVirtio {
         assert!(queue_size > 1 && queue_size.is_power_of_two());
 
         let mut queues = Vec::new();
-        for _ in 0..num_queues {
-            queues.push(Arc::new(VirtQueue::new(queue_size)));
+        for id in 0..num_queues {
+            queues.push(Arc::new(VirtQueue::new(id, queue_size)));
         }
 
         let layout = [
@@ -240,6 +240,7 @@ impl PciVirtio {
                 let pfn = LE::read_u32(wo.buf);
                 if let Some(queue) = self.queues.get(state.queue_sel as usize) {
                     success = queue.map_legacy((pfn as u64) << PAGE_SHIFT);
+                    self.queue_change(queue, VqChange::Address, ctx);
                 }
                 if !success {
                     // XXX: interrupt needed?
@@ -254,7 +255,7 @@ impl PciVirtio {
                 self.queue_notify(LE::read_u16(wo.buf), ctx);
             }
             LegacyReg::DeviceStatus => {
-                self.set_status(wo.buf[0]);
+                self.set_status(wo.buf[0], ctx);
             }
             LegacyReg::MsixVectorConfig => {
                 let mut state = self.state.lock().unwrap();
@@ -301,11 +302,11 @@ impl PciVirtio {
     fn features_supported(&self) -> u32 {
         self.dev.device_get_features() | VIRTIO_F_RING_INDIRECT_DESC
     }
-    fn set_status(&self, status: u8) {
+    fn set_status(&self, status: u8, ctx: &DispCtx) {
         let mut state = self.state.lock().unwrap();
         let val = Status::from_bits_truncate(status);
         if val == Status::RESET && state.status != Status::RESET {
-            self.device_reset(state)
+            self.device_reset(state, ctx)
         } else {
             // XXX: better device status FSM
             state.status = val;
@@ -314,12 +315,21 @@ impl PciVirtio {
     fn queue_notify(&self, queue: u16, ctx: &DispCtx) {
         println!("notify virtqueue {}", queue);
         if let Some(vq) = self.queues.get(queue as usize) {
-            self.dev.queue_notify(queue, vq, ctx);
+            self.dev.queue_notify(vq, ctx);
         }
     }
-    fn device_reset(&self, mut state: MutexGuard<VirtioState>) {
+    fn queue_change(
+        &self,
+        vq: &Arc<VirtQueue>,
+        change: VqChange,
+        ctx: &DispCtx,
+    ) {
+        self.dev.queue_change(vq, change, ctx);
+    }
+    fn device_reset(&self, mut state: MutexGuard<VirtioState>, ctx: &DispCtx) {
         for queue in self.queues.iter() {
             queue.reset();
+            self.queue_change(queue, VqChange::Reset, ctx);
         }
         state.reset();
     }
@@ -390,8 +400,6 @@ impl PciVirtio {
         state.intr_mode_updating = false;
         self.state_cv.notify_all();
     }
-    fn single_msix_update(&self, mut state: MutexGuard<VirtioState>, idx: u16) {
-    }
 }
 
 impl SelfArc for PciVirtio {
@@ -436,6 +444,40 @@ impl pci::Device for PciVirtio {
         // Make sure the correct legacy register map is used
         self.map_which.store(mode == pci::IntrMode::MSIX, Ordering::SeqCst);
     }
+    fn msi_update(&self, info: pci::MsiUpdate, ctx: &DispCtx) {
+        let mut state = self.state.lock().unwrap();
+        if state.intr_mode != IntrMode::Msi {
+            return;
+        }
+        state = self
+            .state_cv
+            .wait_while(state, |s| s.intr_mode_updating)
+            .unwrap();
+        state.intr_mode_updating = true;
+
+        for vq in self.queues.iter() {
+            let val = *state.msix_queue_vec.get(vq.id as usize).unwrap();
+
+            // avoid deadlock while modify per-VQ interrupt config
+            drop(state);
+
+            match info {
+                pci::MsiUpdate::MaskAll | pci::MsiUpdate::UnmaskAll
+                    if val != VIRTIO_MSI_NO_VECTOR =>
+                {
+                    self.queue_change(vq, VqChange::IntrCfg, ctx);
+                }
+                pci::MsiUpdate::Modify(idx) if val == idx => {
+                    self.queue_change(vq, VqChange::IntrCfg, ctx);
+                }
+                _ => {}
+            }
+
+            state = self.state.lock().unwrap();
+        }
+        state.intr_mode_updating = false;
+        self.state_cv.notify_all();
+    }
 }
 
 struct IsrIntr {
@@ -452,6 +494,9 @@ impl VirtioIntr for IsrIntr {
             dev.raise_isr();
         }
     }
+    fn read(&self) -> VqIntr {
+        VqIntr::Pin
+    }
 }
 
 struct MsiIntr {
@@ -467,6 +512,14 @@ impl VirtioIntr for MsiIntr {
     fn notify(&self, ctx: &DispCtx) {
         if self.index < self.hdl.count() {
             self.hdl.fire(self.index, ctx);
+        }
+    }
+    fn read(&self) -> VqIntr {
+        if self.index < self.hdl.count() {
+            let data = self.hdl.read(self.index);
+            VqIntr::MSI(data.addr, data.data)
+        } else {
+            VqIntr::Pin
         }
     }
 }

@@ -612,7 +612,7 @@ impl DeviceInst {
         let bar = BarN::try_from(ident as u8).unwrap();
         if let Some(msix) = self.msix_cfg.as_ref() {
             if msix.bar_match(bar) {
-                msix.bar_rw(rwo, ctx);
+                msix.bar_rw(rwo, |info| self.notify_msi_update(info, ctx), ctx);
                 return;
             }
         }
@@ -654,10 +654,18 @@ impl DeviceInst {
                     // mode of the device which requires extra locking concerns.
                     let state = self.state.lock().unwrap();
                     self.affects_intr_mode(state, |_state| {
-                        msix_cfg.cfg_rw(rwo, ctx);
+                        msix_cfg.cfg_rw(
+                            rwo,
+                            |info| self.notify_msi_update(info, ctx),
+                            ctx,
+                        );
                     });
                 } else {
-                    msix_cfg.cfg_rw(rwo, ctx);
+                    msix_cfg.cfg_rw(
+                        rwo,
+                        |info| self.notify_msi_update(info, ctx),
+                        ctx,
+                    );
                 }
             }
             _ => {
@@ -668,6 +676,9 @@ impl DeviceInst {
                 );
             }
         }
+    }
+    fn notify_msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {
+        self.inner_ref().msi_update(info, ctx);
     }
 }
 
@@ -771,6 +782,12 @@ pub enum IntrMode {
     MSIX,
 }
 
+pub enum MsiUpdate {
+    MaskAll,
+    UnmaskAll,
+    Modify(u16),
+}
+
 pub trait Device: Send + Sync + 'static {
     fn bar_rw(&self, bar: BarN, rwo: &mut RWOp, ctx: &DispCtx) {
         match rwo {
@@ -804,6 +821,7 @@ pub trait Device: Send + Sync + 'static {
         assert!(msix_hdl.is_none());
     }
     fn interrupt_mode_change(&self, mode: IntrMode) {}
+    fn msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {}
     // TODO
     // fn cap_read(&self);
     // fn cap_write(&self);
@@ -936,7 +954,12 @@ impl MsixCfg {
     fn bar_match(&self, bar: BarN) -> bool {
         self.bar == bar
     }
-    fn bar_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn bar_rw(
+        &self,
+        rwo: &mut RWOp,
+        updatef: impl Fn(MsiUpdate) -> (),
+        ctx: &DispCtx,
+    ) {
         self.map.process(rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
                 MsixBarReg::Addr(i) => {
@@ -964,23 +987,36 @@ impl MsixCfg {
                     self.read_pba(ro);
                 }
             },
-            RWOp::Write(wo) => match id {
-                MsixBarReg::Addr(i) => {
-                    let mut ent = self.entries[*i as usize].lock().unwrap();
-                    ent.addr = LE::read_u64(wo.buf);
+            RWOp::Write(wo) => {
+                // If modifying an individual entry, its lock needs to be dropped before making
+                // the `updatef` callback, since it may attempt to access the entry itself.  To
+                // synchronize access, hold on to the state lock across that call.
+                let state = self.state.lock().unwrap();
+                match id {
+                    MsixBarReg::Addr(i) => {
+                        let mut ent = self.entries[*i as usize].lock().unwrap();
+                        ent.addr = LE::read_u64(wo.buf);
+                        drop(ent);
+                        updatef(MsiUpdate::Modify(*i));
+                    }
+                    MsixBarReg::Data(i) => {
+                        let mut ent = self.entries[*i as usize].lock().unwrap();
+                        ent.data = LE::read_u32(wo.buf);
+                        drop(ent);
+                        updatef(MsiUpdate::Modify(*i));
+                    }
+                    MsixBarReg::VecCtrl(i) => {
+                        let mut ent = self.entries[*i as usize].lock().unwrap();
+                        let val = LE::read_u32(wo.buf);
+                        ent.mask_vec = val & MSIX_VEC_MASK != 0;
+                        ent.check_mask(ctx);
+                        drop(ent);
+                        updatef(MsiUpdate::Modify(*i));
+                    }
+                    MsixBarReg::Reserved | MsixBarReg::PBA => {}
                 }
-                MsixBarReg::Data(i) => {
-                    let mut ent = self.entries[*i as usize].lock().unwrap();
-                    ent.data = LE::read_u32(wo.buf);
-                }
-                MsixBarReg::VecCtrl(i) => {
-                    let mut ent = self.entries[*i as usize].lock().unwrap();
-                    let val = LE::read_u32(wo.buf);
-                    ent.mask_vec = val & MSIX_VEC_MASK != 0;
-                    ent.check_mask(ctx);
-                }
-                MsixBarReg::Reserved | MsixBarReg::PBA => {}
-            },
+                drop(state);
+            }
         });
     }
     fn read_pba(&self, ro: &mut ReadOp) {
@@ -998,7 +1034,12 @@ impl MsixCfg {
             *b = val;
         }
     }
-    fn cfg_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn cfg_rw(
+        &self,
+        rwo: &mut RWOp,
+        updatef: impl Fn(MsiUpdate) -> (),
+        ctx: &DispCtx,
+    ) {
         CAP_MSIX_MAP.process(rwo, |id, rwo| {
             match rwo {
                 RWOp::Read(ro) => {
@@ -1031,18 +1072,33 @@ impl MsixCfg {
                     match id {
                         MsixCapReg::MsgCtrl => {
                             let val = LE::read_u16(wo.buf);
-                            let ena = val & MSIX_MSGCTRL_ENABLE != 0;
-                            let mask = val & MSIX_MSGCTRL_FMASK != 0;
                             let mut state = self.state.lock().unwrap();
-                            if state.enabled != ena || state.func_mask != mask {
+                            let new_ena = val & MSIX_MSGCTRL_ENABLE != 0;
+                            let old_ena = state.enabled;
+                            let new_mask = val & MSIX_MSGCTRL_FMASK != 0;
+                            let old_mask = state.func_mask;
+                            if old_ena != new_ena || old_mask != new_mask {
                                 self.each_entry(|ent| {
-                                    ent.mask_func = mask;
-                                    ent.enabled = ena;
+                                    ent.mask_func = new_mask;
+                                    ent.enabled = new_ena;
                                     ent.check_mask(ctx);
                                 });
                             }
-                            state.enabled = ena;
-                            state.func_mask = mask;
+                            state.enabled = new_ena;
+                            state.func_mask = new_mask;
+
+                            // Notify when the MSI-X function mask is changing.  Changes to
+                            // enable/disable state is already covered by the logic for
+                            // interrupt_mode_change updates
+                            if old_mask != new_mask
+                                && old_ena == new_ena
+                                && new_ena
+                            {
+                                updatef(match new_mask {
+                                    true => MsiUpdate::MaskAll,
+                                    false => MsiUpdate::UnmaskAll,
+                                });
+                            }
                         }
                         // only msgctrl can be written
                         _ => {}
@@ -1066,6 +1122,24 @@ impl MsixCfg {
         let state = self.state.lock().unwrap();
         state.enabled
     }
+    fn read(&self, idx: u16) -> MsiEnt {
+        assert!(idx < self.count);
+        let ent = self.entries[idx as usize].lock().unwrap();
+        MsiEnt {
+            addr: ent.addr,
+            data: ent.data,
+            masked: ent.mask_vec || ent.mask_func,
+            pending: ent.pending,
+        }
+    }
+}
+
+// public struct for exposing MSI(-X) values
+pub struct MsiEnt {
+    pub addr: u64,
+    pub data: u32,
+    pub masked: bool,
+    pub pending: bool,
 }
 
 pub struct MsixHdl {
@@ -1077,6 +1151,9 @@ impl MsixHdl {
     }
     pub fn fire(&self, idx: u16, ctx: &DispCtx) {
         self.cfg.fire(idx, ctx);
+    }
+    pub fn read(&self, idx: u16) -> MsiEnt {
+        self.cfg.read(idx)
     }
     pub fn count(&self) -> u16 {
         self.cfg.count
