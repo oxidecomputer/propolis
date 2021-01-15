@@ -230,7 +230,6 @@ impl Bars {
             state.registered =
                 register(ent.define.as_ref().unwrap(), old, state.addr);
         }
-        println!("bar write {:x?} {:x} -> {:x}", bar, old, state.addr);
     }
     fn change_registrations<F>(&self, changef: F)
     where
@@ -420,7 +419,20 @@ impl DeviceInst {
                     buf[0] = 0;
                 }
             }
+            StdCfgReg::HeaderType => {
+                // TODO: add multi-function and other bits
+                buf[0] = 0;
+            }
             StdCfgReg::Reserved => {
+                buf.iter_mut().for_each(|b| *b = 0);
+            }
+            StdCfgReg::CacheLineSize |
+            StdCfgReg::LatencyTimer |
+            StdCfgReg::MaxLatency |
+            StdCfgReg::Bist |
+            StdCfgReg::MinGrant |
+            StdCfgReg::CardbusPtr => {
+                // XXX: zeroed for now
                 buf.iter_mut().for_each(|b| *b = 0);
             }
             _ => {
@@ -501,6 +513,17 @@ impl DeviceInst {
             | StdCfgReg::RevisionId
             | StdCfgReg::Reserved => {
                 // ignore writes to RO fields
+            }
+            StdCfgReg::ExpansionRomAddr => {
+                // no expansion rom for now
+            }
+            StdCfgReg::CacheLineSize |
+            StdCfgReg::LatencyTimer |
+            StdCfgReg::MaxLatency |
+            StdCfgReg::Bist |
+            StdCfgReg::MinGrant |
+            StdCfgReg::CardbusPtr => {
+                // XXX: ignored for now
             }
             _ => {
                 println!("Unhandled write {:?}", id);

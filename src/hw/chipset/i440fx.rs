@@ -146,19 +146,19 @@ impl PioDev for I440Fx {
                         let dev = Arc::clone(dev);
                         drop(bus);
                         dev.cfg_rw(rwo, ctx);
-                        let opname = match rwo {
-                            RWOp::Read(_) => "cfgread",
-                            RWOp::Write(_) => "cfgwrite",
-                        };
-                        println!(
-                            "{} bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                            opname,
-                            bdf.bus(),
-                            bdf.dev(),
-                            bdf.func(),
-                            rwo.offset(),
-                            rwo.buf()
-                        );
+                        // let opname = match rwo {
+                        //     RWOp::Read(_) => "cfgread",
+                        //     RWOp::Write(_) => "cfgwrite",
+                        // };
+                        // println!(
+                        //     "{} bus:{} device:{} func:{} off:{:x}, data:{:x?}",
+                        //     opname,
+                        //     bdf.bus(),
+                        //     bdf.dev(),
+                        //     bdf.func(),
+                        //     rwo.offset(),
+                        //     rwo.buf()
+                        // );
                         Some(())
                     } else {
                         None

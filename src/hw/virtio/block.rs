@@ -113,12 +113,10 @@ impl VirtioDevice for VirtioBlock {
             }
 
             let len = clen.unwrap();
-            println!("chain len {}: {:?}", len, &chain);
             let mut breq = VbReq::default();
             if !chain.read(&mut breq, mem) {
                 todo!("error handling");
             }
-            println!("breq {:?}", &breq);
             match breq.rtype {
                 VIRTIO_BLK_T_IN => {
                     // should be (blocksize * 512) + 1 remaining write bytes

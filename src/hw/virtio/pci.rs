@@ -313,7 +313,6 @@ impl PciVirtio {
         }
     }
     fn queue_notify(&self, queue: u16, ctx: &DispCtx) {
-        println!("notify virtqueue {}", queue);
         if let Some(vq) = self.queues.get(queue as usize) {
             self.dev.queue_notify(vq, ctx);
         }
