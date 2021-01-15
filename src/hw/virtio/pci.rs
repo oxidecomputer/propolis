@@ -448,10 +448,8 @@ impl pci::Device for PciVirtio {
         if state.intr_mode != IntrMode::Msi {
             return;
         }
-        state = self
-            .state_cv
-            .wait_while(state, |s| s.intr_mode_updating)
-            .unwrap();
+        state =
+            self.state_cv.wait_while(state, |s| s.intr_mode_updating).unwrap();
         state.intr_mode_updating = true;
 
         for vq in self.queues.iter() {

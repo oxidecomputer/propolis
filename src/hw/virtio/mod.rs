@@ -20,7 +20,13 @@ pub trait VirtioDevice: Send + Sync + 'static {
     fn device_set_features(&self, feat: u32);
     fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx);
 
-    fn queue_change(&self, vq: &Arc<VirtQueue>, change: VqChange, ctx: &DispCtx) {}
+    fn queue_change(
+        &self,
+        vq: &Arc<VirtQueue>,
+        change: VqChange,
+        ctx: &DispCtx,
+    ) {
+    }
 }
 
 pub trait VirtioIntr: Send + 'static {

@@ -426,12 +426,12 @@ impl DeviceInst {
             StdCfgReg::Reserved => {
                 buf.iter_mut().for_each(|b| *b = 0);
             }
-            StdCfgReg::CacheLineSize |
-            StdCfgReg::LatencyTimer |
-            StdCfgReg::MaxLatency |
-            StdCfgReg::Bist |
-            StdCfgReg::MinGrant |
-            StdCfgReg::CardbusPtr => {
+            StdCfgReg::CacheLineSize
+            | StdCfgReg::LatencyTimer
+            | StdCfgReg::MaxLatency
+            | StdCfgReg::Bist
+            | StdCfgReg::MinGrant
+            | StdCfgReg::CardbusPtr => {
                 // XXX: zeroed for now
                 buf.iter_mut().for_each(|b| *b = 0);
             }
@@ -517,12 +517,12 @@ impl DeviceInst {
             StdCfgReg::ExpansionRomAddr => {
                 // no expansion rom for now
             }
-            StdCfgReg::CacheLineSize |
-            StdCfgReg::LatencyTimer |
-            StdCfgReg::MaxLatency |
-            StdCfgReg::Bist |
-            StdCfgReg::MinGrant |
-            StdCfgReg::CardbusPtr => {
+            StdCfgReg::CacheLineSize
+            | StdCfgReg::LatencyTimer
+            | StdCfgReg::MaxLatency
+            | StdCfgReg::Bist
+            | StdCfgReg::MinGrant
+            | StdCfgReg::CardbusPtr => {
                 // XXX: ignored for now
             }
             _ => {
