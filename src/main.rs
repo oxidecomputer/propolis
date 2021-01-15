@@ -212,8 +212,9 @@ fn main() {
 
     let dbg = mctx.with_pio(|pio| {
         let debug = std::fs::File::create("debug.out").unwrap();
+        let buffered = std::io::LineWriter::new(debug);
         hw::qemu::debug::QemuDebugPort::create(
-            Some(Box::new(debug) as Box<dyn std::io::Write + Send>),
+            Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
             pio,
         )
     });
