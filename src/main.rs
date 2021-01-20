@@ -11,6 +11,7 @@ extern crate serde_derive;
 extern crate toml;
 
 mod block;
+mod chardev;
 mod common;
 mod config;
 mod dispatch;
@@ -29,6 +30,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bhyve_api::vm_reg_name;
+use chardev::{Sink, Source};
 use dispatch::*;
 use exits::*;
 use hw::chipset::Chipset;
@@ -197,17 +199,22 @@ fn main() {
     let mut dispatch = Dispatcher::new(mctx.clone());
     dispatch.spawn_events().unwrap();
 
-    let com1_sock = hw::uart::UartSock::bind(Path::new("./ttya")).unwrap();
+    let com1_sock = chardev::UDSock::bind(Path::new("./ttya")).unwrap();
     dispatch.with_ctx(|ctx| {
-        com1_sock.accept_ready(ctx);
+        com1_sock.listen(ctx);
     });
 
     let chipset = mctx.with_pio(|pio| {
-        hw::chipset::i440fx::I440Fx::new(
-            vm.get_hdl(),
-            pio,
-            Arc::clone(&com1_sock),
-        )
+        hw::chipset::i440fx::I440Fx::new(vm.get_hdl(), pio, |lpc| {
+            lpc.config_uarts(|com1, com2| {
+                com1_sock.attach_sink(Arc::clone(com1) as Arc<dyn Sink>);
+                com1_sock.attach_source(Arc::clone(com1) as Arc<dyn Source>);
+                com1.source_set_autodiscard(false);
+
+                // XXX: plumb up com2, but until then, just auto-discard
+                com2.source_set_autodiscard(true);
+            })
+        })
     });
 
     let dbg = mctx.with_pio(|pio| {

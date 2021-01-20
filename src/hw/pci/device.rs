@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::convert::TryFrom;
 use std::marker::PhantomData;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -277,11 +278,6 @@ impl Bars {
     }
 }
 
-enum BoxOrArc {
-    Boxed(Box<dyn Device>),
-    Arced(Arc<dyn Device>),
-}
-
 struct Cap {
     id: u8,
     offset: u8,
@@ -300,7 +296,9 @@ pub struct DeviceInst {
 
     sa_cell: SelfArcCell<Self>,
 
-    inner: BoxOrArc,
+    inner: Arc<dyn Device>,
+    // Keep a 'dyn Any' copy around for downcasting
+    inner_any: Arc<dyn Any + Send + Sync + 'static>,
 }
 
 impl DeviceInst {
@@ -310,7 +308,8 @@ impl DeviceInst {
         msix_cfg: Option<Arc<MsixCfg>>,
         caps: Vec<Cap>,
         bars: Bars,
-        i: BoxOrArc,
+        inner: Arc<dyn Device>,
+        inner_any: Arc<dyn Any + Send + Sync + 'static>,
     ) -> Self {
         Self {
             ident,
@@ -328,14 +327,9 @@ impl DeviceInst {
             cond: Condvar::new(),
 
             sa_cell: SelfArcCell::new(),
-            inner: i,
-        }
-    }
 
-    fn inner_ref(&self) -> &dyn Device {
-        match &self.inner {
-            BoxOrArc::Boxed(b) => b.as_ref(),
-            BoxOrArc::Arced(a) => a.as_ref(),
+            inner,
+            inner_any,
         }
     }
 
@@ -356,7 +350,7 @@ impl DeviceInst {
         state.update_in_progress = true;
         drop(state);
         // inner is notified of mode change w/o state locked
-        self.inner_ref().interrupt_mode_change(next_mode);
+        self.inner.interrupt_mode_change(next_mode);
 
         let mut state = self.state.lock().unwrap();
         assert!(state.update_in_progress);
@@ -639,7 +633,7 @@ impl DeviceInst {
                 return;
             }
         }
-        self.inner_ref().bar_rw(bar, rwo, ctx);
+        self.inner.bar_rw(bar, rwo, ctx);
     }
 
     fn cfg_cap_rw(&self, id: &CfgReg, rwo: &mut RWOp, ctx: &DispCtx) {
@@ -701,7 +695,10 @@ impl DeviceInst {
         }
     }
     fn notify_msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {
-        self.inner_ref().msi_update(info, ctx);
+        self.inner.msi_update(info, ctx);
+    }
+    pub fn with_inner<T: 'static>(&self, f: impl FnOnce(&T)) {
+        f(Any::downcast_ref(self.inner_any.as_ref()).unwrap());
     }
 }
 
@@ -714,7 +711,7 @@ impl Endpoint for DeviceInst {
                     RWOp::Write(wo) => self.cfg_std_write(id, wo, ctx),
                 });
             }
-            CfgReg::Custom(region) => self.inner_ref().cfg_rw(*region, rwo),
+            CfgReg::Custom(region) => self.inner.cfg_rw(*region, rwo),
             CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
                 self.cfg_cap_rw(id, rwo, ctx)
             }
@@ -734,7 +731,7 @@ impl Endpoint for DeviceInst {
             false => None,
         };
         let msix_hdl = self.msix_cfg.as_ref().map(|msix| MsixHdl::new(msix));
-        self.inner_ref().interrupt_setup(lintr_pin, msix_hdl);
+        self.inner.interrupt_setup(lintr_pin, msix_hdl);
     }
 
     fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine)) {
@@ -1307,18 +1304,11 @@ impl<I: Device + 'static> Builder<I> {
         bars
     }
 
-    pub fn finish_arc(self, inner: Arc<I>) -> Arc<DeviceInst> {
-        self.do_finish(BoxOrArc::Arced(inner as Arc<dyn Device>))
-    }
-    pub fn finish_box(self, inner: Box<I>) -> Arc<DeviceInst> {
-        self.do_finish(BoxOrArc::Boxed(inner as Box<dyn Device>))
-    }
-    pub fn finish_plain(self, inner: I) -> Arc<DeviceInst> {
-        self.do_finish(BoxOrArc::Boxed(Box::new(inner) as Box<dyn Device>))
-    }
-
-    fn do_finish(self, inner: BoxOrArc) -> Arc<DeviceInst> {
+    pub fn finish(self, inner: Arc<I>) -> Arc<DeviceInst> {
         let bars = self.generate_bars();
+
+        let inner_any =
+            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
 
         let mut inst = DeviceInst::new(
             self.ident,
@@ -1327,6 +1317,7 @@ impl<I: Device + 'static> Builder<I> {
             self.caps,
             bars,
             inner,
+            inner_any,
         );
         inst.lintr_req = self.lintr_req;
 

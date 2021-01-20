@@ -166,7 +166,7 @@ impl PciVirtio {
         }
 
         // XXX: properly size the legacy cfg BAR
-        builder.add_bar_io(pci::BarN::BAR0, 0x200).finish_arc(this)
+        builder.add_bar_io(pci::BarN::BAR0, 0x200).finish(this)
     }
 
     fn legacy_read(&self, id: &LegacyReg, ro: &mut ReadOp, _ctx: &DispCtx) {

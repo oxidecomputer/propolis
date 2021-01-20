@@ -5,10 +5,10 @@ use std::thread::{Builder, JoinHandle};
 use crate::vcpu::VcpuHdl;
 use crate::vmm::MachineCtx;
 
-pub mod event_disp;
-mod event_ports;
+pub mod event_ports;
+pub mod events;
 
-use event_disp::{EventCtx, EventDispatch};
+use events::{EventCtx, EventDispatch};
 
 pub struct Dispatcher {
     mctx: MachineCtx,
@@ -33,10 +33,10 @@ impl Dispatcher {
             panic!();
         }
         let ctx = DispCtx::new(self.mctx.clone(), self.event_dispatch.clone());
-        let edisp = self.event_dispatch.clone();
+        let edisp = Arc::clone(&self.event_dispatch);
         let hdl = Builder::new().name("event-dispatch".to_string()).spawn(
             move || {
-                event_disp::event_loop(ctx, edisp);
+                events::event_loop(edisp, ctx);
             },
         )?;
         self.event_thread = Some(hdl);

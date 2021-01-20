@@ -5,7 +5,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci::{self, INTxPinID, PioCfgDecoder, BDF};
 use crate::hw::ps2ctrl::PS2Ctrl;
-use crate::hw::uart::{LpcUart, UartSock, REGISTER_LEN};
+use crate::hw::uart::{LpcUart, REGISTER_LEN};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
@@ -31,7 +31,7 @@ impl I440Fx {
     pub fn new(
         hdl: Arc<VmmHdl>,
         pio: &PioBus,
-        com1_sock: Arc<UartSock>,
+        cfg_lpc: impl FnOnce(&Piix3Lpc),
     ) -> Arc<Self> {
         let pic = LegacyPIC::new(Arc::clone(&hdl));
 
@@ -56,9 +56,10 @@ impl I440Fx {
         SelfArc::self_arc_init(&mut this);
 
         let hbdev = Piix4HostBridge::new();
-        let lpcdev =
-            Piix3Lpc::new(Arc::downgrade(&this), &this.pic, pio, com1_sock);
+        let lpcdev = Piix3Lpc::new(Arc::downgrade(&this), &this.pic, pio);
         let pmdev = Piix3PM::create(hdl.as_ref(), pio);
+
+        lpcdev.with_inner(cfg_lpc);
 
         this.pci_attach(BDF::new(0, 0, 0), hbdev);
         this.pci_attach(BDF::new(0, 1, 0), lpcdev);
@@ -254,7 +255,7 @@ impl Piix4HostBridge {
             class: 0x06,
             ..Default::default()
         })
-        .finish_plain(Self {})
+        .finish(Arc::new(Self {}))
     }
 }
 impl pci::Device for Piix4HostBridge {}
@@ -267,7 +268,7 @@ const COM2_IRQ: u8 = 3;
 pub struct Piix3Lpc {
     reg_pir: Mutex<[u8; PIR_LEN]>,
     uart_com1: Arc<LpcUart>,
-    // uart_com2: Arc<LpcUart>,
+    uart_com2: Arc<LpcUart>,
     ps2_ctrl: Arc<PS2Ctrl>,
     chipset: Weak<I440Fx>,
 }
@@ -276,10 +277,9 @@ impl Piix3Lpc {
         chipset: Weak<I440Fx>,
         pic: &LegacyPIC,
         pio_bus: &PioBus,
-        com1_sock: Arc<UartSock>,
     ) -> Arc<pci::DeviceInst> {
-        let com1 = LpcUart::new(com1_sock, pic.pin_handle(COM1_IRQ).unwrap());
-        // let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
+        let com1 = LpcUart::new(pic.pin_handle(COM1_IRQ).unwrap());
+        let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
 
         pio_bus
             .register(
@@ -289,12 +289,14 @@ impl Piix3Lpc {
                 0,
             )
             .unwrap();
-        // pio_bus.register(
-        //     COM2_PORT,
-        //     REGISTER_LEN as u16,
-        //     Arc::downgrade(&com2) as Weak<dyn PioDev>,
-        //     0,
-        // );
+        pio_bus
+            .register(
+                COM2_PORT,
+                REGISTER_LEN as u16,
+                Arc::downgrade(&com2) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
 
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio_bus, pic);
@@ -302,7 +304,7 @@ impl Piix3Lpc {
         let this = Self {
             reg_pir: Mutex::new([0u8; PIR_LEN]),
             uart_com1: com1,
-            // uart_com2: com2,
+            uart_com2: com2,
             ps2_ctrl,
             chipset,
         };
@@ -315,7 +317,14 @@ impl Piix3Lpc {
             ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
-        .finish_plain(this)
+        .finish(Arc::new(this))
+    }
+
+    pub fn config_uarts<F>(&self, f: F)
+    where
+        F: FnOnce(&Arc<LpcUart>, &Arc<LpcUart>),
+    {
+        f(&self.uart_com1, &self.uart_com2);
     }
 
     fn write_pir(&self, idx: usize, val: u8) {
@@ -467,7 +476,7 @@ impl Piix3PM {
             ..Default::default()
         })
         .add_custom_cfg(PMCFG_OFFSET as u8, PMCFG_LEN as u8)
-        .finish_arc(this)
+        .finish(this)
     }
     fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp) {
         match id {
