@@ -49,7 +49,7 @@ impl VirtioBlock {
             VIRTIO_DEV_BLOCK,
             pci::bits::CLASS_STORAGE,
             VIRTIO_BLK_CFG_SIZE,
-            Box::new(Self { bdev }),
+            Arc::new(Self { bdev }),
         )
     }
 

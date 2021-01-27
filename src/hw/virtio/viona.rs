@@ -1,18 +1,20 @@
 use std::fs::{File, OpenOptions};
 use std::io::Result;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
+use crate::dispatch::events::{Event, EventTarget, FdEvents, Resource, Token};
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::util::regmap::RegMap;
+use crate::util::self_arc::*;
 use crate::util::sys;
 use crate::vmm::VmmHdl;
 
 use super::bits::*;
 use super::pci::PciVirtio;
-use super::queue::{Chain, VirtQueue};
+use super::queue::VirtQueue;
 use super::{VirtioDevice, VqChange, VqIntr};
 
 use byteorder::{ByteOrder, LE};
@@ -27,12 +29,25 @@ const VIRTIO_NET_CFG_SIZE: usize = 0xc;
 
 const ETHERADDRL: usize = 6;
 
+struct Inner {
+    queues: Vec<Arc<VirtQueue>>,
+    event_token: Option<Token>,
+}
+impl Inner {
+    fn new() -> Self {
+        Self { queues: Vec::new(), event_token: None }
+    }
+}
+
 pub struct VirtioViona {
     dev_features: u32,
     link_id: u32,
     mac_addr: [u8; ETHERADDRL],
     mtu: u16,
     hdl: VionaHdl,
+    inner: Mutex<Inner>,
+
+    sa_cell: SelfArcCell<Self>,
 }
 impl VirtioViona {
     pub fn new(
@@ -44,15 +59,20 @@ impl VirtioViona {
         let info = dlhdl.query_vnic(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 
-        let mut inner = VirtioViona {
+        let mut this = VirtioViona {
             dev_features: hdl.get_avail_features()?,
             link_id: info.link_id,
             mac_addr: [0; ETHERADDRL],
             mtu: info.mtu,
             hdl,
+            inner: Mutex::new(Inner::new()),
+            sa_cell: SelfArcCell::new(),
         };
-        inner.mac_addr.copy_from_slice(&info.mac_addr);
+        this.mac_addr.copy_from_slice(&info.mac_addr);
         drop(dlhdl);
+
+        let mut this = Arc::new(this);
+        SelfArc::self_arc_init(&mut this);
 
         // TX and RX
         let queue_count = 2;
@@ -66,8 +86,22 @@ impl VirtioViona {
             VIRTIO_DEV_NET,
             pci::bits::CLASS_NETWORK,
             VIRTIO_NET_CFG_SIZE,
-            Box::new(inner),
+            this,
         ))
+    }
+
+    fn process_interrupts(&self, ctx: &DispCtx) {
+        let inner = self.inner.lock().unwrap();
+        self.hdl.intr_poll(|vq_idx| {
+            self.hdl.ring_intr_clear(vq_idx).unwrap();
+            if let Some(vq) = inner.queues.get(vq_idx as usize) {
+                vq.with_intr(|intr| {
+                    if let Some(intr) = intr {
+                        intr.notify(ctx);
+                    }
+                });
+            }
+        }).unwrap();
     }
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
@@ -107,14 +141,14 @@ impl VirtioDevice for VirtioViona {
         self.hdl.set_features(feat);
     }
 
-    fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx) {
+    fn queue_notify(&self, vq: &Arc<VirtQueue>, _ctx: &DispCtx) {
         self.hdl.ring_kick(vq.id);
     }
     fn queue_change(
         &self,
         vq: &Arc<VirtQueue>,
         change: VqChange,
-        ctx: &DispCtx,
+        _ctx: &DispCtx,
     ) {
         match change {
             VqChange::Reset => {
@@ -130,9 +164,16 @@ impl VirtioDevice for VirtioViona {
                 let mut msg = 0;
                 vq.with_intr(|i| {
                     if let Some(intr) = i {
-                        if let VqIntr::MSI(a, m) = intr.read() {
-                            addr = a;
-                            msg = m;
+                        if let VqIntr::MSI(a, d, masked) = intr.read() {
+                            // If the entry (or entire MSI function) is masked,
+                            // keep the in-kernel MSI acceleration disabled with
+                            // the zeroed address and message.  That will allow
+                            // us to poll the queue interrupt state and expose
+                            // it, as expected, via the PBA.
+                            if !masked {
+                                addr = a;
+                                msg = d;
+                            }
                         }
                     }
                 });
@@ -140,7 +181,45 @@ impl VirtioDevice for VirtioViona {
             }
         }
     }
+
+    fn attach(&self, queues: &[Arc<VirtQueue>]) {
+        let mut inner = self.inner.lock().unwrap();
+        // Keep references to all of the virtqueues around so we can issue
+        // interrupts to them.  This is necessary when MSI is not configured or
+        // is masked (device-wide or for a given queue).
+        for vq in queues {
+            inner.queues.push(Arc::clone(vq));
+        }
+    }
+
+    fn device_reset(&self, ctx: &DispCtx) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.event_token.as_ref().is_none() {
+            let token = ctx.event.fd_register(
+                self.hdl.fd(),
+                FdEvents::POLLRDBAND,
+                self.self_weak() as Weak<dyn EventTarget>,
+            );
+            inner.event_token = Some(token);
+        }
+    }
 }
+impl EventTarget for VirtioViona {
+    fn event_process(&self, event: &Event, ctx: &DispCtx) {
+        match event.res {
+            Resource::Fd(fd, _) => {
+                assert_eq!(fd, self.hdl.fd());
+                self.process_interrupts(ctx);
+            }
+        }
+    }
+}
+impl SelfArc for VirtioViona {
+    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
+        &self.sa_cell
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum NetReg {
     Mac,
@@ -230,6 +309,18 @@ impl VionaHdl {
             viona_api::VNA_IOC_RING_SET_MSI,
             &mut vna_ring_msi,
         )?;
+        Ok(())
+    }
+    fn intr_poll(&self, mut f: impl FnMut(u16)) -> Result<()> {
+        let mut vna_ip = viona_api::vioc_intr_poll {
+            vip_status: [0; viona_api::VIONA_VQ_MAX as usize],
+        };
+        sys::ioctl(self.fd(), viona_api::VNA_IOC_INTR_POLL, &mut vna_ip)?;
+        for i in 0..viona_api::VIONA_VQ_MAX {
+            if vna_ip.vip_status[i as usize] != 0 {
+                f(i)
+            }
+        }
         Ok(())
     }
     fn ring_intr_clear(&self, idx: u16) -> Result<()> {

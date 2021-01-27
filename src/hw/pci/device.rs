@@ -731,7 +731,7 @@ impl Endpoint for DeviceInst {
             false => None,
         };
         let msix_hdl = self.msix_cfg.as_ref().map(|msix| MsixHdl::new(msix));
-        self.inner.interrupt_setup(lintr_pin, msix_hdl);
+        self.inner.attach(lintr_pin, msix_hdl);
     }
 
     fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine)) {
@@ -830,11 +830,7 @@ pub trait Device: Send + Sync + 'static {
             }
         }
     }
-    fn interrupt_setup(
-        &self,
-        lintr_pin: Option<INTxPin>,
-        msix_hdl: Option<MsixHdl>,
-    ) {
+    fn attach(&self, lintr_pin: Option<INTxPin>, msix_hdl: Option<MsixHdl>) {
         // A device model has no reason to request interrupt resources but not
         // make use of them.
         assert!(lintr_pin.is_none());

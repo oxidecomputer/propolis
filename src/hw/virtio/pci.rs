@@ -96,7 +96,7 @@ pub struct PciVirtio {
 
     sa_cell: SelfArcCell<Self>,
 
-    dev: Box<dyn VirtioDevice>,
+    dev: Arc<dyn VirtioDevice>,
 }
 impl PciVirtio {
     pub fn new(
@@ -106,7 +106,7 @@ impl PciVirtio {
         dev_id: u16,
         dev_class: u8,
         cfg_sz: usize,
-        inner: Box<dyn VirtioDevice>,
+        inner: Arc<dyn VirtioDevice>,
     ) -> Arc<pci::DeviceInst> {
         assert!(queue_size > 1 && queue_size.is_power_of_two());
 
@@ -331,6 +331,7 @@ impl PciVirtio {
             self.queue_change(queue, VqChange::Reset, ctx);
         }
         state.reset();
+        self.dev.device_reset(ctx);
     }
 
     fn raise_isr(&self) {
@@ -424,7 +425,7 @@ impl pci::Device for PciVirtio {
             VirtioTop::DeviceConfig => self.dev.device_cfg_rw(rwo),
         });
     }
-    fn interrupt_setup(
+    fn attach(
         &self,
         lintr_pin: Option<pci::INTxPin>,
         msix_hdl: Option<pci::MsixHdl>,
@@ -432,6 +433,7 @@ impl pci::Device for PciVirtio {
         let mut state = self.state.lock().unwrap();
         state.lintr_pin = lintr_pin;
         state.msix_hdl = msix_hdl;
+        self.dev.attach(&self.queues[..]);
     }
     fn interrupt_mode_change(&self, mode: pci::IntrMode) {
         self.set_intr_mode(match mode {
@@ -514,7 +516,7 @@ impl VirtioIntr for MsiIntr {
     fn read(&self) -> VqIntr {
         if self.index < self.hdl.count() {
             let data = self.hdl.read(self.index);
-            VqIntr::MSI(data.addr, data.data)
+            VqIntr::MSI(data.addr, data.data, data.masked)
         } else {
             VqIntr::Pin
         }

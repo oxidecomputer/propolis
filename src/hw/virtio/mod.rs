@@ -20,6 +20,8 @@ pub trait VirtioDevice: Send + Sync + 'static {
     fn device_set_features(&self, feat: u32);
     fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx);
 
+    fn device_reset(&self, ctx: &DispCtx) {}
+    fn attach(&self, queues: &[Arc<VirtQueue>]) {}
     fn queue_change(
         &self,
         vq: &Arc<VirtQueue>,
@@ -42,6 +44,6 @@ pub enum VqChange {
 pub enum VqIntr {
     // Pin (lintr) interrupt
     Pin,
-    // MSI(-X) with address and message
-    MSI(u64, u32),
+    /// MSI(-X) with address, data, and masked state
+    MSI(u64, u32, bool),
 }
