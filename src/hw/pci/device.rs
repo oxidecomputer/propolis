@@ -250,7 +250,7 @@ impl Bars {
         F: FnMut(BarN, &BarDefine),
     {
         for (n, bar) in
-            self.entries.iter().enumerate().filter(|(n, b)| b.define.is_some())
+            self.entries.iter().enumerate().filter(|(_n, b)| b.define.is_some())
         {
             let barn = BarN::try_from(n as u8).unwrap();
             f(barn, bar.define.as_ref().unwrap());
@@ -358,7 +358,7 @@ impl DeviceInst {
         self.cond.notify_all();
     }
 
-    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, ctx: &DispCtx) {
+    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, _ctx: &DispCtx) {
         assert!(ro.offset == 0 || *id == StdCfgReg::Reserved);
 
         let buf = &mut ro.buf;
@@ -427,10 +427,6 @@ impl DeviceInst {
             | StdCfgReg::MinGrant
             | StdCfgReg::CardbusPtr => {
                 // XXX: zeroed for now
-                buf.iter_mut().for_each(|b| *b = 0);
-            }
-            _ => {
-                println!("Unhandled read {:?}", id);
                 buf.iter_mut().for_each(|b| *b = 0);
             }
         }
@@ -789,7 +785,7 @@ impl INTxPin {
     }
     fn with_pin(&self, f: impl FnOnce(&dyn IntrPin)) {
         if let Some(dev) = Weak::upgrade(&self.outer) {
-            let mut state = dev.state.lock().unwrap();
+            let state = dev.state.lock().unwrap();
             f(state.lintr_pin.as_ref().unwrap().as_ref());
         }
     }
@@ -809,6 +805,7 @@ pub enum MsiUpdate {
 }
 
 pub trait Device: Send + Sync + 'static {
+    #[allow(unused_variables)]
     fn bar_rw(&self, bar: BarN, rwo: &mut RWOp, ctx: &DispCtx) {
         match rwo {
             RWOp::Read(ro) => {
@@ -836,7 +833,9 @@ pub trait Device: Send + Sync + 'static {
         assert!(lintr_pin.is_none());
         assert!(msix_hdl.is_none());
     }
+    #[allow(unused_variables)]
     fn interrupt_mode_change(&self, mode: IntrMode) {}
+    #[allow(unused_variables)]
     fn msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {}
     // TODO
     // fn cap_read(&self);

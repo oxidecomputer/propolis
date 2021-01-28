@@ -41,3 +41,10 @@ pub const VIRTIO_BLK_F_TOPOLOGY: u32 = 1 << 10;
 pub const VIRTIO_BLK_F_CONFIG_WCE: u32 = 1 << 11;
 pub const VIRTIO_BLK_F_DISCARD: u32 = 1 << 13;
 pub const VIRTIO_BLK_F_WRITE_ZEROES: u32 = 1 << 14;
+
+// virtqueue descriptor bits
+pub const VIRTQ_DESC_F_NEXT: u16 = 1;
+pub const VIRTQ_DESC_F_WRITE: u16 = 2;
+pub const VIRTQ_DESC_F_INDIRECT: u16 = 4;
+pub const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
+pub const VRING_USED_F_NO_NOTIFY: u16 = 1;

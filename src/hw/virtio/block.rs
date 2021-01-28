@@ -98,7 +98,7 @@ impl VirtioDevice for VirtioBlock {
         }
         feat
     }
-    fn device_set_features(&self, feat: u32) {
+    fn device_set_features(&self, _feat: u32) {
         // XXX: real features
     }
 
@@ -112,7 +112,6 @@ impl VirtioDevice for VirtioBlock {
                 break;
             }
 
-            let len = clen.unwrap();
             let mut breq = VbReq::default();
             if !chain.read(&mut breq, mem) {
                 todo!("error handling");

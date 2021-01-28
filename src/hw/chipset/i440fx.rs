@@ -132,7 +132,7 @@ impl Chipset for I440Fx {
     }
 }
 impl PioDev for I440Fx {
-    fn pio_rw(&self, port: u16, ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
         match port {
             pci::PORT_PCI_CONFIG_ADDR => {
                 self.pci_cfg.service_addr(rwo);
@@ -514,7 +514,13 @@ impl pci::Device for Piix3PM {
     }
 }
 impl PioDev for Piix3PM {
-    fn pio_rw(&self, port: u16, ident: usize, rwop: &mut RWOp, ctx: &DispCtx) {
+    fn pio_rw(
+        &self,
+        _port: u16,
+        _ident: usize,
+        rwop: &mut RWOp,
+        _ctx: &DispCtx,
+    ) {
         match rwop {
             RWOp::Read(ro) => {
                 println!("unhandled PM read {:x}", ro.offset);

@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
+use super::bits::*;
 use super::queue::VirtQueue;
 use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
@@ -13,10 +14,6 @@ use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
 const VIRTIO_VENDOR: u16 = 0x1af4;
-
-const VIRTIO_F_NOTIFY_ON_EMPTY: u32 = 1 << 24;
-const VIRTIO_F_RING_INDIRECT_DESC: u32 = 1 << 28;
-const VIRTIO_F_RING_EVENT_IDX: u32 = 1 << 29;
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
@@ -300,7 +297,7 @@ impl PciVirtio {
     }
 
     fn features_supported(&self) -> u32 {
-        self.dev.device_get_features() | VIRTIO_F_RING_INDIRECT_DESC
+        self.dev.device_get_features() | VIRTIO_F_RING_INDIRECT_DESC as u32
     }
     fn set_status(&self, status: u8, ctx: &DispCtx) {
         let mut state = self.state.lock().unwrap();

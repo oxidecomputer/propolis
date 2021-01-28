@@ -34,7 +34,6 @@ use chardev::{Sink, Source};
 use dispatch::*;
 use exits::*;
 use hw::chipset::Chipset;
-use hw::pci;
 use vcpu::VcpuHdl;
 use vmm::{Machine, MachineCtx};
 
@@ -43,7 +42,7 @@ const PAGE_OFFSET: u64 = 0xfff;
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
 fn parse_args() -> config::Config {
-    let mut args = pico_args::Arguments::from_env();
+    let args = pico_args::Arguments::from_env();
     if let Some(cpath) = args.free().ok().map(|mut f| f.pop()).flatten() {
         config::parse(&cpath)
     } else {
@@ -144,7 +143,7 @@ fn build_vm(name: &str, max_cpu: u8, lowmem: usize) -> Result<Arc<Machine>> {
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
-    let mut fp = File::open(path)?;
+    let fp = File::open(path)?;
     let len = fp.metadata()?.len();
     if len & PAGE_OFFSET != 0 {
         Err(Error::new(
@@ -217,7 +216,7 @@ fn main() {
         })
     });
 
-    let dbg = mctx.with_pio(|pio| {
+    let _dbg = mctx.with_pio(|pio| {
         let debug = std::fs::File::create("debug.out").unwrap();
         let buffered = std::io::LineWriter::new(debug);
         hw::qemu::debug::QemuDebugPort::create(

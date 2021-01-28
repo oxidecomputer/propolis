@@ -3,17 +3,11 @@ use std::num::Wrapping;
 use std::sync::atomic::{fence, Ordering};
 use std::sync::Mutex;
 
+use super::bits::*;
 use super::VirtioIntr;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::vmm::MemCtx;
-
-const VIRTQ_DESC_F_NEXT: u16 = 1;
-const VIRTQ_DESC_F_WRITE: u16 = 2;
-const VIRTQ_DESC_F_INDIRECT: u16 = 4;
-
-const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
-const VRING_USED_F_NO_NOTIFY: u16 = 1;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -197,9 +191,9 @@ impl VirtQueue {
         true
     }
     pub fn map_info(&self) -> Option<MapInfo> {
-        let mut state = self.ctrl.lock().unwrap();
-        let mut avail = self.avail.lock().unwrap();
-        let mut used = self.used.lock().unwrap();
+        let state = self.ctrl.lock().unwrap();
+        let avail = self.avail.lock().unwrap();
+        let used = self.used.lock().unwrap();
 
         if avail.valid && used.valid {
             Some(MapInfo {
@@ -468,7 +462,7 @@ impl Chain {
         if (self.write_stat.bytes_remain as usize) < len {
             return false;
         }
-        let mut remain = len;
+        let remain = len;
         self.for_remaining_type(false, |_addr, blen| {
             if blen < remain {
                 // consume (skip) whole buffer length and continue

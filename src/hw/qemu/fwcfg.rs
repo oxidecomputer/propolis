@@ -252,7 +252,7 @@ impl PioDev for FwCfg {
                             ro.buf[0] = 0;
                         }
                     }
-                    RWOp::Write(wo) => {
+                    RWOp::Write(_wo) => {
                         // XXX: ignore writes to data area
                     }
                 }

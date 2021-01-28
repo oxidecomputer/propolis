@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr::{copy_nonoverlapping, NonNull};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use crate::common::{GuestAddr, GuestRegion};
 use crate::hw::rtc::Rtc;

@@ -1,51 +1,6 @@
 use std::collections::VecDeque;
 
-const REG_RHR: u8 = 0b000; // RO
-const REG_THR: u8 = 0b000; // WO
-const REG_IER: u8 = 0b001; // RW
-const REG_ISR: u8 = 0b010; // RO
-const REG_FCR: u8 = 0b010; // WO
-const REG_LCR: u8 = 0b011; // RW
-const REG_MCR: u8 = 0b100; // RW
-const REG_LSR: u8 = 0b101; // RO
-const REG_MSR: u8 = 0b110; // RO
-const REG_SPR: u8 = 0b111; // RW
-const REG_DLL: u8 = 0b000; // RW when DLAB=1
-const REG_DLH: u8 = 0b001; // RW when DLAB=1
-const REG_PSD: u8 = 0b101; // WO when DLAB=1
-
-const IER_ERBFI: u8 = 1 << 0; // enable received data available intr
-const IER_ETBEI: u8 = 1 << 1; // enable transmitter holding register empty intr
-const IER_ELSI: u8 = 1 << 2; // enable receiver line status intr
-const IER_EDSSI: u8 = 1 << 3; // enable modem status intr
-
-const ISRC_NONE: u8 = 0b0001; // no interrupt
-const ISRC_RLS: u8 = 0b0110; // receiver line status
-const ISRC_DR: u8 = 0b0100; // data ready
-const ISRC_TMO: u8 = 0b1100; // character timeout
-const ISRC_THRE: u8 = 0b0010; // transmitter holding register empty
-const ISRC_MDM: u8 = 0b0000; // modem status
-
-const FCR_ENA: u8 = 1 << 0;
-const FCR_RXRST: u8 = 1 << 1;
-const FCR_TXRST: u8 = 1 << 2;
-const FCR_DMAMD: u8 = 1 << 3;
-const FCR_TRGR: u8 = 0b11000000;
-
-const MCR_LOOP: u8 = 1 << 4;
-
-const LSR_DR: u8 = 1 << 0;
-const LSR_OE: u8 = 1 << 1;
-const LSR_THRE: u8 = 1 << 5;
-const LSR_TEMT: u8 = 1 << 6;
-
-const LCR_DLAB: u8 = 0b10000000;
-
-const MASK_PCD: u8 = 0b00001111;
-const MASK_MCR: u8 = 0b00011111;
-const MASK_IER: u8 = 0b00001111;
-const MASK_FCR: u8 = 0b11001111;
-const MASK_ISRC: u8 = 0b00001111;
+use bits::*;
 
 pub struct Uart {
     reg_intr_enable: u8,
@@ -314,6 +269,57 @@ impl Fifo {
     fn is_full(&self) -> bool {
         self.buf.len() == self.len
     }
+}
+
+mod bits {
+    #![allow(unused)]
+
+    pub const REG_RHR: u8 = 0b000; // RO
+    pub const REG_THR: u8 = 0b000; // WO
+    pub const REG_IER: u8 = 0b001; // RW
+    pub const REG_ISR: u8 = 0b010; // RO
+    pub const REG_FCR: u8 = 0b010; // WO
+    pub const REG_LCR: u8 = 0b011; // RW
+    pub const REG_MCR: u8 = 0b100; // RW
+    pub const REG_LSR: u8 = 0b101; // RO
+    pub const REG_MSR: u8 = 0b110; // RO
+    pub const REG_SPR: u8 = 0b111; // RW
+    pub const REG_DLL: u8 = 0b000; // RW when DLAB=1
+    pub const REG_DLH: u8 = 0b001; // RW when DLAB=1
+    pub const REG_PSD: u8 = 0b101; // WO when DLAB=1
+
+    pub const IER_ERBFI: u8 = 1 << 0; // enable received data available intr
+    pub const IER_ETBEI: u8 = 1 << 1; // enable xmit holding register empty intr
+    pub const IER_ELSI: u8 = 1 << 2; // enable receiver line status intr
+    pub const IER_EDSSI: u8 = 1 << 3; // enable modem status intr
+
+    pub const ISRC_NONE: u8 = 0b0001; // no interrupt
+    pub const ISRC_RLS: u8 = 0b0110; // receiver line status
+    pub const ISRC_DR: u8 = 0b0100; // data ready
+    pub const ISRC_TMO: u8 = 0b1100; // character timeout
+    pub const ISRC_THRE: u8 = 0b0010; // transmitter holding register empty
+    pub const ISRC_MDM: u8 = 0b0000; // modem status
+
+    pub const FCR_ENA: u8 = 1 << 0;
+    pub const FCR_RXRST: u8 = 1 << 1;
+    pub const FCR_TXRST: u8 = 1 << 2;
+    pub const FCR_DMAMD: u8 = 1 << 3;
+    pub const FCR_TRGR: u8 = 0b11000000;
+
+    pub const MCR_LOOP: u8 = 1 << 4;
+
+    pub const LSR_DR: u8 = 1 << 0;
+    pub const LSR_OE: u8 = 1 << 1;
+    pub const LSR_THRE: u8 = 1 << 5;
+    pub const LSR_TEMT: u8 = 1 << 6;
+
+    pub const LCR_DLAB: u8 = 0b10000000;
+
+    pub const MASK_PCD: u8 = 0b00001111;
+    pub const MASK_MCR: u8 = 0b00011111;
+    pub const MASK_IER: u8 = 0b00001111;
+    pub const MASK_FCR: u8 = 0b11001111;
+    pub const MASK_ISRC: u8 = 0b00001111;
 }
 
 #[cfg(test)]

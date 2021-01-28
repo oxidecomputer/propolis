@@ -92,16 +92,18 @@ impl VirtioViona {
 
     fn process_interrupts(&self, ctx: &DispCtx) {
         let inner = self.inner.lock().unwrap();
-        self.hdl.intr_poll(|vq_idx| {
-            self.hdl.ring_intr_clear(vq_idx).unwrap();
-            if let Some(vq) = inner.queues.get(vq_idx as usize) {
-                vq.with_intr(|intr| {
-                    if let Some(intr) = intr {
-                        intr.notify(ctx);
-                    }
-                });
-            }
-        }).unwrap();
+        self.hdl
+            .intr_poll(|vq_idx| {
+                self.hdl.ring_intr_clear(vq_idx).unwrap();
+                if let Some(vq) = inner.queues.get(vq_idx as usize) {
+                    vq.with_intr(|intr| {
+                        if let Some(intr) = intr {
+                            intr.notify(ctx);
+                        }
+                    });
+                }
+            })
+            .unwrap();
     }
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {

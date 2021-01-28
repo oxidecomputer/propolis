@@ -72,11 +72,6 @@ pub const FUNCS_PER_SLOT: usize = 8;
 pub struct Slot {
     funcs: [Option<Arc<dyn Endpoint>>; FUNCS_PER_SLOT],
 }
-impl Slot {
-    fn new() -> Self {
-        Self { funcs: Default::default() }
-    }
-}
 
 #[derive(Default)]
 pub struct Bus {

@@ -1,5 +1,7 @@
 // PCI config registers
 
+#![allow(unused)]
+
 pub const LEN_CFG: usize = 0x100;
 pub const LEN_CFG_STD: usize = 0x40;
 

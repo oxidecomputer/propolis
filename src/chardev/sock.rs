@@ -4,7 +4,7 @@ use std::io::{ErrorKind, Read, Result, Write};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use crate::dispatch::events::{Event, EventTarget, FdEvents, Resource, Token};
 use crate::dispatch::DispCtx;

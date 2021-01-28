@@ -248,6 +248,7 @@ impl VmmHdl {
         };
         self.ioctl(bhyve_api::VM_ISA_PULSE_IRQ, &mut data)
     }
+    #[allow(unused)]
     pub fn isa_set_trigger_mode(
         &self,
         vec: u8,
@@ -260,18 +261,22 @@ impl VmmHdl {
         self.ioctl(bhyve_api::VM_ISA_SET_IRQ_TRIGGER, &mut data)
     }
 
+    #[allow(unused)]
     pub fn ioapic_assert_irq(&self, irq: u8) -> Result<()> {
         let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
         self.ioctl(bhyve_api::VM_IOAPIC_ASSERT_IRQ, &mut data)
     }
+    #[allow(unused)]
     pub fn ioapic_deassert_irq(&self, irq: u8) -> Result<()> {
         let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
         self.ioctl(bhyve_api::VM_IOAPIC_DEASSERT_IRQ, &mut data)
     }
+    #[allow(unused)]
     pub fn ioapic_pulse_irq(&self, irq: u8) -> Result<()> {
         let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
         self.ioctl(bhyve_api::VM_IOAPIC_PULSE_IRQ, &mut data)
     }
+    #[allow(unused)]
     pub fn ioapic_pin_count(&self) -> Result<u8> {
         let mut data = 0u32;
         self.ioctl(bhyve_api::VM_IOAPIC_PINCOUNT, &mut data)?;
