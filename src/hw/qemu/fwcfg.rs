@@ -227,9 +227,7 @@ impl PioDev for FwCfg {
                     RWOp::Read(ro) => {
                         let mut state = self.pio_state.lock().unwrap();
                         if ro.buf.len() != 1 || state.finished {
-                            for b in ro.buf.iter_mut() {
-                                *b = 0
-                            }
+                            ro.fill(0);
                             return;
                         }
                         if let Some(val) =

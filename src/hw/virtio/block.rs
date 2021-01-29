@@ -66,15 +66,11 @@ impl VirtioBlock {
             }
             BlockReg::BlockSize => LE::write_u32(ro.buf, info.block_size),
             BlockReg::Unused => {
-                for b in ro.buf.iter_mut() {
-                    *b = 0;
-                }
+                ro.fill(0);
             }
             _ => {
                 // XXX: all zeroes for now
-                for b in ro.buf.iter_mut() {
-                    *b = 0;
-                }
+                ro.fill(0);
             }
         }
     }

@@ -138,12 +138,6 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
-fn read_inval(data: &mut [u8]) {
-    for b in data.iter_mut() {
-        *b = 0xffu8;
-    }
-}
-
 fn cfg_addr_parse(addr: u32) -> Option<(BDF, u8)> {
     if addr & 0x80000000 == 0 {
         // Enable bit not set
@@ -207,7 +201,9 @@ impl PioCfgDecoder {
             };
             if hit.is_none() {
                 match rwop {
-                    RWOp::Read(ro) => read_inval(ro.buf),
+                    RWOp::Read(ro) => {
+                        ro.fill(0xff);
+                    }
                     RWOp::Write(_) => {}
                 }
             }

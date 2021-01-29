@@ -418,7 +418,7 @@ impl DeviceInst {
                 buf[0] = 0;
             }
             StdCfgReg::Reserved => {
-                buf.iter_mut().for_each(|b| *b = 0);
+                ro.fill(0);
             }
             StdCfgReg::CacheLineSize
             | StdCfgReg::LatencyTimer
@@ -427,7 +427,7 @@ impl DeviceInst {
             | StdCfgReg::MinGrant
             | StdCfgReg::CardbusPtr => {
                 // XXX: zeroed for now
-                buf.iter_mut().for_each(|b| *b = 0);
+                ro.fill(0);
             }
         }
     }
@@ -994,9 +994,7 @@ impl MsixCfg {
                     LE::write_u32(ro.buf, val);
                 }
                 MsixBarReg::Reserved => {
-                    for b in ro.buf.iter_mut() {
-                        *b = 0;
-                    }
+                    ro.fill(0);
                 }
                 MsixBarReg::PBA => {
                     self.read_pba(ro);
