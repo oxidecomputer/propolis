@@ -8,6 +8,11 @@ impl<'a> ReadOp<'a> {
     pub fn new(offset: usize, buf: &'a mut [u8]) -> Self {
         Self { offset, buf }
     }
+    pub fn fill(&mut self, val: u8) {
+        for b in self.buf.iter_mut() {
+            *b = val;
+        }
+    }
 }
 
 pub struct WriteOp<'a> {

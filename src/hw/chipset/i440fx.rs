@@ -265,6 +265,9 @@ const COM2_PORT: u16 = 0x2f8;
 const COM1_IRQ: u8 = 4;
 const COM2_IRQ: u8 = 3;
 
+const PORT_FAST_A20: u16 = 0x92;
+const LEN_FAST_A20: u16 = 1;
+
 pub struct Piix3Lpc {
     reg_pir: Mutex<[u8; PIR_LEN]>,
     uart_com1: Arc<LpcUart>,
@@ -301,13 +304,22 @@ impl Piix3Lpc {
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio_bus, pic);
 
-        let this = Self {
+        let this = Arc::new(Self {
             reg_pir: Mutex::new([0u8; PIR_LEN]),
             uart_com1: com1,
             uart_com2: com2,
             ps2_ctrl,
             chipset,
-        };
+        });
+
+        pio_bus
+            .register(
+                PORT_FAST_A20,
+                LEN_FAST_A20,
+                Arc::downgrade(&this) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
 
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,
@@ -317,7 +329,7 @@ impl Piix3Lpc {
             ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
-        .finish(Arc::new(this))
+        .finish(this)
     }
 
     pub fn config_uarts<F>(&self, f: F)
@@ -362,6 +374,20 @@ impl pci::Device for Piix3Lpc {
                 for (i, val) in wo.buf.iter().enumerate() {
                     self.write_pir(i + off, *val);
                 }
+            }
+        }
+    }
+}
+impl PioDev for Piix3Lpc {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, _ctx: &DispCtx) {
+        assert_eq!(port, PORT_FAST_A20);
+        match rwo {
+            RWOp::Read(ro) => {
+                // A20 is always enabled
+                ro.buf[0] = 0x02;
+            }
+            RWOp::Write(_wo) => {
+                // TODO: handle FAST_INIT request
             }
         }
     }
@@ -436,12 +462,95 @@ lazy_static! {
     };
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum PmReg {
+    PmSts,
+    PmEn,
+    PmCntrl,
+    PmTmr,
+    GpSts,
+    GpEn,
+    PCntrl,
+    PLvl2,
+    PLvl3,
+    GlbSts,
+    DevSts,
+    GlbEn,
+    GlbCtl,
+    DevCtl,
+    GpiReg,
+    GpoReg,
+    Reserved,
+}
+
+lazy_static! {
+    static ref PM_REGS: RegMap<PmReg> = {
+        let layout = [
+            (PmReg::PmSts, 2),
+            (PmReg::PmEn, 2),
+            (PmReg::PmCntrl, 2),
+            (PmReg::Reserved, 2),
+            (PmReg::PmTmr, 4),
+            (PmReg::GpSts, 2),
+            (PmReg::GpEn, 2),
+            (PmReg::PCntrl, 4),
+            (PmReg::PLvl2, 1),
+            (PmReg::PLvl3, 1),
+            (PmReg::Reserved, 2),
+            (PmReg::GlbSts, 2),
+            (PmReg::Reserved, 2),
+            (PmReg::DevSts, 4),
+            (PmReg::GlbEn, 2),
+            (PmReg::Reserved, 6),
+            (PmReg::GlbCtl, 4),
+            (PmReg::DevCtl, 4),
+            (PmReg::GpiReg, 4),
+            (PmReg::GpoReg, 4),
+            (PmReg::Reserved, 8),
+        ];
+        RegMap::create_packed(
+            PMBASE_LEN as usize,
+            &layout,
+            Some(PmReg::Reserved),
+        )
+    };
+}
+bitflags! {
+    #[derive(Default)]
+    struct PmSts: u16 {
+        const PWRBTN_STS = 1 << 8;
+    }
+}
+bitflags! {
+    #[derive(Default)]
+    struct PmEn: u16 {
+        const PWRBTN_EN = 1 << 8;
+    }
+}
+bitflags! {
+    #[derive(Default)]
+    struct PmCntrl: u16 {
+        const SCI_EN = 1;
+        const SUS_TYP = 0b111 << 10;
+        const SUS_EN = 1 << 13;
+
+    }
+}
+
 struct PMRegs {
     pm_base: u16,
+    pm_status: PmSts,
+    pm_ena: PmEn,
+    pm_ctrl: PmCntrl,
 }
 impl Default for PMRegs {
     fn default() -> Self {
-        Self { pm_base: PMBASE_DEFAULT }
+        Self {
+            pm_base: PMBASE_DEFAULT,
+            pm_status: PmSts::empty(),
+            pm_ena: PmEn::empty(),
+            pm_ctrl: PmCntrl::empty(),
+        }
     }
 }
 
@@ -492,15 +601,92 @@ impl Piix3PM {
             }
             _ => {
                 // XXX: report everything else as zeroed
-                for b in ro.buf.iter_mut() {
-                    *b = 0;
-                }
+                ro.fill(0);
             }
         }
     }
     fn pmcfg_write(&self, id: &PmCfg, _wo: &WriteOp) {
         // XXX: ignore writes for now
         println!("ignored PM cfg write to {:?}", id);
+    }
+    fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp) {
+        let regs = self.regs.lock().unwrap();
+        match id {
+            PmReg::PmSts => {
+                LE::write_u16(ro.buf, regs.pm_status.bits());
+            }
+            PmReg::PmEn => {
+                LE::write_u16(ro.buf, regs.pm_ena.bits());
+            }
+            PmReg::PmCntrl => {
+                LE::write_u16(ro.buf, regs.pm_ctrl.bits());
+            }
+
+            PmReg::PmTmr
+            | PmReg::GpSts
+            | PmReg::GpEn
+            | PmReg::PCntrl
+            | PmReg::PLvl2
+            | PmReg::PLvl3
+            | PmReg::GlbSts
+            | PmReg::DevSts
+            | PmReg::GlbEn
+            | PmReg::GlbCtl
+            | PmReg::DevCtl
+            | PmReg::GpiReg
+            | PmReg::GpoReg => {
+                // TODO: flesh out the rest of PM emulation
+                println!("unhandled PM read {:x}", ro.offset);
+                ro.fill(0);
+            }
+            PmReg::Reserved => {
+                ro.fill(0);
+            }
+        }
+    }
+    fn pmreg_write(&self, id: &PmReg, wo: &WriteOp) {
+        let mut regs = self.regs.lock().unwrap();
+        match id {
+            PmReg::PmSts => {
+                let val = PmSts::from_bits_truncate(LE::read_u16(&wo.buf));
+                // status bits are W1C
+                regs.pm_status.remove(val);
+            }
+            PmReg::PmEn => {
+                regs.pm_ena = PmEn::from_bits_truncate(LE::read_u16(&wo.buf));
+            }
+            PmReg::PmCntrl => {
+                regs.pm_ctrl =
+                    PmCntrl::from_bits_truncate(LE::read_u16(&wo.buf));
+                if regs.pm_ctrl.contains(PmCntrl::SUS_EN) {
+                    // SUS_EN is write-only and should always read 0
+                    regs.pm_ctrl.remove(PmCntrl::SUS_EN);
+
+                    let suspend_type = (regs.pm_ctrl & PmCntrl::SUS_TYP).bits();
+                    if suspend_type == 0 {
+                        // 0b000 corresponds to soft-off
+                        // XXX: initiate power-off
+                        eprintln!("poweroff");
+                    }
+                }
+            }
+            PmReg::PmTmr
+            | PmReg::GpSts
+            | PmReg::GpEn
+            | PmReg::PCntrl
+            | PmReg::PLvl2
+            | PmReg::PLvl3
+            | PmReg::GlbSts
+            | PmReg::DevSts
+            | PmReg::GlbEn
+            | PmReg::GlbCtl
+            | PmReg::DevCtl
+            | PmReg::GpiReg
+            | PmReg::GpoReg => {
+                println!("unhandled PM write {:x}", wo.offset);
+            }
+            PmReg::Reserved => {}
+        }
     }
 }
 impl pci::Device for Piix3PM {
@@ -518,17 +704,13 @@ impl PioDev for Piix3PM {
         &self,
         _port: u16,
         _ident: usize,
-        rwop: &mut RWOp,
+        rwo: &mut RWOp,
         _ctx: &DispCtx,
     ) {
-        match rwop {
-            RWOp::Read(ro) => {
-                println!("unhandled PM read {:x}", ro.offset);
-            }
-            RWOp::Write(wo) => {
-                println!("unhandled PM write {:x}", wo.offset);
-            }
-        }
+        PM_REGS.process(rwo, |id, rwo| match rwo {
+            RWOp::Read(ro) => self.pmreg_read(id, ro),
+            RWOp::Write(wo) => self.pmreg_write(id, wo),
+        });
     }
 }
 impl SelfArc for Piix3PM {
