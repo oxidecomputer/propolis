@@ -1,3 +1,5 @@
+#![allow(clippy::mutex_atomic)]
+
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::util::self_arc::*;

@@ -972,7 +972,7 @@ impl MsixCfg {
     fn bar_rw(
         &self,
         rwo: &mut RWOp,
-        updatef: impl Fn(MsiUpdate) -> (),
+        updatef: impl Fn(MsiUpdate),
         ctx: &DispCtx,
     ) {
         self.map.process(rwo, |id, rwo| match rwo {
@@ -1052,7 +1052,7 @@ impl MsixCfg {
     fn cfg_rw(
         &self,
         rwo: &mut RWOp,
-        updatef: impl Fn(MsiUpdate) -> (),
+        updatef: impl Fn(MsiUpdate),
         ctx: &DispCtx,
     ) {
         CAP_MSIX_MAP.process(rwo, |id, rwo| {

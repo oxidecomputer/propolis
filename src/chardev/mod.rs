@@ -4,7 +4,7 @@ mod sock;
 
 pub use sock::UDSock;
 
-pub type Notifier = Box<dyn Fn(&DispCtx) -> () + Send + Sync + 'static>;
+pub type Notifier = Box<dyn Fn(&DispCtx) + Send + Sync + 'static>;
 
 pub trait Sink: Send + Sync + 'static {
     // XXX: make this slice based

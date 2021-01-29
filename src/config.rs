@@ -2,7 +2,6 @@ use std::collections::{btree_map, BTreeMap};
 use std::str::FromStr;
 
 use serde_derive::Deserialize;
-use toml;
 
 use crate::hw::pci;
 

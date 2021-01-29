@@ -28,7 +28,7 @@ pub struct I440Fx {
     sa_cell: SelfArcCell<Self>,
 }
 impl I440Fx {
-    pub fn new(
+    pub fn create(
         hdl: Arc<VmmHdl>,
         pio: &PioBus,
         cfg_lpc: impl FnOnce(&Piix3Lpc),
@@ -55,8 +55,8 @@ impl I440Fx {
         });
         SelfArc::self_arc_init(&mut this);
 
-        let hbdev = Piix4HostBridge::new();
-        let lpcdev = Piix3Lpc::new(Arc::downgrade(&this), &this.pic, pio);
+        let hbdev = Piix4HostBridge::create();
+        let lpcdev = Piix3Lpc::create(Arc::downgrade(&this), &this.pic, pio);
         let pmdev = Piix3PM::create(hdl.as_ref(), pio);
 
         lpcdev.with_inner(cfg_lpc);
@@ -248,7 +248,7 @@ fn valid_pir_irq(irq: u8) -> bool {
 
 struct Piix4HostBridge {}
 impl Piix4HostBridge {
-    pub fn new() -> Arc<pci::DeviceInst> {
+    pub fn create() -> Arc<pci::DeviceInst> {
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,
             device_id: 0x1237,
@@ -273,7 +273,7 @@ pub struct Piix3Lpc {
     chipset: Weak<I440Fx>,
 }
 impl Piix3Lpc {
-    pub fn new(
+    pub fn create(
         chipset: Weak<I440Fx>,
         pic: &LegacyPIC,
         pio_bus: &PioBus,

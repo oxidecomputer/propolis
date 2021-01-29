@@ -85,7 +85,7 @@ impl BufDriver for SinkDriver {
     fn buffer_state(&self) -> BufState {
         if self.buf.len() == self.buf.capacity() {
             BufState::Steady
-        } else if self.buf.len() > 0 {
+        } else if !self.buf.is_empty() {
             BufState::ProcessCapable
         } else {
             BufState::ProcessRequired
@@ -106,7 +106,7 @@ impl BufDriver for SourceDriver {
         }
     }
     fn buffer_state(&self) -> BufState {
-        if self.buf.len() == 0 {
+        if self.buf.is_empty() {
             BufState::Steady
         } else if self.buf.len() != self.buf.capacity() {
             BufState::ProcessCapable

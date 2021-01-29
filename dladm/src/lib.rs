@@ -122,7 +122,7 @@ impl Handle {
 
     fn handle_dladm_err(v: i32) -> Result<()> {
         match dladm_status::try_from(v)
-            .unwrap_or_else(|_| dladm_status::DLADM_STATUS_FAILED)
+            .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),
             e => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),

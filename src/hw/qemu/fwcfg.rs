@@ -4,13 +4,9 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::pio::{PioBus, PioDev};
+use bits::*;
 
 use byteorder::{ByteOrder, LE};
-
-const FW_CFG_IOP_SELECTOR: u16 = 0x0510;
-const FW_CFG_IOP_DATA: u16 = 0x0511;
-const FW_CFG_IOP_DMA_HI: u16 = 0x0514;
-const FW_CFG_IOP_DMA_LO: u16 = 0x0518;
 
 #[allow(unused)]
 #[derive(Copy, Clone)]
@@ -82,26 +78,17 @@ pub enum LegacyX86Id {
     HpetData = 0x8004,
 }
 
-const ITEM_INVALID: u16 = 0xffff;
-const ITEMS_FILE_START: u16 = 0x0020;
-const ITEMS_FILE_END: u16 = 0x1000;
-const ITEMS_ARCH_START: u16 = 0x8000;
-const ITEMS_ARCH_END: u16 = 0x9000;
-
-const FW_CFG_VER_BASE: u32 = 1 << 0;
-const FW_CFG_VER_DMA: u32 = 1 << 1;
-
 pub struct FixedItem {
     data: Vec<u8>,
 }
 impl FixedItem {
-    pub fn new(data: Vec<u8>) -> Box<dyn ItemContent> {
+    pub fn new_raw(data: Vec<u8>) -> Box<dyn ItemContent> {
         Box::new(Self { data })
     }
     pub fn new_u32(val: u32) -> Box<dyn ItemContent> {
         let mut buf = [0u8; 4];
         LE::write_u32(&mut buf, val);
-        Self::new(buf.to_vec())
+        Self::new_raw(buf.to_vec())
     }
 }
 impl ItemContent for FixedItem {
@@ -161,7 +148,10 @@ impl FwCfg {
             dir: Mutex::new(ItemDir::new()),
         });
 
-        this.add_legacy(LegacyId::Signature, FixedItem::new(b"QEMU".to_vec()));
+        this.add_legacy(
+            LegacyId::Signature,
+            FixedItem::new_raw(b"QEMU".to_vec()),
+        );
         this.add_legacy(LegacyId::Id, FixedItem::new_u32(FW_CFG_VER_BASE));
 
         this.attach(pio);
@@ -265,4 +255,22 @@ impl PioDev for FwCfg {
             }
         }
     }
+}
+
+mod bits {
+    #![allow(unused)]
+
+    pub const FW_CFG_IOP_SELECTOR: u16 = 0x0510;
+    pub const FW_CFG_IOP_DATA: u16 = 0x0511;
+    pub const FW_CFG_IOP_DMA_HI: u16 = 0x0514;
+    pub const FW_CFG_IOP_DMA_LO: u16 = 0x0518;
+
+    pub const ITEM_INVALID: u16 = 0xffff;
+    pub const ITEMS_FILE_START: u16 = 0x0020;
+    pub const ITEMS_FILE_END: u16 = 0x1000;
+    pub const ITEMS_ARCH_START: u16 = 0x8000;
+    pub const ITEMS_ARCH_END: u16 = 0x9000;
+
+    pub const FW_CFG_VER_BASE: u32 = 1 << 0;
+    pub const FW_CFG_VER_DMA: u32 = 1 << 1;
 }

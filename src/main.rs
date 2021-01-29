@@ -131,8 +131,8 @@ fn build_vm(name: &str, max_cpu: u8, lowmem: usize) -> Result<Arc<Machine>> {
             Prot::READ | Prot::EXEC,
             "bootrom",
         )?
-        .add_mmio_region(0xc0000000 as usize, 0x20000000 as usize, "dev32")?
-        .add_mmio_region(0xe0000000 as usize, 0x10000000 as usize, "pcicfg")?
+        .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32")?
+        .add_mmio_region(0xe0000000_usize, 0x10000000_usize, "pcicfg")?
         .add_mmio_region(
             vmm::MAX_SYSMEM,
             vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
@@ -204,7 +204,7 @@ fn main() {
     });
 
     let chipset = mctx.with_pio(|pio| {
-        hw::chipset::i440fx::I440Fx::new(vm.get_hdl(), pio, |lpc| {
+        hw::chipset::i440fx::I440Fx::create(vm.get_hdl(), pio, |lpc| {
             lpc.config_uarts(|com1, com2| {
                 com1_sock.attach_sink(Arc::clone(com1) as Arc<dyn Sink>);
                 com1_sock.attach_source(Arc::clone(com1) as Arc<dyn Source>);
@@ -240,9 +240,9 @@ fn main() {
                     dev.options.get("disk").unwrap().as_str().unwrap();
 
                 let plain: Arc<block::PlainBdev<hw::virtio::block::Request>> =
-                    block::PlainBdev::new(disk_path).unwrap();
+                    block::PlainBdev::create(disk_path).unwrap();
 
-                let vioblk = hw::virtio::VirtioBlock::new(
+                let vioblk = hw::virtio::VirtioBlock::create(
                     0x100,
                     Arc::clone(&plain)
                         as Arc<dyn block::BlockDev<hw::virtio::block::Request>>,
@@ -257,9 +257,10 @@ fn main() {
                     dev.options.get("vnic").unwrap().as_str().unwrap();
 
                 let hdl = vm.get_hdl();
-                let viona =
-                    hw::virtio::viona::VirtioViona::new(vnic_name, 0x100, &hdl)
-                        .unwrap();
+                let viona = hw::virtio::viona::VirtioViona::create(
+                    vnic_name, 0x100, &hdl,
+                )
+                .unwrap();
                 chipset.pci_attach(bdf.unwrap(), viona);
             }
             _ => {

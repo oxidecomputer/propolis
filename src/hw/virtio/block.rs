@@ -33,7 +33,7 @@ pub struct VirtioBlock {
     bdev: Arc<dyn BlockDev<Request>>,
 }
 impl VirtioBlock {
-    pub fn new(
+    pub fn create(
         queue_size: u16,
         bdev: Arc<dyn BlockDev<Request>>,
     ) -> Arc<pci::DeviceInst> {
@@ -42,7 +42,7 @@ impl VirtioBlock {
         // - queue 0 notification
         let msix_count = Some(2);
 
-        PciVirtio::new(
+        PciVirtio::create(
             queue_size,
             1,
             msix_count,

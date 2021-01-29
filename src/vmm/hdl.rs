@@ -8,8 +8,6 @@ use std::path::PathBuf;
 use std::ptr::NonNull;
 
 use crate::util::sys::ioctl;
-use bhyve_api;
-use libc;
 
 #[cfg(target_os = "illumos")]
 pub fn create_vm(name: &str, force: bool) -> Result<VmmHdl> {

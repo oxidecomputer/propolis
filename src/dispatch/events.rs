@@ -92,7 +92,6 @@ impl Tracker {
                         _ => false,
                     };
                     if let Some(handler) = Weak::upgrade(&ent.handler) {
-                        drop(ent);
                         if needs_update {
                             guard.publish_update(token);
                         }
@@ -156,7 +155,6 @@ impl Tracker {
             WatchState::Add => {
                 // Addition has not yet been processed, so it can be removed
                 // immediately.
-                drop(ent);
                 let _ent = self.fds.remove(&token).unwrap();
             }
             WatchState::Update => {
@@ -166,7 +164,6 @@ impl Tracker {
             WatchState::Rearm => {
                 // Awaiting rearm, so removal from the event port was already
                 // (implicitly) done.
-                drop(ent);
                 let _ent = self.fds.remove(&token).unwrap();
             }
             WatchState::Current => {
@@ -201,7 +198,6 @@ impl Tracker {
                         eport
                             .dissociate(EventObj::Fd(ent.fd, ent.interest))
                             .unwrap();
-                        drop(ent);
                         self.fds.remove(&token).unwrap();
                     }
                     WatchState::Current => {

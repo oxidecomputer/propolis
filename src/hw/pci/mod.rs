@@ -199,7 +199,7 @@ impl PioCfgDecoder {
                 ),
                 RWOp::Write(wo) => cb(
                     &bdf,
-                    &mut RWOp::Write(&mut WriteOp::new(
+                    &mut RWOp::Write(&WriteOp::new(
                         wo.offset + cfg_off as usize,
                         wo.buf,
                     )),

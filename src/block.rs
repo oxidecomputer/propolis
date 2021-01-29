@@ -57,7 +57,7 @@ pub struct PlainBdev<R: BlockReq> {
     cond: Condvar,
 }
 impl<R: BlockReq> PlainBdev<R> {
-    pub fn new(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn create(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;

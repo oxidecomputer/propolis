@@ -18,9 +18,7 @@ use super::queue::VirtQueue;
 use super::{VirtioDevice, VqChange, VqIntr};
 
 use byteorder::{ByteOrder, LE};
-use dladm;
 use lazy_static::lazy_static;
-use viona_api;
 
 const VIRTIO_NET_S_LINK_UP: u16 = 1 << 0;
 const VIRTIO_NET_S_ANNOUNCE: u16 = 1 << 1;
@@ -50,7 +48,7 @@ pub struct VirtioViona {
     sa_cell: SelfArcCell<Self>,
 }
 impl VirtioViona {
-    pub fn new(
+    pub fn create(
         vnic_name: &str,
         queue_size: u16,
         vm: &VmmHdl,
@@ -79,7 +77,7 @@ impl VirtioViona {
         // interrupts for TX, RX, and device config
         let msix_count = Some(3);
 
-        Ok(PciVirtio::new(
+        Ok(PciVirtio::create(
             queue_size,
             queue_count,
             msix_count,

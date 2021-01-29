@@ -96,7 +96,7 @@ pub struct PciVirtio {
     dev: Arc<dyn VirtioDevice>,
 }
 impl PciVirtio {
-    pub fn new(
+    pub fn create(
         queue_size: u16,
         num_queues: u16,
         msix_count: Option<u16>,
