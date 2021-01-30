@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::{BarPlacer, Chipset};
@@ -267,9 +268,12 @@ const COM2_IRQ: u8 = 3;
 
 const PORT_FAST_A20: u16 = 0x92;
 const LEN_FAST_A20: u16 = 1;
+const PORT_POST_CODE: u16 = 0x80;
+const LEN_POST_CODE: u16 = 1;
 
 pub struct Piix3Lpc {
     reg_pir: Mutex<[u8; PIR_LEN]>,
+    post_code: AtomicU8,
     uart_com1: Arc<LpcUart>,
     uart_com2: Arc<LpcUart>,
     ps2_ctrl: Arc<PS2Ctrl>,
@@ -306,6 +310,7 @@ impl Piix3Lpc {
 
         let this = Arc::new(Self {
             reg_pir: Mutex::new([0u8; PIR_LEN]),
+            post_code: AtomicU8::new(0),
             uart_com1: com1,
             uart_com2: com2,
             ps2_ctrl,
@@ -316,6 +321,14 @@ impl Piix3Lpc {
             .register(
                 PORT_FAST_A20,
                 LEN_FAST_A20,
+                Arc::downgrade(&this) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
+        pio_bus
+            .register(
+                PORT_POST_CODE,
+                LEN_POST_CODE,
                 Arc::downgrade(&this) as Weak<dyn PioDev>,
                 0,
             )
@@ -380,15 +393,27 @@ impl pci::Device for Piix3Lpc {
 }
 impl PioDev for Piix3Lpc {
     fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, _ctx: &DispCtx) {
-        assert_eq!(port, PORT_FAST_A20);
-        match rwo {
-            RWOp::Read(ro) => {
-                // A20 is always enabled
-                ro.buf[0] = 0x02;
+        match port {
+            PORT_FAST_A20 => {
+                match rwo {
+                    RWOp::Read(ro) => {
+                        // A20 is always enabled
+                        ro.buf[0] = 0x02;
+                    }
+                    RWOp::Write(_wo) => {
+                        // TODO: handle FAST_INIT request
+                    }
+                }
             }
-            RWOp::Write(_wo) => {
-                // TODO: handle FAST_INIT request
-            }
+            PORT_POST_CODE => match rwo {
+                RWOp::Read(ro) => {
+                    ro.buf[0] = self.post_code.load(Ordering::SeqCst);
+                }
+                RWOp::Write(wo) => {
+                    self.post_code.store(wo.buf[0], Ordering::SeqCst);
+                }
+            },
+            _ => {}
         }
     }
 }
