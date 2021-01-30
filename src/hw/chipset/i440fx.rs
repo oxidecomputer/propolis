@@ -6,7 +6,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci::{self, INTxPinID, PioCfgDecoder, BDF};
 use crate::hw::ps2ctrl::PS2Ctrl;
-use crate::hw::uart::{LpcUart, REGISTER_LEN};
+use crate::hw::uart::{self, LpcUart};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
@@ -263,8 +263,12 @@ impl pci::Device for Piix4HostBridge {}
 
 const COM1_PORT: u16 = 0x3f8;
 const COM2_PORT: u16 = 0x2f8;
+const COM3_PORT: u16 = 0x3e8;
+const COM4_PORT: u16 = 0x2e8;
 const COM1_IRQ: u8 = 4;
 const COM2_IRQ: u8 = 3;
+const COM3_IRQ: u8 = 4;
+const COM4_IRQ: u8 = 3;
 
 const PORT_FAST_A20: u16 = 0x92;
 const LEN_FAST_A20: u16 = 1;
@@ -276,6 +280,8 @@ pub struct Piix3Lpc {
     post_code: AtomicU8,
     uart_com1: Arc<LpcUart>,
     uart_com2: Arc<LpcUart>,
+    uart_com3: Arc<LpcUart>,
+    uart_com4: Arc<LpcUart>,
     ps2_ctrl: Arc<PS2Ctrl>,
     chipset: Weak<I440Fx>,
 }
@@ -287,11 +293,13 @@ impl Piix3Lpc {
     ) -> Arc<pci::DeviceInst> {
         let com1 = LpcUart::new(pic.pin_handle(COM1_IRQ).unwrap());
         let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
+        let com3 = LpcUart::new(pic.pin_handle(COM3_IRQ).unwrap());
+        let com4 = LpcUart::new(pic.pin_handle(COM4_IRQ).unwrap());
 
         pio_bus
             .register(
                 COM1_PORT,
-                REGISTER_LEN as u16,
+                uart::REGISTER_LEN as u16,
                 Arc::downgrade(&com1) as Weak<dyn PioDev>,
                 0,
             )
@@ -299,7 +307,23 @@ impl Piix3Lpc {
         pio_bus
             .register(
                 COM2_PORT,
-                REGISTER_LEN as u16,
+                uart::REGISTER_LEN as u16,
+                Arc::downgrade(&com2) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
+        pio_bus
+            .register(
+                COM3_PORT,
+                uart::REGISTER_LEN as u16,
+                Arc::downgrade(&com2) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
+        pio_bus
+            .register(
+                COM4_PORT,
+                uart::REGISTER_LEN as u16,
                 Arc::downgrade(&com2) as Weak<dyn PioDev>,
                 0,
             )
@@ -313,6 +337,8 @@ impl Piix3Lpc {
             post_code: AtomicU8::new(0),
             uart_com1: com1,
             uart_com2: com2,
+            uart_com3: com3,
+            uart_com4: com4,
             ps2_ctrl,
             chipset,
         });
@@ -347,9 +373,9 @@ impl Piix3Lpc {
 
     pub fn config_uarts<F>(&self, f: F)
     where
-        F: FnOnce(&Arc<LpcUart>, &Arc<LpcUart>),
+        F: FnOnce(&Arc<LpcUart>, &Arc<LpcUart>, &Arc<LpcUart>, &Arc<LpcUart>),
     {
-        f(&self.uart_com1, &self.uart_com2);
+        f(&self.uart_com1, &self.uart_com2, &self.uart_com3, &self.uart_com4);
     }
 
     fn write_pir(&self, idx: usize, val: u8) {

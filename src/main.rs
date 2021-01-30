@@ -205,13 +205,15 @@ fn main() {
 
     let chipset = mctx.with_pio(|pio| {
         hw::chipset::i440fx::I440Fx::create(vm.get_hdl(), pio, |lpc| {
-            lpc.config_uarts(|com1, com2| {
+            lpc.config_uarts(|com1, com2, com3, com4| {
                 com1_sock.attach_sink(Arc::clone(com1) as Arc<dyn Sink>);
                 com1_sock.attach_source(Arc::clone(com1) as Arc<dyn Source>);
                 com1.source_set_autodiscard(false);
 
-                // XXX: plumb up com2, but until then, just auto-discard
+                // XXX: plumb up com2-4, but until then, just auto-discard
                 com2.source_set_autodiscard(true);
+                com3.source_set_autodiscard(true);
+                com4.source_set_autodiscard(true);
             })
         })
     });
