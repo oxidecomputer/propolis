@@ -1,6 +1,7 @@
 use libc::c_int;
 use num_enum::TryFromPrimitive;
 
+#[cfg(target_os = "illumos")]
 #[link(name = "dladm")]
 extern "C" {
     pub fn dladm_open(handle: *mut dladm_handle_t) -> c_int;
@@ -15,6 +16,34 @@ extern "C" {
         mediap: *mut u32,
     ) -> c_int;
 }
+
+#[cfg(not(target_os = "illumos"))]
+mod compat {
+    #![allow(unused)]
+
+    use super::*;
+
+    pub unsafe extern "C" fn dladm_open(handle: *mut dladm_handle_t) -> c_int {
+        panic!("illumos only");
+    }
+    pub unsafe extern "C" fn dladm_close(handle: dladm_handle_t) {
+        panic!("illumos only");
+    }
+    #[cfg(not(target_os = "illumos"))]
+    pub unsafe extern "C" fn dladm_name2info(
+        handle: dladm_handle_t,
+        link: *const u8,
+        linkidp: *mut datalink_id_t,
+        flagp: *mut u32,
+        // parse to datalink_class
+        classp: *mut c_int,
+        mediap: *mut u32,
+    ) -> c_int {
+        panic!("illumos only");
+    }
+}
+#[cfg(not(target_os = "illumos"))]
+pub use compat::*;
 
 /* opaque dladm handle to libdladm functions */
 pub enum dladm_handle {}
