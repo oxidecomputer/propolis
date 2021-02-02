@@ -210,6 +210,16 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
+    pub fn write_bytes(&self, addr: GuestAddr, val: u8, count: usize) -> bool {
+        if let Some(ptr) = self.region_covered(addr, count, Prot::WRITE) {
+            unsafe {
+                ptr.as_ptr().write_bytes(val, count);
+            }
+            true
+        } else {
+            false
+        }
+    }
 
     pub fn raw_writable(&self, region: &GuestRegion) -> Option<*mut u8> {
         let ptr = self.region_covered(region.0, region.1, Prot::WRITE)?;

@@ -8,6 +8,27 @@ impl<'a> ReadOp<'a> {
     pub fn new(offset: usize, buf: &'a mut [u8]) -> Self {
         Self { offset, buf }
     }
+
+    /// Consumes `size` bytes of the buffer, pushing the offset forward by that
+    /// figure, and shrinking the buffer (from the front) by the same amount.
+    pub fn consume(mut self, size: usize) -> Self {
+        assert!(size <= self.buf.len());
+        self.offset += size;
+        self.buf = &mut self.buf[size..];
+        self
+    }
+
+    pub fn truncate(mut self, size: usize) -> Self {
+        let target = size.min(self.buf.len());
+        self.buf = &mut self.buf[..target];
+        self
+    }
+
+    pub fn limit(&self) -> Option<usize> {
+        self.offset.checked_add(self.buf.len())
+    }
+
+    /// Fill the contained buffer with `val` byte
     pub fn fill(&mut self, val: u8) {
         for b in self.buf.iter_mut() {
             *b = val;

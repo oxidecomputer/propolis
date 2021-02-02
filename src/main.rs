@@ -276,11 +276,16 @@ fn main() {
     // configuration space
     dispatch.with_ctx(|ctx| chipset.pci_finalize(ctx));
 
-    let fwcfg = mctx.with_pio(|pio| hw::qemu::fwcfg::FwCfg::create(pio));
-    fwcfg.add_legacy(
-        hw::qemu::fwcfg::LegacyId::SmpCpuCount,
-        hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
-    );
+    let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
+    fwcfg
+        .add_legacy(
+            hw::qemu::fwcfg::LegacyId::SmpCpuCount,
+            hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
+        )
+        .unwrap();
+    let fwcfg_dev = fwcfg.finalize();
+
+    mctx.with_pio(|pio| fwcfg_dev.attach(pio));
 
     // Spin up non-boot CPUs prior to vCPU 0
     // They will simply block until INIT/SIPI is received
