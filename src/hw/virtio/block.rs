@@ -11,7 +11,6 @@ use super::pci::PciVirtio;
 use super::queue::{Chain, VirtQueue};
 use super::VirtioDevice;
 
-use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
 const VIRTIO_BLK_T_IN: u32 = 0;
@@ -58,13 +57,13 @@ impl VirtioBlock {
         let total_bytes = info.total_size * info.block_size as u64;
         match id {
             BlockReg::Capacity => {
-                LE::write_u64(ro.buf, total_bytes / SECTOR_SZ as u64);
+                ro.write_u64(total_bytes / SECTOR_SZ as u64);
             }
             BlockReg::SegMax => {
                 // XXX: Copy the static limit from qemu for now
-                LE::write_u32(ro.buf, 128 - 2);
+                ro.write_u32(128 - 2);
             }
-            BlockReg::BlockSize => LE::write_u32(ro.buf, info.block_size),
+            BlockReg::BlockSize => ro.write_u32(info.block_size),
             BlockReg::Unused => {
                 ro.fill(0);
             }
@@ -76,7 +75,7 @@ impl VirtioBlock {
     }
 }
 impl VirtioDevice for VirtioBlock {
-    fn device_cfg_rw(&self, rwo: &mut RWOp) {
+    fn device_cfg_rw(&self, rwo: RWOp) {
         BLOCK_DEV_REGS.process(rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.block_cfg_read(id, ro),
             RWOp::Write(_) => {

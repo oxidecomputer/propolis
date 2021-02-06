@@ -8,13 +8,7 @@ pub use crate::util::aspace::{Error, Result};
 use byteorder::{ByteOrder, LE};
 
 pub trait MmioDev: Send + Sync {
-    fn mmio_rw(
-        &self,
-        addr: usize,
-        ident: usize,
-        rwop: &mut RWOp,
-        ctx: &DispCtx,
-    );
+    fn mmio_rw(&self, addr: usize, ident: usize, rwop: RWOp, ctx: &DispCtx);
 }
 
 pub struct MmioBus {
@@ -58,8 +52,8 @@ impl MmioBus {
             _ => panic!(),
         };
         let handled = self.do_mmio(addr, |a, o, dev, ident| {
-            let wo = WriteOp::new(o as usize, data);
-            dev.mmio_rw(a, ident, &mut RWOp::Write(&wo), ctx)
+            let mut wo = WriteOp::new_buf(o as usize, data);
+            dev.mmio_rw(a, ident, RWOp::Write(&mut wo), ctx)
         });
         if !handled {
             println!("unhandled MMIO write - addr:{:x} len:{}", addr, bytes);
@@ -75,8 +69,8 @@ impl MmioBus {
             _ => panic!(),
         };
         let handled = self.do_mmio(addr, |a, o, dev, ident| {
-            let mut ro = ReadOp::new(o as usize, data);
-            dev.mmio_rw(a, ident, &mut RWOp::Read(&mut ro), ctx)
+            let mut ro = ReadOp::new_buf(o as usize, data);
+            dev.mmio_rw(a, ident, RWOp::Read(&mut ro), ctx)
         });
         if !handled {
             println!("unhandled MMIO read - addr:{:x} len:{}", addr, bytes);

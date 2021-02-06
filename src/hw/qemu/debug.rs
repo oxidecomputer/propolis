@@ -29,23 +29,17 @@ impl QemuDebugPort {
 }
 
 impl PioDev for QemuDebugPort {
-    fn pio_rw(
-        &self,
-        _port: u16,
-        _ident: usize,
-        rwo: &mut RWOp,
-        _ctx: &DispCtx,
-    ) {
+    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         match rwo {
             RWOp::Read(ro) => {
-                assert!(!ro.buf.is_empty());
-                ro.buf[0] = QEMU_DEBUG_IDENT;
+                ro.write_u8(QEMU_DEBUG_IDENT);
             }
             RWOp::Write(wo) => {
                 if let Some(out) = self.out.as_ref() {
                     let mut locked = out.lock().unwrap();
-                    let _ = locked.write_all(&wo.buf);
-                    if wo.buf[0] == b'\n' {
+                    let val = wo.read_u8();
+                    let _ = locked.write_all(&[val]);
+                    if val == b'\n' {
                         let _ = locked.flush();
                     }
                 }

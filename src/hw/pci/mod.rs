@@ -4,8 +4,6 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
 
-use byteorder::{ByteOrder, LE};
-
 pub mod bits;
 mod device;
 
@@ -59,7 +57,7 @@ pub enum INTxPinID {
 }
 
 pub trait Endpoint: Send + Sync {
-    fn cfg_rw(&self, op: &mut RWOp<'_, '_>, ctx: &DispCtx);
+    fn cfg_rw(&self, op: RWOp<'_, '_>, ctx: &DispCtx);
     fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>));
     fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine));
     fn bar_place(&self, bar: BarN, addr: u64);
@@ -159,54 +157,40 @@ impl PioCfgDecoder {
     pub fn new() -> Self {
         Self { addr: Mutex::new(0) }
     }
-    pub fn service_addr(&self, rwop: &mut RWOp) {
+    pub fn service_addr(&self, rwop: RWOp) {
         if rwop.len() != 4 || rwop.offset() != 0 {
             // XXX expect aligned/sized reads
             return;
         }
         let mut addr = self.addr.lock().unwrap();
         match rwop {
-            RWOp::Read(ro) => {
-                LE::write_u32(ro.buf, *addr);
-            }
-            RWOp::Write(wo) => {
-                *addr = LE::read_u32(wo.buf);
-            }
+            RWOp::Read(ro) => ro.write_u32(*addr),
+            RWOp::Write(wo) => *addr = wo.read_u32(),
         }
     }
-    pub fn service_data<F>(&self, rwop: &mut RWOp, mut cb: F)
+    pub fn service_data<F>(&self, rwop: RWOp, mut cb: F)
     where
-        F: FnMut(&BDF, &mut RWOp) -> Option<()>,
+        F: FnMut(&BDF, RWOp) -> Option<()>,
     {
         let locked_addr = self.addr.lock().unwrap();
         let addr = *locked_addr;
         drop(locked_addr);
 
         if let Some((bdf, cfg_off)) = cfg_addr_parse(addr) {
-            let hit = match rwop {
-                RWOp::Read(ro) => cb(
-                    &bdf,
-                    &mut RWOp::Read(&mut ReadOp::new(
-                        ro.offset + cfg_off as usize,
-                        ro.buf,
-                    )),
-                ),
-                RWOp::Write(wo) => cb(
-                    &bdf,
-                    &mut RWOp::Write(&WriteOp::new(
-                        wo.offset + cfg_off as usize,
-                        wo.buf,
-                    )),
-                ),
-            };
-            if hit.is_none() {
-                match rwop {
-                    RWOp::Read(ro) => {
-                        ro.fill(0xff);
+            let off = cfg_off as usize + rwop.offset();
+            match rwop {
+                RWOp::Read(ro) => {
+                    let mut cro = ReadOp::new_child(off, ro, ..);
+                    let hit = cb(&bdf, RWOp::Read(&mut cro));
+                    if hit.is_none() {
+                        cro.fill(0xff);
                     }
-                    RWOp::Write(_) => {}
                 }
-            }
+                RWOp::Write(wo) => {
+                    let mut cwo = WriteOp::new_child(off, wo, ..);
+                    let _ = cb(&bdf, RWOp::Write(&mut cwo));
+                }
+            };
         }
     }
 }

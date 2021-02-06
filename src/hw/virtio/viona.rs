@@ -17,7 +17,6 @@ use super::pci::PciVirtio;
 use super::queue::VirtQueue;
 use super::{VirtioDevice, VqChange, VqIntr};
 
-use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
 const VIRTIO_NET_S_LINK_UP: u16 = 1 << 0;
@@ -106,23 +105,23 @@ impl VirtioViona {
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
         match id {
-            NetReg::Mac => ro.buf.copy_from_slice(&self.mac_addr),
+            NetReg::Mac => ro.write_bytes(&self.mac_addr),
             NetReg::Status => {
                 // Always report link up
-                LE::write_u16(ro.buf, VIRTIO_NET_S_LINK_UP);
+                ro.write_u16(VIRTIO_NET_S_LINK_UP);
             }
             NetReg::MaxVqPairs => {
                 // hard-wired to single vq pair for now
-                LE::write_u16(ro.buf, 1);
+                ro.write_u16(1);
             }
             NetReg::Mtu => {
-                LE::write_u16(ro.buf, self.mtu);
+                ro.write_u16(self.mtu);
             }
         }
     }
 }
 impl VirtioDevice for VirtioViona {
-    fn device_cfg_rw(&self, rwo: &mut RWOp) {
+    fn device_cfg_rw(&self, rwo: RWOp) {
         NET_DEV_REGS.process(rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {

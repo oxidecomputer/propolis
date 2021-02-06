@@ -13,7 +13,6 @@ use crate::pio::PioDev;
 use crate::util::regmap::{Flags, RegMap};
 use crate::util::self_arc::*;
 
-use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 use num_enum::TryFromPrimitive;
 
@@ -359,26 +358,21 @@ impl DeviceInst {
     }
 
     fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, _ctx: &DispCtx) {
-        assert!(ro.offset == 0 || *id == StdCfgReg::Reserved);
+        assert!(ro.offset() == 0 || *id == StdCfgReg::Reserved);
 
-        let buf = &mut ro.buf;
         match id {
-            StdCfgReg::VendorId => LE::write_u16(buf, self.ident.vendor_id),
-            StdCfgReg::DeviceId => LE::write_u16(buf, self.ident.device_id),
-            StdCfgReg::Class => buf[0] = self.ident.class,
-            StdCfgReg::Subclass => buf[0] = self.ident.subclass,
-            StdCfgReg::SubVendorId => {
-                LE::write_u16(buf, self.ident.sub_vendor_id)
-            }
-            StdCfgReg::SubDeviceId => {
-                LE::write_u16(buf, self.ident.sub_device_id)
-            }
-            StdCfgReg::ProgIf => buf[0] = self.ident.prog_if,
-            StdCfgReg::RevisionId => buf[0] = self.ident.revision_id,
+            StdCfgReg::VendorId => ro.write_u16(self.ident.vendor_id),
+            StdCfgReg::DeviceId => ro.write_u16(self.ident.device_id),
+            StdCfgReg::Class => ro.write_u8(self.ident.class),
+            StdCfgReg::Subclass => ro.write_u8(self.ident.subclass),
+            StdCfgReg::SubVendorId => ro.write_u16(self.ident.sub_vendor_id),
+            StdCfgReg::SubDeviceId => ro.write_u16(self.ident.sub_device_id),
+            StdCfgReg::ProgIf => ro.write_u8(self.ident.prog_if),
+            StdCfgReg::RevisionId => ro.write_u8(self.ident.revision_id),
 
             StdCfgReg::Command => {
                 let val = self.state.lock().unwrap().reg_command.bits();
-                LE::write_u16(buf, val);
+                ro.write_u16(val);
             }
             StdCfgReg::Status => {
                 let mut val = RegStatus::empty();
@@ -393,29 +387,29 @@ impl DeviceInst {
                 if !self.caps.is_empty() {
                     val.insert(RegStatus::CAP_LIST);
                 }
-                LE::write_u16(buf, val.bits());
+                ro.write_u16(val.bits());
             }
             StdCfgReg::IntrLine => {
-                buf[0] = self.state.lock().unwrap().reg_intr_line
+                ro.write_u8(self.state.lock().unwrap().reg_intr_line)
             }
             StdCfgReg::IntrPin => {
-                buf[0] = self.state.lock().unwrap().reg_intr_pin
+                ro.write_u8(self.state.lock().unwrap().reg_intr_pin)
             }
-            StdCfgReg::Bar(bar) => LE::write_u32(buf, self.bars.reg_read(*bar)),
+            StdCfgReg::Bar(bar) => ro.write_u32(self.bars.reg_read(*bar)),
             StdCfgReg::ExpansionRomAddr => {
                 // no rom for now
-                LE::write_u32(buf, 0);
+                ro.write_u32(0);
             }
             StdCfgReg::CapPtr => {
                 if !self.caps.is_empty() {
-                    buf[0] = self.caps[0].offset;
+                    ro.write_u8(self.caps[0].offset);
                 } else {
-                    buf[0] = 0;
+                    ro.write_u8(0);
                 }
             }
             StdCfgReg::HeaderType => {
                 // TODO: add multi-function and other bits
-                buf[0] = 0;
+                ro.write_u8(0);
             }
             StdCfgReg::Reserved => {
                 ro.fill(0);
@@ -431,20 +425,19 @@ impl DeviceInst {
             }
         }
     }
-    fn cfg_std_write(&self, id: &StdCfgReg, wo: &WriteOp, ctx: &DispCtx) {
-        assert!(wo.offset == 0 || *id == StdCfgReg::Reserved);
+    fn cfg_std_write(&self, id: &StdCfgReg, wo: &mut WriteOp, ctx: &DispCtx) {
+        assert!(wo.offset() == 0 || *id == StdCfgReg::Reserved);
 
-        let buf = wo.buf;
         match id {
             StdCfgReg::Command => {
-                let new = RegCmd::from_bits_truncate(LE::read_u16(buf));
+                let new = RegCmd::from_bits_truncate(wo.read_u16());
                 self.reg_cmd_write(new, ctx);
             }
             StdCfgReg::IntrLine => {
-                self.state.lock().unwrap().reg_intr_line = buf[0];
+                self.state.lock().unwrap().reg_intr_line = wo.read_u8();
             }
             StdCfgReg::Bar(bar) => {
-                let val = LE::read_u32(buf);
+                let val = wo.read_u32();
                 let state = self.state.lock().unwrap();
                 self.bars.reg_write(*bar, val, |def, old, new| {
                     // fail move for now
@@ -621,7 +614,7 @@ impl DeviceInst {
             },
         );
     }
-    fn bar_rw(&self, ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, ident: usize, rwo: RWOp, ctx: &DispCtx) {
         let bar = BarN::try_from(ident as u8).unwrap();
         if let Some(msix) = self.msix_cfg.as_ref() {
             if msix.bar_match(bar) {
@@ -632,20 +625,20 @@ impl DeviceInst {
         self.inner.bar_rw(bar, rwo, ctx);
     }
 
-    fn cfg_cap_rw(&self, id: &CfgReg, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn cfg_cap_rw(&self, id: &CfgReg, rwo: RWOp, ctx: &DispCtx) {
         match id {
             CfgReg::CapId(i) => {
                 if let RWOp::Read(ro) = rwo {
-                    ro.buf[0] = self.caps[*i as usize].id
+                    ro.write_u8(self.caps[*i as usize].id)
                 }
             }
             CfgReg::CapNext(i) => {
                 if let RWOp::Read(ro) = rwo {
                     let next = *i as usize + 1;
                     if next < self.caps.len() {
-                        ro.buf[0] = self.caps[next].offset;
+                        ro.write_u8(self.caps[next].offset);
                     } else {
-                        ro.buf[0] = 0;
+                        ro.write_u8(0);
                     }
                 }
             }
@@ -655,7 +648,7 @@ impl DeviceInst {
             _ => panic!(),
         }
     }
-    fn do_cap_rw(&self, idx: u8, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn do_cap_rw(&self, idx: u8, rwo: RWOp, ctx: &DispCtx) {
         assert!(idx < self.caps.len() as u8);
         // XXX: no fancy capability support for now
         let cap = &self.caps[idx as usize];
@@ -699,7 +692,7 @@ impl DeviceInst {
 }
 
 impl Endpoint for DeviceInst {
-    fn cfg_rw(&self, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn cfg_rw(&self, rwo: RWOp, ctx: &DispCtx) {
         self.cfg_space.process(rwo, |id, rwo| match id {
             CfgReg::Std => {
                 STD_CFG_MAP.process(rwo, |id, rwo| match rwo {
@@ -744,18 +737,12 @@ impl Endpoint for DeviceInst {
 }
 
 impl PioDev for DeviceInst {
-    fn pio_rw(&self, _port: u16, ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, _port: u16, ident: usize, rwo: RWOp, ctx: &DispCtx) {
         self.bar_rw(ident, rwo, ctx);
     }
 }
 impl MmioDev for DeviceInst {
-    fn mmio_rw(
-        &self,
-        _addr: usize,
-        ident: usize,
-        rwo: &mut RWOp,
-        ctx: &DispCtx,
-    ) {
+    fn mmio_rw(&self, _addr: usize, ident: usize, rwo: RWOp, ctx: &DispCtx) {
         self.bar_rw(ident, rwo, ctx);
     }
 }
@@ -806,24 +793,24 @@ pub enum MsiUpdate {
 
 pub trait Device: Send + Sync + 'static {
     #[allow(unused_variables)]
-    fn bar_rw(&self, bar: BarN, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
         match rwo {
             RWOp::Read(ro) => {
-                unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset)
+                unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset())
             }
             RWOp::Write(wo) => {
-                unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset)
+                unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset())
             }
         }
     }
 
-    fn cfg_rw(&self, region: u8, rwo: &mut RWOp) {
+    fn cfg_rw(&self, region: u8, rwo: RWOp) {
         match rwo {
             RWOp::Read(ro) => {
-                unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset)
+                unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset())
             }
             RWOp::Write(wo) => {
-                unimplemented!("CFG write ({:x} @ {:x})", region, wo.offset)
+                unimplemented!("CFG write ({:x} @ {:x})", region, wo.offset())
             }
         }
     }
@@ -969,21 +956,16 @@ impl MsixCfg {
     fn bar_match(&self, bar: BarN) -> bool {
         self.bar == bar
     }
-    fn bar_rw(
-        &self,
-        rwo: &mut RWOp,
-        updatef: impl Fn(MsiUpdate),
-        ctx: &DispCtx,
-    ) {
+    fn bar_rw(&self, rwo: RWOp, updatef: impl Fn(MsiUpdate), ctx: &DispCtx) {
         self.map.process(rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
                 MsixBarReg::Addr(i) => {
                     let ent = self.entries[*i as usize].lock().unwrap();
-                    LE::write_u64(ro.buf, ent.addr);
+                    ro.write_u64(ent.addr);
                 }
                 MsixBarReg::Data(i) => {
                     let ent = self.entries[*i as usize].lock().unwrap();
-                    LE::write_u32(ro.buf, ent.data);
+                    ro.write_u32(ent.data);
                 }
                 MsixBarReg::VecCtrl(i) => {
                     let ent = self.entries[*i as usize].lock().unwrap();
@@ -991,7 +973,7 @@ impl MsixCfg {
                     if ent.mask_vec {
                         val |= MSIX_VEC_MASK;
                     }
-                    LE::write_u32(ro.buf, val);
+                    ro.write_u32(val);
                 }
                 MsixBarReg::Reserved => {
                     ro.fill(0);
@@ -1008,19 +990,19 @@ impl MsixCfg {
                 match id {
                     MsixBarReg::Addr(i) => {
                         let mut ent = self.entries[*i as usize].lock().unwrap();
-                        ent.addr = LE::read_u64(wo.buf);
+                        ent.addr = wo.read_u64();
                         drop(ent);
                         updatef(MsiUpdate::Modify(*i));
                     }
                     MsixBarReg::Data(i) => {
                         let mut ent = self.entries[*i as usize].lock().unwrap();
-                        ent.data = LE::read_u32(wo.buf);
+                        ent.data = wo.read_u32();
                         drop(ent);
                         updatef(MsiUpdate::Modify(*i));
                     }
                     MsixBarReg::VecCtrl(i) => {
                         let mut ent = self.entries[*i as usize].lock().unwrap();
-                        let val = LE::read_u32(wo.buf);
+                        let val = wo.read_u32();
                         ent.mask_vec = val & MSIX_VEC_MASK != 0;
                         ent.check_mask(ctx);
                         drop(ent);
@@ -1033,10 +1015,13 @@ impl MsixCfg {
         });
     }
     fn read_pba(&self, ro: &mut ReadOp) {
-        for (i, b) in ro.buf.iter_mut().enumerate() {
+        let avail = ro.avail();
+        let offset = ro.offset();
+
+        for i in 0..avail {
             let mut val: u8 = 0;
             for bitpos in 0..8 {
-                let idx = ((i + ro.offset) * 8) + bitpos;
+                let idx = ((i + offset) * 8) + bitpos;
                 if idx < self.count as usize {
                     let ent = self.entries[idx].lock().unwrap();
                     if ent.pending {
@@ -1044,15 +1029,10 @@ impl MsixCfg {
                     }
                 }
             }
-            *b = val;
+            ro.write_u8(val);
         }
     }
-    fn cfg_rw(
-        &self,
-        rwo: &mut RWOp,
-        updatef: impl Fn(MsiUpdate),
-        ctx: &DispCtx,
-    ) {
+    fn cfg_rw(&self, rwo: RWOp, updatef: impl Fn(MsiUpdate), ctx: &DispCtx) {
         CAP_MSIX_MAP.process(rwo, |id, rwo| {
             match rwo {
                 RWOp::Read(ro) => {
@@ -1067,24 +1047,21 @@ impl MsixCfg {
                             if state.func_mask {
                                 val |= MSIX_MSGCTRL_FMASK;
                             }
-                            LE::write_u16(ro.buf, val);
+                            ro.write_u16(val);
                         }
                         MsixCapReg::TableOff => {
                             // table always at offset 0 for now
-                            LE::write_u32(ro.buf, 0 | self.bar as u8 as u32);
+                            ro.write_u32(0 | self.bar as u8 as u32);
                         }
                         MsixCapReg::PbaOff => {
-                            LE::write_u32(
-                                ro.buf,
-                                self.pba_off | self.bar as u8 as u32,
-                            );
+                            ro.write_u32(self.pba_off | self.bar as u8 as u32);
                         }
                     }
                 }
                 RWOp::Write(wo) => {
                     match id {
                         MsixCapReg::MsgCtrl => {
-                            let val = LE::read_u16(wo.buf);
+                            let val = wo.read_u16();
                             let mut state = self.state.lock().unwrap();
                             let new_ena = val & MSIX_MSGCTRL_ENABLE != 0;
                             let old_ena = state.enabled;

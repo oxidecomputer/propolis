@@ -53,9 +53,9 @@ impl<ID> RegMap<ID> {
         self.space.register(start, len, RegDef { id, flags }).unwrap();
     }
 
-    pub fn process<F>(&self, op: &mut RWOp<'_, '_>, mut f: F)
+    pub fn process<F>(&self, op: RWOp<'_, '_>, mut f: F)
     where
-        F: FnMut(&ID, &mut RWOp),
+        F: FnMut(&ID, RWOp),
     {
         match op {
             RWOp::Read(ro) => {
@@ -68,37 +68,39 @@ impl<ID> RegMap<ID> {
     }
     pub fn read<F>(&self, ro: &mut ReadOp, f: &mut F)
     where
-        F: FnMut(&ID, &mut RWOp),
+        F: FnMut(&ID, RWOp),
     {
-        assert!(!ro.buf.is_empty());
-        assert!(ro.offset + ro.buf.len() - 1 < self.len);
+        assert!(ro.len() != 0);
+        assert!(ro.offset() + ro.len() - 1 < self.len);
 
-        let buf_len = ro.buf.len();
-        let buf = &mut ro.buf;
-        self.iterate_transfers(ro.offset, buf_len, |xfer: &RegXfer<ID>| {
-            let buf_xfer = &mut buf[xfer.skip_front_idx..xfer.split_back_idx];
-            let mut copy_op = ReadOp::new(xfer.offset, buf_xfer);
+        self.iterate_transfers(ro.offset(), ro.len(), |xfer: &RegXfer<ID>| {
+            let mut copy_op = ReadOp::new_child(
+                xfer.offset,
+                ro,
+                xfer.skip_front_idx..xfer.split_back_idx,
+            );
 
-            debug_assert!(!copy_op.buf.is_empty());
+            debug_assert!(copy_op.len() != 0);
             Self::reg_read(xfer.reg, xfer.reg_len, &mut copy_op, f);
         })
     }
 
-    pub fn write<F>(&self, wo: &WriteOp, f: &mut F)
+    pub fn write<F>(&self, wo: &mut WriteOp, f: &mut F)
     where
-        F: FnMut(&ID, &mut RWOp),
+        F: FnMut(&ID, RWOp),
     {
-        assert!(!wo.buf.is_empty());
-        assert!(wo.offset + wo.buf.len() - 1 < self.len);
+        assert!(wo.len() != 0);
+        assert!(wo.offset() + wo.len() - 1 < self.len);
 
-        let buf_len = wo.buf.len();
-        let buf = wo.buf;
-        self.iterate_transfers(wo.offset, buf_len, |xfer| {
-            let buf_xfer = &buf[xfer.skip_front_idx..xfer.split_back_idx];
-            let copy_op = WriteOp::new(xfer.offset, buf_xfer);
+        self.iterate_transfers(wo.offset(), wo.len(), |xfer| {
+            let mut copy_op = WriteOp::new_child(
+                xfer.offset,
+                wo,
+                xfer.skip_front_idx..xfer.split_back_idx,
+            );
 
-            debug_assert!(!copy_op.buf.is_empty());
-            Self::reg_write(xfer.reg, xfer.reg_len, &copy_op, f);
+            debug_assert!(copy_op.len() != 0);
+            Self::reg_write(xfer.reg, xfer.reg_len, &mut copy_op, f);
         })
     }
 
@@ -108,23 +110,23 @@ impl<ID> RegMap<ID> {
         copy_op: &mut ReadOp,
         f: &mut F,
     ) where
-        F: FnMut(&ID, &mut RWOp),
+        F: FnMut(&ID, RWOp),
     {
-        if reg.flags.contains(Flags::NO_READ_EXTEND)
-            && reg_len != copy_op.buf.len()
+        if reg.flags.contains(Flags::NO_READ_EXTEND) && reg_len != copy_op.len()
         {
-            f(&reg.id, &mut RWOp::Read(copy_op));
-        } else if reg_len == copy_op.buf.len() {
-            debug_assert!(copy_op.offset == 0);
-            f(&reg.id, &mut RWOp::Read(copy_op));
+            f(&reg.id, RWOp::Read(copy_op));
+        } else if reg_len == copy_op.len() {
+            debug_assert!(copy_op.offset() == 0);
+            f(&reg.id, RWOp::Read(copy_op));
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
+            let mut sro = ReadOp::new_buf(0, &mut scratch);
 
-            debug_assert!(scratch.len() == reg_len);
-            f(&reg.id, &mut RWOp::Read(&mut ReadOp::new(0, &mut scratch)));
-            copy_op.buf.copy_from_slice(
-                &scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())],
+            f(&reg.id, RWOp::Read(&mut sro));
+            drop(sro);
+            copy_op.write_bytes(
+                &scratch[copy_op.offset()..(copy_op.offset() + copy_op.len())],
             );
         }
     }
@@ -132,30 +134,33 @@ impl<ID> RegMap<ID> {
     fn reg_write<F>(
         reg: &RegDef<ID>,
         reg_len: usize,
-        copy_op: &WriteOp,
+        copy_op: &mut WriteOp,
         f: &mut F,
     ) where
-        F: FnMut(&ID, &mut RWOp),
+        F: FnMut(&ID, RWOp),
     {
         if reg.flags.contains(Flags::NO_WRITE_EXTEND)
-            && reg_len != copy_op.buf.len()
+            && reg_len != copy_op.len()
         {
-            f(&reg.id, &mut RWOp::Write(copy_op));
-        } else if reg_len == copy_op.buf.len() {
-            debug_assert!(copy_op.offset == 0);
-            f(&reg.id, &mut RWOp::Write(copy_op));
+            f(&reg.id, RWOp::Write(copy_op));
+        } else if reg_len == copy_op.len() {
+            debug_assert!(copy_op.offset() == 0);
+            f(&reg.id, RWOp::Write(copy_op));
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
 
             debug_assert!(scratch.len() == reg_len);
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
-                f(&reg.id, &mut RWOp::Read(&mut ReadOp::new(0, &mut scratch)));
+                let mut sro = ReadOp::new_buf(0, &mut scratch);
+                f(&reg.id, RWOp::Read(&mut sro));
             }
-            scratch[copy_op.offset..(copy_op.offset + copy_op.buf.len())]
-                .copy_from_slice(copy_op.buf);
+            copy_op.read_bytes(
+                &mut scratch
+                    [copy_op.offset()..(copy_op.offset() + copy_op.len())],
+            );
 
-            f(&reg.id, &mut RWOp::Write(&WriteOp::new(0, &scratch)));
+            f(&reg.id, RWOp::Write(&mut WriteOp::new_buf(0, &scratch)));
         }
     }
 
@@ -268,7 +273,7 @@ mod test {
         len: usize,
     }
     impl<ID: Copy + Eq> Xfer<ID> {
-        fn from_rwo(id: &ID, rwo: &mut RWOp) -> Self {
+        fn from_rwo(id: &ID, rwo: RWOp) -> Self {
             let dir = match rwo {
                 RWOp::Read(_) => XferDir::Read,
                 RWOp::Write(_) => XferDir::Write,
@@ -284,18 +289,18 @@ mod test {
         }
     }
 
-    fn read(off: usize, len: usize, cb: impl FnOnce(&mut RWOp)) {
+    fn read(off: usize, len: usize, cb: impl FnOnce(RWOp)) {
         let mut buf = Vec::with_capacity(len);
         buf.resize(len, 0);
-        let mut ro = ReadOp::new(off, &mut buf[..]);
-        cb(&mut RWOp::Read(&mut ro))
+        let mut ro = ReadOp::new_buf(off, &mut buf[..]);
+        cb(RWOp::Read(&mut ro))
     }
     #[allow(unused)]
     fn write(off: usize, len: usize, cb: impl FnOnce(&mut RWOp)) {
         let mut buf = Vec::with_capacity(len);
         buf.resize(len, 0);
-        let wo = WriteOp::new(off, &buf[..]);
-        cb(&mut RWOp::Write(&wo))
+        let mut wo = WriteOp::new_buf(off, &buf[..]);
+        cb(&mut RWOp::Write(&mut wo))
     }
     fn drive_reads<ID: Copy + Eq>(
         xfers: &[(usize, usize)],

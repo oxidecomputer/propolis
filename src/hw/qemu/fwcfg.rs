@@ -107,13 +107,12 @@ impl FixedItem {
 }
 impl Item for FixedItem {
     fn read(&self, ro: &mut ReadOp) -> Result {
-        let off = ro.offset;
-        if off + ro.buf.len() > self.data.len() {
+        let off = ro.offset();
+        if off + ro.len() > self.data.len() {
             Err("read beyond bounds")
         } else {
-            let copy_len = usize::min(self.data.len() - off, ro.buf.len());
-            ro.buf[..copy_len]
-                .copy_from_slice(&self.data[off..(off + copy_len)]);
+            let copy_len = usize::min(self.data.len() - off, ro.len());
+            ro.write_bytes(&self.data[off..(off + copy_len)]);
             Ok(())
         }
     }
@@ -135,7 +134,7 @@ impl Item for PlaceholderItem {
     }
 }
 
-const FWCFG_FILENAME_LEN: usize = 56;
+#[allow(unused)]
 #[repr(packed)]
 struct FwCfgFileEntry {
     size: u32,
@@ -156,7 +155,7 @@ impl FwCfgFileEntry {
         this.name[..name.len()].copy_from_slice(name.as_ref());
         this
     }
-    fn bytes<'a>(&'a self) -> &'a [u8] {
+    fn bytes(&self) -> &[u8] {
         // SAFETY:  This struct is packed, so it does not have any padding with
         // undefined contents, making the conversion to a byte-slice safe.
         unsafe {
@@ -225,21 +224,21 @@ impl ItemDir {
     fn read(&self, mut ro: ReadOp) -> Result {
         let ent_size = FwCfgFileEntry::sizeof();
         let dir_limit = self.sorted_names.len() * ent_size;
-        let buf_limit = ro.limit().ok_or("offset overflow")?;
-        if ro.offset >= dir_limit || buf_limit > dir_limit {
+        let offset = ro.offset();
+        let buf_limit =
+            offset.checked_add(ro.len()).ok_or("offset overflow")?;
+        if offset >= dir_limit || buf_limit > dir_limit {
             return Err("read beyond end");
         }
 
-        while ro.buf.len() > 0 {
-            let idx = ro.offset / ent_size;
-            let off = ro.offset % ent_size;
+        while ro.avail() > 0 {
+            let idx = offset / ent_size;
+            let entry_off = offset % ent_size;
             let entry = self.file_entry(idx);
             let entry_buf = entry.bytes();
-            let copy_len = usize::min(entry_buf.len() - off, ro.buf.len());
+            let copy_len = usize::min(entry_buf.len() - entry_off, ro.avail());
 
-            ro.buf[..copy_len]
-                .copy_from_slice(&entry_buf[off..(off + copy_len)]);
-            ro = ro.consume(copy_len);
+            ro.write_bytes(&entry_buf[entry_off..(entry_off + copy_len)]);
         }
         Ok(())
     }
@@ -324,9 +323,8 @@ impl FwCfgBuilder {
         // Should be sorted coming out of the btree, but be extra sure.
         sorted_names.sort();
         let dir = ItemDir { entries: self.entries, sorted_names };
-        let this = Arc::new(FwCfg::new(dir));
 
-        this
+        Arc::new(FwCfg::new(dir))
     }
 }
 
@@ -365,27 +363,23 @@ impl FwCfg {
         }
     }
 
-    fn read(&self, selector: u16, ro: &mut ReadOp) -> Result {
+    fn read(&self, selector: u16, mut ro: ReadOp) -> Result {
         if selector == LegacyId::FileDir as u16 {
-            self.dir.read(ReadOp::new(ro.offset, &mut ro.buf))
+            self.dir.read(ro)
+        } else if let Some(item) = self.dir.entries.get(&selector) {
+            item.content.read(&mut ro)
         } else {
-            if let Some(item) = self.dir.entries.get(&selector) {
-                item.content.read(ro)
-            } else {
-                Err("entry not found")
-            }
+            Err("entry not found")
         }
     }
 
     fn size(&self, selector: u16) -> u32 {
         if selector == LegacyId::FileDir as u16 {
             self.dir.size()
+        } else if let Some(item) = self.dir.entries.get(&selector) {
+            item.content.size()
         } else {
-            if let Some(item) = self.dir.entries.get(&selector) {
-                item.content.size()
-            } else {
-                0
-            }
+            0
         }
     }
 
@@ -476,52 +470,52 @@ impl FwCfg {
     fn dma_read(
         &self,
         selector: u16,
-        mut addr: u64,
-        mut offset: u32,
-        mut len: u32,
+        addr: u64,
+        offset: u32,
+        len: u32,
         ctx: &DispCtx,
     ) -> Result {
-        const BUF_LEN: u32 = 64;
-        let mut buf = [0u8; BUF_LEN as usize];
         let mem = ctx.mctx.memctx();
-        let mut valid_remain = self.size(selector).saturating_sub(offset);
+        let valid_remain = self.size(selector).saturating_sub(offset);
 
-        while len > 0 {
-            if valid_remain > 0 {
-                let copy_len = len.min(BUF_LEN).min(valid_remain) as usize;
-                let mut ro = ReadOp::new(offset as usize, &mut buf[..copy_len]);
-                self.read(selector, &mut ro)?;
-                mem.write_from(GuestAddr(addr), &buf[..copy_len], copy_len)
-                    .ok_or("bad GPA")?;
+        let written = if valid_remain > 0 {
+            let to_write = len.min(valid_remain);
+            let ptr = mem
+                .raw_writable(&GuestRegion(GuestAddr(addr), to_write as usize))
+                .ok_or("bad GPA")?;
+            let ro = ReadOp::new_ptr(offset as usize, ptr, to_write as usize);
+            self.read(selector, ro)?;
+            to_write
+        } else {
+            0
+        };
 
-                len -= copy_len as u32;
-                valid_remain -= copy_len as u32;
-                offset += copy_len as u32;
-                addr += copy_len as u64;
-            } else {
-                // write zeroes for everything past the end of the entry
-                mem.write_bytes(GuestAddr(addr), 0, len as usize);
-                return Ok(());
-            }
+        // write zeroes for everything past the end of the data
+        if written < len {
+            mem.write_bytes(
+                GuestAddr(addr + written as u64),
+                0,
+                (len - written) as usize,
+            );
         }
         Ok(())
     }
 }
 
 impl PioDev for FwCfg {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
         let mut state = self.state.lock().unwrap();
         match port {
             FW_CFG_IOP_SELECTOR => match rwo {
-                RWOp::Read(ro) => match ro.buf.len() {
-                    2 => LE::write_u16(&mut ro.buf, state.selector),
-                    1 => ro.buf[0] = state.selector as u8,
+                RWOp::Read(ro) => match ro.len() {
+                    2 => ro.write_u16(state.selector),
+                    1 => ro.write_u8(state.selector as u8),
                     _ => {}
                 },
                 RWOp::Write(wo) => {
-                    match wo.buf.len() {
-                        2 => state.selector = LE::read_u16(wo.buf),
-                        1 => state.selector = wo.buf[0] as u16,
+                    match wo.len() {
+                        2 => state.selector = wo.read_u16(),
+                        1 => state.selector = wo.read_u8() as u16,
                         _ => {}
                     }
                     state.offset = 0;
@@ -529,21 +523,22 @@ impl PioDev for FwCfg {
             },
             FW_CFG_IOP_DATA => {
                 match rwo {
-                    RWOp::Read(ro) => {
-                        if ro.buf.len() != 1 {
+                    RWOp::Read(mut ro) => {
+                        if ro.len() != 1 {
                             ro.fill(0);
                             return;
                         }
 
                         let res = self.read(
                             state.selector,
-                            &mut ReadOp::new(
+                            ReadOp::new_child(
                                 state.offset as usize,
-                                &mut ro.buf[..1],
+                                &mut ro,
+                                0..1,
                             ),
                         );
                         if res.is_err() {
-                            ro.buf[0] = 0;
+                            ro.write_u8(0);
                         }
                         state.offset = state.offset.saturating_add(1);
                     }
@@ -554,29 +549,29 @@ impl PioDev for FwCfg {
             }
             FW_CFG_IOP_DMA_HI => match rwo {
                 RWOp::Read(ro) => {
-                    if ro.buf.len() != 4 {
+                    if ro.len() != 4 {
                         ro.fill(0);
                     } else {
-                        BE::write_u32(&mut ro.buf, state.addr_high);
+                        ro.write_u32(state.addr_high.to_be());
                     }
                 }
                 RWOp::Write(wo) => {
-                    if wo.buf.len() == 4 {
-                        state.addr_high = BE::read_u32(&wo.buf);
+                    if wo.len() == 4 {
+                        state.addr_high = u32::from_be(wo.read_u32());
                     }
                 }
             },
             FW_CFG_IOP_DMA_LO => match rwo {
                 RWOp::Read(ro) => {
-                    if ro.buf.len() != 4 {
+                    if ro.len() != 4 {
                         ro.fill(0);
                     } else {
-                        BE::write_u32(&mut ro.buf, state.addr_low);
+                        ro.write_u32(state.addr_low.to_be());
                     }
                 }
                 RWOp::Write(wo) => {
-                    if wo.buf.len() == 4 {
-                        state.addr_low = BE::read_u32(&wo.buf);
+                    if wo.len() == 4 {
+                        state.addr_low = u32::from_be(wo.read_u32());
                         let _ = self.dma_initiate(state, ctx);
                     }
                 }
@@ -614,4 +609,6 @@ mod bits {
             const WRITE = 1 << 4;
         }
     }
+
+    pub const FWCFG_FILENAME_LEN: usize = 56;
 }

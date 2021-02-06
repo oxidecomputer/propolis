@@ -260,16 +260,16 @@ impl PS2Ctrl {
     }
 }
 impl PioDev for PS2Ctrl {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, _ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         assert_eq!(rwo.len(), 1);
         match port {
             PS2_PORT_DATA => match rwo {
-                RWOp::Read(ro) => ro.buf[0] = self.data_read(),
-                RWOp::Write(wo) => self.data_write(wo.buf[0]),
+                RWOp::Read(ro) => ro.write_u8(self.data_read()),
+                RWOp::Write(wo) => self.data_write(wo.read_u8()),
             },
             PS2_PORT_CMD_STATUS => match rwo {
-                RWOp::Read(ro) => ro.buf[0] = self.status_read(),
-                RWOp::Write(wo) => self.cmd_write(wo.buf[0]),
+                RWOp::Read(ro) => ro.write_u8(self.status_read()),
+                RWOp::Write(wo) => self.cmd_write(wo.read_u8()),
             },
             _ => {
                 panic!("unexpected pio in {:x}", port);

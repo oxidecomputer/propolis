@@ -13,7 +13,6 @@ use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 use crate::vmm::VmmHdl;
 
-use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
 const LEGACY_PIC_PINS: u8 = 32;
@@ -133,7 +132,7 @@ impl Chipset for I440Fx {
     }
 }
 impl PioDev for I440Fx {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
         match port {
             pci::PORT_PCI_CONFIG_ADDR => {
                 self.pci_cfg.service_addr(rwo);
@@ -398,45 +397,46 @@ impl Piix3Lpc {
     }
 }
 impl pci::Device for Piix3Lpc {
-    fn cfg_rw(&self, region: u8, rwo: &mut RWOp) {
+    fn cfg_rw(&self, region: u8, rwo: RWOp) {
         assert_eq!(region as usize, PIR_OFFSET);
         assert!(rwo.offset() + rwo.len() <= PIR_END - PIR_OFFSET);
 
         match rwo {
             RWOp::Read(ro) => {
-                let off = ro.offset;
+                let off = ro.offset();
                 let reg = self.reg_pir.lock().unwrap();
-                ro.buf.copy_from_slice(&reg[off..(off + ro.buf.len())]);
+                ro.write_bytes(&reg[off..(off + ro.len())]);
             }
             RWOp::Write(wo) => {
-                let off = wo.offset;
-                for (i, val) in wo.buf.iter().enumerate() {
-                    self.write_pir(i + off, *val);
+                let off = wo.offset();
+                for i in 0..wo.len() {
+                    self.write_pir(off + i, wo.read_u8());
                 }
             }
         }
     }
 }
 impl PioDev for Piix3Lpc {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: &mut RWOp, _ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         match port {
             PORT_FAST_A20 => {
                 match rwo {
                     RWOp::Read(ro) => {
                         // A20 is always enabled
-                        ro.buf[0] = 0x02;
+                        ro.write_u8(0x02);
                     }
-                    RWOp::Write(_wo) => {
+                    RWOp::Write(wo) => {
+                        let _ = wo.read_u8();
                         // TODO: handle FAST_INIT request
                     }
                 }
             }
             PORT_POST_CODE => match rwo {
                 RWOp::Read(ro) => {
-                    ro.buf[0] = self.post_code.load(Ordering::SeqCst);
+                    ro.write_u8(self.post_code.load(Ordering::SeqCst));
                 }
                 RWOp::Write(wo) => {
-                    self.post_code.store(wo.buf[0], Ordering::SeqCst);
+                    self.post_code.store(wo.read_u8(), Ordering::SeqCst);
                 }
             },
             _ => {}
@@ -642,13 +642,13 @@ impl Piix3PM {
         match id {
             PmCfg::PmRegMisc => {
                 // Report IO space as enabled
-                ro.buf[0] = 0x1;
+                ro.write_u8(0x1);
             }
             PmCfg::PmBase => {
                 let regs = self.regs.lock().unwrap();
 
                 // LSB hardwired to 1 to indicate PMBase in IO space
-                LE::write_u32(ro.buf, regs.pm_base as u32 | 0x1);
+                ro.write_u32(regs.pm_base as u32 | 0x1);
             }
             _ => {
                 // XXX: report everything else as zeroed
@@ -664,13 +664,13 @@ impl Piix3PM {
         let regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
-                LE::write_u16(ro.buf, regs.pm_status.bits());
+                ro.write_u16(regs.pm_status.bits());
             }
             PmReg::PmEn => {
-                LE::write_u16(ro.buf, regs.pm_ena.bits());
+                ro.write_u16(regs.pm_ena.bits());
             }
             PmReg::PmCntrl => {
-                LE::write_u16(ro.buf, regs.pm_ctrl.bits());
+                ro.write_u16(regs.pm_ctrl.bits());
             }
 
             PmReg::PmTmr
@@ -687,7 +687,7 @@ impl Piix3PM {
             | PmReg::GpiReg
             | PmReg::GpoReg => {
                 // TODO: flesh out the rest of PM emulation
-                println!("unhandled PM read {:x}", ro.offset);
+                println!("unhandled PM read {:x}", ro.offset());
                 ro.fill(0);
             }
             PmReg::Reserved => {
@@ -695,20 +695,19 @@ impl Piix3PM {
             }
         }
     }
-    fn pmreg_write(&self, id: &PmReg, wo: &WriteOp) {
+    fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp) {
         let mut regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
-                let val = PmSts::from_bits_truncate(LE::read_u16(&wo.buf));
+                let val = PmSts::from_bits_truncate(wo.read_u16());
                 // status bits are W1C
                 regs.pm_status.remove(val);
             }
             PmReg::PmEn => {
-                regs.pm_ena = PmEn::from_bits_truncate(LE::read_u16(&wo.buf));
+                regs.pm_ena = PmEn::from_bits_truncate(wo.read_u16());
             }
             PmReg::PmCntrl => {
-                regs.pm_ctrl =
-                    PmCntrl::from_bits_truncate(LE::read_u16(&wo.buf));
+                regs.pm_ctrl = PmCntrl::from_bits_truncate(wo.read_u16());
                 if regs.pm_ctrl.contains(PmCntrl::SUS_EN) {
                     // SUS_EN is write-only and should always read 0
                     regs.pm_ctrl.remove(PmCntrl::SUS_EN);
@@ -734,14 +733,14 @@ impl Piix3PM {
             | PmReg::DevCtl
             | PmReg::GpiReg
             | PmReg::GpoReg => {
-                println!("unhandled PM write {:x}", wo.offset);
+                println!("unhandled PM write {:x}", wo.offset());
             }
             PmReg::Reserved => {}
         }
     }
 }
 impl pci::Device for Piix3PM {
-    fn cfg_rw(&self, region: u8, rwo: &mut RWOp) {
+    fn cfg_rw(&self, region: u8, rwo: RWOp) {
         assert_eq!(region as usize, PMCFG_OFFSET);
 
         PM_CFG_REGS.process(rwo, |id, rwo| match rwo {
@@ -751,13 +750,7 @@ impl pci::Device for Piix3PM {
     }
 }
 impl PioDev for Piix3PM {
-    fn pio_rw(
-        &self,
-        _port: u16,
-        _ident: usize,
-        rwo: &mut RWOp,
-        _ctx: &DispCtx,
-    ) {
+    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         PM_REGS.process(rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.pmreg_read(id, ro),
             RWOp::Write(wo) => self.pmreg_write(id, wo),

@@ -93,7 +93,7 @@ impl Source for LpcUart {
 }
 
 impl PioDev for LpcUart {
-    fn pio_rw(&self, _port: u16, _ident: usize, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
         assert!(rwo.offset() < REGISTER_LEN);
         assert!(rwo.len() != 0);
         let mut state = self.state.lock().unwrap();
@@ -102,10 +102,10 @@ impl PioDev for LpcUart {
 
         match rwo {
             RWOp::Read(ro) => {
-                ro.buf[0] = state.uart.reg_read(ro.offset as u8);
+                ro.write_u8(state.uart.reg_read(ro.offset() as u8));
             }
             RWOp::Write(wo) => {
-                state.uart.reg_write(wo.offset as u8, wo.buf[0]);
+                state.uart.reg_write(wo.offset() as u8, wo.read_u8());
             }
         }
         if state.auto_discard {

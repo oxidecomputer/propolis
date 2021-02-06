@@ -10,7 +10,6 @@ use crate::hw::pci;
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 
-use byteorder::{ByteOrder, LE};
 use lazy_static::lazy_static;
 
 const VIRTIO_VENDOR: u16 = 0x1af4;
@@ -169,33 +168,33 @@ impl PciVirtio {
     fn legacy_read(&self, id: &LegacyReg, ro: &mut ReadOp, _ctx: &DispCtx) {
         match id {
             LegacyReg::FeatDevice => {
-                LE::write_u32(ro.buf, self.features_supported());
+                ro.write_u32(self.features_supported());
             }
             LegacyReg::FeatDriver => {
                 let state = self.state.lock().unwrap();
-                LE::write_u32(ro.buf, state.nego_feat);
+                ro.write_u32(state.nego_feat);
             }
             LegacyReg::QueuePfn => {
                 let state = self.state.lock().unwrap();
                 if let Some(queue) = self.queues.get(state.queue_sel as usize) {
                     let addr = queue.ctrl.lock().unwrap().gpa_desc.0;
-                    LE::write_u32(ro.buf, (addr >> PAGE_SHIFT) as u32);
+                    ro.write_u32((addr >> PAGE_SHIFT) as u32);
                 } else {
                     // bogus queue
-                    LE::write_u32(ro.buf, 0);
+                    ro.write_u32(0);
                 }
             }
             LegacyReg::QueueSize => {
-                LE::write_u16(ro.buf, self.queue_size);
+                ro.write_u16(self.queue_size);
             }
             LegacyReg::QueueSelect => {
                 let state = self.state.lock().unwrap();
-                LE::write_u16(ro.buf, state.queue_sel);
+                ro.write_u16(state.queue_sel);
             }
             LegacyReg::QueueNotify => {}
             LegacyReg::DeviceStatus => {
                 let state = self.state.lock().unwrap();
-                ro.buf[0] = state.status.bits();
+                ro.write_u8(state.status.bits());
             }
             LegacyReg::IsrStatus => {
                 let mut state = self.state.lock().unwrap();
@@ -207,11 +206,11 @@ impl PciVirtio {
                         pin.deassert();
                     }
                 }
-                ro.buf[0] = isr;
+                ro.write_u8(isr);
             }
             LegacyReg::MsixVectorConfig => {
                 let state = self.state.lock().unwrap();
-                LE::write_u16(ro.buf, state.msix_cfg_vec);
+                ro.write_u16(state.msix_cfg_vec);
             }
             LegacyReg::MsixVectorQueue => {
                 let state = self.state.lock().unwrap();
@@ -219,14 +218,14 @@ impl PciVirtio {
                     .msix_queue_vec
                     .get(state.queue_sel as usize)
                     .unwrap_or(&VIRTIO_MSI_NO_VECTOR);
-                LE::write_u16(ro.buf, *val);
+                ro.write_u16(*val);
             }
         }
     }
-    fn legacy_write(&self, id: &LegacyReg, wo: &WriteOp, ctx: &DispCtx) {
+    fn legacy_write(&self, id: &LegacyReg, wo: &mut WriteOp, ctx: &DispCtx) {
         match id {
             LegacyReg::FeatDriver => {
-                let nego = LE::read_u32(wo.buf) & self.features_supported();
+                let nego = wo.read_u32() & self.features_supported();
                 let mut state = self.state.lock().unwrap();
                 state.nego_feat = nego;
                 self.dev.device_set_features(nego);
@@ -234,7 +233,7 @@ impl PciVirtio {
             LegacyReg::QueuePfn => {
                 let mut state = self.state.lock().unwrap();
                 let mut success = false;
-                let pfn = LE::read_u32(wo.buf);
+                let pfn = wo.read_u32();
                 if let Some(queue) = self.queues.get(state.queue_sel as usize) {
                     success = queue.map_legacy((pfn as u64) << PAGE_SHIFT);
                     self.queue_change(queue, VqChange::Address, ctx);
@@ -246,23 +245,23 @@ impl PciVirtio {
             }
             LegacyReg::QueueSelect => {
                 let mut state = self.state.lock().unwrap();
-                state.queue_sel = LE::read_u16(wo.buf);
+                state.queue_sel = wo.read_u16();
             }
             LegacyReg::QueueNotify => {
-                self.queue_notify(LE::read_u16(wo.buf), ctx);
+                self.queue_notify(wo.read_u16(), ctx);
             }
             LegacyReg::DeviceStatus => {
-                self.set_status(wo.buf[0], ctx);
+                self.set_status(wo.read_u8(), ctx);
             }
             LegacyReg::MsixVectorConfig => {
                 let mut state = self.state.lock().unwrap();
-                state.msix_cfg_vec = LE::read_u16(wo.buf);
+                state.msix_cfg_vec = wo.read_u16();
             }
             LegacyReg::MsixVectorQueue => {
                 let mut state = self.state.lock().unwrap();
                 let sel = state.queue_sel as usize;
                 if let Some(queue) = self.queues.get(sel) {
-                    let val = LE::read_u16(wo.buf);
+                    let val = wo.read_u16();
 
                     if state.intr_mode != IntrMode::Msi {
                         // Store the vector information for later
@@ -406,7 +405,7 @@ impl SelfArc for PciVirtio {
 }
 
 impl pci::Device for PciVirtio {
-    fn bar_rw(&self, bar: pci::BarN, rwo: &mut RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: pci::BarN, rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
         let map = match self.map_which.load(Ordering::SeqCst) {
             false => &self.map_nomsix,
