@@ -276,6 +276,8 @@ fn main() {
     // configuration space
     dispatch.with_ctx(|ctx| chipset.pci_finalize(ctx));
 
+    let ramfb = hw::qemu::ramfb::RamFb::create();
+
     let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
     fwcfg
         .add_legacy(
@@ -283,6 +285,8 @@ fn main() {
             hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
         )
         .unwrap();
+    ramfb.attach(&mut fwcfg);
+
     let fwcfg_dev = fwcfg.finalize();
 
     mctx.with_pio(|pio| fwcfg_dev.attach(pio));

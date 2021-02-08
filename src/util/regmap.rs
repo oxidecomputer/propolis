@@ -53,7 +53,7 @@ impl<ID> RegMap<ID> {
         self.space.register(start, len, RegDef { id, flags }).unwrap();
     }
 
-    pub fn process<F>(&self, op: RWOp<'_, '_>, mut f: F)
+    pub fn process<F>(&self, op: &mut RWOp<'_, '_>, mut f: F)
     where
         F: FnMut(&ID, RWOp),
     {
@@ -309,8 +309,10 @@ mod test {
         let mut res = Vec::new();
 
         for &(off, len) in xfers {
-            read(off, len, |rwo| {
-                map.process(rwo, |id, rwo| res.push(Xfer::from_rwo(id, rwo)))
+            read(off, len, |mut rwo| {
+                map.process(&mut rwo, |id, rwo| {
+                    res.push(Xfer::from_rwo(id, rwo))
+                })
             })
         }
         res

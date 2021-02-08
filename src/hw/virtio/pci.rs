@@ -405,15 +405,15 @@ impl SelfArc for PciVirtio {
 }
 
 impl pci::Device for PciVirtio {
-    fn bar_rw(&self, bar: pci::BarN, rwo: RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
         let map = match self.map_which.load(Ordering::SeqCst) {
             false => &self.map_nomsix,
             true => &self.map,
         };
-        map.process(rwo, |id, rwo| match id {
+        map.process(&mut rwo, |id, mut rwo| match id {
             VirtioTop::LegacyConfig => {
-                LEGACY_REGS.process(rwo, |id, rwo| match rwo {
+                LEGACY_REGS.process(&mut rwo, |id, rwo| match rwo {
                     RWOp::Read(ro) => self.legacy_read(id, ro, ctx),
                     RWOp::Write(wo) => self.legacy_write(id, wo, ctx),
                 })

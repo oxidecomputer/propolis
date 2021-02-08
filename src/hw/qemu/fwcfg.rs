@@ -8,7 +8,7 @@ use bits::*;
 
 use byteorder::{ByteOrder, BE, LE};
 
-type Result = std::result::Result<(), &'static str>;
+pub type Result = std::result::Result<(), &'static str>;
 
 #[allow(unused)]
 #[derive(Copy, Clone)]
@@ -81,13 +81,7 @@ pub enum LegacyX86Id {
 }
 
 pub trait Item: Send + Sync + 'static {
-    #![allow(unused)]
-    fn read(&self, ro: &mut ReadOp) -> Result {
-        Err("unimplemented")
-    }
-    fn write(&self, wo: &WriteOp) -> Result {
-        Err("unimplemented")
-    }
+    fn fwcfg_rw(&self, rwo: RWOp, ctx: &DispCtx) -> Result;
     fn size(&self) -> u32;
 }
 
@@ -95,38 +89,41 @@ pub struct FixedItem {
     data: Vec<u8>,
 }
 impl FixedItem {
-    pub fn new_raw(data: Vec<u8>) -> Box<dyn Item> {
+    pub fn new_raw(data: Vec<u8>) -> Arc<dyn Item> {
         assert!(data.len() <= u32::MAX as usize);
-        Box::new(Self { data })
+        Arc::new(Self { data })
     }
-    pub fn new_u32(val: u32) -> Box<dyn Item> {
+    pub fn new_u32(val: u32) -> Arc<dyn Item> {
         let mut buf = [0u8; 4];
         LE::write_u32(&mut buf, val);
         Self::new_raw(buf.to_vec())
     }
 }
 impl Item for FixedItem {
-    fn read(&self, ro: &mut ReadOp) -> Result {
-        let off = ro.offset();
-        if off + ro.len() > self.data.len() {
-            Err("read beyond bounds")
-        } else {
-            let copy_len = usize::min(self.data.len() - off, ro.len());
-            ro.write_bytes(&self.data[off..(off + copy_len)]);
-            Ok(())
-        }
-    }
     fn size(&self) -> u32 {
         self.data.len() as u32
+    }
+
+    fn fwcfg_rw(&self, rwo: RWOp, _ctx: &DispCtx) -> Result {
+        match rwo {
+            RWOp::Read(ro) => {
+                let off = ro.offset();
+                if off + ro.len() > self.data.len() {
+                    Err("read beyond bounds")
+                } else {
+                    let copy_len = usize::min(self.data.len() - off, ro.len());
+                    ro.write_bytes(&self.data[off..(off + copy_len)]);
+                    Ok(())
+                }
+            }
+            RWOp::Write(_) => Err("writes to fixed items not allowed"),
+        }
     }
 }
 
 struct PlaceholderItem {}
 impl Item for PlaceholderItem {
-    fn read(&self, _ro: &mut ReadOp) -> Result {
-        panic!("should never be accessed");
-    }
-    fn write(&self, _wo: &WriteOp) -> Result {
+    fn fwcfg_rw(&self, _rwo: RWOp, _ctx: &DispCtx) -> Result {
         panic!("should never be accessed");
     }
     fn size(&self) -> u32 {
@@ -203,7 +200,7 @@ mod test {
 }
 
 struct Entry {
-    content: Box<dyn Item>,
+    content: Arc<dyn Item>,
 }
 
 struct ItemDir {
@@ -221,7 +218,13 @@ impl ItemDir {
         };
         FwCfgFileEntry::new(*selector, &name, size)
     }
-    fn read(&self, mut ro: ReadOp) -> Result {
+    fn read_header(&self, mut ro: ReadOp) -> usize {
+        let num = u32::to_be_bytes(self.sorted_names.len() as u32);
+        let to_write = &num[ro.offset()..];
+        ro.write_bytes(to_write);
+        to_write.len()
+    }
+    fn read_entries(&self, mut ro: ReadOp) -> Result {
         let ent_size = FwCfgFileEntry::sizeof();
         let dir_limit = self.sorted_names.len() * ent_size;
         let offset = ro.offset();
@@ -230,20 +233,36 @@ impl ItemDir {
         if offset >= dir_limit || buf_limit > dir_limit {
             return Err("read beyond end");
         }
-
         while ro.avail() > 0 {
             let idx = offset / ent_size;
             let entry_off = offset % ent_size;
             let entry = self.file_entry(idx);
             let entry_buf = entry.bytes();
             let copy_len = usize::min(entry_buf.len() - entry_off, ro.avail());
-
             ro.write_bytes(&entry_buf[entry_off..(entry_off + copy_len)]);
         }
         Ok(())
     }
+    fn read(&self, ro: &mut ReadOp) -> Result {
+        let off = ro.offset();
+        let header_xfer = if off < 4 {
+            self.read_header(ReadOp::new_child(off, ro, off..4))
+        } else {
+            0
+        };
+        if off + ro.len() > 4 {
+            return self.read_entries(ReadOp::new_child(
+                ro.offset() + header_xfer - 4,
+                ro,
+                header_xfer..,
+            ));
+        }
+
+        Ok(())
+    }
     fn size(&self) -> u32 {
-        (self.sorted_names.len() * FwCfgFileEntry::sizeof()) as u32
+        // header (32-bit count) + N 64-byte entries
+        4 + (self.sorted_names.len() * FwCfgFileEntry::sizeof()) as u32
     }
     fn is_present(&self, selector: u16) -> bool {
         if selector == LegacyId::FileDir as u16 {
@@ -284,7 +303,7 @@ impl FwCfgBuilder {
         this.add_impl(
             LegacyId::FileDir as u16,
             LegacyId::FileDir.name().to_string(),
-            Box::new(PlaceholderItem {}),
+            Arc::new(PlaceholderItem {}),
         )
         .unwrap();
 
@@ -294,16 +313,23 @@ impl FwCfgBuilder {
     pub fn add_legacy(
         &mut self,
         sel: LegacyId,
-        content: Box<dyn Item>,
+        content: Arc<dyn Item>,
     ) -> Result {
         self.add_impl(sel as u16, sel.name().to_string(), content)
+    }
+    pub fn add_named(&mut self, name: &str, content: Arc<dyn Item>) -> Result {
+        let sel = self.next_sel;
+        let next_sel = self.next_sel.checked_add(1).ok_or("item overflow")?;
+        self.add_impl(sel, name.to_string(), content)?;
+        self.next_sel = next_sel;
+        Ok(())
     }
 
     fn add_impl(
         &mut self,
         sel: u16,
         name: String,
-        content: Box<dyn Item>,
+        content: Arc<dyn Item>,
     ) -> Result {
         if self.entries.get(&sel).is_none()
             && self.name_to_sel.get(&name).is_none()
@@ -363,11 +389,15 @@ impl FwCfg {
         }
     }
 
-    fn read(&self, selector: u16, mut ro: ReadOp) -> Result {
+    fn xfer(&self, selector: u16, rwo: RWOp, ctx: &DispCtx) -> Result {
         if selector == LegacyId::FileDir as u16 {
-            self.dir.read(ro)
+            if let RWOp::Read(ro) = rwo {
+                self.dir.read(ro)
+            } else {
+                Err("filedir not writable")
+            }
         } else if let Some(item) = self.dir.entries.get(&selector) {
-            item.content.read(&mut ro)
+            item.content.fwcfg_rw(rwo, ctx)
         } else {
             Err("entry not found")
         }
@@ -443,7 +473,7 @@ impl FwCfg {
         ) {
             state.offset.checked_add(dma_req.len).ok_or("offset overflow")?
         } else {
-            0
+            state.offset
         };
 
         // match the same command precedence as qemu (read, write, skip)
@@ -458,13 +488,19 @@ impl FwCfg {
             if res.is_err() {
                 return res;
             }
-
-            state.offset = end_offset;
         } else if ctrl.contains(FwCfgDmaCtrl::WRITE) {
-            return Err("XXX writes disallowed for now");
-        } else if ctrl.contains(FwCfgDmaCtrl::SKIP) {
-            state.offset = end_offset;
+            let res = self.dma_write(
+                state.selector,
+                dma_req.addr,
+                state.offset,
+                dma_req.len,
+                ctx,
+            );
+            if res.is_err() {
+                return res;
+            }
         }
+        state.offset = end_offset;
         Ok(())
     }
     fn dma_read(
@@ -483,8 +519,9 @@ impl FwCfg {
             let ptr = mem
                 .raw_writable(&GuestRegion(GuestAddr(addr), to_write as usize))
                 .ok_or("bad GPA")?;
-            let ro = ReadOp::new_ptr(offset as usize, ptr, to_write as usize);
-            self.read(selector, ro)?;
+            let mut ro =
+                ReadOp::new_ptr(offset as usize, ptr, to_write as usize);
+            self.xfer(selector, RWOp::Read(&mut ro), ctx)?;
             to_write
         } else {
             0
@@ -497,6 +534,28 @@ impl FwCfg {
                 0,
                 (len - written) as usize,
             );
+        }
+        Ok(())
+    }
+    fn dma_write(
+        &self,
+        selector: u16,
+        addr: u64,
+        offset: u32,
+        len: u32,
+        ctx: &DispCtx,
+    ) -> Result {
+        let mem = ctx.mctx.memctx();
+        let valid_remain = self.size(selector).saturating_sub(offset);
+
+        if valid_remain > 0 {
+            let to_read = len.min(valid_remain);
+            let ptr = mem
+                .raw_readable(&GuestRegion(GuestAddr(addr), to_read as usize))
+                .ok_or("bad GPA")?;
+            let mut wo =
+                WriteOp::new_ptr(offset as usize, ptr, to_read as usize);
+            self.xfer(selector, RWOp::Write(&mut wo), ctx)?;
         }
         Ok(())
     }
@@ -529,13 +588,14 @@ impl PioDev for FwCfg {
                             return;
                         }
 
-                        let res = self.read(
+                        let res = self.xfer(
                             state.selector,
-                            ReadOp::new_child(
+                            RWOp::Read(&mut ReadOp::new_child(
                                 state.offset as usize,
                                 &mut ro,
                                 0..1,
-                            ),
+                            )),
+                            ctx,
                         );
                         if res.is_err() {
                             ro.write_u8(0);

@@ -692,10 +692,10 @@ impl DeviceInst {
 }
 
 impl Endpoint for DeviceInst {
-    fn cfg_rw(&self, rwo: RWOp, ctx: &DispCtx) {
-        self.cfg_space.process(rwo, |id, rwo| match id {
+    fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
+        self.cfg_space.process(&mut rwo, |id, mut rwo| match id {
             CfgReg::Std => {
-                STD_CFG_MAP.process(rwo, |id, rwo| match rwo {
+                STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
                     RWOp::Read(ro) => self.cfg_std_read(id, ro, ctx),
                     RWOp::Write(wo) => self.cfg_std_write(id, wo, ctx),
                 });
@@ -956,8 +956,13 @@ impl MsixCfg {
     fn bar_match(&self, bar: BarN) -> bool {
         self.bar == bar
     }
-    fn bar_rw(&self, rwo: RWOp, updatef: impl Fn(MsiUpdate), ctx: &DispCtx) {
-        self.map.process(rwo, |id, rwo| match rwo {
+    fn bar_rw(
+        &self,
+        mut rwo: RWOp,
+        updatef: impl Fn(MsiUpdate),
+        ctx: &DispCtx,
+    ) {
+        self.map.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
                 MsixBarReg::Addr(i) => {
                     let ent = self.entries[*i as usize].lock().unwrap();
@@ -1032,8 +1037,13 @@ impl MsixCfg {
             ro.write_u8(val);
         }
     }
-    fn cfg_rw(&self, rwo: RWOp, updatef: impl Fn(MsiUpdate), ctx: &DispCtx) {
-        CAP_MSIX_MAP.process(rwo, |id, rwo| {
+    fn cfg_rw(
+        &self,
+        mut rwo: RWOp,
+        updatef: impl Fn(MsiUpdate),
+        ctx: &DispCtx,
+    ) {
+        CAP_MSIX_MAP.process(&mut rwo, |id, rwo| {
             match rwo {
                 RWOp::Read(ro) => {
                     match id {

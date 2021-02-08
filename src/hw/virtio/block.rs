@@ -75,8 +75,8 @@ impl VirtioBlock {
     }
 }
 impl VirtioDevice for VirtioBlock {
-    fn device_cfg_rw(&self, rwo: RWOp) {
-        BLOCK_DEV_REGS.process(rwo, |id, rwo| match rwo {
+    fn device_cfg_rw(&self, mut rwo: RWOp) {
+        BLOCK_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.block_cfg_read(id, ro),
             RWOp::Write(_) => {
                 //ignore writes

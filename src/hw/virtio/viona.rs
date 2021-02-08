@@ -121,8 +121,8 @@ impl VirtioViona {
     }
 }
 impl VirtioDevice for VirtioViona {
-    fn device_cfg_rw(&self, rwo: RWOp) {
-        NET_DEV_REGS.process(rwo, |id, rwo| match rwo {
+    fn device_cfg_rw(&self, mut rwo: RWOp) {
+        NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {
                 //ignore writes

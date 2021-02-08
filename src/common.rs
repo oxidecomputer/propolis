@@ -277,6 +277,12 @@ impl RWOp<'_, '_> {
             RWOp::Write(wo) => wo.len(),
         }
     }
+    pub fn is_read(&self) -> bool {
+        matches!(self, RWOp::Read(_))
+    }
+    pub fn is_write(&self) -> bool {
+        matches!(self, RWOp::Write(_))
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

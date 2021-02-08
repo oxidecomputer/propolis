@@ -740,18 +740,18 @@ impl Piix3PM {
     }
 }
 impl pci::Device for Piix3PM {
-    fn cfg_rw(&self, region: u8, rwo: RWOp) {
+    fn cfg_rw(&self, region: u8, mut rwo: RWOp) {
         assert_eq!(region as usize, PMCFG_OFFSET);
 
-        PM_CFG_REGS.process(rwo, |id, rwo| match rwo {
+        PM_CFG_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.pmcfg_read(id, ro),
             RWOp::Write(wo) => self.pmcfg_write(id, wo),
         })
     }
 }
 impl PioDev for Piix3PM {
-    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
-        PM_REGS.process(rwo, |id, rwo| match rwo {
+    fn pio_rw(&self, _port: u16, _ident: usize, mut rwo: RWOp, _ctx: &DispCtx) {
+        PM_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.pmreg_read(id, ro),
             RWOp::Write(wo) => self.pmreg_write(id, wo),
         });
