@@ -1,5 +1,5 @@
 [package]
-name = "propolis"
+name = "propolis-cli"
 version = "0.1.0"
 authors = ["Patrick Mooney <pmooney@pfmooney.com>"]
 edition = "2018"
@@ -12,15 +12,9 @@ panic = "abort"
 panic = "abort"
 
 [dependencies]
-libc = "0.2"
 pico-args = "0.3"
-bitflags = "1.2"
-byteorder = "1"
-lazy_static = "1.4"
-num_enum = "0.5"
+libc = "0.2"
 toml = "0.5"
 serde = "1.0"
 serde_derive = "1.0"
-bhyve_api = { path = "bhyve-api" }
-dladm = { path = "dladm" }
-viona_api = { path = "viona-api" }
+propolis = { path = "../propolis" }

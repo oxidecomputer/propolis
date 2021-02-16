@@ -1,41 +1,21 @@
-extern crate bhyve_api;
-extern crate dladm;
-extern crate viona_api;
-
-#[macro_use]
-extern crate bitflags;
-extern crate byteorder;
 extern crate pico_args;
+extern crate propolis;
 extern crate serde;
 extern crate serde_derive;
 extern crate toml;
-
-mod block;
-mod chardev;
-mod common;
-mod config;
-mod dispatch;
-mod exits;
-mod hw;
-mod intr_pins;
-mod mmio;
-mod pio;
-mod util;
-mod vcpu;
-mod vmm;
 
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result};
 use std::path::Path;
 use std::sync::Arc;
 
-use bhyve_api::vm_reg_name;
-use chardev::{Sink, Source};
-use dispatch::*;
-use exits::*;
-use hw::chipset::Chipset;
-use vcpu::VcpuHdl;
-use vmm::{Machine, MachineCtx};
+use propolis::chardev::{Sink, Source};
+use propolis::dispatch::*;
+use propolis::hw::chipset::Chipset;
+use propolis::vmm::{Builder, Machine, MachineCtx, Prot};
+use propolis::*;
+
+mod config;
 
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
@@ -50,76 +30,6 @@ fn parse_args() -> config::Config {
         std::process::exit(libc::EXIT_FAILURE);
     }
 }
-
-fn run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
-    let mctx = &dctx.mctx;
-    let mut next_entry = VmEntry::Run;
-    loop {
-        let exit = vcpu.run(&next_entry).unwrap();
-        //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
-        match exit.kind {
-            VmExitKind::Bogus => {
-                //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
-                next_entry = VmEntry::Run
-            }
-            VmExitKind::Inout(io) => match io {
-                InoutReq::Out(io, val) => {
-                    mctx.with_pio(|b| {
-                        b.handle_out(io.port, io.bytes, val, &dctx)
-                    });
-                    next_entry = VmEntry::InoutFulfill(InoutRes::Out(io));
-                }
-                InoutReq::In(io) => {
-                    let val = mctx
-                        .with_pio(|b| b.handle_in(io.port, io.bytes, &dctx));
-                    next_entry = VmEntry::InoutFulfill(InoutRes::In(io, val));
-                }
-            },
-            VmExitKind::Mmio(mmio) => match mmio {
-                MmioReq::Read(read) => {
-                    let val = mctx.with_mmio(|b| {
-                        b.handle_read(read.addr as usize, read.bytes, &dctx)
-                    });
-                    next_entry =
-                        VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
-                            addr: read.addr,
-                            bytes: read.bytes,
-                            data: val,
-                        }));
-                }
-                MmioReq::Write(write) => {
-                    mctx.with_mmio(|b| {
-                        b.handle_write(
-                            write.addr as usize,
-                            write.bytes,
-                            write.data,
-                            &dctx,
-                        )
-                    });
-                    next_entry =
-                        VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
-                            addr: write.addr,
-                            bytes: write.bytes,
-                        }));
-                }
-            },
-            VmExitKind::Rdmsr(msr) => {
-                println!("rdmsr({:x})", msr);
-                // XXX just emulate with 0 for now
-                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
-                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
-                next_entry = VmEntry::Run
-            }
-            VmExitKind::Wrmsr(msr, val) => {
-                println!("wrmsr({:x}, {:x})", msr, val);
-                next_entry = VmEntry::Run
-            }
-            _ => panic!("unrecognized exit: {:?}", exit.kind),
-        }
-    }
-}
-
-use vmm::{Builder, Prot};
 
 fn build_vm(name: &str, max_cpu: u8, lowmem: usize) -> Result<Arc<Machine>> {
     let vm = Builder::new(name, true)?
@@ -298,7 +208,7 @@ fn main() {
         next_vcpu.set_default_capabs().unwrap();
         next_vcpu.reboot_state().unwrap();
         next_vcpu.activate().unwrap();
-        dispatch.spawn_vcpu(next_vcpu, run_loop).unwrap();
+        dispatch.spawn_vcpu(next_vcpu, propolis::vcpu_run_loop).unwrap();
     }
 
     let mut vcpu0 = vm.vcpu(0);
@@ -307,12 +217,12 @@ fn main() {
     vcpu0.reboot_state().unwrap();
     vcpu0.activate().unwrap();
     vcpu0.set_run_state(bhyve_api::VRS_RUN).unwrap();
-    vcpu0.set_reg(vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
+    vcpu0.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
 
     // Wait until someone connects to ttya
     com1_sock.wait_for_connect();
 
-    dispatch.spawn_vcpu(vcpu0, run_loop).unwrap();
+    dispatch.spawn_vcpu(vcpu0, propolis::vcpu_run_loop).unwrap();
 
     dispatch.join();
     drop(vm);
