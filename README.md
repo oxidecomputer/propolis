@@ -45,3 +45,8 @@ pci-path = "0.5.0"
 
 Propolis will not destroy the VM instance on exit.  If one exists with the
 specified name on start-up, it will be destroyed and and created fresh.
+
+## License
+
+Unless otherwise noted, all components are licensed under the [Mozilla Public
+License Version 2.0](LICENSE).
