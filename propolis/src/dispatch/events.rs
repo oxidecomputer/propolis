@@ -247,7 +247,7 @@ impl EventDispatch {
         self.notify();
     }
 
-    fn notify(&self) {
+    pub(crate) fn notify(&self) {
         if !self.notified.fetch_or(true, Ordering::SeqCst) {
             self.eport.send(1, NOTIFY_TOKEN).unwrap();
         }
@@ -299,8 +299,11 @@ impl EventCtx {
     }
 }
 
-pub fn event_loop(edisp: Arc<EventDispatch>, dctx: DispCtx) {
+pub fn event_loop(edisp: Arc<EventDispatch>, ctx: &mut DispCtx) {
     loop {
-        edisp.process_events(&dctx)
+        if ctx.check_yield() {
+            return;
+        }
+        edisp.process_events(ctx)
     }
 }

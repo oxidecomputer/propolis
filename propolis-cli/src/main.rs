@@ -4,15 +4,16 @@ extern crate serde;
 extern crate serde_derive;
 extern crate toml;
 
+use std::any::Any;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result};
 use std::path::Path;
 use std::sync::Arc;
 
 use propolis::chardev::{Sink, Source};
-use propolis::dispatch::*;
 use propolis::hw::chipset::Chipset;
-use propolis::vmm::{Builder, Machine, MachineCtx, Prot};
+use propolis::instance::{Instance, State};
+use propolis::vmm::{Builder, Prot};
 use propolis::*;
 
 mod config;
@@ -31,8 +32,12 @@ fn parse_args() -> config::Config {
     }
 }
 
-fn build_vm(name: &str, max_cpu: u8, lowmem: usize) -> Result<Arc<Machine>> {
-    let vm = Builder::new(name, true)?
+fn build_instance(
+    name: &str,
+    max_cpu: u8,
+    lowmem: usize,
+) -> Result<Arc<Instance>> {
+    let builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
         .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
         .add_rom_region(
@@ -47,9 +52,9 @@ fn build_vm(name: &str, max_cpu: u8, lowmem: usize) -> Result<Arc<Machine>> {
             vmm::MAX_SYSMEM,
             vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
             "dev64",
-        )?
-        .finalize()?;
-    Ok(vm)
+        )?;
+    let inst = Instance::create(builder, propolis::vcpu_run_loop)?;
+    Ok(inst)
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -77,153 +82,162 @@ fn main() {
     let lowmem: usize = config.get_mem() * 1024 * 1024;
     let cpus = config.get_cpus();
 
-    let vm = build_vm(vm_name, cpus, lowmem).unwrap();
+    let inst = build_instance(vm_name, cpus, lowmem).unwrap();
     println!("vm {} created", vm_name);
 
     let (mut romfp, rom_len) = open_bootrom(config.get_bootrom()).unwrap();
-    vm.populate_rom("bootrom", |ptr, region_len| {
-        if region_len < rom_len {
-            return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
-        }
-        let offset = region_len - rom_len;
-        unsafe {
-            let write_ptr = ptr.as_ptr().add(offset);
-            let buf = std::slice::from_raw_parts_mut(write_ptr, rom_len);
-            match romfp.read(buf) {
-                Ok(n) if n == rom_len => Ok(()),
-                Ok(_) => {
-                    // TODO: handle short read
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
-    })
-    .unwrap();
-    drop(romfp);
-
-    vm.initalize_rtc(lowmem).unwrap();
-
-    let mctx = MachineCtx::new(&vm);
-    let mut dispatch = Dispatcher::new(mctx.clone());
-    dispatch.spawn_events().unwrap();
-
     let com1_sock = chardev::UDSock::bind(Path::new("./ttya")).unwrap();
-    dispatch.with_ctx(|ctx| {
-        com1_sock.listen(ctx);
-    });
 
-    let chipset = mctx.with_pio(|pio| {
-        hw::chipset::i440fx::I440Fx::create(vm.get_hdl(), pio, |lpc| {
-            lpc.config_uarts(|com1, com2, com3, com4| {
-                com1_sock.attach_sink(Arc::clone(com1) as Arc<dyn Sink>);
-                com1_sock.attach_source(Arc::clone(com1) as Arc<dyn Source>);
-                com1.source_set_autodiscard(false);
+    let mut devs: Vec<(&'static str, Arc<dyn Any>)> = Vec::new();
 
-                // XXX: plumb up com2-4, but until then, just auto-discard
-                com2.source_set_autodiscard(true);
-                com3.source_set_autodiscard(true);
-                com4.source_set_autodiscard(true);
+    let _res = inst.initialize(|machine, mctx, disp| {
+        machine.populate_rom("bootrom", |ptr, region_len| {
+            if region_len < rom_len {
+                return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
+            }
+            let offset = region_len - rom_len;
+            unsafe {
+                let write_ptr = ptr.as_ptr().add(offset);
+                let buf = std::slice::from_raw_parts_mut(write_ptr, rom_len);
+                match romfp.read(buf) {
+                    Ok(n) if n == rom_len => Ok(()),
+                    Ok(_) => {
+                        // TODO: handle short read
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        })?;
+
+        machine.initalize_rtc(lowmem).unwrap();
+
+        disp.with_ctx(|ctx| {
+            com1_sock.listen(ctx);
+        });
+
+        let hdl = machine.get_hdl();
+
+        let chipset = mctx.with_pio(|pio| {
+            hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl), pio, |lpc| {
+                lpc.config_uarts(|com1, com2, com3, com4| {
+                    com1_sock.attach_sink(Arc::clone(com1) as Arc<dyn Sink>);
+                    com1_sock
+                        .attach_source(Arc::clone(com1) as Arc<dyn Source>);
+                    com1.source_set_autodiscard(false);
+
+                    // XXX: plumb up com2-4, but until then, just auto-discard
+                    com2.source_set_autodiscard(true);
+                    com3.source_set_autodiscard(true);
+                    com4.source_set_autodiscard(true);
+                })
             })
-        })
-    });
+        });
 
-    let _dbg = mctx.with_pio(|pio| {
-        let debug = std::fs::File::create("debug.out").unwrap();
-        let buffered = std::io::LineWriter::new(debug);
-        hw::qemu::debug::QemuDebugPort::create(
-            Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
-            pio,
-        )
-    });
-
-    for (name, dev) in config.devs() {
-        let driver = &dev.driver as &str;
-        let bdf = if driver.starts_with("pci-") {
-            config::parse_bdf(
-                dev.options.get("pci-path").unwrap().as_str().unwrap(),
+        let dbg = mctx.with_pio(|pio| {
+            let debug = std::fs::File::create("debug.out").unwrap();
+            let buffered = std::io::LineWriter::new(debug);
+            hw::qemu::debug::QemuDebugPort::create(
+                Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
+                pio,
             )
-        } else {
-            None
-        };
-        match driver {
-            "pci-virtio-block" => {
-                let disk_path =
-                    dev.options.get("disk").unwrap().as_str().unwrap();
+        });
+        devs.push(("debug", dbg));
 
-                let plain: Arc<block::PlainBdev<hw::virtio::block::Request>> =
-                    block::PlainBdev::create(disk_path).unwrap();
-
-                let vioblk = hw::virtio::VirtioBlock::create(
-                    0x100,
-                    Arc::clone(&plain)
-                        as Arc<dyn block::BlockDev<hw::virtio::block::Request>>,
-                );
-                chipset.pci_attach(bdf.unwrap(), vioblk);
-
-                plain
-                    .start_dispatch(format!("bdev-{} thread", name), &dispatch);
-            }
-            "pci-virtio-viona" => {
-                let vnic_name =
-                    dev.options.get("vnic").unwrap().as_str().unwrap();
-
-                let hdl = vm.get_hdl();
-                let viona = hw::virtio::viona::VirtioViona::create(
-                    vnic_name, 0x100, &hdl,
+        for (name, dev) in config.devs() {
+            let driver = &dev.driver as &str;
+            let bdf = if driver.starts_with("pci-") {
+                config::parse_bdf(
+                    dev.options.get("pci-path").unwrap().as_str().unwrap(),
                 )
-                .unwrap();
-                chipset.pci_attach(bdf.unwrap(), viona);
-            }
-            _ => {
-                eprintln!("unrecognized driver: {}", name);
-                std::process::exit(libc::EXIT_FAILURE);
+            } else {
+                None
+            };
+            match driver {
+                "pci-virtio-block" => {
+                    let disk_path =
+                        dev.options.get("disk").unwrap().as_str().unwrap();
+
+                    let plain: Arc<
+                        block::PlainBdev<hw::virtio::block::Request>,
+                    > = block::PlainBdev::create(disk_path).unwrap();
+
+                    let vioblk = hw::virtio::VirtioBlock::create(
+                        0x100,
+                        Arc::clone(&plain)
+                            as Arc<
+                                dyn block::BlockDev<hw::virtio::block::Request>,
+                            >,
+                    );
+                    chipset.pci_attach(bdf.unwrap(), vioblk);
+
+                    plain
+                        .start_dispatch(format!("bdev-{} thread", name), &disp);
+                }
+                "pci-virtio-viona" => {
+                    let vnic_name =
+                        dev.options.get("vnic").unwrap().as_str().unwrap();
+
+                    let viona = hw::virtio::viona::VirtioViona::create(
+                        vnic_name, 0x100, &hdl,
+                    )
+                    .unwrap();
+                    chipset.pci_attach(bdf.unwrap(), viona);
+                }
+                _ => {
+                    eprintln!("unrecognized driver: {}", name);
+                    std::process::exit(libc::EXIT_FAILURE);
+                }
             }
         }
-    }
 
-    // with all pci devices attached, place their BARs and wire up access to PCI
-    // configuration space
-    dispatch.with_ctx(|ctx| chipset.pci_finalize(ctx));
+        // with all pci devices attached, place their BARs and wire up access to PCI
+        // configuration space
+        disp.with_ctx(|ctx| chipset.pci_finalize(ctx));
+        devs.push(("chipset", chipset));
 
-    let ramfb = hw::qemu::ramfb::RamFb::create();
+        let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
+        fwcfg
+            .add_legacy(
+                hw::qemu::fwcfg::LegacyId::SmpCpuCount,
+                hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
+            )
+            .unwrap();
 
-    let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
-    fwcfg
-        .add_legacy(
-            hw::qemu::fwcfg::LegacyId::SmpCpuCount,
-            hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
-        )
-        .unwrap();
-    ramfb.attach(&mut fwcfg);
+        let ramfb = hw::qemu::ramfb::RamFb::create();
+        ramfb.attach(&mut fwcfg);
 
-    let fwcfg_dev = fwcfg.finalize();
+        let fwcfg_dev = fwcfg.finalize();
 
-    mctx.with_pio(|pio| fwcfg_dev.attach(pio));
+        mctx.with_pio(|pio| fwcfg_dev.attach(pio));
 
-    // Spin up non-boot CPUs prior to vCPU 0
-    // They will simply block until INIT/SIPI is received
-    for n in 1..cpus {
-        let mut next_vcpu = vm.vcpu(n as i32);
-        next_vcpu.set_default_capabs().unwrap();
-        next_vcpu.reboot_state().unwrap();
-        next_vcpu.activate().unwrap();
-        dispatch.spawn_vcpu(next_vcpu, propolis::vcpu_run_loop).unwrap();
-    }
+        devs.push(("fwcfg", fwcfg_dev));
+        devs.push(("ramfb", ramfb));
 
-    let mut vcpu0 = vm.vcpu(0);
+        let ncpu = mctx.max_cpus();
+        for id in 0..ncpu {
+            let mut vcpu = machine.vcpu(id);
+            vcpu.set_default_capabs().unwrap();
+            vcpu.reboot_state().unwrap();
+            vcpu.activate().unwrap();
+            // Set BSP to start up
+            if id == 0 {
+                vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RIP, 0xfff0)
+                    .unwrap();
+            }
+        }
 
-    vcpu0.set_default_capabs().unwrap();
-    vcpu0.reboot_state().unwrap();
-    vcpu0.activate().unwrap();
-    vcpu0.set_run_state(bhyve_api::VRS_RUN).unwrap();
-    vcpu0.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RIP, 0xfff0).unwrap();
+        Ok(())
+    });
+
+    drop(romfp);
 
     // Wait until someone connects to ttya
     com1_sock.wait_for_connect();
 
-    dispatch.spawn_vcpu(vcpu0, propolis::vcpu_run_loop).unwrap();
+    inst.set_target_state(State::Run).unwrap();
 
-    dispatch.join();
-    drop(vm);
+    inst.wait_for_state(State::Destroy);
+    drop(inst);
 }

@@ -12,6 +12,7 @@ pub mod common;
 pub mod dispatch;
 pub mod exits;
 pub mod hw;
+pub mod instance;
 pub mod intr_pins;
 pub mod mmio;
 pub mod pio;
@@ -24,10 +25,14 @@ use dispatch::*;
 use exits::*;
 use vcpu::VcpuHdl;
 
-pub fn vcpu_run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
-    let mctx = &dctx.mctx;
+pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
     let mut next_entry = VmEntry::Run;
     loop {
+        if ctx.check_yield() {
+            break;
+        }
+        let mctx = &ctx.mctx;
+
         let exit = vcpu.run(&next_entry).unwrap();
         //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
         match exit.kind {
@@ -35,23 +40,28 @@ pub fn vcpu_run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
                 //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
                 next_entry = VmEntry::Run
             }
+            VmExitKind::ReqIdle => {
+                // another thread came in to use this vCPU
+                // it is likely to push us out for a barrier
+                next_entry = VmEntry::Run
+            }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
                     mctx.with_pio(|b| {
-                        b.handle_out(io.port, io.bytes, val, &dctx)
+                        b.handle_out(io.port, io.bytes, val, ctx)
                     });
                     next_entry = VmEntry::InoutFulfill(InoutRes::Out(io));
                 }
                 InoutReq::In(io) => {
-                    let val = mctx
-                        .with_pio(|b| b.handle_in(io.port, io.bytes, &dctx));
+                    let val =
+                        mctx.with_pio(|b| b.handle_in(io.port, io.bytes, ctx));
                     next_entry = VmEntry::InoutFulfill(InoutRes::In(io, val));
                 }
             },
             VmExitKind::Mmio(mmio) => match mmio {
                 MmioReq::Read(read) => {
                     let val = mctx.with_mmio(|b| {
-                        b.handle_read(read.addr as usize, read.bytes, &dctx)
+                        b.handle_read(read.addr as usize, read.bytes, ctx)
                     });
                     next_entry =
                         VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
@@ -66,7 +76,7 @@ pub fn vcpu_run_loop(dctx: DispCtx, mut vcpu: VcpuHdl) {
                             write.addr as usize,
                             write.bytes,
                             write.data,
-                            &dctx,
+                            ctx,
                         )
                     });
                     next_entry =

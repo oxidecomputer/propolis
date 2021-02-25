@@ -5,7 +5,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use std::sync::Condvar;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
 use crate::dispatch::{DispCtx, Dispatcher};
@@ -87,16 +87,21 @@ impl<R: BlockReq> PlainBdev<R> {
         let len = self.fp.metadata().unwrap().len() as usize;
         self.sectors = len / self.block_size;
     }
-    fn process_loop(&self, ctx: &DispCtx) {
+    fn process_loop(&self, ctx: &mut DispCtx) {
         let mut reqs = self.reqs.lock().unwrap();
         loop {
-            reqs = self.cond.wait_while(reqs, |r| r.is_empty()).unwrap();
-            while let Some(mut req) = reqs.pop_front() {
+            if ctx.check_yield() {
+                break;
+            }
+
+            if let Some(mut req) = reqs.pop_front() {
                 let res = match req.oper() {
                     BlockOp::Read => self.process_read(&mut req, ctx),
                     BlockOp::Write => self.process_write(&mut req, ctx),
                 };
                 req.complete(res, ctx);
+            } else {
+                reqs = self.cond.wait(reqs).unwrap();
             }
         }
     }
@@ -145,9 +150,20 @@ impl<R: BlockReq> PlainBdev<R> {
         BlockResult::Success
     }
     pub fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher) {
-        disp.spawn(name, self, |dctx, bdev| {
-            bdev.process_loop(&dctx);
-        })
+        let ww = Arc::downgrade(&self);
+
+        disp.spawn(
+            name,
+            self,
+            |bdev, ctx| {
+                bdev.process_loop(ctx);
+            },
+            Some(Box::new(move |_ctx| {
+                if let Some(this) = Weak::upgrade(&ww) {
+                    this.cond.notify_all()
+                }
+            })),
+        )
         .unwrap();
     }
 }

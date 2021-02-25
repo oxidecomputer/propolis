@@ -695,7 +695,7 @@ impl Piix3PM {
             }
         }
     }
-    fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp) {
+    fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp, ctx: &DispCtx) {
         let mut regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
@@ -715,8 +715,7 @@ impl Piix3PM {
                     let suspend_type = (regs.pm_ctrl & PmCntrl::SUS_TYP).bits();
                     if suspend_type == 0 {
                         // 0b000 corresponds to soft-off
-                        // XXX: initiate power-off
-                        eprintln!("poweroff");
+                        ctx.instance_halt();
                     }
                 }
             }
@@ -750,10 +749,10 @@ impl pci::Device for Piix3PM {
     }
 }
 impl PioDev for Piix3PM {
-    fn pio_rw(&self, _port: u16, _ident: usize, mut rwo: RWOp, _ctx: &DispCtx) {
+    fn pio_rw(&self, _port: u16, _ident: usize, mut rwo: RWOp, ctx: &DispCtx) {
         PM_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.pmreg_read(id, ro),
-            RWOp::Write(wo) => self.pmreg_write(id, wo),
+            RWOp::Write(wo) => self.pmreg_write(id, wo, ctx),
         });
     }
 }

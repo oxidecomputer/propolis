@@ -163,7 +163,7 @@ impl PS2Ctrl {
             0
         }
     }
-    fn cmd_write(&self, v: u8) {
+    fn cmd_write(&self, v: u8, ctx: &DispCtx) {
         let mut state = self.state.lock().unwrap();
         match v {
             PS2C_CMD_READ_CTRL_CFG => {
@@ -214,7 +214,7 @@ impl PS2Ctrl {
             PS2C_CMD_PULSE_START..=PS2C_CMD_PULSE_END => {
                 let to_pulse = v - PS2C_CMD_PULSE_START;
                 if to_pulse == 0xe {
-                    todo!("ps2-initiated reset");
+                    ctx.instance_reset();
                 }
             }
 
@@ -260,7 +260,7 @@ impl PS2Ctrl {
     }
 }
 impl PioDev for PS2Ctrl {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(rwo.len(), 1);
         match port {
             PS2_PORT_DATA => match rwo {
@@ -269,7 +269,7 @@ impl PioDev for PS2Ctrl {
             },
             PS2_PORT_CMD_STATUS => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.status_read()),
-                RWOp::Write(wo) => self.cmd_write(wo.read_u8()),
+                RWOp::Write(wo) => self.cmd_write(wo.read_u8(), ctx),
             },
             _ => {
                 panic!("unexpected pio in {:x}", port);

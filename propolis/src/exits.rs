@@ -53,6 +53,7 @@ pub enum MmioReq {
 #[derive(Debug)]
 pub enum VmExitKind {
     Bogus,
+    ReqIdle,
     Inout(InoutReq),
     Mmio(MmioReq),
     Rdmsr(u32),
@@ -67,6 +68,7 @@ impl From<&vm_exit> for VmExitKind {
         };
         match code {
             vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
+            vm_exitcode::VM_EXITCODE_REQIDLE => VmExitKind::ReqIdle,
             vm_exitcode::VM_EXITCODE_INOUT => {
                 let inout = unsafe { &exit.u.inout };
                 let port = IoPort { port: inout.port, bytes: inout.bytes };

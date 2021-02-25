@@ -1,6 +1,7 @@
 use std::io::Result;
 use std::sync::Arc;
 
+use crate::dispatch::DispCtx;
 use crate::exits::{VmEntry, VmExit};
 use crate::vmm::VmmHdl;
 
@@ -10,7 +11,7 @@ pub struct VcpuHdl {
 }
 
 impl VcpuHdl {
-    pub fn from_vmhdl(hdl: Arc<VmmHdl>, id: i32) -> Self {
+    pub(crate) fn new(hdl: Arc<VmmHdl>, id: i32) -> Self {
         Self { hdl, id }
     }
 
@@ -90,4 +91,17 @@ impl VcpuHdl {
         let _res = self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)?;
         Ok(VmExit::from(&exit))
     }
+    pub fn barrier(&mut self) -> Result<()> {
+        // XXX: without an official interface for this, just force the vCPU out
+        // of guest context (if it is there) by reading %rax.
+        let mut regcmd = bhyve_api::vm_register {
+            cpuid: self.id,
+            regnum: bhyve_api::vm_reg_name::VM_REG_GUEST_RAX as i32,
+            regval: 0,
+        };
+        self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+        Ok(())
+    }
 }
+
+pub type VcpuRunFunc = fn(VcpuHdl, &mut DispCtx);

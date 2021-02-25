@@ -48,7 +48,6 @@ unsafe impl Sync for MapEnt {}
 pub struct Machine {
     hdl: Arc<VmmHdl>,
     max_cpu: u8,
-    cpus: Mutex<Vec<Option<VcpuHdl>>>,
     state_lock: Mutex<()>,
 
     map_physmem: ASpace<MapEnt>,
@@ -57,10 +56,6 @@ pub struct Machine {
 }
 
 impl Machine {
-    pub fn vcpu(&self, id: i32) -> VcpuHdl {
-        let mut cpus = self.cpus.lock().unwrap();
-        std::mem::replace(&mut cpus[id as usize], None).unwrap()
-    }
     pub fn populate_rom<F>(&self, name: &str, func: F) -> Result<()>
     where
         F: FnOnce(NonNull<u8>, usize) -> Result<()>,
@@ -94,6 +89,11 @@ impl Machine {
     pub fn get_hdl(&self) -> Arc<VmmHdl> {
         Arc::clone(&self.hdl)
     }
+
+    pub fn vcpu(&self, id: usize) -> VcpuHdl {
+        assert!(id <= self.max_cpu as usize);
+        VcpuHdl::new(self.get_hdl(), id as i32)
+    }
 }
 
 #[derive(Clone)]
@@ -103,7 +103,7 @@ pub struct MachineCtx {
 
 impl MachineCtx {
     pub fn new(vm: &Arc<Machine>) -> Self {
-        Self { vm: vm.clone() }
+        Self { vm: Arc::clone(vm) }
     }
 
     pub fn with_pio<F, R>(&self, f: F) -> R
@@ -124,8 +124,21 @@ impl MachineCtx {
     {
         f(&self.vm.hdl)
     }
+    pub fn with_vcpu<F, R>(&self, id: usize, f: F) -> R
+    where
+        F: FnOnce(&mut VcpuHdl) -> R,
+    {
+        let mut vcpu = self.vm.vcpu(id);
+        f(&mut vcpu)
+    }
+    pub(crate) fn get_hdl(&self) -> Arc<VmmHdl> {
+        self.vm.get_hdl()
+    }
     pub fn memctx(&self) -> MemCtx<'_> {
         MemCtx::new(&self)
+    }
+    pub fn max_cpus(&self) -> usize {
+        self.vm.max_cpu as usize
     }
 }
 
@@ -458,31 +471,22 @@ impl Builder {
         Ok(map)
     }
 
-    pub fn finalize(mut self) -> Result<Arc<Machine>> {
+    pub fn finalize(mut self) -> Result<Machine> {
         let hdl = std::mem::replace(&mut self.inner_hdl, None).unwrap();
 
         let map = self.prep_mem_map(&hdl)?;
 
         let arc_hdl = Arc::new(hdl);
 
-        let mut cpus = Vec::with_capacity(self.max_cpu as usize);
-        for n in 0..self.max_cpu {
-            cpus.push(Some(VcpuHdl::from_vmhdl(
-                Arc::clone(&arc_hdl),
-                n as i32,
-            )));
-        }
-
-        let machine = Arc::new(Machine {
+        let machine = Machine {
             hdl: arc_hdl,
             max_cpu: self.max_cpu,
-            cpus: Mutex::new(cpus),
             state_lock: Mutex::new(()),
 
             map_physmem: map,
             bus_mmio: MmioBus::new(MAX_PHYSMEM),
             bus_pio: PioBus::new(),
-        });
+        };
         Ok(machine)
     }
 }
