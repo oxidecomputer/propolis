@@ -14,6 +14,7 @@ pub mod exits;
 pub mod hw;
 pub mod instance;
 pub mod intr_pins;
+pub mod inventory;
 pub mod mmio;
 pub mod pio;
 pub mod util;

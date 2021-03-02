@@ -4,14 +4,10 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::hw::chipset::Chipset;
+use crate::hw::ibmpc;
 use crate::intr_pins::{LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
-
-const PS2_PORT_DATA: u16 = 0x60;
-const PS2_PORT_CMD_STATUS: u16 = 0x64;
-
-const PS2_IRQ_PRI: u8 = 1;
-const PS2_IRQ_AUX: u8 = 12;
 
 bitflags! {
     #[derive(Default)]
@@ -101,15 +97,15 @@ impl PS2Ctrl {
     pub fn create() -> Arc<Self> {
         Arc::new(Self { state: Mutex::new(PS2State::default()) })
     }
-    pub fn attach(self: &Arc<Self>, bus: &PioBus, pic: &LegacyPIC) {
+    pub fn attach(self: &Arc<Self>, bus: &PioBus, chipset: &dyn Chipset) {
         let data_ref = Arc::downgrade(self) as Weak<dyn PioDev>;
         let cmd_ref = Weak::clone(&data_ref);
-        bus.register(PS2_PORT_DATA, 1, data_ref, 0).unwrap();
-        bus.register(PS2_PORT_CMD_STATUS, 1, cmd_ref, 0).unwrap();
+        bus.register(ibmpc::PORT_PS2_DATA, 1, data_ref, 0).unwrap();
+        bus.register(ibmpc::PORT_PS2_CMD_STATUS, 1, cmd_ref, 0).unwrap();
 
         let mut state = self.state.lock().unwrap();
-        state.pri_pin = Some(pic.pin_handle(PS2_IRQ_PRI).unwrap());
-        state.aux_pin = Some(pic.pin_handle(PS2_IRQ_AUX).unwrap());
+        state.pri_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_PRI).unwrap());
+        state.aux_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap());
     }
 
     fn data_write(&self, v: u8) {
@@ -263,11 +259,11 @@ impl PioDev for PS2Ctrl {
     fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(rwo.len(), 1);
         match port {
-            PS2_PORT_DATA => match rwo {
+            ibmpc::PORT_PS2_DATA => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.data_read()),
                 RWOp::Write(wo) => self.data_write(wo.read_u8()),
             },
-            PS2_PORT_CMD_STATUS => match rwo {
+            ibmpc::PORT_PS2_CMD_STATUS => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.status_read()),
                 RWOp::Write(wo) => self.cmd_write(wo.read_u8(), ctx),
             },
@@ -277,6 +273,7 @@ impl PioDev for PS2Ctrl {
         }
     }
 }
+impl Entity for PS2Ctrl {}
 
 const PS2K_CMD_SET_LEDS: u8 = 0xed;
 const PS2K_CMD_SCAN_CODE: u8 = 0xf0;

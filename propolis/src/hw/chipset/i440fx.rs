@@ -4,14 +4,13 @@ use std::sync::{Arc, Mutex, Weak};
 use super::{BarPlacer, Chipset};
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::hw::ibmpc;
 use crate::hw::pci::{self, INTxPinID, PioCfgDecoder, BDF};
-use crate::hw::ps2ctrl::PS2Ctrl;
-use crate::hw::uart::{self, LpcUart};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
-use crate::vmm::VmmHdl;
+use crate::vmm::{MachineCtx, VmmHdl};
 
 use lazy_static::lazy_static;
 
@@ -28,12 +27,8 @@ pub struct I440Fx {
     sa_cell: SelfArcCell<Self>,
 }
 impl I440Fx {
-    pub fn create(
-        hdl: Arc<VmmHdl>,
-        pio: &PioBus,
-        cfg_lpc: impl FnOnce(&Piix3Lpc),
-    ) -> Arc<Self> {
-        let pic = LegacyPIC::new(Arc::clone(&hdl));
+    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
+        let pic = LegacyPIC::new(hdl);
 
         let sci_pin = Arc::new(LNKPin::new());
         sci_pin.reassign(pic.pin_handle(SCI_IRQ));
@@ -56,16 +51,29 @@ impl I440Fx {
         SelfArc::self_arc_init(&mut this);
 
         let hbdev = Piix4HostBridge::create();
-        let lpcdev = Piix3Lpc::create(Arc::downgrade(&this), &this.pic, pio);
-        let pmdev = Piix3PM::create(hdl.as_ref(), pio);
-
-        lpcdev.with_inner(cfg_lpc);
+        let lpcdev = Piix3Lpc::create(Arc::downgrade(&this));
+        let pmdev = Piix3PM::create();
 
         this.pci_attach(BDF::new(0, 0, 0), hbdev);
         this.pci_attach(BDF::new(0, 1, 0), lpcdev);
         this.pci_attach(BDF::new(0, 1, 3), pmdev);
 
         this
+    }
+
+    pub fn attach(&self, mctx: &MachineCtx) {
+        let bus = self.pci_bus.lock().unwrap();
+
+        // XXX: hardcoded attachments for now
+        let lpc = bus.device_at(1, 0).unwrap();
+        lpc.as_devinst().unwrap().with_inner(|lpc: Arc<Piix3Lpc>| {
+            mctx.with_pio(|pio| lpc.attach(pio));
+        });
+
+        let pm = bus.device_at(1, 3).unwrap();
+        pm.as_devinst().unwrap().with_inner(|pm: Arc<Piix3PM>| {
+            pm.attach(mctx);
+        });
     }
 
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
@@ -130,6 +138,9 @@ impl Chipset for I440Fx {
         });
         self.place_bars();
     }
+    fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
+        self.pic.pin_handle(irq)
+    }
 }
 impl PioDev for I440Fx {
     fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
@@ -177,6 +188,7 @@ impl SelfArc for I440Fx {
         &self.sa_cell
     }
 }
+impl Entity for I440Fx {}
 
 struct LNKPin {
     inner: Mutex<LNKPinInner>,
@@ -260,104 +272,18 @@ impl Piix4HostBridge {
 }
 impl pci::Device for Piix4HostBridge {}
 
-const COM1_PORT: u16 = 0x3f8;
-const COM2_PORT: u16 = 0x2f8;
-const COM3_PORT: u16 = 0x3e8;
-const COM4_PORT: u16 = 0x2e8;
-const COM1_IRQ: u8 = 4;
-const COM2_IRQ: u8 = 3;
-const COM3_IRQ: u8 = 4;
-const COM4_IRQ: u8 = 3;
-
-const PORT_FAST_A20: u16 = 0x92;
-const LEN_FAST_A20: u16 = 1;
-const PORT_POST_CODE: u16 = 0x80;
-const LEN_POST_CODE: u16 = 1;
-
 pub struct Piix3Lpc {
     reg_pir: Mutex<[u8; PIR_LEN]>,
     post_code: AtomicU8,
-    uart_com1: Arc<LpcUart>,
-    uart_com2: Arc<LpcUart>,
-    uart_com3: Arc<LpcUart>,
-    uart_com4: Arc<LpcUart>,
-    ps2_ctrl: Arc<PS2Ctrl>,
     chipset: Weak<I440Fx>,
 }
 impl Piix3Lpc {
-    pub fn create(
-        chipset: Weak<I440Fx>,
-        pic: &LegacyPIC,
-        pio_bus: &PioBus,
-    ) -> Arc<pci::DeviceInst> {
-        let com1 = LpcUart::new(pic.pin_handle(COM1_IRQ).unwrap());
-        let com2 = LpcUart::new(pic.pin_handle(COM2_IRQ).unwrap());
-        let com3 = LpcUart::new(pic.pin_handle(COM3_IRQ).unwrap());
-        let com4 = LpcUart::new(pic.pin_handle(COM4_IRQ).unwrap());
-
-        pio_bus
-            .register(
-                COM1_PORT,
-                uart::REGISTER_LEN as u16,
-                Arc::downgrade(&com1) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-        pio_bus
-            .register(
-                COM2_PORT,
-                uart::REGISTER_LEN as u16,
-                Arc::downgrade(&com2) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-        pio_bus
-            .register(
-                COM3_PORT,
-                uart::REGISTER_LEN as u16,
-                Arc::downgrade(&com2) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-        pio_bus
-            .register(
-                COM4_PORT,
-                uart::REGISTER_LEN as u16,
-                Arc::downgrade(&com2) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-
-        let ps2_ctrl = PS2Ctrl::create();
-        ps2_ctrl.attach(pio_bus, pic);
-
+    pub fn create(chipset: Weak<I440Fx>) -> Arc<pci::DeviceInst> {
         let this = Arc::new(Self {
             reg_pir: Mutex::new([0u8; PIR_LEN]),
             post_code: AtomicU8::new(0),
-            uart_com1: com1,
-            uart_com2: com2,
-            uart_com3: com3,
-            uart_com4: com4,
-            ps2_ctrl,
             chipset,
         });
-
-        pio_bus
-            .register(
-                PORT_FAST_A20,
-                LEN_FAST_A20,
-                Arc::downgrade(&this) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
-        pio_bus
-            .register(
-                PORT_POST_CODE,
-                LEN_POST_CODE,
-                Arc::downgrade(&this) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap();
 
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,
@@ -370,11 +296,21 @@ impl Piix3Lpc {
         .finish(this)
     }
 
-    pub fn config_uarts<F>(&self, f: F)
-    where
-        F: FnOnce(&Arc<LpcUart>, &Arc<LpcUart>, &Arc<LpcUart>, &Arc<LpcUart>),
-    {
-        f(&self.uart_com1, &self.uart_com2, &self.uart_com3, &self.uart_com4);
+    fn attach(self: &Arc<Self>, pio: &PioBus) {
+        pio.register(
+            ibmpc::PORT_FAST_A20,
+            ibmpc::LEN_FAST_A20,
+            Arc::downgrade(&self) as Weak<dyn PioDev>,
+            0,
+        )
+        .unwrap();
+        pio.register(
+            ibmpc::PORT_POST_CODE,
+            ibmpc::LEN_POST_CODE,
+            Arc::downgrade(&self) as Weak<dyn PioDev>,
+            0,
+        )
+        .unwrap();
     }
 
     fn write_pir(&self, idx: usize, val: u8) {
@@ -419,7 +355,7 @@ impl pci::Device for Piix3Lpc {
 impl PioDev for Piix3Lpc {
     fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         match port {
-            PORT_FAST_A20 => {
+            ibmpc::PORT_FAST_A20 => {
                 match rwo {
                     RWOp::Read(ro) => {
                         // A20 is always enabled
@@ -431,7 +367,7 @@ impl PioDev for Piix3Lpc {
                     }
                 }
             }
-            PORT_POST_CODE => match rwo {
+            ibmpc::PORT_POST_CODE => match rwo {
                 RWOp::Read(ro) => {
                     ro.write_u8(self.post_code.load(Ordering::SeqCst));
                 }
@@ -610,23 +546,13 @@ pub struct Piix3PM {
     sa_cell: SelfArcCell<Self>,
 }
 impl Piix3PM {
-    pub fn create(hdl: &VmmHdl, pio: &PioBus) -> Arc<pci::DeviceInst> {
+    pub fn create() -> Arc<pci::DeviceInst> {
         let regs = PMRegs::default();
         let mut this = Arc::new(Self {
             regs: Mutex::new(regs),
             sa_cell: SelfArcCell::new(),
         });
         SelfArc::self_arc_init(&mut this);
-
-        // XXX: static registration for now
-        pio.register(
-            PMBASE_DEFAULT,
-            PMBASE_LEN,
-            Arc::downgrade(&this) as Weak<dyn PioDev>,
-            0,
-        )
-        .unwrap();
-        hdl.pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap();
 
         pci::Builder::new(pci::Ident {
             vendor_id: 0x8086,
@@ -638,6 +564,23 @@ impl Piix3PM {
         .add_custom_cfg(PMCFG_OFFSET as u8, PMCFG_LEN as u8)
         .finish(this)
     }
+
+    fn attach(self: &Arc<Self>, mctx: &MachineCtx) {
+        // XXX: static registration for now
+        mctx.with_pio(|pio| {
+            pio.register(
+                PMBASE_DEFAULT,
+                PMBASE_LEN,
+                Arc::downgrade(self) as Weak<dyn PioDev>,
+                0,
+            )
+            .unwrap();
+        });
+        mctx.with_hdl(|hdl| {
+            hdl.pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap();
+        });
+    }
+
     fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp) {
         match id {
             PmCfg::PmRegMisc => {

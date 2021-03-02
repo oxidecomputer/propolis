@@ -305,6 +305,8 @@ impl BitAnd<usize> for GuestAddr {
     }
 }
 
+pub use crate::inventory::Entity;
+
 pub const PAGE_SIZE: usize = 0x1000;
 pub const PAGE_OFFSET: usize = 0xfff;
 pub const PAGE_MASK: usize = usize::MAX - PAGE_OFFSET;

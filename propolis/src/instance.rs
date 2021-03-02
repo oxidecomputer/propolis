@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
 use crate::dispatch::*;
+use crate::inventory::Inventory;
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
@@ -38,12 +39,16 @@ impl State {
     }
 }
 
+type TransitionFunc = dyn Fn(State) + Send + Sync + 'static;
+
 struct InnerState {
     current: State,
     target: Option<State>,
     drive_thread: Option<JoinHandle<()>>,
     machine: Arc<Machine>,
     disp: Dispatcher,
+    inv: Inventory,
+    transition_funcs: Vec<Box<TransitionFunc>>,
 }
 pub struct Instance {
     state: Mutex<InnerState>,
@@ -64,6 +69,8 @@ impl Instance {
                 drive_thread: None,
                 machine,
                 disp,
+                inv: Inventory::new(),
+                transition_funcs: Vec::new(),
             }),
             cv: Condvar::new(),
         });
@@ -83,12 +90,17 @@ impl Instance {
 
     pub fn initialize<F>(&self, func: F) -> io::Result<()>
     where
-        F: FnOnce(&Machine, &MachineCtx, &Dispatcher) -> io::Result<()>,
+        F: FnOnce(
+            &Machine,
+            &MachineCtx,
+            &Dispatcher,
+            &Inventory,
+        ) -> io::Result<()>,
     {
         let state = self.state.lock().unwrap();
         assert_eq!(state.current, State::Initialize);
         let mctx = MachineCtx::new(&state.machine);
-        func(&state.machine, &mctx, &state.disp)
+        func(&state.machine, &mctx, &state.disp, &state.inv)
     }
 
     pub fn current_state(&self) -> State {
@@ -117,6 +129,17 @@ impl Instance {
             // bail if we reach the target state _or Destroy
             state.current != target || state.current != State::Destroy
         });
+    }
+
+    pub fn on_transition(&self, func: Box<TransitionFunc>) {
+        let mut state = self.state.lock().unwrap();
+        state.transition_funcs.push(func);
+    }
+
+    fn transition_cb(&self, state: &MutexGuard<InnerState>, next_state: State) {
+        for f in state.transition_funcs.iter() {
+            f(next_state)
+        }
     }
 
     fn drive_state(&self) {
@@ -194,6 +217,7 @@ impl Instance {
                 State::Destroy => {
                     // XXX: clean up and bail
                     state.disp.destroy_workers();
+                    self.transition_cb(&state, State::Destroy);
                     return;
                 }
             };
@@ -204,9 +228,15 @@ impl Instance {
                     state.current, transition
                 );
 
+                self.transition_cb(&state, transition);
                 next_state = Some(transition);
             }
         }
+    }
+
+    pub fn print(&self) {
+        let state = self.state.lock().unwrap();
+        state.inv.print();
     }
 }
 

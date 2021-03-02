@@ -686,8 +686,13 @@ impl DeviceInst {
     fn notify_msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {
         self.inner.msi_update(info, ctx);
     }
-    pub fn with_inner<T: 'static>(&self, f: impl FnOnce(&T)) {
-        f(Any::downcast_ref(self.inner_any.as_ref()).unwrap());
+    pub fn with_inner<T, F, R>(&self, f: F) -> R
+    where
+        T: Send + Sync + 'static,
+        F: FnOnce(Arc<T>) -> R,
+    {
+        let inner = Arc::clone(&self.inner_any);
+        f(Arc::downcast(inner).unwrap())
     }
 }
 
@@ -733,6 +738,9 @@ impl Endpoint for DeviceInst {
         assert!(state.reg_command == RegCmd::INTX_DIS);
 
         self.bars.place(bar, addr);
+    }
+    fn as_devinst(&self) -> Option<&DeviceInst> {
+        Some(self)
     }
 }
 

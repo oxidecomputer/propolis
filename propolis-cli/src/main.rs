@@ -4,7 +4,6 @@ extern crate serde;
 extern crate serde_derive;
 extern crate toml;
 
-use std::any::Any;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read, Result};
 use std::path::Path;
@@ -12,6 +11,9 @@ use std::sync::Arc;
 
 use propolis::chardev::{Sink, Source};
 use propolis::hw::chipset::Chipset;
+use propolis::hw::ibmpc;
+use propolis::hw::ps2ctrl::PS2Ctrl;
+use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, State};
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
@@ -88,9 +90,7 @@ fn main() {
     let (mut romfp, rom_len) = open_bootrom(config.get_bootrom()).unwrap();
     let com1_sock = chardev::UDSock::bind(Path::new("./ttya")).unwrap();
 
-    let mut devs: Vec<(&'static str, Arc<dyn Any>)> = Vec::new();
-
-    let _res = inst.initialize(|machine, mctx, disp| {
+    let _res = inst.initialize(|machine, mctx, disp, inv| {
         machine.populate_rom("bootrom", |ptr, region_len| {
             if region_len < rom_len {
                 return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
@@ -109,30 +109,47 @@ fn main() {
                 }
             }
         })?;
-
         machine.initalize_rtc(lowmem).unwrap();
+
+        let hdl = machine.get_hdl();
+        let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
+        chipset.attach(mctx);
+
+        // UARTs
+        let com1 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM1).unwrap());
+        let com2 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM2).unwrap());
+        let com3 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM3).unwrap());
+        let com4 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
 
         disp.with_ctx(|ctx| {
             com1_sock.listen(ctx);
         });
+        com1_sock.attach_sink(Arc::clone(&com1) as Arc<dyn Sink>);
+        com1_sock.attach_source(Arc::clone(&com1) as Arc<dyn Source>);
+        com1.source_set_autodiscard(false);
 
-        let hdl = machine.get_hdl();
+        // XXX: plumb up com2-4, but until then, just auto-discard
+        com2.source_set_autodiscard(true);
+        com3.source_set_autodiscard(true);
+        com4.source_set_autodiscard(true);
 
-        let chipset = mctx.with_pio(|pio| {
-            hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl), pio, |lpc| {
-                lpc.config_uarts(|com1, com2, com3, com4| {
-                    com1_sock.attach_sink(Arc::clone(com1) as Arc<dyn Sink>);
-                    com1_sock
-                        .attach_source(Arc::clone(com1) as Arc<dyn Source>);
-                    com1.source_set_autodiscard(false);
-
-                    // XXX: plumb up com2-4, but until then, just auto-discard
-                    com2.source_set_autodiscard(true);
-                    com3.source_set_autodiscard(true);
-                    com4.source_set_autodiscard(true);
-                })
-            })
+        mctx.with_pio(|pio| {
+            LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
+            LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
+            LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
+            LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
         });
+        inv.register(com1, "com1".to_string());
+        inv.register(com2, "com2".to_string());
+        inv.register(com3, "com3".to_string());
+        inv.register(com4, "com4".to_string());
+
+        // PS/2
+        let ps2_ctrl = PS2Ctrl::create();
+        mctx.with_pio(|pio| {
+            ps2_ctrl.attach(pio, chipset.as_ref());
+        });
+        inv.register(ps2_ctrl, "ps2_ctrl".to_string());
 
         let dbg = mctx.with_pio(|pio| {
             let debug = std::fs::File::create("debug.out").unwrap();
@@ -142,7 +159,7 @@ fn main() {
                 pio,
             )
         });
-        devs.push(("debug", dbg));
+        inv.register(dbg, "debug".to_string());
 
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
@@ -194,7 +211,7 @@ fn main() {
         // with all pci devices attached, place their BARs and wire up access to PCI
         // configuration space
         disp.with_ctx(|ctx| chipset.pci_finalize(ctx));
-        devs.push(("chipset", chipset));
+        inv.register(chipset, "chipset".to_string());
 
         let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
         fwcfg
@@ -211,8 +228,8 @@ fn main() {
 
         mctx.with_pio(|pio| fwcfg_dev.attach(pio));
 
-        devs.push(("fwcfg", fwcfg_dev));
-        devs.push(("ramfb", ramfb));
+        inv.register(fwcfg_dev, "fwcfg".to_string());
+        inv.register(ramfb, "ramfb".to_string());
 
         let ncpu = mctx.max_cpus();
         for id in 0..ncpu {
@@ -233,9 +250,14 @@ fn main() {
 
     drop(romfp);
 
+    inst.print();
+
     // Wait until someone connects to ttya
     com1_sock.wait_for_connect();
 
+    inst.on_transition(Box::new(|next_state| {
+        println!("state cb: {:?}", next_state);
+    }));
     inst.set_target_state(State::Run).unwrap();
 
     inst.wait_for_state(State::Destroy);

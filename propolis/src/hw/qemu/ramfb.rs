@@ -132,3 +132,4 @@ impl Item for RamFb {
         Ok(())
     }
 }
+impl Entity for RamFb {}

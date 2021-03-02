@@ -1,11 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use super::base::Uart;
 use crate::chardev::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IntrPin, LegacyPin};
-use crate::pio::PioDev;
+use crate::pio::{PioBus, PioDev};
 
 pub const REGISTER_LEN: usize = 8;
 
@@ -47,6 +47,15 @@ impl LpcUart {
                 notify_writable: None,
             }),
         })
+    }
+    pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
+        bus.register(
+            port,
+            REGISTER_LEN as u16,
+            Arc::downgrade(self) as Weak<dyn PioDev>,
+            0,
+        )
+        .unwrap();
     }
 }
 
@@ -135,3 +144,4 @@ impl PioDev for LpcUart {
         }
     }
 }
+impl Entity for LpcUart {}

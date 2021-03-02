@@ -643,6 +643,8 @@ impl PioDev for FwCfg {
     }
 }
 
+impl Entity for FwCfg {}
+
 mod bits {
     #![allow(unused)]
 

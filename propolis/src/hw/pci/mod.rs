@@ -61,6 +61,7 @@ pub trait Endpoint: Send + Sync {
     fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>));
     fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine));
     fn bar_place(&self, bar: BarN, addr: u64);
+    fn as_devinst(&self) -> Option<&DeviceInst>;
 }
 
 pub const SLOTS_PER_BUS: usize = 32;

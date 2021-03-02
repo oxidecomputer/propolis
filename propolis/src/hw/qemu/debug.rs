@@ -47,3 +47,5 @@ impl PioDev for QemuDebugPort {
         }
     }
 }
+
+impl Entity for QemuDebugPort {}
