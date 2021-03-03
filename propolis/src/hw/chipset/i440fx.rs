@@ -14,14 +14,15 @@ use crate::vmm::{MachineCtx, VmmHdl};
 
 use lazy_static::lazy_static;
 
-const LEGACY_PIC_PINS: u8 = 32;
-
 pub struct I440Fx {
     pic: Arc<LegacyPIC>,
     pci_bus: Mutex<pci::Bus>,
     pci_cfg: PioCfgDecoder,
 
     lnk_pins: [Arc<LNKPin>; 4],
+
+    #[allow(unused)]
+    // XXX: wire up SCI notifications
     sci_pin: Arc<LNKPin>,
 
     sa_cell: SelfArcCell<Self>,

@@ -174,6 +174,26 @@ impl Uart {
         self.is_loopback() || !self.rx_fifo.is_full()
     }
 
+    pub fn reset(&mut self) {
+        self.reg_intr_enable = 0;
+        self.reg_intr_status = ISRC_NONE;
+        self.reg_fifo_ctrl = 0;
+        self.reg_line_ctrl = 0;
+        self.reg_line_status = LSR_THRE | LSR_TEMT;
+        self.reg_modem_ctrl = 0;
+        self.reg_modem_status = 0;
+        self.reg_scratch = 0;
+        self.reg_div_low = 0;
+        self.reg_div_high = 0;
+        self.reg_prescalor_div = 0;
+
+        self.thre_intr = false;
+        self.intr_pin = false;
+
+        self.rx_fifo.reset();
+        self.tx_fifo.reset();
+    }
+
     #[inline(always)]
     fn is_dlab(&self) -> bool {
         (self.reg_line_ctrl & LCR_DLAB) != 0

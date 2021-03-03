@@ -6,7 +6,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
-use crate::intr_pins::{LegacyPIC, LegacyPin};
+use crate::intr_pins::LegacyPin;
 use crate::pio::{PioBus, PioDev};
 
 bitflags! {

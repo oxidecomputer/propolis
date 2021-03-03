@@ -13,18 +13,6 @@ use super::VirtioDevice;
 
 use lazy_static::lazy_static;
 
-const VIRTIO_BLK_T_IN: u32 = 0;
-const VIRTIO_BLK_T_OUT: u32 = 1;
-const VIRTIO_BLK_T_FLUSH: u32 = 4;
-const VIRTIO_BLK_T_DISCARD: u32 = 11;
-const VIRTIO_BLK_T_WRITE_ZEROES: u32 = 13;
-
-const VIRTIO_BLK_S_OK: u8 = 0;
-const VIRTIO_BLK_S_IOERR: u8 = 1;
-const VIRTIO_BLK_S_UNSUPP: u8 = 2;
-
-const VIRTIO_BLK_CFG_SIZE: usize = 0x3c;
-
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
 
@@ -151,8 +139,8 @@ impl VirtioDevice for VirtioBlock {
 pub struct Request {
     op: BlockOp,
     off: usize,
-    xfer_size: usize,
     xfer_left: usize,
+    xfer_used: usize,
     chain: Chain,
     vq: Arc<VirtQueue>,
 }
@@ -167,8 +155,8 @@ impl Request {
         Self {
             op: BlockOp::Read,
             off,
-            xfer_size: size,
             xfer_left: size,
+            xfer_used: 0,
             chain,
             vq,
         }
@@ -184,8 +172,8 @@ impl Request {
         Self {
             op: BlockOp::Write,
             off,
-            xfer_size: size,
             xfer_left: size,
+            xfer_used: 0,
             chain,
             vq,
         }
@@ -223,6 +211,7 @@ impl BlockReq for Request {
         if let Some(region) = res.as_ref() {
             assert!(self.xfer_left >= region.1);
             self.xfer_left -= region.1;
+            self.xfer_used += region.1;
         }
         res
     }
@@ -289,3 +278,20 @@ lazy_static! {
         )
     };
 }
+
+mod bits {
+    #![allow(unused)]
+
+    pub const VIRTIO_BLK_T_IN: u32 = 0;
+    pub const VIRTIO_BLK_T_OUT: u32 = 1;
+    pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
+    pub const VIRTIO_BLK_T_DISCARD: u32 = 11;
+    pub const VIRTIO_BLK_T_WRITE_ZEROES: u32 = 13;
+
+    pub const VIRTIO_BLK_S_OK: u8 = 0;
+    pub const VIRTIO_BLK_S_IOERR: u8 = 1;
+    pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+
+    pub const VIRTIO_BLK_CFG_SIZE: usize = 0x3c;
+}
+use bits::*;

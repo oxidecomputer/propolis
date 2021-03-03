@@ -19,11 +19,6 @@ use super::{VirtioDevice, VqChange, VqIntr};
 
 use lazy_static::lazy_static;
 
-const VIRTIO_NET_S_LINK_UP: u16 = 1 << 0;
-const VIRTIO_NET_S_ANNOUNCE: u16 = 1 << 1;
-
-const VIRTIO_NET_CFG_SIZE: usize = 0xc;
-
 const ETHERADDRL: usize = 6;
 
 struct Inner {
@@ -38,7 +33,6 @@ impl Inner {
 
 pub struct VirtioViona {
     dev_features: u32,
-    link_id: u32,
     mac_addr: [u8; ETHERADDRL],
     mtu: u16,
     hdl: VionaHdl,
@@ -58,7 +52,6 @@ impl VirtioViona {
 
         let mut this = VirtioViona {
             dev_features: hdl.get_avail_features()?,
-            link_id: info.link_id,
             mac_addr: [0; ETHERADDRL],
             mtu: info.mtu,
             hdl,
@@ -331,3 +324,13 @@ impl VionaHdl {
         Ok(())
     }
 }
+
+mod bits {
+    #![allow(unused)]
+
+    pub const VIRTIO_NET_S_LINK_UP: u16 = 1 << 0;
+    pub const VIRTIO_NET_S_ANNOUNCE: u16 = 1 << 1;
+
+    pub const VIRTIO_NET_CFG_SIZE: usize = 0xc;
+}
+use bits::*;

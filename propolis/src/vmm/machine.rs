@@ -131,9 +131,6 @@ impl MachineCtx {
         let mut vcpu = self.vm.vcpu(id);
         f(&mut vcpu)
     }
-    pub(crate) fn get_hdl(&self) -> Arc<VmmHdl> {
-        self.vm.get_hdl()
-    }
     pub fn memctx(&self) -> MemCtx<'_> {
         MemCtx::new(&self)
     }

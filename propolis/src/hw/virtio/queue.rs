@@ -24,14 +24,7 @@ struct VqdUsed {
     len: u32,
 }
 
-enum VqStatus {
-    Init,
-    Mapped,
-    Error,
-}
-
 pub struct VqControl {
-    status: VqStatus,
     pub(super) gpa_desc: GuestAddr,
 }
 
@@ -120,10 +113,7 @@ impl VirtQueue {
         Self {
             id,
             size,
-            ctrl: Mutex::new(VqControl {
-                status: VqStatus::Init,
-                gpa_desc: GuestAddr(0),
-            }),
+            ctrl: Mutex::new(VqControl { gpa_desc: GuestAddr(0) }),
             avail: Mutex::new(VqAvail {
                 valid: false,
                 gpa_flags: GuestAddr(0),
@@ -148,7 +138,6 @@ impl VirtQueue {
         let mut used = self.used.lock().unwrap();
 
         // XXX verify no outstanding chains
-        state.status = VqStatus::Init;
         state.gpa_desc = GuestAddr(0);
         avail.valid = false;
         used.valid = false;
@@ -184,7 +173,6 @@ impl VirtQueue {
         used.gpa_idx = GuestAddr(used_addr + 2);
         used.gpa_ring = GuestAddr(used_addr + 4);
 
-        state.status = VqStatus::Mapped;
         avail.valid = true;
         used.valid = true;
 

@@ -87,7 +87,6 @@ pub struct PciVirtio {
     state: Mutex<VirtioState>,
     state_cv: Condvar,
     queue_size: u16,
-    num_queues: u16,
     queues: Vec<Arc<VirtQueue>>,
 
     sa_cell: SelfArcCell<Self>,
@@ -134,7 +133,6 @@ impl PciVirtio {
             state: Mutex::new(VirtioState::new(num_queues)),
             state_cv: Condvar::new(),
             queue_size,
-            num_queues,
             queues,
 
             dev: inner,
