@@ -130,11 +130,15 @@ impl VirtioDevice for VirtioViona {
         feat
     }
     fn device_set_features(&self, feat: u32) {
-        self.hdl.set_features(feat);
+        self.hdl
+            .set_features(feat)
+            .unwrap_or_else(|_| todo!("viona error handling"));
     }
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>, _ctx: &DispCtx) {
-        self.hdl.ring_kick(vq.id);
+        self.hdl
+            .ring_kick(vq.id)
+            .unwrap_or_else(|_| todo!("viona error handling"));
     }
     fn queue_change(
         &self,
@@ -144,11 +148,15 @@ impl VirtioDevice for VirtioViona {
     ) {
         match change {
             VqChange::Reset => {
-                self.hdl.ring_reset(vq.id);
+                self.hdl
+                    .ring_reset(vq.id)
+                    .unwrap_or_else(|_| todo!("viona error handling"));
             }
             VqChange::Address => {
                 if let Some(info) = vq.map_info() {
-                    self.hdl.ring_init(vq.id, vq.size, info.desc_addr);
+                    self.hdl
+                        .ring_init(vq.id, vq.size, info.desc_addr)
+                        .unwrap_or_else(|_| todo!("viona error handling"));
                 }
             }
             VqChange::IntrCfg => {
@@ -169,7 +177,9 @@ impl VirtioDevice for VirtioViona {
                         }
                     }
                 });
-                self.hdl.ring_cfg_msi(vq.id, addr, msg);
+                self.hdl
+                    .ring_cfg_msi(vq.id, addr, msg)
+                    .unwrap_or_else(|_| todo!("viona error handling"));
             }
         }
     }

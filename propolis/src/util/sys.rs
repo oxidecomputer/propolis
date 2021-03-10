@@ -1,5 +1,8 @@
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, Result};
 use std::os::unix::io::RawFd;
+
+#[cfg(not(target_os = "illumos"))]
+use std::io::ErrorKind;
 
 // Deal with libc bits which vary enough between OSes to make cargo-check a pain
 

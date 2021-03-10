@@ -47,6 +47,8 @@ impl InventoryInner {
     }
 }
 
+// XXX: still a WIP
+#[allow(unused)]
 struct Record {
     any: Arc<dyn Any + Send + Sync + 'static>,
     ent: Arc<dyn Entity>,
