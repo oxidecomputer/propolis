@@ -53,7 +53,9 @@ impl<'a> ReadOp<'a> {
     pub fn new_buf(op_offset: usize, buf: &'a mut [u8]) -> Self {
         Self { inner: ROInner::Buf(buf), offset: op_offset, write_offset: 0 }
     }
-    pub fn new_ptr(op_offset: usize, ptr: *mut u8, len: usize) -> Self {
+    /// Safety: The provided `ptr` must be valid and writable for `len` bytes
+    /// and must not alias to any of the inputs to write_* calls on this ReadOp.
+    pub unsafe fn new_ptr(op_offset: usize, ptr: *mut u8, len: usize) -> Self {
         Self {
             inner: ROInner::Ptr(ptr, len),
             offset: op_offset,
@@ -101,10 +103,14 @@ impl<'a> ReadOp<'a> {
     }
 
     fn write_val<T: Sized>(&mut self, val: T) {
-        self.write_raw(
-            &val as *const T as *const u8,
-            ::std::mem::size_of::<T>(),
-        );
+        // Safety: Taking legal a reference to `val` here means that no internal
+        // pointer(s) should overlap with it.
+        unsafe {
+            self.write_raw(
+                &val as *const T as *const u8,
+                ::std::mem::size_of::<T>(),
+            );
+        }
     }
     pub fn write_u8(&mut self, val: u8) {
         self.write_val(val);
@@ -119,7 +125,11 @@ impl<'a> ReadOp<'a> {
         self.write_val(val);
     }
     pub fn write_bytes(&mut self, data: &[u8]) {
-        self.write_raw(data.as_ptr(), data.len());
+        // Safety: With a legal reference to `data`, no internal pointer(s)
+        // should overlap with it.
+        unsafe {
+            self.write_raw(data.as_ptr(), data.len());
+        }
     }
     pub fn fill(&mut self, val: u8) {
         let wr_off = self.write_offset;
@@ -136,7 +146,9 @@ impl<'a> ReadOp<'a> {
         self.write_offset = self.len();
     }
 
-    pub fn write_raw(&mut self, data: *const u8, copy_len: usize) {
+    /// Safety: The `copy_len` bytes of memory, pointed to by `data` must not
+    /// overlap with any of the memory contained by this ReadOp
+    pub unsafe fn write_raw(&mut self, data: *const u8, copy_len: usize) {
         if copy_len == 0 {
             return;
         }
@@ -145,12 +157,12 @@ impl<'a> ReadOp<'a> {
         assert!(copy_len <= data_len.checked_sub(wr_off).unwrap());
 
         match &mut self.inner {
-            ROInner::Buf(b) => unsafe {
+            ROInner::Buf(b) => {
                 copy_nonoverlapping(data, b[wr_off..].as_mut_ptr(), copy_len);
-            },
-            ROInner::Ptr(p, _l) => unsafe {
+            }
+            ROInner::Ptr(p, _l) => {
                 copy_nonoverlapping(data, p.add(wr_off), copy_len);
-            },
+            }
         }
         self.write_offset += copy_len;
     }
@@ -169,7 +181,13 @@ impl<'a> WriteOp<'a> {
     pub fn new_buf(op_offset: usize, buf: &'a [u8]) -> Self {
         Self { inner: WOInner::Buf(buf), offset: op_offset, read_offset: 0 }
     }
-    pub fn new_ptr(op_offset: usize, ptr: *const u8, len: usize) -> Self {
+    /// Safety: The provided `ptr` must be valid and readable for `len` bytes
+    /// and must not alias to any of the inputs to read_* calls on this WriteOp.
+    pub unsafe fn new_ptr(
+        op_offset: usize,
+        ptr: *const u8,
+        len: usize,
+    ) -> Self {
         Self {
             inner: WOInner::Ptr(ptr, len),
             offset: op_offset,
@@ -218,10 +236,14 @@ impl<'a> WriteOp<'a> {
 
     fn read_val<T: Sized + Copy + Default>(&mut self) -> T {
         let mut val: T = Default::default();
-        self.read_raw(
-            &mut val as *mut T as *mut u8,
-            ::std::mem::size_of::<T>(),
-        );
+        // Safety: Since `val` is created and referenced locally, it should not
+        // overlap with any inner pointer.
+        unsafe {
+            self.read_raw(
+                &mut val as *mut T as *mut u8,
+                ::std::mem::size_of::<T>(),
+            );
+        }
         val
     }
     pub fn read_u8(&mut self) -> u8 {
@@ -237,10 +259,16 @@ impl<'a> WriteOp<'a> {
         self.read_val()
     }
     pub fn read_bytes(&mut self, buf: &mut [u8]) {
-        self.read_raw(buf.as_mut_ptr(), buf.len());
+        // Safety: Since `buf` is a legal mutable reference, it should not
+        // overlap with any inner pointer.
+        unsafe {
+            self.read_raw(buf.as_mut_ptr(), buf.len());
+        }
     }
 
-    pub fn read_raw(&mut self, data: *mut u8, copy_len: usize) {
+    /// Safety: The `copy_len` bytes of memory, pointed to by `data` must not
+    /// overlap with any of the memory contained by this WriteOp.
+    pub unsafe fn read_raw(&mut self, data: *mut u8, copy_len: usize) {
         if copy_len == 0 {
             return;
         }
@@ -249,12 +277,12 @@ impl<'a> WriteOp<'a> {
         assert!(copy_len <= data_len.checked_sub(rd_off).unwrap());
 
         match &mut self.inner {
-            WOInner::Buf(b) => unsafe {
+            WOInner::Buf(b) => {
                 copy_nonoverlapping(b[rd_off..].as_ptr(), data, copy_len);
-            },
-            WOInner::Ptr(p, _l) => unsafe {
+            }
+            WOInner::Ptr(p, _l) => {
                 copy_nonoverlapping(p.add(rd_off), data, copy_len);
-            },
+            }
         }
         self.read_offset += copy_len;
     }

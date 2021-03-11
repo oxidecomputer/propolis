@@ -519,8 +519,12 @@ impl FwCfg {
             let ptr = mem
                 .raw_writable(&GuestRegion(GuestAddr(addr), to_write as usize))
                 .ok_or("bad GPA")?;
-            let mut ro =
-                ReadOp::new_ptr(offset as usize, ptr, to_write as usize);
+            // Safety: The memctx has determined that this is valid writable
+            // guest memory, so it should be valid to construct a ReadOp for
+            // that region.
+            let mut ro = unsafe {
+                ReadOp::new_ptr(offset as usize, ptr, to_write as usize)
+            };
             self.xfer(selector, RWOp::Read(&mut ro), ctx)?;
             to_write
         } else {
@@ -553,8 +557,12 @@ impl FwCfg {
             let ptr = mem
                 .raw_readable(&GuestRegion(GuestAddr(addr), to_read as usize))
                 .ok_or("bad GPA")?;
-            let mut wo =
-                WriteOp::new_ptr(offset as usize, ptr, to_read as usize);
+            // Safety: The memctx has determined that this is valid readable
+            // guest memory, so it should be valid to construct a WriteOp for
+            // that region.
+            let mut wo = unsafe {
+                WriteOp::new_ptr(offset as usize, ptr, to_read as usize)
+            };
             self.xfer(selector, RWOp::Write(&mut wo), ctx)?;
         }
         Ok(())
