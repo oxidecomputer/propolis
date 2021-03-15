@@ -1,3 +1,5 @@
+//! Virtual CPU functionality.
+
 use std::io::Result;
 use std::sync::Arc;
 
@@ -5,20 +7,24 @@ use crate::dispatch::DispCtx;
 use crate::exits::{VmEntry, VmExit};
 use crate::vmm::VmmHdl;
 
+/// A handle to a virtual CPU.
 pub struct VcpuHdl {
     hdl: Arc<VmmHdl>,
     id: i32,
 }
 
 impl VcpuHdl {
+    /// Creates a handle to a virtual CPU.
     pub(crate) fn new(hdl: Arc<VmmHdl>, id: i32) -> Self {
         Self { hdl, id }
     }
 
+    /// ID of the virtual CPU.
     pub fn cpuid(&self) -> i32 {
         self.id
     }
 
+    /// Resets the capabilities of the virtual CPU.
     pub fn set_default_capabs(&mut self) -> Result<()> {
         // Enable exit-on-HLT so the host CPU does not spin in VM context when
         // the guest enters a HLT instruction.
@@ -31,6 +37,7 @@ impl VcpuHdl {
         self.hdl.ioctl(bhyve_api::VM_SET_CAPABILITY, &mut cap)
     }
 
+    /// Sets the value of a register within the CPU.
     pub fn set_reg(
         &mut self,
         reg: bhyve_api::vm_reg_name,
@@ -45,6 +52,11 @@ impl VcpuHdl {
         self.hdl.ioctl(bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
         Ok(())
     }
+
+    /// Set a segment register `reg` to a particular value `seg`.
+    ///
+    /// If `reg` is not a valid segment register, an error will
+    /// be returned.
     pub fn set_segreg(
         &mut self,
         reg: bhyve_api::vm_reg_name,
@@ -59,6 +71,9 @@ impl VcpuHdl {
         self.hdl.ioctl(bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut desc)?;
         Ok(())
     }
+
+    /// Issues a command to reset all state for the virtual CPU (including registers and
+    /// pending interrupts).
     pub fn reboot_state(&mut self) -> Result<()> {
         let mut vvr = bhyve_api::vm_vcpu_reset {
             cpuid: self.id,
@@ -69,12 +84,23 @@ impl VcpuHdl {
 
         Ok(())
     }
+    /// Activates the virtual CPU.
+    ///
+    /// Fails if the CPU has already been activated.
     pub fn activate(&mut self) -> Result<()> {
         let mut cpu = self.id;
 
         self.hdl.ioctl(bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
         Ok(())
     }
+
+    /// Set the state of a virtual CPU.
+    // TODO: What are acceptable values of "state"?
+    // Some well-defined values exist
+    // here:https://github.com/illumos/illumos-gate/blob/2606939d92dd3044a9851b2930ebf533c3c03892/usr/src/uts/i86pc/sys/vmm.h#L290
+    //
+    // Might be worth converting this argument into bitflags.
+    // TODO: Is it worthwhile commenting on the clearing of the sipi_vector?
     pub fn set_run_state(&mut self, state: u32) -> Result<()> {
         let mut state = bhyve_api::vm_run_state {
             cpuid: self.id,
@@ -85,12 +111,19 @@ impl VcpuHdl {
         self.hdl.ioctl(bhyve_api::VM_SET_RUN_STATE, &mut state)?;
         Ok(())
     }
+
+    /// Executes the guest by running the virtual CPU.
+    ///
+    /// Blocks the calling thread until the vCPU returns execution,
+    /// and returns the reason for exiting ([`VmExit`]).
     pub fn run(&mut self, entry: &VmEntry) -> Result<VmExit> {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);
         let _res = self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)?;
         Ok(VmExit::from(&exit))
     }
+
+    /// Issues a "barrier" to the guest VM by polling a register.
     pub fn barrier(&mut self) -> Result<()> {
         // XXX: without an official interface for this, just force the vCPU out
         // of guest context (if it is there) by reading %rax.
@@ -104,4 +137,6 @@ impl VcpuHdl {
     }
 }
 
+/// Alias for a function acting on a virtualized CPU within a dispatcher
+/// callback.
 pub type VcpuRunFunc = fn(VcpuHdl, &mut DispCtx);

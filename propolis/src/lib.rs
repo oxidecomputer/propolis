@@ -98,6 +98,9 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                 println!("wrmsr({:x}, {:x})", msr, val);
                 next_entry = VmEntry::Run
             }
+            VmExitKind::Vmx => {
+                panic!("VMX exits not yet handled");
+            }
             _ => panic!("unrecognized exit: {:?}", exit.kind),
         }
     }

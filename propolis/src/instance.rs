@@ -1,3 +1,5 @@
+//! Structures related VM instances management.
+
 #![allow(unused)]
 
 use std::io;
@@ -9,14 +11,27 @@ use crate::inventory::Inventory;
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
+/// States of operation for an instance.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
+    /// Initial state. Instances cannot return to this state
+    /// after transitioning away from it.
     Initialize,
+    /// The instance is booting. Instances automatically
+    /// transition to boot after initialization, unless they're
+    /// being explicitly destroyed.
     Boot,
+    /// The instance is actively running.
     Run,
+    /// The instance is in a paused state such that it may
+    /// later be booted or maintained.
     Quiesce,
+    /// The insance is no longer running
     Halt,
+    /// The instance is rebooting, and should transition back
+    /// to the "Boot" state.
     Reset,
+    /// Terminal state in which the instance is torn down.
     Destroy,
 }
 impl State {
@@ -50,11 +65,16 @@ struct InnerState {
     inv: Inventory,
     transition_funcs: Vec<Box<TransitionFunc>>,
 }
+
+/// A single virtual machine.
 pub struct Instance {
     state: Mutex<InnerState>,
     cv: Condvar,
 }
 impl Instance {
+    /// Creates a new virtual machine, absorbing the supplied `builder`.
+    ///
+    /// Uses `vcpu_fn` to determine how to run a virtual CPU for the instance.
     pub fn create(
         builder: Builder,
         vcpu_fn: VcpuRunFunc,
@@ -88,6 +108,7 @@ impl Instance {
         Ok(this)
     }
 
+    // TODO: Why is this separate from creating an instance?
     pub fn initialize<F>(&self, func: F) -> io::Result<()>
     where
         F: FnOnce(

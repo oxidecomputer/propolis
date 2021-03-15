@@ -1,3 +1,5 @@
+//! Representation of a virtual machine's hardware.
+
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -37,6 +39,8 @@ enum MapKind {
 struct MapEnt {
     kind: MapKind,
     name: String,
+    // A mapping of the guest address space within the address space of
+    // propolis.
     guest_map: Option<NonNull<u8>>,
     dev_map: Option<Mutex<NonNull<u8>>>,
 }
@@ -45,6 +49,12 @@ struct MapEnt {
 unsafe impl Send for MapEnt {}
 unsafe impl Sync for MapEnt {}
 
+/// The aggregate representation of a virtual machine.
+///
+/// This includes:
+/// - The underlying [`VmmHdl`], accessible via [`Machine::get_hdl`].
+/// - The device's physical memory representation
+/// - Buses.
 pub struct Machine {
     hdl: Arc<VmmHdl>,
     max_cpu: u8,
@@ -56,6 +66,9 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// Walks through the machine's address space until a
+    /// ROM entry named `name` is found, then invoke `func`
+    /// on the entry's device mapping.
     pub fn populate_rom<F>(&self, name: &str, func: F) -> Result<()>
     where
         F: FnOnce(NonNull<u8>, usize) -> Result<()>,
@@ -78,7 +91,8 @@ impl Machine {
         func(*ptr, len)
     }
 
-    pub fn initalize_rtc(&self, lowmem: usize) -> Result<()> {
+    /// Initialize the real-time-clock of the device.
+    pub fn initialize_rtc(&self, lowmem: usize) -> Result<()> {
         let lock = self.state_lock.lock().unwrap();
         Rtc::set_time(&self.hdl)?;
         Rtc::store_memory_sizing(&self.hdl, lowmem, None)?;
@@ -86,16 +100,23 @@ impl Machine {
         Ok(())
     }
 
+    /// Get a handle to the underlying VMM.
     pub fn get_hdl(&self) -> Arc<VmmHdl> {
         Arc::clone(&self.hdl)
     }
 
+    /// Get a handle to the underlying VCPU.
     pub fn vcpu(&self, id: usize) -> VcpuHdl {
         assert!(id <= self.max_cpu as usize);
         VcpuHdl::new(self.get_hdl(), id as i32)
     }
 }
 
+/// Wrapper around a [`Machine`] object which exposes helpers for
+/// accessing different aspects of the VMM.
+// TODO: Getters can expose references, with control over mutability.
+// What's the benefit of requiring callers to provide functions wrapping
+// the field, rather than just being able to access the field directly?
 #[derive(Clone)]
 pub struct MachineCtx {
     vm: Arc<Machine>,
@@ -139,6 +160,7 @@ impl MachineCtx {
     }
 }
 
+/// Wrapper around an address space for a VM.
 pub struct MemCtx<'a> {
     map: &'a ASpace<MapEnt>,
 }
@@ -146,6 +168,7 @@ impl<'a> MemCtx<'a> {
     fn new(mctx: &'a MachineCtx) -> Self {
         Self { map: &mctx.vm.map_physmem }
     }
+    /// Reads a generic value from a specified guest address.
     pub fn read<T: Copy>(&self, addr: GuestAddr) -> Option<T> {
         if let Some(ptr) = self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
@@ -157,6 +180,9 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
+    /// Reads bytes into a requested buffer from guest memory.
+    ///
+    /// Copies up to `buf.len()` or `len` bytes, whichever is smaller.
     pub fn read_into(
         &self,
         addr: GuestAddr,
@@ -173,6 +199,7 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
+    /// Reads multiple objects from a guest address.
     pub fn read_many<T: Copy>(
         &self,
         base: GuestAddr,
@@ -191,6 +218,7 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
+    /// Writes a value to guest memory.
     pub fn write<T: Copy>(&self, addr: GuestAddr, val: &T) -> bool {
         if let Some(ptr) =
             self.region_covered(addr, size_of::<T>(), Prot::WRITE)
@@ -204,6 +232,9 @@ impl<'a> MemCtx<'a> {
             false
         }
     }
+    /// Writes bytes from a buffer to guest memory.
+    ///
+    /// Writes up to `buf.len()` or `len` bytes, whichever is smaller.
     pub fn write_from(
         &self,
         addr: GuestAddr,
@@ -220,6 +251,7 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
+    /// Writes a single value to guest memory.
     pub fn write_bytes(&self, addr: GuestAddr, val: u8, count: usize) -> bool {
         if let Some(ptr) = self.region_covered(addr, count, Prot::WRITE) {
             unsafe {
@@ -231,6 +263,7 @@ impl<'a> MemCtx<'a> {
         }
     }
 
+    /// Returns a raw writable pointer to the start of the guest address.
     pub fn raw_writable(&self, region: &GuestRegion) -> Option<*mut u8> {
         let ptr = self.region_covered(region.0, region.1, Prot::WRITE)?;
         Some(ptr.as_ptr())
@@ -240,6 +273,8 @@ impl<'a> MemCtx<'a> {
         Some(ptr.as_ptr() as *const u8)
     }
 
+    // Looks up a region of memory in the guest's address space,
+    // returning a pointer to the containing region.
     fn region_covered(
         &self,
         addr: GuestAddr,
@@ -270,13 +305,18 @@ impl<'a> MemCtx<'a> {
     }
 }
 
+/// A contiguous region of memory containing generic objects.
 pub struct MemMany<T: Copy> {
     ptr: *const T,
     count: usize,
     pos: usize,
+    // XXX: This doesn't seem necessary; why is it here?
     phantom: PhantomData<T>,
 }
 impl<T: Copy> MemMany<T> {
+    /// Gets the object at position `pos` within the memory region.
+    ///
+    /// Returns [`Option::None`] if out of range.
     pub fn get(&self, pos: usize) -> Option<T> {
         if pos < self.count {
             let val = unsafe { self.ptr.add(pos).read_unaligned() };
@@ -296,6 +336,22 @@ impl<T: Copy> Iterator for MemMany<T> {
     }
 }
 
+/// A builder object which may be used to initialize an instance.
+///
+/// # Example
+///
+/// ```no_run
+/// use propolis::vmm::{Builder, Prot};
+/// use propolis::instance::Instance;
+///
+/// let builder = Builder::new("my-machine", true).unwrap()
+///     .max_cpus(4).unwrap()
+///     .add_mem_region(0, 0x10_0000, Prot::ALL, "lowmem").unwrap()
+///     .add_rom_region(0x1_0000_0000, 0x20_0000, Prot::READ | Prot::EXEC, "bootrom")
+///         .unwrap()
+///     .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32").unwrap();
+/// let inst = Instance::create(builder, propolis::vcpu_run_loop).unwrap();
+/// ```
 pub struct Builder {
     inner_hdl: Option<VmmHdl>,
     max_cpu: u8,
@@ -303,6 +359,16 @@ pub struct Builder {
     memmap: ASpace<(MapKind, String)>,
 }
 impl Builder {
+    /// Constructs a new builder object which may be used
+    /// to produce a VM.
+    ///
+    /// In the construction of this object, the builder
+    /// attempts to access the vmm controller at "/dev/vmmctl",
+    /// and issues commands to begin construction of the VM.
+    ///
+    /// # Arguments
+    /// - `name`: The name for the new instance.
+    /// - `force`: If true, deletes the VM if it already exists.
     pub fn new(name: &str, force: bool) -> Result<Self> {
         let hdl = create_vm(name, force)?;
         Ok(Self {
@@ -320,6 +386,9 @@ impl Builder {
         self.cur_segid += 1;
         next
     }
+
+    /// Creates and maps a memory segment in the guest's address space,
+    /// identified as system memory.
     pub fn add_mem_region(
         mut self,
         start: usize,
@@ -341,6 +410,12 @@ impl Builder {
             })?;
         Ok(self)
     }
+
+    /// Creates and maps a memory segment in the guest's address space,
+    /// identified as ROM.
+    ///
+    /// Since this is ROM, an error will be returned if `prot` includes
+    /// [`Prot::WRITE`].
     pub fn add_rom_region(
         mut self,
         start: usize,
@@ -364,6 +439,7 @@ impl Builder {
             })?;
         Ok(self)
     }
+    /// Registers a region of memory for MMIO.
     pub fn add_mmio_region(
         mut self,
         start: usize,
@@ -377,6 +453,7 @@ impl Builder {
             })?;
         Ok(self)
     }
+    /// Sets the maximum number of CPUs for the machine.
     pub fn max_cpus(mut self, max: u8) -> Result<Self> {
         if max == 0 || max > bhyve_api::VM_MAXCPU as u8 {
             Err(Error::new(ErrorKind::InvalidInput, "maxcpu out of range"))
@@ -468,6 +545,8 @@ impl Builder {
         Ok(map)
     }
 
+    /// Consumes `self` and creates a new [`Machine`] based
+    /// on the provided memory regions.
     pub fn finalize(mut self) -> Result<Machine> {
         let hdl = std::mem::replace(&mut self.inner_hdl, None).unwrap();
 

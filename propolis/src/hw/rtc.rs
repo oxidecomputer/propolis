@@ -1,3 +1,5 @@
+//! Represents the RTC (Real-time Clock) hardware.
+
 use std::io::Result;
 use std::time::SystemTime;
 
@@ -12,6 +14,9 @@ const MEM_OFF_HIGH: u8 = 0x5b;
 pub struct Rtc {}
 
 impl Rtc {
+    /// Synchronizes the time within the virtual machine
+    /// represented by `hdl` with the current system clock,
+    /// accurate to the second.
     pub fn set_time(hdl: &VmmHdl) -> Result<()> {
         hdl.rtc_settime(
             SystemTime::now()
@@ -21,6 +26,10 @@ impl Rtc {
         )
     }
 
+    /// Store miemory size information within the NVRAM area of the RTC device.
+    ///
+    /// This provides a mechanism for transferring this sizing information
+    /// to the host device software.
     pub fn store_memory_sizing(
         hdl: &VmmHdl,
         lowmem: usize,
@@ -44,6 +53,7 @@ impl Rtc {
         let high_bytes = high_chunks.to_le_bytes();
         hdl.rtc_write(MEM_OFF_HIGH, high_bytes[0])?;
         hdl.rtc_write(MEM_OFF_HIGH + 1, high_bytes[1])?;
+        // XXX Shouldn't this be "high_bytes[2]"?
         hdl.rtc_write(MEM_OFF_HIGH + 2, high_bytes[1])?;
 
         Ok(())

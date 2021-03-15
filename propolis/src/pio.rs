@@ -11,6 +11,7 @@ pub trait PioDev: Send + Sync {
     fn pio_rw(&self, port: u16, ident: usize, rwop: RWOp, ctx: &DispCtx);
 }
 
+/// Port IO bus.
 pub struct PioBus {
     map: Mutex<ASpace<(Weak<dyn PioDev>, usize)>>,
 }

@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::util::self_arc::*;
 use crate::vmm::VmmHdl;
 
+const PIN_COUNT: u8 = 16;
+
 pub trait IntrPin: Send + Sync + 'static {
     fn assert(&self);
     fn deassert(&self);
@@ -17,9 +19,13 @@ pub trait IntrPin: Send + Sync + 'static {
     }
 }
 
+/// Describes the operation to take with an interrupt pin.
 pub enum PinOp {
+    /// Turn the interrupt on.
     Assert,
+    /// Turn the interrupt off.
     Deassert,
+    /// Turn the interrupt on, then off.
     Pulse,
 }
 
@@ -30,7 +36,7 @@ pub struct LegacyPIC {
 }
 
 struct Inner {
-    pins: [Entry; 16],
+    pins: [Entry; PIN_COUNT as usize],
 }
 
 #[derive(Default, Copy, Clone)]
@@ -60,10 +66,13 @@ impl Entry {
 }
 
 impl LegacyPIC {
+    /// Creates a new virtual PIC.
     pub fn new(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let mut this = Arc::new(Self {
             sa_cell: Default::default(),
-            inner: Mutex::new(Inner { pins: [Entry::default(); 16] }),
+            inner: Mutex::new(Inner {
+                pins: [Entry::default(); PIN_COUNT as usize],
+            }),
             hdl,
         });
         SelfArc::self_arc_init(&mut this);
@@ -71,14 +80,14 @@ impl LegacyPIC {
     }
 
     pub fn pin_handle(&self, irq: u8) -> Option<LegacyPin> {
-        if irq >= 16 && irq == 2 {
+        if irq >= PIN_COUNT && irq == 2 {
             return None;
         }
         Some(LegacyPin::new(irq, self.self_weak()))
     }
 
     fn do_irq(&self, op: PinOp, irq: u8) {
-        assert!(irq < 16);
+        assert!(irq < PIN_COUNT);
 
         let mut inner = self.inner.lock().unwrap();
         if inner.pins[irq as usize].process_op(&op) {

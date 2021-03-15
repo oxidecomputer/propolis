@@ -1,4 +1,4 @@
-// PCI config registers
+//! PCI config registers.
 
 #![allow(unused)]
 

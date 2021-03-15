@@ -44,12 +44,24 @@ enum ROInner<'a> {
     Buf(&'a mut [u8]),
     Ptr(*mut u8, usize),
 }
+
+/// Represents an abstract requested read operation.
+///
+/// Exposes an API with various "write" methods, which fulfill the request.
 pub struct ReadOp<'a> {
     inner: ROInner<'a>,
     offset: usize,
     write_offset: usize,
 }
 impl<'a> ReadOp<'a> {
+    /// Initializes a new read operation from a buffer.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: An auxiliary offset stored within the operation.
+    /// - `buf`: A buffer which represents the "sink" of the read operation.
+    // TODO: Is there a better explanation for `op_offset`? It doesn't seem to
+    // be used in any calculations within this operation.
     pub fn new_buf(op_offset: usize, buf: &'a mut [u8]) -> Self {
         Self { inner: ROInner::Buf(buf), offset: op_offset, write_offset: 0 }
     }
@@ -60,6 +72,20 @@ impl<'a> ReadOp<'a> {
             write_offset: 0,
         }
     }
+
+    /// Constructs a child read operation from within an existing read
+    /// operation.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: Offset of the child operation. Does not need to correlate
+    /// to the `parent` operation's offset.
+    /// - `parent`: The operation from which this operation is being split.
+    /// - `range`: The location within the parent operation to be moved
+    /// to the child.
+    // TODO: Why doesn't this impact the `write_offset` of the parent, or take
+    // that into consideration? What if the parent already wrote past this
+    // region?
     pub fn new_child<'b, R>(
         op_offset: usize,
         parent: &'a mut ReadOp,
@@ -160,6 +186,10 @@ enum WOInner<'a> {
     Buf(&'a [u8]),
     Ptr(*const u8, usize),
 }
+
+/// Represents an abstract requested write operation.
+///
+/// Exposes an API with various "read" methods, which fulfill the request.
 pub struct WriteOp<'a> {
     inner: WOInner<'a>,
     offset: usize,
@@ -285,8 +315,11 @@ impl RWOp<'_, '_> {
     }
 }
 
+/// An address within a guest VM.
 #[derive(Copy, Clone, Debug)]
 pub struct GuestAddr(pub u64);
+
+/// A region of memory within a guest VM.
 #[derive(Copy, Clone, Debug)]
 pub struct GuestRegion(pub GuestAddr, pub usize);
 
