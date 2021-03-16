@@ -26,7 +26,7 @@ impl Rtc {
         )
     }
 
-    /// Store miemory size information within the NVRAM area of the RTC device.
+    /// Store memory size information within the NVRAM area of the RTC device.
     ///
     /// This provides a mechanism for transferring this sizing information
     /// to the host device software.
