@@ -121,9 +121,8 @@ fn main() {
         let com3 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM3).unwrap());
         let com4 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
 
-        disp.with_ctx(|ctx| {
-            com1_sock.listen(ctx);
-        });
+        let ctx = disp.ctx();
+        com1_sock.listen(&ctx);
         com1_sock.attach_sink(Arc::clone(&com1) as Arc<dyn Sink>);
         com1_sock.attach_source(Arc::clone(&com1) as Arc<dyn Source>);
         com1.source_set_autodiscard(false);
@@ -133,12 +132,11 @@ fn main() {
         com3.source_set_autodiscard(true);
         com4.source_set_autodiscard(true);
 
-        mctx.with_pio(|pio| {
-            LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-            LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-            LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-            LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        });
+        let pio = mctx.pio();
+        LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
+        LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
+        LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
+        LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
         inv.register(com1, "com1".to_string());
         inv.register(com2, "com2".to_string());
         inv.register(com3, "com3".to_string());
@@ -146,19 +144,15 @@ fn main() {
 
         // PS/2
         let ps2_ctrl = PS2Ctrl::create();
-        mctx.with_pio(|pio| {
-            ps2_ctrl.attach(pio, chipset.as_ref());
-        });
+        ps2_ctrl.attach(pio, chipset.as_ref());
         inv.register(ps2_ctrl, "ps2_ctrl".to_string());
 
-        let dbg = mctx.with_pio(|pio| {
-            let debug = std::fs::File::create("debug.out").unwrap();
-            let buffered = std::io::LineWriter::new(debug);
-            hw::qemu::debug::QemuDebugPort::create(
-                Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
-                pio,
-            )
-        });
+        let debug = std::fs::File::create("debug.out").unwrap();
+        let buffered = std::io::LineWriter::new(debug);
+        let dbg = hw::qemu::debug::QemuDebugPort::create(
+            Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
+            pio,
+        );
         inv.register(dbg, "debug".to_string());
 
         for (name, dev) in config.devs() {
@@ -210,7 +204,7 @@ fn main() {
 
         // with all pci devices attached, place their BARs and wire up access to PCI
         // configuration space
-        disp.with_ctx(|ctx| chipset.pci_finalize(ctx));
+        chipset.pci_finalize(&ctx);
         inv.register(chipset, "chipset".to_string());
 
         let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
@@ -225,8 +219,7 @@ fn main() {
         ramfb.attach(&mut fwcfg);
 
         let fwcfg_dev = fwcfg.finalize();
-
-        mctx.with_pio(|pio| fwcfg_dev.attach(pio));
+        fwcfg_dev.attach(pio);
 
         inv.register(fwcfg_dev, "fwcfg".to_string());
         inv.register(ramfb, "ramfb".to_string());

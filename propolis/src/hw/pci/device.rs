@@ -447,38 +447,31 @@ impl DeviceInst {
                                 // pio mappings are disabled via cmd reg
                                 return false;
                             }
-                            ctx.mctx.with_pio(|bus| {
-                                // We know this was previously registered
-                                let (dev, old_bar) =
-                                    bus.unregister(old as u16).unwrap();
-                                assert_eq!(old_bar, *bar as usize);
-                                bus.register(
-                                    new as u16,
-                                    *sz,
-                                    dev,
-                                    *bar as usize,
-                                )
+                            let bus = ctx.mctx.pio();
+                            // We know this was previously registered
+                            let (dev, old_bar) =
+                                bus.unregister(old as u16).unwrap();
+                            assert_eq!(old_bar, *bar as usize);
+                            bus.register(new as u16, *sz, dev, *bar as usize)
                                 .is_err()
-                            })
                         }
                         BarDefine::Mmio(sz) => {
                             if !state.reg_command.contains(RegCmd::MMIO_EN) {
                                 // mmio mappings are disabled via cmd reg
                                 return false;
                             }
-                            ctx.mctx.with_mmio(|bus| {
-                                // We know this was previously registered
-                                let (dev, old_bar) =
-                                    bus.unregister(old as usize).unwrap();
-                                assert_eq!(old_bar, *bar as usize);
-                                bus.register(
-                                    new as usize,
-                                    *sz as usize,
-                                    dev,
-                                    *bar as usize,
-                                )
-                                .is_err()
-                            })
+                            let bus = ctx.mctx.mmio();
+                            // We know this was previously registered
+                            let (dev, old_bar) =
+                                bus.unregister(old as usize).unwrap();
+                            assert_eq!(old_bar, *bar as usize);
+                            bus.register(
+                                new as usize,
+                                *sz as usize,
+                                dev,
+                                *bar as usize,
+                            )
+                            .is_err()
                         }
                         _ => {
                             todo!("wire up mmio64 later");
@@ -561,20 +554,19 @@ impl DeviceInst {
                     }
 
                     if registered && !new.contains(RegCmd::IO_EN) {
-                        ctx.mctx.with_pio(|bus| {
-                            bus.unregister(addr as u16).unwrap();
-                        });
+                        ctx.mctx.pio().unregister(addr as u16).unwrap();
                         return Some(false);
                     } else if !registered && new.contains(RegCmd::IO_EN) {
-                        let reg_attempt = ctx.mctx.with_pio(|bus| {
-                            bus.register(
+                        let reg_attempt = ctx
+                            .mctx
+                            .pio()
+                            .register(
                                 addr as u16,
                                 *sz as u16,
                                 self.self_weak(),
                                 bar as usize,
                             )
-                            .is_ok()
-                        });
+                            .is_ok();
                         return Some(reg_attempt);
                     }
                     None
@@ -591,20 +583,19 @@ impl DeviceInst {
                     };
 
                     if registered && !new.contains(RegCmd::IO_EN) {
-                        ctx.mctx.with_mmio(|bus| {
-                            bus.unregister(addr as usize).unwrap();
-                        });
+                        ctx.mctx.mmio().unregister(addr as usize).unwrap();
                         return Some(false);
                     } else if !registered && new.contains(RegCmd::IO_EN) {
-                        let reg_attempt = ctx.mctx.with_mmio(|bus| {
-                            bus.register(
+                        let reg_attempt = ctx
+                            .mctx
+                            .mmio()
+                            .register(
                                 addr as usize,
                                 sz as usize,
                                 self.self_weak(),
                                 bar as usize,
                             )
-                            .is_ok()
-                        });
+                            .is_ok();
                         return Some(reg_attempt);
                     }
 
@@ -884,16 +875,12 @@ impl MsixEntry {
             self.pending = true;
             return;
         }
-        ctx.mctx.with_hdl(|hdl| {
-            hdl.lapic_msi(self.addr, self.data as u64).unwrap()
-        });
+        ctx.mctx.hdl().lapic_msi(self.addr, self.data as u64).unwrap();
     }
     fn check_mask(&mut self, ctx: &DispCtx) {
         if !self.mask_vec && !self.mask_func && self.pending {
             self.pending = false;
-            ctx.mctx.with_hdl(|hdl| {
-                hdl.lapic_msi(self.addr, self.data as u64).unwrap()
-            });
+            ctx.mctx.hdl().lapic_msi(self.addr, self.data as u64).unwrap();
         }
     }
 }
