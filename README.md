@@ -46,6 +46,66 @@ pci-path = "0.5.0"
 Propolis will not destroy the VM instance on exit.  If one exists with the
 specified name on start-up, it will be destroyed and and created fresh.
 
+Propolis will create a unix domain socket, available at "./ttya",
+which acts as a serial port. One such tool for accessing this serial port is
+[sercons](https://github.com/jclulow/vmware-sercons), though others (such as
+"screen") would also work.
+
+### Quickstart to Alpine
+
+In the aforementioned config file, there are three major components
+that need to be supplied: The OVMF file, the ISO, and the VNIC.
+
+Since this is a configuration file, you can supply whatever you'd like, but here
+are some options to get up-and-running quickly:
+
+#### OVMF
+
+Using a bootrom from Linux works here - you can either build
+your own [OVMF](https://wiki.ubuntu.com/UEFI/OVMF), or you
+can use a pre-built.
+
+```bash
+$ sudo apt-get install ovmf && dpkg -L ovmf | grpe OVMF_CODE.fd
+```
+
+#### ISO
+
+Although there are many options for ISOs, an easy option that
+should work is the [Alpine Linux distribution](https://alpinelinux.org/downloads/).
+
+These distributions are lightweight, and they have varients
+custom-built for virtual machines.
+
+The "extendend" variant contains more useful tools, but will
+require a modification of the kernel arguments when booting
+to see the console on the serial port. From Grub, this can be
+accomplished by pressing "e" (to edit), adding "console=ttyS0"
+to the line starting with "/boot/vmlinuz-lts", and pressing
+"Control + x" to boot with these parameters.
+
+#### VNIC
+
+To see your current network interfaces, you can use the following:
+
+```bash
+$ dladm show-link
+```
+
+To create a vnic, you can use one of your physical devices
+(like "e1000g0", if you have an ethernet connection) as a link
+for a VNIC. This can be done as follows:
+
+```bash
+NIC_NAME="vnic_prop0"
+NIC_MAC="02:08:20:ac:e9:16"
+NIC_LINK="e1000g0"
+
+if ! dladm show-vnic $NIC_NAME 2> /dev/null; then
+  dladm create-vnic -t -l $NIC_LINK -m $NIC_MAC $NIC_NAME
+fi
+```
+
 ## License
 
 Unless otherwise noted, all components are licensed under the [Mozilla Public
