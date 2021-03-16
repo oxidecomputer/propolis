@@ -66,7 +66,7 @@ your own [OVMF](https://wiki.ubuntu.com/UEFI/OVMF), or you
 can use a pre-built.
 
 ```bash
-$ sudo apt-get install ovmf && dpkg -L ovmf | grpe OVMF_CODE.fd
+$ sudo apt-get install ovmf && dpkg -L ovmf | grep OVMF_CODE.fd
 ```
 
 #### ISO
