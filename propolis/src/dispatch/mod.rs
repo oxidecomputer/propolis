@@ -118,9 +118,7 @@ impl Dispatcher {
                     join: Some(hdl),
                     ctrl,
                     wake: Some(Box::new(move |ctx: &DispCtx| {
-                        ctx.mctx.with_vcpu(id, |vcpu| {
-                            let _ = vcpu.barrier();
-                        });
+                        let _ = ctx.mctx.vcpu(id).barrier();
                     })),
                 },
             );
@@ -195,20 +193,17 @@ impl Dispatcher {
             hdl.join().unwrap()
         }
     }
-    /// Invokes `f`, supplying a context object which provides
-    /// access to the dispatcher.
-    pub fn with_ctx<F>(&self, f: F)
-    where
-        F: FnOnce(&DispCtx),
-    {
+
+    /// Creates a new context object which provides an
+    /// API of a subset of the Dispatcher.
+    pub fn ctx(&self) -> DispCtx {
         let ctrl = WorkerCtrl::create(false);
-        let ctx = DispCtx::new(
+        DispCtx::new(
             self.mctx.clone(),
             self.event_dispatch.clone(),
             Some(ctrl),
             Arc::clone(&self.inner),
-        );
-        f(&ctx)
+        )
     }
 
     pub(crate) fn release_vcpus(&self) {

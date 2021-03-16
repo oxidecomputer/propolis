@@ -127,31 +127,22 @@ impl MachineCtx {
         Self { vm: Arc::clone(vm) }
     }
 
-    pub fn with_pio<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&PioBus) -> R,
-    {
-        f(&self.vm.bus_pio)
+    pub fn pio(&self) -> &PioBus {
+        &self.vm.bus_pio
     }
-    pub fn with_mmio<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&MmioBus) -> R,
-    {
-        f(&self.vm.bus_mmio)
+
+    pub fn mmio(&self) -> &MmioBus {
+        &self.vm.bus_mmio
     }
-    pub fn with_hdl<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&VmmHdl) -> R,
-    {
-        f(&self.vm.hdl)
+
+    pub fn hdl(&self) -> &VmmHdl {
+        &self.vm.hdl
     }
-    pub fn with_vcpu<F, R>(&self, id: usize, f: F) -> R
-    where
-        F: FnOnce(&mut VcpuHdl) -> R,
-    {
-        let mut vcpu = self.vm.vcpu(id);
-        f(&mut vcpu)
+
+    pub fn vcpu(&self, id: usize) -> VcpuHdl {
+        self.vm.vcpu(id)
     }
+
     pub fn memctx(&self) -> MemCtx<'_> {
         MemCtx::new(&self)
     }

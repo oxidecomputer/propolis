@@ -48,22 +48,21 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
             }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
-                    mctx.with_pio(|b| {
-                        b.handle_out(io.port, io.bytes, val, ctx)
-                    });
+                    mctx.pio().handle_out(io.port, io.bytes, val, ctx);
                     next_entry = VmEntry::InoutFulfill(InoutRes::Out(io));
                 }
                 InoutReq::In(io) => {
-                    let val =
-                        mctx.with_pio(|b| b.handle_in(io.port, io.bytes, ctx));
+                    let val = mctx.pio().handle_in(io.port, io.bytes, ctx);
                     next_entry = VmEntry::InoutFulfill(InoutRes::In(io, val));
                 }
             },
             VmExitKind::Mmio(mmio) => match mmio {
                 MmioReq::Read(read) => {
-                    let val = mctx.with_mmio(|b| {
-                        b.handle_read(read.addr as usize, read.bytes, ctx)
-                    });
+                    let val = mctx.mmio().handle_read(
+                        read.addr as usize,
+                        read.bytes,
+                        ctx,
+                    );
                     next_entry =
                         VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
                             addr: read.addr,
@@ -72,14 +71,12 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                         }));
                 }
                 MmioReq::Write(write) => {
-                    mctx.with_mmio(|b| {
-                        b.handle_write(
-                            write.addr as usize,
-                            write.bytes,
-                            write.data,
-                            ctx,
-                        )
-                    });
+                    mctx.mmio().handle_write(
+                        write.addr as usize,
+                        write.bytes,
+                        write.data,
+                        ctx,
+                    );
                     next_entry =
                         VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
                             addr: write.addr,
