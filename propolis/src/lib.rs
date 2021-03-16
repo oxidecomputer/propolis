@@ -1,10 +1,15 @@
-pub extern crate bhyve_api;
-extern crate dladm;
-extern crate viona_api;
+// Pull in asm!() support for USDT
+#![feature(asm)]
 
+use usdt::dtrace_provider;
+
+// Define probe macros prior to module imports below.
+dtrace_provider!("usdt.d", format = "probe_{probe}");
+
+pub extern crate bhyve_api;
+pub extern crate usdt;
 #[macro_use]
 extern crate bitflags;
-extern crate byteorder;
 
 pub mod block;
 pub mod chardev;

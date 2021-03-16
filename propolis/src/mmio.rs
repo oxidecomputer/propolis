@@ -58,6 +58,7 @@ impl MmioBus {
         if !handled {
             println!("unhandled MMIO write - addr:{:x} len:{}", addr, bytes);
         }
+        probe_mmio_write!(|| (addr as u64, bytes, val, handled as u8));
     }
     pub fn handle_read(&self, addr: usize, bytes: u8, ctx: &DispCtx) -> u64 {
         let mut buf = [0xffu8; 8];
@@ -76,7 +77,9 @@ impl MmioBus {
             println!("unhandled MMIO read - addr:{:x} len:{}", addr, bytes);
         }
 
-        LE::read_u64(&buf)
+        let val = LE::read_u64(&buf);
+        probe_mmio_read!(|| (addr as u64, bytes, val, handled as u8));
+        val
     }
 
     fn do_mmio<F>(&self, addr: usize, f: F) -> bool
