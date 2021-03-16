@@ -68,7 +68,7 @@ impl I440Fx {
         // XXX: hardcoded attachments for now
         let lpc = bus.device_at(1, 0).unwrap();
         lpc.as_devinst().unwrap().with_inner(|lpc: Arc<Piix3Lpc>| {
-            mctx.with_pio(|pio| lpc.attach(pio));
+            lpc.attach(mctx.pio());
         });
 
         let pm = bus.device_at(1, 3).unwrap();
@@ -132,11 +132,10 @@ impl Chipset for I440Fx {
     }
     fn pci_finalize(&self, ctx: &DispCtx) {
         let cfg_pio = self.self_weak() as Weak<dyn PioDev>;
-        ctx.mctx.with_pio(|pio| {
-            let cfg_pio2 = Weak::clone(&cfg_pio);
-            pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, cfg_pio, 0).unwrap();
-            pio.register(pci::PORT_PCI_CONFIG_DATA, 4, cfg_pio2, 0).unwrap();
-        });
+        let pio = ctx.mctx.pio();
+        let cfg_pio2 = Weak::clone(&cfg_pio);
+        pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, cfg_pio, 0).unwrap();
+        pio.register(pci::PORT_PCI_CONFIG_DATA, 4, cfg_pio2, 0).unwrap();
         self.place_bars();
     }
     fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
@@ -568,18 +567,15 @@ impl Piix3PM {
 
     fn attach(self: &Arc<Self>, mctx: &MachineCtx) {
         // XXX: static registration for now
-        mctx.with_pio(|pio| {
-            pio.register(
+        mctx.pio()
+            .register(
                 PMBASE_DEFAULT,
                 PMBASE_LEN,
                 Arc::downgrade(self) as Weak<dyn PioDev>,
                 0,
             )
             .unwrap();
-        });
-        mctx.with_hdl(|hdl| {
-            hdl.pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap();
-        });
+        mctx.hdl().pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap();
     }
 
     fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp) {
