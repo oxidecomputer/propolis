@@ -60,6 +60,19 @@ pub enum VmExitKind {
     Wrmsr(u32, u64),
     Unknown(i32),
 }
+impl VmExitKind {
+    pub fn code(&self) -> i32 {
+        match self {
+            VmExitKind::Bogus => vm_exitcode::VM_EXITCODE_BOGUS as i32,
+            VmExitKind::ReqIdle => vm_exitcode::VM_EXITCODE_REQIDLE as i32,
+            VmExitKind::Inout(_) => vm_exitcode::VM_EXITCODE_INOUT as i32,
+            VmExitKind::Mmio(_) => vm_exitcode::VM_EXITCODE_MMIO as i32,
+            VmExitKind::Rdmsr(_) => vm_exitcode::VM_EXITCODE_RDMSR as i32,
+            VmExitKind::Wrmsr(_, _) => vm_exitcode::VM_EXITCODE_WRMSR as i32,
+            VmExitKind::Unknown(code) => *code,
+        }
+    }
+}
 impl From<&vm_exit> for VmExitKind {
     fn from(exit: &vm_exit) -> Self {
         let code = match vm_exitcode::try_from(exit.exitcode) {
