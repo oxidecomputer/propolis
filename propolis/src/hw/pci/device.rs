@@ -485,13 +485,20 @@ impl DeviceInst {
             | StdCfgReg::Subclass
             | StdCfgReg::SubVendorId
             | StdCfgReg::SubDeviceId
+            | StdCfgReg::HeaderType
             | StdCfgReg::ProgIf
             | StdCfgReg::RevisionId
+            | StdCfgReg::CapPtr
+            | StdCfgReg::IntrPin
             | StdCfgReg::Reserved => {
                 // ignore writes to RO fields
             }
             StdCfgReg::ExpansionRomAddr => {
                 // no expansion rom for now
+            }
+            StdCfgReg::Status => {
+                // Treat status register as RO until there is a need for guests
+                // to clear bits within it
             }
             StdCfgReg::CacheLineSize
             | StdCfgReg::LatencyTimer
@@ -500,10 +507,6 @@ impl DeviceInst {
             | StdCfgReg::MinGrant
             | StdCfgReg::CardbusPtr => {
                 // XXX: ignored for now
-            }
-            _ => {
-                println!("Unhandled write {:?}", id);
-                // discard all other writes
             }
         }
     }
