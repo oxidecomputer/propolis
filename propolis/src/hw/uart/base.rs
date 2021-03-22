@@ -5,7 +5,8 @@ use bits::*;
 pub struct Uart {
     reg_intr_enable: u8,
     reg_intr_status: u8,
-    reg_fifo_ctrl: u8,
+    // TODO: add FIFO support
+    // reg_fifo_ctrl: u8,
     reg_line_ctrl: u8,
     reg_line_status: u8,
     reg_modem_ctrl: u8,
@@ -13,7 +14,6 @@ pub struct Uart {
     reg_scratch: u8,
     reg_div_low: u8,
     reg_div_high: u8,
-    reg_prescalor_div: u8,
 
     thre_intr: bool,
     intr_pin: bool,
@@ -26,7 +26,7 @@ impl Uart {
         Uart {
             reg_intr_enable: 0,
             reg_intr_status: ISRC_NONE,
-            reg_fifo_ctrl: 0,
+            // reg_fifo_ctrl: 0,
             reg_line_ctrl: 0,
             reg_line_status: LSR_THRE | LSR_TEMT,
             reg_modem_ctrl: 0,
@@ -34,7 +34,6 @@ impl Uart {
             reg_scratch: 0,
             reg_div_low: 0,
             reg_div_high: 0,
-            reg_prescalor_div: 0,
 
             thre_intr: false,
             intr_pin: false,
@@ -107,8 +106,8 @@ impl Uart {
                 self.update_isr();
             }
             (REG_FCR, _) => {
-                // ignore requests to enable the FIFOs for now
-                self.reg_fifo_ctrl = 0;
+                // TODO: add FIFO support
+                // self.reg_fifo_ctrl = ?;
             }
             (REG_LCR, _) => {
                 // Accept any line control configuration.
@@ -133,9 +132,6 @@ impl Uart {
             }
             (REG_DLH, true) => {
                 self.reg_div_high = data;
-            }
-            (REG_PSD, true) => {
-                self.reg_prescalor_div = data & MASK_PCD;
             }
             _ => {
                 panic!();
@@ -177,7 +173,7 @@ impl Uart {
     pub fn reset(&mut self) {
         self.reg_intr_enable = 0;
         self.reg_intr_status = ISRC_NONE;
-        self.reg_fifo_ctrl = 0;
+        // self.reg_fifo_ctrl = 0;
         self.reg_line_ctrl = 0;
         self.reg_line_status = LSR_THRE | LSR_TEMT;
         self.reg_modem_ctrl = 0;
@@ -185,7 +181,6 @@ impl Uart {
         self.reg_scratch = 0;
         self.reg_div_low = 0;
         self.reg_div_high = 0;
-        self.reg_prescalor_div = 0;
 
         self.thre_intr = false;
         self.intr_pin = false;
@@ -306,7 +301,6 @@ mod bits {
     pub const REG_SPR: u8 = 0b111; // RW
     pub const REG_DLL: u8 = 0b000; // RW when DLAB=1
     pub const REG_DLH: u8 = 0b001; // RW when DLAB=1
-    pub const REG_PSD: u8 = 0b101; // WO when DLAB=1
 
     pub const IER_ERBFI: u8 = 1 << 0; // enable received data available intr
     pub const IER_ETBEI: u8 = 1 << 1; // enable xmit holding register empty intr
@@ -352,7 +346,7 @@ mod tests {
         assert_eq!(uart.reg_read(REG_IER), 0u8);
         assert_eq!(uart.reg_read(REG_ISR), 1u8);
         // TI datasheet notes the state of this register, despite it being WO
-        assert_eq!(uart.reg_fifo_ctrl, 0u8);
+        // assert_eq!(uart.reg_fifo_ctrl, 0u8);
         assert_eq!(uart.reg_read(REG_LCR), 0u8);
         assert_eq!(uart.reg_read(REG_MCR), 0u8);
         assert_eq!(uart.reg_read(REG_LSR), 0b01100000u8);
