@@ -117,7 +117,7 @@ impl Uart {
             (REG_MCR, _) => {
                 self.reg_modem_ctrl = data & MASK_MCR;
             }
-            (REG_LSR, false) => {
+            (REG_LSR, _) => {
                 // ignore writes to read-only line-status
             }
             (REG_MSR, _) => {
