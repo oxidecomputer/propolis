@@ -66,7 +66,7 @@ pub fn parse(path: &str) -> Config {
     Config { inner: top }
 }
 
-pub fn parse_bdf(v: &str) -> Option<pci::BDF> {
+pub fn parse_bdf(v: &str) -> Option<pci::Bdf> {
     let mut fields = Vec::with_capacity(3);
     for f in v.split('.') {
         let num = usize::from_str(f).ok()?;
@@ -77,7 +77,7 @@ pub fn parse_bdf(v: &str) -> Option<pci::BDF> {
     }
 
     if fields.len() == 3 {
-        pci::BDF::try_new(fields[0], fields[1], fields[2])
+        pci::Bdf::try_new(fields[0], fields[1], fields[2])
     } else {
         None
     }

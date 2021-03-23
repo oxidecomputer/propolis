@@ -332,7 +332,7 @@ impl WorkerCtrl {
         let inner = self.inner.lock().unwrap();
         assert!(inner.req_hold);
         if !inner.held && !inner.exited {
-            let _ = self
+            let _guard = self
                 .cv
                 .wait_while(inner, |inner| !inner.held && !inner.exited)
                 .unwrap();

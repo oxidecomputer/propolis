@@ -5,7 +5,7 @@ use super::{BarPlacer, Chipset};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::ibmpc;
-use crate::hw::pci::{self, INTxPinID, PioCfgDecoder, BDF};
+use crate::hw::pci::{self, Bdf, INTxPinID, PioCfgDecoder};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
@@ -55,9 +55,9 @@ impl I440Fx {
         let lpcdev = Piix3Lpc::create(Arc::downgrade(&this));
         let pmdev = Piix3PM::create();
 
-        this.pci_attach(BDF::new(0, 0, 0), hbdev);
-        this.pci_attach(BDF::new(0, 1, 0), lpcdev);
-        this.pci_attach(BDF::new(0, 1, 3), pmdev);
+        this.pci_attach(Bdf::new(0, 0, 0), hbdev);
+        this.pci_attach(Bdf::new(0, 1, 0), lpcdev);
+        this.pci_attach(Bdf::new(0, 1, 3), pmdev);
 
         this
     }
@@ -82,12 +82,12 @@ impl I440Fx {
         self.lnk_pins[idx].reassign(irq.and_then(|i| self.pic.pin_handle(i)));
     }
 
-    fn route_lintr(&self, bdf: &BDF) -> (INTxPinID, Arc<dyn IntrPin>) {
+    fn route_lintr(&self, bdf: &Bdf) -> (INTxPinID, Arc<dyn IntrPin>) {
         let intx_pin = match (bdf.func() + 1) % 4 {
-            1 => INTxPinID::INTA,
-            2 => INTxPinID::INTB,
-            3 => INTxPinID::INTC,
-            4 => INTxPinID::INTD,
+            1 => INTxPinID::IntA,
+            2 => INTxPinID::IntB,
+            3 => INTxPinID::IntC,
+            4 => INTxPinID::IntD,
             _ => panic!(),
         };
         // D->A->B->C starting at 0:0.0
@@ -123,7 +123,7 @@ impl I440Fx {
     }
 }
 impl Chipset for I440Fx {
-    fn pci_attach(&self, bdf: BDF, dev: Arc<dyn pci::Endpoint>) {
+    fn pci_attach(&self, bdf: Bdf, dev: Arc<dyn pci::Endpoint>) {
         assert!(bdf.bus() == 0);
 
         dev.attach(&|| self.route_lintr(&bdf));

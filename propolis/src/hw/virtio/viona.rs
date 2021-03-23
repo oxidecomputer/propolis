@@ -164,7 +164,7 @@ impl VirtioDevice for VirtioViona {
                 let mut msg = 0;
                 vq.with_intr(|i| {
                     if let Some(intr) = i {
-                        if let VqIntr::MSI(a, d, masked) = intr.read() {
+                        if let VqIntr::Msi(a, d, masked) = intr.read() {
                             // If the entry (or entire MSI function) is masked,
                             // keep the in-kernel MSI acceleration disabled with
                             // the zeroed address and message.  That will allow

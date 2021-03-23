@@ -48,5 +48,5 @@ pub enum VqIntr {
     // Pin (lintr) interrupt
     Pin,
     /// MSI(-X) with address, data, and masked state
-    MSI(u64, u32, bool),
+    Msi(u64, u32, bool),
 }

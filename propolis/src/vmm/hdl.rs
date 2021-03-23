@@ -282,7 +282,7 @@ impl VmmHdl {
     }
 
     pub fn lapic_msi(&self, addr: u64, msg: u64) -> Result<()> {
-        let mut data = bhyve_api::vm_lapic_msi { addr, msg };
+        let mut data = bhyve_api::vm_lapic_msi { msg, addr };
         self.ioctl(bhyve_api::VM_LAPIC_MSI, &mut data)
     }
 

@@ -528,7 +528,7 @@ impl DeviceInst {
         if self.msix_cfg.is_some()
             && self.msix_cfg.as_ref().unwrap().is_enabled()
         {
-            return IntrMode::MSIX;
+            return IntrMode::Msix;
         }
         if state.lintr_pin.is_some()
             && !state.reg_command.contains(RegCmd::INTX_DIS)
@@ -784,7 +784,7 @@ impl INTxPin {
 pub enum IntrMode {
     Disabled,
     INTxPin,
-    MSIX,
+    Msix,
 }
 
 pub enum MsiUpdate {
@@ -836,7 +836,7 @@ enum MsixBarReg {
     Data(u16),
     VecCtrl(u16),
     Reserved,
-    PBA,
+    Pba,
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum MsixCapReg {
@@ -935,7 +935,7 @@ impl MsixCfg {
             Flags::PASSTHRU,
         );
         off += table_pad;
-        map.define_with_flags(off, pba_size, MsixBarReg::PBA, Flags::PASSTHRU);
+        map.define_with_flags(off, pba_size, MsixBarReg::Pba, Flags::PASSTHRU);
 
         let mut entries = Vec::with_capacity(count as usize);
         entries.resize_with(count as usize, Default::default);
@@ -981,7 +981,7 @@ impl MsixCfg {
                 MsixBarReg::Reserved => {
                     ro.fill(0);
                 }
-                MsixBarReg::PBA => {
+                MsixBarReg::Pba => {
                     self.read_pba(ro);
                 }
             },
@@ -1011,7 +1011,7 @@ impl MsixCfg {
                         drop(ent);
                         updatef(MsiUpdate::Modify(*i));
                     }
-                    MsixBarReg::Reserved | MsixBarReg::PBA => {}
+                    MsixBarReg::Reserved | MsixBarReg::Pba => {}
                 }
                 drop(state);
             }

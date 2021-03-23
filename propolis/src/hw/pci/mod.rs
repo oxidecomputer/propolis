@@ -17,12 +17,12 @@ const MASK_DEV: u8 = 0x1f;
 const MASK_BUS: u8 = 0xff;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct BDF {
+pub struct Bdf {
     inner_bus: u8,
     inner_dev: u8,
     inner_func: u8,
 }
-impl BDF {
+impl Bdf {
     pub fn new(bus: u8, dev: u8, func: u8) -> Self {
         assert!(dev <= MASK_DEV);
         assert!(func <= MASK_FUNC);
@@ -50,10 +50,10 @@ impl BDF {
 #[repr(u8)]
 #[derive(Copy, Clone)]
 pub enum INTxPinID {
-    INTA = 1,
-    INTB = 2,
-    INTC = 3,
-    INTD = 4,
+    IntA = 1,
+    IntB = 2,
+    IntC = 3,
+    IntD = 4,
 }
 
 pub trait Endpoint: Send + Sync {
@@ -137,7 +137,7 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
-fn cfg_addr_parse(addr: u32) -> Option<(BDF, u8)> {
+fn cfg_addr_parse(addr: u32) -> Option<(Bdf, u8)> {
     if addr & 0x80000000 == 0 {
         // Enable bit not set
         None
@@ -147,7 +147,7 @@ fn cfg_addr_parse(addr: u32) -> Option<(BDF, u8)> {
         let device = (addr >> 11) as u8 & MASK_DEV;
         let bus = (addr >> 16) as u8 & MASK_BUS;
 
-        Some((BDF::new(bus, device, func), offset as u8))
+        Some((Bdf::new(bus, device, func), offset as u8))
     }
 }
 
@@ -171,7 +171,7 @@ impl PioCfgDecoder {
     }
     pub fn service_data<F>(&self, rwop: RWOp, mut cb: F)
     where
-        F: FnMut(&BDF, RWOp) -> Option<()>,
+        F: FnMut(&Bdf, RWOp) -> Option<()>,
     {
         let locked_addr = self.addr.lock().unwrap();
         let addr = *locked_addr;
