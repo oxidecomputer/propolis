@@ -928,14 +928,29 @@ impl MsixCfg {
             map.define(off + 12, 4, MsixBarReg::VecCtrl(i));
             off += 16;
         }
-        map.define_with_flags(
-            off,
-            table_pad,
-            MsixBarReg::Reserved,
-            Flags::PASSTHRU,
-        );
+        if table_pad != 0 {
+            map.define_with_flags(
+                off,
+                table_pad,
+                MsixBarReg::Reserved,
+                Flags::PASSTHRU,
+            );
+        }
         off += table_pad;
         map.define_with_flags(off, pba_size, MsixBarReg::Pba, Flags::PASSTHRU);
+        off += pba_size;
+
+        // If table sizing leaves space after the PBA in order to pad the BAR
+        // out to the next power of 2, cover it with Reserved handling.
+        if off < bar_size {
+            let pba_pad = bar_size - off;
+            map.define_with_flags(
+                off,
+                pba_pad,
+                MsixBarReg::Reserved,
+                Flags::PASSTHRU,
+            );
+        }
 
         let mut entries = Vec::with_capacity(count as usize);
         entries.resize_with(count as usize, Default::default);
@@ -1334,5 +1349,31 @@ impl<I: Device + 'static> Builder<I> {
         let mut done = Arc::new(inst);
         SelfArc::self_arc_init(&mut done);
         done
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn msix_cfg_zero() {
+        let (_cfg, _bsize) = MsixCfg::new(0, BarN::BAR1);
+    }
+    #[test]
+    #[should_panic]
+    fn msix_cfg_too_big() {
+        let (_cfg, _bsize) = MsixCfg::new(2049, BarN::BAR1);
+    }
+    #[test]
+    fn msix_cfg_sizing() {
+        let (_cfg, bar_size) = MsixCfg::new(2048, BarN::BAR1);
+        // 32k for entries + 4k PBA -> 64k (rounded to next pow2)
+        assert_eq!(bar_size, 65536);
+
+        // 4k for entries + 4k PBA
+        let (_cfg, bar_size) = MsixCfg::new(256, BarN::BAR1);
+        assert_eq!(bar_size, 8192);
     }
 }
