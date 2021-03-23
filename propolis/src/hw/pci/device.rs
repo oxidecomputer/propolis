@@ -1195,6 +1195,11 @@ impl<I: Device + 'static> Builder<I> {
         }
     }
 
+    /// Add a BAR which is accessible via IO ports
+    ///
+    /// # Panics
+    ///
+    /// If `size` is < 4 or not a power of 2.
     pub fn add_bar_io(mut self, bar: BarN, size: u16) -> Self {
         assert!(size.is_power_of_two());
         assert!(size >= 4);
@@ -1205,6 +1210,13 @@ impl<I: Device + 'static> Builder<I> {
         self.bars[idx] = Some(BarDefine::Pio(size));
         self
     }
+
+    /// Add a BAR which is accessible via MMIO.  The size and placement of the
+    /// BAR is limited to the 32-bit address space.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is < 16 or not a power of 2.
     pub fn add_bar_mmio(mut self, bar: BarN, size: u32) -> Self {
         assert!(size.is_power_of_two());
         assert!(size >= 16);
@@ -1215,6 +1227,14 @@ impl<I: Device + 'static> Builder<I> {
         self.bars[idx] = Some(BarDefine::Mmio(size));
         self
     }
+
+    /// Add a BAR which is accessible via MMIO.  As a 64-bit BAR, its size can
+    /// be >= 4G, and it is expected to be placed above the 32-bit address
+    /// limit.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is < 16 or not a power of 2.
     pub fn add_bar_mmio64(mut self, bar: BarN, size: u64) -> Self {
         assert!(size.is_power_of_two());
         assert!(size >= 16);
@@ -1228,10 +1248,15 @@ impl<I: Device + 'static> Builder<I> {
         self.bars[idx + 1] = Some(BarDefine::Mmio64High);
         self
     }
+
+    /// Add a legacy (pin-based) interrupt
     pub fn add_lintr(mut self) -> Self {
         self.lintr_req = true;
         self
     }
+
+    /// Add a region of the PCI config space for the device which has custom
+    /// handling.
     pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
         self.cfgmap.define_with_flags(
             offset as usize,
@@ -1261,6 +1286,13 @@ impl<I: Device + 'static> Builder<I> {
         self.cap_next_alloc = end;
     }
 
+    /// Add MSI-X interrupt functionality.
+    ///
+    /// # Panics
+    ///
+    /// If:
+    /// - `count` is 0 or > 2048
+    /// - `bar` conflicts (overlaps) with other defined BAR for the device
     pub fn add_cap_msix(mut self, bar: BarN, count: u16) -> Self {
         assert!(self.msix_cfg.is_none());
 
