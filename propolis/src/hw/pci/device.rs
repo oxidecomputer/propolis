@@ -149,8 +149,8 @@ struct Bars {
 }
 
 impl Bars {
-    fn new() -> Self {
-        Self {
+    fn new(defs: &[Option<BarDefine>; 6]) -> Self {
+        let mut this = Self {
             entries: [
                 BarEntry::new(),
                 BarEntry::new(),
@@ -159,7 +159,23 @@ impl Bars {
                 BarEntry::new(),
                 BarEntry::new(),
             ],
+        };
+        for (idx, def) in
+            defs.iter().enumerate().filter_map(|(n, def)| def.map(|d| (n, d)))
+        {
+            // Make sure 64-bit BAR definitions are playing by the rules
+            if matches!(def, BarDefine::Mmio64(_)) {
+                assert!(idx < 5);
+                assert!(matches!(defs[idx + 1], Some(BarDefine::Mmio64High)));
+            }
+            if matches!(def, BarDefine::Mmio64High) {
+                assert_ne!(idx, 0);
+                assert!(matches!(defs[idx - 1], Some(BarDefine::Mmio64(_))));
+            }
+            this.entries[idx].define = Some(def);
         }
+
+        this
     }
     fn reg_read(&self, bar: BarN) -> u32 {
         let idx = bar as usize;
@@ -206,7 +222,7 @@ impl Bars {
             BarDefine::Mmio64(size) => {
                 let old = state.addr;
                 let mask = !(size - 1) as u32;
-                let low = old as u32 & mask;
+                let low = val as u32 & mask;
                 state.addr = (old & (0xffffffff << 32)) | low as u64;
                 (old, state)
             }
@@ -221,7 +237,8 @@ impl Bars {
                 };
                 let mask = !(size - 1);
                 let old = state.addr;
-                state.addr = ((val as u64) << 32) & mask | (old & 0xffffffff);
+                let high = (((val as u64) << 32) & mask) & 0xffffffff00000000;
+                state.addr = high | (old & 0xffffffff);
                 (old, state)
             }
         };
@@ -236,6 +253,11 @@ impl Bars {
         F: Fn(BarN, &BarDefine, u64, bool) -> Option<bool>,
     {
         self.for_each(|barn, def| {
+            if def == &BarDefine::Mmio64High {
+                // The high portion of 64-bit BARs does not require direct
+                // handling, as the low portion bears the necessary information.
+                return;
+            }
             let mut state = self.entries[barn as usize].state.lock().unwrap();
             if let Some(new_reg_state) =
                 changef(barn, def, state.addr, state.registered)
@@ -455,27 +477,25 @@ impl DeviceInst {
                             bus.register(new as u16, *sz, dev, *bar as usize)
                                 .is_err()
                         }
-                        BarDefine::Mmio(sz) => {
+                        BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
                             if !state.reg_command.contains(RegCmd::MMIO_EN) {
                                 // mmio mappings are disabled via cmd reg
                                 return false;
                             }
+                            let sz = match def {
+                                BarDefine::Mmio(s) => *s as usize,
+                                BarDefine::Mmio64(s) => *s as usize,
+                                _ => panic!(),
+                            };
                             let bus = ctx.mctx.mmio();
                             // We know this was previously registered
                             let (dev, old_bar) =
                                 bus.unregister(old as usize).unwrap();
                             assert_eq!(old_bar, *bar as usize);
-                            bus.register(
-                                new as usize,
-                                *sz as usize,
-                                dev,
-                                *bar as usize,
-                            )
-                            .is_err()
+                            bus.register(new as usize, sz, dev, *bar as usize)
+                                .is_err()
                         }
-                        _ => {
-                            todo!("wire up mmio64 later");
-                        }
+                        BarDefine::Mmio64High => panic!(),
                     }
                 });
             }
@@ -604,7 +624,9 @@ impl DeviceInst {
 
                     None
                 }
-                _ => todo!("wire up MMIO later"),
+                // Registration for the high portion of a 64-bit BAR is not
+                // handled separately.
+                BarDefine::Mmio64High => panic!(),
             },
         );
     }
@@ -1321,16 +1343,8 @@ impl<I: Device + 'static> Builder<I> {
         self
     }
 
-    fn generate_bars(&self) -> Bars {
-        let mut bars = Bars::new();
-        for (idx, ent) in self.bars.iter().enumerate() {
-            bars.entries[idx].define = *ent;
-        }
-        bars
-    }
-
     pub fn finish(self, inner: Arc<I>) -> Arc<DeviceInst> {
-        let bars = self.generate_bars();
+        let bars = Bars::new(&self.bars);
 
         let inner_any =
             Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
@@ -1355,6 +1369,53 @@ impl<I: Device + 'static> Builder<I> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn bar_setup() -> Bars {
+        let bar_defs = [
+            Some(BarDefine::Pio(0x100)),
+            Some(BarDefine::Mmio(0x20000)),
+            Some(BarDefine::Mmio64(0x40000)),
+            Some(BarDefine::Mmio64High),
+            Some(BarDefine::Mmio64(0x200000000)),
+            Some(BarDefine::Mmio64High),
+        ];
+        let bars = Bars::new(&bar_defs);
+        bars.place(BarN::BAR0, 0x1000);
+        bars.place(BarN::BAR1, 0xc000000);
+        bars.place(BarN::BAR2, 0xd000000);
+        bars.place(BarN::BAR4, 0x800000000);
+
+        bars
+    }
+    #[test]
+    fn bar_init() {
+        let _ = bar_setup();
+    }
+
+    #[test]
+    fn bar_limits() {
+        let bars = bar_setup();
+
+        assert_eq!(bars.reg_read(BarN::BAR0), 0x1001);
+        assert_eq!(bars.reg_read(BarN::BAR1), 0xc000000);
+        assert_eq!(bars.reg_read(BarN::BAR2), 0xd000004);
+        assert_eq!(bars.reg_read(BarN::BAR3), 0);
+        assert_eq!(bars.reg_read(BarN::BAR4), 0x4);
+        assert_eq!(bars.reg_read(BarN::BAR5), 0x8);
+        for i in 0..=5u8 {
+            bars.reg_write(
+                BarN::try_from(i).unwrap(),
+                0xffffffff,
+                |_, _, _| false,
+            );
+        }
+        assert_eq!(bars.reg_read(BarN::BAR0), 0x0000ff01);
+        assert_eq!(bars.reg_read(BarN::BAR1), 0xfffe0000);
+        assert_eq!(bars.reg_read(BarN::BAR2), 0xfffc0004);
+        assert_eq!(bars.reg_read(BarN::BAR3), 0xffffffff);
+        assert_eq!(bars.reg_read(BarN::BAR4), 0x00000004);
+        assert_eq!(bars.reg_read(BarN::BAR5), 0xfffffffe);
+    }
 
     #[test]
     #[should_panic]

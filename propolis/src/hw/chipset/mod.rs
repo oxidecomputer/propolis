@@ -15,9 +15,11 @@ pub trait Chipset {
 pub(self) struct BarPlacer<T> {
     pio_bars: Vec<(T, usize)>,
     mmio_bars: Vec<(T, usize)>,
+    mmio64_bars: Vec<(T, usize)>,
 
     pio_avail: Option<(usize, usize)>,
     mmio_avail: Option<(usize, usize)>,
+    mmio64_avail: Option<(usize, usize)>,
 }
 impl<T: Copy + Sized> BarPlacer<T> {
     pub fn new() -> Self {
@@ -27,6 +29,9 @@ impl<T: Copy + Sized> BarPlacer<T> {
 
             mmio_bars: Vec::new(),
             mmio_avail: None,
+
+            mmio64_bars: Vec::new(),
+            mmio64_avail: None,
         }
     }
     pub fn add_bar(&mut self, loc: T, def: &BarDefine) {
@@ -37,7 +42,10 @@ impl<T: Copy + Sized> BarPlacer<T> {
             BarDefine::Mmio(sz) => {
                 self.mmio_bars.push((loc, *sz as usize));
             }
-            _ => todo!("handle 64-bit bars later"),
+            BarDefine::Mmio64(sz) => {
+                self.mmio64_bars.push((loc, *sz as usize));
+            }
+            BarDefine::Mmio64High => {}
         }
     }
     pub fn add_avail_pio(&mut self, port: u16, len: u16) {
@@ -56,12 +64,25 @@ impl<T: Copy + Sized> BarPlacer<T> {
         assert!(self.mmio_avail.is_none());
         self.mmio_avail = Some((addr as usize, len as usize));
     }
-    pub fn place(self, mut cb: impl FnMut(T, usize)) -> Option<(usize, usize)> {
+    pub fn add_avail_mmio64(&mut self, addr: u64, len: u64) {
+        assert!(len != 0);
+        assert!(addr.checked_add(len - 1).is_some());
+
+        // Only allow one region for now
+        assert!(self.mmio64_avail.is_none());
+        self.mmio64_avail = Some((addr as usize, len as usize));
+    }
+    pub fn place(
+        self,
+        mut cb: impl FnMut(T, usize),
+    ) -> Option<(usize, usize, usize)> {
         assert!(self.pio_avail.is_some());
         assert!(self.mmio_avail.is_some());
+        assert!(self.mmio64_avail.is_some());
 
         let (pio_start, pio_len) = self.pio_avail.unwrap();
         let (mmio_start, mmio_len) = self.mmio_avail.unwrap();
+        let (mmio64_start, mmio64_len) = self.mmio64_avail.unwrap();
 
         let pio_remain =
             Self::simple_placement(self.pio_bars, pio_start, pio_len, &mut cb);
@@ -71,10 +92,20 @@ impl<T: Copy + Sized> BarPlacer<T> {
             mmio_len,
             &mut cb,
         );
-        if pio_remain.is_none() && mmio_remain.is_none() {
-            None
-        } else {
-            Some((pio_remain.unwrap_or(0), mmio_remain.unwrap_or(0)))
+        // TODO: We could attempt to place 64-bit BARs down in the 32-bit space,
+        // but for now just do the easy thing and use the 64-bit space.
+        let mmio64_remain = Self::simple_placement(
+            self.mmio64_bars,
+            mmio64_start,
+            mmio64_len,
+            &mut cb,
+        );
+
+        match (pio_remain, mmio_remain, mmio64_remain) {
+            (None, None, None) => None,
+            (pio, mmio, mmio64) => {
+                Some((pio.unwrap_or(0), mmio.unwrap_or(0), mmio64.unwrap_or(0)))
+            }
         }
     }
 

@@ -103,6 +103,7 @@ impl I440Fx {
         let mut bar_placer = BarPlacer::new();
         bar_placer.add_avail_pio(0xc000, 0x4000);
         bar_placer.add_avail_mmio(0xe0000000, 0x10000000);
+        bar_placer.add_avail_mmio64(0x8000000000, 0x8000000000);
 
         for (slot, func, dev) in bus.iter() {
             dev.bar_for_each(&mut |bar, def| {
@@ -117,8 +118,11 @@ impl I440Fx {
             let dev = bus.device_at(slot, func).unwrap();
             dev.bar_place(bar, addr as u64);
         });
-        if let Some((pio, mmio)) = remain {
-            panic!("Unfulfilled BAR allocations! pio:{} mmio:{}", pio, mmio);
+        if let Some((pio, mmio, mmio64)) = remain {
+            panic!(
+                "Unfulfilled BAR allocations! pio:{} mmio:{} mmio64:{}",
+                pio, mmio, mmio64
+            );
         }
     }
 }
