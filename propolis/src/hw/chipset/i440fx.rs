@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use super::{BarPlacer, Chipset};
+use super::Chipset;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::ibmpc;
@@ -97,34 +97,6 @@ impl I440Fx {
             Arc::clone(&self.lnk_pins[pin_route as usize]) as Arc<dyn IntrPin>,
         )
     }
-    fn place_bars(&self) {
-        let bus = self.pci_bus.lock().unwrap();
-
-        let mut bar_placer = BarPlacer::new();
-        bar_placer.add_avail_pio(0xc000, 0x4000);
-        bar_placer.add_avail_mmio(0xe0000000, 0x10000000);
-        bar_placer.add_avail_mmio64(0x8000000000, 0x8000000000);
-
-        for (slot, func, dev) in bus.iter() {
-            dev.bar_for_each(&mut |bar, def| {
-                bar_placer.add_bar((slot, func, bar), def);
-            });
-        }
-        let remain = bar_placer.place(|(slot, func, bar), addr| {
-            println!(
-                "placing {:?} @ {:x} for 0:{:x}:{:x}",
-                bar, addr, slot, func
-            );
-            let dev = bus.device_at(slot, func).unwrap();
-            dev.bar_place(bar, addr as u64);
-        });
-        if let Some((pio, mmio, mmio64)) = remain {
-            panic!(
-                "Unfulfilled BAR allocations! pio:{} mmio:{} mmio64:{}",
-                pio, mmio, mmio64
-            );
-        }
-    }
 }
 impl Chipset for I440Fx {
     fn pci_attach(&self, bdf: Bdf, dev: Arc<dyn pci::Endpoint>) {
@@ -140,7 +112,6 @@ impl Chipset for I440Fx {
         let cfg_pio2 = Weak::clone(&cfg_pio);
         pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, cfg_pio, 0).unwrap();
         pio.register(pci::PORT_PCI_CONFIG_DATA, 4, cfg_pio2, 0).unwrap();
-        self.place_bars();
     }
     fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
         self.pic.pin_handle(irq)
