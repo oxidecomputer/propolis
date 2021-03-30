@@ -114,9 +114,6 @@ impl Machine {
 
 /// Wrapper around a [`Machine`] object which exposes helpers for
 /// accessing different aspects of the VMM.
-// TODO: Getters can expose references, with control over mutability.
-// What's the benefit of requiring callers to provide functions wrapping
-// the field, rather than just being able to access the field directly?
 #[derive(Clone)]
 pub struct MachineCtx {
     vm: Arc<Machine>,

@@ -17,9 +17,7 @@ pub enum State {
     /// Initial state. Instances cannot return to this state
     /// after transitioning away from it.
     Initialize,
-    /// The instance is booting. Instances automatically
-    /// transition to boot after initialization, unless they're
-    /// being explicitly destroyed.
+    /// The instance is booting.
     Boot,
     /// The instance is actively running.
     Run,
@@ -108,6 +106,12 @@ impl Instance {
         Ok(this)
     }
 
+    /// Invokes `func`, which may operate on the instance's internal state
+    /// to prepare an instance before it boots.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if the instance's state is not [`State::Initialize`].
     // TODO: Why is this separate from creating an instance?
     pub fn initialize<F>(&self, func: F) -> io::Result<()>
     where
@@ -124,12 +128,17 @@ impl Instance {
         func(&state.machine, &mctx, &state.disp, &state.inv)
     }
 
+    /// Returns the state of the instance.
     pub fn current_state(&self) -> State {
         let state = self.state.lock().unwrap();
         let res = state.current;
         drop(state);
         res
     }
+
+    /// Updates the state of the instance.
+    ///
+    /// Returns an error if the state transition is invalid.
     pub fn set_target_state(&self, target: State) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
 
@@ -144,6 +153,9 @@ impl Instance {
         self.cv.notify_all();
         Ok(())
     }
+
+    /// Blocks the calling thread until the machine reaches
+    /// the state `target` or [`State::Destroy`].
     pub fn wait_for_state(&self, target: State) {
         let mut state = self.state.lock().unwrap();
         self.cv.wait_while(state, |state| {
@@ -152,6 +164,8 @@ impl Instance {
         });
     }
 
+    /// Registers  callback, `func`, whichi si invoked whenever a state
+    /// transition occurs.
     pub fn on_transition(&self, func: Box<TransitionFunc>) {
         let mut state = self.state.lock().unwrap();
         state.transition_funcs.push(func);

@@ -24,7 +24,7 @@ impl VcpuHdl {
         self.id
     }
 
-    /// Resets the capabilities of the virtual CPU.
+    /// Sets the capabilities of the virtual CPU.
     pub fn set_default_capabs(&mut self) -> Result<()> {
         // Enable exit-on-HLT so the host CPU does not spin in VM context when
         // the guest enters a HLT instruction.
@@ -95,12 +95,6 @@ impl VcpuHdl {
     }
 
     /// Set the state of a virtual CPU.
-    // TODO: What are acceptable values of "state"?
-    // Some well-defined values exist
-    // here:https://github.com/illumos/illumos-gate/blob/2606939d92dd3044a9851b2930ebf533c3c03892/usr/src/uts/i86pc/sys/vmm.h#L290
-    //
-    // Might be worth converting this argument into bitflags.
-    // TODO: Is it worthwhile commenting on the clearing of the sipi_vector?
     pub fn set_run_state(&mut self, state: u32) -> Result<()> {
         let mut state = bhyve_api::vm_run_state {
             cpuid: self.id,

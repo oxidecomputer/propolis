@@ -12,8 +12,7 @@ pub struct VmExit {
     /// The instruction pointer of the guest at the time of exit.
     pub rip: u64,
     /// The length of the instruction which triggered the exit.
-    /// Zero means unknown.
-    // TODO: Unsure about this; is this description accurate?
+    /// Zero if inapplicable to the exit or unknown.
     pub inst_len: u8,
     /// Describes the reason for triggering an exit.
     pub kind: VmExitKind,
@@ -72,6 +71,7 @@ pub enum VmExitKind {
 impl VmExitKind {
     pub fn code(&self) -> i32 {
         match self {
+            VmExitKind::Vmx => vm_exitcode::VM_EXITCODE_VMX as i32,
             VmExitKind::Bogus => vm_exitcode::VM_EXITCODE_BOGUS as i32,
             VmExitKind::ReqIdle => vm_exitcode::VM_EXITCODE_REQIDLE as i32,
             VmExitKind::Inout(_) => vm_exitcode::VM_EXITCODE_INOUT as i32,

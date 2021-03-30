@@ -58,10 +58,9 @@ impl<'a> ReadOp<'a> {
     ///
     /// # Arguments
     ///
-    /// - `op_offset`: An auxiliary offset stored within the operation.
+    /// - `op_offset`: An auxiliary offset stored within the operation,
+    /// identifying the region which should be accessed to populate `buf`.
     /// - `buf`: A buffer which represents the "sink" of the read operation.
-    // TODO: Is there a better explanation for `op_offset`? It doesn't seem to
-    // be used in any calculations within this operation.
     pub fn new_buf(op_offset: usize, buf: &'a mut [u8]) -> Self {
         Self { inner: ROInner::Buf(buf), offset: op_offset, write_offset: 0 }
     }
@@ -85,9 +84,6 @@ impl<'a> ReadOp<'a> {
     /// - `parent`: The operation from which this operation is being split.
     /// - `range`: The location within the parent operation to be moved
     /// to the child.
-    // TODO: Why doesn't this impact the `write_offset` of the parent, or take
-    // that into consideration? What if the parent already wrote past this
-    // region?
     pub fn new_child<'b, R>(
         op_offset: usize,
         parent: &'a mut ReadOp,
@@ -208,6 +204,13 @@ pub struct WriteOp<'a> {
     read_offset: usize,
 }
 impl<'a> WriteOp<'a> {
+    /// Initializes a new write operation from a buffer.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: An auxiliary offset stored within the operation,
+    /// identifying the region where `buf` should be stored.
+    /// - `buf`: A buffer which represents the "source" of the write operation.
     pub fn new_buf(op_offset: usize, buf: &'a [u8]) -> Self {
         Self { inner: WOInner::Buf(buf), offset: op_offset, read_offset: 0 }
     }
@@ -224,6 +227,17 @@ impl<'a> WriteOp<'a> {
             read_offset: 0,
         }
     }
+
+    /// Constructs a child write operation from within an existing write
+    /// operation.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: Offset of the child operation. Does not need to correlate
+    /// to the `parent` operation's offset.
+    /// - `parent`: The operation from which this operation is being split.
+    /// - `range`: The location within the parent operation to be moved
+    /// to the child.
     pub fn new_child<'b, R>(
         op_offset: usize,
         parent: &'a mut WriteOp,

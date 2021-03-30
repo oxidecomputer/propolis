@@ -26,13 +26,17 @@ pub struct Bdf {
     inner_func: u8,
 }
 
-/// Creates a new Bdf.
-///
-/// # Panics
-///
-/// - Panics if `dev` is larger than 0x1F.
-/// - Panics if `func` is larger than 0x07.
 impl Bdf {
+    /// Creates a new Bdf.
+    ///
+    /// The bus/device/function values must be within the acceptable range for
+    /// PCI addressing. If they could be invalid, `Bdf::try_new` should be used
+    /// instead.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `dev` is larger than 0x1F.
+    /// - Panics if `func` is larger than 0x07.
     pub fn new(bus: u8, dev: u8, func: u8) -> Self {
         assert!(dev <= MASK_DEV);
         assert!(func <= MASK_FUNC);
@@ -42,8 +46,7 @@ impl Bdf {
 
     /// Attempts to make a new BDF.
     ///
-    /// Returns [`Option::None`] if the values would not
-    /// fit within a BDF.
+    /// Returns [`Option::None`] if the values would not fit within a BDF.
     pub fn try_new(bus: u8, dev: u8, func: u8) -> Option<Self> {
         if dev <= MASK_DEV && func <= MASK_FUNC {
             Some(Self::new(bus, dev, func))

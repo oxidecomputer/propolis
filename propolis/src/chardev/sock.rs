@@ -138,7 +138,7 @@ impl UDSock {
                     return Err(e);
                 }
                 eprintln!(
-                    "Couldn't connect to {}, removing and trying again...",
+                    "Couldn't bind to {}, removing and trying again...",
                     path.to_string_lossy()
                 );
                 // XXX just blindly do remove

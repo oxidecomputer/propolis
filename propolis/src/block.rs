@@ -36,7 +36,7 @@ pub trait BlockReq: Send + Sync + 'static {
     fn offset(&self) -> usize;
     /// Returns the next region of memory within a request to a block device.
     fn next_buf(&mut self) -> Option<GuestRegion>;
-    /// Signals to the guest that a block operation has been completed.
+    /// Signals to the driver emulation that a block operation has been completed.
     fn complete(self, res: BlockResult, ctx: &DispCtx);
 }
 
@@ -73,8 +73,6 @@ pub struct PlainBdev<R: BlockReq> {
 }
 impl<R: BlockReq> PlainBdev<R> {
     /// Creates a new block device from a device at `path`.
-    ///
-    /// TODO: Not yet implemented for character devices.
     pub fn create(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let p: &Path = path.as_ref();
 

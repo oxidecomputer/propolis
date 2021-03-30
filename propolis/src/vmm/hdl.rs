@@ -87,7 +87,7 @@ fn create_vm_impl(_name: &str, _force: bool) -> Result<VmmHdl> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
 }
 
-/// Destroys the vritual machine matching the provided `name`.
+/// Destroys the virtual machine matching the provided `name`.
 pub fn destroy_vm(name: impl AsRef<str>) -> Result<()> {
     destroy_vm_impl(name.as_ref())
 }
@@ -167,9 +167,6 @@ impl VmmHdl {
         if let Some(name) = segname {
             let name_raw = name.as_bytes();
 
-            // XXX: Does this name need to be null-terminated?
-            // It's crossing an FFI boundary, and C won't have any
-            // way to distinguish the length.
             assert!(name_raw.len() < bhyve_api::SEG_NAME_LEN);
             (&mut seg.name[..]).write_all(name_raw)?;
         }
@@ -220,8 +217,6 @@ impl VmmHdl {
     /// Maps a memory segment into propolis' address space.
     ///
     /// Returns a pointer to the mapped segment, if successful.
-    // TODO: Could wrap this in an object which unmaps on drop?
-    // TODO: Unsafe docs
     pub unsafe fn mmap_seg(&self, segid: i32, size: usize) -> Result<*mut u8> {
         let devoff = self.devmem_offset(segid)?;
         let ptr = libc::mmap(
@@ -237,13 +232,11 @@ impl VmmHdl {
         }
         Ok(ptr)
     }
+
     /// Maps a portion of the guest's virtual address space
     /// into propolis' address space.
     ///
     /// Returns a pointer to the mapped segment, if successful.
-    // TODO: Unsafe docs
-    // TODO: Could wrap this in an object which unmaps on drop?
-    // TODO: Why "NonNull" here, but raw pointer for mmap_seg?
     pub unsafe fn mmap_guest_mem(
         &self,
         offset: usize,

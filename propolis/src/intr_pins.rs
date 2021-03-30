@@ -21,11 +21,11 @@ pub trait IntrPin: Send + Sync + 'static {
 
 /// Describes the operation to take with an interrupt pin.
 pub enum PinOp {
-    /// Turn the interrupt on.
+    /// Asserts the interrupt.
     Assert,
-    /// Turn the interrupt off.
+    /// Deasserts the interrupt.
     Deassert,
-    /// Turn the interrupt on, then off.
+    /// Asserts and then deasserts the interrupt.
     Pulse,
 }
 

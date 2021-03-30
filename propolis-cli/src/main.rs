@@ -108,9 +108,6 @@ fn main() {
             let offset = region_len - rom_len;
             unsafe {
                 let write_ptr = ptr.as_ptr().add(offset);
-                // TODO: from_raw_parts_mut requires that the data must be
-                // properly aligned - is there anything which guarantees
-                // alignment about this access?
                 let buf = std::slice::from_raw_parts_mut(write_ptr, rom_len);
                 match romfp.read(buf) {
                     Ok(n) if n == rom_len => Ok(()),

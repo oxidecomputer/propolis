@@ -53,8 +53,7 @@ impl Rtc {
         let high_bytes = high_chunks.to_le_bytes();
         hdl.rtc_write(MEM_OFF_HIGH, high_bytes[0])?;
         hdl.rtc_write(MEM_OFF_HIGH + 1, high_bytes[1])?;
-        // XXX Shouldn't this be "high_bytes[2]"?
-        hdl.rtc_write(MEM_OFF_HIGH + 2, high_bytes[1])?;
+        hdl.rtc_write(MEM_OFF_HIGH + 2, high_bytes[2])?;
 
         Ok(())
     }

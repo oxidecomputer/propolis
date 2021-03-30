@@ -401,9 +401,7 @@ impl DispCtx {
     }
 
     /// Halts the instance asssociated with the dispatcher.
-    // TODO: What prevents re-invoking this method concurrently / repeatedly?
-    // Would that be safe? Kinda seems like invalid state transitions would
-    // cause a panic.
+    // TODO: not safe against repeated/concurrent invocation.
     pub fn instance_halt(&self) {
         // XXX: record additional metadata about halt?
         self.with_inst(|inst| {
@@ -412,8 +410,7 @@ impl DispCtx {
     }
 
     /// Resets the instance associated with the dispatcher.
-    // TODO: Same question as above; it looks like invalid state transitions
-    // would propagate an error which is being unwrapped here.
+    // TODO: not safe against repeated/concurrent invocation.
     pub fn instance_reset(&self) {
         // XXX: record additional metadata about reset?
         self.with_inst(|inst| {
