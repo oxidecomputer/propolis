@@ -59,7 +59,6 @@ pub enum MmioReq {
 
 #[derive(Debug)]
 pub enum VmExitKind {
-    Vmx,
     Bogus,
     ReqIdle,
     Inout(InoutReq),
@@ -71,7 +70,6 @@ pub enum VmExitKind {
 impl VmExitKind {
     pub fn code(&self) -> i32 {
         match self {
-            VmExitKind::Vmx => vm_exitcode::VM_EXITCODE_VMX as i32,
             VmExitKind::Bogus => vm_exitcode::VM_EXITCODE_BOGUS as i32,
             VmExitKind::ReqIdle => vm_exitcode::VM_EXITCODE_REQIDLE as i32,
             VmExitKind::Inout(_) => vm_exitcode::VM_EXITCODE_INOUT as i32,
@@ -89,11 +87,6 @@ impl From<&vm_exit> for VmExitKind {
             Ok(c) => c,
         };
         match code {
-            vm_exitcode::VM_EXITCODE_VMX => {
-                // TODO: Populate and use this exit type.
-                let _vmx = unsafe { &exit.u.vmx };
-                VmExitKind::Vmx
-            }
             vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
             vm_exitcode::VM_EXITCODE_REQIDLE => VmExitKind::ReqIdle,
             vm_exitcode::VM_EXITCODE_INOUT => {
