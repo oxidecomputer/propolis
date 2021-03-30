@@ -433,11 +433,11 @@ impl pci::Device for PciVirtio {
         self.set_intr_mode(match mode {
             pci::IntrMode::Disabled => IntrMode::IsrOnly,
             pci::IntrMode::INTxPin => IntrMode::IsrLintr,
-            pci::IntrMode::MSIX => IntrMode::Msi,
+            pci::IntrMode::Msix => IntrMode::Msi,
         });
 
         // Make sure the correct legacy register map is used
-        self.map_which.store(mode == pci::IntrMode::MSIX, Ordering::SeqCst);
+        self.map_which.store(mode == pci::IntrMode::Msix, Ordering::SeqCst);
     }
     fn msi_update(&self, info: pci::MsiUpdate, ctx: &DispCtx) {
         let mut state = self.state.lock().unwrap();
@@ -510,7 +510,7 @@ impl VirtioIntr for MsiIntr {
     fn read(&self) -> VqIntr {
         if self.index < self.hdl.count() {
             let data = self.hdl.read(self.index);
-            VqIntr::MSI(data.addr, data.data, data.masked)
+            VqIntr::Msi(data.addr, data.data, data.masked)
         } else {
             VqIntr::Pin
         }

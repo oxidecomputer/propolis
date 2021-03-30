@@ -1,10 +1,15 @@
-pub extern crate bhyve_api;
-extern crate dladm;
-extern crate viona_api;
+// Pull in asm!() support for USDT
+#![feature(asm)]
 
+use usdt::dtrace_provider;
+
+// Define probe macros prior to module imports below.
+dtrace_provider!("usdt.d", format = "probe_{probe}");
+
+pub extern crate bhyve_api;
+pub extern crate usdt;
 #[macro_use]
 extern crate bitflags;
-extern crate byteorder;
 
 pub mod block;
 pub mod chardev;
@@ -34,26 +39,29 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
         }
         let mctx = &ctx.mctx;
 
+        probe_vm_entry!(|| (vcpu.cpuid() as u32));
         let exit = vcpu.run(&next_entry).unwrap();
-        //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
-        match exit.kind {
-            VmExitKind::Bogus => {
-                //println!("rip:{:x} exit: {:?}", exit.rip, exit.kind);
-                next_entry = VmEntry::Run
-            }
+        probe_vm_exit!(|| (
+            vcpu.cpuid() as u32,
+            exit.rip,
+            exit.kind.code() as u32
+        ));
+
+        next_entry = match exit.kind {
+            VmExitKind::Bogus => VmEntry::Run,
             VmExitKind::ReqIdle => {
                 // another thread came in to use this vCPU
                 // it is likely to push us out for a barrier
-                next_entry = VmEntry::Run
+                VmEntry::Run
             }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
                     mctx.pio().handle_out(io.port, io.bytes, val, ctx);
-                    next_entry = VmEntry::InoutFulfill(InoutRes::Out(io));
+                    VmEntry::InoutFulfill(InoutRes::Out(io))
                 }
                 InoutReq::In(io) => {
                     let val = mctx.pio().handle_in(io.port, io.bytes, ctx);
-                    next_entry = VmEntry::InoutFulfill(InoutRes::In(io, val));
+                    VmEntry::InoutFulfill(InoutRes::In(io, val))
                 }
             },
             VmExitKind::Mmio(mmio) => match mmio {
@@ -63,12 +71,11 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                         read.bytes,
                         ctx,
                     );
-                    next_entry =
-                        VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
-                            addr: read.addr,
-                            bytes: read.bytes,
-                            data: val,
-                        }));
+                    VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
+                        addr: read.addr,
+                        bytes: read.bytes,
+                        data: val,
+                    }))
                 }
                 MmioReq::Write(write) => {
                     mctx.mmio().handle_write(
@@ -77,11 +84,10 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                         write.data,
                         ctx,
                     );
-                    next_entry =
-                        VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
-                            addr: write.addr,
-                            bytes: write.bytes,
-                        }));
+                    VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
+                        addr: write.addr,
+                        bytes: write.bytes,
+                    }))
                 }
             },
             VmExitKind::Rdmsr(msr) => {
@@ -89,11 +95,11 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                 // XXX just emulate with 0 for now
                 vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
                 vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
-                next_entry = VmEntry::Run
+                VmEntry::Run
             }
             VmExitKind::Wrmsr(msr, val) => {
                 println!("wrmsr({:x}, {:x})", msr, val);
-                next_entry = VmEntry::Run
+                VmEntry::Run
             }
             VmExitKind::Vmx => {
                 panic!("VMX exits not yet handled");

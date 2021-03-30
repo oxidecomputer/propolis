@@ -21,3 +21,4 @@ num_enum = "0.5"
 bhyve_api = { path = "../bhyve-api" }
 dladm = { path = "../dladm" }
 viona_api = { path = "../viona-api" }
+usdt = "0.1.11"

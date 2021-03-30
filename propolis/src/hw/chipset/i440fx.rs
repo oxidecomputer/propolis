@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use super::{BarPlacer, Chipset};
+use super::Chipset;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::ibmpc;
-use crate::hw::pci::{self, INTxPinID, PioCfgDecoder, BDF};
+use crate::hw::pci::{self, Bdf, INTxPinID, PioCfgDecoder};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
@@ -55,9 +55,9 @@ impl I440Fx {
         let lpcdev = Piix3Lpc::create(Arc::downgrade(&this));
         let pmdev = Piix3PM::create();
 
-        this.pci_attach(BDF::new(0, 0, 0), hbdev);
-        this.pci_attach(BDF::new(0, 1, 0), lpcdev);
-        this.pci_attach(BDF::new(0, 1, 3), pmdev);
+        this.pci_attach(Bdf::new(0, 0, 0), hbdev);
+        this.pci_attach(Bdf::new(0, 1, 0), lpcdev);
+        this.pci_attach(Bdf::new(0, 1, 3), pmdev);
 
         this
     }
@@ -82,12 +82,12 @@ impl I440Fx {
         self.lnk_pins[idx].reassign(irq.and_then(|i| self.pic.pin_handle(i)));
     }
 
-    fn route_lintr(&self, bdf: &BDF) -> (INTxPinID, Arc<dyn IntrPin>) {
+    fn route_lintr(&self, bdf: &Bdf) -> (INTxPinID, Arc<dyn IntrPin>) {
         let intx_pin = match (bdf.func() + 1) % 4 {
-            1 => INTxPinID::INTA,
-            2 => INTxPinID::INTB,
-            3 => INTxPinID::INTC,
-            4 => INTxPinID::INTD,
+            1 => INTxPinID::IntA,
+            2 => INTxPinID::IntB,
+            3 => INTxPinID::IntC,
+            4 => INTxPinID::IntD,
             _ => panic!(),
         };
         // D->A->B->C starting at 0:0.0
@@ -97,33 +97,9 @@ impl I440Fx {
             Arc::clone(&self.lnk_pins[pin_route as usize]) as Arc<dyn IntrPin>,
         )
     }
-    fn place_bars(&self) {
-        let bus = self.pci_bus.lock().unwrap();
-
-        let mut bar_placer = BarPlacer::new();
-        bar_placer.add_avail_pio(0xc000, 0x4000);
-        bar_placer.add_avail_mmio(0xe0000000, 0x10000000);
-
-        for (slot, func, dev) in bus.iter() {
-            dev.bar_for_each(&mut |bar, def| {
-                bar_placer.add_bar((slot, func, bar), def);
-            });
-        }
-        let remain = bar_placer.place(|(slot, func, bar), addr| {
-            println!(
-                "placing {:?} @ {:x} for 0:{:x}:{:x}",
-                bar, addr, slot, func
-            );
-            let dev = bus.device_at(slot, func).unwrap();
-            dev.bar_place(bar, addr as u64);
-        });
-        if let Some((pio, mmio)) = remain {
-            panic!("Unfulfilled BAR allocations! pio:{} mmio:{}", pio, mmio);
-        }
-    }
 }
 impl Chipset for I440Fx {
-    fn pci_attach(&self, bdf: BDF, dev: Arc<dyn pci::Endpoint>) {
+    fn pci_attach(&self, bdf: Bdf, dev: Arc<dyn pci::Endpoint>) {
         assert!(bdf.bus() == 0);
 
         dev.attach(&|| self.route_lintr(&bdf));
@@ -136,7 +112,6 @@ impl Chipset for I440Fx {
         let cfg_pio2 = Weak::clone(&cfg_pio);
         pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, cfg_pio, 0).unwrap();
         pio.register(pci::PORT_PCI_CONFIG_DATA, 4, cfg_pio2, 0).unwrap();
-        self.place_bars();
     }
     fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
         self.pic.pin_handle(irq)

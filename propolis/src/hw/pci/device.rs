@@ -149,8 +149,8 @@ struct Bars {
 }
 
 impl Bars {
-    fn new() -> Self {
-        Self {
+    fn new(defs: &[Option<BarDefine>; 6]) -> Self {
+        let mut this = Self {
             entries: [
                 BarEntry::new(),
                 BarEntry::new(),
@@ -159,7 +159,23 @@ impl Bars {
                 BarEntry::new(),
                 BarEntry::new(),
             ],
+        };
+        for (idx, def) in
+            defs.iter().enumerate().filter_map(|(n, def)| def.map(|d| (n, d)))
+        {
+            // Make sure 64-bit BAR definitions are playing by the rules
+            if matches!(def, BarDefine::Mmio64(_)) {
+                assert!(idx < 5);
+                assert!(matches!(defs[idx + 1], Some(BarDefine::Mmio64High)));
+            }
+            if matches!(def, BarDefine::Mmio64High) {
+                assert_ne!(idx, 0);
+                assert!(matches!(defs[idx - 1], Some(BarDefine::Mmio64(_))));
+            }
+            this.entries[idx].define = Some(def);
         }
+
+        this
     }
     fn reg_read(&self, bar: BarN) -> u32 {
         let idx = bar as usize;
@@ -206,7 +222,7 @@ impl Bars {
             BarDefine::Mmio64(size) => {
                 let old = state.addr;
                 let mask = !(size - 1) as u32;
-                let low = old as u32 & mask;
+                let low = val as u32 & mask;
                 state.addr = (old & (0xffffffff << 32)) | low as u64;
                 (old, state)
             }
@@ -221,7 +237,8 @@ impl Bars {
                 };
                 let mask = !(size - 1);
                 let old = state.addr;
-                state.addr = ((val as u64) << 32) & mask | (old & 0xffffffff);
+                let high = (((val as u64) << 32) & mask) & 0xffffffff00000000;
+                state.addr = high | (old & 0xffffffff);
                 (old, state)
             }
         };
@@ -236,6 +253,11 @@ impl Bars {
         F: Fn(BarN, &BarDefine, u64, bool) -> Option<bool>,
     {
         self.for_each(|barn, def| {
+            if def == &BarDefine::Mmio64High {
+                // The high portion of 64-bit BARs does not require direct
+                // handling, as the low portion bears the necessary information.
+                return;
+            }
             let mut state = self.entries[barn as usize].state.lock().unwrap();
             if let Some(new_reg_state) =
                 changef(barn, def, state.addr, state.registered)
@@ -455,27 +477,25 @@ impl DeviceInst {
                             bus.register(new as u16, *sz, dev, *bar as usize)
                                 .is_err()
                         }
-                        BarDefine::Mmio(sz) => {
+                        BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
                             if !state.reg_command.contains(RegCmd::MMIO_EN) {
                                 // mmio mappings are disabled via cmd reg
                                 return false;
                             }
+                            let sz = match def {
+                                BarDefine::Mmio(s) => *s as usize,
+                                BarDefine::Mmio64(s) => *s as usize,
+                                _ => panic!(),
+                            };
                             let bus = ctx.mctx.mmio();
                             // We know this was previously registered
                             let (dev, old_bar) =
                                 bus.unregister(old as usize).unwrap();
                             assert_eq!(old_bar, *bar as usize);
-                            bus.register(
-                                new as usize,
-                                *sz as usize,
-                                dev,
-                                *bar as usize,
-                            )
-                            .is_err()
+                            bus.register(new as usize, sz, dev, *bar as usize)
+                                .is_err()
                         }
-                        _ => {
-                            todo!("wire up mmio64 later");
-                        }
+                        BarDefine::Mmio64High => panic!(),
                     }
                 });
             }
@@ -485,13 +505,20 @@ impl DeviceInst {
             | StdCfgReg::Subclass
             | StdCfgReg::SubVendorId
             | StdCfgReg::SubDeviceId
+            | StdCfgReg::HeaderType
             | StdCfgReg::ProgIf
             | StdCfgReg::RevisionId
+            | StdCfgReg::CapPtr
+            | StdCfgReg::IntrPin
             | StdCfgReg::Reserved => {
                 // ignore writes to RO fields
             }
             StdCfgReg::ExpansionRomAddr => {
                 // no expansion rom for now
+            }
+            StdCfgReg::Status => {
+                // Treat status register as RO until there is a need for guests
+                // to clear bits within it
             }
             StdCfgReg::CacheLineSize
             | StdCfgReg::LatencyTimer
@@ -500,10 +527,6 @@ impl DeviceInst {
             | StdCfgReg::MinGrant
             | StdCfgReg::CardbusPtr => {
                 // XXX: ignored for now
-            }
-            _ => {
-                println!("Unhandled write {:?}", id);
-                // discard all other writes
             }
         }
     }
@@ -525,7 +548,7 @@ impl DeviceInst {
         if self.msix_cfg.is_some()
             && self.msix_cfg.as_ref().unwrap().is_enabled()
         {
-            return IntrMode::MSIX;
+            return IntrMode::Msix;
         }
         if state.lintr_pin.is_some()
             && !state.reg_command.contains(RegCmd::INTX_DIS)
@@ -601,7 +624,9 @@ impl DeviceInst {
 
                     None
                 }
-                _ => todo!("wire up MMIO later"),
+                // Registration for the high portion of a 64-bit BAR is not
+                // handled separately.
+                BarDefine::Mmio64High => panic!(),
             },
         );
     }
@@ -781,7 +806,7 @@ impl INTxPin {
 pub enum IntrMode {
     Disabled,
     INTxPin,
-    MSIX,
+    Msix,
 }
 
 pub enum MsiUpdate {
@@ -833,7 +858,7 @@ enum MsixBarReg {
     Data(u16),
     VecCtrl(u16),
     Reserved,
-    PBA,
+    Pba,
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum MsixCapReg {
@@ -925,14 +950,29 @@ impl MsixCfg {
             map.define(off + 12, 4, MsixBarReg::VecCtrl(i));
             off += 16;
         }
-        map.define_with_flags(
-            off,
-            table_pad,
-            MsixBarReg::Reserved,
-            Flags::PASSTHRU,
-        );
+        if table_pad != 0 {
+            map.define_with_flags(
+                off,
+                table_pad,
+                MsixBarReg::Reserved,
+                Flags::PASSTHRU,
+            );
+        }
         off += table_pad;
-        map.define_with_flags(off, pba_size, MsixBarReg::PBA, Flags::PASSTHRU);
+        map.define_with_flags(off, pba_size, MsixBarReg::Pba, Flags::PASSTHRU);
+        off += pba_size;
+
+        // If table sizing leaves space after the PBA in order to pad the BAR
+        // out to the next power of 2, cover it with Reserved handling.
+        if off < bar_size {
+            let pba_pad = bar_size - off;
+            map.define_with_flags(
+                off,
+                pba_pad,
+                MsixBarReg::Reserved,
+                Flags::PASSTHRU,
+            );
+        }
 
         let mut entries = Vec::with_capacity(count as usize);
         entries.resize_with(count as usize, Default::default);
@@ -978,7 +1018,7 @@ impl MsixCfg {
                 MsixBarReg::Reserved => {
                     ro.fill(0);
                 }
-                MsixBarReg::PBA => {
+                MsixBarReg::Pba => {
                     self.read_pba(ro);
                 }
             },
@@ -1008,7 +1048,7 @@ impl MsixCfg {
                         drop(ent);
                         updatef(MsiUpdate::Modify(*i));
                     }
-                    MsixBarReg::Reserved | MsixBarReg::PBA => {}
+                    MsixBarReg::Reserved | MsixBarReg::Pba => {}
                 }
                 drop(state);
             }
@@ -1192,6 +1232,11 @@ impl<I: Device + 'static> Builder<I> {
         }
     }
 
+    /// Add a BAR which is accessible via IO ports
+    ///
+    /// # Panics
+    ///
+    /// If `size` is < 4 or not a power of 2.
     pub fn add_bar_io(mut self, bar: BarN, size: u16) -> Self {
         assert!(size.is_power_of_two());
         assert!(size >= 4);
@@ -1202,6 +1247,13 @@ impl<I: Device + 'static> Builder<I> {
         self.bars[idx] = Some(BarDefine::Pio(size));
         self
     }
+
+    /// Add a BAR which is accessible via MMIO.  The size and placement of the
+    /// BAR is limited to the 32-bit address space.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is < 16 or not a power of 2.
     pub fn add_bar_mmio(mut self, bar: BarN, size: u32) -> Self {
         assert!(size.is_power_of_two());
         assert!(size >= 16);
@@ -1212,6 +1264,14 @@ impl<I: Device + 'static> Builder<I> {
         self.bars[idx] = Some(BarDefine::Mmio(size));
         self
     }
+
+    /// Add a BAR which is accessible via MMIO.  As a 64-bit BAR, its size can
+    /// be >= 4G, and it is expected to be placed above the 32-bit address
+    /// limit.
+    ///
+    /// # Panics
+    ///
+    /// If `size` is < 16 or not a power of 2.
     pub fn add_bar_mmio64(mut self, bar: BarN, size: u64) -> Self {
         assert!(size.is_power_of_two());
         assert!(size >= 16);
@@ -1225,10 +1285,15 @@ impl<I: Device + 'static> Builder<I> {
         self.bars[idx + 1] = Some(BarDefine::Mmio64High);
         self
     }
+
+    /// Add a legacy (pin-based) interrupt
     pub fn add_lintr(mut self) -> Self {
         self.lintr_req = true;
         self
     }
+
+    /// Add a region of the PCI config space for the device which has custom
+    /// handling.
     pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
         self.cfgmap.define_with_flags(
             offset as usize,
@@ -1258,6 +1323,13 @@ impl<I: Device + 'static> Builder<I> {
         self.cap_next_alloc = end;
     }
 
+    /// Add MSI-X interrupt functionality.
+    ///
+    /// # Panics
+    ///
+    /// If:
+    /// - `count` is 0 or > 2048
+    /// - `bar` conflicts (overlaps) with other defined BAR for the device
     pub fn add_cap_msix(mut self, bar: BarN, count: u16) -> Self {
         assert!(self.msix_cfg.is_none());
 
@@ -1271,16 +1343,8 @@ impl<I: Device + 'static> Builder<I> {
         self
     }
 
-    fn generate_bars(&self) -> Bars {
-        let mut bars = Bars::new();
-        for (idx, ent) in self.bars.iter().enumerate() {
-            bars.entries[idx].define = *ent;
-        }
-        bars
-    }
-
     pub fn finish(self, inner: Arc<I>) -> Arc<DeviceInst> {
-        let bars = self.generate_bars();
+        let bars = Bars::new(&self.bars);
 
         let inner_any =
             Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
@@ -1299,5 +1363,78 @@ impl<I: Device + 'static> Builder<I> {
         let mut done = Arc::new(inst);
         SelfArc::self_arc_init(&mut done);
         done
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn bar_setup() -> Bars {
+        let bar_defs = [
+            Some(BarDefine::Pio(0x100)),
+            Some(BarDefine::Mmio(0x20000)),
+            Some(BarDefine::Mmio64(0x40000)),
+            Some(BarDefine::Mmio64High),
+            Some(BarDefine::Mmio64(0x200000000)),
+            Some(BarDefine::Mmio64High),
+        ];
+        let bars = Bars::new(&bar_defs);
+        bars.place(BarN::BAR0, 0x1000);
+        bars.place(BarN::BAR1, 0xc000000);
+        bars.place(BarN::BAR2, 0xd000000);
+        bars.place(BarN::BAR4, 0x800000000);
+
+        bars
+    }
+    #[test]
+    fn bar_init() {
+        let _ = bar_setup();
+    }
+
+    #[test]
+    fn bar_limits() {
+        let bars = bar_setup();
+
+        assert_eq!(bars.reg_read(BarN::BAR0), 0x1001);
+        assert_eq!(bars.reg_read(BarN::BAR1), 0xc000000);
+        assert_eq!(bars.reg_read(BarN::BAR2), 0xd000004);
+        assert_eq!(bars.reg_read(BarN::BAR3), 0);
+        assert_eq!(bars.reg_read(BarN::BAR4), 0x4);
+        assert_eq!(bars.reg_read(BarN::BAR5), 0x8);
+        for i in 0..=5u8 {
+            bars.reg_write(
+                BarN::try_from(i).unwrap(),
+                0xffffffff,
+                |_, _, _| false,
+            );
+        }
+        assert_eq!(bars.reg_read(BarN::BAR0), 0x0000ff01);
+        assert_eq!(bars.reg_read(BarN::BAR1), 0xfffe0000);
+        assert_eq!(bars.reg_read(BarN::BAR2), 0xfffc0004);
+        assert_eq!(bars.reg_read(BarN::BAR3), 0xffffffff);
+        assert_eq!(bars.reg_read(BarN::BAR4), 0x00000004);
+        assert_eq!(bars.reg_read(BarN::BAR5), 0xfffffffe);
+    }
+
+    #[test]
+    #[should_panic]
+    fn msix_cfg_zero() {
+        let (_cfg, _bsize) = MsixCfg::new(0, BarN::BAR1);
+    }
+    #[test]
+    #[should_panic]
+    fn msix_cfg_too_big() {
+        let (_cfg, _bsize) = MsixCfg::new(2049, BarN::BAR1);
+    }
+    #[test]
+    fn msix_cfg_sizing() {
+        let (_cfg, bar_size) = MsixCfg::new(2048, BarN::BAR1);
+        // 32k for entries + 4k PBA -> 64k (rounded to next pow2)
+        assert_eq!(bar_size, 65536);
+
+        // 4k for entries + 4k PBA
+        let (_cfg, bar_size) = MsixCfg::new(256, BarN::BAR1);
+        assert_eq!(bar_size, 8192);
     }
 }

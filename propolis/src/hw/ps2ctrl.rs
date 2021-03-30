@@ -309,6 +309,8 @@ impl PS2ScanCodeSet {
     }
 }
 
+// TODO: wire up remote console to enabled/led_status/typematic
+#[allow(unused)]
 struct PS2Kbd {
     buf: VecDeque<u8>,
     cur_cmd: Option<u8>,

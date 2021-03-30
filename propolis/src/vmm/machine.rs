@@ -196,18 +196,14 @@ impl<'a> MemCtx<'a> {
         base: GuestAddr,
         count: usize,
     ) -> Option<MemMany<T>> {
-        if let Some(ptr) =
-            self.region_covered(base, size_of::<T>() * count, Prot::READ)
-        {
-            Some(MemMany {
+        self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
+            |ptr| MemMany {
                 ptr: ptr.as_ptr() as *const T,
                 pos: 0,
                 count,
                 phantom: PhantomData,
-            })
-        } else {
-            None
-        }
+            },
+        )
     }
     /// Writes a value to guest memory.
     pub fn write<T: Copy>(&self, addr: GuestAddr, val: &T) -> bool {

@@ -1,3 +1,6 @@
+// Required for USDT
+#![feature(asm)]
+
 extern crate pico_args;
 extern crate propolis;
 extern crate serde;
@@ -17,6 +20,8 @@ use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, State};
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
+
+use propolis::usdt::register_probes;
 
 mod config;
 
@@ -78,6 +83,9 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
 }
 
 fn main() {
+    // Ensure proper setup of USDT probes
+    register_probes().unwrap();
+
     let config = parse_args();
 
     let vm_name = config.get_name();
