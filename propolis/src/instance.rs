@@ -164,7 +164,7 @@ impl Instance {
         });
     }
 
-    /// Registers  callback, `func`, whichi si invoked whenever a state
+    /// Registers  callback, `func`, which is invoked whenever a state
     /// transition occurs.
     pub fn on_transition(&self, func: Box<TransitionFunc>) {
         let mut state = self.state.lock().unwrap();

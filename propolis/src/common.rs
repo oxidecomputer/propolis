@@ -209,7 +209,8 @@ impl<'a> WriteOp<'a> {
     /// # Arguments
     ///
     /// - `op_offset`: An auxiliary offset stored within the operation,
-    /// identifying the region where `buf` should be stored.
+    /// identifying the region within the emulated resource where `buf` should
+    /// be stored.
     /// - `buf`: A buffer which represents the "source" of the write operation.
     pub fn new_buf(op_offset: usize, buf: &'a [u8]) -> Self {
         Self { inner: WOInner::Buf(buf), offset: op_offset, read_offset: 0 }

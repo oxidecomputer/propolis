@@ -36,7 +36,7 @@ pub trait BlockReq: Send + Sync + 'static {
     fn offset(&self) -> usize;
     /// Returns the next region of memory within a request to a block device.
     fn next_buf(&mut self) -> Option<GuestRegion>;
-    /// Signals to the driver emulation that a block operation has been completed.
+    /// Signals to the device emulation that a block operation has been completed.
     fn complete(self, res: BlockResult, ctx: &DispCtx);
 }
 

@@ -385,7 +385,6 @@ impl DispCtx {
 
     /// Returns true if the function holding this [`DispCtx`] object
     /// should yield control back to the dispatcher.
-    // TODO: Why "&mut self", not just "&self"?
     pub fn check_yield(&mut self) -> bool {
         if let Some(ctrl) = self.ctrl.as_ref() {
             ctrl.check_yield()
