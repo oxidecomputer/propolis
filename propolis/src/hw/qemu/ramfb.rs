@@ -62,7 +62,7 @@ impl Config {
         let total_sz = u32::checked_mul(self.height - 1, line_sz)?
             .checked_add(self.width)?
             .checked_mul(bypp)?;
-        let _ = mem.raw_readable(&GuestRegion(
+        let _ = mem.readable_region(&GuestRegion(
             GuestAddr(self.addr),
             total_sz as usize,
         ))?;

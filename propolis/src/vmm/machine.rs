@@ -3,7 +3,7 @@
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ptr::{copy_nonoverlapping, NonNull};
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 use crate::common::{GuestAddr, GuestRegion};
@@ -12,7 +12,7 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::VcpuHdl;
-use crate::vmm::{create_vm, Prot, VmmHdl};
+use crate::vmm::{create_vm, SubMapping, Mapping, Prot, VmmHdl};
 
 // XXX: Arbitrary limits for now
 pub const MAX_PHYSMEM: usize = 0x80_0000_0000;
@@ -41,13 +41,9 @@ struct MapEnt {
     name: String,
     // A mapping of the guest address space within the address space of
     // propolis.
-    guest_map: Option<NonNull<u8>>,
-    dev_map: Option<Mutex<NonNull<u8>>>,
+    guest_map: Option<Mapping>,
+    dev_map: Option<Mutex<Mapping>>,
 }
-// SAFETY: Consumers of the NonNull pointers must take care not to allow them
-// to fall prey to aliasing issues.
-unsafe impl Send for MapEnt {}
-unsafe impl Sync for MapEnt {}
 
 /// The aggregate representation of a virtual machine.
 ///
@@ -71,7 +67,7 @@ impl Machine {
     /// on the entry's device mapping.
     pub fn populate_rom<F>(&self, name: &str, func: F) -> Result<()>
     where
-        F: FnOnce(NonNull<u8>, usize) -> Result<()>,
+        F: FnOnce(&Mapping, usize) -> Result<()>,
     {
         let (_addr, len, ent) = self
             .map_physmem
@@ -88,7 +84,7 @@ impl Machine {
             })?;
         assert!(ent.dev_map.is_some());
         let ptr = ent.dev_map.as_ref().unwrap().lock().unwrap();
-        func(*ptr, len)
+        func(&*ptr, len)
     }
 
     /// Initialize the real-time-clock of the device.
@@ -160,10 +156,7 @@ impl<'a> MemCtx<'a> {
     pub fn read<T: Copy>(&self, addr: GuestAddr) -> Option<T> {
         if let Some(ptr) = self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
-            unsafe {
-                let typed = ptr.as_ptr() as *const T;
-                Some(typed.read_unaligned())
-            }
+            ptr.read().ok()
         } else {
             None
         }
@@ -175,14 +168,9 @@ impl<'a> MemCtx<'a> {
         &self,
         addr: GuestAddr,
         buf: &mut [u8],
-        len: usize,
     ) -> Option<usize> {
-        if let Some(ptr) = self.region_covered(addr, len, Prot::READ) {
-            let to_copy = usize::min(buf.len(), len);
-            unsafe {
-                copy_nonoverlapping(ptr.as_ptr(), buf.as_mut_ptr(), to_copy);
-            }
-            Some(to_copy)
+        if let Some(ptr) = self.region_covered(addr, buf.len(),  Prot::READ) {
+            ptr.read_bytes(buf).ok()
         } else {
             None
         }
@@ -195,7 +183,7 @@ impl<'a> MemCtx<'a> {
     ) -> Option<MemMany<T>> {
         self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
             |ptr| MemMany {
-                ptr: ptr.as_ptr() as *const T,
+                ptr,
                 pos: 0,
                 count,
                 phantom: PhantomData,
@@ -207,54 +195,40 @@ impl<'a> MemCtx<'a> {
         if let Some(ptr) =
             self.region_covered(addr, size_of::<T>(), Prot::WRITE)
         {
-            unsafe {
-                let typed = ptr.as_ptr() as *mut T;
-                typed.write_unaligned(*val);
-            }
-            true
+            ptr.write(val).is_ok()
         } else {
             false
         }
     }
     /// Writes bytes from a buffer to guest memory.
-    ///
-    /// Writes up to `buf.len()` or `len` bytes, whichever is smaller.
     pub fn write_from(
         &self,
         addr: GuestAddr,
         buf: &[u8],
-        len: usize,
     ) -> Option<usize> {
-        if let Some(ptr) = self.region_covered(addr, len, Prot::WRITE) {
-            let to_copy = usize::min(buf.len(), len);
-            unsafe {
-                copy_nonoverlapping(buf.as_ptr(), ptr.as_ptr(), to_copy);
-            }
-            Some(to_copy)
+        if let Some(ptr) = self.region_covered(addr, buf.len(), Prot::WRITE) {
+            ptr.write_bytes(buf).ok()
         } else {
             None
         }
     }
+
     /// Writes a single value to guest memory.
-    pub fn write_bytes(&self, addr: GuestAddr, val: u8, count: usize) -> bool {
+    pub fn write_byte(&self, addr: GuestAddr, val: u8, count: usize) -> bool {
         if let Some(ptr) = self.region_covered(addr, count, Prot::WRITE) {
-            unsafe {
-                ptr.as_ptr().write_bytes(val, count);
-            }
-            true
+            ptr.write_byte(val, count).is_ok()
         } else {
             false
         }
     }
 
-    /// Returns a raw writable pointer to the start of the guest address.
-    pub fn raw_writable(&self, region: &GuestRegion) -> Option<*mut u8> {
-        let ptr = self.region_covered(region.0, region.1, Prot::WRITE)?;
-        Some(ptr.as_ptr())
+    pub fn writable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+        let mapping = self.region_covered(region.0, region.1, Prot::WRITE)?;
+        Some(mapping)
     }
-    pub fn raw_readable(&self, region: &GuestRegion) -> Option<*const u8> {
-        let ptr = self.region_covered(region.0, region.1, Prot::READ)?;
-        Some(ptr.as_ptr() as *const u8)
+    pub fn readable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+        let mapping = self.region_covered(region.0, region.1, Prot::READ)?;
+        Some(mapping)
     }
 
     // Looks up a region of memory in the guest's address space,
@@ -264,7 +238,7 @@ impl<'a> MemCtx<'a> {
         addr: GuestAddr,
         len: usize,
         need_prot: Prot,
-    ) -> Option<NonNull<u8>> {
+    ) -> Option<SubMapping> {
         let start = addr.0 as usize;
         let end = start + len;
         if let Ok((addr, rlen, ent)) = self.map.region_at(start) {
@@ -274,12 +248,10 @@ impl<'a> MemCtx<'a> {
             let req_offset = start - addr;
             match ent.kind {
                 MapKind::SysMem(_, prot) | MapKind::Rom(_, prot) => {
+                    // TODO: This protection check may be redundant with mapping
                     if prot.contains(need_prot) {
-                        let base = ent.guest_map.as_ref().unwrap();
-                        let res = unsafe {
-                            NonNull::new(base.as_ptr().add(req_offset)).unwrap()
-                        };
-                        return Some(res);
+                        let base = ent.guest_map.as_ref().unwrap().as_ref();
+                        return base.subregion(req_offset);
                     }
                 }
                 _ => {}
@@ -290,27 +262,25 @@ impl<'a> MemCtx<'a> {
 }
 
 /// A contiguous region of memory containing generic objects.
-pub struct MemMany<T: Copy> {
-    ptr: *const T,
+pub struct MemMany<'a, T: Copy> {
+    ptr: SubMapping<'a>,
     count: usize,
     pos: usize,
-    // XXX: This doesn't seem necessary; why is it here?
     phantom: PhantomData<T>,
 }
-impl<T: Copy> MemMany<T> {
+impl<'a, T: Copy> MemMany<'a, T> {
     /// Gets the object at position `pos` within the memory region.
     ///
     /// Returns [`Option::None`] if out of range.
     pub fn get(&self, pos: usize) -> Option<T> {
         if pos < self.count {
-            let val = unsafe { self.ptr.add(pos).read_unaligned() };
-            Some(val)
+            self.ptr.subregion(pos)?.read().ok()
         } else {
             None
         }
     }
 }
-impl<T: Copy> Iterator for MemMany<T> {
+impl<'a, T: Copy> Iterator for MemMany<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -511,9 +481,7 @@ impl Builder {
                             Some(NonNull::new(addr).unwrap()),
                         )?
                     };
-                    let dev =
-                        NonNull::new(unsafe { hdl.mmap_seg(segid, len)? })
-                            .unwrap();
+                    let dev = hdl.mmap_seg(segid, len)?;
                     (Some(ptr), Some(Mutex::new(dev)))
                 }
                 MapKind::MmioReserve => (None, None),

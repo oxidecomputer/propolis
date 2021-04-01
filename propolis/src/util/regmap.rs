@@ -122,7 +122,7 @@ impl<ID> RegMap<ID> {
         } else {
             let mut scratch = Vec::new();
             scratch.resize(reg_len, 0);
-            let mut sro = ReadOp::new_buf(0, &mut scratch);
+            let mut sro = ReadOp::from_buf(0, &mut scratch);
 
             f(&reg.id, RWOp::Read(&mut sro));
             drop(sro);
@@ -153,7 +153,7 @@ impl<ID> RegMap<ID> {
 
             debug_assert!(scratch.len() == reg_len);
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
-                let mut sro = ReadOp::new_buf(0, &mut scratch);
+                let mut sro = ReadOp::from_buf(0, &mut scratch);
                 f(&reg.id, RWOp::Read(&mut sro));
             }
             copy_op.read_bytes(
@@ -161,7 +161,7 @@ impl<ID> RegMap<ID> {
                     [copy_op.offset()..(copy_op.offset() + copy_op.len())],
             );
 
-            f(&reg.id, RWOp::Write(&mut WriteOp::new_buf(0, &scratch)));
+            f(&reg.id, RWOp::Write(&mut WriteOp::from_buf(0, &scratch)));
         }
     }
 
@@ -293,14 +293,14 @@ mod test {
     fn read(off: usize, len: usize, cb: impl FnOnce(RWOp)) {
         let mut buf = Vec::with_capacity(len);
         buf.resize(len, 0);
-        let mut ro = ReadOp::new_buf(off, &mut buf[..]);
+        let mut ro = ReadOp::from_buf(off, &mut buf);
         cb(RWOp::Read(&mut ro))
     }
     #[allow(unused)]
     fn write(off: usize, len: usize, cb: impl FnOnce(&mut RWOp)) {
         let mut buf = Vec::with_capacity(len);
         buf.resize(len, 0);
-        let mut wo = WriteOp::new_buf(off, &buf[..]);
+        let mut wo = WriteOp::from_buf(off, &buf);
         cb(&mut RWOp::Write(&mut wo))
     }
     fn drive_reads<ID: Copy + Eq>(

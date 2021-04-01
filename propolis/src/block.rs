@@ -12,8 +12,6 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::common::*;
 use crate::dispatch::{DispCtx, Dispatcher};
 
-use libc::{c_void, pread, pwrite};
-
 /// Type of operations which may be issued to a virtual block device.
 #[derive(Copy, Clone, Debug)]
 pub enum BlockOp {
@@ -126,18 +124,16 @@ impl<R: BlockReq> PlainBdev<R> {
 
         let mut offset = req.offset();
         while let Some(buf) = req.next_buf() {
-            if let Some(rbuf) = mem.raw_writable(&buf) {
-                let nread = unsafe {
-                    pread(self.fd, rbuf as *mut c_void, buf.1, offset as i64)
-                };
-                if nread == -1 {
-                    // XXX: error reporting
+            if let Some(mapping) = mem.writable_region(&buf) {
+                if let Ok(nread) = mapping.pread(self.fd, buf.1, offset as i64) {
+                    assert_eq!(nread as usize, buf.1);
+                    offset += buf.1;
+                } else {
+                    // XXX: Error reporting (bad read)
                     return BlockResult::Failure;
                 }
-                assert_eq!(nread as usize, buf.1);
-                offset += buf.1;
             } else {
-                // XXX: report bad addr
+                // XXX: Error reporting (bad addr)
                 return BlockResult::Failure;
             }
         }
@@ -148,18 +144,16 @@ impl<R: BlockReq> PlainBdev<R> {
 
         let mut offset = req.offset();
         while let Some(buf) = req.next_buf() {
-            if let Some(wbuf) = mem.raw_readable(&buf) {
-                let nwritten = unsafe {
-                    pwrite(self.fd, wbuf as *const c_void, buf.1, offset as i64)
-                };
-                if nwritten == -1 {
-                    // XXX: error reporting
+            if let Some(mapping) = mem.readable_region(&buf) {
+                if let Ok(nwritten) = mapping.pwrite(self.fd, buf.1, offset as i64) {
+                    assert_eq!(nwritten as usize, buf.1);
+                    offset += buf.1;
+                } else {
+                    // XXX: Error reporting (bad write)
                     return BlockResult::Failure;
                 }
-                assert_eq!(nwritten as usize, buf.1);
-                offset += buf.1;
             } else {
-                // XXX: report bad addr
+                // XXX: Error reporting (bad addr)
                 return BlockResult::Failure;
             }
         }

@@ -389,8 +389,9 @@ impl Chain {
         };
         let mut done = 0;
         let total = self.for_remaining_type(true, |addr, len| {
-            let remain = &mut raw[done..];
-            if let Some(copied) = mem.read_into(addr, remain, len) {
+            let len = usize::min(raw.len(), len);
+            let remain = &mut raw[done..len];
+            if let Some(copied) = mem.read_into(addr, remain) {
                 let need_more = copied != remain.len();
 
                 done += copied;
@@ -429,8 +430,8 @@ impl Chain {
         };
         let mut done = 0;
         let total = self.for_remaining_type(false, |addr, len| {
-            let remain = &raw[done..];
-            if let Some(copied) = mem.write_from(addr, remain, len) {
+            let remain = &raw[done..usize::min(raw.len(), done + len)];
+            if let Some(copied) = mem.write_from(addr, remain) {
                 let need_more = copied != remain.len();
 
                 done += copied;
