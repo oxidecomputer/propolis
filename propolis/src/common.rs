@@ -106,8 +106,8 @@ impl<'a> ReadOp<'a> {
             },
             ROInner::Map(m) => {
                 let (start, end) = numeric_bounds(range, m.len());
-                let mut m = m.subregion(start).unwrap();
-                m.set_length(end - start);
+                let len = end - start;
+                let m = m.subregion(start, len).unwrap();
                 ReadOp {
                     inner: ROInner::Map(m),
                     offset: op_offset,
@@ -230,8 +230,8 @@ impl<'a> WriteOp<'a> {
             },
             WOInner::Map(m) => {
                 let (start, end) = numeric_bounds(range, m.len());
-                let mut m = m.subregion(start).unwrap();
-                m.set_length(end - start);
+                let len = end - start;
+                let m = m.subregion(start, len).unwrap();
                 WriteOp {
                     inner: WOInner::Map(m),
                     offset: op_offset,

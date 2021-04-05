@@ -83,8 +83,8 @@ impl Machine {
                 )
             })?;
         assert!(ent.dev_map.is_some());
-        let ptr = ent.dev_map.as_ref().unwrap().lock().unwrap();
-        func(&*ptr, len)
+        let mapping= ent.dev_map.as_ref().unwrap().lock().unwrap();
+        func(&*mapping, len)
     }
 
     /// Initialize the real-time-clock of the device.
@@ -154,9 +154,9 @@ impl<'a> MemCtx<'a> {
     }
     /// Reads a generic value from a specified guest address.
     pub fn read<T: Copy>(&self, addr: GuestAddr) -> Option<T> {
-        if let Some(ptr) = self.region_covered(addr, size_of::<T>(), Prot::READ)
+        if let Some(mapping) = self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
-            ptr.read().ok()
+            mapping.read().ok()
         } else {
             None
         }
@@ -168,9 +168,11 @@ impl<'a> MemCtx<'a> {
         &self,
         addr: GuestAddr,
         buf: &mut [u8],
+        len: usize,
     ) -> Option<usize> {
-        if let Some(ptr) = self.region_covered(addr, buf.len(),  Prot::READ) {
-            ptr.read_bytes(buf).ok()
+        let len = usize::min(buf.len(), len);
+        if let Some(mapping) = self.region_covered(addr, len, Prot::READ) {
+            mapping.read_bytes(&mut buf[..len]).ok()
         } else {
             None
         }
@@ -182,8 +184,8 @@ impl<'a> MemCtx<'a> {
         count: usize,
     ) -> Option<MemMany<T>> {
         self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
-            |ptr| MemMany {
-                ptr,
+            |mapping| MemMany {
+                mapping,
                 pos: 0,
                 count,
                 phantom: PhantomData,
@@ -192,10 +194,10 @@ impl<'a> MemCtx<'a> {
     }
     /// Writes a value to guest memory.
     pub fn write<T: Copy>(&self, addr: GuestAddr, val: &T) -> bool {
-        if let Some(ptr) =
+        if let Some(mapping) =
             self.region_covered(addr, size_of::<T>(), Prot::WRITE)
         {
-            ptr.write(val).is_ok()
+            mapping.write(val).is_ok()
         } else {
             false
         }
@@ -205,9 +207,11 @@ impl<'a> MemCtx<'a> {
         &self,
         addr: GuestAddr,
         buf: &[u8],
+        len: usize,
     ) -> Option<usize> {
-        if let Some(ptr) = self.region_covered(addr, buf.len(), Prot::WRITE) {
-            ptr.write_bytes(buf).ok()
+        let len = usize::min(buf.len(), len);
+        if let Some(mapping) = self.region_covered(addr, len, Prot::WRITE) {
+            mapping.write_bytes(&buf[..len]).ok()
         } else {
             None
         }
@@ -215,8 +219,8 @@ impl<'a> MemCtx<'a> {
 
     /// Writes a single value to guest memory.
     pub fn write_byte(&self, addr: GuestAddr, val: u8, count: usize) -> bool {
-        if let Some(ptr) = self.region_covered(addr, count, Prot::WRITE) {
-            ptr.write_byte(val, count).is_ok()
+        if let Some(mapping) = self.region_covered(addr, count, Prot::WRITE) {
+            mapping.write_byte(val, count).is_ok()
         } else {
             false
         }
@@ -251,7 +255,7 @@ impl<'a> MemCtx<'a> {
                     // TODO: This protection check may be redundant with mapping
                     if prot.contains(need_prot) {
                         let base = ent.guest_map.as_ref().unwrap().as_ref();
-                        return base.subregion(req_offset);
+                        return base.subregion(req_offset, len);
                     }
                 }
                 _ => {}
@@ -263,7 +267,7 @@ impl<'a> MemCtx<'a> {
 
 /// A contiguous region of memory containing generic objects.
 pub struct MemMany<'a, T: Copy> {
-    ptr: SubMapping<'a>,
+    mapping: SubMapping<'a>,
     count: usize,
     pos: usize,
     phantom: PhantomData<T>,
@@ -274,7 +278,8 @@ impl<'a, T: Copy> MemMany<'a, T> {
     /// Returns [`Option::None`] if out of range.
     pub fn get(&self, pos: usize) -> Option<T> {
         if pos < self.count {
-            self.ptr.subregion(pos)?.read().ok()
+            let sz = std::mem::size_of::<T>();
+            self.mapping.subregion(pos * sz, sz)?.read().ok()
         } else {
             None
         }
@@ -457,7 +462,7 @@ impl Builder {
         for (start, len, (ent, name)) in self.memmap.iter() {
             let (guest_map, dev_map) = match *ent {
                 MapKind::SysMem(_, prot) => {
-                    let ptr = unsafe {
+                    let mapping = unsafe {
                         let addr = guard_space.add(GUARD_LEN + start);
 
                         hdl.mmap_guest_mem(
@@ -467,10 +472,10 @@ impl Builder {
                             Some(NonNull::new(addr).unwrap()),
                         )?
                     };
-                    (Some(ptr), None)
+                    (Some(mapping), None)
                 }
                 MapKind::Rom(segid, _) => {
-                    let ptr = unsafe {
+                    let mapping = unsafe {
                         let addr = guard_space.add(GUARD_LEN + start);
 
                         // Only PROT_READ makes sense for normal ROM access
@@ -482,7 +487,7 @@ impl Builder {
                         )?
                     };
                     let dev = hdl.mmap_seg(segid, len)?;
-                    (Some(ptr), Some(Mutex::new(dev)))
+                    (Some(mapping), Some(Mutex::new(dev)))
                 }
                 MapKind::MmioReserve => (None, None),
             };

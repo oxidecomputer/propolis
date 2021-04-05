@@ -107,7 +107,7 @@ fn main() {
                 return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
             }
             let offset = region_len - rom_len;
-            let submapping = mapping.as_ref().subregion(offset).unwrap();
+            let submapping = mapping.as_ref().subregion(offset, rom_len).unwrap();
             let nread = submapping.pread(romfp.as_raw_fd(), rom_len, 0)?;
             if nread != rom_len {
                 return Err(Error::new(ErrorKind::InvalidData, "short read"));

@@ -427,7 +427,8 @@ impl FwCfg {
         let mem = ctx.mctx.memctx();
         mem.read_into(
             GuestAddr(req_addr),
-            &mut desc_buf[..FwCfgDmaReq::sizeof()],
+            &mut desc_buf,
+            FwCfgDmaReq::sizeof(),
         )
         .ok_or("bad GPA")?;
 
