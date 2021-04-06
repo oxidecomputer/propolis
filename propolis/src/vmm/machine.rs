@@ -12,7 +12,7 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::VcpuHdl;
-use crate::vmm::{create_vm, SubMapping, Mapping, Prot, VmmHdl};
+use crate::vmm::{create_vm, Mapping, Prot, SubMapping, VmmHdl};
 
 // XXX: Arbitrary limits for now
 pub const MAX_PHYSMEM: usize = 0x80_0000_0000;
@@ -67,9 +67,9 @@ impl Machine {
     /// on the entry's device mapping.
     pub fn populate_rom<F>(&self, name: &str, func: F) -> Result<()>
     where
-        F: FnOnce(&Mapping, usize) -> Result<()>,
+        F: FnOnce(&Mapping) -> Result<()>,
     {
-        let (_addr, len, ent) = self
+        let (_addr, _len, ent) = self
             .map_physmem
             .iter()
             .find(|(_addr, _len, ent)| match ent.kind {
@@ -83,8 +83,8 @@ impl Machine {
                 )
             })?;
         assert!(ent.dev_map.is_some());
-        let mapping= ent.dev_map.as_ref().unwrap().lock().unwrap();
-        func(&*mapping, len)
+        let mapping = ent.dev_map.as_ref().unwrap().lock().unwrap();
+        func(&*mapping)
     }
 
     /// Initialize the real-time-clock of the device.
@@ -154,7 +154,8 @@ impl<'a> MemCtx<'a> {
     }
     /// Reads a generic value from a specified guest address.
     pub fn read<T: Copy>(&self, addr: GuestAddr) -> Option<T> {
-        if let Some(mapping) = self.region_covered(addr, size_of::<T>(), Prot::READ)
+        if let Some(mapping) =
+            self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
             mapping.read().ok()
         } else {
@@ -184,12 +185,7 @@ impl<'a> MemCtx<'a> {
         count: usize,
     ) -> Option<MemMany<T>> {
         self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
-            |mapping| MemMany {
-                mapping,
-                pos: 0,
-                count,
-                phantom: PhantomData,
-            },
+            |mapping| MemMany { mapping, pos: 0, count, phantom: PhantomData },
         )
     }
     /// Writes a value to guest memory.

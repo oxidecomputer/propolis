@@ -517,7 +517,10 @@ impl FwCfg {
         let written = if valid_remain > 0 {
             let to_write = len.min(valid_remain);
             let mapping = mem
-                .writable_region(&GuestRegion(GuestAddr(addr), to_write as usize))
+                .writable_region(&GuestRegion(
+                    GuestAddr(addr),
+                    to_write as usize,
+                ))
                 .ok_or("bad GPA")?;
 
             let mut ro = ReadOp::from_mapping(offset as usize, mapping);
@@ -551,7 +554,10 @@ impl FwCfg {
         if valid_remain > 0 {
             let to_read = len.min(valid_remain);
             let mapping = mem
-                .readable_region(&GuestRegion(GuestAddr(addr), to_read as usize))
+                .readable_region(&GuestRegion(
+                    GuestAddr(addr),
+                    to_read as usize,
+                ))
                 .ok_or("bad GPA")?;
             let mut wo = WriteOp::from_mapping(offset as usize, mapping);
             self.xfer(selector, RWOp::Write(&mut wo), ctx)?;

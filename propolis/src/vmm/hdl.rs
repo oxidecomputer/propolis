@@ -8,7 +8,6 @@
 //! object which represents a single VM.
 
 use super::mapping::*;
-use core::ptr;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result, Write};
@@ -73,7 +72,11 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
     vmpath.push(name);
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
-    Ok(VmmHdl { inner: fp, name: name.to_string() })
+
+    // SAFETY: Files opened within VMM_PATH_PREFIX are VMMs, which may not be
+    // truncated.
+    let inner = unsafe { VmmFile::new(fp) };
+    Ok(VmmHdl { inner, name: name.to_string() })
 }
 #[cfg(not(target_os = "illumos"))]
 fn create_vm_impl(_name: &str, _force: bool) -> Result<VmmHdl> {
@@ -119,15 +122,39 @@ fn destroy_vm_impl(_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// A wrapper around a file which must uphold the guarantee that the underlying
+/// structure may not be truncated.
+pub struct VmmFile(File);
+
+impl VmmFile {
+    /// Constructs a new `VmmFile`.
+    ///
+    /// SAFETY: The caller must guarantee that the provided file cannot be
+    /// truncated.
+    pub unsafe fn new(f: File) -> Self {
+        VmmFile(f)
+    }
+
+    /// Accesses the VMM as a regular file.
+    pub fn file(&self) -> &File {
+        &self.0
+    }
+
+    /// Accesses the VMM as a raw fd.
+    pub fn fd(&self) -> RawFd {
+        self.file().as_raw_fd()
+    }
+}
+
 /// A handle to an existing virtual machine monitor.
 pub struct VmmHdl {
-    inner: File,
+    inner: VmmFile,
     name: String,
 }
 impl VmmHdl {
     /// Accesses the raw file descriptor behind the VMM.
     pub fn fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        self.inner.0.as_raw_fd()
     }
     /// Sends an ioctl to the underlying VMM.
     pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<()> {
@@ -208,12 +235,7 @@ impl VmmHdl {
     pub fn mmap_seg(&self, segid: i32, size: usize) -> Result<Mapping> {
         let devoff = self.devmem_offset(segid)?;
 
-        Mapping::new(ptr::null_mut(),
-                     size,
-                     Prot::WRITE,
-                     libc::MAP_SHARED,
-                     self.fd(),
-                     devoff as i64)
+        Mapping::new(None, size, Prot::WRITE, &self.inner, devoff as i64)
     }
 
     /// Maps a portion of the guest's virtual address space
@@ -227,17 +249,7 @@ impl VmmHdl {
         prot: Prot,
         map_at: Option<NonNull<u8>>,
     ) -> Result<Mapping> {
-        let (map_addr, add_flags) = if let Some(addr) = map_at {
-            (addr.as_ptr() as *mut libc::c_void, libc::MAP_FIXED)
-        } else {
-            (ptr::null_mut(), 0)
-        };
-        Mapping::new(map_addr,
-                     size,
-                     prot,
-                     libc::MAP_SHARED | add_flags,
-                     self.fd(),
-                     offset as i64)
+        Mapping::new(map_at, size, prot, &self.inner, offset as i64)
     }
 
     /// Issues a request to update the virtual RTC time.

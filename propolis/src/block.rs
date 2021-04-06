@@ -125,7 +125,8 @@ impl<R: BlockReq> PlainBdev<R> {
         let mut offset = req.offset();
         while let Some(buf) = req.next_buf() {
             if let Some(mapping) = mem.writable_region(&buf) {
-                if let Ok(nread) = mapping.pread(self.fd, buf.1, offset as i64) {
+                if let Ok(nread) = mapping.pread(self.fd, buf.1, offset as i64)
+                {
                     assert_eq!(nread as usize, buf.1);
                     offset += buf.1;
                 } else {
@@ -145,7 +146,9 @@ impl<R: BlockReq> PlainBdev<R> {
         let mut offset = req.offset();
         while let Some(buf) = req.next_buf() {
             if let Some(mapping) = mem.readable_region(&buf) {
-                if let Ok(nwritten) = mapping.pwrite(self.fd, buf.1, offset as i64) {
+                if let Ok(nwritten) =
+                    mapping.pwrite(self.fd, buf.1, offset as i64)
+                {
                     assert_eq!(nwritten as usize, buf.1);
                     offset += buf.1;
                 } else {

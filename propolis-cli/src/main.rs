@@ -9,8 +9,8 @@ extern crate toml;
 
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
-use std::path::Path;
 use std::os::unix::io::AsRawFd;
+use std::path::Path;
 use std::sync::Arc;
 
 use propolis::chardev::{Sink, Source};
@@ -102,14 +102,16 @@ fn main() {
         .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
 
     inst.initialize(|machine, mctx, disp, inv| {
-        machine.populate_rom("bootrom", |mapping, region_len| {
-            if region_len < rom_len {
+        machine.populate_rom("bootrom", |mapping| {
+            let mapping = mapping.as_ref();
+            if mapping.len() < rom_len {
                 return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
             }
-            let offset = region_len - rom_len;
-            let submapping = mapping.as_ref().subregion(offset, rom_len).unwrap();
+            let offset = mapping.len() - rom_len;
+            let submapping = mapping.subregion(offset, rom_len).unwrap();
             let nread = submapping.pread(romfp.as_raw_fd(), rom_len, 0)?;
             if nread != rom_len {
+                // TODO: Handle short read
                 return Err(Error::new(ErrorKind::InvalidData, "short read"));
             }
             Ok(())

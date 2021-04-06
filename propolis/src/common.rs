@@ -43,7 +43,7 @@ fn numeric_bounds(
 
 enum ROInner<'a> {
     Buf(&'a mut [u8]),
-    Map(SubMapping<'a>)
+    Map(SubMapping<'a>),
 }
 
 /// Represents an abstract requested read operation.
@@ -56,12 +56,12 @@ pub struct ReadOp<'a> {
 }
 
 impl<'a> ReadOp<'a> {
-    /// Initializes a new read operation from a buffer.
+    /// Initializes a new read operation from a mapping.
     ///
     /// # Arguments
     ///
     /// - `op_offset`: An auxiliary offset stored within the operation,
-    /// identifying the region which should be accessed to populate `buf`.
+    /// identifying the region which should be accessed to populate `mapping`.
     /// - `mapping`: A mapping which represents the "sink" of the read operation.
     pub fn from_mapping(op_offset: usize, mapping: SubMapping<'a>) -> Self {
         Self {
@@ -71,12 +71,15 @@ impl<'a> ReadOp<'a> {
         }
     }
 
+    /// Initializes a new read operation from a buffer.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: An auxiliary offset stored within the operation,
+    /// identifying the region which should be accessed to populate `buf`.
+    /// - `buffer`: A buffer which represents the "sink" of the read operation.
     pub fn from_buf(op_offset: usize, buffer: &'a mut [u8]) -> Self {
-        Self {
-            inner: ROInner::Buf(buffer),
-            offset: op_offset,
-            write_offset: 0,
-        }
+        Self { inner: ROInner::Buf(buffer), offset: op_offset, write_offset: 0 }
     }
 
     /// Constructs a child read operation from within an existing read
@@ -151,7 +154,7 @@ impl<'a> ReadOp<'a> {
         match &mut self.inner {
             ROInner::Buf(b) => {
                 b.as_mut()[wr_off..].copy_from_slice(&data[..copy_len]);
-            },
+            }
             ROInner::Map(m) => {
                 m.write_bytes(data).unwrap();
             }
@@ -164,7 +167,7 @@ impl<'a> ReadOp<'a> {
                 for b in buf[self.write_offset..].iter_mut() {
                     *b = val
                 }
-            },
+            }
             ROInner::Map(m) => {
                 m.write_byte(val, m.len() - self.write_offset).unwrap();
             }
@@ -175,7 +178,7 @@ impl<'a> ReadOp<'a> {
 
 enum WOInner<'a> {
     Buf(&'a [u8]),
-    Map(SubMapping<'a>)
+    Map(SubMapping<'a>),
 }
 
 /// Represents an abstract requested write operation.
@@ -187,6 +190,14 @@ pub struct WriteOp<'a> {
     read_offset: usize,
 }
 impl<'a> WriteOp<'a> {
+    /// Initializes a new write operation from a mapping.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: An auxiliary offset stored within the operation,
+    /// identifying the region within the emulated resource where `mapping` should
+    /// be stored.
+    /// - `mapping`: A mapping which represents the "source" of the write operation.
     pub fn from_mapping(op_offset: usize, mapping: SubMapping<'a>) -> Self {
         Self { inner: WOInner::Map(mapping), offset: op_offset, read_offset: 0 }
     }
@@ -282,7 +293,7 @@ impl<'a> WriteOp<'a> {
         match &mut self.inner {
             WOInner::Buf(b) => {
                 data[..copy_len].copy_from_slice(&b[rd_off..]);
-            },
+            }
             WOInner::Map(m) => {
                 m.read_bytes(data).unwrap();
             }
