@@ -1,3 +1,5 @@
+//! Implements an interface to virtualized block devices.
+
 use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::Result;
@@ -12,6 +14,7 @@ use crate::dispatch::{DispCtx, Dispatcher};
 
 use libc::{c_void, pread, pwrite};
 
+/// Type of operations which may be issued to a virtual block device.
 #[derive(Copy, Clone, Debug)]
 pub enum BlockOp {
     Read,
@@ -25,13 +28,19 @@ pub enum BlockResult {
     Unsupported,
 }
 
+/// Trait indicating that a type may be used as a request to a block device.
 pub trait BlockReq: Send + Sync + 'static {
+    /// Type of operation being issued.
     fn oper(&self) -> BlockOp;
+    /// Offset within the block device, in bytes.
     fn offset(&self) -> usize;
+    /// Returns the next region of memory within a request to a block device.
     fn next_buf(&mut self) -> Option<GuestRegion>;
+    /// Signals to the device emulation that a block operation has been completed.
     fn complete(self, res: BlockResult, ctx: &DispCtx);
 }
 
+/// Metadata regarding a virtualized block device.
 #[derive(Debug)]
 pub struct BlockInquiry {
     /// Device size in blocks (see below)
@@ -41,11 +50,17 @@ pub struct BlockInquiry {
     pub writable: bool,
 }
 
+/// API to access a virtualized block device.
 pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
+    /// Enqueues a [`BlockReq`] to the underlying device.
     fn enqueue(&self, req: R);
+    /// Requests metadata about the block device.
     fn inquire(&self) -> BlockInquiry;
 }
 
+/// A block device implementation backed by an underlying file.
+///
+/// Primarily accessed through the [`BlockDev`] interface.
 pub struct PlainBdev<R: BlockReq> {
     fp: File,
     fd: RawFd,
@@ -57,6 +72,7 @@ pub struct PlainBdev<R: BlockReq> {
     cond: Condvar,
 }
 impl<R: BlockReq> PlainBdev<R> {
+    /// Creates a new block device from a device at `path`.
     pub fn create(path: impl AsRef<Path>) -> Result<Arc<Self>> {
         let p: &Path = path.as_ref();
 
@@ -149,6 +165,9 @@ impl<R: BlockReq> PlainBdev<R> {
         }
         BlockResult::Success
     }
+
+    /// Spawns a new thread named `name` on the dispatcher `disp` which
+    /// begins processing incoming requests.
     pub fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher) {
         let ww = Arc::downgrade(&self);
 

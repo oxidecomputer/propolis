@@ -1,3 +1,5 @@
+//! Implements utilities for dispatching operations to a virtual CPU.
+
 use std::collections::BTreeMap;
 use std::io::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +34,7 @@ struct DispInner {
     inst: Mutex<Option<Weak<instance::Instance>>>,
 }
 
+/// Implements a VM-specific executor.
 pub struct Dispatcher {
     mctx: MachineCtx,
     event_dispatch: Arc<EventDispatch>,
@@ -40,6 +43,13 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    /// Creates a new dispatcher.
+    ///
+    /// # Arguments
+    /// - `vm`: The machine for which the dispatcher will handle requests.
+    /// - `vcpu_fn`: A function, which will be invoked by the dispatcher,
+    /// to run the CPU. This function is responsible for yielding control
+    /// back to the dispatcher when requested.
     pub fn create(vm: &Arc<Machine>, vcpu_fn: VcpuRunFunc) -> Result<Self> {
         let mut workers = BTreeMap::new();
         let mctx = MachineCtx::new(vm);
@@ -126,11 +136,22 @@ impl Dispatcher {
         Ok(this)
     }
 
+    /// Associates an instance with a dispatcher.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the dispatcher has already been associated with
+    /// an instance.
     pub(crate) fn assoc_instance(&self, inst: Weak<instance::Instance>) {
         let res = self.inner.inst.lock().unwrap().replace(inst);
         assert!(res.is_none());
     }
 
+    /// Spawns a new dedicated worker thread named `name` which invokes
+    /// `func` on `data`.
+    ///
+    /// An optional `wake` function may be supplied, when invoked, this
+    /// function should trigger the worker to move to a barrier point.
     pub fn spawn<D>(
         &self,
         name: String,
@@ -161,6 +182,8 @@ impl Dispatcher {
 
         Ok(())
     }
+
+    /// Waits for the termination of all workers.
     pub fn join(&self) {
         // XXX: indicate to all threads that they should bail out
         let mut workers = self.workers.lock().unwrap();
@@ -171,6 +194,8 @@ impl Dispatcher {
         }
     }
 
+    /// Creates a new context object which provides an
+    /// API of a subset of the Dispatcher.
     pub fn ctx(&self) -> DispCtx {
         let ctrl = WorkerCtrl::create(false);
         DispCtx::new(
@@ -340,6 +365,7 @@ impl WorkerCtrl {
     }
 }
 
+/// Context to methods invoked from [`Dispatcher`].
 pub struct DispCtx {
     pub mctx: MachineCtx,
     pub event: EventCtx,
@@ -356,6 +382,9 @@ impl DispCtx {
     ) -> DispCtx {
         DispCtx { mctx, event: EventCtx::new(edisp), ctrl, di: inner }
     }
+
+    /// Returns true if the function holding this [`DispCtx`] object
+    /// should yield control back to the dispatcher.
     pub fn check_yield(&mut self) -> bool {
         if let Some(ctrl) = self.ctrl.as_ref() {
             ctrl.check_yield()
@@ -370,12 +399,17 @@ impl DispCtx {
         cb(&inst)
     }
 
+    /// Halts the instance asssociated with the dispatcher.
+    // TODO: not safe against repeated/concurrent invocation.
     pub fn instance_halt(&self) {
         // XXX: record additional metadata about halt?
         self.with_inst(|inst| {
             inst.set_target_state(instance::State::Halt).unwrap();
         });
     }
+
+    /// Resets the instance associated with the dispatcher.
+    // TODO: not safe against repeated/concurrent invocation.
     pub fn instance_reset(&self) {
         // XXX: record additional metadata about reset?
         self.with_inst(|inst| {

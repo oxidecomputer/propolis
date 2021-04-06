@@ -263,6 +263,7 @@ pub struct vm_vcpu_reset {
 }
 
 // bit definitions for vm_run_state`state
+pub const VRS_HALT: u32 = 0;
 pub const VRS_INIT: u32 = 1 << 0;
 pub const VRS_RUN: u32 = 1 << 1;
 pub const VRS_PEND_SIPI: u32 = 1 << 14;

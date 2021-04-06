@@ -1,7 +1,13 @@
+//! Utilities to construct and manipulate an address space.
+
 use std::collections::{btree_map, BTreeMap};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 
+/// Generic utility representing an address space.
+///
+/// Stores ranges by (start, length), but also allows association
+/// of generic objects with each region.
 #[derive(Debug)]
 pub struct ASpace<T> {
     start: usize,
@@ -24,6 +30,10 @@ type SpaceItem<'a, T> = (usize, usize, &'a T);
 
 impl<T> ASpace<T> {
     /// Create a instance with inclusive range [`start`, `end`]
+    ///
+    /// # Panics
+    ///
+    /// - Panics if start >= end.
     pub fn new(start: usize, end: usize) -> ASpace<T> {
         assert!(start < end);
         Self { start, end, map: BTreeMap::new() }
@@ -130,6 +140,7 @@ fn kv_flatten<'a, T>(i: (&'a usize, &'a (usize, T))) -> SpaceItem<'a, T> {
     (start, end, item)
 }
 
+/// Iterator for all items in an [ASpace], constructed by [ASpace::iter].
 pub struct Iter<'a, T> {
     inner: btree_map::Iter<'a, usize, (usize, T)>,
 }
@@ -143,6 +154,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
+/// Iterator for items in an [ASpace] overlapping with a range, constructed by [ASpace::covered_by].
 pub struct Range<'a, T> {
     inner: btree_map::Range<'a, usize, (usize, T)>,
 }

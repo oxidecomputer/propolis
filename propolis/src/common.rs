@@ -44,12 +44,23 @@ enum ROInner<'a> {
     Buf(&'a mut [u8]),
     Ptr(*mut u8, usize),
 }
+
+/// Represents an abstract requested read operation.
+///
+/// Exposes an API with various "write" methods, which fulfill the request.
 pub struct ReadOp<'a> {
     inner: ROInner<'a>,
     offset: usize,
     write_offset: usize,
 }
 impl<'a> ReadOp<'a> {
+    /// Initializes a new read operation from a buffer.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: An auxiliary offset stored within the operation,
+    /// identifying the region which should be accessed to populate `buf`.
+    /// - `buf`: A buffer which represents the "sink" of the read operation.
     pub fn new_buf(op_offset: usize, buf: &'a mut [u8]) -> Self {
         Self { inner: ROInner::Buf(buf), offset: op_offset, write_offset: 0 }
     }
@@ -62,6 +73,17 @@ impl<'a> ReadOp<'a> {
             write_offset: 0,
         }
     }
+
+    /// Constructs a child read operation from within an existing read
+    /// operation.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: Offset of the child operation. Does not need to correlate
+    /// to the `parent` operation's offset.
+    /// - `parent`: The operation from which this operation is being split.
+    /// - `range`: The location within the parent operation to be moved
+    /// to the child.
     pub fn new_child<'b, R>(
         op_offset: usize,
         parent: &'a mut ReadOp,
@@ -172,12 +194,24 @@ enum WOInner<'a> {
     Buf(&'a [u8]),
     Ptr(*const u8, usize),
 }
+
+/// Represents an abstract requested write operation.
+///
+/// Exposes an API with various "read" methods, which fulfill the request.
 pub struct WriteOp<'a> {
     inner: WOInner<'a>,
     offset: usize,
     read_offset: usize,
 }
 impl<'a> WriteOp<'a> {
+    /// Initializes a new write operation from a buffer.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: An auxiliary offset stored within the operation,
+    /// identifying the region within the emulated resource where `buf` should
+    /// be stored.
+    /// - `buf`: A buffer which represents the "source" of the write operation.
     pub fn new_buf(op_offset: usize, buf: &'a [u8]) -> Self {
         Self { inner: WOInner::Buf(buf), offset: op_offset, read_offset: 0 }
     }
@@ -194,6 +228,17 @@ impl<'a> WriteOp<'a> {
             read_offset: 0,
         }
     }
+
+    /// Constructs a child write operation from within an existing write
+    /// operation.
+    ///
+    /// # Arguments
+    ///
+    /// - `op_offset`: Offset of the child operation. Does not need to correlate
+    /// to the `parent` operation's offset.
+    /// - `parent`: The operation from which this operation is being split.
+    /// - `range`: The location within the parent operation to be moved
+    /// to the child.
     pub fn new_child<'b, R>(
         op_offset: usize,
         parent: &'a mut WriteOp,
@@ -313,8 +358,11 @@ impl RWOp<'_, '_> {
     }
 }
 
+/// An address within a guest VM.
 #[derive(Copy, Clone, Debug)]
 pub struct GuestAddr(pub u64);
+
+/// A region of memory within a guest VM.
 #[derive(Copy, Clone, Debug)]
 pub struct GuestRegion(pub GuestAddr, pub usize);
 

@@ -16,19 +16,37 @@ const MASK_FUNC: u8 = 0x07;
 const MASK_DEV: u8 = 0x1f;
 const MASK_BUS: u8 = 0xff;
 
+/// Bus, Device, Function.
+///
+/// Acts as an address for PCI and PCIe device functionality.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Bdf {
     inner_bus: u8,
     inner_dev: u8,
     inner_func: u8,
 }
+
 impl Bdf {
+    /// Creates a new Bdf.
+    ///
+    /// The bus/device/function values must be within the acceptable range for
+    /// PCI addressing. If they could be invalid, `Bdf::try_new` should be used
+    /// instead.
+    ///
+    /// # Panics
+    ///
+    /// - Panics if `dev` is larger than 0x1F.
+    /// - Panics if `func` is larger than 0x07.
     pub fn new(bus: u8, dev: u8, func: u8) -> Self {
         assert!(dev <= MASK_DEV);
         assert!(func <= MASK_FUNC);
 
         Self { inner_bus: bus, inner_dev: dev, inner_func: func }
     }
+
+    /// Attempts to make a new BDF.
+    ///
+    /// Returns [`Option::None`] if the values would not fit within a BDF.
     pub fn try_new(bus: u8, dev: u8, func: u8) -> Option<Self> {
         if dev <= MASK_DEV && func <= MASK_FUNC {
             Some(Self::new(bus, dev, func))
@@ -64,8 +82,8 @@ pub trait Endpoint: Send + Sync {
     fn as_devinst(&self) -> Option<&DeviceInst>;
 }
 
-pub const SLOTS_PER_BUS: usize = 32;
-pub const FUNCS_PER_SLOT: usize = 8;
+const SLOTS_PER_BUS: usize = 32;
+const FUNCS_PER_SLOT: usize = 8;
 
 #[derive(Default)]
 pub struct Slot {

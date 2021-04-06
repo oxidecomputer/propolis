@@ -31,6 +31,8 @@ impl Inner {
     }
 }
 
+/// Represents a connection to the kernel's Viona (VirtIO Network Adapter)
+/// driver.
 pub struct VirtioViona {
     dev_features: u32,
     mac_addr: [u8; ETHERADDRL],

@@ -1,3 +1,5 @@
+//! Describes transitions from VMs to the VMM.
+
 use std::convert::TryFrom;
 use std::os::raw::c_void;
 
@@ -5,9 +7,14 @@ use bhyve_api::{
     vm_entry, vm_entry_cmds, vm_entry_payload, vm_exit, vm_exitcode,
 };
 
+/// Describes the reason for exiting execution of a vCPU.
 pub struct VmExit {
+    /// The instruction pointer of the guest at the time of exit.
     pub rip: u64,
+    /// The length of the instruction which triggered the exit.
+    /// Zero if inapplicable to the exit or unknown.
     pub inst_len: u8,
+    /// Describes the reason for triggering an exit.
     pub kind: VmExitKind,
 }
 impl From<&vm_exit> for VmExit {

@@ -9,6 +9,7 @@ struct RegDef<ID> {
     flags: Flags,
 }
 
+/// Represents a mapping of registers within an address space.
 pub struct RegMap<ID> {
     len: usize,
     space: ASpace<RegDef<ID>>,

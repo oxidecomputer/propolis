@@ -95,10 +95,12 @@ fn main() {
     let inst = build_instance(vm_name, cpus, lowmem).unwrap();
     println!("vm {} created", vm_name);
 
-    let (mut romfp, rom_len) = open_bootrom(config.get_bootrom()).unwrap();
-    let com1_sock = chardev::UDSock::bind(Path::new("./ttya")).unwrap();
+    let (mut romfp, rom_len) = open_bootrom(config.get_bootrom())
+        .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
+    let com1_sock = chardev::UDSock::bind(Path::new("./ttya"))
+        .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
 
-    let _res = inst.initialize(|machine, mctx, disp, inv| {
+    inst.initialize(|machine, mctx, disp, inv| {
         machine.populate_rom("bootrom", |ptr, region_len| {
             if region_len < rom_len {
                 return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
@@ -117,7 +119,7 @@ fn main() {
                 }
             }
         })?;
-        machine.initalize_rtc(lowmem).unwrap();
+        machine.initialize_rtc(lowmem).unwrap();
 
         let hdl = machine.get_hdl();
         let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
@@ -247,13 +249,15 @@ fn main() {
         }
 
         Ok(())
-    });
+    })
+    .unwrap_or_else(|e| panic!("Failed to initialize instance: {}", e));
 
     drop(romfp);
 
     inst.print();
 
     // Wait until someone connects to ttya
+    println!("Waiting for a connection to ttya...");
     com1_sock.wait_for_connect();
 
     inst.on_transition(Box::new(|next_state| {
