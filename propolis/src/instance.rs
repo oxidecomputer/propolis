@@ -112,7 +112,6 @@ impl Instance {
     /// # Panics
     ///
     /// - Panics if the instance's state is not [`State::Initialize`].
-    // TODO: Why is this separate from creating an instance?
     pub fn initialize<F>(&self, func: F) -> io::Result<()>
     where
         F: FnOnce(

@@ -294,7 +294,6 @@ pub struct MemMany<T: Copy> {
     ptr: *const T,
     count: usize,
     pos: usize,
-    // XXX: This doesn't seem necessary; why is it here?
     phantom: PhantomData<T>,
 }
 impl<T: Copy> MemMany<T> {
