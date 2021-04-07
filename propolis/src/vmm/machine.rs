@@ -199,6 +199,8 @@ impl<'a> MemCtx<'a> {
         }
     }
     /// Writes bytes from a buffer to guest memory.
+    ///
+    /// Writes up to `buf.len()` or `len` bytes, whichever is smaller.
     pub fn write_from(
         &self,
         addr: GuestAddr,
@@ -212,7 +214,6 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
-
     /// Writes a single value to guest memory.
     pub fn write_byte(&self, addr: GuestAddr, val: u8, count: usize) -> bool {
         if let Some(mapping) = self.region_covered(addr, count, Prot::WRITE) {
