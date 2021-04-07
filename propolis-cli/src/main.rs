@@ -9,7 +9,6 @@ extern crate toml;
 
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 

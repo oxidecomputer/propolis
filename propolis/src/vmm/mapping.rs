@@ -9,9 +9,10 @@
 
 use crate::vmm::VmmFile;
 
+use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::AsRawFd;
 use std::ptr::{copy_nonoverlapping, NonNull};
 
 bitflags! {
@@ -198,10 +199,10 @@ impl<'a> SubMapping<'a> {
         Ok(to_copy)
     }
 
-    /// Pread from `fd` into the mapping.
+    /// Pread from `file` into the mapping.
     pub fn pread(
         &self,
-        fd: RawFd,
+        file: &File,
         length: usize,
         offset: i64,
     ) -> Result<usize> {
@@ -215,7 +216,7 @@ impl<'a> SubMapping<'a> {
         let to_read = usize::min(length, self.len);
         let read = unsafe {
             libc::pread(
-                fd,
+                file.as_raw_fd(),
                 self.ptr.as_ptr() as *mut libc::c_void,
                 to_read,
                 offset,
@@ -280,10 +281,10 @@ impl<'a> SubMapping<'a> {
         Ok(to_copy)
     }
 
-    /// Pwrite from the mapping to `fd`.
+    /// Pwrite from the mapping to `file`.
     pub fn pwrite(
         &self,
-        fd: RawFd,
+        file: &File,
         length: usize,
         offset: i64,
     ) -> Result<usize> {
@@ -297,7 +298,7 @@ impl<'a> SubMapping<'a> {
         let to_write = usize::min(length, self.len);
         let written = unsafe {
             libc::pwrite(
-                fd,
+                file.as_raw_fd(),
                 self.ptr.as_ptr() as *const libc::c_void,
                 to_write,
                 offset,
