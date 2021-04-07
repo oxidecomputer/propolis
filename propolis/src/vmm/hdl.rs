@@ -14,7 +14,6 @@ use std::io::{Error, ErrorKind, Result, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
-use std::ptr::NonNull;
 
 use crate::util::sys::ioctl;
 
@@ -164,7 +163,6 @@ impl VmmHdl {
     /// Creates and sends a request to allocate a memory segment within the VM.
     ///
     /// # Arguments
-    ///
     /// - `segid`: The segment ID of the requested memory.
     /// - `size`: The size of the memory region, in bytes.
     /// - `segname`: The (optional) name of the memory segment.
@@ -238,18 +236,29 @@ impl VmmHdl {
         Mapping::new(None, size, Prot::WRITE, &self.inner, devoff as i64)
     }
 
-    /// Maps a portion of the guest's virtual address space
-    /// into propolis' address space.
+    /// Maps a portion of the guest's virtual address space into propolis'
+    /// address space.
     ///
-    /// Returns a pointer to the mapped segment, if successful.
+    /// # Arguments:
+    /// - `offset`: Offset within the guests's address space to be mapped.
+    /// - `size`: Size of the mapping.
+    /// - `prot`: Memory protections to be applied to the mapping.
+    /// - `map_at`: An optional fixed address where the mapping must be located. XXX
+    ///
+    /// Return the mapped segment if successful.
     pub fn mmap_guest_mem(
         &self,
+        guard_space: &mut GuardSpace,
         offset: usize,
         size: usize,
         prot: Prot,
-        map_at: Option<NonNull<u8>>,
     ) -> Result<Mapping> {
-        Mapping::new(map_at, size, prot, &self.inner, offset as i64)
+        guard_space.mapping(
+            size,
+            prot,
+            &self.inner,
+            offset as i64,
+        )
     }
 
     /// Issues a request to update the virtual RTC time.

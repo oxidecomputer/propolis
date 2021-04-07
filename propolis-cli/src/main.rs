@@ -108,7 +108,7 @@ fn main() {
             }
             let offset = mapping.len() - rom_len;
             let submapping = mapping.subregion(offset, rom_len).unwrap();
-            let nread = submapping.pread(romfp.as_raw_fd(), rom_len, 0)?;
+            let nread = submapping.pread(&romfp, rom_len, 0)?;
             if nread != rom_len {
                 // TODO: Handle short read
                 return Err(Error::new(ErrorKind::InvalidData, "short read"));

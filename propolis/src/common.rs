@@ -153,7 +153,7 @@ impl<'a> ReadOp<'a> {
 
         match &mut self.inner {
             ROInner::Buf(b) => {
-                b.as_mut()[wr_off..].copy_from_slice(&data[..copy_len]);
+                b[wr_off..].copy_from_slice(&data[..copy_len]);
             }
             ROInner::Map(m) => {
                 m.write_bytes(data).unwrap();

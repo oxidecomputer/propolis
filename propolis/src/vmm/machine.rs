@@ -3,7 +3,6 @@
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 use crate::common::{GuestAddr, GuestRegion};
@@ -12,22 +11,11 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::VcpuHdl;
-use crate::vmm::{create_vm, Mapping, Prot, SubMapping, VmmHdl};
+use crate::vmm::{create_vm, GuardSpace, Mapping, Prot, SubMapping, VmmHdl};
 
 // XXX: Arbitrary limits for now
 pub const MAX_PHYSMEM: usize = 0x80_0000_0000;
 pub const MAX_SYSMEM: usize = 0x40_0000_0000;
-
-// 2MB guard length
-pub const GUARD_LEN: usize = 0x20000;
-pub const GUARD_ALIGN: usize = 0x20000;
-
-#[cfg(target_os = "illumos")]
-const FLAGS_MAP_GUARD: i32 =
-    libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_NORESERVE | libc::MAP_ALIGN;
-#[cfg(not(target_os = "illumos"))]
-const FLAGS_MAP_GUARD: i32 =
-    libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_NORESERVE;
 
 #[derive(Copy, Clone)]
 enum MapKind {
@@ -249,7 +237,8 @@ impl<'a> MemCtx<'a> {
             let req_offset = start - addr;
             match ent.kind {
                 MapKind::SysMem(_, prot) | MapKind::Rom(_, prot) => {
-                    // TODO: This protection check may be redundant with mapping
+                    // TODO: This protection check may be redundant with
+                    // mapping, which has its own memory protection tracking.
                     if prot.contains(need_prot) {
                         let base = ent.guest_map.as_ref().unwrap().as_ref();
                         return base.subregion(req_offset, len);
@@ -419,70 +408,32 @@ impl Builder {
         }
     }
 
-    fn last_sysmem_addr(&self) -> Result<usize> {
-        let last_mem_seg = self
-            .memmap
-            .iter()
-            .filter(|(_addr, _len, (ent, _name))| {
-                matches!(ent, MapKind::SysMem(_, _))
-            })
-            .last();
-        if let Some((start, len, (_, _))) = last_mem_seg {
-            Ok(start + len)
-        } else {
-            Err(Error::new(ErrorKind::InvalidData, "missing guest memory"))
-        }
-    }
-
     fn prep_mem_map(&self, hdl: &VmmHdl) -> Result<ASpace<MapEnt>> {
-        let last_sysmem = self.last_sysmem_addr()?;
-
-        // Pad to guard length
-        let padded = (last_sysmem + (GUARD_LEN - 1)) & !(GUARD_LEN - 1);
-        let overall = GUARD_LEN * 2 + padded;
-
-        let guard_space = unsafe {
-            libc::mmap(
-                GUARD_ALIGN as *mut libc::c_void,
-                overall,
-                libc::PROT_NONE,
-                FLAGS_MAP_GUARD,
-                -1,
-                0,
-            ) as *mut u8
-        };
-        if guard_space.is_null() {
-            return Err(Error::last_os_error());
-        }
+        let total = self.memmap.iter().fold(0, |total, (_addr, len, _map)| {
+            total + len
+        });
+        let mut guard_space = GuardSpace::new(total)?;
 
         let mut map = ASpace::new(0, MAX_PHYSMEM);
         for (start, len, (ent, name)) in self.memmap.iter() {
             let (guest_map, dev_map) = match *ent {
                 MapKind::SysMem(_, prot) => {
-                    let mapping = unsafe {
-                        let addr = guard_space.add(GUARD_LEN + start);
-
-                        hdl.mmap_guest_mem(
-                            start,
-                            len,
-                            prot & (Prot::READ | Prot::WRITE),
-                            Some(NonNull::new(addr).unwrap()),
-                        )?
-                    };
+                    let mapping = hdl.mmap_guest_mem(
+                        &mut guard_space,
+                        start,
+                        len,
+                        prot & (Prot::READ | Prot::WRITE),
+                    )?;
                     (Some(mapping), None)
                 }
                 MapKind::Rom(segid, _) => {
-                    let mapping = unsafe {
-                        let addr = guard_space.add(GUARD_LEN + start);
-
-                        // Only PROT_READ makes sense for normal ROM access
-                        hdl.mmap_guest_mem(
-                            start,
-                            len,
-                            Prot::READ,
-                            Some(NonNull::new(addr).unwrap()),
-                        )?
-                    };
+                    // Only PROT_READ makes sense for normal ROM access
+                    let mapping = hdl.mmap_guest_mem(
+                        &mut guard_space,
+                        start,
+                        len,
+                        Prot::READ,
+                    )?;
                     let dev = hdl.mmap_seg(segid, len)?;
                     (Some(mapping), Some(Mutex::new(dev)))
                 }

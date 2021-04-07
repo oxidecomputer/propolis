@@ -15,6 +15,17 @@ use std::marker::PhantomData;
 use std::os::unix::io::AsRawFd;
 use std::ptr::{copy_nonoverlapping, NonNull};
 
+// 2MB guard length
+pub const GUARD_LEN: usize   = 0x20000;
+pub const GUARD_ALIGN: usize = 0x20000;
+
+#[cfg(target_os = "illumos")]
+const FLAGS_MAP_GUARD: i32 =
+    libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_NORESERVE | libc::MAP_ALIGN;
+#[cfg(not(target_os = "illumos"))]
+const FLAGS_MAP_GUARD: i32 =
+    libc::MAP_ANON | libc::MAP_PRIVATE | libc::MAP_NORESERVE;
+
 bitflags! {
     /// Bitflags representing memory protections.
     pub struct Prot: u8 {
@@ -25,6 +36,100 @@ bitflags! {
         const ALL = (bhyve_api::PROT_READ
                     | bhyve_api::PROT_WRITE
                     | bhyve_api::PROT_EXEC) as u8;
+    }
+}
+
+/// A region of memory, bounded by two guard pages.
+pub struct GuardSpace {
+    // Original PROT_NONE mapping, which is replaced by other mappings.
+    map: Mapping,
+    // Start of the next fixed address within the mapping.
+    next: usize,
+}
+
+impl GuardSpace {
+    /// Creates a new guard region, capable of storing a mapping of the
+    /// requested size.
+    ///
+    /// # Arguments
+    /// - `size`: The size of the mapping, not including guard pages.
+    /// Implicitly rounded up to the nearest guard region size.
+    pub fn new(
+        size: usize,
+    ) -> Result<GuardSpace> {
+        let prot = Prot::NONE;
+
+        // Round up size to the nearest GUARD_LEN.
+        let padded = (size + (GUARD_LEN - 1)) & !(GUARD_LEN - 1);
+        // Total size is the user-accessible space, plus pages on either side.
+        let overall = GUARD_LEN * 2 + padded;
+
+        // SAFETY: This invocation of mmap is only unsafe because of FFI;
+        // it isn't requesting a fixed address mapping, and uses anonymous
+        // (rather than file-backed) virtual memory.
+        let ptr = unsafe {
+            libc::mmap(
+                GUARD_ALIGN as *mut libc::c_void,
+                overall,
+                prot.bits().into(),
+                FLAGS_MAP_GUARD,
+                -1,
+                0,
+            ) as *mut u8
+        };
+        let ptr = NonNull::new(ptr).ok_or_else(Error::last_os_error)?;
+
+        Ok(GuardSpace {
+            map: Mapping {
+                inner: SubMapping {
+                    ptr,
+                    len: overall,
+                    prot, _phantom: PhantomData
+                },
+            },
+            next: 0,
+        })
+    }
+
+    /// Creates a new mapping within the bounds of the guard region, replacing
+    /// guard pages with the new mapping.
+    pub fn mapping(
+        &mut self,
+        size: usize,
+        prot: Prot,
+        vmm: &VmmFile,
+        devoff: i64,
+    ) -> Result<Mapping> {
+        if size % GUARD_LEN != 0 {
+            return Err(
+                Error::new(ErrorKind::InvalidInput, "Size not aligned to guard page")
+            );
+        }
+
+        // Access the unguarded region of the mapping.
+        let unguarded = self.map.as_ref().subregion(
+            GUARD_LEN,
+            self.map.as_ref().len() - GUARD_LEN
+        ).unwrap();
+
+        // Access the to-be-mapped subregion within the unguarded area.
+        let subregion = unguarded.subregion(
+            self.next,
+            size,
+        ).ok_or_else(|| {
+            Error::new(ErrorKind::NotFound, "Not enough guard space")
+        })?;
+
+        let mapping = Mapping::new(
+            Some(subregion.ptr),
+            size,
+            prot,
+            vmm,
+            devoff,
+        )?;
+
+        self.next += size;
+        Ok(mapping)
     }
 }
 
@@ -76,7 +181,7 @@ impl Mapping {
         // as it is accessible to the guest, which may arbitrarily read
         // or write the region.
         let ptr = unsafe {
-            libc::mmap(addr, size, prot.bits() as i32, flags, vmm.fd(), devoff)
+            libc::mmap(addr, size, prot.bits().into(), flags, vmm.fd(), devoff)
         } as *mut u8;
         let ptr = NonNull::new(ptr).ok_or_else(Error::last_os_error)?;
         let m = Mapping {
