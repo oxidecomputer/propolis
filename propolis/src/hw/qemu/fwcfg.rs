@@ -153,7 +153,7 @@ impl FwCfgFileEntry {
         this
     }
     fn bytes(&self) -> &[u8] {
-        // SAFETY:  This struct is packed, so it does not have any padding with
+        // Safety:  This struct is packed, so it does not have any padding with
         // undefined contents, making the conversion to a byte-slice safe.
         unsafe {
             std::slice::from_raw_parts(

@@ -27,8 +27,7 @@ enum MapKind {
 struct MapEnt {
     kind: MapKind,
     name: String,
-    // A mapping of the guest address space within the address space of
-    // propolis.
+    // A mapping of the guest address space within the current process.
     guest_map: Option<Mapping>,
     dev_map: Option<Mutex<Mapping>>,
 }
@@ -44,7 +43,6 @@ pub struct Machine {
     max_cpu: u8,
     state_lock: Mutex<()>,
 
-    _guard_space: GuardSpace,
     map_physmem: ASpace<MapEnt>,
     bus_mmio: MmioBus,
     bus_pio: PioBus,
@@ -409,7 +407,7 @@ impl Builder {
         }
     }
 
-    fn prep_mem_map(&self, hdl: &VmmHdl) -> Result<(GuardSpace, ASpace<MapEnt>)> {
+    fn prep_mem_map(&self, hdl: &VmmHdl) -> Result<ASpace<MapEnt>> {
         let total = self.memmap.iter().fold(0, |total, (_addr, len, _map)| {
             total + len
         });
@@ -448,7 +446,7 @@ impl Builder {
             .unwrap();
         }
 
-        Ok((guard_space, map))
+        Ok(map)
     }
 
     /// Consumes `self` and creates a new [`Machine`] based
@@ -456,7 +454,7 @@ impl Builder {
     pub fn finalize(mut self) -> Result<Machine> {
         let hdl = std::mem::replace(&mut self.inner_hdl, None).unwrap();
 
-        let (guard_space, map) = self.prep_mem_map(&hdl)?;
+        let map = self.prep_mem_map(&hdl)?;
 
         let arc_hdl = Arc::new(hdl);
 
@@ -465,7 +463,6 @@ impl Builder {
             max_cpu: self.max_cpu,
             state_lock: Mutex::new(()),
 
-            _guard_space: guard_space,
             map_physmem: map,
             bus_mmio: MmioBus::new(MAX_PHYSMEM),
             bus_pio: PioBus::new(),

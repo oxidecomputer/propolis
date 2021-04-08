@@ -72,7 +72,7 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
 
-    // SAFETY: Files opened within VMM_PATH_PREFIX are VMMs, which may not be
+    // Safety: Files opened within VMM_PATH_PREFIX are VMMs, which may not be
     // truncated.
     let inner = unsafe { VmmFile::new(fp) };
     Ok(VmmHdl { inner, name: name.to_string() })
@@ -128,7 +128,7 @@ pub struct VmmFile(File);
 impl VmmFile {
     /// Constructs a new `VmmFile`.
     ///
-    /// SAFETY: The caller must guarantee that the provided file cannot be
+    /// Safety: The caller must guarantee that the provided file cannot be
     /// truncated.
     pub unsafe fn new(f: File) -> Self {
         VmmFile(f)
@@ -233,7 +233,7 @@ impl VmmHdl {
     pub fn mmap_seg(&self, segid: i32, size: usize) -> Result<Mapping> {
         let devoff = self.devmem_offset(segid)?;
 
-        Mapping::new(None, size, Prot::WRITE, &self.inner, devoff as i64)
+        Mapping::new(size, Prot::WRITE, &self.inner, devoff as i64)
     }
 
     /// Maps a portion of the guest's virtual address space into propolis'
@@ -243,7 +243,6 @@ impl VmmHdl {
     /// - `offset`: Offset within the guests's address space to be mapped.
     /// - `size`: Size of the mapping.
     /// - `prot`: Memory protections to be applied to the mapping.
-    /// - `map_at`: An optional fixed address where the mapping must be located. XXX
     ///
     /// Return the mapped segment if successful.
     pub fn mmap_guest_mem(

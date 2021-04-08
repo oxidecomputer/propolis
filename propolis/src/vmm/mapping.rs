@@ -12,6 +12,7 @@ use crate::vmm::VmmFile;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::os::unix::io::AsRawFd;
 use std::ptr::{copy_nonoverlapping, NonNull};
 
@@ -42,7 +43,13 @@ bitflags! {
 /// A region of memory, bounded by two guard pages.
 pub struct GuardSpace {
     // Original PROT_NONE mapping, which is replaced by other mappings.
-    map: Mapping,
+    //
+    // TODO: This mapping is wrapped in ManuallyDrop to explicitly leak.
+    // It should be possible to remove this wrapper, unmapping the guard
+    // pages once the GuardSpace goes out of scope, but this will require
+    // ensuring all `Mapping` objects created by the GuardSpace have
+    // a shorter lifetime than the GuardSpace itself.
+    map: ManuallyDrop<Mapping>,
     // Start of the next fixed address within the mapping.
     next: usize,
 }
@@ -64,7 +71,7 @@ impl GuardSpace {
         // Total size is the user-accessible space, plus pages on either side.
         let overall = GUARD_LEN * 2 + padded;
 
-        // SAFETY: This invocation of mmap is only unsafe because of FFI;
+        // Safety: This invocation of mmap isn't safe because of FFI;
         // it isn't requesting a fixed address mapping, and uses anonymous
         // (rather than file-backed) virtual memory.
         let ptr = unsafe {
@@ -80,13 +87,13 @@ impl GuardSpace {
         let ptr = NonNull::new(ptr).ok_or_else(Error::last_os_error)?;
 
         Ok(GuardSpace {
-            map: Mapping {
+            map: ManuallyDrop::new(Mapping {
                 inner: SubMapping {
                     ptr,
                     len: overall,
                     prot, _phantom: PhantomData
                 },
-            },
+            }),
             next: 0,
         })
     }
@@ -120,13 +127,18 @@ impl GuardSpace {
             Error::new(ErrorKind::NotFound, "Not enough guard space")
         })?;
 
-        let mapping = Mapping::new(
-            Some(subregion.ptr),
-            size,
-            prot,
-            vmm,
-            devoff,
-        )?;
+        // Safety: The region of memory being replaced by MAP_FIXED has been
+        // allocated by the GuardSpace, and becomes inaccessible to other
+        // callers after this invocation succeeds.
+        let mapping = unsafe {
+            Mapping::new_internal(
+                Some(subregion.ptr),
+                size,
+                prot,
+                vmm,
+                devoff,
+            )?
+        };
 
         self.next += size;
         Ok(mapping)
@@ -158,9 +170,29 @@ pub struct Mapping {
 impl Mapping {
     /// Creates a new memory mapping from a VmmFile, with the requested
     /// permissions.
-    //
-    // TODO: To be safe against MAP_FIXED, we need to track mappings.
     pub fn new(
+        size: usize,
+        prot: Prot,
+        vmm: &VmmFile,
+        devoff: i64,
+    ) -> Result<Self> {
+        // Safety: addr == None, so the invocation may choose its own mapping.
+        unsafe { Mapping::new_internal(None, size, prot, vmm, devoff) }
+    }
+
+    // Safety:
+    // - If addr != None, the caller must ensure that the region of memory
+    // from [addr, addr + size) has previously been mapped with Prot::None.
+    // Using mmap with MAP_FIXED silently replaces conflicting pages, so
+    // pointing to an arbitrary address risks colliding with the rest of the
+    // address space.
+    // - The creator of the VmmFile is responsible for ensuring it points
+    // to an object that may not be truncated. If this property is upheld,
+    // the returned mapping cannot suddenly become invalided.
+    // - The returned region of memory must not be accessed via reference,
+    // as it is accessible to the guest, which may arbitrarily read or
+    // write the region.
+    unsafe fn new_internal(
         addr: Option<NonNull<u8>>,
         size: usize,
         prot: Prot,
@@ -174,15 +206,8 @@ impl Mapping {
             .map(|addr| addr.as_ptr() as *mut libc::c_void)
             .unwrap_or_else(core::ptr::null_mut);
 
-        // SAFETY: The creator of a VmmFile is responsible for ensuring
-        // it points to an object that may not be truncated.
-        //
-        // The mapped region of memory must not be accessed via reference,
-        // as it is accessible to the guest, which may arbitrarily read
-        // or write the region.
-        let ptr = unsafe {
-            libc::mmap(addr, size, prot.bits().into(), flags, vmm.fd(), devoff)
-        } as *mut u8;
+        let ptr = libc::mmap(addr, size, prot.bits().into(), flags, vmm.fd(), devoff)
+            as *mut u8;
         let ptr = NonNull::new(ptr).ok_or_else(Error::last_os_error)?;
         let m = Mapping {
             inner: SubMapping { ptr, len: size, prot, _phantom: PhantomData },
@@ -194,7 +219,7 @@ impl Mapping {
 impl Drop for Mapping {
     fn drop(&mut self) {
         let map = self.as_ref();
-        // SAFETY:
+        // Safety:
         // - No references may exist to the mapping at the time it is dropped,
         // as no references are created.
         // - No child mappings (SubMappings) of the original should exist, as
@@ -213,7 +238,7 @@ pub struct SubMapping<'a> {
     _phantom: PhantomData<&'a ()>,
 }
 
-// SAFETY: SubMapping's API does not provide raw access to the underlying
+// Safety: SubMapping's API does not provide raw access to the underlying
 // pointer, nor any mechanism to create references to the underlying data.
 unsafe impl<'a> Send for SubMapping<'a> {}
 unsafe impl<'a> Sync for SubMapping<'a> {}
@@ -243,7 +268,7 @@ impl<'a> SubMapping<'a> {
             return None;
         }
 
-        // SAFETY:
+        // Safety:
         // - Starting and resulting pointer must be within bounds or
         // one past the end of the same allocated object.
         // - The computed offset, in bytes, cannot overflow isize.
