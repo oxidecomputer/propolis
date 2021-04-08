@@ -11,7 +11,7 @@ use std::ptr::{copy_nonoverlapping, NonNull};
 
 // 2MB guard length
 /// The size of a guard page.
-pub const GUARD_LEN: usize   = 0x20000;
+pub const GUARD_LEN: usize = 0x20000;
 pub const GUARD_ALIGN: usize = 0x20000;
 
 #[cfg(target_os = "illumos")]
@@ -55,9 +55,7 @@ impl GuardSpace {
     /// # Arguments
     /// - `size`: The size of the mapping, not including guard pages.
     /// Implicitly rounded up to the nearest [`GUARD_LEN`].
-    pub fn new(
-        size: usize,
-    ) -> Result<GuardSpace> {
+    pub fn new(size: usize) -> Result<GuardSpace> {
         let prot = Prot::NONE;
 
         // Round up size to the nearest GUARD_LEN.
@@ -85,7 +83,8 @@ impl GuardSpace {
                 inner: SubMapping {
                     ptr,
                     len: overall,
-                    prot, _phantom: PhantomData
+                    prot,
+                    _phantom: PhantomData,
                 },
             }),
             next: 0,
@@ -103,38 +102,31 @@ impl GuardSpace {
         vmm: &VmmFile,
         devoff: i64,
     ) -> Result<Mapping> {
-
         if size % GUARD_LEN != 0 {
-            return Err(
-                Error::new(ErrorKind::InvalidInput, "Size not aligned to guard page")
-            );
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Size not aligned to guard page",
+            ));
         }
 
         // Access the unguarded region of the mapping.
-        let unguarded = self.map.as_ref().subregion(
-            GUARD_LEN,
-            self.map.as_ref().len() - 2 * GUARD_LEN
-        ).unwrap();
+        let unguarded = self
+            .map
+            .as_ref()
+            .subregion(GUARD_LEN, self.map.as_ref().len() - 2 * GUARD_LEN)
+            .unwrap();
 
         // Access the to-be-mapped subregion within the unguarded area.
-        let subregion = unguarded.subregion(
-            self.next,
-            size,
-        ).ok_or_else(|| {
-            Error::new(ErrorKind::NotFound, "Not enough guard space")
-        })?;
+        let subregion =
+            unguarded.subregion(self.next, size).ok_or_else(|| {
+                Error::new(ErrorKind::NotFound, "Not enough guard space")
+            })?;
 
         // Safety: The region of memory being replaced by MAP_FIXED has been
         // allocated by the GuardSpace, and becomes inaccessible to other
         // callers after this invocation succeeds.
         let mapping = unsafe {
-            Mapping::new_internal(
-                Some(subregion.ptr),
-                size,
-                prot,
-                vmm,
-                devoff,
-            )?
+            Mapping::new_internal(Some(subregion.ptr), size, prot, vmm, devoff)?
         };
 
         self.next += size;
@@ -196,15 +188,16 @@ impl Mapping {
         vmm: &VmmFile,
         devoff: i64,
     ) -> Result<Self> {
-        let flags = libc::MAP_SHARED
-            | if addr.is_some() { libc::MAP_FIXED } else { 0 };
+        let flags =
+            libc::MAP_SHARED | if addr.is_some() { libc::MAP_FIXED } else { 0 };
 
         let addr = addr
             .map(|addr| addr.as_ptr() as *mut libc::c_void)
             .unwrap_or_else(core::ptr::null_mut);
 
-        let ptr = libc::mmap(addr, size, prot.bits().into(), flags, vmm.fd(), devoff)
-            as *mut u8;
+        let ptr =
+            libc::mmap(addr, size, prot.bits().into(), flags, vmm.fd(), devoff)
+                as *mut u8;
         let ptr = NonNull::new(ptr).ok_or_else(Error::last_os_error)?;
         let m = Mapping {
             inner: SubMapping { ptr, len: size, prot, _phantom: PhantomData },
@@ -495,10 +488,7 @@ mod tests {
     fn test_vmm(len: u64) -> VmmFile {
         let file = tempfile().unwrap();
         file.set_len(len).unwrap();
-        unsafe {
-            VmmFile::new(file)
-        }
-
+        unsafe { VmmFile::new(file) }
     }
 
     #[test]
@@ -512,7 +502,9 @@ mod tests {
     fn guard_space_creates_readable_writable_regions() {
         let mut guard = GuardSpace::new(GUARD_LEN).unwrap();
         let vmm = test_vmm(GUARD_LEN as u64);
-        let mapping = guard.mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).unwrap();
+        let mapping = guard
+            .mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0)
+            .unwrap();
 
         let input: u64 = 0xDEADBEEF;
         mapping.as_ref().write(&input).unwrap();
@@ -525,9 +517,13 @@ mod tests {
         let mut guard = GuardSpace::new(GUARD_LEN).unwrap();
         let vmm = test_vmm(GUARD_LEN as u64);
 
-        let _ = guard.mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).unwrap();
+        let _ = guard
+            .mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0)
+            .unwrap();
         // No space remaining after the first allocation.
-        assert!(guard.mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).is_err());
+        assert!(guard
+            .mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0)
+            .is_err());
     }
 
     #[test]

@@ -252,12 +252,7 @@ impl VmmHdl {
         size: usize,
         prot: Prot,
     ) -> Result<Mapping> {
-        guard_space.mapping(
-            size,
-            prot,
-            &self.inner,
-            offset as i64,
-        )
+        guard_space.mapping(size, prot, &self.inner, offset as i64)
     }
 
     /// Issues a request to update the virtual RTC time.

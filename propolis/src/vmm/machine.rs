@@ -408,9 +408,8 @@ impl Builder {
     }
 
     fn prep_mem_map(&self, hdl: &VmmHdl) -> Result<ASpace<MapEnt>> {
-        let total = self.memmap.iter().fold(0, |total, (_addr, len, _map)| {
-            total + len
-        });
+        let total =
+            self.memmap.iter().fold(0, |total, (_addr, len, _map)| total + len);
         let mut guard_space = GuardSpace::new(total)?;
 
         let mut map = ASpace::new(0, MAX_PHYSMEM);
