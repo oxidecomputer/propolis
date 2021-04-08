@@ -1,11 +1,4 @@
-//! Module responsible for communicating with the kernel's VMM.
-//!
-//! Responsible for both issuing commands to the bhyve
-//! kernel controller to create and destroy VMs.
-//!
-//! Additionally, contains a wrapper struct ([`VmmHdl`])
-//! for encapsulating commands to the underlying kernel
-//! object which represents a single VM.
+//! Module for managing guest memory mappings.
 
 use crate::vmm::VmmFile;
 
@@ -17,6 +10,7 @@ use std::os::unix::io::AsRawFd;
 use std::ptr::{copy_nonoverlapping, NonNull};
 
 // 2MB guard length
+/// The size of a guard page.
 pub const GUARD_LEN: usize   = 0x20000;
 pub const GUARD_ALIGN: usize = 0x20000;
 
@@ -60,7 +54,7 @@ impl GuardSpace {
     ///
     /// # Arguments
     /// - `size`: The size of the mapping, not including guard pages.
-    /// Implicitly rounded up to the nearest guard region size.
+    /// Implicitly rounded up to the nearest [`GUARD_LEN`].
     pub fn new(
         size: usize,
     ) -> Result<GuardSpace> {
@@ -100,6 +94,8 @@ impl GuardSpace {
 
     /// Creates a new mapping within the bounds of the guard region, replacing
     /// guard pages with the new mapping.
+    ///
+    /// `size` must be divisible by [`GUARD_LEN`].
     pub fn mapping(
         &mut self,
         size: usize,
@@ -107,6 +103,7 @@ impl GuardSpace {
         vmm: &VmmFile,
         devoff: i64,
     ) -> Result<Mapping> {
+
         if size % GUARD_LEN != 0 {
             return Err(
                 Error::new(ErrorKind::InvalidInput, "Size not aligned to guard page")
@@ -116,7 +113,7 @@ impl GuardSpace {
         // Access the unguarded region of the mapping.
         let unguarded = self.map.as_ref().subregion(
             GUARD_LEN,
-            self.map.as_ref().len() - GUARD_LEN
+            self.map.as_ref().len() - 2 * GUARD_LEN
         ).unwrap();
 
         // Access the to-be-mapped subregion within the unguarded area.
@@ -145,7 +142,7 @@ impl GuardSpace {
     }
 }
 
-/// A region of mapped guest memory.
+/// A owned region of mapped guest memory, accessible via [`SubMapping`].
 ///
 /// When dealing with raw pointers, caution must be taken to dereference the
 /// pointer safely:
@@ -230,6 +227,10 @@ impl Drop for Mapping {
     }
 }
 
+/// A borrowed region from a [`Mapping`] object.
+///
+/// Provides interfaces for acting on memory, but does not own the
+/// underlying memory region.
 #[derive(Debug)]
 pub struct SubMapping<'a> {
     ptr: NonNull<u8>,
@@ -287,6 +288,7 @@ impl<'a> SubMapping<'a> {
         Some(sub)
     }
 
+    /// Reads a `T` object from the mapping.
     pub fn read<T: Copy>(&self) -> Result<T> {
         if !self.prot.contains(Prot::READ) {
             return Err(Error::new(
@@ -305,6 +307,7 @@ impl<'a> SubMapping<'a> {
         Ok(unsafe { typed.read_unaligned() })
     }
 
+    /// Reads a buffer of bytes from the mapping.
     pub fn read_bytes(&self, buf: &mut [u8]) -> Result<usize> {
         if !self.prot.contains(Prot::READ) {
             return Err(Error::new(
@@ -358,6 +361,7 @@ impl<'a> SubMapping<'a> {
         Ok(read as usize)
     }
 
+    /// Writes `value` into the mapping.
     pub fn write<T: Copy>(&self, value: &T) -> Result<()> {
         if !self.prot.contains(Prot::WRITE) {
             return Err(Error::new(
@@ -372,6 +376,7 @@ impl<'a> SubMapping<'a> {
         Ok(())
     }
 
+    /// Writes a buffer of bytes into the mapping.
     pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
         if !self.prot.contains(Prot::WRITE) {
             return Err(Error::new(
@@ -397,6 +402,7 @@ impl<'a> SubMapping<'a> {
         Ok(to_copy)
     }
 
+    /// Writes a single byte `val` to the mapping, `count` times.
     pub fn write_byte(&self, val: u8, count: usize) -> Result<usize> {
         if !self.prot.contains(Prot::WRITE) {
             return Err(Error::new(
@@ -440,35 +446,144 @@ impl<'a> SubMapping<'a> {
         Ok(written as usize)
     }
 
+    /// Returns the length of the mapping.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns true if the mapping is empty.
     pub fn is_empty(&self) -> bool {
-        self.len != 0
+        self.len == 0
+    }
+
+    /// Returns a raw readable reference to the underlying data.
+    ///
+    /// Safety:
+    /// - The caller must never create a reference to the underlying
+    /// memory region.
+    /// - The returned pointer must not outlive the mapping.
+    /// - The caller may only read up to `len()` bytes.
+    pub unsafe fn raw_readable(&self) -> Option<*const u8> {
+        if self.prot.contains(Prot::READ) {
+            Some(self.ptr.as_ptr() as *const u8)
+        } else {
+            None
+        }
+    }
+
+    /// Returns a raw writable reference to the underlying data.
+    ///
+    /// Safety:
+    /// - The caller must never create a reference to the underlying
+    /// memory region.
+    /// - The returned pointer must not outlive the mapping.
+    /// - The caller may only write up to `len()` bytes.
+    pub unsafe fn raw_writable(&self) -> Option<*mut u8> {
+        if self.prot.contains(Prot::WRITE) {
+            Some(self.ptr.as_ptr() as *mut u8)
+        } else {
+            None
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempfile;
+
+    fn test_vmm(len: u64) -> VmmFile {
+        let file = tempfile().unwrap();
+        file.set_len(len).unwrap();
+        unsafe {
+            VmmFile::new(file)
+        }
+
+    }
 
     #[test]
-    fn assert_protections() {
+    fn memory_protections_match_libc() {
         assert_eq!(Prot::READ.bits() as i32, libc::PROT_READ);
         assert_eq!(Prot::WRITE.bits() as i32, libc::PROT_WRITE);
         assert_eq!(Prot::EXEC.bits() as i32, libc::PROT_EXEC);
     }
 
-    /*
-
     #[test]
-    fn mapping_lifetime() {
-        // TODO: Will need to patch this with drop...
-        let ptr = NonNull::new(0x1234 as *mut u8).unwrap();
-        let mapping = unsafe { Mapping::new(ptr, 1024) };
-        mapping.as_ref().subregion(512);
+    fn guard_space_creates_readable_writable_regions() {
+        let mut guard = GuardSpace::new(GUARD_LEN).unwrap();
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping = guard.mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).unwrap();
+
+        let input: u64 = 0xDEADBEEF;
+        mapping.as_ref().write(&input).unwrap();
+        let output = mapping.as_ref().read().unwrap();
+        assert_eq!(input, output);
     }
 
-    */
+    #[test]
+    fn guard_space_cannot_allocate_beyond_end() {
+        let mut guard = GuardSpace::new(GUARD_LEN).unwrap();
+        let vmm = test_vmm(GUARD_LEN as u64);
+
+        let _ = guard.mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).unwrap();
+        // No space remaining after the first allocation.
+        assert!(guard.mapping(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).is_err());
+    }
+
+    #[test]
+    fn guard_space_must_allocate_modulo_guard_len() {
+        let mut guard = GuardSpace::new(GUARD_LEN).unwrap();
+        let vmm = test_vmm(GUARD_LEN as u64);
+        assert!(guard.mapping(GUARD_LEN - 1, Prot::READ, &vmm, 0).is_err());
+    }
+
+    #[test]
+    fn mapping_denies_read_beyond_end() {
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping = Mapping::new(GUARD_LEN, Prot::READ, &vmm, 0).unwrap();
+
+        assert!(mapping.as_ref().read::<[u8; GUARD_LEN + 1]>().is_err());
+    }
+
+    #[test]
+    fn mapping_shortens_read_bytes_beyond_end() {
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping = Mapping::new(GUARD_LEN, Prot::READ, &vmm, 0).unwrap();
+
+        let mut buf: [u8; GUARD_LEN + 1] = [0; GUARD_LEN + 1];
+        assert_eq!(GUARD_LEN, mapping.as_ref().read_bytes(&mut buf).unwrap());
+    }
+
+    #[test]
+    fn mapping_create_empty() {
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping = Mapping::new(0, Prot::READ, &vmm, 0).unwrap();
+
+        assert_eq!(0, mapping.as_ref().len());
+        assert!(mapping.as_ref().is_empty());
+    }
+
+    #[test]
+    fn mapping_valid_subregions() {
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping = Mapping::new(GUARD_LEN, Prot::READ, &vmm, 0).unwrap();
+
+        assert!(mapping.as_ref().subregion(0, 0).is_some());
+        assert!(mapping.as_ref().subregion(0, GUARD_LEN / 2).is_some());
+        assert!(mapping.as_ref().subregion(GUARD_LEN, 0).is_some());
+    }
+
+    #[test]
+    fn mapping_invalid_subregions() {
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping = Mapping::new(GUARD_LEN, Prot::READ, &vmm, 0).unwrap();
+
+        // Beyond the end of the mapping.
+        assert!(mapping.as_ref().subregion(GUARD_LEN + 1, 0).is_none());
+        assert!(mapping.as_ref().subregion(GUARD_LEN, 1).is_none());
+
+        // Overflow.
+        assert!(mapping.as_ref().subregion(usize::MAX, 1).is_none());
+        assert!(mapping.as_ref().subregion(1, usize::MAX).is_none());
+    }
 }
