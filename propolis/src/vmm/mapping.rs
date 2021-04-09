@@ -1,5 +1,7 @@
 //! Module for managing guest memory mappings.
 
+use crate::common::PAGE_SIZE;
+use crate::util::aspace::ASpace;
 use crate::vmm::VmmFile;
 
 use std::fs::File;
@@ -38,14 +40,14 @@ bitflags! {
 pub struct GuardSpace {
     // Original PROT_NONE mapping, which is replaced by other mappings.
     //
-    // TODO: This mapping is wrapped in ManuallyDrop to explicitly leak.
-    // It should be possible to remove this wrapper, unmapping the guard
-    // pages once the GuardSpace goes out of scope, but this will require
-    // ensuring all `Mapping` objects created by the GuardSpace have
-    // a shorter lifetime than the GuardSpace itself.
+    // Portions of map are vended out to callers during the usage of
+    // GuardSpace, though the remaining "unused" portions are unmapped
+    // manually in GuardSpace's drop implementation.
     map: ManuallyDrop<Mapping>,
-    // Start of the next fixed address within the mapping.
-    next: usize,
+
+    // Tracks the allocated mappings within the GuardSpace,
+    // relative to the start address of the first guard page.
+    aspace: ASpace<()>,
 }
 
 impl GuardSpace {
@@ -63,7 +65,7 @@ impl GuardSpace {
         // Total size is the user-accessible space, plus pages on either side.
         let overall = GUARD_LEN * 2 + padded;
 
-        // Safety: This invocation of mmap isn't safe because of FFI;
+        // Safety: This invocation of mmap isn't safe only because of FFI;
         // it isn't requesting a fixed address mapping, and uses anonymous
         // (rather than file-backed) virtual memory.
         let ptr = unsafe {
@@ -78,6 +80,12 @@ impl GuardSpace {
         };
         let ptr = NonNull::new(ptr).ok_or_else(Error::last_os_error)?;
 
+        let mut aspace = ASpace::new(0, overall);
+
+        // Register the two guard pages.
+        aspace.register(0, GUARD_LEN, ()).unwrap();
+        aspace.register(overall - GUARD_LEN, GUARD_LEN, ()).unwrap();
+
         Ok(GuardSpace {
             map: ManuallyDrop::new(Mapping {
                 inner: SubMapping {
@@ -87,14 +95,18 @@ impl GuardSpace {
                     _phantom: PhantomData,
                 },
             }),
-            next: 0,
+            aspace,
         })
     }
 
     /// Creates a new mapping within the bounds of the guard region, replacing
     /// guard pages with the new mapping.
     ///
-    /// `size` must be divisible by [`GUARD_LEN`].
+    /// `size` must be divisible by [`PAGE_SIZE`].
+    ///
+    /// The lifetime of the returned mapping can exceed the lifetime of the
+    /// GuardSpace - dropping the GuardSpace early merely removes the guard
+    /// mappings.
     pub fn mapping(
         &mut self,
         size: usize,
@@ -102,25 +114,29 @@ impl GuardSpace {
         vmm: &VmmFile,
         devoff: i64,
     ) -> Result<Mapping> {
-        if size % GUARD_LEN != 0 {
+        if size % PAGE_SIZE != 0 {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
-                "Size not aligned to guard page",
+                "Size not aligned to page size",
             ));
         }
 
-        // Access the unguarded region of the mapping.
-        let unguarded = self
-            .map
-            .as_ref()
-            .subregion(GUARD_LEN, self.map.as_ref().len() - 2 * GUARD_LEN)
-            .unwrap();
-
-        // Access the to-be-mapped subregion within the unguarded area.
-        let subregion =
-            unguarded.subregion(self.next, size).ok_or_else(|| {
+        // Find free space large enough for this mapping.
+        //
+        // This acts as a first-fit allocator.
+        let free_space = self
+            .aspace
+            .inverse_iter()
+            .find(|&extent| extent.len() >= size)
+            .ok_or_else(|| {
                 Error::new(ErrorKind::NotFound, "Not enough guard space")
             })?;
+
+        // Access the to-be-mapped subregion.
+        let subregion =
+            self.map.as_ref().subregion(free_space.start(), size).ok_or_else(
+                || Error::new(ErrorKind::NotFound, "Not enough guard space"),
+            )?;
 
         // Safety: The region of memory being replaced by MAP_FIXED has been
         // allocated by the GuardSpace, and becomes inaccessible to other
@@ -128,9 +144,28 @@ impl GuardSpace {
         let mapping = unsafe {
             Mapping::new_internal(Some(subregion.ptr), size, prot, vmm, devoff)?
         };
-
-        self.next += size;
+        self.aspace.register(free_space.start(), size, ()).unwrap();
         Ok(mapping)
+    }
+}
+
+impl Drop for GuardSpace {
+    fn drop(&mut self) {
+        // Deregister the guard pages, as we would like to unmap them.
+        self.aspace.unregister(0).unwrap();
+        self.aspace.unregister(self.map.as_ref().len() - GUARD_LEN).unwrap();
+
+        // Unmap all space marked "free" in the original mapping.
+        // Other regions are used by Mapping objects, and will be
+        // unmapped when those mappings go out of scope.
+        for free_space in self.aspace.inverse_iter() {
+            let r = unsafe {
+                let start =
+                    self.map.as_ref().ptr.as_ptr().add(free_space.start());
+                libc::munmap(start as *mut libc::c_void, free_space.len())
+            };
+            assert!(r == 0, "Unmap of GuardSpace failed");
+        }
     }
 }
 
@@ -451,7 +486,8 @@ impl<'a> SubMapping<'a> {
 
     /// Returns a raw readable reference to the underlying data.
     ///
-    /// Safety:
+    /// # Safety
+    ///
     /// - The caller must never create a reference to the underlying
     /// memory region.
     /// - The returned pointer must not outlive the mapping.
@@ -466,7 +502,8 @@ impl<'a> SubMapping<'a> {
 
     /// Returns a raw writable reference to the underlying data.
     ///
-    /// Safety:
+    /// # Safety
+    ///
     /// - The caller must never create a reference to the underlying
     /// memory region.
     /// - The returned pointer must not outlive the mapping.
@@ -527,10 +564,10 @@ mod tests {
     }
 
     #[test]
-    fn guard_space_must_allocate_modulo_guard_len() {
+    fn guard_space_must_allocate_modulo_page_size() {
         let mut guard = GuardSpace::new(GUARD_LEN).unwrap();
         let vmm = test_vmm(GUARD_LEN as u64);
-        assert!(guard.mapping(GUARD_LEN - 1, Prot::READ, &vmm, 0).is_err());
+        assert!(guard.mapping(PAGE_SIZE - 1, Prot::READ, &vmm, 0).is_err());
     }
 
     #[test]

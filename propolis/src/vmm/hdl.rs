@@ -128,20 +128,16 @@ pub struct VmmFile(File);
 impl VmmFile {
     /// Constructs a new `VmmFile`.
     ///
-    /// Safety: The caller must guarantee that the provided file cannot be
-    /// truncated.
+    /// # Safety
+    ///
+    /// The caller must guarantee that the provided file cannot be truncated.
     pub unsafe fn new(f: File) -> Self {
         VmmFile(f)
     }
 
-    /// Accesses the VMM as a regular file.
-    pub fn file(&self) -> &File {
-        &self.0
-    }
-
     /// Accesses the VMM as a raw fd.
     pub fn fd(&self) -> RawFd {
-        self.file().as_raw_fd()
+        self.0.as_raw_fd()
     }
 }
 
