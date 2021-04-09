@@ -96,11 +96,7 @@ impl<T> ASpace<T> {
     ///
     /// Returns all space which does not overlap with registered regions.
     pub fn inverse_iter(&self) -> InverseIter<'_, T> {
-        InverseIter {
-            inner: self.map.iter().peekable(),
-            next: 0,
-            end: self.end,
-        }
+        InverseIter { inner: self.map.iter(), next: 0, end: self.end }
     }
 
     /// Get iterator for regions which are (partially or totally) covered by a range
@@ -186,7 +182,7 @@ impl Extent {
 
 /// Iterator for empty space in an [ASpace], created by [ASpace::inverse_iter].
 pub struct InverseIter<'a, T> {
-    inner: std::iter::Peekable<btree_map::Iter<'a, usize, (usize, T)>>,
+    inner: btree_map::Iter<'a, usize, (usize, T)>,
     // Next potential empty region starting address.
     next: usize,
     end: usize,
@@ -198,24 +194,21 @@ impl<'a, T> Iterator for InverseIter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.next < self.end {
-            match self.inner.peek() {
+            match self.inner.next() {
                 Some((registered_start, (registered_len, _))) => {
-                    if self.next < **registered_start {
+                    if self.next < *registered_start {
                         // Empty space exists before the next region.
                         let extent = Extent {
                             start: self.next,
-                            len: **registered_start - self.next,
+                            len: *registered_start - self.next,
                         };
                         // Jump past the registered region.
-                        self.next = **registered_start + *registered_len;
-                        let _ = self.inner.next();
-
+                        self.next = *registered_start + registered_len;
                         return Some(extent);
                     } else {
                         // This space is registered. Move beyond it to find
                         // empty space.
-                        self.next = **registered_start + *registered_len;
-                        let _ = self.inner.next();
+                        self.next = *registered_start + registered_len;
                         continue;
                     }
                 }
