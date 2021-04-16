@@ -47,7 +47,7 @@ impl PioBus {
             _ => panic!(),
         };
         let handled = self.do_pio(port, |p, o, dev, ident| {
-            let mut wo = WriteOp::new_buf(o as usize, data);
+            let mut wo = WriteOp::from_buf(o as usize, data);
             dev.pio_rw(p, ident, RWOp::Write(&mut wo), ctx)
         });
         if !handled {
@@ -58,14 +58,14 @@ impl PioBus {
 
     pub fn handle_in(&self, port: u16, bytes: u8, ctx: &DispCtx) -> u32 {
         let mut buf = [0xffu8; 4];
-        let data = match bytes {
+        let mut data = match bytes {
             1 => &mut buf[0..1],
             2 => &mut buf[0..2],
             4 => &mut buf[0..],
             _ => panic!(),
         };
         let handled = self.do_pio(port, |p, o, dev, ident| {
-            let mut ro = ReadOp::new_buf(o as usize, data);
+            let mut ro = ReadOp::from_buf(o as usize, &mut data);
             dev.pio_rw(p, ident, RWOp::Read(&mut ro), ctx)
         });
         if !handled {

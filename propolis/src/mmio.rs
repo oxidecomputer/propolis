@@ -52,7 +52,7 @@ impl MmioBus {
             _ => panic!(),
         };
         let handled = self.do_mmio(addr, |a, o, dev, ident| {
-            let mut wo = WriteOp::new_buf(o as usize, data);
+            let mut wo = WriteOp::from_buf(o as usize, data);
             dev.mmio_rw(a, ident, RWOp::Write(&mut wo), ctx)
         });
         if !handled {
@@ -62,7 +62,7 @@ impl MmioBus {
     }
     pub fn handle_read(&self, addr: usize, bytes: u8, ctx: &DispCtx) -> u64 {
         let mut buf = [0xffu8; 8];
-        let data = match bytes {
+        let mut data = match bytes {
             1 => &mut buf[0..1],
             2 => &mut buf[0..2],
             4 => &mut buf[0..4],
@@ -70,7 +70,7 @@ impl MmioBus {
             _ => panic!(),
         };
         let handled = self.do_mmio(addr, |a, o, dev, ident| {
-            let mut ro = ReadOp::new_buf(o as usize, data);
+            let mut ro = ReadOp::from_buf(o as usize, &mut data);
             dev.mmio_rw(a, ident, RWOp::Read(&mut ro), ctx)
         });
         if !handled {

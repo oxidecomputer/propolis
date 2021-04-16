@@ -381,7 +381,7 @@ impl Chain {
         if (self.read_stat.bytes_remain as usize) < item_sz {
             return false;
         }
-        // SAFETY: We assume the mutable item reference we have received is
+        // Safety: We assume the mutable item reference we have received is
         // valid (aligned, etc) to begin with.  It is cast into a u8 slice to
         // handle cases where it cannot be filled by a single buffer copy.
         let raw = unsafe {
@@ -421,7 +421,7 @@ impl Chain {
         if (self.write_stat.bytes_remain as usize) < item_sz {
             return false;
         }
-        // SAFETY: We assume the item reference we have received is valid
+        // Safety: We assume the item reference we have received is valid
         // (aligned, etc) to begin with.  It is cast into a u8 slice to handle
         // cases where it cannot be filled by a single buffer copy.
         let raw = unsafe {

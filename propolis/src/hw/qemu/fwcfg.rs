@@ -153,7 +153,7 @@ impl FwCfgFileEntry {
         this
     }
     fn bytes(&self) -> &[u8] {
-        // SAFETY:  This struct is packed, so it does not have any padding with
+        // Safety:  This struct is packed, so it does not have any padding with
         // undefined contents, making the conversion to a byte-slice safe.
         unsafe {
             std::slice::from_raw_parts(
@@ -516,15 +516,14 @@ impl FwCfg {
 
         let written = if valid_remain > 0 {
             let to_write = len.min(valid_remain);
-            let ptr = mem
-                .raw_writable(&GuestRegion(GuestAddr(addr), to_write as usize))
+            let mapping = mem
+                .writable_region(&GuestRegion(
+                    GuestAddr(addr),
+                    to_write as usize,
+                ))
                 .ok_or("bad GPA")?;
-            // Safety: The memctx has determined that this is valid writable
-            // guest memory, so it should be valid to construct a ReadOp for
-            // that region.
-            let mut ro = unsafe {
-                ReadOp::new_ptr(offset as usize, ptr, to_write as usize)
-            };
+
+            let mut ro = ReadOp::from_mapping(offset as usize, mapping);
             self.xfer(selector, RWOp::Read(&mut ro), ctx)?;
             to_write
         } else {
@@ -533,7 +532,7 @@ impl FwCfg {
 
         // write zeroes for everything past the end of the data
         if written < len {
-            mem.write_bytes(
+            mem.write_byte(
                 GuestAddr(addr + written as u64),
                 0,
                 (len - written) as usize,
@@ -554,15 +553,13 @@ impl FwCfg {
 
         if valid_remain > 0 {
             let to_read = len.min(valid_remain);
-            let ptr = mem
-                .raw_readable(&GuestRegion(GuestAddr(addr), to_read as usize))
+            let mapping = mem
+                .readable_region(&GuestRegion(
+                    GuestAddr(addr),
+                    to_read as usize,
+                ))
                 .ok_or("bad GPA")?;
-            // Safety: The memctx has determined that this is valid readable
-            // guest memory, so it should be valid to construct a WriteOp for
-            // that region.
-            let mut wo = unsafe {
-                WriteOp::new_ptr(offset as usize, ptr, to_read as usize)
-            };
+            let mut wo = WriteOp::from_mapping(offset as usize, mapping);
             self.xfer(selector, RWOp::Write(&mut wo), ctx)?;
         }
         Ok(())

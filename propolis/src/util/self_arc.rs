@@ -16,7 +16,7 @@ impl<T: SelfArc> SelfArcCell<T> {
         Self { inner: UnsafeCell::new(None) }
     }
     fn set(this: &mut Arc<T>) {
-        // SAFETY: Our exclusive access to the UnsafeCell is ensured by the
+        // Safety: Our exclusive access to the UnsafeCell is ensured by the
         // Arc::get_mut() call.  Any later attempt to call set() again will
         // fail, as the stored Weak reference will preclude its success.
         //
@@ -38,21 +38,21 @@ impl<T: SelfArc> SelfArcCell<T> {
     }
     fn get(&self) -> Weak<T> {
         let pointer = self.inner.get();
-        // SAFETY: The UnsafeCell will either hold the None from initialization,
+        // Safety: The UnsafeCell will either hold the None from initialization,
         // or a valid Some(Weak<T>) as written by set().
         let oref = unsafe { pointer.as_ref().unwrap() };
         oref.as_ref().unwrap().clone()
     }
     fn get_arc(&self) -> Arc<T> {
         let pointer = self.inner.get();
-        // SAFETY: The UnsafeCell will either hold the None from initialization,
+        // Safety: The UnsafeCell will either hold the None from initialization,
         // or a valid Some(Weak<T>) as written by set().
         let oref = unsafe { pointer.as_ref().unwrap() };
         Weak::upgrade(oref.as_ref().unwrap()).unwrap()
     }
 }
 
-// SAFETY: With the one write access to the UnsafeCell constrained to an context
+// Safety: With the one write access to the UnsafeCell constrained to an context
 // we know is exclusive, we are willing to grant Sync.
 unsafe impl<T: Sync> Sync for SelfArcCell<T> {}
 

@@ -8,7 +8,7 @@ extern crate serde_derive;
 extern crate toml;
 
 use std::fs::File;
-use std::io::{Error, ErrorKind, Read, Result};
+use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -95,29 +95,25 @@ fn main() {
     let inst = build_instance(vm_name, cpus, lowmem).unwrap();
     println!("vm {} created", vm_name);
 
-    let (mut romfp, rom_len) = open_bootrom(config.get_bootrom())
+    let (romfp, rom_len) = open_bootrom(config.get_bootrom())
         .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
     let com1_sock = chardev::UDSock::bind(Path::new("./ttya"))
         .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
 
     inst.initialize(|machine, mctx, disp, inv| {
-        machine.populate_rom("bootrom", |ptr, region_len| {
-            if region_len < rom_len {
+        machine.populate_rom("bootrom", |mapping| {
+            let mapping = mapping.as_ref();
+            if mapping.len() < rom_len {
                 return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
             }
-            let offset = region_len - rom_len;
-            unsafe {
-                let write_ptr = ptr.as_ptr().add(offset);
-                let buf = std::slice::from_raw_parts_mut(write_ptr, rom_len);
-                match romfp.read(buf) {
-                    Ok(n) if n == rom_len => Ok(()),
-                    Ok(_) => {
-                        // TODO: handle short read
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+            let offset = mapping.len() - rom_len;
+            let submapping = mapping.subregion(offset, rom_len).unwrap();
+            let nread = submapping.pread(&romfp, rom_len, 0)?;
+            if nread != rom_len {
+                // TODO: Handle short read
+                return Err(Error::new(ErrorKind::InvalidData, "short read"));
             }
+            Ok(())
         })?;
         machine.initialize_rtc(lowmem).unwrap();
 

@@ -4,7 +4,7 @@ use std::collections::{btree_map, BTreeMap};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 
-/// Generic utility representing an address space.
+/// Generic container storing items in a region representing an address space.
 ///
 /// Stores ranges by (start, length), but also allows association
 /// of generic objects with each region.
@@ -39,7 +39,10 @@ impl<T> ASpace<T> {
         Self { start, end, map: BTreeMap::new() }
     }
 
-    /// Register an inclusive region [`start`, `end`]
+    /// Register an inclusive region [`start`, `end`].
+    ///
+    /// Returns an error if the region extends beyond the start/end of the
+    /// address space, or if it conflicts with any existing registration.
     pub fn register(
         &mut self,
         start: usize,
@@ -87,6 +90,13 @@ impl<T> ASpace<T> {
     /// Get an iterator for items in the space, sorted by starting point
     pub fn iter(&self) -> Iter<'_, T> {
         Iter { inner: self.map.iter() }
+    }
+
+    /// Get an iterator for all empty space, sorted by starting point
+    ///
+    /// Returns all space which does not overlap with registered regions.
+    pub fn inverse_iter(&self) -> InverseIter<'_, T> {
+        InverseIter { inner: self.map.iter(), next: 0, end: self.end }
     }
 
     /// Get iterator for regions which are (partially or totally) covered by a range
@@ -151,6 +161,68 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(kv_flatten)
+    }
+}
+
+/// Represents a region in the space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extent {
+    start: usize,
+    len: usize,
+}
+
+impl Extent {
+    pub fn start(&self) -> usize {
+        self.start
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
+/// Iterator for empty space in an [ASpace], created by [ASpace::inverse_iter].
+pub struct InverseIter<'a, T> {
+    inner: btree_map::Iter<'a, usize, (usize, T)>,
+    // Next potential empty region starting address.
+    next: usize,
+    end: usize,
+}
+
+impl<'a, T> Iterator for InverseIter<'a, T> {
+    /// Item represents unregistered region in address mapping.
+    type Item = Extent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next < self.end {
+            match self.inner.next() {
+                Some((registered_start, (registered_len, _))) => {
+                    if self.next < *registered_start {
+                        // Empty space exists before the next region.
+                        let extent = Extent {
+                            start: self.next,
+                            len: *registered_start - self.next,
+                        };
+                        // Jump past the registered region.
+                        self.next = *registered_start + registered_len;
+                        return Some(extent);
+                    } else {
+                        // This space is registered. Move beyond it to find
+                        // empty space.
+                        self.next = *registered_start + registered_len;
+                        continue;
+                    }
+                }
+                None => {
+                    // If we've run out of registered regions, return everything
+                    // up to the end of the address space.
+                    let extent =
+                        Extent { start: self.next, len: self.end - self.next };
+                    self.next = self.end;
+                    return Some(extent);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -283,5 +355,77 @@ mod tests {
 
         assert_eq!(s.region_at(end + 1), Err(Error::OutOfRange));
         assert_eq!(s.region_at(end + 10), Err(Error::OutOfRange));
+    }
+
+    #[test]
+    fn inverse_iterator_alloc_middle() {
+        let end = 100;
+        let mut s: ASpace<()> = ASpace::new(0, end);
+
+        // Registrations in the middle of the mapping, with free space at the
+        // edges of the address space.
+        assert!(s.register(10, 10, ()).is_ok());
+        assert!(s.register(30, 10, ()).is_ok());
+
+        let mut iter = s.inverse_iter();
+        assert_eq!(Extent { start: 0, len: 10 }, iter.next().unwrap());
+        assert_eq!(Extent { start: 20, len: 10 }, iter.next().unwrap());
+        assert_eq!(Extent { start: 40, len: 60 }, iter.next().unwrap());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn inverse_iterator_alloc_ends() {
+        let end = 100;
+        let mut s: ASpace<()> = ASpace::new(0, end);
+
+        // Registrations at the edges of the address space.
+        assert!(s.register(0, 10, ()).is_ok());
+        assert!(s.register(40, 20, ()).is_ok());
+        assert!(s.register(90, 10, ()).is_ok());
+
+        let mut iter = s.inverse_iter();
+        assert_eq!(Extent { start: 10, len: 30 }, iter.next().unwrap());
+        assert_eq!(Extent { start: 60, len: 30 }, iter.next().unwrap());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn inverse_iterator_sequential_registrations() {
+        let end = 100;
+        let mut s: ASpace<()> = ASpace::new(0, end);
+
+        // Back-to-back registrations within the address space.
+        assert!(s.register(10, 10, ()).is_ok());
+        assert!(s.register(20, 10, ()).is_ok());
+        assert!(s.register(30, 10, ()).is_ok());
+
+        let mut iter = s.inverse_iter();
+        assert_eq!(Extent { start: 0, len: 10 }, iter.next().unwrap());
+        assert_eq!(Extent { start: 40, len: 60 }, iter.next().unwrap());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn inverse_iterator_empty() {
+        let end = 100;
+        let mut s: ASpace<()> = ASpace::new(0, end);
+
+        // Entire address space occupied.
+        assert!(s.register(0, 100, ()).is_ok());
+
+        let mut iter = s.inverse_iter();
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn inverse_iterator_full() {
+        let end = 100;
+        let s: ASpace<()> = ASpace::new(0, end);
+
+        // Entire address space empty
+        let mut iter = s.inverse_iter();
+        assert_eq!(Extent { start: 0, len: 100 }, iter.next().unwrap());
+        assert!(iter.next().is_none());
     }
 }

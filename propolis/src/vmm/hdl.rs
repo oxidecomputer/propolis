@@ -7,14 +7,13 @@
 //! for encapsulating commands to the underlying kernel
 //! object which represents a single VM.
 
-use core::ptr;
+use super::mapping::*;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
-use std::ptr::NonNull;
 
 use crate::util::sys::ioctl;
 
@@ -72,7 +71,11 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
     vmpath.push(name);
 
     let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
-    Ok(VmmHdl { inner: fp, name: name.to_string() })
+
+    // Safety: Files opened within VMM_PATH_PREFIX are VMMs, which may not be
+    // truncated.
+    let inner = unsafe { VmmFile::new(fp) };
+    Ok(VmmHdl { inner, name: name.to_string() })
 }
 #[cfg(not(target_os = "illumos"))]
 fn create_vm_impl(_name: &str, _force: bool) -> Result<VmmHdl> {
@@ -118,28 +121,35 @@ fn destroy_vm_impl(_name: &str) -> Result<()> {
     Ok(())
 }
 
-bitflags! {
-    /// Bitflags representing memory protections.
-    pub struct Prot: u8 {
-        const NONE = 0;
-        const READ = bhyve_api::PROT_READ as u8;
-        const WRITE = bhyve_api::PROT_WRITE as u8;
-        const EXEC = bhyve_api::PROT_EXEC as u8;
-        const ALL = (bhyve_api::PROT_READ
-                    | bhyve_api::PROT_WRITE
-                    | bhyve_api::PROT_EXEC) as u8;
+/// A wrapper around a file which must uphold the guarantee that the underlying
+/// structure may not be truncated.
+pub struct VmmFile(File);
+
+impl VmmFile {
+    /// Constructs a new `VmmFile`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the provided file cannot be truncated.
+    pub unsafe fn new(f: File) -> Self {
+        VmmFile(f)
+    }
+
+    /// Accesses the VMM as a raw fd.
+    pub fn fd(&self) -> RawFd {
+        self.0.as_raw_fd()
     }
 }
 
 /// A handle to an existing virtual machine monitor.
 pub struct VmmHdl {
-    inner: File,
+    inner: VmmFile,
     name: String,
 }
 impl VmmHdl {
     /// Accesses the raw file descriptor behind the VMM.
     pub fn fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
+        self.inner.0.as_raw_fd()
     }
     /// Sends an ioctl to the underlying VMM.
     pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<()> {
@@ -149,7 +159,6 @@ impl VmmHdl {
     /// Creates and sends a request to allocate a memory segment within the VM.
     ///
     /// # Arguments
-    ///
     /// - `segid`: The segment ID of the requested memory.
     /// - `size`: The size of the memory region, in bytes.
     /// - `segname`: The (optional) name of the memory segment.
@@ -217,47 +226,29 @@ impl VmmHdl {
     /// Maps a memory segment into propolis' address space.
     ///
     /// Returns a pointer to the mapped segment, if successful.
-    pub unsafe fn mmap_seg(&self, segid: i32, size: usize) -> Result<*mut u8> {
+    pub fn mmap_seg(&self, segid: i32, size: usize) -> Result<Mapping> {
         let devoff = self.devmem_offset(segid)?;
-        let ptr = libc::mmap(
-            ptr::null_mut(),
-            size,
-            libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            self.fd(),
-            devoff as i64,
-        ) as *mut u8;
-        if ptr.is_null() {
-            return Err(Error::last_os_error());
-        }
-        Ok(ptr)
+
+        Mapping::new(size, Prot::WRITE, &self.inner, devoff as i64)
     }
 
-    /// Maps a portion of the guest's virtual address space
-    /// into propolis' address space.
+    /// Maps a portion of the guest's virtual address space into propolis'
+    /// address space.
     ///
-    /// Returns a pointer to the mapped segment, if successful.
-    pub unsafe fn mmap_guest_mem(
+    /// # Arguments:
+    /// - `offset`: Offset within the guests's address space to be mapped.
+    /// - `size`: Size of the mapping.
+    /// - `prot`: Memory protections to be applied to the mapping.
+    ///
+    /// Return the mapped segment if successful.
+    pub fn mmap_guest_mem(
         &self,
+        guard_space: &mut GuardSpace,
         offset: usize,
         size: usize,
         prot: Prot,
-        map_at: Option<NonNull<u8>>,
-    ) -> Result<NonNull<u8>> {
-        let (map_addr, add_flags) = if let Some(addr) = map_at {
-            (addr.as_ptr() as *mut libc::c_void, libc::MAP_FIXED)
-        } else {
-            (ptr::null_mut(), 0)
-        };
-        let ptr = libc::mmap(
-            map_addr,
-            size,
-            prot.bits() as i32,
-            libc::MAP_SHARED | add_flags,
-            self.fd(),
-            offset as i64,
-        ) as *mut u8;
-        NonNull::new(ptr).ok_or_else(Error::last_os_error)
+    ) -> Result<Mapping> {
+        guard_space.mapping(size, prot, &self.inner, offset as i64)
     }
 
     /// Issues a request to update the virtual RTC time.
