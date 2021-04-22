@@ -277,16 +277,27 @@ impl UDSock {
                 if source_state != BufState::Steady {
                     events.insert(FdEvents::POLLOUT);
                 }
+
                 if let Some(cur_token) = socks.client_token_fd {
+                    // If the client_token_fd exists, we have already registered
+                    // this fd with the dispatcher - re-registering continues
+                    // providing event notificaitons.
                     ctx.event.fd_reregister(cur_token, events);
-                } else {
-                    let client_fd = socks.client.as_ref().unwrap().as_raw_fd();
+                } else if let Some(client_fd) =
+                    socks.client.as_ref().map(AsRawFd::as_raw_fd)
+                {
+                    // If the client_token_fd does not exist, but the client exists,
+                    // this is the initial opportunity to register the client_fd for
+                    // subsequent signals.
                     socks.client_token_fd = Some(ctx.event.fd_register(
                         client_fd,
                         events,
                         self.self_weak(),
                     ));
                 }
+                // If neither the client_token nor client exist, the client has
+                // been disconnected, and no work should be taken to receive
+                // further notifications.
             }
             (BufState::ProcessCapable, BufState::ProcessCapable) => {
                 // TODO: polling
@@ -362,6 +373,7 @@ impl UDSock {
         assert!(socks.client.is_some());
         if let Some(token) = socks.client_token_fd {
             ctx.event.fd_deregister(token);
+            socks.client_token_fd = None;
         }
         socks.client = None;
         socks.state = SockState::ClientGone;
