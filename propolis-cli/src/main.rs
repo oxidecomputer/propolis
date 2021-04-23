@@ -120,6 +120,8 @@ fn main() {
         let hdl = machine.get_hdl();
         let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
         chipset.attach(mctx);
+        let chipset_id = inv.register_root(chipset.clone(), "chipset".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
 
         // UARTs
         let com1 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM1).unwrap());
@@ -143,15 +145,20 @@ fn main() {
         LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
         LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
         LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        inv.register(com1, "com1".to_string());
-        inv.register(com2, "com2".to_string());
-        inv.register(com3, "com3".to_string());
-        inv.register(com4, "com4".to_string());
+        inv.register(chipset_id, com1, "com1".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(chipset_id, com2, "com2".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(chipset_id, com3, "com3".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(chipset_id, com4, "com4".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
 
         // PS/2
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.as_ref());
-        inv.register(ps2_ctrl, "ps2_ctrl".to_string());
+        inv.register(chipset_id, ps2_ctrl, "ps2_ctrl".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
 
         let debug = std::fs::File::create("debug.out").unwrap();
         let buffered = std::io::LineWriter::new(debug);
@@ -159,7 +166,8 @@ fn main() {
             Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
             pio,
         );
-        inv.register(dbg, "debug".to_string());
+        inv.register(chipset_id, dbg, "debug".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
 
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
@@ -211,7 +219,6 @@ fn main() {
         // with all pci devices attached, place their BARs and wire up access to PCI
         // configuration space
         chipset.pci_finalize(&ctx);
-        inv.register(chipset, "chipset".to_string());
 
         let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
         fwcfg
@@ -227,8 +234,10 @@ fn main() {
         let fwcfg_dev = fwcfg.finalize();
         fwcfg_dev.attach(pio);
 
-        inv.register(fwcfg_dev, "fwcfg".to_string());
-        inv.register(ramfb, "ramfb".to_string());
+        inv.register(chipset_id, fwcfg_dev, "fwcfg".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(chipset_id, ramfb, "ramfb".to_string())
+            .map_err(|e| -> std::io::Error { e.into() })?;
 
         let ncpu = mctx.max_cpus();
         for id in 0..ncpu {

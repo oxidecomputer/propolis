@@ -1,3 +1,5 @@
+use std::io::{Error, ErrorKind};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
@@ -24,6 +26,40 @@ pub struct Bdf {
     inner_bus: u8,
     inner_dev: u8,
     inner_func: u8,
+}
+
+impl FromStr for Bdf {
+    type Err = std::io::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut fields = Vec::with_capacity(3);
+        for f in s.split('.') {
+            let num = usize::from_str(f).map_err(|e| {
+                Error::new(ErrorKind::InvalidInput, e.to_string())
+            })?;
+            if num > u8::MAX as usize {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("Value too large: {}", num),
+                ));
+            }
+            fields.push(num as u8);
+        }
+
+        if fields.len() != 3 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Wrong number of fields for BDF",
+            ));
+        }
+
+        Bdf::try_new(fields[0], fields[1], fields[2]).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "Failed to parse as BDF".to_string(),
+            )
+        })
+    }
 }
 
 impl Bdf {
