@@ -1,7 +1,3 @@
-// TODO: REMOVE ME
-#![allow(dead_code)]
-
-// use bitflags::bitflags;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -145,8 +141,11 @@ bitflags! {
 */
 
 // TODO: Remove this; it's a hack to workaround the above bug.
+#[allow(dead_code)]
 pub const DISK_FLAG_READ: u32 = 0b0000_0001;
+#[allow(dead_code)]
 pub const DISK_FLAG_WRITE: u32 = 0b0000_0010;
+#[allow(dead_code)]
 pub const DISK_FLAG_READ_WRITE: u32 = DISK_FLAG_READ | DISK_FLAG_WRITE;
 type DiskFlags = u32;
 
