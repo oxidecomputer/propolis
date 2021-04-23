@@ -182,9 +182,6 @@ async fn instance_ensure(
             }
 
             // Finalize device.
-            //
-            // TODO: Can any of this happen *before* we attach devices?
-            // TODO: How long do these steps take?
             chipset.device().pci_finalize(&disp.ctx());
             init.initialize_fwcfg(&chipset, properties.vcpus)?;
             Ok(())
@@ -232,8 +229,6 @@ async fn instance_get(
     let instance_info = api::Instance {
         properties: context.properties.clone(),
         state: propolis_to_api_state(context.instance.current_state()),
-
-        // TODO(scaffolding)
         disks: vec![],
         nics: vec![],
     };
