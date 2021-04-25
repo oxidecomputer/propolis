@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use propolis::bhyve_api;
 use propolis::block;
-use propolis::chardev::{Sink, Source, UDSock};
+use propolis::chardev::Source;
 use propolis::common::PAGE_SIZE;
-use propolis::dispatch::Dispatcher;
+use propolis::dispatch::{DispCtx, Dispatcher};
 use propolis::hw::chipset::{i440fx::I440Fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
@@ -132,10 +132,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_uart(
         &self,
         chipset: &RegisteredChipset,
-    ) -> Result<Serial, Error> {
-        let com1_sock = UDSock::bind(std::path::Path::new("./ttya"))
-            .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
-
+    ) -> Result<Serial<DispCtx, LpcUart>, Error> {
         // UARTs
         let com1 =
             LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM1).unwrap());
@@ -146,13 +143,7 @@ impl<'a> MachineInitializer<'a> {
         let com4 =
             LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap());
 
-        let ctx = self.disp.ctx();
-        com1_sock.listen(&ctx);
-        com1_sock.attach_sink(Arc::clone(&com1) as Arc<dyn Sink>);
-        com1_sock.attach_source(Arc::clone(&com1) as Arc<dyn Source>);
         com1.source_set_autodiscard(true);
-
-        // XXX: plumb up com2-4, but until then, just auto-discard
         com2.source_set_autodiscard(true);
         com3.source_set_autodiscard(true);
         com4.source_set_autodiscard(true);
@@ -175,7 +166,9 @@ impl<'a> MachineInitializer<'a> {
             .register(chipset.id(), com4, "com4".to_string())
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        Serial::new(com1, com1_sock)
+        let sink_size = 15;
+        let source_size = 4095;
+        Ok(Serial::new(com1, sink_size, source_size))
     }
 
     pub fn initialize_ps2(

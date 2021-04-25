@@ -10,9 +10,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
 
+use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::pci;
+use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
+
+use tokio::sync::Mutex;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 mod api;
 mod config;
@@ -30,17 +35,17 @@ struct InstanceContext {
     // The instance, which may or may not be instantiated.
     instance: Arc<Instance>,
     properties: api::InstanceProperties,
-    serial: Serial,
+    serial: Serial<DispCtx, LpcUart>,
 }
 
 struct ServerContext {
-    context: tokio::sync::Mutex<Option<InstanceContext>>,
+    context: Mutex<Option<InstanceContext>>,
     config: config::Config,
 }
 
 impl ServerContext {
     fn new(config: config::Config) -> Self {
-        ServerContext { context: tokio::sync::Mutex::new(None), config }
+        ServerContext { context: Mutex::new(None), config }
     }
 }
 
@@ -120,7 +125,7 @@ async fn instance_ensure(
     //
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
-    let mut com1: Option<Serial> = None;
+    let mut com1: Option<Serial<DispCtx, LpcUart>> = None;
 
     instance
         .initialize(|machine, mctx, disp, inv| {
@@ -291,20 +296,36 @@ async fn instance_serial(
         ));
     }
 
-    context.serial.ensure_connected().await.map_err(|e| {
-        HttpError::for_internal_error(format!(
-            "Cannot connect to serial: {}",
-            e
-        ))
-    })?;
-    let output = context.serial.read().await.map_err(|e| {
-        HttpError::for_internal_error(format!("Cannot read from serial: {}", e))
-    })?;
-    context.serial.write(&request.into_inner().bytes).await.map_err(|e| {
-        HttpError::for_internal_error(format!("Cannot write to serial: {}", e))
-    })?;
+    // Attempt to read from the serial console, but stop trying to read after
+    // 50ms if there is nothing to observe.
+    //
+    // NOTE: When this interface is converted to websockets, this timeout will
+    // be unnecessary - the connection can just block on the read, since
+    // reading/writing will be decoupled.
+    let mut output = [0u8; 4096];
+    let n = {
+        match tokio::time::timeout(
+            core::time::Duration::from_millis(50),
+            context.serial.read(&mut output)
+        ).await {
+            Ok(result) => {
+                // The read completed without a timeout firing.
+                let n = result.map_err(|e| {
+                    HttpError::for_internal_error(format!("Cannot read from serial: {}", e))
+                })?;
+                n
+            }
+            Err(_) => {0}
+        }
+    };
 
-    let response = api::InstanceSerialResponse { bytes: output };
+    let input = request.into_inner().bytes;
+    if input.len() != 0 {
+        context.serial.write_all(&input).await.map_err(|e| {
+            HttpError::for_internal_error(format!("Cannot write to serial: {}", e))
+        })?;
+    }
+    let response = api::InstanceSerialResponse { bytes: output[..n].to_vec() };
     Ok(HttpResponseOk(response))
 }
 
