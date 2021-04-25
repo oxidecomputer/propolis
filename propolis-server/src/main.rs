@@ -16,8 +16,8 @@ use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 mod api;
 mod config;
@@ -306,23 +306,31 @@ async fn instance_serial(
     let n = {
         match tokio::time::timeout(
             core::time::Duration::from_millis(50),
-            context.serial.read(&mut output)
-        ).await {
+            context.serial.read(&mut output),
+        )
+        .await
+        {
             Ok(result) => {
                 // The read completed without a timeout firing.
                 let n = result.map_err(|e| {
-                    HttpError::for_internal_error(format!("Cannot read from serial: {}", e))
+                    HttpError::for_internal_error(format!(
+                        "Cannot read from serial: {}",
+                        e
+                    ))
                 })?;
                 n
             }
-            Err(_) => {0}
+            Err(_) => 0,
         }
     };
 
     let input = request.into_inner().bytes;
     if input.len() != 0 {
         context.serial.write_all(&input).await.map_err(|e| {
-            HttpError::for_internal_error(format!("Cannot write to serial: {}", e))
+            HttpError::for_internal_error(format!(
+                "Cannot write to serial: {}",
+                e
+            ))
         })?;
     }
     let response = api::InstanceSerialResponse { bytes: output[..n].to_vec() };

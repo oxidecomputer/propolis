@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
 use std::io::Result;
-use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncWrite, AsyncRead, ReadBuf};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use propolis::chardev::{Sink, Source};
 
@@ -20,7 +20,8 @@ impl<Ctx: 'static> SinkDriver<Ctx> {
     // Writes to the internal buffer with as much of `buf` as possible.
     // Returns the number of bytes written.
     fn write_to_buffer(&mut self, buf: &[u8]) -> usize {
-        let to_fill = std::cmp::min(buf.len(), self.buf.capacity() - self.buf.len());
+        let to_fill =
+            std::cmp::min(buf.len(), self.buf.capacity() - self.buf.len());
         self.buf.extend(buf[..to_fill].iter());
         to_fill
     }
@@ -113,7 +114,11 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
     /// * `uart` - The device which data will be read from / written to.
     /// * `sink_size` - A lower bound on the size of the writeback buffer.
     /// * `source_size` - A lower bound on the size of the read buffer.
-    pub fn new(uart: Arc<Device>, sink_size: usize, source_size: usize) -> Serial<Ctx, Device> {
+    pub fn new(
+        uart: Arc<Device>,
+        sink_size: usize,
+        source_size: usize,
+    ) -> Serial<Ctx, Device> {
         let sink = Arc::clone(&uart) as Arc<dyn Sink<Ctx>>;
         let sink_driver = Arc::new(Mutex::new(SinkDriver {
             sink: sink.clone(),
@@ -141,11 +146,7 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
         }));
 
         uart.source_set_autodiscard(false);
-        Serial {
-            uart,
-            sink_driver,
-            source_driver,
-        }
+        Serial { uart, sink_driver, source_driver }
     }
 }
 
@@ -155,7 +156,9 @@ impl<Ctx, Device: Sink<Ctx> + Source<Ctx>> Drop for Serial<Ctx, Device> {
     }
 }
 
-impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite for Serial<Ctx, Device> {
+impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite
+    for Serial<Ctx, Device>
+{
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -181,20 +184,28 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite for Serial<Ctx, D
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
 
-impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncRead for Serial<Ctx, Device> {
+impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncRead
+    for Serial<Ctx, Device>
+{
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<()>> {
         if buf.remaining() == 0 {
             return Poll::Ready(Ok(()));
@@ -215,9 +226,9 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncRead for Serial<Ctx, De
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use futures::FutureExt;
     use propolis::chardev::Notifier;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct TestUart {
@@ -303,7 +314,7 @@ mod tests {
             self.auto_discard.store(active, Ordering::SeqCst);
         }
         fn source_set_notifier(&self, f: Notifier<()>) {
-            let mut source_notifier  = self.source_notifier.lock().unwrap();
+            let mut source_notifier = self.source_notifier.lock().unwrap();
             assert!(source_notifier.is_none());
             *source_notifier = Some(f);
         }
