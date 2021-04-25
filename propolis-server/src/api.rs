@@ -71,7 +71,7 @@ pub struct InstanceProperties {
     pub image_id: Uuid,
     /// ID of the bootrom used to initialize this Instance.
     pub bootrom_id: Uuid,
-    /// Size of memory allocated to the Instance, in MB.
+    /// Size of memory allocated to the Instance, in MiB.
     pub memory: u64,
     /// Number of vCPUs to be allocated to the Instance.
     pub vcpus: u8,

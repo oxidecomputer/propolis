@@ -164,11 +164,10 @@ impl InventoryInner {
         ent: Arc<T>,
         name: String,
     ) -> Result<EntityID, RegistrationError> {
-        let rec = Record::new(None, ent, name);
-
         if self.root.is_some() {
             return Err(RegistrationError::NotEmpty);
         }
+        let rec = Record::new(None, ent, name);
         let id = self.next_id();
         self.insert(rec, id)?;
         self.root = Some(id);
@@ -208,7 +207,7 @@ impl InventoryInner {
         Some(record)
     }
 
-    /// Removes an entity from the inventory.
+    /// Removes an entity (and all its children) from the inventory.
     ///
     /// No-op if the entity does not exist.
     pub fn deregister(
@@ -270,7 +269,7 @@ impl InventoryInner {
             .entities
             .get_mut(&parent_id)
             .ok_or_else(|| RegistrationError::MissingParent(parent_id))?;
-        parent.children.insert(child_id);
+        assert!(parent.children.insert(child_id));
         Ok(())
     }
 
