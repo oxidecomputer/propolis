@@ -164,10 +164,10 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize>> {
-        let mut sink = self.get_mut().sink_driver.lock().unwrap();
         if buf.len() == 0 {
             return Poll::Ready(Ok(0));
         }
+        let mut sink = self.get_mut().sink_driver.lock().unwrap();
         let n = sink.write_to_buffer(&buf);
         match n {
             0 => {
