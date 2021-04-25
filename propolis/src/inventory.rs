@@ -20,11 +20,10 @@ pub enum RegistrationError {
     NotEmpty,
 }
 
-impl Into<IoError> for RegistrationError {
-    fn into(self) -> IoError {
+impl From<RegistrationError> for IoError {
+    fn from(e: RegistrationError) -> IoError {
         use RegistrationError::*;
-
-        match self {
+        match e {
             AlreadyRegistered => {
                 IoError::new(ErrorKind::AlreadyExists, "already registered")
             }
@@ -133,8 +132,7 @@ impl Inventory {
         F: Fn(&Record),
     {
         let inv = self.inner.lock().unwrap();
-        let mut iter = inv.iter(order);
-        while let Some(record) = iter.next() {
+        for record in inv.iter(order) {
             func(record);
         }
     }
@@ -219,7 +217,7 @@ impl InventoryInner {
             let record = self
                 .entities
                 .get_mut(&id)
-                .ok_or_else(|| RegistrationError::MissingEntity(id))?;
+                .ok_or(RegistrationError::MissingEntity(id))?;
             std::mem::take(&mut record.children)
         };
         for child in &children {
@@ -268,7 +266,7 @@ impl InventoryInner {
         let parent = self
             .entities
             .get_mut(&parent_id)
-            .ok_or_else(|| RegistrationError::MissingParent(parent_id))?;
+            .ok_or(RegistrationError::MissingParent(parent_id))?;
         assert!(parent.children.insert(child_id));
         Ok(())
     }
@@ -339,7 +337,7 @@ impl EntityIteratorNode {
                     std::ops::Bound::Unbounded,
                 ))
                 .next()
-                .map(|x| *x);
+                .copied();
             Some(next)
         } else {
             None
@@ -438,7 +436,7 @@ impl Record {
     }
 
     fn first_child(&self) -> Option<EntityID> {
-        self.children.iter().next().map(|x| *x)
+        self.children.iter().next().copied()
     }
 }
 
