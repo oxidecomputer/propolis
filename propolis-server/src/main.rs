@@ -1,3 +1,6 @@
+// Required for USDT
+#![feature(asm)]
+
 use anyhow::{anyhow, Result};
 use dropshot::{
     endpoint, ApiDescription, ConfigDropshot, ConfigLogging,
@@ -5,6 +8,7 @@ use dropshot::{
     HttpResponseUpdatedNoContent, HttpServerStarter, Path, RequestContext,
     TypedBody,
 };
+use futures::FutureExt;
 use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,6 +19,7 @@ use propolis::hw::chipset::Chipset;
 use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
+use propolis::usdt::register_probes;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -296,36 +301,33 @@ async fn instance_serial(
         ));
     }
 
-    // Attempt to read from the serial console, but stop trying to read after
-    // 50ms if there is nothing to observe.
-    //
-    // NOTE: When this interface is converted to websockets, this timeout will
-    // be unnecessary - the connection can just block on the read, since
-    // reading/writing will be decoupled.
+    // Backpressure: Wait until either the buffer has filled completely, or
+    // (for partial reads) 10ms have elapsed. This prevents spinning on a
+    // serial console which is emitting single bytes at a time.
+    let _ = tokio::time::timeout(
+        core::time::Duration::from_millis(10),
+        context.serial.read_buffer_full(),
+    )
+    .await;
+
+    // The buffer may or may not actually have any output - we've already
+    // introduced our backpressure mechanism with the previous tokio timeout,
+    // so don't bother blocking on this particular read.
     let mut output = [0u8; 4096];
-    let n = {
-        match tokio::time::timeout(
-            core::time::Duration::from_millis(50),
-            context.serial.read(&mut output),
-        )
-        .await
-        {
-            Ok(result) => {
-                // The read completed without a timeout firing.
-                let n = result.map_err(|e| {
-                    HttpError::for_internal_error(format!(
-                        "Cannot read from serial: {}",
-                        e
-                    ))
-                })?;
-                n
-            }
-            Err(_) => 0,
-        }
+    let n = futures::select! {
+        result = context.serial.read(&mut output).fuse() => {
+            result.map_err(|e| {
+                HttpError::for_internal_error(format!(
+                    "Cannot read from serial: {}",
+                    e
+                ))
+            })?
+        },
+        default => { 0 }
     };
 
     let input = request.into_inner().bytes;
-    if input.len() != 0 {
+    if !input.is_empty() {
         context.serial.write_all(&input).await.map_err(|e| {
             HttpError::for_internal_error(format!(
                 "Cannot write to serial: {}",
@@ -349,6 +351,9 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Ensure proper setup of USDT probes
+    register_probes().unwrap();
+
     // Command line arguments.
     let opt = Opt::from_args();
     let config = config::parse(&opt.cfg)?;

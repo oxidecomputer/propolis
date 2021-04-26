@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::watch;
 
 use propolis::chardev::{Sink, Source};
 
@@ -51,6 +52,7 @@ struct SourceDriver<Ctx> {
     source: Arc<dyn Source<Ctx>>,
     buf: VecDeque<u8>,
     waker: Option<Waker>,
+    source_full_tx: watch::Sender<bool>,
 }
 
 impl<Ctx: 'static> SourceDriver<Ctx> {
@@ -69,8 +71,15 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
         if second_fill > 0 {
             buf.put_slice(&second[..second_fill]);
         }
-        self.buf.drain(..first_fill + second_fill);
-        return first_fill + second_fill;
+
+        let was_full = self.buf.len() == self.buf.capacity();
+        let drained = first_fill + second_fill;
+        self.buf.drain(..drained);
+        if was_full {
+            println!("was full, sending FALSE");
+            self.source_full_tx.send(false).unwrap();
+        }
+        drained
     }
 
     fn source_to_buffer(&mut self) {
@@ -83,9 +92,18 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
                 break;
             }
         }
+        println!(
+            "source_to_buffer: {} / {}",
+            self.buf.len(),
+            self.buf.capacity()
+        );
         if wrote_bytes {
             if let Some(waker) = self.waker.take() {
                 waker.wake();
+            }
+            if self.buf.len() == self.buf.capacity() {
+                println!("Is full, sending TRUE");
+                self.source_full_tx.send(true).unwrap();
             }
         }
     }
@@ -97,6 +115,8 @@ pub struct Serial<Ctx, Device: Sink<Ctx> + Source<Ctx>> {
 
     sink_driver: Arc<Mutex<SinkDriver<Ctx>>>,
     source_driver: Arc<Mutex<SourceDriver<Ctx>>>,
+
+    source_full_rx: watch::Receiver<bool>,
 }
 
 impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
@@ -132,11 +152,13 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
             sink_driver.buffer_to_sink();
         }));
 
+        let (source_full_tx, source_full_rx) = watch::channel(false);
         let source = Arc::clone(&uart) as Arc<dyn Source<Ctx>>;
         let source_driver = Arc::new(Mutex::new(SourceDriver {
             source: source.clone(),
             buf: VecDeque::with_capacity(source_size),
             waker: None,
+            source_full_tx,
         }));
 
         let notifier_source = source_driver.clone();
@@ -146,7 +168,14 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
         }));
 
         uart.source_set_autodiscard(false);
-        Serial { uart, sink_driver, source_driver }
+        Serial { uart, sink_driver, source_driver, source_full_rx }
+    }
+
+    /// Returns a future that completes when the read buffer becomes full.
+    pub async fn read_buffer_full(&mut self) {
+        while !(*self.source_full_rx.borrow()) {
+            self.source_full_rx.changed().await.unwrap();
+        }
     }
 }
 
@@ -164,7 +193,7 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize>> {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
         let mut sink = self.get_mut().sink_driver.lock().unwrap();
@@ -384,6 +413,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_read_buffer_triggers_full_signal() {
+        let uart = Arc::new(TestUart::new(4, 4));
+        let mut serial = Serial::new(uart.clone(), 3, 3);
+        assert_eq!(3, serial.source_driver.lock().unwrap().buf.capacity());
+
+        let buffer_full_signal = |serial: &mut Serial<(), TestUart>| {
+            futures::select! {
+                _ = serial.read_buffer_full().fuse() => true,
+                default => false,
+            }
+        };
+
+        // The "buffer full signal" does not fire while we're filling up the
+        // buffer...
+        assert!(!buffer_full_signal(&mut serial));
+        uart.push_source(0x0A);
+        uart.notify_source();
+        assert!(!buffer_full_signal(&mut serial));
+
+        uart.push_source(0x0B);
+        uart.notify_source();
+        assert!(!buffer_full_signal(&mut serial));
+
+        // ... but as soon as the last byte has been written, the signal
+        // asserts.
+        uart.push_source(0x0C);
+        uart.notify_source();
+        assert!(buffer_full_signal(&mut serial));
+
+        let mut output = [0u8; 16];
+        assert_eq!(3, serial.read(&mut output).await.unwrap());
+
+        // The signal clears as soon as the read completes.
+        assert!(!buffer_full_signal(&mut serial));
+    }
+
+    #[tokio::test]
     async fn read_bytes_beyond_internal_buffer_size() {
         let uart = Arc::new(TestUart::new(4, 4));
         let mut serial = Serial::new(uart.clone(), 3, 3);
@@ -405,8 +471,8 @@ mod tests {
         assert_eq!(output[0], 0x0A);
         assert_eq!(output[1], 0x0B);
         assert_eq!(output[2], 0x0C);
-        assert_eq!(1, serial.read(&mut output).await.unwrap());
-        assert_eq!(output[0], 0x0D);
+        assert_eq!(1, serial.read(&mut output[3..]).await.unwrap());
+        assert_eq!(output[3], 0x0D);
     }
 
     #[tokio::test]
