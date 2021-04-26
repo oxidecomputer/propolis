@@ -76,7 +76,6 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
         let drained = first_fill + second_fill;
         self.buf.drain(..drained);
         if was_full {
-            println!("was full, sending FALSE");
             self.source_full_tx.send(false).unwrap();
         }
         drained
@@ -92,17 +91,11 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
                 break;
             }
         }
-        println!(
-            "source_to_buffer: {} / {}",
-            self.buf.len(),
-            self.buf.capacity()
-        );
         if wrote_bytes {
             if let Some(waker) = self.waker.take() {
                 waker.wake();
             }
             if self.buf.len() == self.buf.capacity() {
-                println!("Is full, sending TRUE");
                 self.source_full_tx.send(true).unwrap();
             }
         }
