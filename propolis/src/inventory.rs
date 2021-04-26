@@ -443,7 +443,7 @@ impl Record {
 pub trait Block {}
 pub trait Pci {}
 pub trait Chipset {}
-pub trait Uart {}
+pub trait CharDev {}
 
 pub trait Entity: Send + Sync + 'static {
     fn as_block(&self) -> Option<&dyn Block> {
@@ -455,7 +455,7 @@ pub trait Entity: Send + Sync + 'static {
     fn as_chipset(&self) -> Option<&dyn Chipset> {
         None
     }
-    fn as_uart(&self) -> Option<&dyn Uart> {
+    fn as_chardev(&self) -> Option<&dyn CharDev> {
         None
     }
 }

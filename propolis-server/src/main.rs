@@ -194,6 +194,7 @@ async fn instance_ensure(
             // Finalize device.
             chipset.device().pci_finalize(&disp.ctx());
             init.initialize_fwcfg(&chipset, properties.vcpus)?;
+            init.initialize_cpus()?;
             Ok(())
         })
         .map_err(|err| {
