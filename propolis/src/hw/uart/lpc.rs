@@ -15,8 +15,8 @@ struct UartState {
     auto_discard: bool,
 }
 struct Notifiers {
-    notify_readable: Option<Notifier>,
-    notify_writable: Option<Notifier>,
+    notify_readable: Option<Notifier<DispCtx>>,
+    notify_writable: Option<Notifier<DispCtx>>,
 }
 
 impl UartState {
@@ -59,19 +59,19 @@ impl LpcUart {
     }
 }
 
-impl Sink for LpcUart {
+impl Sink<DispCtx> for LpcUart {
     fn sink_write(&self, data: u8) -> bool {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_write(data);
         state.sync_intr_pin();
         res
     }
-    fn sink_set_notifier(&self, f: Notifier) {
+    fn sink_set_notifier(&self, f: Notifier<DispCtx>) {
         let mut notifiers = self.notifiers.lock().unwrap();
         notifiers.notify_writable = Some(f);
     }
 }
-impl Source for LpcUart {
+impl Source<DispCtx> for LpcUart {
     fn source_read(&self) -> Option<u8> {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_read();
@@ -91,7 +91,7 @@ impl Source for LpcUart {
         state.sync_intr_pin();
         discarded
     }
-    fn source_set_notifier(&self, f: Notifier) {
+    fn source_set_notifier(&self, f: Notifier<DispCtx>) {
         let mut notifiers = self.notifiers.lock().unwrap();
         notifiers.notify_readable = Some(f);
     }

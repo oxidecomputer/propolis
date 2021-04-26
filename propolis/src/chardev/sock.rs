@@ -26,11 +26,11 @@ struct Socks {
     client_token_fd: Option<Token>,
 }
 struct SinkDriver {
-    sink: Option<Arc<dyn Sink>>,
+    sink: Option<Arc<dyn Sink<DispCtx>>>,
     buf: VecDeque<u8>,
 }
 struct SourceDriver {
-    source: Option<Arc<dyn Source>>,
+    source: Option<Arc<dyn Source<DispCtx>>>,
     buf: VecDeque<u8>,
 }
 
@@ -163,7 +163,7 @@ impl UDSock {
         Ok(this)
     }
 
-    pub fn attach_sink(&self, sink: Arc<dyn Sink>) {
+    pub fn attach_sink(&self, sink: Arc<dyn Sink<DispCtx>>) {
         let mut state = self.sink_driver.lock().unwrap();
 
         let cb_self = self.self_weak();
@@ -176,7 +176,7 @@ impl UDSock {
         assert!(state.sink.is_none());
         state.sink = Some(sink);
     }
-    pub fn attach_source(&self, source: Arc<dyn Source>) {
+    pub fn attach_source(&self, source: Arc<dyn Source<DispCtx>>) {
         let mut state = self.source_driver.lock().unwrap();
 
         let cb_self = self.self_weak();
