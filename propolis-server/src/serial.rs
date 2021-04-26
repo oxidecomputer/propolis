@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::watch;
+use tokio::sync::Notify;
 
 use propolis::chardev::{Sink, Source};
 
@@ -52,7 +52,8 @@ struct SourceDriver<Ctx> {
     source: Arc<dyn Source<Ctx>>,
     buf: VecDeque<u8>,
     waker: Option<Waker>,
-    source_full_tx: watch::Sender<bool>,
+    source_full: bool,
+    source_full_signal: Arc<Notify>,
 }
 
 impl<Ctx: 'static> SourceDriver<Ctx> {
@@ -76,7 +77,7 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
         let drained = first_fill + second_fill;
         self.buf.drain(..drained);
         if was_full {
-            self.source_full_tx.send(false).unwrap();
+            self.source_full = false;
         }
         drained
     }
@@ -96,7 +97,12 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
                 waker.wake();
             }
             if self.buf.len() == self.buf.capacity() {
-                self.source_full_tx.send(true).unwrap();
+                self.source_full = true;
+                // If a task is waiting on this signal, they are notified
+                // immediately. Otherwise, a permit is called such that the
+                // next call to source_full_signal.notified() is woken
+                // immediately.
+                self.source_full_signal.notify_one();
             }
         }
     }
@@ -109,7 +115,7 @@ pub struct Serial<Ctx, Device: Sink<Ctx> + Source<Ctx>> {
     sink_driver: Arc<Mutex<SinkDriver<Ctx>>>,
     source_driver: Arc<Mutex<SourceDriver<Ctx>>>,
 
-    source_full_rx: watch::Receiver<bool>,
+    source_full_signal: Arc<Notify>,
 }
 
 impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
@@ -145,13 +151,14 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
             sink_driver.buffer_to_sink();
         }));
 
-        let (source_full_tx, source_full_rx) = watch::channel(false);
+        let source_full_signal = Arc::new(Notify::new());
         let source = Arc::clone(&uart) as Arc<dyn Source<Ctx>>;
         let source_driver = Arc::new(Mutex::new(SourceDriver {
             source: source.clone(),
             buf: VecDeque::with_capacity(source_size),
             waker: None,
-            source_full_tx,
+            source_full: false,
+            source_full_signal: source_full_signal.clone(),
         }));
 
         let notifier_source = source_driver.clone();
@@ -161,13 +168,19 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
         }));
 
         uart.source_set_autodiscard(false);
-        Serial { uart, sink_driver, source_driver, source_full_rx }
+        Serial { uart, sink_driver, source_driver, source_full_signal }
     }
 
     /// Returns a future that completes when the read buffer becomes full.
     pub async fn read_buffer_full(&mut self) {
-        while !(*self.source_full_rx.borrow()) {
-            self.source_full_rx.changed().await.unwrap();
+        while !self.source_driver.lock().unwrap().source_full {
+            // By relaying on the "notify_one" permit mechanism, we are safe
+            // from a TOCTTOU race condition where the buffer becomes full
+            // after we check "source_full" but before we await the notified
+            // signal.
+            //
+            // In this case, the "notified()" call will return immediately.
+            self.source_full_signal.notified().await;
         }
     }
 }

@@ -264,9 +264,7 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_cpus(
-        &self
-    ) -> Result<(), Error> {
+    pub fn initialize_cpus(&self) -> Result<(), Error> {
         let ncpu = self.mctx.max_cpus();
         for id in 0..ncpu {
             let mut vcpu = self.machine.vcpu(id);
