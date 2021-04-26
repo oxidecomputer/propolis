@@ -118,7 +118,7 @@ async fn instance_ensure(
 
     // Create the instance.
     let lowmem = (properties.memory * 1024 * 1024) as usize;
-    let instance = build_instance(&properties.name, properties.vcpus, lowmem)
+    let instance = build_instance(&properties.id.to_string(), properties.vcpus, lowmem)
         .map_err(|err| {
         HttpError::for_internal_error(format!(
             "Cannot build instance: {}",
