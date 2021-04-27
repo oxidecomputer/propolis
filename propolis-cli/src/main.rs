@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use propolis::chardev::{Sink, Source};
+use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
@@ -120,7 +121,8 @@ fn main() {
         let hdl = machine.get_hdl();
         let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
         chipset.attach(mctx);
-        let chipset_id = inv.register_root(chipset.clone(), "chipset".to_string())
+        let chipset_id = inv
+            .register_root(chipset.clone(), "chipset".to_string())
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         // UARTs
@@ -131,8 +133,8 @@ fn main() {
 
         let ctx = disp.ctx();
         com1_sock.listen(&ctx);
-        com1_sock.attach_sink(Arc::clone(&com1) as Arc<dyn Sink>);
-        com1_sock.attach_source(Arc::clone(&com1) as Arc<dyn Source>);
+        com1_sock.attach_sink(Arc::clone(&com1) as Arc<dyn Sink<DispCtx>>);
+        com1_sock.attach_source(Arc::clone(&com1) as Arc<dyn Source<DispCtx>>);
         com1.source_set_autodiscard(false);
 
         // XXX: plumb up com2-4, but until then, just auto-discard
