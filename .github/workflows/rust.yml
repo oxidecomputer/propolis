@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: dtolnay/rust-toolchain@nightly
     - name: Report rustfmt version
       run: cargo fmt -- --version
     - name: Check style
