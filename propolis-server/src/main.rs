@@ -20,11 +20,11 @@ use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
 use propolis::usdt::register_probes;
+use propolis_client::api;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-mod api;
 mod config;
 mod initializer;
 mod serial;
