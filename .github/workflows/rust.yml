@@ -1,0 +1,37 @@
+name: Rust
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-style:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Report rustfmt version
+      run: cargo fmt -- --version
+    - name: Check style
+      run: cargo fmt -- --check
+  build-docs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: dtolnay/rust-toolchain@nightly
+    - name: Test build documentation
+      run: cargo doc
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: dtolnay/rust-toolchain@nightly
+    - name: Build
+      run: cargo build --verbose
+    - name: Test
+      run: cargo test --verbose
+

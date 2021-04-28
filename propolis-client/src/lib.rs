@@ -19,9 +19,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(address: SocketAddr, log: Logger) -> Client {
-        Client {
-            client: HttpClient::new("propolis", address, log),
-        }
+        Client { client: HttpClient::new("propolis", address, log) }
     }
 
     async fn send_request_await_response<R, P>(
@@ -54,14 +52,8 @@ impl Client {
         properties: &api::InstanceProperties,
     ) -> Result<api::InstanceEnsureResponse, ApiError> {
         let path = format!("/instances/{}", properties.id);
-        let body = Body::from(
-            serde_json::to_string(&properties).unwrap(),
-        );
-        self.send_request_await_response(
-            &path,
-            Method::PUT,
-            body,
-        ).await
+        let body = Body::from(serde_json::to_string(&properties).unwrap());
+        self.send_request_await_response(&path, Method::PUT, body).await
     }
 
     pub async fn instance_get(
@@ -69,11 +61,8 @@ impl Client {
         id: Uuid,
     ) -> Result<api::InstanceGetResponse, ApiError> {
         let path = format!("/instances/{}", id);
-        self.send_request_await_response(
-            &path,
-            Method::GET,
-            Body::empty(),
-        ).await
+        self.send_request_await_response(&path, Method::GET, Body::empty())
+            .await
     }
 
     pub async fn instance_state_put(
@@ -82,14 +71,8 @@ impl Client {
         state: api::InstanceStateRequested,
     ) -> Result<(), ApiError> {
         let path = format!("/instances/{}/state", id);
-        let body = Body::from(
-            serde_json::to_string(&state).unwrap(),
-        );
-        self.send_request_await_response(
-            &path,
-            Method::PUT,
-            body,
-        ).await
+        let body = Body::from(serde_json::to_string(&state).unwrap());
+        self.send_request_await_response(&path, Method::PUT, body).await
     }
 
     pub async fn instance_serial(
@@ -98,13 +81,7 @@ impl Client {
         state: api::InstanceSerialRequest,
     ) -> Result<api::InstanceSerialResponse, ApiError> {
         let path = format!("/instances/{}/serial", id);
-        let body = Body::from(
-            serde_json::to_string(&state).unwrap(),
-        );
-        self.send_request_await_response(
-            &path,
-            Method::PUT,
-            body,
-        ).await
+        let body = Body::from(serde_json::to_string(&state).unwrap());
+        self.send_request_await_response(&path, Method::PUT, body).await
     }
 }

@@ -30,7 +30,7 @@ pub enum ApiError {
 
     /// Failed to parse message from service.
     #[error("Parsing Error: {0}")]
-    Parse(String)
+    Parse(String),
 }
 
 impl ApiError {
@@ -51,12 +51,10 @@ impl ApiError {
             Some("InvalidRequest") => {
                 ApiError::InvalidRequest(error_response.message)
             }
-            _ => ApiError::InternalError(
-                format!(
-                    "{}: unknown error from dependency: {:?}",
-                    error_message_base, error_response
-                ),
-            ),
+            _ => ApiError::InternalError(format!(
+                "{}: unknown error from dependency: {:?}",
+                error_message_base, error_response
+            )),
         }
     }
 }
@@ -127,7 +125,11 @@ impl HttpClient {
         let request =
             Request::builder().method(method).uri(uri).body(body).unwrap();
         let result = self.http_client.request(request).await.map_err(|error| {
-            ApiError::ServiceUnavailable(convert_error(&error_message_base, "making request", error))
+            ApiError::ServiceUnavailable(convert_error(
+                &error_message_base,
+                "making request",
+                error,
+            ))
         });
 
         debug!(self.log, "client response"; "result" => ?result);
@@ -170,10 +172,18 @@ impl HttpClient {
         let body_bytes = hyper::body::to_bytes(response.body_mut())
             .await
             .map_err(|error| {
-                ApiError::Parse(convert_error(error_message_base, "reading response", error))
+                ApiError::Parse(convert_error(
+                    error_message_base,
+                    "reading response",
+                    error,
+                ))
             })?;
         serde_json::from_slice::<T>(body_bytes.as_ref()).map_err(|error| {
-            ApiError::Parse(convert_error(error_message_base, "parsing response", error))
+            ApiError::Parse(convert_error(
+                error_message_base,
+                "parsing response",
+                error,
+            ))
         })
     }
 }
