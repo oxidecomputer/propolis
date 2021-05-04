@@ -23,7 +23,7 @@ impl Client {
     }
 
     async fn send_request_await_response<R, P>(
-        self: &Self,
+        self,
         path: P,
         method: Method,
         body: Body,
@@ -48,7 +48,7 @@ impl Client {
     }
 
     pub async fn instance_ensure(
-        self: &Self,
+        self,
         properties: &api::InstanceProperties,
     ) -> Result<api::InstanceEnsureResponse, ApiError> {
         let path = format!("/instances/{}", properties.id);
@@ -57,7 +57,7 @@ impl Client {
     }
 
     pub async fn instance_get(
-        self: &Self,
+        self,
         id: Uuid,
     ) -> Result<api::InstanceGetResponse, ApiError> {
         let path = format!("/instances/{}", id);
@@ -66,7 +66,7 @@ impl Client {
     }
 
     pub async fn instance_state_put(
-        self: &Self,
+        self,
         id: Uuid,
         state: api::InstanceStateRequested,
     ) -> Result<(), ApiError> {
@@ -76,7 +76,7 @@ impl Client {
     }
 
     pub async fn instance_serial(
-        self: &Self,
+        self,
         id: Uuid,
         state: api::InstanceSerialRequest,
     ) -> Result<api::InstanceSerialResponse, ApiError> {
