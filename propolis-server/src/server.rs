@@ -94,7 +94,7 @@ pub async fn instance_ensure(
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
 }
-/*
+
 #[endpoint {
     method = GET,
     path = "/instances/{instance_id}",
@@ -218,4 +218,3 @@ async fn instance_serial(
     let response = api::InstanceSerialResponse { bytes: output[..n].to_vec() };
     Ok(HttpResponseOk(response))
 }
-*/
