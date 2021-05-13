@@ -10,6 +10,7 @@ use dropshot::{
 };
 use futures::FutureExt;
 use std::io::{Error, ErrorKind};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
@@ -346,9 +347,12 @@ async fn instance_serial(
     name = "propolis-server",
     about = "An HTTP server providing access to Propolis"
 )]
-struct Opt {
+struct Args {
     #[structopt(parse(from_os_str))]
     cfg: PathBuf,
+
+    #[structopt(name = "PROPOLIS_IP:PORT", parse(try_from_str))]
+    propolis_addr: SocketAddr,
 }
 
 #[tokio::main]
@@ -357,11 +361,14 @@ async fn main() -> anyhow::Result<()> {
     register_probes().unwrap();
 
     // Command line arguments.
-    let opt = Opt::from_args();
-    let config = config::parse(&opt.cfg)?;
+    let args = Args::from_args_safe()?;
+    let config = config::parse(&args.cfg)?;
 
     // Dropshot configuration.
-    let config_dropshot: ConfigDropshot = Default::default();
+    let config_dropshot = ConfigDropshot {
+        bind_address: args.propolis_addr,
+        ..Default::default()
+    };
     let config_logging =
         ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Info };
     let log = config_logging
