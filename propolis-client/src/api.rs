@@ -1,3 +1,9 @@
+//! Types used to communicate between the Sled Agent and Propolis.
+//!
+//! Although many of these types mirror the API between Nexus
+//! and sled agent (within omicron-common), they are intentionally
+//! decoupled so the interfaces may evolve independently, as necessary.
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
