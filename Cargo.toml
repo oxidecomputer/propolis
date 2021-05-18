@@ -3,5 +3,6 @@
 members = [
   "propolis",
   "propolis-cli",
+  "propolis-client",
   "propolis-server",
 ]
