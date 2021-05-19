@@ -163,8 +163,9 @@ pub struct DiskAttachmentInfo {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub enum DiskAttachmentState {
-    Attached(DiskAttachmentInfo),
+    Attached(Uuid),
     Detached,
+    Destroyed,
     Faulted,
 }
 
