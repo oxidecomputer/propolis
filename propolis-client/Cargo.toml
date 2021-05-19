@@ -14,4 +14,4 @@ panic = "abort"
 [dependencies]
 schemars = { version = "0.8", features = [ "uuid" ] }
 serde = "1.0"
-uuid = "0.8"
+uuid = { version = "0.8", features = [ "serde", "v4" ] }
