@@ -15,12 +15,31 @@ pub mod api;
 pub enum Error {
     #[error("Request failed: {0}")]
     Reqwest(#[from] reqwest::Error),
+
+    #[error("Bad Status: {0}")]
+    Status(u16),
 }
 
 pub struct Client {
     client: reqwest::Client,
     log: Logger,
     address: SocketAddr,
+}
+
+// Sends "request", awaits "response", and returns an error on any
+// non-success status code.
+//
+// TODO: Do we want to handle re-directs?
+async fn send_and_check_ok(request: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
+    let response = request.send()
+        .await
+        .map_err(|e| Error::from(e))?;
+
+    if !response.status().is_success() {
+        return Err(Error::Status(response.status().as_u16()));
+    }
+
+    Ok(response)
 }
 
 impl Client {
@@ -38,9 +57,8 @@ impl Client {
         if let Some(body) = body {
             request = request.body(body);
         }
-        request.send()
-            .await
-            .map_err(|e| Error::from(e))?
+
+        send_and_check_ok(request).await?
             .json()
             .await
             .map_err(|e| e.into())
@@ -52,9 +70,8 @@ impl Client {
         if let Some(body) = body {
             request = request.body(body);
         }
-        request.send()
-            .await
-            .map_err(|e| Error::from(e))?
+
+        send_and_check_ok(request).await?
             .json()
             .await
             .map_err(|e| e.into())
@@ -84,12 +101,9 @@ impl Client {
     ) -> Result<(), Error> {
         let path = format!("http://{}/instances/{}/state", self.address, id);
         let body = Body::from(serde_json::to_string(&state).unwrap());
-        let _ = self.client
-            .put(path)
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| Error::from(e))?;
+        // Serde struggles to decode an empty response body, so we validate
+        // that we get a successful response, but drop the response.
+        let _ = self.put(path, Some(body)).await?;
         Ok(())
     }
 
