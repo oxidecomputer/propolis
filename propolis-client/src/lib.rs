@@ -2,6 +2,7 @@
 //! This should be replaced with a client generated from the OpenAPI spec.
 
 use reqwest::Body;
+use reqwest::IntoUrl;
 use serde::de::DeserializeOwned;
 use slog::{info, o, Logger};
 use std::net::SocketAddr;
@@ -60,9 +61,9 @@ impl Client {
         }
     }
 
-    async fn get<T: DeserializeOwned>(
+    async fn get<T: DeserializeOwned, U: IntoUrl + std::fmt::Display>(
         &self,
-        path: String,
+        path: U,
         body: Option<Body>,
     ) -> Result<T, Error> {
         info!(self.log, "GET request to {}", path);
@@ -74,9 +75,9 @@ impl Client {
         send_and_parse_response(request).await
     }
 
-    async fn put<T: DeserializeOwned>(
+    async fn put<T: DeserializeOwned, U: IntoUrl + std::fmt::Display>(
         &self,
-        path: String,
+        path: U,
         body: Option<Body>,
     ) -> Result<T, Error> {
         info!(self.log, "PUT request to {}", path);
