@@ -89,9 +89,9 @@ impl Client {
         send_and_parse_response(request).await
     }
 
-    async fn put_no_response(
+    async fn put_no_response<U: IntoUrl + std::fmt::Display>(
         &self,
-        path: String,
+        path: U,
         body: Option<Body>,
     ) -> Result<(), Error> {
         info!(self.log, "PUT request to {}", path);
