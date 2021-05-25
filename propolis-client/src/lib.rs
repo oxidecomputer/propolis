@@ -3,7 +3,7 @@
 
 use reqwest::Body;
 use serde::de::DeserializeOwned;
-use slog::{Logger, info, o};
+use slog::{info, o, Logger};
 use std::net::SocketAddr;
 use thiserror::Error;
 use uuid::Uuid;
@@ -20,6 +20,7 @@ pub enum Error {
     Status(u16),
 }
 
+/// Client-side connection to propolis.
 pub struct Client {
     client: reqwest::Client,
     log: Logger,
@@ -30,16 +31,24 @@ pub struct Client {
 // non-success status code.
 //
 // TODO: Do we want to handle re-directs?
-async fn send_and_check_ok(request: reqwest::RequestBuilder) -> Result<reqwest::Response, Error> {
-    let response = request.send()
-        .await
-        .map_err(|e| Error::from(e))?;
+async fn send_and_check_ok(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, Error> {
+    let response = request.send().await.map_err(Error::from)?;
 
     if !response.status().is_success() {
         return Err(Error::Status(response.status().as_u16()));
     }
 
     Ok(response)
+}
+
+// Sends a "request", awaits "response", and parses the body
+// into a deserializable type.
+async fn send_and_parse_response<T: DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T, Error> {
+    send_and_check_ok(request).await?.json().await.map_err(|e| e.into())
 }
 
 impl Client {
@@ -51,41 +60,63 @@ impl Client {
         }
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: String, body: Option<Body>) -> Result<T, Error> {
+    async fn get<T: DeserializeOwned>(
+        &self,
+        path: String,
+        body: Option<Body>,
+    ) -> Result<T, Error> {
         info!(self.log, "GET request to {}", path);
         let mut request = self.client.get(path);
         if let Some(body) = body {
             request = request.body(body);
         }
 
-        send_and_check_ok(request).await?
-            .json()
-            .await
-            .map_err(|e| e.into())
+        send_and_parse_response(request).await
     }
 
-    async fn put<T: DeserializeOwned>(&self, path: String, body: Option<Body>) -> Result<T, Error> {
+    async fn put<T: DeserializeOwned>(
+        &self,
+        path: String,
+        body: Option<Body>,
+    ) -> Result<T, Error> {
         info!(self.log, "PUT request to {}", path);
         let mut request = self.client.put(path);
         if let Some(body) = body {
             request = request.body(body);
         }
 
-        send_and_check_ok(request).await?
-            .json()
-            .await
-            .map_err(|e| e.into())
+        send_and_parse_response(request).await
     }
 
+    async fn put_no_response(
+        &self,
+        path: String,
+        body: Option<Body>,
+    ) -> Result<(), Error> {
+        info!(self.log, "PUT request to {}", path);
+        let mut request = self.client.put(path);
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+
+        send_and_check_ok(request).await?;
+        Ok(())
+    }
+
+    /// Ensures that an instance with the specified properties exists.
     pub async fn instance_ensure(
         &self,
         request: &api::InstanceEnsureRequest,
     ) -> Result<api::InstanceEnsureResponse, Error> {
-        let path = format!("http://{}/instances/{}", self.address, request.properties.id);
+        let path = format!(
+            "http://{}/instances/{}",
+            self.address, request.properties.id
+        );
         let body = Body::from(serde_json::to_string(&request).unwrap());
         self.put(path, Some(body)).await
     }
 
+    /// Returns information about an instance, by UUID.
     pub async fn instance_get(
         &self,
         id: Uuid,
@@ -94,6 +125,7 @@ impl Client {
         self.get(path, None).await
     }
 
+    /// Puts an instance into a new state.
     pub async fn instance_state_put(
         &self,
         id: Uuid,
@@ -101,19 +133,20 @@ impl Client {
     ) -> Result<(), Error> {
         let path = format!("http://{}/instances/{}/state", self.address, id);
         let body = Body::from(serde_json::to_string(&state).unwrap());
-        // Serde struggles to decode an empty response body, so we validate
-        // that we get a successful response, but drop the response.
-        let _ = self.put(path, Some(body)).await?;
-        Ok(())
+        self.put_no_response(path, Some(body)).await
     }
 
+    /// Inputs bytes to the serial console, and returns any new output.
+    ///
+    /// TODO: This method is NOT idempotent, uses short-polling, and should be
+    /// replaced by a websocket-based interface (or equivalent).
     pub async fn instance_serial(
         &self,
         id: Uuid,
-        state: api::InstanceSerialRequest,
+        input: api::InstanceSerialRequest,
     ) -> Result<api::InstanceSerialResponse, Error> {
         let path = format!("http://{}/instances/{}/serial", self.address, id);
-        let body = Body::from(serde_json::to_string(&state).unwrap());
+        let body = Body::from(serde_json::to_string(&input).unwrap());
         self.put(path, Some(body)).await
     }
 }
