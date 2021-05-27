@@ -6,3 +6,8 @@ members = [
   "propolis-client",
   "propolis-server",
 ]
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
