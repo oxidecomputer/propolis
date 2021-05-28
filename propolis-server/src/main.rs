@@ -85,8 +85,8 @@ fn propolis_to_api_state(
         PropolisState::Boot => ApiState::Starting,
         PropolisState::Run => ApiState::Running,
         PropolisState::Quiesce => ApiState::Stopped,
-        PropolisState::Halt => todo!(),
-        PropolisState::Reset => todo!(),
+        PropolisState::Halt => ApiState::Stopped,
+        PropolisState::Reset => ApiState::Stopped,
         PropolisState::Destroy => ApiState::Destroyed,
     }
 }
