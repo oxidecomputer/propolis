@@ -14,6 +14,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{Mutex, watch};
 
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
@@ -22,9 +24,6 @@ use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
 use propolis::usdt::register_probes;
 use propolis_client::api;
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
 
 mod config;
 mod initializer;
@@ -36,12 +35,19 @@ use serial::Serial;
 // TODO(error) Do a pass of HTTP codes (error and ok)
 // TODO(idempotency) Idempotency mechanisms?
 
+#[derive(Clone)]
+struct StateChange {
+    gen: u64,
+    state: propolis::instance::State,
+}
+
 // All context for a single propolis instance.
 struct InstanceContext {
     // The instance, which may or may not be instantiated.
     instance: Arc<Instance>,
     properties: api::InstanceProperties,
     serial: Serial<DispCtx, LpcUart>,
+    state_watcher: watch::Receiver<StateChange>
 }
 
 struct ServerContext {
@@ -100,21 +106,35 @@ async fn instance_ensure(
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
 
-    // TODO(idempotency) - how?
-
-    let mut context = server_context.context.lock().await;
-
-    if context.is_some() {
-        return Err(HttpError::for_internal_error(
-            "Server already initialized".to_string(),
-        ));
-    }
-
     let properties = request.into_inner().properties;
     if path_params.into_inner().instance_id != properties.id {
         return Err(HttpError::for_internal_error(
             "UUID mismatch (path did not match struct)".to_string(),
         ));
+    }
+
+    // Handle requsts to an instance that has already been initialized.
+    let mut context = server_context.context.lock().await;
+    if let Some(ctx) = &*context {
+        if ctx.properties.id != properties.id {
+            return Err(HttpError::for_internal_error(
+                format!("Server already initialized with ID {}", ctx.properties.id)
+            ));
+        }
+
+        // If properties match, we return Ok. Otherwise, we could attempt to
+        // update the instance.
+        //
+        // TODO: The intial implementation does not modify any properties,
+        // but we plausibly could do so - need to work out which properties
+        // can be changed without rebooting.
+        if ctx.properties != properties {
+            return Err(HttpError::for_internal_error(
+                "Cannot update running server".to_string(),
+            ));
+        }
+
+        return Ok(HttpResponseCreated(api::InstanceEnsureResponse {}));
     }
 
     // Create the instance.
@@ -206,14 +226,20 @@ async fn instance_ensure(
             ))
         })?;
 
+    let (tx, rx) = watch::channel(StateChange { gen: 0, state: propolis::instance::State::Initialize });
     instance.print();
-    instance.on_transition(Box::new(|next_state| {
+    instance.on_transition(Box::new(move |next_state| {
         println!("state cb: {:?}", next_state);
+        let last = (*tx.borrow()).clone();
+        let _ = tx.send(StateChange {
+            gen: last.gen + 1,
+            state: next_state,
+        });
     }));
 
     // Save the newly created instance in the server's context.
     *context =
-        Some(InstanceContext { instance, properties, serial: com1.unwrap() });
+        Some(InstanceContext { instance, properties, serial: com1.unwrap(), state_watcher: rx });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
 }
@@ -250,6 +276,48 @@ async fn instance_get(
 }
 
 // TODO: Instance delete. What happens to the server? Does it shut down?
+
+#[endpoint {
+    method = GET,
+    path = "/instances/{instance_id}/state-monitor",
+}]
+async fn instance_state_monitor(
+    rqctx: Arc<RequestContext<ServerContext>>,
+    path_params: Path<api::InstancePathParams>,
+    request: TypedBody<api::InstanceStateMonitorRequest>,
+) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
+    let (mut state_watcher, gen) = {
+        let context = rqctx.context().context.lock().await;
+        let context = context.as_ref().ok_or_else(|| {
+            HttpError::for_internal_error(
+                "Server not initialized (no instance)".to_string(),
+            )
+        })?;
+        let path_params = path_params.into_inner();
+        if path_params.instance_id != context.properties.id {
+            return Err(HttpError::for_internal_error(
+                "UUID mismatch (path did not match struct)".to_string(),
+            ));
+        }
+
+        let gen = request.into_inner().gen;
+        let state_watcher = context.state_watcher.clone();
+
+        (state_watcher, gen)
+    };
+
+    loop {
+        let last = state_watcher.borrow().clone();
+        if gen <= last.gen {
+            let response = api::InstanceStateMonitorResponse {
+                gen: last.gen,
+                state: propolis_to_api_state(last.state),
+            };
+            return Ok(HttpResponseOk(response));
+        }
+        state_watcher.changed().await.unwrap();
+    }
+}
 
 #[endpoint {
     method = PUT,
@@ -378,6 +446,7 @@ async fn main() -> anyhow::Result<()> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
     api.register(instance_get).unwrap();
+    api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
 

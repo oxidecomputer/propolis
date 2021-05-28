@@ -126,6 +126,20 @@ impl Client {
         self.get(path, None).await
     }
 
+    /// Long-poll for state changes.
+    pub async fn instance_state_monitor(
+        &self,
+        id: Uuid,
+        gen: u64,
+    ) -> Result<api::InstanceStateMonitorResponse, Error> {
+        let path = format!("http://{}/instances/{}/state-monitor", self.address, id);
+        let body = Body::from(serde_json::to_string(
+            &api::InstanceStateMonitorRequest {
+                gen,
+            }).unwrap());
+        self.get(path, Some(body)).await
+    }
+
     /// Puts an instance into a new state.
     pub async fn instance_state_put(
         &self,
