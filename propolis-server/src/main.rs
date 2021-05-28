@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
@@ -47,7 +47,7 @@ struct InstanceContext {
     instance: Arc<Instance>,
     properties: api::InstanceProperties,
     serial: Serial<DispCtx, LpcUart>,
-    state_watcher: watch::Receiver<StateChange>
+    state_watcher: watch::Receiver<StateChange>,
 }
 
 struct ServerContext {
@@ -117,9 +117,10 @@ async fn instance_ensure(
     let mut context = server_context.context.lock().await;
     if let Some(ctx) = &*context {
         if ctx.properties.id != properties.id {
-            return Err(HttpError::for_internal_error(
-                format!("Server already initialized with ID {}", ctx.properties.id)
-            ));
+            return Err(HttpError::for_internal_error(format!(
+                "Server already initialized with ID {}",
+                ctx.properties.id
+            )));
         }
 
         // If properties match, we return Ok. Otherwise, we could attempt to
@@ -226,20 +227,24 @@ async fn instance_ensure(
             ))
         })?;
 
-    let (tx, rx) = watch::channel(StateChange { gen: 0, state: propolis::instance::State::Initialize });
+    let (tx, rx) = watch::channel(StateChange {
+        gen: 0,
+        state: propolis::instance::State::Initialize,
+    });
     instance.print();
     instance.on_transition(Box::new(move |next_state| {
         println!("state cb: {:?}", next_state);
         let last = (*tx.borrow()).clone();
-        let _ = tx.send(StateChange {
-            gen: last.gen + 1,
-            state: next_state,
-        });
+        let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
     }));
 
     // Save the newly created instance in the server's context.
-    *context =
-        Some(InstanceContext { instance, properties, serial: com1.unwrap(), state_watcher: rx });
+    *context = Some(InstanceContext {
+        instance,
+        properties,
+        serial: com1.unwrap(),
+        state_watcher: rx,
+    });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
 }
