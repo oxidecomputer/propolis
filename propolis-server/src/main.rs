@@ -10,13 +10,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use structopt::StructOpt;
 use propolis::usdt::register_probes;
-
-mod config;
-mod initializer;
-mod serial;
-mod server;
-#[cfg(test)]
-mod test_utils;
+use propolis_server_lib::{config, server};
 
 #[derive(Debug, StructOpt)]
 #[structopt(

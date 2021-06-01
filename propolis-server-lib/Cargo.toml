@@ -1,5 +1,5 @@
 [package]
-name = "propolis-server"
+name = "propolis-server-lib"
 version = "0.1.0"
 authors = ["Sean Klein <sean@oxide.computer>", "Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
@@ -28,7 +28,6 @@ schemars = { version = "0.8", features = [ "uuid" ] }
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis" }
 propolis-client = { path = "../propolis-client" }
-propolis-server-lib = { path = "../propolis-server-lib" }
 uuid = "0.8"
 
 [dev-dependencies]
