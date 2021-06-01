@@ -25,6 +25,28 @@ pub struct Config {
     devices: BTreeMap<String, Device>,
 }
 
+impl Config {
+    /// Constructs a new configuration object.
+    ///
+    /// Typically, the configuration is parsed from a config
+    /// file via [`parse`], but this method allows an alternative
+    /// mechanism for initialization.
+    pub fn new<P: Into<PathBuf>>(bootrom: P, devices: BTreeMap<String, Device>) -> Config {
+        Config {
+            bootrom: bootrom.into(),
+            devices,
+        }
+    }
+
+    pub fn get_bootrom(&self) -> &Path {
+        &self.bootrom
+    }
+
+    pub fn devs(&self) -> IterDevs {
+        IterDevs { inner: self.devices.iter() }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
@@ -40,16 +62,6 @@ impl Device {
 
     pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {
         self.get_string(key)?.parse().ok()
-    }
-}
-
-impl Config {
-    pub fn get_bootrom(&self) -> &Path {
-        &self.bootrom
-    }
-
-    pub fn devs(&self) -> IterDevs {
-        IterDevs { inner: self.devices.iter() }
     }
 }
 
