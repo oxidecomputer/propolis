@@ -31,11 +31,11 @@ impl Config {
     /// Typically, the configuration is parsed from a config
     /// file via [`parse`], but this method allows an alternative
     /// mechanism for initialization.
-    pub fn new<P: Into<PathBuf>>(bootrom: P, devices: BTreeMap<String, Device>) -> Config {
-        Config {
-            bootrom: bootrom.into(),
-            devices,
-        }
+    pub fn new<P: Into<PathBuf>>(
+        bootrom: P,
+        devices: BTreeMap<String, Device>,
+    ) -> Config {
+        Config { bootrom: bootrom.into(), devices }
     }
 
     pub fn get_bootrom(&self) -> &Path {

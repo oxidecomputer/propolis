@@ -1,35 +1,29 @@
 use anyhow::{bail, Result};
 use dropshot::{
-    ConfigDropshot, ConfigLogging,
-    ConfigLoggingLevel, HttpServer, HttpServerStarter
+    ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServer,
+    HttpServerStarter,
+};
+use propolis_client::{
+    api::{InstanceState, InstanceStateRequested},
+    Client, Error as ClientError,
+};
+use propolis_server_lib::{
+    config::{Config, Device},
+    server,
 };
 use slog::Logger;
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use propolis_client::{
-    api::{
-        InstanceState,
-        InstanceStateRequested,
-    },
-    Client,
-    Error as ClientError,
-};
-use propolis_server_lib::{
-    config::{Config, Device},
-    server
-};
 use uuid::Uuid;
 
 mod artifacts;
 
-use artifacts::{setup, TEST_IMAGE, TEST_BOOTROM};
+use artifacts::{setup, TEST_BOOTROM, TEST_IMAGE};
 
 fn initialize_log() -> Logger {
     let config_logging =
         ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Info };
-    config_logging
-        .to_logger("propolis-server-integration-test")
-        .unwrap()
+    config_logging.to_logger("propolis-server-integration-test").unwrap()
 }
 
 async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
@@ -38,7 +32,9 @@ async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
     let mut block_options = BTreeMap::new();
     block_options.insert(
         "disk".to_string(),
-        toml::value::Value::String(TEST_IMAGE.path().as_path().to_str().unwrap().to_string())
+        toml::value::Value::String(
+            TEST_IMAGE.path().as_path().to_str().unwrap().to_string(),
+        ),
     );
     block_options.insert(
         "pci-path".to_string(),
@@ -67,7 +63,9 @@ async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
 //
 // NOTE: Many of these values are placeholders, and can be replaced
 // when we have "real" integration of UUID-based images / bootroms.
-fn create_ensure_request(id: Uuid) -> propolis_client::api::InstanceEnsureRequest {
+fn create_ensure_request(
+    id: Uuid,
+) -> propolis_client::api::InstanceEnsureRequest {
     propolis_client::api::InstanceEnsureRequest {
         properties: propolis_client::api::InstanceProperties {
             id,
@@ -83,17 +81,25 @@ fn create_ensure_request(id: Uuid) -> propolis_client::api::InstanceEnsureReques
 
 // Utility wrapper for monitoring an instance's state until it reaches a
 // requested target.
-async fn wait_until_state(client: &Client, id: Uuid, state: InstanceState) -> Result<()> {
+async fn wait_until_state(
+    client: &Client,
+    id: Uuid,
+    state: InstanceState,
+) -> Result<()> {
     let mut gen = 0;
     loop {
-        let monitor_response = client.instance_state_monitor(
-            id,
-            gen
-        ).await?;
+        let monitor_response = client.instance_state_monitor(id, gen).await?;
         if monitor_response.gen < gen {
-            bail!("Gen should be increasing: (requested {}, saw {})", gen, monitor_response.gen);
+            bail!(
+                "Gen should be increasing: (requested {}, saw {})",
+                gen,
+                monitor_response.gen
+            );
         }
-        eprintln!("Monitor response: {:?} (waiting for {:?})", monitor_response, state);
+        eprintln!(
+            "Monitor response: {:?} (waiting for {:?})",
+            monitor_response, state
+        );
         if monitor_response.state == state {
             return Ok(());
         }
@@ -175,24 +181,27 @@ async fn test_stop_instance_causes_destroy() {
     //
     // TODO: Probably should update the actual status to something other than
     // 500, but it's important that the server throws an expected error here.
-    assert!(
-        matches!(
-            client.instance_state_put(id, InstanceStateRequested::Run).await.unwrap_err(),
-            ClientError::Status(500),
-        )
-    );
-    assert!(
-        matches!(
-            client.instance_state_put(id, InstanceStateRequested::Stop).await.unwrap_err(),
-            ClientError::Status(500),
-        )
-    );
-    assert!(
-        matches!(
-            client.instance_state_put(id, InstanceStateRequested::Reboot).await.unwrap_err(),
-            ClientError::Status(500),
-        )
-    );
+    assert!(matches!(
+        client
+            .instance_state_put(id, InstanceStateRequested::Run)
+            .await
+            .unwrap_err(),
+        ClientError::Status(500),
+    ));
+    assert!(matches!(
+        client
+            .instance_state_put(id, InstanceStateRequested::Stop)
+            .await
+            .unwrap_err(),
+        ClientError::Status(500),
+    ));
+    assert!(matches!(
+        client
+            .instance_state_put(id, InstanceStateRequested::Reboot)
+            .await
+            .unwrap_err(),
+        ClientError::Status(500),
+    ));
 
     server.close().await.unwrap();
 }
@@ -213,7 +222,10 @@ async fn test_reboot_returns_to_running() {
     wait_until_state(&client, id, InstanceState::Running).await.unwrap();
 
     // Reboot the instance. Observe that it becomes running once again.
-    client.instance_state_put(id, InstanceStateRequested::Reboot).await.unwrap();
+    client
+        .instance_state_put(id, InstanceStateRequested::Reboot)
+        .await
+        .unwrap();
     wait_until_state(&client, id, InstanceState::Running).await.unwrap();
 
     // Set the state to "Stop". Observe that the instance is destroyed.

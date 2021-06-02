@@ -259,7 +259,9 @@ impl Instance {
             if transition != state.current {
                 eprintln!(
                     "Instance transition {:?} -> {:?} (target: {:?})",
-                    state.current, transition, state.target.as_ref()
+                    state.current,
+                    transition,
+                    state.target.as_ref()
                 );
 
                 self.transition_cb(&state, transition);

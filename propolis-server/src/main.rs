@@ -3,14 +3,13 @@
 
 use anyhow::anyhow;
 use dropshot::{
-    ConfigDropshot, ConfigLogging,
-    ConfigLoggingLevel, HttpServerStarter
+    ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
 };
+use propolis::usdt::register_probes;
+use propolis_server_lib::{config, server};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use structopt::StructOpt;
-use propolis::usdt::register_probes;
-use propolis_server_lib::{config, server};
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -46,8 +45,9 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow!("failed to create logger: {}", error))?;
 
     let context = server::Context::new(config);
-    let server = HttpServerStarter::new(&config_dropshot, server::api(), context, &log)
-        .map_err(|error| anyhow!("Failed to start server: {}", error))?
-        .start();
+    let server =
+        HttpServerStarter::new(&config_dropshot, server::api(), context, &log)
+            .map_err(|error| anyhow!("Failed to start server: {}", error))?
+            .start();
     server.await.map_err(|e| anyhow!("Server exited with an error: {}", e))
 }

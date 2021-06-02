@@ -1,9 +1,7 @@
 use anyhow::Result;
 use dropshot::{
-    endpoint, ApiDescription,
-    HttpError, HttpResponseCreated, HttpResponseOk,
-    HttpResponseUpdatedNoContent, Path, RequestContext,
-    TypedBody,
+    endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
+    HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
 use futures::FutureExt;
 use std::io::{Error, ErrorKind};
