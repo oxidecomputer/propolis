@@ -7,3 +7,8 @@ members = [
   "propolis-server",
   "propolis-server-lib",
 ]
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
