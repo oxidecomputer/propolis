@@ -32,6 +32,6 @@ jobs:
     - uses: dtolnay/rust-toolchain@nightly
     - name: Build
       run: cargo build --verbose
-    - name: Test
-      run: cargo test --verbose
+    - name: Test Libraries
+      run: cargo test --lib --verbose
 
