@@ -1,3 +1,5 @@
+//! HTTP server callback functions.
+
 use anyhow::Result;
 use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
@@ -420,6 +422,7 @@ async fn instance_serial(
     Ok(HttpResponseOk(response))
 }
 
+/// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();

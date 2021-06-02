@@ -1,3 +1,5 @@
+//! Describes a server config which may be parsed from a TOML file.
+
 use std::collections::{btree_map, BTreeMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -47,6 +49,8 @@ impl Config {
     }
 }
 
+/// A hard-coded device, either enabled by default or accessible locally
+/// on a machine.
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
@@ -65,6 +69,8 @@ impl Device {
     }
 }
 
+/// Iterator returned from [`Config::devs`] which allows iteration over
+/// all [`Device`] objects.
 pub struct IterDevs<'a> {
     inner: btree_map::Iter<'a, String, Device>,
 }
@@ -76,6 +82,7 @@ impl<'a> Iterator for IterDevs<'a> {
     }
 }
 
+/// Parses a TOML file into a configuration object.
 pub fn parse<P: AsRef<Path>>(path: P) -> Result<Config, ParseError> {
     let contents = std::fs::read_to_string(path.as_ref())?;
     let cfg = toml::from_str::<Config>(&contents)?;

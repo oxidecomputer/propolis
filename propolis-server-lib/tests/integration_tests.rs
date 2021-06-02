@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 mod artifacts;
 
-use artifacts::{setup, TEST_BOOTROM, TEST_IMAGE};
+use artifacts::setup;
 
 fn initialize_log() -> Logger {
     let config_logging =
@@ -27,13 +27,13 @@ fn initialize_log() -> Logger {
 }
 
 async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
-    setup().await;
+    let artifacts = setup().await;
 
     let mut block_options = BTreeMap::new();
     block_options.insert(
         "disk".to_string(),
         toml::value::Value::String(
-            TEST_IMAGE.path().as_path().to_str().unwrap().to_string(),
+            artifacts.image.path().as_path().to_str().unwrap().to_string(),
         ),
     );
     block_options.insert(
@@ -47,7 +47,7 @@ async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
     let mut devices = BTreeMap::new();
     devices.insert("block0".to_string(), block);
 
-    let config = Config::new(TEST_BOOTROM.path(), devices);
+    let config = Config::new(artifacts.bootrom.path(), devices);
     let context = server::Context::new(config);
 
     let config_dropshot = ConfigDropshot {
