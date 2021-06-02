@@ -26,6 +26,17 @@ pub struct InstanceGetResponse {
     pub instance: Instance,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct InstanceStateMonitorRequest {
+    pub gen: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceStateMonitorResponse {
+    pub gen: u64,
+    pub state: InstanceState,
+}
+
 /// Requested state of an Instance.
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub struct InstanceStateChange {
@@ -50,7 +61,7 @@ pub struct InstanceSerialResponse {
 }
 
 /// Current state of an Instance.
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub enum InstanceState {
     Creating,
     Starting,
@@ -62,10 +73,8 @@ pub enum InstanceState {
     Destroyed,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, JsonSchema)]
 pub struct InstanceProperties {
-    pub generation_id: u64,
-
     /// Unique identifier for this Instance.
     pub id: Uuid,
     /// Human-readable name of the Instance.
