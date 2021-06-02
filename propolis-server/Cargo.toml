@@ -14,24 +14,9 @@ panic = "abort"
 
 [dependencies]
 anyhow = "1.0"
-bitflags = "1.2"
 # dropshot = "0.6"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
-futures = "0.3"
-libc = "0.2"
-thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
-toml = "0.5"
-serde = "1.0"
-serde_derive = "1.0"
-schemars = { version = "0.8", features = [ "uuid" ] }
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis" }
-propolis-client = { path = "../propolis-client" }
 propolis-server-lib = { path = "../propolis-server-lib" }
-uuid = "0.8"
-
-[dev-dependencies]
-hex = "0.4.3"
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
-ring = "0.16"

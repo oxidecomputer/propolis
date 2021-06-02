@@ -131,6 +131,8 @@ async fn instance_ensure(
     }
 
     // Create the instance.
+    //
+    // The VM is named after the UUID, ensuring that it is unique.
     let lowmem = (properties.memory * 1024 * 1024) as usize;
     let instance =
         build_instance(&properties.id.to_string(), properties.vcpus, lowmem)
@@ -224,10 +226,23 @@ async fn instance_ensure(
         state: propolis::instance::State::Initialize,
     });
     instance.print();
+
+    let id = properties.id;
     instance.on_transition(Box::new(move |next_state| {
         println!("state cb: {:?}", next_state);
         let last = (*tx.borrow()).clone();
         let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
+
+        // If we transition to the destroyed state, we should be able to
+        // free up resources for the underlying VM.
+        if matches!(next_state, propolis::instance::State::Destroy) {
+            let r = propolis::vmm::destroy_vm(id.to_string());
+            if let Err(e) = r {
+                eprintln!("Failed to destroy VM ({}): {}", id, e);
+            } else {
+                eprintln!("Destroyed VM ({})", id);
+            }
+        }
     }));
 
     // Save the newly created instance in the server's context.

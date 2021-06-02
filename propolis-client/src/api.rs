@@ -61,7 +61,7 @@ pub struct InstanceSerialResponse {
 }
 
 /// Current state of an Instance.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
 pub enum InstanceState {
     Creating,
     Starting,
@@ -73,7 +73,7 @@ pub enum InstanceState {
     Destroyed,
 }
 
-#[derive(Clone, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
 pub struct InstanceProperties {
     /// Unique identifier for this Instance.
     pub id: Uuid,
