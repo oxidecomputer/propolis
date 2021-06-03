@@ -347,7 +347,7 @@ impl VmmHdl {
 
     /// Destroys the VMM.
     // TODO: Should this take "mut self", to consume the object?
-    pub fn destroy(&mut self) -> Result<()> {
+    pub fn destroy(&self) -> Result<()> {
         destroy_vm(&self.name)
     }
 }

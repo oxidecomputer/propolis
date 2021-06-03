@@ -252,6 +252,7 @@ impl Instance {
                     // XXX: clean up and bail
                     state.disp.destroy_workers();
                     self.transition_cb(&state, State::Destroy);
+                    state.machine.get_hdl().destroy().unwrap();
                     return;
                 }
             };

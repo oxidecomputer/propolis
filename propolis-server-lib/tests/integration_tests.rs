@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use dropshot::{
-    ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServer,
-    HttpServerStarter,
+    ConfigDropshot, ConfigLogging, ConfigLoggingIfExists, ConfigLoggingLevel,
+    HttpServer, HttpServerStarter,
 };
 use propolis_client::{
     api::{InstanceState, InstanceStateRequested},
@@ -11,7 +11,7 @@ use propolis_server_lib::{
     config::{Config, Device},
     server,
 };
-use slog::Logger;
+use slog::{o, Logger};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use uuid::Uuid;
@@ -20,13 +20,18 @@ mod artifacts;
 
 use artifacts::setup;
 
-fn initialize_log() -> Logger {
-    let config_logging =
-        ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Info };
-    config_logging.to_logger("propolis-server-integration-test").unwrap()
+fn initialize_log(test_name: &str) -> Logger {
+    let path = format!("/tmp/{}.log", test_name);
+    eprintln!("Logging at {}", path);
+    let config_logging = ConfigLogging::File {
+        level: ConfigLoggingLevel::Info,
+        if_exists: ConfigLoggingIfExists::Truncate,
+        path,
+    };
+    config_logging.to_logger(test_name).unwrap()
 }
 
-async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
+async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
     let artifacts = setup().await;
 
     let mut block_options = BTreeMap::new();
@@ -54,6 +59,7 @@ async fn initialize_server(log: Logger) -> HttpServer<server::Context> {
         bind_address: "127.0.0.1:0".parse().unwrap(),
         ..Default::default()
     };
+    let log = log.new(o!("component" => "server"));
     HttpServerStarter::new(&config_dropshot, server::api(), context, &log)
         .unwrap()
         .start()
@@ -109,10 +115,10 @@ async fn wait_until_state(
 
 #[tokio::test]
 async fn test_uninitialized_server() {
-    let log = initialize_log();
-    let server = initialize_server(log.clone()).await;
-
-    let client = Client::new(server.local_addr(), log);
+    let log = initialize_log("test_uninitialized_server");
+    let server = initialize_server(&log).await;
+    let client =
+        Client::new(server.local_addr(), log.new(o!("component" => "client")));
     assert!(matches!(
         client.instance_get(Uuid::nil()).await,
         Err(ClientError::Status(500))
@@ -123,10 +129,10 @@ async fn test_uninitialized_server() {
 
 #[tokio::test]
 async fn test_ensure_instance_put_running() {
-    let log = initialize_log();
-    let server = initialize_server(log.clone()).await;
-
-    let client = Client::new(server.local_addr(), log);
+    let log = initialize_log("test_ensure_instance_put_running");
+    let server = initialize_server(&log).await;
+    let client =
+        Client::new(server.local_addr(), log.new(o!("component" => "client")));
 
     let id = Uuid::from_str("0000002a-000c-0005-0c03-0938362b0809").unwrap();
     let ensure_request = create_ensure_request(id);
@@ -159,10 +165,10 @@ async fn test_ensure_instance_put_running() {
 
 #[tokio::test]
 async fn test_stop_instance_causes_destroy() {
-    let log = initialize_log();
-    let server = initialize_server(log.clone()).await;
-
-    let client = Client::new(server.local_addr(), log);
+    let log = initialize_log("test_stop_instance_causes_destroy");
+    let server = initialize_server(&log).await;
+    let client =
+        Client::new(server.local_addr(), log.new(o!("component" => "client")));
 
     let id = Uuid::from_str("0000002a-000c-0005-0c03-0938362b080a").unwrap();
     let ensure_request = create_ensure_request(id);
@@ -208,10 +214,10 @@ async fn test_stop_instance_causes_destroy() {
 
 #[tokio::test]
 async fn test_reboot_returns_to_running() {
-    let log = initialize_log();
-    let server = initialize_server(log.clone()).await;
-
-    let client = Client::new(server.local_addr(), log);
+    let log = initialize_log("test_reboot_returns_to_running");
+    let server = initialize_server(&log).await;
+    let client =
+        Client::new(server.local_addr(), log.new(o!("component" => "client")));
 
     let id = Uuid::from_str("0000002a-000c-0005-0c03-0938362b080b").unwrap();
     let ensure_request = create_ensure_request(id);
