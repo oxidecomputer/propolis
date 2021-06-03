@@ -6,10 +6,11 @@ use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
 };
 use propolis::usdt::register_probes;
-use propolis_server_lib::{config, server};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use structopt::StructOpt;
+
+use propolis_server::{config, server};
 
 #[derive(Debug, StructOpt)]
 #[structopt(

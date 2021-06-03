@@ -7,7 +7,7 @@ use propolis_client::{
     api::{InstanceState, InstanceStateRequested},
     Client, Error as ClientError,
 };
-use propolis_server_lib::{
+use propolis_server::{
     config::{Config, Device},
     server,
 };
