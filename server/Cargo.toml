@@ -7,11 +7,32 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "propolis_server"
+path = "src/lib/lib.rs"
+
+[[bin]]
+name = "propolis-server"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 # dropshot = "0.6"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
+futures = "0.3"
+thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
+toml = "0.5"
+serde = "1.0"
+serde_derive = "1.0"
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis" }
-propolis-server-lib = { path = "../propolis-server-lib" }
+propolis-client = { path = "../client" }
+uuid = "0.8"
+
+[dev-dependencies]
+hex = "0.4.3"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+ring = "0.16"
+slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_debug" ] }
+

@@ -2,10 +2,9 @@
 
 members = [
   "propolis",
-  "propolis-cli",
-  "propolis-client",
-  "propolis-server",
-  "propolis-server-lib",
+  "cli",
+  "client",
+  "server",
 ]
 
 [profile.dev]
