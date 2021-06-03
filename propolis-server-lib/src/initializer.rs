@@ -19,7 +19,7 @@ use propolis::instance::Instance;
 use propolis::inventory::{EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
 
-use crate::Serial;
+use crate::serial::Serial;
 
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;

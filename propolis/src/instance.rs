@@ -211,15 +211,14 @@ impl Instance {
             if let Some(t) = state.target.as_ref() {
                 assert!(State::valid_target(&state.current, t));
             }
-            let target = state.target.as_ref();
 
             let transition = match state.current {
-                State::Initialize => match target {
+                State::Initialize => match state.target.as_ref() {
                     Some(State::Destroy) => State::Destroy,
                     _ => State::Boot,
                 },
                 State::Boot => {
-                    match target {
+                    match state.target.as_ref() {
                         Some(State::Run) => {
                             // XXX: pause for conditions
                             state.disp.release_vcpus();
@@ -228,13 +227,13 @@ impl Instance {
                         _ => State::Quiesce,
                     }
                 }
-                State::Run => match target {
+                State::Run => match state.target.as_ref() {
                     Some(_) => State::Quiesce,
                     None => State::Run,
                 },
                 State::Quiesce => {
                     state.disp.quiesce_workers();
-                    match target {
+                    match state.target.as_ref() {
                         Some(State::Halt) | Some(State::Destroy) => State::Halt,
                         Some(State::Reset) => State::Reset,
                         t => panic!("unexpected target {:?}", t),
@@ -246,20 +245,24 @@ impl Instance {
                 }
                 State::Reset => {
                     // XXX: reset devices
+                    state.target = Some(State::Run);
                     State::Boot
                 }
                 State::Destroy => {
                     // XXX: clean up and bail
                     state.disp.destroy_workers();
                     self.transition_cb(&state, State::Destroy);
+                    state.machine.get_hdl().destroy().unwrap();
                     return;
                 }
             };
 
             if transition != state.current {
                 eprintln!(
-                    "Instance transition {:?} -> {:?}",
-                    state.current, transition
+                    "Instance transition {:?} -> {:?} (target: {:?})",
+                    state.current,
+                    transition,
+                    state.target.as_ref()
                 );
 
                 self.transition_cb(&state, transition);

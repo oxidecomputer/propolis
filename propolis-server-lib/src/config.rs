@@ -1,3 +1,5 @@
+//! Describes a server config which may be parsed from a TOML file.
+
 use std::collections::{btree_map, BTreeMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -25,6 +27,30 @@ pub struct Config {
     devices: BTreeMap<String, Device>,
 }
 
+impl Config {
+    /// Constructs a new configuration object.
+    ///
+    /// Typically, the configuration is parsed from a config
+    /// file via [`parse`], but this method allows an alternative
+    /// mechanism for initialization.
+    pub fn new<P: Into<PathBuf>>(
+        bootrom: P,
+        devices: BTreeMap<String, Device>,
+    ) -> Config {
+        Config { bootrom: bootrom.into(), devices }
+    }
+
+    pub fn get_bootrom(&self) -> &Path {
+        &self.bootrom
+    }
+
+    pub fn devs(&self) -> IterDevs {
+        IterDevs { inner: self.devices.iter() }
+    }
+}
+
+/// A hard-coded device, either enabled by default or accessible locally
+/// on a machine.
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
@@ -43,16 +69,8 @@ impl Device {
     }
 }
 
-impl Config {
-    pub fn get_bootrom(&self) -> &Path {
-        &self.bootrom
-    }
-
-    pub fn devs(&self) -> IterDevs {
-        IterDevs { inner: self.devices.iter() }
-    }
-}
-
+/// Iterator returned from [`Config::devs`] which allows iteration over
+/// all [`Device`] objects.
 pub struct IterDevs<'a> {
     inner: btree_map::Iter<'a, String, Device>,
 }
@@ -64,6 +82,7 @@ impl<'a> Iterator for IterDevs<'a> {
     }
 }
 
+/// Parses a TOML file into a configuration object.
 pub fn parse<P: AsRef<Path>>(path: P) -> Result<Config, ParseError> {
     let contents = std::fs::read_to_string(path.as_ref())?;
     let cfg = toml::from_str::<Config>(&contents)?;

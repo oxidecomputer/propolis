@@ -5,6 +5,7 @@ members = [
   "propolis-cli",
   "propolis-client",
   "propolis-server",
+  "propolis-server-lib",
 ]
 
 [profile.dev]
