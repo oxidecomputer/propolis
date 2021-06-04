@@ -8,17 +8,19 @@ use dropshot::{
 use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
-use slog::{error, o, Logger};
+use slog::{error, info, o, Logger};
+use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio_tungstenite::tungstenite::{
     self, handshake, protocol::Role, Message,
 };
 use tokio_tungstenite::WebSocketStream;
-use structopt::StructOpt;
 use thiserror::Error;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
@@ -60,6 +62,8 @@ struct InstanceContext {
     properties: api::InstanceProperties,
     serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
+    // Oneshot channel used to detach an attached serial session
+    serial_detach: Option<oneshot::Sender<()>>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -261,6 +265,7 @@ async fn instance_ensure(
         properties,
         serial: Arc::new(Mutex::new(com1.unwrap())),
         state_watcher: rx,
+        serial_detach: None,
     });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
@@ -373,11 +378,13 @@ async fn instance_state_put(
 }
 
 async fn instance_serial_task(
+    detach: oneshot::Receiver<()>,
     serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
     mut ws_stream: WebSocketStream<Upgraded>,
-    _log: Logger,
+    log: Logger,
 ) -> Result<(), SerialTaskError> {
     let mut serial = serial.lock().await;
+    let mut detach = detach.fuse();
     loop {
         let mut output = [0u8; 4096];
         futures::select! {
@@ -394,6 +401,15 @@ async fn instance_serial_task(
                     Some(_) => continue,
                     None => break,
                 }
+            }
+            _ = detach => {
+                info!(log, "Detaching from serial console");
+                let close = CloseFrame {
+                    code: CloseCode::Policy,
+                    reason: Cow::Borrowed("serial console was detached"),
+                };
+                ws_stream.send(Message::Close(Some(close))).await?;
+                break;
             }
             complete => break
         }
@@ -421,21 +437,23 @@ async fn instance_serial(
             "UUID mismatch (path did not match struct)".to_string(),
         ));
     }
-
-    let _serial_guard = context.serial.try_lock().map_err(|_| {
-        HttpError::for_unavail(
+    if context.serial_detach.as_ref().map_or(false, |s| !s.is_closed()) {
+        return Err(HttpError::for_unavail(
             None,
-            "serial console already locked".to_string(),
-        )
-    })?;
+            "serial console already attached".to_string(),
+        ));
+    }
 
     let request = &mut *rqctx.request.lock().await;
 
-    if request
+    if !request
         .headers()
         .get(header::CONNECTION)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("upgrade"))
+        .and_then(|hv| hv.to_str().ok())
+        .map(|hv| {
+            hv.split(|c| c == ',' || c == ' ')
+                .any(|vs| vs.eq_ignore_ascii_case("upgrade"))
+        })
         .unwrap_or(false)
     {
         return Err(HttpError::for_bad_request(
@@ -443,11 +461,14 @@ async fn instance_serial(
             "expected connection upgrade".to_string(),
         ));
     }
-    if request
+    if !request
         .headers()
         .get(header::UPGRADE)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .map(|v| {
+            v.split(|c| c == ',' || c == ' ')
+                .any(|v| v.eq_ignore_ascii_case("websocket"))
+        })
         .unwrap_or(false)
     {
         return Err(HttpError::for_bad_request(
@@ -478,6 +499,9 @@ async fn instance_serial(
             )
         })?;
 
+    let (detach_sender, detach_recv) = oneshot::channel();
+    context.serial_detach = Some(detach_sender);
+
     let upgrade_fut = upgrade::on(&mut *request);
     let serial = context.serial.clone();
     let ws_log = rqctx.log.new(o!());
@@ -487,7 +511,7 @@ async fn instance_serial(
             let upgraded = upgrade_fut.await?;
             let ws_stream =
                 WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
-            instance_serial_task(serial, ws_stream, ws_log).await
+            instance_serial_task(detach_recv, serial, ws_stream, ws_log).await
         }
         .inspect_err(move |err| error!(err_log, "Serial Task Failed: {}", err)),
     );
@@ -500,6 +524,46 @@ async fn instance_serial(
         .body(Body::empty())?)
 }
 
+#[endpoint {
+    method = PUT,
+    path = "/instances/{instance_id}/serial/detach",
+}]
+async fn instance_serial_detach(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstancePathParams>,
+) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+    let mut context = rqctx.context().context.lock().await;
+
+    let context = context.as_mut().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+    if path_params.into_inner().instance_id != context.properties.id {
+        return Err(HttpError::for_internal_error(
+            "UUID mismatch (path did not match struct)".to_string(),
+        ));
+    }
+
+    let serial_detach =
+        context.serial_detach.take().filter(|s| !s.is_closed()).ok_or_else(
+            || {
+                HttpError::for_bad_request(
+                    None,
+                    "serial console already detached".to_string(),
+                )
+            },
+        )?;
+
+    serial_detach.send(()).map_err(|_| {
+        HttpError::for_internal_error(
+            "couldn't send detach message to serial task".to_string(),
+        )
+    })?;
+
+    Ok(HttpResponseUpdatedNoContent {})
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
@@ -508,5 +572,6 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
+    api.register(instance_serial_detach).unwrap();
     api
 }
