@@ -50,16 +50,6 @@ pub enum InstanceStateRequested {
     Reboot,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct InstanceSerialRequest {
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct InstanceSerialResponse {
-    pub bytes: Vec<u8>,
-}
-
 /// Current state of an Instance.
 #[derive(Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
 pub enum InstanceState {

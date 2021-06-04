@@ -158,11 +158,8 @@ impl Client {
     /// replaced by a websocket-based interface (or equivalent).
     pub async fn instance_serial(
         &self,
-        id: Uuid,
-        input: api::InstanceSerialRequest,
-    ) -> Result<api::InstanceSerialResponse, Error> {
-        let path = format!("http://{}/instances/{}/serial", self.address, id);
-        let body = Body::from(serde_json::to_string(&input).unwrap());
-        self.put(path, Some(body)).await
+        _id: Uuid,
+    ) -> Result<(), Error> {
+        todo!()
     }
 }
