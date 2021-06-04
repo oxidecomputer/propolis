@@ -12,15 +12,15 @@ use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch, Mutex};
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{
     self, handshake, protocol::Role, Message,
 };
 use tokio_tungstenite::WebSocketStream;
-use thiserror::Error;
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
@@ -510,7 +510,8 @@ async fn instance_serial(
         async move {
             let upgraded = upgrade_fut.await?;
             let ws_stream =
-                WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
+                WebSocketStream::from_raw_socket(upgraded, Role::Server, None)
+                    .await;
             instance_serial_task(detach_recv, serial, ws_stream, ws_log).await
         }
         .inspect_err(move |err| error!(err_log, "Serial Task Failed: {}", err)),
