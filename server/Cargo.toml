@@ -21,11 +21,14 @@ anyhow = "1.0"
 # dropshot = "0.6"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 futures = "0.3"
+hyper =  "0.14"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.14"
 toml = "0.5"
 serde = "1.0"
 serde_derive = "1.0"
+slog = "2.7"
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis" }
 propolis-client = { path = "../client" }
@@ -36,4 +39,3 @@ hex = "0.4.3"
 reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 ring = "0.16"
 slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_debug" ] }
-
