@@ -16,7 +16,7 @@ use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch, Mutex};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{
     self, handshake, protocol::Role, Message,
 };
@@ -509,8 +509,12 @@ async fn instance_serial(
     tokio::spawn(
         async move {
             let upgraded = upgrade_fut.await?;
+            let config = WebSocketConfig {
+                max_send_queue: Some(1024),
+                ..Default::default()
+            };
             let ws_stream =
-                WebSocketStream::from_raw_socket(upgraded, Role::Server, None)
+                WebSocketStream::from_raw_socket(upgraded, Role::Server, Some(config))
                     .await;
             instance_serial_task(detach_recv, serial, ws_stream, ws_log).await
         }
