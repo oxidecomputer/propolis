@@ -76,9 +76,9 @@ fn propolis_to_api_state(
         PropolisState::Initialize => ApiState::Creating,
         PropolisState::Boot => ApiState::Starting,
         PropolisState::Run => ApiState::Running,
-        PropolisState::Quiesce => ApiState::Stopped,
+        PropolisState::Quiesce => ApiState::Stopping,
         PropolisState::Halt => ApiState::Stopped,
-        PropolisState::Reset => ApiState::Stopped,
+        PropolisState::Reset => ApiState::Rebooting,
         PropolisState::Destroy => ApiState::Destroyed,
     }
 }
