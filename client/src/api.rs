@@ -68,6 +68,7 @@ pub enum InstanceState {
     Running,
     Stopping,
     Stopped,
+    Rebooting,
     Repairing,
     Failed,
     Destroyed,
