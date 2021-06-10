@@ -17,6 +17,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch, Mutex};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
@@ -67,6 +68,7 @@ struct InstanceContext {
     state_watcher: watch::Receiver<StateChange>,
     // Oneshot channel used to detach an attached serial session
     serial_detach: Option<oneshot::Sender<()>>,
+    serial_task: Option<JoinHandle<Result<(), SerialTaskError>>>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -269,6 +271,7 @@ async fn instance_ensure(
         serial: Arc::new(Mutex::new(com1.unwrap())),
         state_watcher: rx,
         serial_detach: None,
+        serial_task: None,
     });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
@@ -520,13 +523,12 @@ async fn instance_serial(
         })?;
 
     let (detach_sender, detach_recv) = oneshot::channel();
-    context.serial_detach = Some(detach_sender);
 
     let upgrade_fut = upgrade::on(&mut *request);
     let serial = context.serial.clone();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-    tokio::spawn(
+    let serial_task = tokio::spawn(
         async move {
             let upgraded = upgrade_fut.await?;
             let config = WebSocketConfig {
@@ -543,6 +545,10 @@ async fn instance_serial(
         }
         .inspect_err(move |err| error!(err_log, "Serial Task Failed: {}", err)),
     );
+
+    // Save active serial task handle
+    context.serial_detach = Some(detach_sender);
+    context.serial_task = Some(serial_task);
 
     Ok(Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -582,10 +588,16 @@ async fn instance_serial_detach(
                 )
             },
         )?;
+    let serial_task = context.serial_task.take().unwrap();
 
     serial_detach.send(()).map_err(|_| {
         HttpError::for_internal_error(
             "couldn't send detach message to serial task".to_string(),
+        )
+    })?;
+    let _ = serial_task.await.map_err(|_| {
+        HttpError::for_internal_error(
+            "failed to complete existing serial task".to_string(),
         )
     })?;
 
