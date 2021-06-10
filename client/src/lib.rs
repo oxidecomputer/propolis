@@ -156,10 +156,7 @@ impl Client {
     ///
     /// TODO: This method is NOT idempotent, uses short-polling, and should be
     /// replaced by a websocket-based interface (or equivalent).
-    pub async fn instance_serial(
-        &self,
-        _id: Uuid,
-    ) -> Result<(), Error> {
+    pub async fn instance_serial(&self, _id: Uuid) -> Result<(), Error> {
         todo!()
     }
 }
