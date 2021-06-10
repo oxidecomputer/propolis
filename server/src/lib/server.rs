@@ -5,6 +5,7 @@ use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
+use futures::future::FusedFuture;
 use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
@@ -12,9 +13,11 @@ use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch, Mutex};
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{
@@ -378,31 +381,25 @@ async fn instance_state_put(
 }
 
 async fn instance_serial_task(
-    detach: oneshot::Receiver<()>,
+    mut detach: oneshot::Receiver<()>,
     serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
     mut ws_stream: WebSocketStream<Upgraded>,
     log: Logger,
 ) -> Result<(), SerialTaskError> {
     let mut serial = serial.lock().await;
-    let mut detach = detach.fuse();
+    let read_ready_fut = futures::future::Fuse::terminated();
+    tokio::pin!(read_ready_fut);
+
     loop {
         let mut output = [0u8; 4096];
-        futures::select! {
-            result = serial.read(&mut output).fuse() => {
-                if let Ok(n) = result {
-                    ws_stream.send(Message::binary(&output[..n])).await?;
-                }
-            }
-            msg = ws_stream.next().fuse() => {
-                match msg {
-                    Some(Ok(Message::Binary(input))) => {
-                        serial.write_all(&input).await?;
-                    }
-                    Some(_) => continue,
-                    None => break,
-                }
-            }
-            _ = detach => {
+        tokio::select! {
+            // Poll in the order written
+            biased;
+
+            // It's important we always poll the detach channel first
+            // so that a constant stream of incoming/outgoing messages
+            // don't cause us to ignore a detach
+            _ = &mut detach => {
                 info!(log, "Detaching from serial console");
                 let close = CloseFrame {
                     code: CloseCode::Policy,
@@ -411,7 +408,30 @@ async fn instance_serial_task(
                 ws_stream.send(Message::Close(Some(close))).await?;
                 break;
             }
-            complete => break
+
+            // Go ahead and try to read from the serial port.
+            // Backpressure: The `read_ready_fut` precondition makes sure we only try to read
+            // from the serial port until either the buffer has filled completely, or
+            // (for partial reads) 10ms have elapsed. This prevents spinning on a
+            // serial console which is emitting single bytes at a time.
+            Ok(n) = serial.read(&mut output), if read_ready_fut.is_terminated() => {
+                ws_stream.send(Message::binary(&output[..n])).await?;
+
+                // Queue another read/timeout
+                read_ready_fut.set(timeout(Duration::from_millis(10), serial.read_buffer_full()).fuse());
+            }
+
+            // Then check for any incoming data from the client
+            msg = ws_stream.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(input))) => serial.write_all(&input).await?,
+                    Some(Ok(Message::Close(..))) | None => break,
+                    _ => continue,
+                }
+            }
+
+            // Poll timeout/read_buffer_full future; see above comment
+            _ = &mut read_ready_fut => {}
         }
     }
     Ok(())
@@ -510,12 +530,15 @@ async fn instance_serial(
         async move {
             let upgraded = upgrade_fut.await?;
             let config = WebSocketConfig {
-                max_send_queue: Some(1024),
+                max_send_queue: Some(4096),
                 ..Default::default()
             };
-            let ws_stream =
-                WebSocketStream::from_raw_socket(upgraded, Role::Server, Some(config))
-                    .await;
+            let ws_stream = WebSocketStream::from_raw_socket(
+                upgraded,
+                Role::Server,
+                Some(config),
+            )
+            .await;
             instance_serial_task(detach_recv, serial, ws_stream, ws_log).await
         }
         .inspect_err(move |err| error!(err_log, "Serial Task Failed: {}", err)),
