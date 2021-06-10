@@ -53,6 +53,22 @@ enum SerialTaskError {
     Io(#[from] std::io::Error),
 }
 
+struct SerialTask {
+    /// Handle to attached serial session
+    task: JoinHandle<Result<(), SerialTaskError>>,
+    /// Oneshot channel used to detach an attached serial session
+    detach_ch: oneshot::Sender<()>,
+}
+
+impl SerialTask {
+    /// Is the serial task still attached
+    fn is_attached(&self) -> bool {
+        // Use whether the detach channel has been closed as
+        // a proxy for whether or not the task is still active
+        !self.detach_ch.is_closed()
+    }
+}
+
 #[derive(Clone)]
 struct StateChange {
     gen: u64,
@@ -66,9 +82,7 @@ struct InstanceContext {
     properties: api::InstanceProperties,
     serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
-    // Oneshot channel used to detach an attached serial session
-    serial_detach: Option<oneshot::Sender<()>>,
-    serial_task: Option<JoinHandle<Result<(), SerialTaskError>>>,
+    serial_task: Option<SerialTask>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -270,7 +284,6 @@ async fn instance_ensure(
         properties,
         serial: Arc::new(Mutex::new(com1.unwrap())),
         state_watcher: rx,
-        serial_detach: None,
         serial_task: None,
     });
 
@@ -460,7 +473,7 @@ async fn instance_serial(
             "UUID mismatch (path did not match struct)".to_string(),
         ));
     }
-    if context.serial_detach.as_ref().map_or(false, |s| !s.is_closed()) {
+    if context.serial_task.as_ref().map_or(false, |s| s.is_attached()) {
         return Err(HttpError::for_unavail(
             None,
             "serial console already attached".to_string(),
@@ -522,13 +535,13 @@ async fn instance_serial(
             )
         })?;
 
-    let (detach_sender, detach_recv) = oneshot::channel();
+    let (detach_ch, detach_recv) = oneshot::channel();
 
     let upgrade_fut = upgrade::on(&mut *request);
     let serial = context.serial.clone();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-    let serial_task = tokio::spawn(
+    let task = tokio::spawn(
         async move {
             let upgraded = upgrade_fut.await?;
             let config = WebSocketConfig {
@@ -547,8 +560,7 @@ async fn instance_serial(
     );
 
     // Save active serial task handle
-    context.serial_detach = Some(detach_sender);
-    context.serial_task = Some(serial_task);
+    context.serial_task = Some(SerialTask { task, detach_ch });
 
     Ok(Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -579,8 +591,8 @@ async fn instance_serial_detach(
         ));
     }
 
-    let serial_detach =
-        context.serial_detach.take().filter(|s| !s.is_closed()).ok_or_else(
+    let serial_task =
+        context.serial_task.take().filter(|s| s.is_attached()).ok_or_else(
             || {
                 HttpError::for_bad_request(
                     None,
@@ -588,14 +600,13 @@ async fn instance_serial_detach(
                 )
             },
         )?;
-    let serial_task = context.serial_task.take().unwrap();
 
-    serial_detach.send(()).map_err(|_| {
+    serial_task.detach_ch.send(()).map_err(|_| {
         HttpError::for_internal_error(
             "couldn't send detach message to serial task".to_string(),
         )
     })?;
-    let _ = serial_task.await.map_err(|_| {
+    let _ = serial_task.task.await.map_err(|_| {
         HttpError::for_internal_error(
             "failed to complete existing serial task".to_string(),
         )
