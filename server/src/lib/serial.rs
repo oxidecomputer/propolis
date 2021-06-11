@@ -172,15 +172,19 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
     }
 
     /// Returns a future that completes when the read buffer becomes full.
-    pub async fn read_buffer_full(&mut self) {
-        while !self.source_driver.lock().unwrap().source_full {
-            // By relaying on the "notify_one" permit mechanism, we are safe
-            // from a TOCTTOU race condition where the buffer becomes full
-            // after we check "source_full" but before we await the notified
-            // signal.
-            //
-            // In this case, the "notified()" call will return immediately.
-            self.source_full_signal.notified().await;
+    pub fn read_buffer_full(&self) -> impl futures::Future<Output = ()> {
+        let source_driver = self.source_driver.clone();
+        let source_full_signal = self.source_full_signal.clone();
+        async move {
+            while !source_driver.lock().unwrap().source_full {
+                // By relaying on the "notify_one" permit mechanism, we are safe
+                // from a TOCTTOU race condition where the buffer becomes full
+                // after we check "source_full" but before we await the notified
+                // signal.
+                //
+                // In this case, the "notified()" call will return immediately.
+                source_full_signal.notified().await;
+            }
         }
     }
 }

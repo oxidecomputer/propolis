@@ -5,11 +5,26 @@ use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
-use futures::FutureExt;
+use futures::future::FusedFuture;
+use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
+use hyper::upgrade::{self, Upgraded};
+use hyper::{header, Body, Response, StatusCode};
+use slog::{error, info, o, Logger};
+use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
+use std::time::Duration;
+use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
+use tokio_tungstenite::tungstenite::{
+    self, handshake, protocol::Role, Message,
+};
+use tokio_tungstenite::WebSocketStream;
 
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
@@ -25,6 +40,35 @@ use crate::serial::Serial;
 // TODO(error) Do a pass of HTTP codes (error and ok)
 // TODO(idempotency) Idempotency mechanisms?
 
+/// Errors which may occur during the course of a serial connection
+#[derive(Error, Debug)]
+enum SerialTaskError {
+    #[error("Cannot upgrade HTTP request to WebSockets: {0}")]
+    Upgrade(#[from] hyper::Error),
+
+    #[error("WebSocket Error: {0}")]
+    WebSocket(#[from] tungstenite::Error),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+struct SerialTask {
+    /// Handle to attached serial session
+    task: JoinHandle<Result<(), SerialTaskError>>,
+    /// Oneshot channel used to detach an attached serial session
+    detach_ch: oneshot::Sender<()>,
+}
+
+impl SerialTask {
+    /// Is the serial task still attached
+    fn is_attached(&self) -> bool {
+        // Use whether the detach channel has been closed as
+        // a proxy for whether or not the task is still active
+        !self.detach_ch.is_closed()
+    }
+}
+
 #[derive(Clone)]
 struct StateChange {
     gen: u64,
@@ -36,8 +80,9 @@ struct InstanceContext {
     // The instance, which may or may not be instantiated.
     instance: Arc<Instance>,
     properties: api::InstanceProperties,
-    serial: Serial<DispCtx, LpcUart>,
+    serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
+    serial_task: Option<SerialTask>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -237,8 +282,9 @@ async fn instance_ensure(
     *context = Some(InstanceContext {
         instance,
         properties,
-        serial: com1.unwrap(),
+        serial: Arc::new(Mutex::new(com1.unwrap())),
         state_watcher: rx,
+        serial_task: None,
     });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
@@ -350,15 +396,188 @@ async fn instance_state_put(
     Ok(HttpResponseUpdatedNoContent {})
 }
 
+async fn instance_serial_task(
+    mut detach: oneshot::Receiver<()>,
+    serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
+    mut ws_stream: WebSocketStream<Upgraded>,
+    log: Logger,
+) -> Result<(), SerialTaskError> {
+    let mut serial = serial.lock().await;
+    let read_ready_fut = futures::future::Fuse::terminated();
+    tokio::pin!(read_ready_fut);
+
+    loop {
+        let mut output = [0u8; 4096];
+        tokio::select! {
+            // Poll in the order written
+            biased;
+
+            // It's important we always poll the detach channel first
+            // so that a constant stream of incoming/outgoing messages
+            // don't cause us to ignore a detach
+            _ = &mut detach => {
+                info!(log, "Detaching from serial console");
+                let close = CloseFrame {
+                    code: CloseCode::Policy,
+                    reason: Cow::Borrowed("serial console was detached"),
+                };
+                ws_stream.send(Message::Close(Some(close))).await?;
+                break;
+            }
+
+            // Go ahead and try to read from the serial port.
+            // Backpressure: The `read_ready_fut` precondition makes sure we only try to read
+            // from the serial port until either the buffer has filled completely, or
+            // (for partial reads) 10ms have elapsed. This prevents spinning on a
+            // serial console which is emitting single bytes at a time.
+            Ok(n) = serial.read(&mut output), if read_ready_fut.is_terminated() => {
+                ws_stream.send(Message::binary(&output[..n])).await?;
+
+                // Queue another read/timeout
+                read_ready_fut.set(timeout(Duration::from_millis(10), serial.read_buffer_full()).fuse());
+            }
+
+            // Then check for any incoming data from the client
+            msg = ws_stream.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(input))) => serial.write_all(&input).await?,
+                    Some(Ok(Message::Close(..))) | None => break,
+                    _ => continue,
+                }
+            }
+
+            // Poll timeout/read_buffer_full future; see above comment
+            _ = &mut read_ready_fut => {}
+        }
+    }
+    Ok(())
+}
+
 #[endpoint {
-    method = PUT,
+    method = GET,
     path = "/instances/{instance_id}/serial",
 }]
 async fn instance_serial(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<api::InstancePathParams>,
-    request: TypedBody<api::InstanceSerialRequest>,
-) -> Result<HttpResponseOk<api::InstanceSerialResponse>, HttpError> {
+) -> Result<Response<Body>, HttpError> {
+    let mut context = rqctx.context().context.lock().await;
+
+    let context = context.as_mut().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+    if path_params.into_inner().instance_id != context.properties.id {
+        return Err(HttpError::for_internal_error(
+            "UUID mismatch (path did not match struct)".to_string(),
+        ));
+    }
+    if context.serial_task.as_ref().map_or(false, |s| s.is_attached()) {
+        return Err(HttpError::for_unavail(
+            None,
+            "serial console already attached".to_string(),
+        ));
+    }
+
+    let request = &mut *rqctx.request.lock().await;
+
+    if !request
+        .headers()
+        .get(header::CONNECTION)
+        .and_then(|hv| hv.to_str().ok())
+        .map(|hv| {
+            hv.split(|c| c == ',' || c == ' ')
+                .any(|vs| vs.eq_ignore_ascii_case("upgrade"))
+        })
+        .unwrap_or(false)
+    {
+        return Err(HttpError::for_bad_request(
+            None,
+            "expected connection upgrade".to_string(),
+        ));
+    }
+    if !request
+        .headers()
+        .get(header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(|c| c == ',' || c == ' ')
+                .any(|v| v.eq_ignore_ascii_case("websocket"))
+        })
+        .unwrap_or(false)
+    {
+        return Err(HttpError::for_bad_request(
+            None,
+            "unexpected protocol for upgrade".to_string(),
+        ));
+    }
+    if request
+        .headers()
+        .get(header::SEC_WEBSOCKET_VERSION)
+        .map(|v| v.as_bytes())
+        != Some(b"13")
+    {
+        return Err(HttpError::for_bad_request(
+            None,
+            "missing or invalid websocket version".to_string(),
+        ));
+    }
+    let accept_key = request
+        .headers()
+        .get(header::SEC_WEBSOCKET_KEY)
+        .map(|hv| hv.as_bytes())
+        .map(|key| handshake::derive_accept_key(key))
+        .ok_or_else(|| {
+            HttpError::for_bad_request(
+                None,
+                "missing websocket key".to_string(),
+            )
+        })?;
+
+    let (detach_ch, detach_recv) = oneshot::channel();
+
+    let upgrade_fut = upgrade::on(&mut *request);
+    let serial = context.serial.clone();
+    let ws_log = rqctx.log.new(o!());
+    let err_log = ws_log.clone();
+    let task = tokio::spawn(
+        async move {
+            let upgraded = upgrade_fut.await?;
+            let config = WebSocketConfig {
+                max_send_queue: Some(4096),
+                ..Default::default()
+            };
+            let ws_stream = WebSocketStream::from_raw_socket(
+                upgraded,
+                Role::Server,
+                Some(config),
+            )
+            .await;
+            instance_serial_task(detach_recv, serial, ws_stream, ws_log).await
+        }
+        .inspect_err(move |err| error!(err_log, "Serial Task Failed: {}", err)),
+    );
+
+    // Save active serial task handle
+    context.serial_task = Some(SerialTask { task, detach_ch });
+
+    Ok(Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::UPGRADE, "websocket")
+        .header(header::SEC_WEBSOCKET_ACCEPT, accept_key)
+        .body(Body::empty())?)
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/instances/{instance_id}/serial/detach",
+}]
+async fn instance_serial_detach(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstancePathParams>,
+) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let mut context = rqctx.context().context.lock().await;
 
     let context = context.as_mut().ok_or_else(|| {
@@ -372,42 +591,28 @@ async fn instance_serial(
         ));
     }
 
-    // Backpressure: Wait until either the buffer has filled completely, or
-    // (for partial reads) 10ms have elapsed. This prevents spinning on a
-    // serial console which is emitting single bytes at a time.
-    let _ = tokio::time::timeout(
-        core::time::Duration::from_millis(10),
-        context.serial.read_buffer_full(),
-    )
-    .await;
+    let serial_task =
+        context.serial_task.take().filter(|s| s.is_attached()).ok_or_else(
+            || {
+                HttpError::for_bad_request(
+                    None,
+                    "serial console already detached".to_string(),
+                )
+            },
+        )?;
 
-    // The buffer may or may not actually have any output - we've already
-    // introduced our backpressure mechanism with the previous tokio timeout,
-    // so don't bother blocking on this particular read.
-    let mut output = [0u8; 4096];
-    let n = futures::select! {
-        result = context.serial.read(&mut output).fuse() => {
-            result.map_err(|e| {
-                HttpError::for_internal_error(format!(
-                    "Cannot read from serial: {}",
-                    e
-                ))
-            })?
-        },
-        default => { 0 }
-    };
+    serial_task.detach_ch.send(()).map_err(|_| {
+        HttpError::for_internal_error(
+            "couldn't send detach message to serial task".to_string(),
+        )
+    })?;
+    let _ = serial_task.task.await.map_err(|_| {
+        HttpError::for_internal_error(
+            "failed to complete existing serial task".to_string(),
+        )
+    })?;
 
-    let input = request.into_inner().bytes;
-    if !input.is_empty() {
-        context.serial.write_all(&input).await.map_err(|e| {
-            HttpError::for_internal_error(format!(
-                "Cannot write to serial: {}",
-                e
-            ))
-        })?;
-    }
-    let response = api::InstanceSerialResponse { bytes: output[..n].to_vec() };
-    Ok(HttpResponseOk(response))
+    Ok(HttpResponseUpdatedNoContent {})
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
@@ -418,5 +623,6 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
+    api.register(instance_serial_detach).unwrap();
     api
 }
