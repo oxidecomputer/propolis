@@ -151,12 +151,4 @@ impl Client {
         let body = Body::from(serde_json::to_string(&state).unwrap());
         self.put_no_response(path, Some(body)).await
     }
-
-    /// Inputs bytes to the serial console, and returns any new output.
-    ///
-    /// TODO: This method is NOT idempotent, uses short-polling, and should be
-    /// replaced by a websocket-based interface (or equivalent).
-    pub async fn instance_serial(&self, _id: Uuid) -> Result<(), Error> {
-        todo!()
-    }
 }
