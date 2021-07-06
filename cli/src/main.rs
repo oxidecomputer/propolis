@@ -211,6 +211,18 @@ fn main() {
                     .unwrap();
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
+                "pci-nvme" => {
+                    let disk_path =
+                        dev.options.get("disk").unwrap().as_str().unwrap();
+
+                    let plain = block::PlainBdev::create(disk_path).unwrap();
+                    // TODO: allow creating multiple nvme-ns devices all attached to the same controller
+                    let ns = hw::nvme::NvmeNs::create(plain.clone());
+                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, ns);
+
+                    chipset.pci_attach(bdf.unwrap(), nvme);
+                    plain.start_dispatch(format!("bdev-{} thread", name), &disp);
+                }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);
                     std::process::exit(libc::EXIT_FAILURE);
