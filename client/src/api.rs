@@ -8,42 +8,42 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstancePathParams {
     pub instance_id: Uuid,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureResponse {}
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceGetResponse {
     pub instance: Instance,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceStateMonitorRequest {
     pub gen: u64,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceStateMonitorResponse {
     pub gen: u64,
     pub state: InstanceState,
 }
 
 /// Requested state of an Instance.
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceStateChange {
     pub state: InstanceStateRequested,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
 pub enum InstanceStateRequested {
     Run,
     Stop,
@@ -51,7 +51,7 @@ pub enum InstanceStateRequested {
 }
 
 /// Current state of an Instance.
-#[derive(Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
 pub enum InstanceState {
     Creating,
     Starting,
@@ -83,7 +83,7 @@ pub struct InstanceProperties {
     pub vcpus: u8,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Instance {
     pub properties: InstanceProperties,
     pub state: InstanceState,
@@ -93,7 +93,7 @@ pub struct Instance {
 }
 
 /// Describes how to connect to one or more storage agent services.
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct StorageAgentDescription {
     /// Addresses of storage agents.
     pub agents: Vec<std::net::SocketAddrV6>,
@@ -109,14 +109,14 @@ pub struct StorageAgentDescription {
 
 /// Refer to RFD 135 for more information on Virtual Storage Interfaces.
 /// This describes the type of disk which should be exposed to the guest VM.
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
 pub enum DiskType {
     NVMe,
     VirtioBlock,
 }
 
 /// Describes a virtual disk.
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Disk {
     /// Unique identifier for this disk.
     pub id: Uuid,
@@ -155,13 +155,13 @@ pub const DISK_FLAG_WRITE: u32 = 0b0000_0010;
 pub const DISK_FLAG_READ_WRITE: u32 = DISK_FLAG_READ | DISK_FLAG_WRITE;
 type DiskFlags = u32;
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct DiskAttachmentInfo {
     pub flags: DiskFlags,
     pub slot: u16,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub enum DiskAttachmentState {
     Attached(Uuid),
     Detached,
@@ -169,26 +169,26 @@ pub enum DiskAttachmentState {
     Faulted,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct DiskAttachment {
     pub generation_id: u64,
     pub disk_id: Uuid,
     pub state: DiskAttachmentState,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct NicAttachmentInfo {
     pub slot: u16,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub enum NicAttachmentState {
     Attached(NicAttachmentInfo),
     Detached,
     Faulted,
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct NicAttachment {
     pub generation_id: u64,
     pub nic_id: Uuid,
