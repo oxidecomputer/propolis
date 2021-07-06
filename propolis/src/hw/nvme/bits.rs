@@ -127,7 +127,6 @@ pub const IDENT_CNS_CONTROLLER: u8 = 0x1;
 pub const IDENT_CNS_ACTIVE_NSID: u8 = 0x2;
 pub const IDENT_CNS_NSID_DESC: u8 = 0x3;
 
-
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum StatusCodeType {

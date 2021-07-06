@@ -92,14 +92,14 @@ impl NvmeCtrl {
             0, // Admin CQ uses interrupt vector 0
             GuestAddr(self.ctrl.admin_cq_base),
             self.ctrl.admin_cq_size as u32,
-            ctx
+            ctx,
         )?;
         self.create_sq(
             ADMIN_QUEUE_ID,
             ADMIN_QUEUE_ID,
             GuestAddr(self.ctrl.admin_sq_base),
             self.ctrl.admin_sq_size as u32,
-            ctx
+            ctx,
         )?;
         Ok(())
     }
@@ -113,7 +113,7 @@ impl NvmeCtrl {
         iv: u16,
         base: GuestAddr,
         size: u32,
-        ctx: &DispCtx
+        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         if (cqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidCompQueue(cqid));
@@ -121,7 +121,11 @@ impl NvmeCtrl {
         if self.cqs[cqid as usize].is_some() {
             return Err(NvmeError::CompQueueAlreadyExists(cqid));
         }
-        let msix_hdl = self.msix_hdl.as_ref().ok_or(NvmeError::MsixHdlUnavailable)?.clone();
+        let msix_hdl = self
+            .msix_hdl
+            .as_ref()
+            .ok_or(NvmeError::MsixHdlUnavailable)?
+            .clone();
         let cq = CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?;
         self.cqs[cqid as usize] = Some(Arc::new(Mutex::new(cq)));
         Ok(())
@@ -137,12 +141,14 @@ impl NvmeCtrl {
         cqid: u16,
         base: GuestAddr,
         size: u32,
-        ctx: &DispCtx
+        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(cqid));
         }
-        if (cqid as usize) >= MAX_NUM_QUEUES || self.cqs[cqid as usize].is_none() {
+        if (cqid as usize) >= MAX_NUM_QUEUES
+            || self.cqs[cqid as usize].is_none()
+        {
             return Err(NvmeError::InvalidCompQueue(cqid));
         }
         if self.sqs[sqid as usize].is_some() {
@@ -156,13 +162,19 @@ impl NvmeCtrl {
     /// Returns a reference to the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
     fn get_cq(&self, cqid: u16) -> Result<Arc<Mutex<CompQueue>>, NvmeError> {
         debug_assert!((cqid as usize) < MAX_NUM_QUEUES);
-        self.cqs[cqid as usize].as_ref().map(Arc::clone).ok_or(NvmeError::InvalidCompQueue(cqid))
+        self.cqs[cqid as usize]
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(NvmeError::InvalidCompQueue(cqid))
     }
 
     /// Returns a reference to the [`SubQueue`] which corresponds to the given submission queue id (`cqid`).
     fn get_sq(&self, sqid: u16) -> Result<Arc<Mutex<SubQueue>>, NvmeError> {
         debug_assert!((sqid as usize) < MAX_NUM_QUEUES);
-        self.sqs[sqid as usize].as_ref().map(Arc::clone).ok_or(NvmeError::InvalidSubQueue(sqid))
+        self.sqs[sqid as usize]
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(NvmeError::InvalidSubQueue(sqid))
     }
 
     /// Returns a reference to the Admin [`CompQueue`].
@@ -211,7 +223,11 @@ pub struct PciNvme {
 }
 
 impl PciNvme {
-    pub fn create(vendor: u16, device: u16, ns: NvmeNs) -> Arc<pci::DeviceInst> {
+    pub fn create(
+        vendor: u16,
+        device: u16,
+        ns: NvmeNs,
+    ) -> Arc<pci::DeviceInst> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: vendor,
             device_id: device,
@@ -232,9 +248,7 @@ impl PciNvme {
             ns,
         };
 
-        let nvme = PciNvme {
-            state: Mutex::new(state),
-        };
+        let nvme = PciNvme { state: Mutex::new(state) };
 
         builder
             // XXX: add room for doorbells
@@ -246,7 +260,11 @@ impl PciNvme {
             .finish(Arc::new(nvme))
     }
 
-    fn ctrlr_cfg_write(&self, val: u32, ctx: &DispCtx) -> Result<(), NvmeError> {
+    fn ctrlr_cfg_write(
+        &self,
+        val: u32,
+        ctx: &DispCtx,
+    ) -> Result<(), NvmeError> {
         let mut state = self.state.lock().unwrap();
 
         if !state.ctrl.enabled {
@@ -270,7 +288,12 @@ impl PciNvme {
 
         Ok(())
     }
-    fn reg_ctrl_read(&self, id: &CtrlrReg, ro: &mut ReadOp, _ctx: &DispCtx) -> Result<(), NvmeError> {
+    fn reg_ctrl_read(
+        &self,
+        id: &CtrlrReg,
+        ro: &mut ReadOp,
+        _ctx: &DispCtx,
+    ) -> Result<(), NvmeError> {
         match id {
             CtrlrReg::CtrlrCaps => {
                 // MPSMIN = MPSMAX = 0 (4k pages)
@@ -337,7 +360,12 @@ impl PciNvme {
 
         Ok(())
     }
-    fn reg_ctrl_write(&self, id: &CtrlrReg, wo: &mut WriteOp, ctx: &DispCtx) -> Result<(), NvmeError> {
+    fn reg_ctrl_write(
+        &self,
+        id: &CtrlrReg,
+        wo: &mut WriteOp,
+        ctx: &DispCtx,
+    ) -> Result<(), NvmeError> {
         match id {
             CtrlrReg::CtrlrCaps
             | CtrlrReg::Version
@@ -437,7 +465,7 @@ impl PciNvme {
         &self,
         mut state: MutexGuard<NvmeCtrl>,
         mut sq: MutexGuard<SubQueue>,
-        ctx: &DispCtx
+        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         // Grab the Admin CQ too
         let admin_cq = state.get_admin_cq();
@@ -459,21 +487,17 @@ impl PciNvme {
                 AdminCmd::CreateIOSubQ(cmd) => {
                     state.acmd_create_io_sq(&cmd, ctx)
                 }
-                AdminCmd::GetLogPage(cmd) => {
-                    state.acmd_get_log_page(&cmd, ctx)
-                }
-                AdminCmd::Identify(cmd) => {
-                    state.acmd_identify(&cmd, ctx)
-                }
+                AdminCmd::GetLogPage(cmd) => state.acmd_get_log_page(&cmd, ctx),
+                AdminCmd::Identify(cmd) => state.acmd_identify(&cmd, ctx),
                 AdminCmd::SetFeatures(cmd) => {
                     state.acmd_set_features(&cmd, ctx)
                 }
-                AdminCmd::DeleteIOSubQ(_) |
-                AdminCmd::DeleteIOCompQ(_) |
-                AdminCmd::Abort |
-                AdminCmd::GetFeatures |
-                AdminCmd::AsyncEventReq |
-                AdminCmd::Unknown(_) => {
+                AdminCmd::DeleteIOSubQ(_)
+                | AdminCmd::DeleteIOCompQ(_)
+                | AdminCmd::Abort
+                | AdminCmd::GetFeatures
+                | AdminCmd::AsyncEventReq
+                | AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
             };
@@ -499,7 +523,7 @@ impl PciNvme {
         &self,
         state: MutexGuard<NvmeCtrl>,
         io_sq: Arc<Mutex<SubQueue>>,
-        ctx: &DispCtx
+        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         let mut sq = io_sq.lock().unwrap();
 

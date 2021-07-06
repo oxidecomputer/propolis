@@ -6,10 +6,10 @@ use crate::hw::nvme::bits::RawCompletion;
 use crate::hw::nvme::cmds::{self, NvmCmd};
 use crate::{common, dispatch::DispCtx};
 
-use super::NvmeError;
 use super::bits::{self, RawSubmission};
 use super::cmds::{Completion, ReadCmd, WriteCmd};
 use super::queue::{CompQueue, SubQueue};
+use super::NvmeError;
 
 const BLOCK_SZ: u64 = 512;
 
@@ -34,8 +34,15 @@ impl NvmeNs {
             ..Default::default()
         };
 
-        debug_assert_eq!(BLOCK_SZ.count_ones(), 1, "BLOCK_SZ must be a power of 2");
-        debug_assert!(BLOCK_SZ.trailing_zeros() >= 9, "BLOCK_SZ must be at least 512 bytes");
+        debug_assert_eq!(
+            BLOCK_SZ.count_ones(),
+            1,
+            "BLOCK_SZ must be a power of 2"
+        );
+        debug_assert!(
+            BLOCK_SZ.trailing_zeros() >= 9,
+            "BLOCK_SZ must be at least 512 bytes"
+        );
         ident.lbaf[0].lbads = BLOCK_SZ.trailing_zeros() as u8;
 
         NvmeNs { ident, bdev }
@@ -53,15 +60,18 @@ impl NvmeNs {
         cmds: Vec<RawSubmission>,
         cq: Arc<Mutex<CompQueue>>,
         sq: Arc<Mutex<SubQueue>>,
-        ctx: &DispCtx
+        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         for cmd in cmds {
             let (cmd, sub) = NvmCmd::parse(cmd)?;
             match cmd {
-                NvmCmd::Write(cmd) => self.write_cmd(sub.cid, cmd, ctx, cq.clone(), sq.clone()),
-                NvmCmd::Read(cmd) => self.read_cmd(sub.cid, cmd, ctx, cq.clone(), sq.clone()),
-                NvmCmd::Flush |
-                NvmCmd::Unknown(_) => {
+                NvmCmd::Write(cmd) => {
+                    self.write_cmd(sub.cid, cmd, ctx, cq.clone(), sq.clone())
+                }
+                NvmCmd::Read(cmd) => {
+                    self.read_cmd(sub.cid, cmd, ctx, cq.clone(), sq.clone())
+                }
+                NvmCmd::Flush | NvmCmd::Unknown(_) => {
                     // For any other command, just immediately complete it
                     let mut cq = cq.lock().unwrap();
                     let sq = sq.lock().unwrap();
@@ -79,7 +89,7 @@ impl NvmeNs {
                         sqhd: sq.head(),
                         sqid: sq.id(),
                         cid: sub.cid,
-                        status: comp.status | cq.phase()
+                        status: comp.status | cq.phase(),
                     };
 
                     cq.push(completion, ctx);
@@ -96,7 +106,7 @@ impl NvmeNs {
         mut cmd: ReadCmd,
         ctx: &DispCtx,
         cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>
+        sq: Arc<Mutex<SubQueue>>,
     ) {
         // `nlb` is a 0-based value and so add 1 to get the corresponding value
         cmd.nlb += 1;
@@ -113,7 +123,7 @@ impl NvmeNs {
         mut cmd: WriteCmd,
         ctx: &DispCtx,
         cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>
+        sq: Arc<Mutex<SubQueue>>,
     ) {
         // `nlb` is a 0-based value and so add 1 to get the corresponding value
         cmd.nlb += 1;
@@ -142,17 +152,9 @@ impl Request {
         bufs: VecDeque<common::GuestRegion>,
         cid: u16,
         cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>
+        sq: Arc<Mutex<SubQueue>>,
     ) -> Self {
-        Self {
-            op: BlockOp::Read,
-            off,
-            xfer_left: size,
-            bufs,
-            cid,
-            cq,
-            sq
-        }
+        Self { op: BlockOp::Read, off, xfer_left: size, bufs, cid, cq, sq }
     }
 
     fn new_write(
@@ -161,17 +163,9 @@ impl Request {
         bufs: VecDeque<common::GuestRegion>,
         cid: u16,
         cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>
+        sq: Arc<Mutex<SubQueue>>,
     ) -> Self {
-        Self {
-            op: BlockOp::Write,
-            off,
-            xfer_left: size,
-            bufs,
-            cid,
-            cq,
-            sq
-        }
+        Self { op: BlockOp::Write, off, xfer_left: size, bufs, cid, cq, sq }
     }
 }
 
@@ -203,11 +197,13 @@ impl BlockReq for Request {
     fn complete(self, res: BlockResult, ctx: &DispCtx) {
         let comp = match res {
             BlockResult::Success => cmds::Completion::success(),
-            BlockResult::Failure => cmds::Completion::generic_err(bits::STS_DATA_XFER_ERR),
+            BlockResult::Failure => {
+                cmds::Completion::generic_err(bits::STS_DATA_XFER_ERR)
+            }
             BlockResult::Unsupported => cmds::Completion::specific_err(
                 bits::StatusCodeType::CmdSpecific,
-                bits::STS_READ_CONFLICTING_ATTRS
-            )
+                bits::STS_READ_CONFLICTING_ATTRS,
+            ),
         };
 
         let sq = self.sq.lock().unwrap();

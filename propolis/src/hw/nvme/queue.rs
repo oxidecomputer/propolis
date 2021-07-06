@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use super::bits::{self, RawSubmission, RawCompletion};
+use super::bits::{self, RawCompletion, RawSubmission};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
@@ -138,7 +138,7 @@ impl SubQueue {
         cqid: u16,
         size: u32,
         base: GuestAddr,
-        ctx: &DispCtx
+        ctx: &DispCtx,
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(base, size, ctx)?;
         Ok(Self { id, cqid, state: QueueState::new(size, 0, 0), base })
@@ -166,10 +166,15 @@ impl SubQueue {
         self.cqid
     }
     fn entry_addr(&self, idx: u16) -> GuestAddr {
-        let res = self.base.0 + idx as u64 * std::mem::size_of::<RawSubmission>() as u64;
+        let res = self.base.0
+            + idx as u64 * std::mem::size_of::<RawSubmission>() as u64;
         GuestAddr(res)
     }
-    fn validate(base: GuestAddr, size: u32, ctx: &DispCtx) -> Result<(), QueueCreateErr> {
+    fn validate(
+        base: GuestAddr,
+        size: u32,
+        ctx: &DispCtx,
+    ) -> Result<(), QueueCreateErr> {
         if (base.0 & PAGE_OFFSET as u64) != 0 {
             return Err(QueueCreateErr::InvalidBaseAddr);
         }
@@ -201,7 +206,7 @@ impl CompQueue {
         size: u32,
         base: GuestAddr,
         ctx: &DispCtx,
-        hdl: pci::MsixHdl
+        hdl: pci::MsixHdl,
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(base, size, ctx)?;
         Ok(Self {
@@ -210,7 +215,7 @@ impl CompQueue {
             state: QueueState::new(size, 0, 0),
             base,
             phase: 1,
-            hdl
+            hdl,
         })
     }
     pub fn notify_head(&mut self, idx: u16) -> Result<(), &'static str> {
@@ -240,10 +245,15 @@ impl CompQueue {
         }
     }
     fn entry_addr(&self, idx: u16) -> GuestAddr {
-        let res = self.base.0 + idx as u64 * std::mem::size_of::<RawCompletion>() as u64;
+        let res = self.base.0
+            + idx as u64 * std::mem::size_of::<RawCompletion>() as u64;
         GuestAddr(res)
     }
-    fn validate(base: GuestAddr, size: u32, ctx: &DispCtx) -> Result<(), QueueCreateErr> {
+    fn validate(
+        base: GuestAddr,
+        size: u32,
+        ctx: &DispCtx,
+    ) -> Result<(), QueueCreateErr> {
         if (base.0 & PAGE_OFFSET as u64) != 0 {
             return Err(QueueCreateErr::InvalidBaseAddr);
         }

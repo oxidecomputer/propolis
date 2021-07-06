@@ -66,7 +66,8 @@ impl AdminCmd {
                 AdminCmd::GetLogPage(GetLogPageCmd {
                     nsid: raw.nsid,
                     len: (((raw.cdw11 as u16) as u32) << 16
-                        | (raw.cdw10 >> 16)) * 4,
+                        | (raw.cdw10 >> 16))
+                        * 4,
                     retain_async_ev: (raw.cdw10 & (1 << 15) != 0),
                     log_specific_field: (raw.cdw10 >> 8) as u8 & 0b1111,
                     log_page_ident: LogPageIdent::from(raw.cdw10 as u8),
@@ -97,10 +98,12 @@ impl AdminCmd {
                 prp2: raw.prp2,
             }),
             bits::ADMIN_OPC_ABORT => AdminCmd::Abort,
-            bits::ADMIN_OPC_SET_FEATURES => AdminCmd::SetFeatures(SetFeaturesCmd {
-                save: (raw.cdw10 & (1 << 31)) != 0,
-                fid: FeatureIdent::from((raw.cdw10 as u8, raw.cdw11)),
-            }),
+            bits::ADMIN_OPC_SET_FEATURES => {
+                AdminCmd::SetFeatures(SetFeaturesCmd {
+                    save: (raw.cdw10 & (1 << 31)) != 0,
+                    fid: FeatureIdent::from((raw.cdw10 as u8, raw.cdw11)),
+                })
+            }
             bits::ADMIN_OPC_GET_FEATURES => AdminCmd::GetFeatures,
             bits::ADMIN_OPC_ASYNC_EVENT_REQ => AdminCmd::AsyncEventReq,
             _ => AdminCmd::Unknown(raw),
@@ -112,9 +115,9 @@ impl AdminCmd {
             _ => Err(ParseErr::ReservedPsdt),
         }?;
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
-            0b00 => Ok(()),                 // Normal (non-fused) operation
-            0b01 => Err(ParseErr::Fused),   // First fused op
-            0b10 => Err(ParseErr::Fused),   // Second fused op
+            0b00 => Ok(()),               // Normal (non-fused) operation
+            0b01 => Err(ParseErr::Fused), // First fused op
+            0b10 => Err(ParseErr::Fused), // Second fused op
             _ => Err(ParseErr::ReservedFuse),
         }?;
         Ok((cmd, SubmissionEntry::new(&raw)))
@@ -273,7 +276,7 @@ impl From<(u8, u32)> for FeatureIdent {
             6 => VolatileWriteCache,
             7 => NumberOfQueues {
                 ncqr: (cdw11 >> 16) as u16,
-                nsqr: cdw11 as u16
+                nsqr: cdw11 as u16,
             },
             8 => InterruptCoalescing,
             9 => InterruptVectorConfiguration,
@@ -310,15 +313,15 @@ impl NvmCmd {
         raw: RawSubmission,
     ) -> Result<(Self, SubmissionEntry), ParseErr> {
         let _psdt = match (raw.cdw0 >> 14) & 0b11 {
-            0b00 => Ok(()),                 // PRP
-            0b01 => Err(ParseErr::SGL),     // SGL buffer
-            0b10 => Err(ParseErr::SGL),     // SGL segment
+            0b00 => Ok(()),             // PRP
+            0b01 => Err(ParseErr::SGL), // SGL buffer
+            0b10 => Err(ParseErr::SGL), // SGL segment
             _ => Err(ParseErr::ReservedPsdt),
         }?;
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
-            0b00 => Ok(()), // Normal (non-fused) operation
-            0b01 => Err(ParseErr::Fused),   // First fused op
-            0b10 => Err(ParseErr::Fused),   // Second fused op
+            0b00 => Ok(()),               // Normal (non-fused) operation
+            0b01 => Err(ParseErr::Fused), // First fused op
+            0b10 => Err(ParseErr::Fused), // Second fused op
             _ => Err(ParseErr::ReservedFuse),
         }?;
         let cmd = match raw.opcode() {
@@ -522,10 +525,7 @@ impl Completion {
         // success doesn't belong in an error
         assert_ne!(status, bits::STS_SUCCESS);
 
-        Self {
-            cdw0: 0,
-            status: Self::status_field(sct, status),
-        }
+        Self { cdw0: 0, status: Self::status_field(sct, status) }
     }
 
     pub fn generic_err(status: u8) -> Self {
@@ -548,13 +548,13 @@ impl Completion {
 impl From<QueueCreateErr> for Completion {
     fn from(e: QueueCreateErr) -> Self {
         match e {
-            QueueCreateErr::InvalidBaseAddr =>
-                Completion::generic_err(STS_INVAL_PRP_OFFSET),
-            QueueCreateErr::InvalidSize =>
-                Completion::specific_err(
-                    StatusCodeType::CmdSpecific,
-                    bits::STS_CREATE_IO_Q_INVAL_QSIZE
-                ),
+            QueueCreateErr::InvalidBaseAddr => {
+                Completion::generic_err(STS_INVAL_PRP_OFFSET)
+            }
+            QueueCreateErr::InvalidSize => Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                bits::STS_CREATE_IO_Q_INVAL_QSIZE,
+            ),
         }
     }
 }

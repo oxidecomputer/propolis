@@ -1,10 +1,10 @@
 use std::mem::size_of;
 
+use super::bits::{self, *};
 use crate::common::GuestAddr;
 use crate::{common::PAGE_SIZE, dispatch::DispCtx};
-use super::bits::{self, *};
 
-use super::{NvmeCtrl, NvmeError, cmds};
+use super::{cmds, NvmeCtrl, NvmeError};
 
 impl NvmeCtrl {
     /// Create a new I/O Completion Queue
@@ -16,7 +16,7 @@ impl NvmeCtrl {
         if cmd.intr_vector >= super::NVME_MSIX_COUNT {
             return cmds::Completion::specific_err(
                 StatusCodeType::CmdSpecific,
-                STS_CREATE_IO_Q_INVAL_INT_VEC
+                STS_CREATE_IO_Q_INVAL_INT_VEC,
             );
         }
 
@@ -31,14 +31,16 @@ impl NvmeCtrl {
             cmd.intr_vector,
             GuestAddr(cmd.prp),
             cmd.qsize as u32,
-            ctx
+            ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
-            Err(NvmeError::InvalidCompQueue(_) | NvmeError::CompQueueAlreadyExists(_)) =>
-                cmds::Completion::specific_err(
-                    StatusCodeType::CmdSpecific,
-                    STS_CREATE_IO_Q_INVAL_QID
-                ),
+            Err(
+                NvmeError::InvalidCompQueue(_)
+                | NvmeError::CompQueueAlreadyExists(_),
+            ) => cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_CREATE_IO_Q_INVAL_QID,
+            ),
             Err(NvmeError::QueueCreateErr(err)) => err.into(),
             Err(_) => cmds::Completion::generic_err(STS_INTERNAL_ERR),
         }
@@ -61,19 +63,22 @@ impl NvmeCtrl {
             cmd.cqid,
             GuestAddr(cmd.prp),
             cmd.qsize as u32,
-            ctx
+            ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
-            Err(NvmeError::InvalidCompQueue(_)) =>
+            Err(NvmeError::InvalidCompQueue(_)) => {
                 cmds::Completion::specific_err(
                     StatusCodeType::CmdSpecific,
-                    STS_CREATE_IO_Q_INVAL_CQ
+                    STS_CREATE_IO_Q_INVAL_CQ,
+                )
+            }
+            Err(
+                NvmeError::InvalidSubQueue(_)
+                | NvmeError::SubQueueAlreadyExists(_),
+            ) => cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_CREATE_IO_Q_INVAL_QID,
             ),
-            Err(NvmeError::InvalidSubQueue(_) | NvmeError::SubQueueAlreadyExists(_)) =>
-                cmds::Completion::specific_err(
-                    StatusCodeType::CmdSpecific,
-                    STS_CREATE_IO_Q_INVAL_QID
-                ),
             Err(NvmeError::QueueCreateErr(err)) => err.into(),
             Err(_) => cmds::Completion::generic_err(STS_INTERNAL_ERR),
         }
@@ -85,7 +90,10 @@ impl NvmeCtrl {
         ctx: &DispCtx,
     ) -> cmds::Completion {
         assert!((cmd.len as usize) < PAGE_SIZE);
-        let buf = cmd.data(ctx.mctx.memctx()).next().expect("missing prp entry for log page response");
+        let buf = cmd
+            .data(ctx.mctx.memctx())
+            .next()
+            .expect("missing prp entry for log page response");
         // TODO: actually keep a log that we can write back instead of all zeros
         assert!(ctx.mctx.memctx().write_byte(buf.0, 0, cmd.len as usize));
         cmds::Completion::success()
@@ -101,7 +109,10 @@ impl NvmeCtrl {
                 // TODO: We only support a single namespace currently
                 1 => {
                     assert!(size_of::<bits::IdentifyNamespace>() <= PAGE_SIZE);
-                    let buf = cmd.data(ctx.mctx.memctx()).next().expect("missing prp entry for ident response");
+                    let buf = cmd
+                        .data(ctx.mctx.memctx())
+                        .next()
+                        .expect("missing prp entry for ident response");
                     assert!(ctx.mctx.memctx().write(buf.0, &self.ns.ident));
                     cmds::Completion::success()
                 }
@@ -129,7 +140,10 @@ impl NvmeCtrl {
                     ..Default::default()
                 };
                 assert!(size_of::<bits::IdentifyController>() <= PAGE_SIZE);
-                let buf = cmd.data(ctx.mctx.memctx()).next().expect("missing prp entry for ident response");
+                let buf = cmd
+                    .data(ctx.mctx.memctx())
+                    .next()
+                    .expect("missing prp entry for ident response");
                 assert!(ctx.mctx.memctx().write(buf.0, &ident));
                 cmds::Completion::success()
             }
@@ -147,7 +161,7 @@ impl NvmeCtrl {
         if cmd.save {
             return cmds::Completion::specific_err(
                 StatusCodeType::CmdSpecific,
-                STS_SET_FEATURE_NOT_SAVEABLE
+                STS_SET_FEATURE_NOT_SAVEABLE,
             );
         }
         match cmd.fid {
@@ -162,30 +176,30 @@ impl NvmeCtrl {
                 let nsqa = 1;
                 // `ncqa`/`nsqa` are 0-based values so subtract 1
                 cmds::Completion::success_val((ncqa - 1) << 16 | (nsqa - 1))
-            },
-            cmds::FeatureIdent::Reserved |
-            cmds::FeatureIdent::Arbitration |
-            cmds::FeatureIdent::PowerManagement |
-            cmds::FeatureIdent::LbaRangeType |
-            cmds::FeatureIdent::TemperatureThreshold |
-            cmds::FeatureIdent::ErrorRecovery |
-            cmds::FeatureIdent::VolatileWriteCache |
-            cmds::FeatureIdent::InterruptCoalescing |
-            cmds::FeatureIdent::InterruptVectorConfiguration |
-            cmds::FeatureIdent::WriteAtomicityNormal |
-            cmds::FeatureIdent::AsynchronousEventConfiguration |
-            cmds::FeatureIdent::AutonomousPowerStateTransition |
-            cmds::FeatureIdent::HostMemoryBuffer |
-            cmds::FeatureIdent::Timestamp |
-            cmds::FeatureIdent::KeepAliveTimer |
-            cmds::FeatureIdent::HostControlledThermalManagement |
-            cmds::FeatureIdent::NonOperationPowerStateConfig |
-            cmds::FeatureIdent::Managment(_) |
-            cmds::FeatureIdent::SoftwareProgressMarker |
-            cmds::FeatureIdent::HostIdentifier |
-            cmds::FeatureIdent::ReservationNotificationMask |
-            cmds::FeatureIdent::ReservationPersistance |
-            cmds::FeatureIdent::Vendor(_) => {
+            }
+            cmds::FeatureIdent::Reserved
+            | cmds::FeatureIdent::Arbitration
+            | cmds::FeatureIdent::PowerManagement
+            | cmds::FeatureIdent::LbaRangeType
+            | cmds::FeatureIdent::TemperatureThreshold
+            | cmds::FeatureIdent::ErrorRecovery
+            | cmds::FeatureIdent::VolatileWriteCache
+            | cmds::FeatureIdent::InterruptCoalescing
+            | cmds::FeatureIdent::InterruptVectorConfiguration
+            | cmds::FeatureIdent::WriteAtomicityNormal
+            | cmds::FeatureIdent::AsynchronousEventConfiguration
+            | cmds::FeatureIdent::AutonomousPowerStateTransition
+            | cmds::FeatureIdent::HostMemoryBuffer
+            | cmds::FeatureIdent::Timestamp
+            | cmds::FeatureIdent::KeepAliveTimer
+            | cmds::FeatureIdent::HostControlledThermalManagement
+            | cmds::FeatureIdent::NonOperationPowerStateConfig
+            | cmds::FeatureIdent::Managment(_)
+            | cmds::FeatureIdent::SoftwareProgressMarker
+            | cmds::FeatureIdent::HostIdentifier
+            | cmds::FeatureIdent::ReservationNotificationMask
+            | cmds::FeatureIdent::ReservationPersistance
+            | cmds::FeatureIdent::Vendor(_) => {
                 cmds::Completion::generic_err(STS_INVAL_FIELD)
             }
         }

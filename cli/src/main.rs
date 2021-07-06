@@ -221,7 +221,8 @@ fn main() {
                     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, ns);
 
                     chipset.pci_attach(bdf.unwrap(), nvme);
-                    plain.start_dispatch(format!("bdev-{} thread", name), &disp);
+                    plain
+                        .start_dispatch(format!("bdev-{} thread", name), &disp);
                 }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);
