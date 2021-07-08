@@ -1,5 +1,5 @@
 use super::bits::{self, RawSubmission, StatusCodeType};
-use super::queue::QueueCreateErr;
+use super::queue::{QueueCreateErr, QueueId};
 use crate::common::*;
 use crate::hw::nvme::bits::STS_INVAL_PRP_OFFSET;
 use crate::vmm::MemCtx;
@@ -20,8 +20,6 @@ pub enum ParseErr {
     #[error("reserved FUSE value specified")]
     ReservedFuse,
 }
-
-type QueueId = u16;
 
 #[derive(Debug)]
 pub enum AdminCmd {

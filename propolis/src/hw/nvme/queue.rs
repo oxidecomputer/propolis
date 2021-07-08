@@ -5,8 +5,31 @@ use crate::hw::pci;
 
 use thiserror::Error;
 
-const MIN_SIZE: u32 = 2;
-const MAX_SIZE: u32 = 1 << 16;
+/// Each queue is identified by a 16-bit ID.
+///
+/// NVMe 1.0e Section 4.1.4 Queue Identifier
+pub type QueueId = u16;
+
+/// The minimum number of entries in either a Completion or Submission Queue.
+///
+/// Note: One entry will always be unavailable for use due to Head and Tail entry pointer defition.
+/// NVMe 1.0e Section 4.1.3 Queue Size
+const MIN_QUEUE_SIZE: u32 = 2;
+
+/// The maximum number of entries in either a Completion or Submission Queue.
+///
+/// NVMe 1.0e Section 4.1.3 Queue Size
+const MAX_QUEUE_SIZE: u32 = 1 << 16;
+
+/// The maximum number of entries in the Admin Completion or Admin Submission Queues.
+///
+/// NVMe 1.0e Section 4.1.3 Queue Size
+const MAX_ADMIN_QUEUE_SIZE: u32 = 1 << 12;
+
+/// The Admin Completion and Submission are defined to have ID 0.
+///
+/// NVMe 1.0e Section 1.6.1 Admin Queue
+pub const ADMIN_QUEUE_ID: QueueId = 0;
 
 struct QueueState {
     size: u32,
@@ -15,7 +38,7 @@ struct QueueState {
 }
 impl QueueState {
     fn new(size: u32, head: u16, tail: u16) -> Self {
-        assert!(size >= MIN_SIZE && size <= MAX_SIZE);
+        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
         Self { size, head, tail }
     }
     fn is_empty(&self) -> bool {
@@ -122,7 +145,7 @@ pub enum QueueCreateErr {
 }
 
 pub struct SubQueue {
-    id: u16,
+    id: QueueId,
     cqid: u16,
     state: QueueState,
     base: GuestAddr,
@@ -130,13 +153,13 @@ pub struct SubQueue {
 
 impl SubQueue {
     pub fn new(
-        id: u16,
+        id: QueueId,
         cqid: u16,
         size: u32,
         base: GuestAddr,
         ctx: &DispCtx,
     ) -> Result<Self, QueueCreateErr> {
-        Self::validate(base, size, ctx)?;
+        Self::validate(id, base, size, ctx)?;
         Ok(Self { id, cqid, state: QueueState::new(size, 0, 0), base })
     }
     pub fn notify_tail(&mut self, idx: u16) -> Result<(), &'static str> {
@@ -167,6 +190,7 @@ impl SubQueue {
         GuestAddr(res)
     }
     fn validate(
+        id: QueueId,
         base: GuestAddr,
         size: u32,
         ctx: &DispCtx,
@@ -174,7 +198,12 @@ impl SubQueue {
         if (base.0 & PAGE_OFFSET as u64) != 0 {
             return Err(QueueCreateErr::InvalidBaseAddr);
         }
-        if size < MIN_SIZE || size > MAX_SIZE {
+        let max = if id == ADMIN_QUEUE_ID {
+            MAX_ADMIN_QUEUE_SIZE
+        } else {
+            MAX_QUEUE_SIZE
+        };
+        if size < MIN_QUEUE_SIZE || size > max {
             return Err(QueueCreateErr::InvalidSize);
         }
         let queue_size =
@@ -193,16 +222,16 @@ pub struct CompQueue {
     phase: u16,
     hdl: pci::MsixHdl,
 }
-
 impl CompQueue {
     pub fn new(
+        id: QueueId,
         iv: u16,
         size: u32,
         base: GuestAddr,
         ctx: &DispCtx,
         hdl: pci::MsixHdl,
     ) -> Result<Self, QueueCreateErr> {
-        Self::validate(base, size, ctx)?;
+        Self::validate(id, base, size, ctx)?;
         Ok(Self {
             iv,
             state: QueueState::new(size, 0, 0),
@@ -243,6 +272,7 @@ impl CompQueue {
         GuestAddr(res)
     }
     fn validate(
+        id: QueueId,
         base: GuestAddr,
         size: u32,
         ctx: &DispCtx,
@@ -250,7 +280,12 @@ impl CompQueue {
         if (base.0 & PAGE_OFFSET as u64) != 0 {
             return Err(QueueCreateErr::InvalidBaseAddr);
         }
-        if size < MIN_SIZE || size > MAX_SIZE {
+        let max = if id == ADMIN_QUEUE_ID {
+            MAX_ADMIN_QUEUE_SIZE
+        } else {
+            MAX_QUEUE_SIZE
+        };
+        if size < MIN_QUEUE_SIZE || size > max {
             return Err(QueueCreateErr::InvalidSize);
         }
         let queue_size =

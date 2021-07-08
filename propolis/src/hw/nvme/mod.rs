@@ -18,7 +18,7 @@ mod ns;
 mod queue;
 
 use bits::*;
-use queue::{CompQueue, SubQueue};
+use queue::{CompQueue, SubQueue, QueueId};
 
 const NVME_MSIX_COUNT: u16 = 1024;
 
@@ -59,9 +59,6 @@ struct CtrlState {
 /// The max number of completion or submission queues we support.
 const MAX_NUM_QUEUES: usize = 16;
 
-/// The Admin Completion and Submission are always ID 0
-const ADMIN_QUEUE_ID: u16 = 0;
-
 struct NvmeCtrl {
     /// Internal NVMe Controller state
     ctrl: CtrlState,
@@ -88,15 +85,15 @@ impl NvmeCtrl {
     /// Admin queues are always created with `cqid`/`sqid` `0`.
     fn create_admin_queues(&mut self, ctx: &DispCtx) -> Result<(), NvmeError> {
         self.create_cq(
-            ADMIN_QUEUE_ID,
+            queue::ADMIN_QUEUE_ID,
             0, // Admin CQ uses interrupt vector 0
             GuestAddr(self.ctrl.admin_cq_base),
             self.ctrl.admin_cq_size as u32,
             ctx,
         )?;
         self.create_sq(
-            ADMIN_QUEUE_ID,
-            ADMIN_QUEUE_ID,
+            queue::ADMIN_QUEUE_ID,
+            queue::ADMIN_QUEUE_ID,
             GuestAddr(self.ctrl.admin_sq_base),
             self.ctrl.admin_sq_size as u32,
             ctx,
@@ -109,7 +106,7 @@ impl NvmeCtrl {
     /// The specified `cqid` must not already be in use by another completion queue.
     fn create_cq(
         &mut self,
-        cqid: u16,
+        cqid: QueueId,
         iv: u16,
         base: GuestAddr,
         size: u32,
@@ -126,7 +123,7 @@ impl NvmeCtrl {
             .as_ref()
             .ok_or(NvmeError::MsixHdlUnavailable)?
             .clone();
-        let cq = CompQueue::new(iv, size, base, ctx, msix_hdl)?;
+        let cq = CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?;
         self.cqs[cqid as usize] = Some(Arc::new(Mutex::new(cq)));
         Ok(())
     }
@@ -137,8 +134,8 @@ impl NvmeCtrl {
     /// The corresponding completion queue specified (`cqid`) must already exist.
     fn create_sq(
         &mut self,
-        sqid: u16,
-        cqid: u16,
+        sqid: QueueId,
+        cqid: QueueId,
         base: GuestAddr,
         size: u32,
         ctx: &DispCtx,
@@ -160,7 +157,7 @@ impl NvmeCtrl {
     }
 
     /// Returns a reference to the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
-    fn get_cq(&self, cqid: u16) -> Result<Arc<Mutex<CompQueue>>, NvmeError> {
+    fn get_cq(&self, cqid: QueueId) -> Result<Arc<Mutex<CompQueue>>, NvmeError> {
         debug_assert!((cqid as usize) < MAX_NUM_QUEUES);
         self.cqs[cqid as usize]
             .as_ref()
@@ -169,7 +166,7 @@ impl NvmeCtrl {
     }
 
     /// Returns a reference to the [`SubQueue`] which corresponds to the given submission queue id (`cqid`).
-    fn get_sq(&self, sqid: u16) -> Result<Arc<Mutex<SubQueue>>, NvmeError> {
+    fn get_sq(&self, sqid: QueueId) -> Result<Arc<Mutex<SubQueue>>, NvmeError> {
         debug_assert!((sqid as usize) < MAX_NUM_QUEUES);
         self.sqs[sqid as usize]
             .as_ref()
@@ -183,7 +180,7 @@ impl NvmeCtrl {
     ///
     /// Panics if the Admin Completion Queue hasn't been created yet.
     fn get_admin_cq(&self) -> Arc<Mutex<CompQueue>> {
-        self.get_cq(ADMIN_QUEUE_ID).unwrap()
+        self.get_cq(queue::ADMIN_QUEUE_ID).unwrap()
     }
 
     /// Returns a reference to the Admin [`SubQueue`].
@@ -192,7 +189,7 @@ impl NvmeCtrl {
     ///
     /// Panics if the Admin Submission Queue hasn't been created yet.
     fn get_admin_sq(&self) -> Arc<Mutex<SubQueue>> {
-        self.get_sq(ADMIN_QUEUE_ID).unwrap()
+        self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
     }
 
     /// Performs a Controller Reset.
