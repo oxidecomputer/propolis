@@ -126,7 +126,7 @@ impl NvmeCtrl {
             .as_ref()
             .ok_or(NvmeError::MsixHdlUnavailable)?
             .clone();
-        let cq = CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?;
+        let cq = CompQueue::new(iv, size, base, ctx, msix_hdl)?;
         self.cqs[cqid as usize] = Some(Arc::new(Mutex::new(cq)));
         Ok(())
     }

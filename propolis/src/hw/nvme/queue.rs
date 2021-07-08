@@ -1,7 +1,3 @@
-#![allow(unused)]
-
-use std::sync::Mutex;
-
 use super::bits::{self, RawCompletion, RawSubmission};
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -191,7 +187,6 @@ impl SubQueue {
 }
 
 pub struct CompQueue {
-    id: u16,
     iv: u16,
     state: QueueState,
     base: GuestAddr,
@@ -201,7 +196,6 @@ pub struct CompQueue {
 
 impl CompQueue {
     pub fn new(
-        id: u16,
         iv: u16,
         size: u32,
         base: GuestAddr,
@@ -210,7 +204,6 @@ impl CompQueue {
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(base, size, ctx)?;
         Ok(Self {
-            id,
             iv,
             state: QueueState::new(size, 0, 0),
             base,

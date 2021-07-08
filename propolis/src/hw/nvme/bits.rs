@@ -1,4 +1,4 @@
-#![allow(unused)]
+#![allow(dead_code)]
 
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
