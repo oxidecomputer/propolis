@@ -55,7 +55,7 @@ impl NvmeNs {
 
     /// Takes the given list of raw IO commands and queues up reads and writes to the underlying
     /// block device as appropriate.
-    pub fn queue_io_cmds(
+    pub(super) fn queue_io_cmds(
         &self,
         cmds: Vec<RawSubmission>,
         cq: Arc<Mutex<CompQueue>>,

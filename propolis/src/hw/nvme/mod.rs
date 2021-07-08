@@ -23,7 +23,7 @@ use queue::{CompQueue, SubQueue};
 const NVME_MSIX_COUNT: u16 = 1024;
 
 #[derive(Debug, Error)]
-pub enum NvmeError {
+enum NvmeError {
     #[error("the completion queue specified ({0}) is invalid")]
     InvalidCompQueue(u16),
 
