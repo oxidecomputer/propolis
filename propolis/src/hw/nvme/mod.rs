@@ -363,6 +363,8 @@ impl PciNvme {
             CtrlrReg::CtrlrCfg => {
                 let state = self.state.lock().unwrap();
                 let mut val = if state.ctrl.enabled { 1 } else { 0 };
+                // MPS = 0 (4k pages)
+                // CSS = 0 (NVM command set)
                 val |= 4 << 20 // IOCQES 23:20 - 2^4 = 16 bytes
                 | 6 << 16; // IOSQES 19:16 - 2^6 = 64 bytes
                 ro.write_u32(val);
