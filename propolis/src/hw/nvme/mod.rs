@@ -20,45 +20,83 @@ mod queue;
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
 
+/// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
 
+/// NVMe errors
 #[derive(Debug, Error)]
 enum NvmeError {
+    /// The specified Completion Queue ID did not correspond to a valid Completion Queue
     #[error("the completion queue specified ({0}) is invalid")]
-    InvalidCompQueue(u16),
+    InvalidCompQueue(QueueId),
 
+    /// The specified Submission Queue ID did not correspond to a valid Completion Queue
     #[error("the submission queue specified ({0}) is invalid")]
-    InvalidSubQueue(u16),
+    InvalidSubQueue(QueueId),
 
+    /// The specified Completion Queue ID already exists
     #[error("the completition queue specified ({0}) already exists")]
-    CompQueueAlreadyExists(u16),
+    CompQueueAlreadyExists(QueueId),
 
+    /// The specified Submission Queue ID already exists
     #[error("the submission queue specified ({0}) already exists")]
-    SubQueueAlreadyExists(u16),
+    SubQueueAlreadyExists(QueueId),
 
+    /// Failed to create Queue
     #[error("failed to create queue: {0}")]
     QueueCreateErr(#[from] queue::QueueCreateErr),
 
+    /// MSI-X Interrupt handle is unavailable
     #[error("the MSI-X interrupt handle is unavailable")]
     MsixHdlUnavailable,
 
+    /// Couln't parse command
     #[error("failed to parse command: {0}")]
     CommandParseErr(#[from] cmds::ParseErr),
 }
 
+/// Internal NVMe Controller State
 #[derive(Debug, Default)]
 struct CtrlState {
+    /// Whether the Controller is enabled
+    ///
+    /// CC.EN
+    /// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
     enabled: bool,
+
+    /// Whether the Controller is ready
+    ///
+    /// CSTS.RDY
+    /// See NVMe 1.0e Section 3.1.6 Offset 14h: CSTS - Controller Status
     ready: bool,
+
+    /// The 64-bit Guest address for the Admin Submission Queue
+    ///
+    /// ASQB
+    /// See NVMe 1.0e Section 3.1.8 Offset 28h: ASQ - Admin Submission Queue Base Address
     admin_sq_base: u64,
+
+    /// The 64-bit Guest address for the Admin Completion Queue
+    ///
+    /// ACQB
+    /// See NVMe 1.0e Section 3.1.9 Offset 30h: ACQ - Admin Completion Queue Base Address
     admin_cq_base: u64,
+
+    // Admin Submission Queue Size (ASQS)
+    ///
+    /// See NVMe 1.0e Section 3.1.7 Offset 24h: AQA - Admin Queue Attributes
     admin_sq_size: u16,
+
+    // Admin Completion Queue Size (ACQS)
+    ///
+    /// See NVMe 1.0e Section 3.1.7 Offset 24h: AQA - Admin Queue Attributes
     admin_cq_size: u16,
 }
 
 /// The max number of completion or submission queues we support.
 const MAX_NUM_QUEUES: usize = 16;
 
+/// NVMe Controller
 struct NvmeCtrl {
     /// Internal NVMe Controller state
     ctrl: CtrlState,
@@ -218,11 +256,14 @@ impl NvmeCtrl {
     }
 }
 
+/// NVMe over PCIe
 pub struct PciNvme {
+    /// NVMe Controller
     state: Mutex<NvmeCtrl>,
 }
 
 impl PciNvme {
+    /// Create a new pci-nvme device with the given values
     pub fn create(
         vendor: u16,
         device: u16,
@@ -260,6 +301,7 @@ impl PciNvme {
             .finish(Arc::new(nvme))
     }
 
+    /// Service a write to the NVMe Controller Configuration from the VM
     fn ctrlr_cfg_write(
         &self,
         val: u32,
@@ -288,6 +330,8 @@ impl PciNvme {
 
         Ok(())
     }
+
+    /// Service an NVMe register read from the VM
     fn reg_ctrl_read(
         &self,
         id: &CtrlrReg,
@@ -360,6 +404,8 @@ impl PciNvme {
 
         Ok(())
     }
+
+    /// Service an NVMe register write from the VM
     fn reg_ctrl_write(
         &self,
         id: &CtrlrReg,
@@ -461,6 +507,7 @@ impl PciNvme {
         Ok(())
     }
 
+    /// Process any new entries in the Admin Submission Queue
     fn process_admin_queue(
         &self,
         mut state: MutexGuard<NvmeCtrl>,
@@ -519,6 +566,7 @@ impl PciNvme {
         Ok(())
     }
 
+    /// Process any new entries in an I/O Submission Queue
     fn process_io_queue(
         &self,
         state: MutexGuard<NvmeCtrl>,
@@ -578,24 +626,68 @@ impl pci::Device for PciNvme {
     }
 }
 
+/// NVMe Controller Registers
+///
+/// See NVMe 1.0e Section 3.1 Register Definition
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum CtrlrReg {
-    CtrlrCaps,
-    Version,
-    IntrMaskSet,
-    IntrMaskClear,
-    CtrlrCfg,
-    CtrlrStatus,
-    AdminQueueAttr,
-    AdminSubQAddr,
-    AdminCompQAddr,
+    /// Reserved register.
     Reserved,
 
+    /// Controller Capabilities (CAP)
+    ///
+    /// See NVMe 1.0e Section 3.1.1 Offset 00h: CAP - Controller Capabilities
+    CtrlrCaps,
+    /// Version (VS)
+    ///
+    /// See NVMe 1.0e Section 3.1.2 Offset 08h: VS - Version
+    Version,
+    /// Interrupt Mask Set (INTMS)
+    ///
+    /// See NVMe 1.0e Section 3.1.3 Offset 0Ch: INTMS - Interrupt Mask Set
+    IntrMaskSet,
+    /// Interrupt Mask Clear (INTMC)
+    ///
+    /// See NVMe 1.0e Section 3.1.4 Offset 10h: INTMC - Interrupt Mask Clear
+    IntrMaskClear,
+    /// Controller Configuration (CC)
+    ///
+    /// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
+    CtrlrCfg,
+    /// Controller Status (CSTS)
+    ///
+    /// See NVMe 1.0e Section 3.1.6 Offset 1Ch: CSTS - Controller Status
+    CtrlrStatus,
+    /// Admin Queue Attributes (AQA)
+    ///
+    /// See NVMe 1.0e Section 3.1.7 Offset 24h: AQA - Admin Queue Attributes
+    AdminQueueAttr,
+    /// Admin Submission Queue Base Address (ASQ)
+    ///
+    /// See NVMe 1.0e Section 3.1.8 Offset 28h: ASQ - Admin Submission Queue Base Address
+    AdminSubQAddr,
+    /// Admin Completion Queue Base Address (ACQ)
+    ///
+    /// See NVMe 1.0e Section 3.1.9 Offset 30h: ACQ - Admin Completion Queue Base Addres
+    AdminCompQAddr,
+
+    /// Admin Submission Queue Tail Doorbell
+    ///
+    /// See NVMe 1.0e Section 3.1.10
     DoorBellAdminSQ,
+    /// Admin Completion Queue Head Doorbell
+    ///
+    /// See NVMe 1.0e Section 3.1.10
     DoorBellAdminCQ,
 
     // XXX: Can we coalesce these
+    /// Submission Queue 1 Tail Doorbell
+    ///
+    /// See NVMe 1.0e Section 3.1.10
     DoorBellIoSQ1,
+    /// Completion Queue 1 Head Doorbell
+    ///
+    /// See NVMe 1.0e Section 3.1.10
     DoorBellIoCQ1,
 }
 // XXX: single IO doorbell for prototype
