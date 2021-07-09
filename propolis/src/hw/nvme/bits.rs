@@ -24,7 +24,7 @@ pub struct RawSubmission {
     /// The namespace that this command applies to.
     pub nsid: u32,
 
-    /// Reserved
+    /// Reserved - Bytes 15:08
     pub rsvd: u64,
 
     /// Metadata Pointer (MPTR)
@@ -106,7 +106,7 @@ pub struct RawCompletion {
     /// A command specific value.
     pub dw0: u32,
 
-    /// Reserved
+    /// Reserved (DW1) - Bytes 07:04
     pub rsvd: u32,
 
     /// Submission Queue Head Pointer (SQHD)
@@ -414,7 +414,7 @@ pub struct PowerStateDescriptor {
     /// The value multiplied by 0.01 is equal to the power in Watts.
     pub mp: u16,
 
-    /// Reserved
+    /// Reserved - Bits 31:16
     pub _resv1: u16,
 
     /// Entry Latency (ENLAT)
@@ -431,31 +431,31 @@ pub struct PowerStateDescriptor {
     ///
     /// Must be less than the number of supported power states.
     ///
-    /// Top 4 bits are reserved.
+    /// Top 3 bits are reserved - Bits 103:101
     pub rrt: u8,
 
     /// Relative Read Latency (RRL)
     ///
     /// Must be less than the number of supported power states.
     ///
-    /// Top 4 bits are reserved.
+    /// Top 3 bits are reserved - Bits 111:109
     pub rrl: u8,
 
     /// Relative Write Throughput (RWT)
     ///
     /// Must be less than the number of supported power states.
     ///
-    /// Top 4 bits are reserved.
+    /// Top 3 bits are reserved - Bits 119:117
     pub rwt: u8,
 
     /// Relative Write Latency (RWL)
     ///
     /// Must be less than the number of supported power states.
     ///
-    /// Top 4 bits are reserved.
+    /// Top 3 bits are reserved - Bits 127:125
     pub rwl: u8,
 
-    /// Reserved
+    /// Reserved - Bits 255:128
     pub _resv: [u8; 16],
 }
 
@@ -509,7 +509,7 @@ pub struct IdentifyController {
     /// reported as a power of two (2^n). A value of 0h indicates no restrictions on
     /// transfer size. The restrictions includes interleaved metadata.
     pub mdts: u8,
-    /// Reserved
+    /// Reserved - Bytes 255:78
     pub _resv1: [u8; 178],
 
     // bytes 256-511 - Admin Command Set Attributes & Optional Controller Capabilities
@@ -586,7 +586,7 @@ pub struct IdentifyController {
     /// Controllers with proprietary extensions may support a larger size.
     /// Both the required and maximum CQES values are in bytes and reported as powers of two (2^n).
     pub cqes: u8,
-    /// Reserved
+    /// Reserved - Bytes 515:514
     pub _resv3: [u8; 2],
     /// Number of Namespaces (NN)
     ///
@@ -634,9 +634,9 @@ pub struct IdentifyController {
     /// See NVMe 1.0e Section 4.2, Figure 8 Command Format - Admin and NVM Vendor Specific Commands (Optional)
     /// See NVMe 1.0e Section 8.7 Standard Vendor Specific Command Format
     pub nvscc: u8,
-    /// Reserved
+    /// Reserved - Bytes 703:531
     pub _resv4: [u8; 173],
-    /// Reserved (I/O Command Set Attributes)
+    /// Reserved (I/O Command Set Attributes) - Bytes 2047:704
     pub _resv5: [u8; 1344],
 
     // bytes 2048-3071 - Power State Descriptors
@@ -793,13 +793,13 @@ pub struct IdentifyNamespace {
     ///     100b-111b = Reserved
     /// See NVMe 1.0e Section 8.3 End-to-end Data Protection (Optional)
     pub dps: u8,
-    /// Reserved
+    /// Reserved - Bytes 127:30
     pub _resv1: [u8; 98],
     /// LBA Formats (LBAF0-LBAF15)
     ///
     /// The list of supported LBA formats.
     pub lbaf: [LbaFormat; 16],
-    /// Reserved
+    /// Reserved - Bytes 383:192
     pub _resv2: [u8; 192],
     /// Vendor Specific (VS)
     pub vs: [u8; 3712],
