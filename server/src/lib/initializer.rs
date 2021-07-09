@@ -206,8 +206,9 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
         path: P,
         bdf: pci::Bdf,
+        readonly: bool,
     ) -> Result<(), Error> {
-        let plain = block::PlainBdev::create(path.as_ref())?;
+        let plain = block::PlainBdev::create(path.as_ref(), readonly)?;
 
         let vioblk = virtio::VirtioBlock::create(
             0x100,
