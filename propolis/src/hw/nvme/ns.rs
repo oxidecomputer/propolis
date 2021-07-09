@@ -11,14 +11,24 @@ use super::cmds::{Completion, ReadCmd, WriteCmd};
 use super::queue::{CompQueue, SubQueue};
 use super::NvmeError;
 
+/// Supported block size.
+/// TODO: Support more
 const BLOCK_SZ: u64 = 512;
 
+/// NVMe Namespace with underlying block device
 pub struct NvmeNs {
+    /// The Identify structure returned for Identify namespace commands
     pub ident: bits::IdentifyNamespace,
+
+    /// The underlying block device to service read/write requests
     bdev: Arc<dyn BlockDev<Request>>,
+
+    /// Whether the underlying block device readonly
+    is_ro: bool,
 }
 
 impl NvmeNs {
+    /// Create a new NVMe namespace with the given block device
     pub fn create(bdev: Arc<dyn BlockDev<Request>>) -> Self {
         let binfo = bdev.inquire();
         let total_bytes = binfo.total_size * binfo.block_size as u64;
@@ -45,7 +55,7 @@ impl NvmeNs {
         );
         ident.lbaf[0].lbads = BLOCK_SZ.trailing_zeros() as u8;
 
-        NvmeNs { ident, bdev }
+        NvmeNs { ident, bdev, is_ro: !binfo.writable }
     }
 
     /// Convert some number of logical blocks to bytes with the currently active LBA data size
@@ -65,6 +75,24 @@ impl NvmeNs {
         for sub in cmds {
             let cmd = NvmCmd::parse(sub)?;
             match cmd {
+                NvmCmd::Write(_) if self.is_ro => {
+                    let mut cq = cq.lock().unwrap();
+                    let sq = sq.lock().unwrap();
+                    let comp = Completion::specific_err(
+                        bits::StatusCodeType::CmdSpecific,
+                        bits::STS_WRITE_READ_ONLY_RANGE,
+                    );
+                    let completion = RawCompletion {
+                        dw0: comp.dw0,
+                        rsvd: 0,
+                        sqhd: sq.head(),
+                        sqid: sq.id(),
+                        cid: sub.cid(),
+                        status_phase: comp.status | cq.phase(),
+                    };
+
+                    cq.push(completion, ctx);
+                }
                 NvmCmd::Write(cmd) => {
                     self.write_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
                 }
@@ -100,6 +128,7 @@ impl NvmeNs {
         Ok(())
     }
 
+    /// Enqueues a read to the underlying block device
     fn read_cmd(
         &self,
         cid: u16,
@@ -112,9 +141,18 @@ impl NvmeNs {
         let size = self.nlb_to_size(cmd.nlb as usize);
         // TODO: handles if it gets unmapped?
         let bufs = cmd.data(size as u64, ctx.mctx.memctx()).collect();
-        self.bdev.enqueue(Request::new_read(off, size, bufs, cid, cq, sq));
+        self.bdev.enqueue(Request {
+            op: BlockOp::Read,
+            off,
+            xfer_left: size,
+            bufs,
+            cid,
+            cq,
+            sq,
+        });
     }
 
+    /// Enqueues a write to the underlying block device
     fn write_cmd(
         &self,
         cid: u16,
@@ -127,42 +165,40 @@ impl NvmeNs {
         let size = self.nlb_to_size(cmd.nlb as usize);
         // TODO: handles if it gets unmapped?
         let bufs = cmd.data(size as u64, ctx.mctx.memctx()).collect();
-        self.bdev.enqueue(Request::new_write(off, size, bufs, cid, cq, sq));
+        self.bdev.enqueue(Request {
+            op: BlockOp::Write,
+            off,
+            xfer_left: size,
+            bufs,
+            cid,
+            cq,
+            sq,
+        });
     }
 }
 
+/// I/O Request to block device
 pub struct Request {
+    /// The operation type
     op: BlockOp,
+
+    /// The offset at which to begin reading/writing
     off: usize,
+
+    /// How many bytes to read/write
     xfer_left: usize,
+
+    /// The buffers to read/write from/to
     bufs: VecDeque<common::GuestRegion>,
+
+    /// The associated command id
     cid: u16,
+
+    /// The associated Completion Queue
     cq: Arc<Mutex<CompQueue>>,
+
+    /// The associated Submission Queue
     sq: Arc<Mutex<SubQueue>>,
-}
-
-impl Request {
-    fn new_read(
-        off: usize,
-        size: usize,
-        bufs: VecDeque<common::GuestRegion>,
-        cid: u16,
-        cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>,
-    ) -> Self {
-        Self { op: BlockOp::Read, off, xfer_left: size, bufs, cid, cq, sq }
-    }
-
-    fn new_write(
-        off: usize,
-        size: usize,
-        bufs: VecDeque<common::GuestRegion>,
-        cid: u16,
-        cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>,
-    ) -> Self {
-        Self { op: BlockOp::Write, off, xfer_left: size, bufs, cid, cq, sq }
-    }
 }
 
 impl BlockReq for Request {
