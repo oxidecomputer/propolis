@@ -193,19 +193,9 @@ impl NvmeCtrl {
             | cmds::FeatureIdent::VolatileWriteCache
             | cmds::FeatureIdent::InterruptCoalescing
             | cmds::FeatureIdent::InterruptVectorConfiguration
-            | cmds::FeatureIdent::WriteAtomicityNormal
+            | cmds::FeatureIdent::WriteAtomicity
             | cmds::FeatureIdent::AsynchronousEventConfiguration
-            | cmds::FeatureIdent::AutonomousPowerStateTransition
-            | cmds::FeatureIdent::HostMemoryBuffer
-            | cmds::FeatureIdent::Timestamp
-            | cmds::FeatureIdent::KeepAliveTimer
-            | cmds::FeatureIdent::HostControlledThermalManagement
-            | cmds::FeatureIdent::NonOperationPowerStateConfig
-            | cmds::FeatureIdent::Managment(_)
             | cmds::FeatureIdent::SoftwareProgressMarker
-            | cmds::FeatureIdent::HostIdentifier
-            | cmds::FeatureIdent::ReservationNotificationMask
-            | cmds::FeatureIdent::ReservationPersistance
             | cmds::FeatureIdent::Vendor(_) => {
                 cmds::Completion::generic_err(STS_INVAL_FIELD)
             }

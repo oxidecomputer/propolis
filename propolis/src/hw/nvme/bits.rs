@@ -231,7 +231,6 @@ pub const NVM_OPC_WRITE: u8 = 0x01;
 /// Read Command Opcode
 pub const NVM_OPC_READ: u8 = 0x02;
 
-
 // Generic Command Status values
 // See NVMe 1.0e Section 4.5.1.2.1, Figure 17 Status Code - Generic Command Status Values
 
@@ -329,7 +328,6 @@ pub const STS_WRITE_READ_ONLY_RANGE: u8 = 0x82;
 
 // Feature identifiers
 // See NVMe 1.0e Section 5.12.1, Figure 73 Set Features - Feature Identifiers
-
 
 /// Arbitration
 ///
@@ -470,7 +468,6 @@ pub struct PowerStateDescriptor {
 #[repr(C)]
 pub struct IdentifyController {
     // bytes 0-255 - Controller Capabilities and Features
-
     /// PCI Vendor ID (VID)
     ///
     /// Same value reported in ID register.
@@ -516,7 +513,6 @@ pub struct IdentifyController {
     pub _resv1: [u8; 178],
 
     // bytes 256-511 - Admin Command Set Attributes & Optional Controller Capabilities
-
     /// Optional Admin Command Support (OACS)
     ///
     /// Bits 15:3 are reserved.
@@ -570,7 +566,6 @@ pub struct IdentifyController {
     pub _resv2: [u8; 246],
 
     // bytes 512-2047 - NVM Command Set Attributes
-
     /// Submission Queue Entry Size (SQES)
     ///
     /// Defines the required and maximum Submission Queue entry sizes when using the NVM Command Set.
@@ -645,12 +640,10 @@ pub struct IdentifyController {
     pub _resv5: [u8; 1344],
 
     // bytes 2048-3071 - Power State Descriptors
-
     /// Power State Descriptors (PSD0-PSD31)
     pub psd: [PowerStateDescriptor; 32],
 
     // bytes 3072-4095 - Vendor Specific
-
     /// Vendor Specific (VS)
     pub vs: [u8; 1024],
 }

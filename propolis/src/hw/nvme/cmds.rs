@@ -5,39 +5,48 @@ use crate::vmm::MemCtx;
 
 use thiserror::Error;
 
+/// Errors that may be encounted during command parsing.
 #[derive(Debug, Error)]
 pub enum ParseErr {
-    #[error("SGLs not supported")]
-    SGL,
-
+    /// Encounted a fused operation which we don't currently support.
     #[error("Fused ops not supported")]
     Fused,
 
-    #[error("reserved PSDT value specified")]
-    ReservedPsdt,
-
+    /// An invalid value was specified in the FUSE bits of `CDW0`.
     #[error("reserved FUSE value specified")]
     ReservedFuse,
 }
 
+/// A parsed Admin Command
 #[derive(Debug)]
 pub enum AdminCmd {
+    /// Delete the specified I/O Submission Queue
     DeleteIOSubQ(QueueId),
+    /// Create the specified I/O Submission Queue
     CreateIOSubQ(CreateIOSQCmd),
+    /// Get Log Page Command
     GetLogPage(GetLogPageCmd),
+    /// Delete the specified I/O Completion Queue
     DeleteIOCompQ(QueueId),
+    /// Create the specified I/O Completion Queue
     CreateIOCompQ(CreateIOCQCmd),
+    /// Identify Command
     Identify(IdentifyCmd),
+    /// Abort Command
     Abort,
+    /// Set Features Command
     SetFeatures(SetFeaturesCmd),
+    /// Get Features Command
     GetFeatures,
+    /// Asynchronous Event Request Command
     AsyncEventReq,
+    /// An unknown admin command
     Unknown(RawSubmission),
 }
+
 impl AdminCmd {
-    pub fn parse(
-        raw: RawSubmission,
-    ) -> Result<(Self, SubmissionEntry), ParseErr> {
+    /// Triy to parse an `AdminCmd` out of a raw Submission Entry.
+    pub fn parse(raw: RawSubmission) -> Result<Self, ParseErr> {
         let cmd = match raw.opcode() {
             bits::ADMIN_OPC_DELETE_IO_SQ => {
                 AdminCmd::DeleteIOSubQ(raw.cdw10 as u16)
@@ -52,7 +61,7 @@ impl AdminCmd {
                 };
                 AdminCmd::CreateIOSubQ(CreateIOSQCmd {
                     prp: raw.prp1,
-                    qsize: (raw.cdw10 >> 16) as u16,
+                    qsize: (raw.cdw10 >> 16) as u16 + 1, // Convert from 0's based
                     qid: raw.cdw10 as u16,
                     cqid: (raw.cdw11 >> 16) as u16,
                     queue_prio,
@@ -62,14 +71,9 @@ impl AdminCmd {
             bits::ADMIN_OPC_GET_LOG_PAGE => {
                 AdminCmd::GetLogPage(GetLogPageCmd {
                     nsid: raw.nsid,
-                    len: (((raw.cdw11 as u16) as u32) << 16
-                        | (raw.cdw10 >> 16))
-                        * 4,
-                    retain_async_ev: (raw.cdw10 & (1 << 15) != 0),
-                    log_specific_field: (raw.cdw10 >> 8) as u8 & 0b1111,
+                    // Convert from 0's based dword
+                    len: (((raw.cdw10 & 0xFFF) >> 16) + 1) * 4,
                     log_page_ident: LogPageIdent::from(raw.cdw10 as u8),
-                    log_page_offset: raw.cdw12 as u64
-                        | (raw.cdw13 as u64) << 32,
                     prp1: raw.prp1,
                     prp2: raw.prp2,
                 })
@@ -80,7 +84,7 @@ impl AdminCmd {
             bits::ADMIN_OPC_CREATE_IO_CQ => {
                 AdminCmd::CreateIOCompQ(CreateIOCQCmd {
                     prp: raw.prp1,
-                    qsize: (raw.cdw10 >> 16) as u16,
+                    qsize: (raw.cdw10 >> 16) as u16 + 1, // Convert from 0's based
                     qid: raw.cdw10 as u16,
                     intr_vector: (raw.cdw11 >> 16) as u16,
                     intr_enable: (raw.cdw11 & 0b10) != 0,
@@ -88,8 +92,8 @@ impl AdminCmd {
                 })
             }
             bits::ADMIN_OPC_IDENTIFY => AdminCmd::Identify(IdentifyCmd {
-                cns: raw.cdw10 as u8,
-                cntid: (raw.cdw10 >> 16) as u16,
+                // Only the last bit is used for NVMe 1.0e
+                cns: raw.cdw10 as u8 & 0b1,
                 nsid: raw.nsid,
                 prp1: raw.prp1,
                 prp2: raw.prp2,
@@ -104,86 +108,161 @@ impl AdminCmd {
             bits::ADMIN_OPC_ASYNC_EVENT_REQ => AdminCmd::AsyncEventReq,
             _ => AdminCmd::Unknown(raw),
         };
-        let _psdt = match (raw.cdw0 >> 14) & 0b11 {
-            0b00 => Ok(()),             // PRP
-            0b01 => Err(ParseErr::SGL), // SGL buffer
-            0b10 => Err(ParseErr::SGL), // SGL segment
-            _ => Err(ParseErr::ReservedPsdt),
-        }?;
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
             0b00 => Ok(()),               // Normal (non-fused) operation
             0b01 => Err(ParseErr::Fused), // First fused op
             0b10 => Err(ParseErr::Fused), // Second fused op
             _ => Err(ParseErr::ReservedFuse),
         }?;
-        Ok((cmd, SubmissionEntry::new(&raw)))
+        Ok(cmd)
     }
 }
 
-pub struct SubmissionEntry {
-    pub cid: u16,
-    pub prp1: u64,
-    pub prp2: u64,
-}
-impl SubmissionEntry {
-    fn new(raw: &RawSubmission) -> Self {
-        Self { cid: raw.cid(), prp1: raw.prp1, prp2: raw.prp2 }
-    }
-}
-
+/// Create I/O Completion Queue Command Parameters
 #[derive(Debug)]
 pub struct CreateIOCQCmd {
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// If the queue is physically contiguous, then this is the 64-bit base address
+    /// of the Completion Queue in guest memory. Otherwise it a PRP List pointer of
+    /// the pages that constitute the Completion Queue.
     pub prp: u64,
+
+    /// Queue Size (QSIZE)
+    ///
+    /// The size of the Completion Queue to be created.
+    /// See NVMe 1.0e Section 4.1.3 Queue Size
     pub qsize: u16,
+
+    /// Queue Identifier (QID)
+    ///
+    /// The identifier to assign to the Completion Queue to be created.
+    /// See NVMe 1.0e Section 4.1.4 Queue Identifier
     pub qid: QueueId,
+
+    /// Interrupt Vector (IV)
+    ///
+    /// The Interrupt Vector used to signal to the host (VM) upon pushing
+    /// entries onto the Completion Queue.
     pub intr_vector: u16,
+
+    /// Interrupts Enabled (IEN)
+    ///
+    /// Whether or not interrupts are enabled for this Completion Queue.
     pub intr_enable: bool,
-    pub phys_contig: bool,
-}
-#[derive(Debug)]
-pub struct CreateIOSQCmd {
-    pub prp: u64,
-    pub qsize: u16,
-    pub qid: QueueId,
-    pub cqid: QueueId,
-    pub queue_prio: QueuePriority,
+
+    /// Physically Contiguous (PC)
+    ///
+    /// Whether or not the Completion Queue is physically contiguous in memory.
     pub phys_contig: bool,
 }
 
+/// Create I/O Submission Queue Command Parameters
+#[derive(Debug)]
+pub struct CreateIOSQCmd {
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// If the queue is physically contiguous, then this is the 64-bit base address
+    /// of the Submission Queue in guest memory. Otherwise it a PRP List pointer of
+    /// the pages that constitute the Completion Queue.
+    pub prp: u64,
+
+    /// Queue Size (QSIZE)
+    ///
+    /// The size of the Completion Queue to be created.
+    /// See NVMe 1.0e Section 4.1.3 Queue Size
+    pub qsize: u16,
+
+    /// Queue Identifier (QID)
+    ///
+    /// The identifier to assign to the Completion Queue to be created.
+    /// See NVMe 1.0e Section 4.1.4 Queue Identifier
+    pub qid: QueueId,
+
+    /// Completion Queue Identifier (CQID)
+    ///
+    /// The ID of the corresponding Completion Queue for this Submission Queue.
+    pub cqid: QueueId,
+
+    /// Queue Priority (QPRIO)
+    ///
+    /// The priority service class for commands within this Submission Queue.
+    /// Only used when the weighted round robin with an urgent priority service
+    /// class is the arbitration mechanism selected.
+    /// See NVMe 1.0e Section 4.7 Command Arbitration
+    pub queue_prio: QueuePriority,
+
+    /// Physically Contiguous (PC)
+    ///
+    /// Whether or not the Submission Queue is physically contiguous in memory.
+    pub phys_contig: bool,
+}
+
+/// Priority Levels
 #[derive(Debug)]
 pub enum QueuePriority {
+    /// Highest strict priority class (excluding Commands submitted to Admin Submission Queue)
     Urgent,
+    /// Lowest strict priority class: Level - High
     High,
+    /// Lowest strict priority class: Level - Medium
     Medium,
+    /// Lowest strict priority class: Level - Low
     Low,
 }
 
+/// Get Log Page Command Parameters
 #[derive(Debug)]
 pub struct GetLogPageCmd {
+    /// Namespace Identifier (NSID)
+    ///
+    /// The namespace that this command applies to.
     pub nsid: u32,
+
+    /// The number of bytes to return.
     pub len: u32,
-    pub retain_async_ev: bool,
-    pub log_specific_field: u8,
+
+    /// Log Page Identifier (LID)
+    ///
+    /// The ID of the log page to retrieve.
     pub log_page_ident: LogPageIdent,
-    pub log_page_offset: u64,
+
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// The first PRP entry specifying the start of the data buffer.
     prp1: u64,
+
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// If PRP1 specifies enough space, then PRP2 is reserved. Otherwise
+    /// PRP2 specifies the second page and remainder of the data. It may
+    /// not be a PRP List.
     prp2: u64,
 }
 
 impl GetLogPageCmd {
+    /// Returns an Iterator that yields [`GuestRegion`]'s to write the log page data to.
     pub fn data<'a>(&'a self, mem: MemCtx<'a>) -> PrpIter<'a> {
         PrpIter::new(PAGE_SIZE as u64, self.prp1, self.prp2, mem)
     }
 }
 
+/// The type of Log pages that may be retrieved with the Get Log Page command.
+///
+/// See NVMe 1.0e Section 5.10.1, Figure 58 Get Log Page - Log Page Identifiers
 #[derive(Debug)]
 pub enum LogPageIdent {
+    /// Reserved Log Page
     Reserved,
+    /// Error Information Log Page
     Error,
+    /// SMART / Health Information Log Page
     Smart,
+    /// Firmware Slot Information Log PAge
     Firmware,
-    Reservation,
-    SanitizeStatus,
+    /// I/O Command Set Specific Log Page
+    IOSpecifc(u8),
+    /// Vendor Specific Log Page
     Vendor(u8),
 }
 
@@ -194,67 +273,122 @@ impl From<u8> for LogPageIdent {
             1 => LogPageIdent::Error,
             2 => LogPageIdent::Smart,
             3 => LogPageIdent::Firmware,
-            4..=8 => LogPageIdent::Reserved,
-            9..=0x6F => LogPageIdent::Reserved,
-            0x70 => LogPageIdent::Reserved,
-            0x71..=0x7F => LogPageIdent::Reserved,
-            0x80 => LogPageIdent::Reservation,
-            0x81 => LogPageIdent::SanitizeStatus,
-            0x82..=0xBF => LogPageIdent::Reserved,
+            0x04..=0x7F => LogPageIdent::Reserved,
+            0x80..=0xBF => LogPageIdent::IOSpecifc(ident),
             0xC0..=0xFF => LogPageIdent::Vendor(ident),
         }
     }
 }
 
+/// Identify Command Parameters
 #[derive(Debug)]
 pub struct IdentifyCmd {
+    /// The type of Identify data structure to return
     pub cns: u8,
-    pub cntid: u16,
+
+    /// Namespace Identifier (NSID)
+    ///
+    /// The namespace that this command applies to.
     pub nsid: u32,
+
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// The first PRP entry specifying the start of the data buffer.
     prp1: u64,
+
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// If PRP1 specifies enough space, then PRP2 is reserved. Otherwise
+    /// PRP2 specifies the second page and remainder of the data. It may
+    /// not be a PRP List.
     prp2: u64,
 }
+
 impl IdentifyCmd {
+    /// Returns an Iterator that yields [`GuestRegion`]'s to write the identify structure data to.
     pub fn data<'a>(&'a self, mem: MemCtx<'a>) -> PrpIter<'a> {
         PrpIter::new(PAGE_SIZE as u64, self.prp1, self.prp2, mem)
     }
 }
 
+/// Set Features Command Parameters
 #[derive(Debug)]
 pub struct SetFeaturesCmd {
+    /// Feature Identifier (FID)
+    ///
+    /// The feature that attributes are being specified for.
     pub fid: FeatureIdent,
 }
 
+/// Feature Identifiers
+///
+/// See NVMe 1.0e Section 5.12.1, Figure 73 Set Features - Feature Identifiers
+/// TODO: Fill out parameters for rest of variants
 #[derive(Debug)]
 pub enum FeatureIdent {
+    /// Reserved or unknown feature identifier
     Reserved,
+    /// Arbitration
+    ///
+    /// Controls command arbitration.
+    /// See NVMe 1.0e Section 4.7 Command Arbitration
     Arbitration,
+    /// Power Management
+    ///
+    /// Allows configuring power state.
     PowerManagement,
+    /// LBA Range Type
+    ///
+    /// Indicates the type and attribtues of LBA ranges that part of the specified namespace.
     LbaRangeType,
+    /// Temperature Threshold
+    ///
+    /// Indicates the threshold for the temperature of the overall device (controller and NVM) in Kelvin.
     TemperatureThreshold,
+    /// Error Recovery
+    ///
+    /// Controls error recovery attributes.
     ErrorRecovery,
+    /// Volatile Write Cache
+    ///
+    /// Control the volatile write cache, if present.
     VolatileWriteCache,
+    /// Number of Queues
+    ///
+    /// Indicates the number of queues requested to the controller.
+    /// Only allowed during initialization and canot change between resets.
     NumberOfQueues {
-        /// Number of I/O Completion Queues Requested
+        /// Number of I/O Completion Queues Requested (NCQR)
+        ///
+        /// Does not include Admin Completion Queue. Minimum of 2 shall be requested.
         ncqr: u16,
         /// Number of I/O Submission Queues Requested
+        ///
+        /// Does not include Admin Submission Queue. Minimum of 2 shall be requested.
         nsqr: u16,
     },
+    /// Interrupt Coalescing
+    ///
+    /// Allows configuring interrupt coalescing settings.
     InterruptCoalescing,
+    /// Interrupt Vector Configuration
+    ///
+    /// Allows confuring settings specific to a particular interrupt vector.
     InterruptVectorConfiguration,
-    WriteAtomicityNormal,
+    /// Write Atomicity
+    ///
+    /// Control write atomicity.
+    WriteAtomicity,
+    /// Asynchronous Event Configuration
+    ///
+    /// Controls the events that trigger an asynchronous event notification.
     AsynchronousEventConfiguration,
-    AutonomousPowerStateTransition,
-    HostMemoryBuffer,
-    Timestamp,
-    KeepAliveTimer,
-    HostControlledThermalManagement,
-    NonOperationPowerStateConfig,
-    Managment(u8),
+    /// Software Progress Marker
+    ///
+    /// This feature is persistnt across power states.
+    /// See NVMe 1.0e Section 7.6.1.1 Software Progress Marker
     SoftwareProgressMarker,
-    HostIdentifier,
-    ReservationNotificationMask,
-    ReservationPersistance,
+    /// Vendor specific feature.
     Vendor(u8),
 }
 
@@ -270,49 +404,38 @@ impl From<(u8, u32)> for FeatureIdent {
             5 => ErrorRecovery,
             6 => VolatileWriteCache,
             7 => NumberOfQueues {
-                ncqr: (cdw11 >> 16) as u16,
-                nsqr: cdw11 as u16,
+                // Convert from 0's based values
+                ncqr: (cdw11 >> 16) as u16 + 1,
+                nsqr: cdw11 as u16 + 1,
             },
             8 => InterruptCoalescing,
             9 => InterruptVectorConfiguration,
-            0xA => WriteAtomicityNormal,
+            0xA => WriteAtomicity,
             0xB => AsynchronousEventConfiguration,
-            0xC => AutonomousPowerStateTransition,
-            0xD => HostMemoryBuffer,
-            0xE => Timestamp,
-            0xF => KeepAliveTimer,
-            0x10 => HostControlledThermalManagement,
-            0x11 => NonOperationPowerStateConfig,
-            0x12..=0x77 => Reserved,
-            0x78..=0x7F => Managment(id),
+            0xC..=0x7F => Reserved,
             0x80 => SoftwareProgressMarker,
-            0x81 => HostIdentifier,
-            0x82 => ReservationNotificationMask,
-            0x83 => ReservationPersistance,
-            0x84..=0xBF => Reserved,
+            0x81..=0xBF => Reserved,
             0xC0..=0xFF => Vendor(id),
         }
     }
 }
 
+/// A parsed NVM Command
 #[derive(Debug)]
 pub enum NvmCmd {
+    /// Commit data and metadata
     Flush,
+    /// Write data and metadata
     Write(WriteCmd),
+    /// Read data and metadata
     Read(ReadCmd),
+    /// An unknown NVM command
     Unknown(RawSubmission),
 }
 
 impl NvmCmd {
-    pub fn parse(
-        raw: RawSubmission,
-    ) -> Result<(Self, SubmissionEntry), ParseErr> {
-        let _psdt = match (raw.cdw0 >> 14) & 0b11 {
-            0b00 => Ok(()),             // PRP
-            0b01 => Err(ParseErr::SGL), // SGL buffer
-            0b10 => Err(ParseErr::SGL), // SGL segment
-            _ => Err(ParseErr::ReservedPsdt),
-        }?;
+    /// Triy to parse an `NvmCmd` out of a raw Submission Entry.
+    pub fn parse(raw: RawSubmission) -> Result<Self, ParseErr> {
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
             0b00 => Ok(()),               // Normal (non-fused) operation
             0b01 => Err(ParseErr::Fused), // First fused op
@@ -323,50 +446,89 @@ impl NvmCmd {
             bits::NVM_OPC_FLUSH => NvmCmd::Flush,
             bits::NVM_OPC_WRITE => NvmCmd::Write(WriteCmd {
                 slba: (raw.cdw11 as u64) << 32 | raw.cdw10 as u64,
-                nlb: raw.cdw12 as u16,
+                // Convert from 0's based value
+                nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
             bits::NVM_OPC_READ => NvmCmd::Read(ReadCmd {
                 slba: (raw.cdw11 as u64) << 32 | raw.cdw10 as u64,
-                nlb: raw.cdw12 as u16,
+                // Convert from 0's based value
+                nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
             _ => NvmCmd::Unknown(raw),
         };
-        Ok((cmd, SubmissionEntry::new(&raw)))
+        Ok(cmd)
     }
 }
 
+/// Write Command Parameters
 #[derive(Debug)]
 pub struct WriteCmd {
+    /// Starting LBA (SLBA)
+    ///
+    /// 64-bit base address of the first logical block to be written.
     pub slba: u64,
+
+    /// Number of Logical Blocks (NLB)
+    ///
+    /// The number of logical blocks to be written.
     pub nlb: u16,
+
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// The first PRP entry specifying the start of the data buffer to be transferred from.
     prp1: u64,
+
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// If PRP1 specifies enough space, then PRP2 is reserved. Otherwise
+    /// PRP2 may either be another PRP entry or a PRP list as necessary.
     prp2: u64,
 }
 
 impl WriteCmd {
+    /// Returns an Iterator that yields [`GuestRegion`]'s to read the data to tranfer out.
     pub fn data<'a>(&'a self, sz: u64, mem: MemCtx<'a>) -> PrpIter<'a> {
         PrpIter::new(sz, self.prp1, self.prp2, mem)
     }
 }
 
+/// Read Command Parameters
 #[derive(Debug)]
 pub struct ReadCmd {
+    /// Starting LBA (SLBA)
+    ///
+    /// 64-bit base address of the first logical block to be read.
     pub slba: u64,
+
+    /// Number of Logical Blocks (NLB)
+    ///
+    /// The number of logical blocks to be read.
     pub nlb: u16,
+
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// The first PRP entry specifying the start of the data buffer to be transferred to.
     prp1: u64,
+
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// If PRP1 specifies enough space, then PRP2 is reserved. Otherwise
+    /// PRP2 may either be another PRP entry or a PRP list as necessary.
     prp2: u64,
 }
 
 impl ReadCmd {
+    /// Returns an Iterator that yields [`GuestRegion`]'s to write the data to transfer in.
     pub fn data<'a>(&'a self, sz: u64, mem: MemCtx<'a>) -> PrpIter<'a> {
         PrpIter::new(sz, self.prp1, self.prp2, mem)
     }
 }
 
+/// Indicates the possible states of a [`PrpIter`].
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 enum PrpNext {
     Prp1,
@@ -375,18 +537,44 @@ enum PrpNext {
     Done,
 }
 
-// 512 64-bit entries in a PRP list
+/// The max number of entries in a single Physical Region Page (PRP) List
+///
+/// 512 64-bit entries in a PRP list
+/// Note this relies on a Page Size of 4k (2^12).
+/// More generally: 2^(lg(PAGE_SIZE)-1-2)
+///     - 2 because PRP entries are expected to be 32-bit aligned.
+///
+/// See NVMe 1.0e Section 4.3 Physical Region Page Entry and List
 const PRP_LIST_MAX: u16 = 511;
 
+/// A helper object for iterator over a single, 2 or a list of PRPs.
 pub struct PrpIter<'a> {
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// The first PRP entry specifying the start of the data buffer or
     prp1: u64,
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// The second PRP entry or a PRP list pointer or reserved if PRP1 was enough.
     prp2: u64,
+
+    /// Handle to Guest's [`MemCtx`]
     mem: MemCtx<'a>,
+
+    /// How many bytes remaining to be read/written
     remain: u64,
+
+    /// The next PRP state
     next: PrpNext,
+
+    /// Any error we might've encountered
     error: Option<&'static str>,
 }
+
 impl<'a> PrpIter<'a> {
+    /// Create a new `PrpIter` object.
+    ///
+    /// See corresponding `data` methods on any relevant commands.
     pub fn new(size: u64, prp1: u64, prp2: u64, mem: MemCtx<'a>) -> Self {
         // prp1 and prp2 are expected to be 32-bit aligned
         assert!(prp1 & 0b11 == 0);
@@ -396,6 +584,7 @@ impl<'a> PrpIter<'a> {
 }
 
 impl PrpIter<'_> {
+    /// Grab the next memory region to read/write
     fn get_next(&mut self) -> Result<GuestRegion, &'static str> {
         assert!(self.remain > 0);
         assert!(self.error.is_none());
@@ -472,6 +661,7 @@ impl PrpIter<'_> {
         Ok(GuestRegion(GuestAddr(addr), size as usize))
     }
 }
+
 impl Iterator for PrpIter<'_> {
     type Item = GuestRegion;
 
@@ -489,26 +679,20 @@ impl Iterator for PrpIter<'_> {
     }
 }
 
+/// A Command Completion result
 #[derive(Debug)]
 pub struct Completion {
     /// Status Code Type and Status Code
     pub status: u16,
-    pub cdw0: u32,
+    /// Command Specific Result (DW0)
+    pub dw0: u32,
 }
 
 impl Completion {
+    /// Create a successful Completion result
     pub fn success() -> Self {
         Self {
-            cdw0: 0,
-            status: Self::status_field(
-                StatusCodeType::Generic,
-                bits::STS_SUCCESS,
-            ),
-        }
-    }
-    pub fn success_val(cdw0: u32) -> Self {
-        Self {
-            cdw0,
+            dw0: 0,
             status: Self::status_field(
                 StatusCodeType::Generic,
                 bits::STS_SUCCESS,
@@ -516,23 +700,37 @@ impl Completion {
         }
     }
 
+    /// Create a successful Completion result with a specific value
+    pub fn success_val(cdw0: u32) -> Self {
+        Self {
+            dw0: cdw0,
+            status: Self::status_field(
+                StatusCodeType::Generic,
+                bits::STS_SUCCESS,
+            ),
+        }
+    }
+
+    /// Create an error Completion result with a specific type and status
     pub fn specific_err(sct: StatusCodeType, status: u8) -> Self {
         // success doesn't belong in an error
         assert_ne!(status, bits::STS_SUCCESS);
 
-        Self { cdw0: 0, status: Self::status_field(sct, status) }
+        Self { dw0: 0, status: Self::status_field(sct, status) }
     }
 
+    /// Create a generic error Completion result with a specific status
     pub fn generic_err(status: u8) -> Self {
         // success doesn't belong in an error
         assert_ne!(status, bits::STS_SUCCESS);
 
         Self {
-            cdw0: 0,
+            dw0: 0,
             status: Self::status_field(StatusCodeType::Generic, status),
         }
     }
 
+    /// Helper method to combine StatusCodeType and status code
     fn status_field(sct: StatusCodeType, sc: u8) -> u16 {
         (sc as u16) << 1 | ((sct as u8) as u16) << 9
         // | (more as u16) << 14

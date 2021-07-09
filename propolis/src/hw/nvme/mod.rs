@@ -18,7 +18,7 @@ mod ns;
 mod queue;
 
 use bits::*;
-use queue::{CompQueue, SubQueue, QueueId};
+use queue::{CompQueue, QueueId, SubQueue};
 
 const NVME_MSIX_COUNT: u16 = 1024;
 
@@ -157,7 +157,10 @@ impl NvmeCtrl {
     }
 
     /// Returns a reference to the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
-    fn get_cq(&self, cqid: QueueId) -> Result<Arc<Mutex<CompQueue>>, NvmeError> {
+    fn get_cq(
+        &self,
+        cqid: QueueId,
+    ) -> Result<Arc<Mutex<CompQueue>>, NvmeError> {
         debug_assert!((cqid as usize) < MAX_NUM_QUEUES);
         self.cqs[cqid as usize]
             .as_ref()
@@ -476,7 +479,7 @@ impl PciNvme {
                 // XXX: set controller error state?
                 continue;
             }
-            let (cmd, _) = parsed.unwrap();
+            let cmd = parsed.unwrap();
             let comp = match cmd {
                 AdminCmd::CreateIOCompQ(cmd) => {
                     state.acmd_create_io_cq(&cmd, ctx)
@@ -500,7 +503,7 @@ impl PciNvme {
             };
 
             let completion = RawCompletion {
-                dw0: comp.cdw0,
+                dw0: comp.dw0,
                 rsvd: 0,
                 sqhd: sq.head(),
                 sqid: sq.id(),

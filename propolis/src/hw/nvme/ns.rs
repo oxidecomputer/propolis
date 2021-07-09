@@ -62,14 +62,14 @@ impl NvmeNs {
         sq: Arc<Mutex<SubQueue>>,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
-        for cmd in cmds {
-            let (cmd, sub) = NvmCmd::parse(cmd)?;
+        for sub in cmds {
+            let cmd = NvmCmd::parse(sub)?;
             match cmd {
                 NvmCmd::Write(cmd) => {
-                    self.write_cmd(sub.cid, cmd, ctx, cq.clone(), sq.clone())
+                    self.write_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
                 }
                 NvmCmd::Read(cmd) => {
-                    self.read_cmd(sub.cid, cmd, ctx, cq.clone(), sq.clone())
+                    self.read_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
                 }
                 NvmCmd::Flush | NvmCmd::Unknown(_) => {
                     // For any other command, just immediately complete it
@@ -84,11 +84,11 @@ impl NvmeNs {
                     };
 
                     let completion = RawCompletion {
-                        dw0: comp.cdw0,
+                        dw0: comp.dw0,
                         rsvd: 0,
                         sqhd: sq.head(),
                         sqid: sq.id(),
-                        cid: sub.cid,
+                        cid: sub.cid(),
                         status_phase: comp.status | cq.phase(),
                     };
 
@@ -103,13 +103,11 @@ impl NvmeNs {
     fn read_cmd(
         &self,
         cid: u16,
-        mut cmd: ReadCmd,
+        cmd: ReadCmd,
         ctx: &DispCtx,
         cq: Arc<Mutex<CompQueue>>,
         sq: Arc<Mutex<SubQueue>>,
     ) {
-        // `nlb` is a 0-based value and so add 1 to get the corresponding value
-        cmd.nlb += 1;
         let off = self.nlb_to_size(cmd.slba as usize);
         let size = self.nlb_to_size(cmd.nlb as usize);
         // TODO: handles if it gets unmapped?
@@ -120,13 +118,11 @@ impl NvmeNs {
     fn write_cmd(
         &self,
         cid: u16,
-        mut cmd: WriteCmd,
+        cmd: WriteCmd,
         ctx: &DispCtx,
         cq: Arc<Mutex<CompQueue>>,
         sq: Arc<Mutex<SubQueue>>,
     ) {
-        // `nlb` is a 0-based value and so add 1 to get the corresponding value
-        cmd.nlb += 1;
         let off = self.nlb_to_size(cmd.slba as usize);
         let size = self.nlb_to_size(cmd.nlb as usize);
         // TODO: handles if it gets unmapped?
@@ -210,7 +206,7 @@ impl BlockReq for Request {
         let mut cq = self.cq.lock().unwrap();
 
         let completion = bits::RawCompletion {
-            dw0: comp.cdw0,
+            dw0: comp.dw0,
             rsvd: 0,
             sqhd: sq.head(),
             sqid: sq.id(),
