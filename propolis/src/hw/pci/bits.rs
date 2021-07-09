@@ -41,4 +41,4 @@ pub const CLASS_BRIDGE: u8 = 6;
 
 pub const SUBCLASS_NVM: u8 = 8;
 
-pub const PROGIF_ENTERPRISE_NVMHCI: u8 = 2;
+pub const PROGIF_ENTERPRISE_NVME: u8 = 2;

@@ -276,7 +276,7 @@ impl PciNvme {
             sub_device_id: device,
             class: pci::bits::CLASS_STORAGE,
             subclass: pci::bits::SUBCLASS_NVM,
-            prog_if: pci::bits::PROGIF_ENTERPRISE_NVMHCI,
+            prog_if: pci::bits::PROGIF_ENTERPRISE_NVME,
             ..Default::default()
         });
 
