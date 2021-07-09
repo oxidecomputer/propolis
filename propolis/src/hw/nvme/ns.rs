@@ -11,6 +11,9 @@ use super::cmds::{Completion, ReadCmd, WriteCmd};
 use super::queue::{CompQueue, SubQueue};
 use super::NvmeError;
 
+/// Max number of namespaces we support
+pub const MAX_NUM_NAMESPACES: usize = 16;
+
 /// Supported block size.
 /// TODO: Support more
 const BLOCK_SZ: u64 = 512;

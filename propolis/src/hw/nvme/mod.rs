@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -18,6 +19,7 @@ mod ns;
 mod queue;
 
 use bits::*;
+use ns::MAX_NUM_NAMESPACES;
 use queue::{CompQueue, QueueId, SubQueue};
 
 /// The max number of MSI-X interrupts we support
@@ -25,7 +27,7 @@ const NVME_MSIX_COUNT: u16 = 1024;
 
 /// NVMe errors
 #[derive(Debug, Error)]
-enum NvmeError {
+pub enum NvmeError {
     /// The specified Completion Queue ID did not correspond to a valid Completion Queue
     #[error("the completion queue specified ({0}) is invalid")]
     InvalidCompQueue(QueueId),
@@ -53,6 +55,14 @@ enum NvmeError {
     /// Couln't parse command
     #[error("failed to parse command: {0}")]
     CommandParseErr(#[from] cmds::ParseErr),
+
+    /// Maximum number of namespaces already attached to controller
+    #[error("maximum number of namespaces already attached to controller")]
+    TooManyNamespaces,
+
+    /// The specified Namespace ID did not correspond to a valid Namespace
+    #[error("the namespace specified ({0}) is invalid")]
+    InvalidNamespace(u32),
 }
 
 /// Internal NVMe Controller State
@@ -115,8 +125,8 @@ struct NvmeCtrl {
     /// The list of Submission Queues handled by the controller
     sqs: [Option<Arc<Mutex<SubQueue>>>; MAX_NUM_QUEUES],
 
-    // TODO: Support more than 1 namespace
-    ns: ns::NvmeNs,
+    /// The list of namespaces handled by the controller
+    nss: [Option<NvmeNs>; MAX_NUM_NAMESPACES],
 
     /// The PCI Vendor ID the Controller is initialized with
     vendor_id: u16,
@@ -239,6 +249,30 @@ impl NvmeCtrl {
         self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
     }
 
+    /// Add a new namespace to the controller
+    fn add_ns(&mut self, ns: NvmeNs) -> Result<(), NvmeError> {
+        // Find the first empty spot
+        if let Some(spot) = self.nss.iter_mut().find(|n| n.is_none()) {
+            *spot = Some(ns);
+            Ok(())
+        } else {
+            Err(NvmeError::TooManyNamespaces)
+        }
+    }
+
+    /// Returns a reference to the [`NvmeNs`] which corresponds to the given namespace id (`nsid`).
+    fn get_ns(&self, nsid: u32) -> Result<&NvmeNs, NvmeError> {
+        debug_assert!((nsid as usize) <= MAX_NUM_NAMESPACES);
+        self.nss[nsid as usize - 1]
+            .as_ref()
+            .ok_or(NvmeError::InvalidNamespace(nsid))
+    }
+
+    /// Return the current number of namespaces handled by the controller
+    fn num_ns(&self) -> u32 {
+        self.nss.iter().filter(|ns| ns.is_some()).count() as u32
+    }
+
     /// Performs a Controller Reset.
     ///
     /// The reset deletes all I/O Submission & Completion Queues, resets
@@ -270,11 +304,7 @@ pub struct PciNvme {
 
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
-    pub fn create(
-        vendor: u16,
-        device: u16,
-        ns: NvmeNs,
-    ) -> Arc<pci::DeviceInst> {
+    pub fn create(vendor: u16, device: u16) -> Arc<pci::DeviceInst> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: vendor,
             device_id: device,
@@ -292,7 +322,7 @@ impl PciNvme {
             cqs: Default::default(),
             sqs: Default::default(),
             vendor_id: vendor,
-            ns,
+            nss: Default::default(),
         };
 
         let nvme = PciNvme { state: Mutex::new(state) };
@@ -305,6 +335,12 @@ impl PciNvme {
             // Place MSIX in BAR4 for now
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
             .finish(Arc::new(nvme))
+    }
+
+    /// Add a new namespace to the controller
+    pub fn add_ns(&self, ns: NvmeNs) -> Result<(), NvmeError> {
+        let mut state = self.state.lock().unwrap();
+        state.add_ns(ns)
     }
 
     /// Service a write to the NVMe Controller Configuration from the VM
@@ -598,19 +634,23 @@ impl PciNvme {
         // Grab the corresponding CQ
         let io_cq = state.get_cq(sq.cqid())?;
 
-        // Collect all the IO SQ entries
-        let mut io_cmds = vec![];
+        // Collect all the IO SQ entries, per namespace
+        let mut io_cmds = BTreeMap::new();
         while let Some(sub) = sq.pop(ctx) {
-            // TODO: 1 hardcoded namespace
-            assert_eq!(sub.nsid, 1);
-
-            io_cmds.push(sub);
+            io_cmds.entry(sub.nsid).or_insert(vec![]).push(sub);
         }
 
         drop(sq);
 
-        // Queue up said IO entries to the underlying block device
-        state.ns.queue_io_cmds(io_cmds, io_cq.clone(), io_sq, ctx)?;
+        // Queue up said IO entries to the underlying block device, per namespace
+        for (nsid, io_cmds) in io_cmds {
+            state.get_ns(nsid)?.queue_io_cmds(
+                io_cmds,
+                io_cq.clone(),
+                io_sq.clone(),
+                ctx,
+            )?;
+        }
 
         // Notify for any newly added completions
         let cq = io_cq.lock().unwrap();

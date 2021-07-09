@@ -117,15 +117,18 @@ impl NvmeCtrl {
     ) -> cmds::Completion {
         match cmd.cns {
             IDENT_CNS_NAMESPACE => match cmd.nsid {
-                // TODO: We only support a single namespace currently
-                1 => {
+                n if n > 0 && n < super::ns::MAX_NUM_NAMESPACES as u32 => {
                     assert!(size_of::<bits::IdentifyNamespace>() <= PAGE_SIZE);
                     let buf = cmd
                         .data(ctx.mctx.memctx())
                         .next()
                         .expect("missing prp entry for ident response");
-                    assert!(ctx.mctx.memctx().write(buf.0, &self.ns.ident));
-                    cmds::Completion::success()
+                    if let Ok(ns) = self.get_ns(n) {
+                        assert!(ctx.mctx.memctx().write(buf.0, &ns.ident));
+                        cmds::Completion::success()
+                    } else {
+                        cmds::Completion::generic_err(STS_INVALID_NS)
+                    }
                 }
                 // 0 is not a valid NSID (See NVMe 1.0e, Section 6.1 Namespaces)
                 // We also don't currently support namespace management
@@ -144,8 +147,7 @@ impl NvmeCtrl {
                     ieee: [0xA8, 0x40, 0x25], // Oxide OUI
                     sqes: size_of::<bits::RawSubmission>() as u8,
                     cqes: size_of::<bits::RawCompletion>() as u8,
-                    // hardcode a single namespace for now
-                    nn: 1,
+                    nn: self.num_ns(),
                     // bit 0 indicates volatile write cache is present
                     vwc: 1,
                     ..Default::default()

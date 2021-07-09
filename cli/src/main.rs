@@ -7,6 +7,7 @@ extern crate serde;
 extern crate serde_derive;
 extern crate toml;
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
@@ -171,6 +172,8 @@ fn main() {
         inv.register(chipset_id, dbg, "debug".to_string())
             .map_err(|e| -> std::io::Error { e.into() })?;
 
+        let mut devices = HashMap::new();
+
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
             let bdf = if driver.starts_with("pci-") {
@@ -212,15 +215,36 @@ fn main() {
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
                 "pci-nvme" => {
+                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000);
+                    devices.insert(&**name, nvme.clone());
+                    chipset.pci_attach(bdf.unwrap(), nvme);
+                }
+                "nvme-ns" => {
                     let disk_path =
                         dev.options.get("disk").unwrap().as_str().unwrap();
+                    let nvme_ctrl = dev
+                        .options
+                        .get("controller")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
+
+                    let nvme = devices.get(nvme_ctrl).expect(&format!(
+                        "no such nvme controller: {}",
+                        nvme_ctrl
+                    ));
 
                     let plain = block::PlainBdev::create(disk_path).unwrap();
-                    // TODO: allow creating multiple nvme-ns devices all attached to the same controller
                     let ns = hw::nvme::NvmeNs::create(plain.clone());
-                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, ns);
 
-                    chipset.pci_attach(bdf.unwrap(), nvme);
+                    if let Err(e) =
+                        nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
+                            nvme.add_ns(ns)
+                        })
+                    {
+                        eprintln!("failed to attach nvme-ns: {}", e);
+                        std::process::exit(libc::EXIT_FAILURE);
+                    }
                     plain
                         .start_dispatch(format!("bdev-{} thread", name), &disp);
                 }
