@@ -185,9 +185,14 @@ fn main() {
                     let disk_path =
                         dev.options.get("disk").unwrap().as_str().unwrap();
 
+                    let readonly: bool = || -> Option<bool> {
+                        dev.options.get("readonly")?.as_str()?.parse().ok()
+                    }()
+                    .unwrap_or(false);
+
                     let plain: Arc<
                         block::PlainBdev<hw::virtio::block::Request>,
-                    > = block::PlainBdev::create(disk_path).unwrap();
+                    > = block::PlainBdev::create(disk_path, readonly).unwrap();
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
