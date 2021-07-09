@@ -21,7 +21,7 @@ const MIN_QUEUE_SIZE: u32 = 2;
 /// The maximum number of entries in either a Completion or Submission Queue.
 ///
 /// See NVMe 1.0e Section 4.1.3 Queue Size
-const MAX_QUEUE_SIZE: u32 = 1 << 16;
+pub const MAX_QUEUE_SIZE: u32 = 1 << 16;
 
 /// The maximum number of entries in the Admin Completion or Admin Submission Queues.
 ///

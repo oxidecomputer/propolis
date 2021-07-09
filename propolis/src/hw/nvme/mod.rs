@@ -347,8 +347,9 @@ impl PciNvme {
                 // TO = 0 - 0 * 500ms to wait for controller ready
                 // AMS = 0x0 - no additional abitrary mechs (besides RR)
                 // CQR = 0x1 - contig queues required for now
-                // MQES = 0xfff - 4k (zeros-based)
-                ro.write_u64(CAP_CCS | CAP_CQR | 0x0fff);
+                // Convert to 0's based
+                let mqes = (queue::MAX_QUEUE_SIZE - 1) as u64;
+                ro.write_u64(CAP_CCS | CAP_CQR | mqes);
             }
             CtrlrReg::Version => {
                 ro.write_u32(NVME_VER_1_0);
