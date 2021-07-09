@@ -335,7 +335,7 @@ pub struct CompQueue {
     /// The current Phase Tag to identify to the host (VM) that a Completion
     /// entry is new. Flips every time the Tail entry pointer wraps around.
     ///
-    /// See NVMe 1.0e Section 4.6 Completion Queue Entry - Phase Tag (P)
+    /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
     phase: bool,
 
     /// MSI-X object associated with PCIe device to signal host (VM).
@@ -389,7 +389,7 @@ impl CompQueue {
     /// The current Phase Tag to identify to the host (VM) that a Completion
     /// entry is new. Flips every time the Tail entry pointer wraps around.
     ///
-    /// See NVMe 1.0e Section 4.6 Completion Queue Entry - Phase Tag (P)
+    /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
     pub fn phase(&self) -> u16 {
         self.phase as u16
     }

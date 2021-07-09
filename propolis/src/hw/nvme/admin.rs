@@ -7,7 +7,9 @@ use crate::{common::PAGE_SIZE, dispatch::DispCtx};
 use super::{cmds, NvmeCtrl, NvmeError};
 
 impl NvmeCtrl {
-    /// Create a new I/O Completion Queue
+    /// Service Create I/O Completion Queue command.
+    ///
+    /// See NVMe 1.0e Section 5.3 Create I/O Completion Queue command
     pub(super) fn acmd_create_io_cq(
         &mut self,
         cmd: &cmds::CreateIOCQCmd,
@@ -46,7 +48,9 @@ impl NvmeCtrl {
         }
     }
 
-    /// Creates a new I/O Submission Queue
+    /// Service I/O Create Submission Queue command.
+    ///
+    /// See NVMe 1.0e Section 5.4 Create I/O Submission Queue command
     pub(super) fn acmd_create_io_sq(
         &mut self,
         cmd: &cmds::CreateIOSQCmd,
@@ -84,6 +88,9 @@ impl NvmeCtrl {
         }
     }
 
+    /// Service Get Log Page command.
+    ///
+    /// See NVMe 1.0e Section 5.10 Get Log Page command
     pub(super) fn acmd_get_log_page(
         &self,
         cmd: &cmds::GetLogPageCmd,
@@ -99,6 +106,9 @@ impl NvmeCtrl {
         cmds::Completion::success()
     }
 
+    /// Service Identify command.
+    ///
+    /// See NVMe 1.0e Section 5.11 Identify command
     pub(super) fn acmd_identify(
         &self,
         cmd: &cmds::IdentifyCmd,
@@ -153,6 +163,9 @@ impl NvmeCtrl {
         }
     }
 
+    /// Service Set Features command.
+    ///
+    /// See NVMe 1.0e Section 5.12 Set Features command
     pub(super) fn acmd_set_features(
         &self,
         cmd: &cmds::SetFeaturesCmd,
