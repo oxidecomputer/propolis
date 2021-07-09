@@ -122,9 +122,10 @@ impl NvmeCtrl {
     ///
     /// Admin queues are always created with `cqid`/`sqid` `0`.
     fn create_admin_queues(&mut self, ctx: &DispCtx) -> Result<(), NvmeError> {
+        // Admin CQ uses interrupt vector 0 (See NVMe 1.0e Section 3.1.9 ACQ)
         self.create_cq(
             queue::ADMIN_QUEUE_ID,
-            0, // Admin CQ uses interrupt vector 0
+            0,
             GuestAddr(self.ctrl.admin_cq_base),
             self.ctrl.admin_cq_size as u32,
             ctx,
