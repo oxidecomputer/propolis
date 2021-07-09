@@ -1,10 +1,11 @@
+use std::cmp::min;
 use std::mem::size_of;
 
 use super::bits::{self, *};
 use crate::common::GuestAddr;
 use crate::{common::PAGE_SIZE, dispatch::DispCtx};
 
-use super::{cmds, NvmeCtrl, NvmeError};
+use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES};
 
 impl NvmeCtrl {
     /// Service Create I/O Completion Queue command.
@@ -177,9 +178,11 @@ impl NvmeCtrl {
                     return cmds::Completion::generic_err(STS_INVAL_FIELD);
                 }
                 // TODO: error if called after initialization
-                // TODO: we only support a single pair of I/O queues
-                let ncqa = 1;
-                let nsqa = 1;
+
+                // If they ask for too many queues, just return our max possible
+                let ncqa = min(ncqr as u32, MAX_NUM_IO_QUEUES as u32);
+                let nsqa = min(nsqr as u32, MAX_NUM_IO_QUEUES as u32);
+
                 // `ncqa`/`nsqa` are 0-based values so subtract 1
                 cmds::Completion::success_val((ncqa - 1) << 16 | (nsqa - 1))
             }

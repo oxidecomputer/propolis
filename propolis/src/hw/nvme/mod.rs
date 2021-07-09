@@ -94,7 +94,12 @@ struct CtrlState {
 }
 
 /// The max number of completion or submission queues we support.
+/// Note: This includes the admin completion/submission queues.
 const MAX_NUM_QUEUES: usize = 16;
+
+/// The max number of I/O completion or submission queues we support.
+/// Always 1 less than the total number w/ the admin queues.
+const MAX_NUM_IO_QUEUES: usize = MAX_NUM_QUEUES - 1;
 
 /// NVMe Controller
 struct NvmeCtrl {
@@ -398,8 +403,7 @@ impl PciNvme {
             }
             CtrlrReg::DoorBellAdminSQ
             | CtrlrReg::DoorBellAdminCQ
-            | CtrlrReg::DoorBellIoSQ1
-            | CtrlrReg::DoorBellIoCQ1 => {
+            | CtrlrReg::IOQueueDoorBells => {
                 // The host should not read from the doorbells, and the contents
                 // can be vendor/implementation specific (in our case, zeroed).
                 ro.fill(0);
@@ -481,30 +485,42 @@ impl PciNvme {
                 // TODO: post any entries to the CQ now that it has more space
             }
 
-            CtrlrReg::DoorBellIoSQ1 => {
-                let val = wo.read_u32().try_into().unwrap();
+            CtrlrReg::IOQueueDoorBells => {
+                // Submission Queue y Tail Doorbell offset
+                //  = 0x1000 + (2y * (4 << CAP.DSTRD))
+                // Completion Queue y Head Doorbell offset
+                //  = 0x1000 + ((2y + 1) * (4 << CAP.DSTRD))
+                //
+                // See NVMe 1.0e Section 3.1.10 & 3.1.11
+                //
+                // But note that we only support CAP.DSTRD = 0
+                let off = wo.offset() - 0x1000;
+
+                let val: u16 = wo.read_u32().try_into().unwrap();
                 let state = self.state.lock().unwrap();
-                // TODO: Support more than 1 I/O queue
-                let io_sq = state.get_sq(1)?;
-                let mut sq = io_sq.lock().unwrap();
-                match sq.notify_tail(val) {
-                    Ok(_) => {}
-                    Err(_) => todo!("set controller error state"),
+
+                if (off >> 2) & 0b1 == 0b1 {
+                    // Completion Queue y Head Doorbell
+                    let y = (off - 4) >> 3;
+                    let io_cq = state.get_cq(y as u16)?;
+                    let mut cq = io_cq.lock().unwrap();
+                    match cq.notify_head(val) {
+                        Ok(_) => {}
+                        Err(_) => todo!("set controller error state"),
+                    }
+                    // TODO: post any entries to the CQ now that it has more space
+                } else {
+                    // Submission Queue y Tail Doorbell
+                    let y = off >> 3;
+                    let io_sq = state.get_sq(y as u16)?;
+                    let mut sq = io_sq.lock().unwrap();
+                    match sq.notify_tail(val) {
+                        Ok(_) => {}
+                        Err(_) => todo!("set controller error state"),
+                    }
+                    drop(sq);
+                    self.process_io_queue(state, io_sq, ctx)?;
                 }
-                drop(sq);
-                self.process_io_queue(state, io_sq, ctx)?;
-            }
-            CtrlrReg::DoorBellIoCQ1 => {
-                let val = wo.read_u32().try_into().unwrap();
-                let state = self.state.lock().unwrap();
-                // TODO: Support more than 1 I/O queue
-                let io_cq = state.get_cq(1)?;
-                let mut cq = io_cq.lock().unwrap();
-                match cq.notify_head(val) {
-                    Ok(_) => {}
-                    Err(_) => todo!("set controller error state"),
-                }
-                // TODO: post any entries to the CQ now that it has more space
             }
         }
 
@@ -607,7 +623,7 @@ impl PciNvme {
 impl pci::Device for PciNvme {
     fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
-        CONTROLLER_REGS.process(&mut rwo, |id, rwo| {
+        let f = |id: &CtrlrReg, rwo: RWOp<'_, '_>| {
             let res = match rwo {
                 RWOp::Read(ro) => self.reg_ctrl_read(id, ro, ctx),
                 RWOp::Write(wo) => self.reg_ctrl_write(id, wo, ctx),
@@ -616,7 +632,15 @@ impl pci::Device for PciNvme {
             if let Err(err) = res {
                 eprintln!("nvme reg read/write failed: {}", err);
             }
-        });
+        };
+
+        if rwo.offset() >= CONTROLLER_REGS.1 {
+            // This is an I/O DoorBell op, so skip RegMaps's process
+            f(&CtrlrReg::IOQueueDoorBells, rwo);
+        } else {
+            // Otherwise deal with every other register as normal
+            CONTROLLER_REGS.0.process(&mut rwo, f)
+        }
     }
 
     fn attach(
@@ -681,24 +705,21 @@ enum CtrlrReg {
     DoorBellAdminSQ,
     /// Admin Completion Queue Head Doorbell
     ///
-    /// See NVMe 1.0e Section 3.1.10
+    /// See NVMe 1.0e Section 3.1.11
     DoorBellAdminCQ,
 
-    // XXX: Can we coalesce these
-    /// Submission Queue 1 Tail Doorbell
+    /// I/O Submission Tail and Completion Head Doorbells
     ///
-    /// See NVMe 1.0e Section 3.1.10
-    DoorBellIoSQ1,
-    /// Completion Queue 1 Head Doorbell
-    ///
-    /// See NVMe 1.0e Section 3.1.10
-    DoorBellIoCQ1,
+    /// See NVMe 1.0e Section 3.1.10 & 3.1.11
+    IOQueueDoorBells,
 }
-// XXX: single IO doorbell for prototype
+
+/// Size of the Controller Register space
 const CONTROLLER_REG_SZ: usize = 0x2000;
+
 lazy_static! {
-    static ref CONTROLLER_REGS: RegMap<CtrlrReg> = {
-        let layout = [
+    static ref CONTROLLER_REGS: (RegMap<CtrlrReg>, usize) = {
+        let mut layout = [
             (CtrlrReg::CtrlrCaps, 8),
             (CtrlrReg::Version, 4),
             (CtrlrReg::IntrMaskSet, 4),
@@ -712,19 +733,30 @@ lazy_static! {
             (CtrlrReg::AdminCompQAddr, 8),
             (CtrlrReg::Reserved, 0xec8),
             (CtrlrReg::Reserved, 0x100),
-            // XXX: hardcode 0 stride for doorbells
+            // CAP.DSTRD = 0 hence 0 stride and doorbells are 4 bytes apart
             (CtrlrReg::DoorBellAdminSQ, 4),
             (CtrlrReg::DoorBellAdminCQ, 4),
-            // XXX: hardcode a single IO doorbell
-            (CtrlrReg::DoorBellIoSQ1, 4),
-            (CtrlrReg::DoorBellIoCQ1, 4),
-            // XXX: pad out to next power of 2
-            (CtrlrReg::Reserved, 0x1000 - 16),
+            (CtrlrReg::IOQueueDoorBells, 8 * MAX_NUM_IO_QUEUES),
+            // Left as 0 and adjusted below
+            (CtrlrReg::Reserved, 0),
         ];
-        RegMap::create_packed(
+
+        // Pad out to the next power of two
+        let regs_sz = layout.iter().map(|(_, sz)| sz).sum::<usize>();
+        assert!(regs_sz.next_power_of_two() <= CONTROLLER_REG_SZ);
+        layout.last_mut().unwrap().1 = regs_sz.next_power_of_two() - regs_sz;
+
+        // Find the offset of IOQueueDoorBells
+        let db_offset = layout
+            .iter()
+            .take_while(|&(r,_)| *r != CtrlrReg::IOQueueDoorBells)
+            .map(|&(_, sz)| sz)
+            .sum();
+
+        (RegMap::create_packed(
             CONTROLLER_REG_SZ,
             &layout,
             Some(CtrlrReg::Reserved),
-        )
+        ), db_offset)
     };
 }
