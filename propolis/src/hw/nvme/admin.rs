@@ -126,7 +126,7 @@ impl NvmeCtrl {
                     assert!(ctx.mctx.memctx().write(buf.0, &self.ns.ident));
                     cmds::Completion::success()
                 }
-                // 0 is not a valid NSID (See NVMe 1.3, Section 6.1)
+                // 0 is not a valid NSID (See NVMe 1.0e, Section 6.1 Namespaces)
                 // We also don't currently support namespace management
                 // and so treat the 'broadcast' NSID (0xffffffff) as invalid
                 // along with any other namespace
@@ -173,8 +173,7 @@ impl NvmeCtrl {
     ) -> cmds::Completion {
         match cmd.fid {
             cmds::FeatureIdent::NumberOfQueues { ncqr, nsqr } => {
-                // NVMe 1.3, Section 5.21.1.7: ncqr/nsqr can't be 65535
-                if ncqr == 0xFFFF || nsqr == 0xFFFF {
+                if ncqr == 0 || nsqr == 0 {
                     return cmds::Completion::generic_err(STS_INVAL_FIELD);
                 }
                 // TODO: error if called after initialization
