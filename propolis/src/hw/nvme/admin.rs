@@ -171,12 +171,6 @@ impl NvmeCtrl {
         cmd: &cmds::SetFeaturesCmd,
         _ctx: &DispCtx,
     ) -> cmds::Completion {
-        if cmd.save {
-            return cmds::Completion::specific_err(
-                StatusCodeType::CmdSpecific,
-                STS_SET_FEATURE_NOT_SAVEABLE,
-            );
-        }
         match cmd.fid {
             cmds::FeatureIdent::NumberOfQueues { ncqr, nsqr } => {
                 // NVMe 1.3, Section 5.21.1.7: ncqr/nsqr can't be 65535

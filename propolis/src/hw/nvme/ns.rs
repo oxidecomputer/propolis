@@ -84,12 +84,12 @@ impl NvmeNs {
                     };
 
                     let completion = RawCompletion {
-                        cdw0: comp.cdw0,
+                        dw0: comp.cdw0,
                         rsvd: 0,
                         sqhd: sq.head(),
                         sqid: sq.id(),
                         cid: sub.cid,
-                        status: comp.status | cq.phase(),
+                        status_phase: comp.status | cq.phase(),
                     };
 
                     cq.push(completion, ctx);
@@ -210,12 +210,12 @@ impl BlockReq for Request {
         let mut cq = self.cq.lock().unwrap();
 
         let completion = bits::RawCompletion {
-            cdw0: comp.cdw0,
+            dw0: comp.cdw0,
             rsvd: 0,
             sqhd: sq.head(),
             sqid: sq.id(),
             cid: self.cid,
-            status: comp.status | cq.phase(),
+            status_phase: comp.status | cq.phase(),
         };
 
         cq.push(completion, ctx);

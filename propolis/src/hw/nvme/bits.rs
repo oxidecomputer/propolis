@@ -1,132 +1,398 @@
 #![allow(dead_code)]
 
+/// A Submission Queue Entry as represented in memory.
+///
+/// See NVMe 1.0e Section 4.2 Submission Queue Entry - Command Format
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 pub struct RawSubmission {
+    /// Command Dword 0 (CDW0)
+    ///
+    /// Field common to all commands and defined as:
+    ///
+    /// Bits
+    /// 31:16 - Command Identifier (CID)
+    /// 15:10 - Reserved
+    /// 09:08 - Fused Operation (FUSE)
+    /// 07:00 - Opcode (OPC)
+    ///
+    /// See NVMe 1.0e Section 4.2, Figure 6 Command Dword 0
     pub cdw0: u32,
+
+    /// Namespace Identifier (NSID)
+    ///
+    /// The namespace that this command applies to.
     pub nsid: u32,
+
+    /// Reserved
     pub rsvd: u64,
+
+    /// Metadata Pointer (MPTR)
+    ///
+    /// If the command has metadata not interleaved with the logical
+    /// block data, then this field contains the address of a contiguous
+    /// physical buffer of metadata. The metadata pointer shall be
+    /// DWORD aligned.
+    ///
+    /// See NVMe 1.0e Section 4.4 Metadata Region (MR)
     pub mptr: u64,
+
+    /// The first Physical Region Page (PRP) entry for the command or a
+    /// PRP List pointer.
+    ///
+    /// See NVMe 1.0e Section 4.3 Physical Region Page Entry and List
     pub prp1: u64,
+
+    /// Either reserved, the second Physical Region Page (PRP) entry or
+    /// a PRP List pointer.
+    ///
+    /// See NVMe 1.0e Section 4.3 Physical Region Page Entry and List
     pub prp2: u64,
+
+    /// Command Dword 10 (CDW10)
+    ///
+    /// A command specific value.
     pub cdw10: u32,
+
+    /// Command Dword 11 (CDW11)
+    ///
+    /// A command specific value.
     pub cdw11: u32,
+
+    /// Command Dword 12 (CDW12)
+    ///
+    /// A command specific value.
     pub cdw12: u32,
+
+    /// Command Dword 13 (CDW13)
+    ///
+    /// A command specific value.
     pub cdw13: u32,
+
+    /// Command Dword 14 (CDW14)
+    ///
+    /// A command specific value.
     pub cdw14: u32,
+
+    /// Command Dword 15 (CDW15)
+    ///
+    /// A command specific value.
     pub cdw15: u32,
 }
+
 impl RawSubmission {
+    /// Returns the Identifier (CID) of this Submission Queue Entry.
+    ///
+    /// The command identifier along with the Submission Queue ID
+    /// specifiy a unique identifier for the command.
     pub fn cid(&self) -> u16 {
         (self.cdw0 >> 16) as u16
     }
+
+    /// Returns the Opcode (OPC) of this Submission Queue Entry.
     pub fn opcode(&self) -> u8 {
         self.cdw0 as u8
     }
 }
 
+/// A Completion Queue Entry as represented in memory.
+///
+/// See NVMe 1.0e Section 4.5 Completion Queue Entry
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 pub struct RawCompletion {
-    pub cdw0: u32,
+    /// Dword 0 (DW0)
+    ///
+    /// A command specific value.
+    pub dw0: u32,
+
+    /// Reserved
     pub rsvd: u32,
+
+    /// Submission Queue Head Pointer (SQHD)
+    ///
+    /// Indicates the current Submission Queue Head pointer
+    /// for the Submission Queue identified by `sqid`.
+    ///
+    /// Bits 15:0 of Dword 2 (DW2)
+    ///
+    /// See NVMe 1.0e Section 4.5, Figure 13 Completion Queue Entry: DW 2
     pub sqhd: u16,
+
+    /// Submission Queue Identifier (SQID)
+    ///
+    /// Indicates the Submission Queue for which the command completed
+    /// by this Completion Entry was submitted to.
+    ///
+    /// Bits 31:16 of Dword 2 (DW2)
+    ///
+    /// See NVMe 1.0e Section 4.5, Figure 13 Completion Queue Entry: DW 2
     pub sqid: u16,
+
+    /// Command Identifier (CID)
+    ///
+    /// The identifier of the command completed by this Completion Entry.
+    /// The command identifier along with the Submission Queue ID
+    /// specifiy a unique identifier for the command.
+    ///
+    /// Bits 15:0 of Dword 3 (DW3)
+    ///
+    /// See NVMe 1.0e Section 4.5, Figure 14 Completion Queue Entry: DW 3
     pub cid: u16,
-    pub status: u16,
+
+    /// The status of the command that's being completed along with
+    /// the current phase tag.
+    ///
+    /// Bit      0 Phase Tag (P)      ===  Bit 16 of Dword 3 (DW3)
+    /// Bits 15:01 Status Field (SF)  ===  Bits 31:17 of Dword 3 (DW3)
+    ///
+    /// See NVMe 1.0e Section 4.5.1 Status Field Definition
+    /// See NVMe 1.0e Section 4.5, Figure 14 Completion Queue Entry: DW 3
+    pub status_phase: u16,
 }
 
 // Register bits
 
-pub const CAP_CCS: u64 = 1 << 37; // CAP.CCS - NVM command set
-pub const CAP_CQR: u64 = 1 << 16; // CAP.CQR - require contiguous queus
+/// Controller Capabilities - Command Sets Supported (CAP.CSS)
+///
+/// Bit 37 of CAP register which indicates NVM command set support.
+///
+/// See NVMe 1.0e Section 3.1.1 Offset 00h: CAP - Controller Capabilities
+pub const CAP_CCS: u64 = 1 << 37;
 
+/// Controller Capabilities - Contiguous Queues Required (CAP.CQR)
+///
+/// Bit 16 of CAP register which indicates that the controller requires
+/// all I/O Submission and Completion Queues to be physically contiguous.
+///
+/// See NVMe 1.0e Section 3.1.1 Offset 00h: CAP - Controller Capabilities
+pub const CAP_CQR: u64 = 1 << 16;
+
+/// Controller Configuration - Enable (CC.EN)
+///
+/// Bit 0 of CC register. When set to 1, the the controller should begin
+/// process commands based on Submission Queue Tail doorbell writes.
+/// When cleared to 0, the controller shall not process commands nor post
+/// completion queue entries. Transitioning from 1 to 0 indicates a
+/// (Controller) Reset.
+///
+/// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
 pub const CC_EN: u32 = 0x1;
 
-pub const CSTS_READY: u32 = 0x1;
+/// Controller Status - Ready (CSTS.RDY)
+///
+/// Bit 0 of CSTS register. Controller sets to 1 when it is ready to accept
+/// Submission Queue Tail doorbell writes after CC.EN is set to 1.
+///
+/// See NVMe 1.0e Section 3.1.6 Offset 14h: CSTS - Controller Status
+pub const CSTS_RDY: u32 = 0x1;
 
 // Version definitions
 
+/// Controller Version NVM Express 1.0
+///
+/// Bits 31:16  Major Version Number (MJR) = "1"
+/// Bits 15:00  Minor Version Number (MNR) = "0"
+///
+/// See NVMe 1.0e Section 3.1.2 Offset 08h: VS - Version
 pub const NVME_VER_1_0: u32 = 0x00010000;
 
 // Admin Command Opcodes
+// See NVMe 1.0e Section 5, Figure 25 Opcodes for Admin Commands
 
+/// Delete I/O Submission Queue Command Opcode
 pub const ADMIN_OPC_DELETE_IO_SQ: u8 = 0x00;
+/// Create I/O Submission Queue Command Opcode
 pub const ADMIN_OPC_CREATE_IO_SQ: u8 = 0x01;
+/// Get Log Page Command Opcode
 pub const ADMIN_OPC_GET_LOG_PAGE: u8 = 0x02;
+/// Delete I/O Completion Queue Command Opcode
 pub const ADMIN_OPC_DELETE_IO_CQ: u8 = 0x04;
+/// Create I/O Completion Queue Command Opcode
 pub const ADMIN_OPC_CREATE_IO_CQ: u8 = 0x05;
+/// Identify Command Opcode
 pub const ADMIN_OPC_IDENTIFY: u8 = 0x06;
+/// Abort Command Opcode
 pub const ADMIN_OPC_ABORT: u8 = 0x08;
+/// Set Feature Command Opcode
 pub const ADMIN_OPC_SET_FEATURES: u8 = 0x09;
-pub const ADMIN_OPC_GET_FEATURES: u8 = 0x0a;
+/// Get Feature Command Opcode
+pub const ADMIN_OPC_GET_FEATURES: u8 = 0x0A;
+/// Asynchronous Event Request Command Opcode
 pub const ADMIN_OPC_ASYNC_EVENT_REQ: u8 = 0x0c;
 
-// Nvm Command Opcodes
+// NVM Command Opcodes
+// See NVMe 1.0e Section 6, Figure 99 Opcodes for NVM Commands
 
+/// Flush Command Opcode
 pub const NVM_OPC_FLUSH: u8 = 0x00;
+/// Write Command Opcode
 pub const NVM_OPC_WRITE: u8 = 0x01;
+/// Read Command Opcode
 pub const NVM_OPC_READ: u8 = 0x02;
 
-// Command Status values
 
+// Generic Command Status values
+// See NVMe 1.0e Section 4.5.1.2.1, Figure 17 Status Code - Generic Command Status Values
+
+/// Successful Completion
+///
+/// The command completed successfully.
 pub const STS_SUCCESS: u8 = 0x0;
-pub const STS_INVAL_OPC: u8 = 0x1;
-pub const STS_INVAL_FIELD: u8 = 0x2;
-pub const STS_CID_CONFLICT: u8 = 0x3;
-pub const STS_DATA_XFER_ERR: u8 = 0x4;
-pub const STS_PWR_LOSS_ABRT: u8 = 0x5;
-pub const STS_INTERNAL_ERR: u8 = 0x6;
-pub const STS_ABORT_REQ: u8 = 0x7;
-pub const STS_ABORT_SQ_DEL: u8 = 0x8;
-pub const STS_FAILED_FUSED: u8 = 0x9;
-pub const STS_MISSING_FUSED: u8 = 0xa;
-pub const STS_INVALID_NS: u8 = 0xb;
-pub const STS_COMMAND_SEQ_ERR: u8 = 0xc;
-pub const STS_INVAL_SGL_DESC: u8 = 0xd;
-pub const STS_INVAL_SGL_NUM: u8 = 0xe;
-pub const STS_INVAL_SGL_LEN: u8 = 0xf;
-pub const STS_INVAL_SGL_META_LEN: u8 = 0x10;
-pub const STS_INVAL_SGL_TYPE_LEN: u8 = 0x11;
-pub const STS_INVAL_CMB_USE: u8 = 0x12;
-pub const STS_INVAL_PRP_OFFSET: u8 = 0x13;
 
+/// Invalid Command Opcode
+///
+/// The associated command opcode field is not valid.
+pub const STS_INVAL_OPC: u8 = 0x1;
+
+/// Invalid Field in Command
+///
+/// An invalid field specified in the command parameters.
+pub const STS_INVAL_FIELD: u8 = 0x2;
+
+/// Command ID Conflict
+///
+/// The command identifier is already in use.
+pub const STS_CID_CONFLICT: u8 = 0x3;
+
+/// Data Transfer Error
+///
+/// Transferring the data or metadata associated with a command had an error.
+pub const STS_DATA_XFER_ERR: u8 = 0x4;
+
+/// Commands Aborted due to Power Loss Notification
+///
+/// Indicates that the command was aborted due to a power loss notifiation.
+pub const STS_PWR_LOSS_ABRT: u8 = 0x5;
+
+/// Internal Device Error
+///
+/// The command was not completed successfully due to an internal device error.
+pub const STS_INTERNAL_ERR: u8 = 0x6;
+
+/// Command Abort Requested
+///
+/// The command was aborted due to a Command Abort command.
+pub const STS_ABORT_REQ: u8 = 0x7;
+
+/// Command Aborted due to SQ Deletion
+///
+/// The command was aborted due to a Delete I/O Submission Queue request.
+pub const STS_ABORT_SQ_DEL: u8 = 0x8;
+
+/// Command Aborted due to Failed Fused Command
+///
+/// The command was aborted due to the other command in a fused command failing.
+pub const STS_FAILED_FUSED: u8 = 0x9;
+
+/// Command Aborted due to Missing Fused Command
+///
+/// The command was aborted due to the companion fused command not being found.
+pub const STS_MISSING_FUSED: u8 = 0xA;
+
+/// Invalid Namespace or Format
+///
+/// The namespace or the format of that namespace is invalid.
+pub const STS_INVALID_NS: u8 = 0xB;
+
+/// Command Sequence Error
+///
+/// The command was aborted due to a protocol violation in a multi-command sequence.
+pub const STS_COMMAND_SEQ_ERR: u8 = 0xC;
+
+// Command Specific Status values
+// See NVMe 1.0e Section 4.5.1.2.2, Figure 19 Status Code - Command Specific Status Values
+
+/// Completion Queue Invalid
 pub const STS_CREATE_IO_Q_INVAL_CQ: u8 = 0x0;
+
+/// Invalid Queue Identifier
 pub const STS_CREATE_IO_Q_INVAL_QID: u8 = 0x1;
+
+/// Invalid Queue Size
 pub const STS_CREATE_IO_Q_INVAL_QSIZE: u8 = 0x2;
+
+/// Invalid Interrupt Vector
 pub const STS_CREATE_IO_Q_INVAL_INT_VEC: u8 = 0x8;
 
-// SetFeature Command Specific Status values
+// NVM Command Specific Status values
+// See NVMe 1.0e Section 4.5.1.2.2, Figure 20 Status Code - Command Specific Status Values, NVM Command Set
 
-pub const STS_SET_FEATURE_NOT_SAVEABLE: u8 = 0x0D;
-pub const STS_SET_FEATURE_NOT_CHANGEABLE: u8 = 0x0E;
-pub const STS_SET_FEATURE_NOT_NAMESPACE_SPECIFIC: u8 = 0x0F;
-pub const STS_SET_FEATURE_OVERLAPPING_RANGES: u8 = 0x14;
-
-// Read Command Status values
-
+/// Conflicting Attributes
 pub const STS_READ_CONFLICTING_ATTRS: u8 = 0x80;
+
+/// Invalid Protection Information
 pub const STS_READ_INVALID_PROT_INFO: u8 = 0x81;
 
-// Feature identifiers
+/// Attempted to Write Read Only Range
+pub const STS_WRITE_READ_ONLY_RANGE: u8 = 0x82;
 
+// Feature identifiers
+// See NVMe 1.0e Section 5.12.1, Figure 73 Set Features - Feature Identifiers
+
+
+/// Arbitration
+///
+/// See NVMe 1.0e Section 5.12.1.1 Arbitration (Feature Identifier 01h)
 pub const FEAT_ID_ARBITRATION: u8 = 0x01;
+
+/// Power Management
+///
+/// See NVMe 1.0e Section 5.12.1.2 Power Management (Feature Identifier 02h)
 pub const FEAT_ID_POWER_MGMT: u8 = 0x02;
+
+/// Temperature Threshold
+///
+/// See NVMe 1.0e Section 5.12.1.4 Arbitration (Feature Identifier 04h)
 pub const FEAT_ID_TEMP_THRESH: u8 = 0x04;
+
+/// Error Recovery
+///
+/// See NVMe 1.0e Section 5.12.1.5 Error Recovery (Feature Identifier 05h)
 pub const FEAT_ID_ERROR_RECOVERY: u8 = 0x05;
+
+/// Number of Queues
+///
+/// See NVMe 1.0e Section 5.12.1.7 Number of Queues (Feature Identifier 07h)
 pub const FEAT_ID_NUM_QUEUES: u8 = 0x07;
+
+/// Interrupt Coalescing
+///
+/// See NVMe 1.0e Section 5.12.1.8 Interrupt Coalescing (Feature Identifier 08h)
 pub const FEAT_ID_INTR_COALESCE: u8 = 0x08;
+
+/// Interrupt Vector Configuration
+///
+/// See NVMe 1.0e Section 5.12.1.9 Interrupt Vector Configuration (Feature Identifier 09h)
 pub const FEAT_ID_INTR_VEC_CFG: u8 = 0x09;
-pub const FEAT_ID_WRITE_ATOMIC: u8 = 0x0a;
-pub const FEAT_ID_ASYNC_EVENT_CFG: u8 = 0x0b;
+
+/// Write Atomicity
+///
+/// See NVMe 1.0e Section 5.12.1.10 Write Atomicity (Feature Identifier 0Ah)
+pub const FEAT_ID_WRITE_ATOMIC: u8 = 0x0A;
+
+/// Asynchronous Event Configuration
+///
+/// See NVMe 1.0e Section 5.12.1.11 Asynchronous Event Configuration (Feature Identifier 0Bh)
+pub const FEAT_ID_ASYNC_EVENT_CFG: u8 = 0x0B;
 
 // Identify CNS values
 
+/// Identify - Namespace Structure
+///
+/// Return the Identify Namespace data structure in response to Identify command.
+/// See NVMe 1.0e Section 5.11
 pub const IDENT_CNS_NAMESPACE: u8 = 0x0;
-pub const IDENT_CNS_CONTROLLER: u8 = 0x1;
-pub const IDENT_CNS_ACTIVE_NSID: u8 = 0x2;
-pub const IDENT_CNS_NSID_DESC: u8 = 0x3;
 
+/// Identify - Controller Structure
+///
+/// Return the Identify Controller data structure in response to Identify command.
+/// See NVMe 1.0e Section 5.11
+pub const IDENT_CNS_CONTROLLER: u8 = 0x1;
+
+/// The type of value specified in the Status Field (SF) of a command completion.
+///
+/// See NVMe 1.0e Section 4.5.1.1 Status Code Type (SCT)
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum StatusCodeType {
@@ -136,96 +402,242 @@ pub enum StatusCodeType {
     VendorSpecific = 7,
 }
 
+/// Power State Descriptor (PSD) Data Structure
+///
+/// Describes the characteristics of a specific power state.
+///
+/// See NVMe 1.0e Section 5.11, Figure 67 Identify - Power State Descriptor Data Structure
 #[derive(Default, Copy, Clone)]
 #[repr(C)]
 pub struct PowerStateDescriptor {
     /// Maximum Power
+    ///
+    /// Maximum power consumed by NVM subsystem in this power state.
+    /// The value multiplied by 0.01 is equal to the power in Watts.
     pub mp: u16,
+
     /// Reserved
     pub _resv1: u16,
-    /// Entry Latency
+
+    /// Entry Latency (ENLAT)
+    ///
+    /// The maximum entry latency in microseconds.
     pub enlat: u32,
-    /// Exit Latency
+
+    /// Exit Latency (EXLAT)
+    ///
+    /// The maximum exit latency in microseconds.
     pub exlat: u32,
-    /// Relative Read Throughput
+
+    /// Relative Read Throughput (RRT)
+    ///
+    /// Must be less than the number of supported power states.
+    ///
+    /// Top 4 bits are reserved.
     pub rrt: u8,
-    /// Relative Read Latency
+
+    /// Relative Read Latency (RRL)
+    ///
+    /// Must be less than the number of supported power states.
+    ///
+    /// Top 4 bits are reserved.
     pub rrl: u8,
-    /// Relative Write Throughput
+
+    /// Relative Write Throughput (RWT)
+    ///
+    /// Must be less than the number of supported power states.
+    ///
+    /// Top 4 bits are reserved.
     pub rwt: u8,
-    /// Relative Write Latency
+
+    /// Relative Write Latency (RWL)
+    ///
+    /// Must be less than the number of supported power states.
+    ///
+    /// Top 4 bits are reserved.
     pub rwl: u8,
+
     /// Reserved
     pub _resv: [u8; 16],
 }
 
+/// Identify Controller Data Structure
+///
+/// Describes the characteristics of the controller.
+///
+/// See NVMe 1.0e Section 5.11, Figure 66 Identify - Identify Controller Data Structure
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct IdentifyController {
     // bytes 0-255 - Controller Capabilities and Features
-    /// PCI Vendor ID
+
+    /// PCI Vendor ID (VID)
+    ///
+    /// Same value reported in ID register.
+    /// See NVMe 1.0e Section 2.1.1 Offset 00h: ID - Identifiers
     pub vid: u16,
-    /// PCI Subsystem Vendor ID
+    /// PCI Subsystem Vendor ID (SSVID)
+    ///
+    /// Same value reported in SS register.
+    /// See NVMe 1.0e Section 2.1.17 Offset 2Ch: ID - Sub System Identifiers
     pub ssvid: u16,
-    /// Serial Number
+    /// Serial Number (SN)
+    ///
+    /// See NVMe 1.0e Section 7.7 Unique Identifier
     pub sn: [u8; 20],
-    /// Model Number
+    /// Model Number (MN)
+    ///
+    /// See NVMe 1.0e Section 7.7 Unique Identifier
     pub mn: [u8; 40],
-    /// Firmware Revision
+    /// Firmware Revision (FR)
+    ///
+    /// Same revision information returned via Get Log Page command.
+    /// See NVMe 1.0e Section 5.10.1.3 Firmware Slot Information (Log Identifier 03h)
     pub fr: [u8; 8],
-    /// Recommended Arbitration Burst
+    /// Recommended Arbitration Burst (RAB)
+    ///
+    /// See NVMe 1.0e Section 4.7 Command Arbitration
     pub rab: u8,
-    /// IEEE OUI Identifier
+    /// IEEE OUI Identifier (IEEE)
     pub ieee: [u8; 3],
-    /// Multi-Interface Capabilities
+    /// Multi-Interface Capabilities (MIC)
+    ///
+    /// Whether there are multiple physical PCIe interfaces and associated capabilities.
+    /// Bits 7:1 are optional.
     pub cmic: u8,
-    /// Maximum Data Transfer Size
+    /// Maximum Data Transfer Size (MDTS)
+    ///
+    /// The host (VM) should not submit a command that exceeds this transfer size.
+    /// The value is in unites of the minimum memory page size (CAP.MPSMIN) and is
+    /// reported as a power of two (2^n). A value of 0h indicates no restrictions on
+    /// transfer size. The restrictions includes interleaved metadata.
     pub mdts: u8,
     /// Reserved
     pub _resv1: [u8; 178],
 
     // bytes 256-511 - Admin Command Set Attributes & Optional Controller Capabilities
-    /// Optional Admin Command Support
+
+    /// Optional Admin Command Support (OACS)
+    ///
+    /// Bits 15:3 are reserved.
+    /// Bit 2 indicates Firmware Activate & Download command support.
+    /// Bit 1 indicates Format NVM command support.
+    /// Bit 0 indicates Security Send/Receive command support.
     pub oacs: u16,
-    /// Abort Command Limit
+    /// Abort Command Limit (ACL)
+    ///
+    /// Maximum number of concurrently outstanding Abort commands supported.
+    /// This is a 0's based value.
+    /// See NVMe 1.0e Section 5.1 Abort command
     pub acl: u8,
-    /// Asynchronous Event Request Limit
+    /// Asynchronous Event Request Limit (AERL)
+    ///
+    /// Maximum number of concurrently outstanding Asynchronous Event Request commands
+    /// supported.
+    /// This is a 0's based value.
+    /// See NVMe 1.0e Section 5.2 Asynchronous Event Request command
     pub aerl: u8,
-    /// Firmware Updates
+    /// Firmware Updates (FRMW)
+    ///
+    /// Bits 7:4 are reserved.
+    /// Bits 3:1 indicate number of firmware slots device supports (between 1-7, inclusive)
+    /// Bit 0 indicates if the first firmware slot (slot 1) is read-only.
+    /// See NVMe 1.0e Section 8.1 Firmware Update Process
     pub frmw: u8,
-    /// Log Page Attributes
+    /// Log Page Attributes (LPA)
+    ///
+    /// Bits 7:1 are reserved.
+    /// Bit 0 indicated per-namespace SMART/Health information log support.
     pub lpa: u8,
-    /// Error Log Page Etnries
+    /// Error Log Page Entries (ELPE)
+    ///
+    /// Number of Error Information log entries that are stored by the controller.
+    /// This is a 0's based value.
     pub elpe: u8,
-    /// Number of Power States Support
+    /// Number of Power States Support (NPSS)
+    ///
+    /// Number of NVMe power states supported by the controller (up to 32 total).
+    /// This is a 0's based value, i.e. 1 minimum.
+    /// See NVMe 1.0e Section 8.4 Power Management
     pub npss: u8,
-    /// Admin Vedor Specific Command Configuration
+    /// Admin Vendor Specific Command Configuration (AVSCC)
+    ///
+    /// Bits 7:1 are reserved.
+    /// Bit 0 indicates that all Admin Vendor Specific Commands use format in Figure 8.
+    /// See NVMe 1.0e Section 4.2, Figure 8 Command Format - Admin and NVM Vendor Specific Commands (Optional)
     pub avscc: u8,
     /// Reserved
     pub _resv2: [u8; 246],
 
     // bytes 512-2047 - NVM Command Set Attributes
-    /// Submission Queue Entry Size
+
+    /// Submission Queue Entry Size (SQES)
+    ///
+    /// Defines the required and maximum Submission Queue entry sizes when using the NVM Command Set.
+    /// Bits 7:4 define the maximum SQES and is >= the required SQES.
+    /// Bits 3:0 define the required (minimum) SQES. It shall be 6 (64 bytes).
+    ///
+    /// The recommended maximum SQES is 6 (64 bytes) for standard NVM Command Set.
+    /// Controllers with proprietary extensions may support a larger size.
+    /// Both the required and maximum SQES values are in bytes and reported as powers of two (2^n).
     pub sqes: u8,
-    /// Completion Queue Entry Size
+    /// Completion Queue Entry Size (CQES)
+    ///
+    /// Defines the required and maximum Completion Queue entry sizes when using the NVM Command Set.
+    /// Bits 7:4 define the maximum CQES and is >= the required CQES.
+    /// Bits 3:0 define the required (minimum) CQES. It shall be 4 (16 bytes).
+    ///
+    /// The recommended maximum CQES is 4 (16 bytes) for standard NVM Command Set.
+    /// Controllers with proprietary extensions may support a larger size.
+    /// Both the required and maximum CQES values are in bytes and reported as powers of two (2^n).
     pub cqes: u8,
     /// Reserved
     pub _resv3: [u8; 2],
-    /// Number of Namespaces
+    /// Number of Namespaces (NN)
+    ///
+    /// The number of valid namespaces present for the controller. Namespaces shall start
+    /// with namespace ID 1 and be packed sequentially.
     pub nn: u32,
-    /// Option NVM Command Support
+    /// Option NVM Command Support (ONCS)
+    ///
+    /// Bits 15:3 are reserved.
+    /// Bit 2 indicates Dataset Management command support.
+    /// Bit 1 indicates Write Uncorrectable command support.
+    /// Bit 0 indicates Compare command support.
     pub oncs: u16,
-    /// Fused Operation Support
+    /// Fused Operation Support (FUSES)
+    ///
+    /// Bits 15:1 are reserved.
+    /// Bit 0 indicates Compare and Write fused operation support.
     pub fuses: u16,
-    /// Format NVM Attributes
+    /// Format NVM Attributes (FNA)
+    ///
+    /// Bits 7:3 are reserved.
+    /// Bit 2 indicates cryptographic erase support.
+    /// Bit 1 indicates whether secure erase is a global (1) or per-namespace (0) operation.
+    /// Bit 0 indicates whether format is a global (1) or per-namespace (0) operation.
     pub fna: u8,
-    /// Volatile Write Cache
+    /// Volatile Write Cache (VWC)
+    ///
+    /// Bits 7:1 are reserved.
+    /// Bit 0 indicates whether a volatile write cache is present.
     pub vwc: u8,
-    /// Atomic Write Unit Normal
+    /// Atomic Write Unit Normal (AWUN)
+    ///
+    /// Indicates the atomic write size for the controller during normal operation.
+    /// This field is specified in logical blocks and is a 0's based value.
     pub awun: u16,
-    /// Atomic Write Unit Power Fail
+    /// Atomic Write Unit Power Fail (AWUPF)
+    ///
+    /// Indicates the atomic write size for the controller during a power fail condition.
+    /// This field is specified in logical blocks and is a 0's based value.
     pub awupf: u16,
-    /// NVM Vendor Specific Command Configuration
+    /// NVM Vendor Specific Command Configuration (NVSCC)
+    ///
+    /// Bits 7:1 are reserved
+    /// Bit 0 indicates that all NVM Vendor Specific Commands use format in Figure 8.
+    /// See NVMe 1.0e Section 4.2, Figure 8 Command Format - Admin and NVM Vendor Specific Commands (Optional)
+    /// See NVMe 1.0e Section 8.7 Standard Vendor Specific Command Format
     pub nvscc: u8,
     /// Reserved
     pub _resv4: [u8; 173],
@@ -233,11 +645,13 @@ pub struct IdentifyController {
     pub _resv5: [u8; 1344],
 
     // bytes 2048-3071 - Power State Descriptors
+
     /// Power State Descriptors (PSD0-PSD31)
     pub psd: [PowerStateDescriptor; 32],
 
     // bytes 3072-4095 - Vendor Specific
-    /// Vendor Specific
+
+    /// Vendor Specific (VS)
     pub vs: [u8; 1024],
 }
 
@@ -285,48 +699,121 @@ impl Default for IdentifyController {
     }
 }
 
+/// LBA Format Data Structure
+///
+/// Describes a specific Logical Block Address (LBA) format.
+/// See NVMe 1.0e Section 5.11, Figure 69 Identify - LBA Format Data Structure, NVM Command Set Specific
 #[derive(Default, Copy, Clone)]
 #[repr(C)]
 pub struct LbaFormat {
-    /// Metadata Size
+    /// Metadata Size (MS)
+    ///
+    /// The number of metadata bytes provided per LBA.
     pub ms: u16,
-    /// LBA Data Size
+    /// LBA Data Size (LBADS)
+    ///
+    /// The LBA data size supported and reported in terms of power of two (2^n).
+    /// The minimum required value is 9 (512 bytes).
+    /// If the value is 0h, then the LBA format is not supported.
     pub lbads: u8,
-    /// Relative Performance
+    /// Relative Performance (RP)
+    ///
+    /// Bits 7:2 are reserved.
+    /// Bits 1:0 indicate the performance of this LBA format relative to other supported LBA formats.
+    ///     00b = Best Performance
+    ///     01b = Better Performance
+    ///     10b = Good Performance
+    ///     11b = Degraded Performance
     pub rp: u8,
 }
 
+/// Identify Namespace Data Structure
+///
+/// Describes the characteristics of a namespace.
+///
+/// See NVMe 1.0e Section 5.11, Figure 68 Identify - Identify Namespace Data Structure, NVM Command Set Specific
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct IdentifyNamespace {
-    /// Namespace Size
+    /// Namespace Size (NSZE)
+    ///
+    /// The total size of the namespace in logical blocks. A namespace of size
+    /// n consists of Logical Block Addresses (LBA) 0 through n-1.
     pub nsze: u64,
-    /// Namespace Capacity
+    /// Namespace Capacity (NCAP)
+    ///
+    /// NCAP <= NSZE.
+    /// The maximum number of logical blocks that may be allocated in the namespace
+    /// at any point in time. This field is used in the case of thin provisioning.
+    /// A logical block is allocated when written with a Write (Uncorrectable) command.
+    /// A value of 0h indicates that the namespace is not available for use.
     pub ncap: u64,
-    /// Namespace Utilization
+    /// Namespace Utilization (NUSE)
+    ///
+    /// NUSE <= NCAP
+    /// The current number of logical blocks allocated in the namespace.
     pub nuse: u64,
-    /// Namespace Features
+    /// Namespace Features (NSFEAT)
+    ///
+    /// Bits 7:1 are reserved.
+    /// Bit 0 indicates whether the namespace supports thin provisioning.
     pub nsfeat: u8,
-    /// Number of LBA Formats
+    /// Number of LBA Formats (NLBAF)
+    ///
+    /// The number of supported LBA data size and metadata size combinations.
+    /// LBA formats shall be allocated (starting with 0) and packed sequentially.
+    /// This is a 0's based value.
+    /// The maximum number of LBA formats that may be indicated as supported is 16.
+    /// The supported LBA formats are defined in the `lbaf` field.
     pub nlbaf: u8,
-    /// Formatted LBA Size
+    /// Formatted LBA Size (FLBAS)
+    ///
+    /// Bits 7:5 are reserved.
+    /// Bit 4 indicates that the metadata is transferred at the end of the data LBA.
+    /// Bits 3:0 indicate one of the 16 supported combinations in `lbaf`.
     pub flbas: u8,
-    /// Metadata Capabilities
+    /// Metadata Capabilities (MC)
+    ///
+    /// Bits 7:2 are reserved
+    /// Bit 1 indicated whether namespace supports transferring maetadata in a separate buffer.
+    /// Bit 0 indicates whether namespace supports transferring metadata as part of extended data LBA.
     pub mc: u8,
-    /// End-to-end Data Protection Capabilities
+    /// End-to-end Data Protection Capabilities (DPC)
+    ///
+    /// Bits 7:5 are reserved.
+    /// Bit 4 indicates whether namespace supports protection information in last 8 bytes of metadata.
+    /// Bit 3 indicates whether namespace supports protection information in first 8 bytes of metadata.
+    /// Bit 2 indicates whether namespace supports Protection Information Type 3.
+    /// Bit 1 indicates whether namespace supports Protection Information Type 2.
+    /// Bit 0 indicates whether namespace supports Protection Information Type 1.
+    /// See NVMe 1.0e Section 8.3 End-to-end Data Protection (Optional)
     pub dpc: u8,
-    /// End-to-end Data Protection Type Settings
+    /// End-to-end Data Protection Type Settings (DPS)
+    ///
+    /// Bits 7:4 are reserved
+    /// Bit 3 indicates that the protection information, if enabled, is transferred as first 8 bytes of metadata (1) or last 8 bytes (0).
+    /// Bits 2:0 indicate whether Protection Information is enabled and the type.
+    ///     000b = Protection information is not enabled
+    ///     001b = Protection information is enabled, Type 1
+    ///     010b = Protection information is enabled, Type 2
+    ///     011b = Protection information is enabled, Type 3
+    ///     100b-111b = Reserved
+    /// See NVMe 1.0e Section 8.3 End-to-end Data Protection (Optional)
     pub dps: u8,
     /// Reserved
     pub _resv1: [u8; 98],
-    /// LBA Formats
+    /// LBA Formats (LBAF0-LBAF15)
+    ///
+    /// The list of supported LBA formats.
     pub lbaf: [LbaFormat; 16],
     /// Reserved
     pub _resv2: [u8; 192],
-    /// Vendor Specific
+    /// Vendor Specific (VS)
     pub vs: [u8; 3712],
 }
 
+// We can't derive Default since Default isn't impl'd
+// for [T; N] where N > 32 yet (rust #61415)
 impl Default for IdentifyNamespace {
     fn default() -> Self {
         Self {

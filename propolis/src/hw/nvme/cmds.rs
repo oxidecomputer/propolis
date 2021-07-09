@@ -1,7 +1,6 @@
 use super::bits::{self, RawSubmission, StatusCodeType};
 use super::queue::{QueueCreateErr, QueueId};
 use crate::common::*;
-use crate::hw::nvme::bits::STS_INVAL_PRP_OFFSET;
 use crate::vmm::MemCtx;
 
 use thiserror::Error;
@@ -98,7 +97,6 @@ impl AdminCmd {
             bits::ADMIN_OPC_ABORT => AdminCmd::Abort,
             bits::ADMIN_OPC_SET_FEATURES => {
                 AdminCmd::SetFeatures(SetFeaturesCmd {
-                    save: (raw.cdw10 & (1 << 31)) != 0,
                     fid: FeatureIdent::from((raw.cdw10 as u8, raw.cdw11)),
                 })
             }
@@ -224,7 +222,6 @@ impl IdentifyCmd {
 
 #[derive(Debug)]
 pub struct SetFeaturesCmd {
-    pub save: bool,
     pub fid: FeatureIdent,
 }
 
@@ -547,7 +544,7 @@ impl From<QueueCreateErr> for Completion {
     fn from(e: QueueCreateErr) -> Self {
         match e {
             QueueCreateErr::InvalidBaseAddr => {
-                Completion::generic_err(STS_INVAL_PRP_OFFSET)
+                Completion::generic_err(bits::STS_INVAL_FIELD)
             }
             QueueCreateErr::InvalidSize => Completion::specific_err(
                 StatusCodeType::CmdSpecific,

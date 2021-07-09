@@ -323,7 +323,7 @@ impl PciNvme {
                 let mut val = 0;
 
                 if state.ctrl.ready {
-                    val |= CSTS_READY;
+                    val |= CSTS_RDY;
                 }
                 ro.write_u32(val);
             }
@@ -500,12 +500,12 @@ impl PciNvme {
             };
 
             let completion = RawCompletion {
-                cdw0: comp.cdw0,
+                dw0: comp.cdw0,
                 rsvd: 0,
                 sqhd: sq.head(),
                 sqid: sq.id(),
                 cid: sub.cid(),
-                status: comp.status | cq.phase(),
+                status_phase: comp.status | cq.phase(),
             };
             cq.push(completion, ctx);
         }
