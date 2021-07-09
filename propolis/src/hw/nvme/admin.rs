@@ -117,7 +117,7 @@ impl NvmeCtrl {
     ) -> cmds::Completion {
         match cmd.cns {
             IDENT_CNS_NAMESPACE => match cmd.nsid {
-                n if n > 0 && n < super::ns::MAX_NUM_NAMESPACES as u32 => {
+                n if n > 0 && n <= super::ns::MAX_NUM_NAMESPACES as u32 => {
                     assert!(size_of::<bits::IdentifyNamespace>() <= PAGE_SIZE);
                     let buf = cmd
                         .data(ctx.mctx.memctx())
