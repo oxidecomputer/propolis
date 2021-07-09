@@ -99,18 +99,15 @@ impl NvmeNs {
                 NvmCmd::Read(cmd) => {
                     self.read_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
                 }
-                NvmCmd::Flush | NvmCmd::Unknown(_) => {
+                NvmCmd::Flush => {
+                    self.flush_cmd(sub.cid(), cq.clone(), sq.clone())
+                }
+                NvmCmd::Unknown(_) => {
                     // For any other command, just immediately complete it
                     let mut cq = cq.lock().unwrap();
                     let sq = sq.lock().unwrap();
 
-                    let comp = if matches!(cmd, NvmCmd::Flush) {
-                        // TODO: is there anything else to do for flush?
-                        Completion::success()
-                    } else {
-                        Completion::generic_err(bits::STS_INTERNAL_ERR)
-                    };
-
+                    let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
                     let completion = RawCompletion {
                         dw0: comp.dw0,
                         rsvd: 0,
@@ -126,6 +123,25 @@ impl NvmeNs {
         }
 
         Ok(())
+    }
+
+    /// Enqueues a flush to the underlying block device
+    fn flush_cmd(
+        &self,
+        cid: u16,
+        cq: Arc<Mutex<CompQueue>>,
+        sq: Arc<Mutex<SubQueue>>,
+    ) {
+        // TODO: handles if it gets unmapped?
+        self.bdev.enqueue(Request {
+            op: BlockOp::Flush,
+            off: 0,
+            xfer_left: 0,
+            bufs: VecDeque::new(),
+            cid,
+            cq,
+            sq,
+        });
     }
 
     /// Enqueues a read to the underlying block device
