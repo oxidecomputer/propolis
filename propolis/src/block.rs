@@ -67,13 +67,14 @@ pub struct PlainBdev<R: BlockReq> {
     reqs: Mutex<VecDeque<R>>,
     cond: Condvar,
 }
+
 impl<R: BlockReq> PlainBdev<R> {
     /// Creates a new block device from a device at `path`.
-    pub fn create(path: impl AsRef<Path>) -> Result<Arc<Self>> {
+    pub fn create(path: impl AsRef<Path>, readonly: bool) -> Result<Arc<Self>> {
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;
-        let is_ro = meta.permissions().readonly();
+        let is_ro = readonly || meta.permissions().readonly();
 
         let fp = OpenOptions::new().read(true).write(!is_ro).open(p)?;
         let is_raw = fp.metadata()?.file_type().is_char_device();

@@ -163,7 +163,7 @@ async fn instance_ensure(
         // If properties match, we return Ok. Otherwise, we could attempt to
         // update the instance.
         //
-        // TODO: The intial implementation does not modify any properties,
+        // TODO: The initial implementation does not modify any properties,
         // but we plausibly could do so - need to work out which properties
         // can be changed without rebooting.
         if ctx.properties != properties {
@@ -213,6 +213,8 @@ async fn instance_ensure(
                 let driver = &dev.driver as &str;
                 match driver {
                     "pci-virtio-block" => {
+                        let readonly: bool =
+                            dev.get("readonly").unwrap_or(false);
                         let path = dev.get_string("disk").ok_or_else(|| {
                             Error::new(
                                 ErrorKind::InvalidData,
@@ -226,7 +228,7 @@ async fn instance_ensure(
                                     "Cannot parse disk PCI",
                                 )
                             })?;
-                        init.initialize_block(&chipset, path, bdf)?;
+                        init.initialize_block(&chipset, path, bdf, readonly)?;
                     }
                     "pci-virtio-viona" => {
                         let name = dev.get_string("vnic").ok_or_else(|| {
