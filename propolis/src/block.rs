@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::Result;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Condvar;
 use std::sync::{Arc, Mutex, Weak};
@@ -14,6 +15,7 @@ use crate::dispatch::{DispCtx, Dispatcher};
 /// Type of operations which may be issued to a virtual block device.
 #[derive(Copy, Clone, Debug)]
 pub enum BlockOp {
+    Flush,
     Read,
     Write,
 }
@@ -107,6 +109,15 @@ impl<R: BlockReq> PlainBdev<R> {
 
             if let Some(mut req) = reqs.pop_front() {
                 let res = match req.oper() {
+                    BlockOp::Flush => {
+                        let res =
+                            unsafe { libc::fdatasync(self.fp.as_raw_fd()) };
+                        if res == -1 {
+                            BlockResult::Failure
+                        } else {
+                            BlockResult::Success
+                        }
+                    }
                     BlockOp::Read => self.process_read(&mut req, ctx),
                     BlockOp::Write => self.process_write(&mut req, ctx),
                 };

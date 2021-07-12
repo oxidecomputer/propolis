@@ -205,6 +205,7 @@ impl BlockReq for Request {
             return None;
         }
         let res = match self.op {
+            BlockOp::Flush => return None,
             BlockOp::Read => self.chain.writable_buf(self.xfer_left),
             BlockOp::Write => self.chain.readable_buf(self.xfer_left),
         };

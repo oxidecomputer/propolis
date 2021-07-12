@@ -1,5 +1,6 @@
 pub mod chipset;
 pub mod ibmpc;
+pub mod nvme;
 pub mod pci;
 pub mod ps2ctrl;
 pub mod qemu;
