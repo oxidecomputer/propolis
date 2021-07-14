@@ -49,9 +49,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::from_args_safe()?;
 
     match args {
-        Args::OpenApi => {
-            run_openapi().map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e))
-        }
+        Args::OpenApi => run_openapi()
+            .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
         Args::Run { cfg, propolis_addr } => {
             let config = config::parse(&cfg)?;
 
@@ -60,18 +59,25 @@ async fn main() -> anyhow::Result<()> {
                 bind_address: propolis_addr,
                 ..Default::default()
             };
-            let config_logging =
-                ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Info };
-            let log = config_logging
-                .to_logger("propolis-server")
-                .map_err(|error| anyhow!("failed to create logger: {}", error))?;
+            let config_logging = ConfigLogging::StderrTerminal {
+                level: ConfigLoggingLevel::Info,
+            };
+            let log = config_logging.to_logger("propolis-server").map_err(
+                |error| anyhow!("failed to create logger: {}", error),
+            )?;
 
             let context = server::Context::new(config);
-            let server =
-                HttpServerStarter::new(&config_dropshot, server::api(), context, &log)
-                    .map_err(|error| anyhow!("Failed to start server: {}", error))?
-                    .start();
-            server.await.map_err(|e| anyhow!("Server exited with an error: {}", e))
+            let server = HttpServerStarter::new(
+                &config_dropshot,
+                server::api(),
+                context,
+                &log,
+            )
+            .map_err(|error| anyhow!("Failed to start server: {}", error))?
+            .start();
+            server
+                .await
+                .map_err(|e| anyhow!("Server exited with an error: {}", e))
         }
     }
 }
