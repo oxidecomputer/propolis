@@ -239,7 +239,12 @@ fn main() {
                         nvme_ctrl
                     ));
 
-                    let plain = block::PlainBdev::create(disk_path).unwrap();
+                    let readonly: bool = || -> Option<bool> {
+                        dev.options.get("readonly")?.as_str()?.parse().ok()
+                    }()
+                    .unwrap_or(false);
+                    let plain =
+                        block::PlainBdev::create(disk_path, readonly).unwrap();
                     let ns = hw::nvme::NvmeNs::create(plain.clone());
 
                     if let Err(e) =
