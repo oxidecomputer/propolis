@@ -194,8 +194,8 @@ fn main() {
                     .unwrap_or(false);
 
                     let plain: Arc<
-                        block::PlainBdev<hw::virtio::block::Request>,
-                    > = block::PlainBdev::create(disk_path, readonly).unwrap();
+                        block::PlainBdev<hw::virtio::block::Request, block::FileBlockDevBackingStore>,
+                    > = block::create_file_backed_block_device(disk_path, readonly).unwrap();
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
@@ -244,7 +244,7 @@ fn main() {
                     }()
                     .unwrap_or(false);
                     let plain =
-                        block::PlainBdev::create(disk_path, readonly).unwrap();
+                        block::create_file_backed_block_device(disk_path, readonly).unwrap();
                     let ns = hw::nvme::NvmeNs::create(plain.clone());
 
                     if let Err(e) =
