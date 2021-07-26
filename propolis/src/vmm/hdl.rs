@@ -8,7 +8,6 @@
 //! object which represents a single VM.
 
 use super::mapping::*;
-use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -37,12 +36,10 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
         .write(true)
         .custom_flags(libc::O_EXCL)
         .open(bhyve_api::VMM_CTL_PATH)?;
-    let namestr = CString::new(name)
-        .or_else(|_x| Err(Error::from_raw_os_error(libc::EINVAL)))?;
-    let nameptr = namestr.as_ptr();
     let ctlfd = ctl.as_raw_fd();
 
-    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, nameptr) };
+    let req = bhyve_api::vm_create_req::new(name);
+    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
     if res != 0 {
         let err = Error::last_os_error();
         if err.kind() != ErrorKind::AlreadyExists {
@@ -50,18 +47,20 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
         } else if !force {
             return Err(err);
         }
+
         // try to nuke(!) the existing vm
+        let dreq = bhyve_api::vm_destroy_req::new(name);
         let res =
-            unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, nameptr) };
+            unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, &dreq) };
         if res != 0 {
             let err = Error::last_os_error();
             if err.kind() != ErrorKind::NotFound {
                 return Err(err);
             }
         }
-        // attempt to create in its presumed absence
-        let res =
-            unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, nameptr) };
+
+        // now attempt to create in its presumed absence
+        let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
         if res != 0 {
             return Err(Error::last_os_error());
         }
@@ -83,7 +82,6 @@ fn create_vm_impl(_name: &str, _force: bool) -> Result<VmmHdl> {
         // suppress unused warnings
         let mut _oo = OpenOptions::new();
         _oo.mode(0o444);
-        let _cstr = CString::new("");
         let _flag = libc::O_EXCL;
         let _pathbuf = PathBuf::new();
     }
@@ -101,12 +99,10 @@ fn destroy_vm_impl(name: &str) -> Result<()> {
         .write(true)
         .custom_flags(libc::O_EXCL)
         .open(bhyve_api::VMM_CTL_PATH)?;
-    let namestr = CString::new(name)
-        .or_else(|_x| Err(Error::from_raw_os_error(libc::EINVAL)))?;
-    let nameptr = namestr.as_ptr();
     let ctlfd = ctl.as_raw_fd();
 
-    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, nameptr) };
+    let dreq = bhyve_api::vm_destroy_req::new(name);
+    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, &dreq) };
     if res != 0 {
         let err = Error::last_os_error();
         if err.kind() == ErrorKind::NotFound {
