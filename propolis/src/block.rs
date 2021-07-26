@@ -3,11 +3,11 @@
 use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::Result;
+use std::io::{Error, ErrorKind};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Condvar;
 use std::sync::{Arc, Mutex, Weak};
-use std::io::{Error, ErrorKind};
 
 use crate::common::*;
 use crate::dispatch::{DispCtx, Dispatcher};
@@ -79,7 +79,10 @@ pub struct FileBlockDevBackingStore {
 }
 
 impl FileBlockDevBackingStore {
-    pub fn from_path(path: impl AsRef<Path>, readonly: bool) -> Result<FileBlockDevBackingStore> {
+    pub fn from_path(
+        path: impl AsRef<Path>,
+        readonly: bool,
+    ) -> Result<FileBlockDevBackingStore> {
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;
@@ -89,11 +92,7 @@ impl FileBlockDevBackingStore {
         let is_ro = readonly || meta.permissions().readonly();
         let len = fp.metadata().unwrap().len() as usize;
 
-        Ok(FileBlockDevBackingStore {
-            fp: fp,
-            is_ro: is_ro,
-            len: len,
-        })
+        Ok(FileBlockDevBackingStore { fp: fp, is_ro: is_ro, len: len })
     }
 
     pub fn get_file(&self) -> &File {
@@ -197,8 +196,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
             if let Some(mut req) = reqs.pop_front() {
                 let result = self.process_request(&mut req, ctx);
                 req.complete(result, ctx);
-            }
-            else {
+            } else {
                 reqs = self.cond.wait(reqs).unwrap();
             }
         }
@@ -218,16 +216,22 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
             let sz = buf.1;
 
             let result = match req.oper() {
-                BlockOp::Read => self.process_read_request(offset, sz, &mem, buf),
+                BlockOp::Read => {
+                    self.process_read_request(offset, sz, &mem, buf)
+                }
                 BlockOp::Write => self.process_write_request(offset, &mem, buf),
                 BlockOp::Flush => self.process_flush(),
             };
 
             // TODO: should all BlockReq be attempted instead of returning early?
             match result {
-                BlockResult::Success => {}, // ok
-                BlockResult::Failure => { return BlockResult::Failure; },
-                BlockResult::Unsupported => { return BlockResult::Unsupported; },
+                BlockResult::Success => {} // ok
+                BlockResult::Failure => {
+                    return BlockResult::Failure;
+                }
+                BlockResult::Unsupported => {
+                    return BlockResult::Unsupported;
+                }
             };
 
             offset += sz;
@@ -239,7 +243,13 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
     /*
      * Read from BlockReqBackingStore and write into VM memory.
      */
-    fn process_read_request(&self, offset: usize, sz: usize, mem: &MemCtx, buf: GuestRegion) -> BlockResult {
+    fn process_read_request(
+        &self,
+        offset: usize,
+        sz: usize,
+        mem: &MemCtx,
+        buf: GuestRegion,
+    ) -> BlockResult {
         let bytes = self.backing_store.issue_read(offset, sz);
 
         match bytes {
@@ -264,7 +274,12 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
     /*
      * Read from VM memory and write to BlockReqBackingStore.
      */
-    fn process_write_request(&self, offset: usize, mem: &MemCtx, buf: GuestRegion) -> BlockResult {
+    fn process_write_request(
+        &self,
+        offset: usize,
+        mem: &MemCtx,
+        buf: GuestRegion,
+    ) -> BlockResult {
         let bytes = read_from_vm_memory(mem, buf);
 
         match bytes {
@@ -337,10 +352,11 @@ impl<R: BlockReq, S: BlockDevBackingStore> BlockDev<R> for PlainBdev<R, S> {
 
 pub fn create_file_backed_block_device<R: BlockReq>(
     path: impl AsRef<Path>,
-    readonly: bool
+    readonly: bool,
 ) -> Result<Arc<PlainBdev<R, FileBlockDevBackingStore>>> {
     let backing_store = FileBlockDevBackingStore::from_path(path, readonly)?;
-    let plain_bdev = PlainBdev::<R, FileBlockDevBackingStore>::create(backing_store)?;
+    let plain_bdev =
+        PlainBdev::<R, FileBlockDevBackingStore>::create(backing_store)?;
 
     Ok(plain_bdev)
 }
@@ -359,19 +375,29 @@ fn read_from_vm_memory(mem: &MemCtx, buf: GuestRegion) -> Result<Vec<u8>> {
                 return Ok(bytes);
             }
             Err(_) => {
-                return Err(Error::new(ErrorKind::Other, "Error reading from guest memory"))
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    "Error reading from guest memory",
+                ))
             }
         }
     } else {
         // TODO: better error messaging
-        return Err(Error::new(ErrorKind::Other, "Error getting readable region"))
+        return Err(Error::new(
+            ErrorKind::Other,
+            "Error getting readable region",
+        ));
     }
 }
 
 /*
  * Write bytes to VM memory (through MemCtx) at designated GuestRegion.
  */
-fn write_to_vm_memory(bytes: Vec<u8>, mem: &MemCtx, buf: GuestRegion) -> Result<()> {
+fn write_to_vm_memory(
+    bytes: Vec<u8>,
+    mem: &MemCtx,
+    buf: GuestRegion,
+) -> Result<()> {
     assert_eq!(bytes.len(), buf.1);
 
     if let Some(mapping) = mem.writable_region(&buf) {
@@ -381,11 +407,17 @@ fn write_to_vm_memory(bytes: Vec<u8>, mem: &MemCtx, buf: GuestRegion) -> Result<
                 Ok(())
             }
             Err(_) => {
-                return Err(Error::new(ErrorKind::Other, "Error writing to guest memory"))
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    "Error writing to guest memory",
+                ))
             }
         }
     } else {
         // TODO: better error messaging
-        return Err(Error::new(ErrorKind::Other, "Error getting writable region"))
+        return Err(Error::new(
+            ErrorKind::Other,
+            "Error getting writable region",
+        ));
     }
 }
