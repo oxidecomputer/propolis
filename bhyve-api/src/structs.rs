@@ -277,3 +277,33 @@ pub struct vm_run_state {
     pub sipi_vector: u8,
     pub _pad: [u8; 3],
 }
+
+pub const VM_MAX_NAMELEN: usize = 128;
+pub const VM_MAX_SEG_NAMELEN: usize = 128;
+
+// Allocate guest memory segments from existing reservoir capacity, rather than
+// attempting to create transient allocations.
+pub const VCF_RESERVOIR_MEM: u64 = 1;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_create_req {
+    pub name: [u8; VM_MAX_NAMELEN],
+    pub flags: u64,
+}
+impl Default for vm_create_req {
+    fn default() -> Self {
+        Self { name: [0u8; VM_MAX_NAMELEN], flags: 0 }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_destroy_req {
+    pub name: [u8; VM_MAX_NAMELEN],
+}
+impl Default for vm_destroy_req {
+    fn default() -> Self {
+        Self { name: [0u8; VM_MAX_NAMELEN] }
+    }
+}
