@@ -281,10 +281,6 @@ pub struct vm_run_state {
 pub const VM_MAX_NAMELEN: usize = 128;
 pub const VM_MAX_SEG_NAMELEN: usize = 128;
 
-// Allocate guest memory segments from existing reservoir capacity, rather than
-// attempting to create transient allocations.
-pub const VCF_RESERVOIR_MEM: u64 = 1;
-
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_create_req {
@@ -296,6 +292,12 @@ impl Default for vm_create_req {
         Self { name: [0u8; VM_MAX_NAMELEN], flags: 0 }
     }
 }
+
+// Flag values for use in in `vm_create_req`:
+
+// Allocate guest memory segments from existing reservoir capacity, rather than
+// attempting to create transient allocations.
+pub const VCF_RESERVOIR_MEM: u64 = 1;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
