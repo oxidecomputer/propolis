@@ -89,7 +89,6 @@ impl FileBlockDevBackingStore {
         let is_ro = readonly || meta.permissions().readonly();
 
         let fp = OpenOptions::new().read(true).write(!is_ro).open(p)?;
-        let is_ro = readonly || meta.permissions().readonly();
         let len = fp.metadata().unwrap().len() as usize;
 
         Ok(FileBlockDevBackingStore { fp, is_ro, len })
