@@ -193,12 +193,7 @@ fn main() {
                     }()
                     .unwrap_or(false);
 
-                    let plain: Arc<
-                        block::PlainBdev<
-                            hw::virtio::block::Request,
-                            block::FileBlockDevBackingStore,
-                        >,
-                    > = block::create_file_backed_block_device(
+                    let plain = block::create_file_backed_block_device(
                         disk_path, readonly,
                     )
                     .unwrap();
