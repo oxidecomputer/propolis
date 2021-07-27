@@ -62,7 +62,7 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 /// Abstraction over an actual backing store
 pub trait BlockDevBackingStore: Send + Sync + 'static {
     fn issue_read(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize>;
-    fn issue_write(&self, bytes: &[u8], offset: usize) -> Result<()>;
+    fn issue_write(&self, bytes: &[u8], offset: usize) -> Result<usize>;
     fn issue_flush(&self) -> Result<()>;
 
     fn is_ro(&self) -> bool;
@@ -105,7 +105,7 @@ impl BlockDevBackingStore for FileBlockDevBackingStore {
         Ok(nread as usize)
     }
 
-    fn issue_write(&self, bytes: &[u8], offset: usize) -> Result<()> {
+    fn issue_write(&self, bytes: &[u8], offset: usize) -> Result<usize> {
         let nwritten = unsafe {
             libc::pwrite(
                 self.fp.as_raw_fd(),
@@ -119,8 +119,7 @@ impl BlockDevBackingStore for FileBlockDevBackingStore {
             return Err(Error::last_os_error());
         }
 
-        assert_eq!(nwritten as usize, bytes.len());
-        Ok(())
+        Ok(nwritten as usize)
     }
 
     fn issue_flush(&self) -> Result<()> {
@@ -262,24 +261,26 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         buf: GuestRegion,
     ) -> BlockResult {
         let bytes = read_from_vm_memory(mem, buf);
+        let sz = buf.1;
 
         match bytes {
             Ok(bytes) => {
                 match self.backing_store.issue_write(&bytes[..], offset) {
-                    Ok(()) => {} // ok
+                    Ok(nwritten) => {
+                        assert_eq!(nwritten as usize, sz);
+                        BlockResult::Success
+                    }
                     Err(_) => {
                         // TODO: encapsulated error here from BlockReqBackingStore here?
-                        return BlockResult::Failure;
+                        BlockResult::Failure
                     }
                 }
             }
             Err(_) => {
                 // TODO: bad read from VM memory
-                return BlockResult::Failure;
+                BlockResult::Failure
             }
         }
-
-        BlockResult::Success
     }
 
     /*
