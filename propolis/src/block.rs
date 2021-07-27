@@ -92,7 +92,7 @@ impl FileBlockDevBackingStore {
         let is_ro = readonly || meta.permissions().readonly();
         let len = fp.metadata().unwrap().len() as usize;
 
-        Ok(FileBlockDevBackingStore { fp: fp, is_ro: is_ro, len: len })
+        Ok(FileBlockDevBackingStore { fp, is_ro, len })
     }
 
     pub fn get_file(&self) -> &File {
