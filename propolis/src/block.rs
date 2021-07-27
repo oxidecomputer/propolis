@@ -62,7 +62,7 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 /// Abstraction over an actual backing store
 pub trait BlockDevBackingStore: Send + Sync + 'static {
     fn issue_read(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize>;
-    fn issue_write(&self, bytes: &[u8], offset: usize) -> Result<usize>;
+    fn issue_write(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize>;
     fn issue_flush(&self) -> Result<()>;
 
     fn is_ro(&self) -> bool;
@@ -101,25 +101,11 @@ impl FileBlockDevBackingStore {
 
 impl BlockDevBackingStore for FileBlockDevBackingStore {
     fn issue_read(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize> {
-        let nread = mapping.pread(&self.fp, sz, offset as i64)?;
-        Ok(nread as usize)
+        mapping.pread(&self.fp, sz, offset as i64)
     }
 
-    fn issue_write(&self, bytes: &[u8], offset: usize) -> Result<usize> {
-        let nwritten = unsafe {
-            libc::pwrite(
-                self.fp.as_raw_fd(),
-                bytes.as_ptr() as *const libc::c_void,
-                bytes.len(),
-                offset as i64,
-            )
-        };
-
-        if nwritten == -1 {
-            return Err(Error::last_os_error());
-        }
-
-        Ok(nwritten as usize)
+    fn issue_write(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize> {
+        mapping.pwrite(&self.fp, sz, offset as i64)
     }
 
     fn issue_flush(&self) -> Result<()> {
@@ -261,26 +247,23 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         mem: &MemCtx,
         buf: GuestRegion,
     ) -> BlockResult {
-        let bytes = read_from_vm_memory(mem, buf);
         let sz = buf.1;
 
-        match bytes {
-            Ok(bytes) => {
-                match self.backing_store.issue_write(&bytes[..], offset) {
-                    Ok(nwritten) => {
-                        assert_eq!(nwritten as usize, sz);
-                        BlockResult::Success
-                    }
-                    Err(_) => {
-                        // TODO: encapsulated error here from BlockReqBackingStore here?
-                        BlockResult::Failure
-                    }
+        if let Some(mapping) = mem.readable_region(&buf) {
+            let nwritten = self.backing_store.issue_write(offset, sz, mapping);
+            match nwritten {
+                Ok(nwritten) => {
+                    assert_eq!(nwritten as usize, sz);
+                    BlockResult::Success
+                }
+                Err(_) => {
+                    // TODO: Error writing to guest memory
+                    BlockResult::Failure
                 }
             }
-            Err(_) => {
-                // TODO: bad read from VM memory
-                BlockResult::Failure
-            }
+        } else {
+            // TODO: Error getting readable region
+            BlockResult::Failure
         }
     }
 
@@ -343,35 +326,3 @@ pub fn create_file_backed_block_device<R: BlockReq>(
 
     Ok(plain_bdev)
 }
-
-/*
- * Read from VM memory (through MemCtx) at designated GuestRegion, and return Vec<u8>.
- */
-fn read_from_vm_memory(mem: &MemCtx, buf: GuestRegion) -> Result<Vec<u8>> {
-    let sz = buf.1;
-
-    if let Some(mapping) = mem.readable_region(&buf) {
-        let mut bytes = Vec::<u8>::with_capacity(sz);
-        bytes.resize(sz, 0);
-
-        match mapping.read_bytes(&mut bytes[..]) {
-            Ok(nread) => {
-                assert_eq!(nread as usize, bytes.len());
-                return Ok(bytes);
-            }
-            Err(_) => {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Error reading from guest memory",
-                ))
-            }
-        }
-    } else {
-        // TODO: better error messaging
-        return Err(Error::new(
-            ErrorKind::Other,
-            "Error getting readable region",
-        ));
-    }
-}
-
