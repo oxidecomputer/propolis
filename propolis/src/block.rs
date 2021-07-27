@@ -206,7 +206,8 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
                 BlockOp::Flush => self.process_flush(),
             };
 
-            // TODO: should all BlockReq be attempted instead of returning early?
+            // If any BlockReq in this IO request fail, inform the guest that
+            // their IO request failed.
             match result {
                 BlockResult::Success => {} // ok
                 BlockResult::Failure => {
