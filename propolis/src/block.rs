@@ -61,8 +61,18 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 
 /// Abstraction over an actual backing store
 pub trait BlockDevBackingStore: Send + Sync + 'static {
-    fn issue_read(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize>;
-    fn issue_write(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize>;
+    fn issue_read(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize>;
+    fn issue_write(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize>;
     fn issue_flush(&self) -> Result<()>;
 
     fn is_ro(&self) -> bool;
@@ -100,11 +110,21 @@ impl FileBlockDevBackingStore {
 }
 
 impl BlockDevBackingStore for FileBlockDevBackingStore {
-    fn issue_read(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize> {
+    fn issue_read(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize> {
         mapping.pread(&self.fp, sz, offset as i64)
     }
 
-    fn issue_write(&self, offset: usize, sz: usize, mapping: SubMapping) -> Result<usize> {
+    fn issue_write(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize> {
         mapping.pwrite(&self.fp, sz, offset as i64)
     }
 
