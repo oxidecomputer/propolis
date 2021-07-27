@@ -281,6 +281,13 @@ pub struct vm_run_state {
 pub const VM_MAX_NAMELEN: usize = 128;
 pub const VM_MAX_SEG_NAMELEN: usize = 128;
 
+// Copy VM name, paying no heed to whether a trailing NUL is left in the
+// destination byte slice.  The kernel will do that error handling.
+fn copy_name(field: &mut [u8], name: &str) {
+    let copy_len = name.len().min(field.len());
+    field[..copy_len].copy_from_slice(name.as_bytes());
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_create_req {
@@ -290,6 +297,13 @@ pub struct vm_create_req {
 impl Default for vm_create_req {
     fn default() -> Self {
         Self { name: [0u8; VM_MAX_NAMELEN], flags: 0 }
+    }
+}
+impl vm_create_req {
+    pub fn new(name: &str) -> Self {
+        let mut res = Self::default();
+        copy_name(&mut res.name, name);
+        res
     }
 }
 
@@ -307,5 +321,12 @@ pub struct vm_destroy_req {
 impl Default for vm_destroy_req {
     fn default() -> Self {
         Self { name: [0u8; VM_MAX_NAMELEN] }
+    }
+}
+impl vm_destroy_req {
+    pub fn new(name: &str) -> Self {
+        let mut res = Self::default();
+        copy_name(&mut res.name, name);
+        res
     }
 }

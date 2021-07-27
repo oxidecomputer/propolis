@@ -37,10 +37,8 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
         .custom_flags(libc::O_EXCL)
         .open(bhyve_api::VMM_CTL_PATH)?;
     let ctlfd = ctl.as_raw_fd();
-    let name_len = name.len().min(bhyve_api::VM_MAX_NAMELEN);
 
-    let mut req = bhyve_api::vm_create_req::default();
-    req.name[..name_len].copy_from_slice(name.as_bytes());
+    let req = bhyve_api::vm_create_req::new(name);
     let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
     if res != 0 {
         let err = Error::last_os_error();
@@ -51,8 +49,7 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
         }
 
         // try to nuke(!) the existing vm
-        let mut dreq = bhyve_api::vm_destroy_req::default();
-        dreq.name[..name_len].copy_from_slice(name.as_bytes());
+        let dreq = bhyve_api::vm_destroy_req::new(name);
         let res =
             unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, &dreq) };
         if res != 0 {
@@ -103,10 +100,8 @@ fn destroy_vm_impl(name: &str) -> Result<()> {
         .custom_flags(libc::O_EXCL)
         .open(bhyve_api::VMM_CTL_PATH)?;
     let ctlfd = ctl.as_raw_fd();
-    let name_len = name.len().min(bhyve_api::VM_MAX_NAMELEN);
 
-    let mut dreq = bhyve_api::vm_destroy_req::default();
-    dreq.name[..name_len].copy_from_slice(name.as_bytes());
+    let dreq = bhyve_api::vm_destroy_req::new(name);
     let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, &dreq) };
     if res != 0 {
         let err = Error::last_os_error();
