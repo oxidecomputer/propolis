@@ -102,6 +102,7 @@ impl FileBlockDevBackingStore {
 impl BlockDevBackingStore for FileBlockDevBackingStore {
     fn issue_read(&self, offset: usize, sz: usize) -> Result<Vec<u8>> {
         let mut vec = Vec::<u8>::with_capacity(sz);
+        vec.resize(sz, 0);
 
         let nread = unsafe {
             libc::pread(
@@ -368,6 +369,8 @@ fn read_from_vm_memory(mem: &MemCtx, buf: GuestRegion) -> Result<Vec<u8>> {
 
     if let Some(mapping) = mem.readable_region(&buf) {
         let mut bytes = Vec::<u8>::with_capacity(sz);
+        bytes.resize(sz, 0);
+
         match mapping.read_bytes(&mut bytes[..]) {
             Ok(nread) => {
                 assert_eq!(nread as usize, bytes.len());
