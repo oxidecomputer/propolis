@@ -152,9 +152,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         Ok(Arc::new(this))
     }
 
-    /*
-     * Consume enqueued requests and process them. Signal completion when done.
-     */
+    // Consume enqueued requests and process them. Signal completion when done.
     fn process_loop(&self, ctx: &mut DispCtx) {
         let mut reqs = self.reqs.lock().unwrap();
         loop {
@@ -171,9 +169,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         }
     }
 
-    /*
-     * Match against individual BlockReqs and call appropriate processing functions.
-     */
+    // Match against individual BlockReqs and call appropriate processing functions.
     fn process_request(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
         let mem = ctx.mctx.memctx();
 
@@ -210,9 +206,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         BlockResult::Success
     }
 
-    /*
-     * Read from BlockReqBackingStore and write into VM memory.
-     */
+    // Read from BlockReqBackingStore and write into VM memory.
     fn process_read_request(
         &self,
         offset: usize,
@@ -238,9 +232,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         }
     }
 
-    /*
-     * Read from VM memory and write to BlockReqBackingStore.
-     */
+    // Read from VM memory and write to BlockReqBackingStore.
     fn process_write_request(
         &self,
         offset: usize,
@@ -267,9 +259,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         }
     }
 
-    /*
-     * Send flush to BlockReqBackingStore
-     */
+    // Send flush to BlockReqBackingStore
     fn process_flush(&self) -> BlockResult {
         match self.backing_store.issue_flush() {
             Ok(()) => BlockResult::Success,
