@@ -61,24 +61,34 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 
 /// Abstraction over an actual backing store
 pub trait BlockDevBackingStore: Send + Sync + 'static {
+    /// Read from backing store and write into guest mapping
     fn issue_read(
         &self,
         offset: usize,
         sz: usize,
         mapping: SubMapping,
     ) -> Result<usize>;
+
+    /// Read from guest mapping and write into backing store
     fn issue_write(
         &self,
         offset: usize,
         sz: usize,
         mapping: SubMapping,
     ) -> Result<usize>;
+
+    /// Issue flush command to backing store
     fn issue_flush(&self) -> Result<()>;
 
+    /// Is backing store read only?
     fn is_ro(&self) -> bool;
 
-    // length in bytes
+    /// return total length in bytes
     fn len(&self) -> usize;
+
+    /// some backing stores may have block size requirements. optionally return a
+    /// block size in bytes.
+    fn block_size(&self) -> Option<usize>;
 }
 
 /// A block device implementation backed by an underlying file.
@@ -145,6 +155,11 @@ impl BlockDevBackingStore for FileBlockDevBackingStore {
     fn len(&self) -> usize {
         self.len
     }
+
+    fn block_size(&self) -> Option<usize> {
+        // Files do not have a block size requirement
+        None
+    }
 }
 
 /// Standard [`BlockDev`] implementation. Requires a backing store.
@@ -173,11 +188,15 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
     /// Creates a new block device from a device at `path`.
     pub fn create(backing_store: S) -> Result<Arc<Self>> {
         let len = backing_store.len();
+        let block_size = match backing_store.block_size() {
+            Some(v) => { v }
+            None => { 512 }
+        };
 
         let this = Self {
             backing_store,
-            block_size: 512,
-            sectors: len / 512,
+            block_size,
+            sectors: len / block_size,
             reqs: Mutex::new(VecDeque::new()),
             cond: Condvar::new(),
         };
@@ -185,7 +204,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         Ok(Arc::new(this))
     }
 
-    // Consume enqueued requests and process them. Signal completion when done.
+    /// Consume enqueued requests and process them. Signal completion when done.
     fn process_loop(&self, ctx: &mut DispCtx) {
         let mut reqs = self.reqs.lock().unwrap();
         loop {
@@ -202,14 +221,12 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         }
     }
 
-    // Match against individual BlockReqs and call appropriate processing functions.
+    /// Match against individual BlockReqs and call appropriate processing functions.
     fn process_request(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
         let mem = ctx.mctx.memctx();
 
         let mut offset = req.offset();
 
-        // TODO: are buffers guaranteed to be sector size? do BlockDevBackingStores require
-        // this?
         while let Some(buf) = req.next_buf() {
             let sz = buf.1;
 
@@ -239,7 +256,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         BlockResult::Success
     }
 
-    // Read from BlockReqBackingStore and write into VM memory.
+    /// Delegate a block device read to BlockReqBackingStore.
     fn process_read_request(
         &self,
         offset: usize,
@@ -265,7 +282,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         }
     }
 
-    // Read from VM memory and write to BlockReqBackingStore.
+    /// Delegate a block device write to BlockReqBackingStore.
     fn process_write_request(
         &self,
         offset: usize,
@@ -292,7 +309,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
         }
     }
 
-    // Send flush to BlockReqBackingStore
+    /// Send flush to BlockReqBackingStore
     fn process_flush(&self) -> BlockResult {
         match self.backing_store.issue_flush() {
             Ok(()) => BlockResult::Success,
