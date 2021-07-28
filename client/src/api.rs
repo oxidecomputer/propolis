@@ -16,6 +16,7 @@ pub struct InstancePathParams {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
+    pub nics: Vec<NetworkInterfaceRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -89,7 +90,7 @@ pub struct Instance {
     pub state: InstanceState,
 
     pub disks: Vec<DiskAttachment>,
-    pub nics: Vec<NicAttachment>,
+    pub nics: Vec<NetworkInterface>,
 }
 
 /// Describes how to connect to one or more storage agent services.
@@ -176,21 +177,26 @@ pub struct DiskAttachment {
     pub state: DiskAttachmentState,
 }
 
+/// A stable index which is translated by Propolis
+/// into a PCI BDF, visible to the guest.
+#[derive(Copy, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct PciSlot(pub u8);
+
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct NicAttachmentInfo {
-    pub slot: u16,
+pub struct NetworkInterfaceRequest {
+    pub name: String,
+    pub slot: PciSlot,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub enum NicAttachmentState {
-    Attached(NicAttachmentInfo),
+pub struct NetworkInterface {
+    pub name: String,
+    pub attachment: NetworkInterfaceAttachmentState,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub enum NetworkInterfaceAttachmentState {
+    Attached(PciSlot),
     Detached,
     Faulted,
-}
-
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct NicAttachment {
-    pub generation_id: u64,
-    pub nic_id: Uuid,
-    pub stat: NicAttachmentState,
 }

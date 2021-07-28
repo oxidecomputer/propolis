@@ -82,6 +82,7 @@ fn create_ensure_request(
             memory: 256,
             vcpus: 2,
         },
+        nics: vec![],
     }
 }
 
