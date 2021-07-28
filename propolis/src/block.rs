@@ -281,7 +281,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
                     BlockResult::Success
                 }
                 Err(_) => {
-                    // TODO: Error writing to guest memory
+                    // TODO: Error reading from guest memory
                     BlockResult::Failure
                 }
             }
