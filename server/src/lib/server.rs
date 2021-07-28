@@ -149,8 +149,9 @@ fn slot_to_bdf(slot: api::PciSlot, ty: SlotType) -> Result<pci::Bdf> {
         SlotType::Disk if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x10, 0)),
         _ => Err(anyhow::anyhow!(
             "PCI Slot {} has no translation to BDF for type {:?}",
-            slot.0, ty
-        ))
+            slot.0,
+            ty
+        )),
     }
 }
 
@@ -236,12 +237,13 @@ async fn instance_ensure(
 
             // Attach devices which have been requested from the HTTP interface.
             for nic in &nics {
-                let bdf = slot_to_bdf(nic.slot, SlotType::NIC).map_err(|e| {
-                    Error::new(
-                        ErrorKind::InvalidData,
-                        format!("Cannot parse vnic PCI: {}", e),
-                    )
-                })?;
+                let bdf =
+                    slot_to_bdf(nic.slot, SlotType::NIC).map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Cannot parse vnic PCI: {}", e),
+                        )
+                    })?;
                 init.initialize_vnic(&chipset, &nic.name, bdf)?;
             }
 
