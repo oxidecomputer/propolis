@@ -180,12 +180,12 @@ pub struct DiskAttachment {
 /// A stable index which is translated by Propolis
 /// into a PCI BDF, visible to the guest.
 #[derive(Copy, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct PciSlot(pub u8);
+pub struct Slot(pub u8);
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct NetworkInterfaceRequest {
     pub name: String,
-    pub slot: PciSlot,
+    pub slot: Slot,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -196,7 +196,7 @@ pub struct NetworkInterface {
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub enum NetworkInterfaceAttachmentState {
-    Attached(PciSlot),
+    Attached(Slot),
     Detached,
     Faulted,
 }

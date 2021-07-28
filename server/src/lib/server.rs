@@ -141,7 +141,7 @@ enum SlotType {
 // we'd like to assign a stable PCI slot, such that re-allocating these
 // devices on a new instance of propolis produces the same guest-visible
 // BDFs.
-fn slot_to_bdf(slot: api::PciSlot, ty: SlotType) -> Result<pci::Bdf> {
+fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
     match ty {
         // Slots for NICS: 0x08 -> 0x0F
         SlotType::NIC if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x8, 0)),
