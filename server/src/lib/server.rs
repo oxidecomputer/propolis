@@ -128,21 +128,29 @@ fn propolis_to_api_state(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SlotType {
+    NIC,
+    #[allow(dead_code)]
+    Disk,
+}
+
 // This is a somewhat hard-coded translation of a stable "PCI slot" to a BDF.
 //
 // For all the devices requested by Nexus (network interfaces, disks, etc),
 // we'd like to assign a stable PCI slot, such that re-allocating these
 // devices on a new instance of propolis produces the same guest-visible
 // BDFs.
-fn slot_to_bdf(slot: api::PciSlot) -> Result<pci::Bdf> {
-    match slot.0 {
-        // NOTE: This "5" is 100% arbitrary; it just shows we'd map to different
-        // slots as new devices are requested.
-        n if n < 5 => Ok(pci::Bdf::new(0, n, 0)),
+fn slot_to_bdf(slot: api::PciSlot, ty: SlotType) -> Result<pci::Bdf> {
+    match ty {
+        // Slots for NICS: 0x08 -> 0x0F
+        SlotType::NIC if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x8, 0)),
+        // Slots for Disks: 0x10 -> 0x17
+        SlotType::Disk if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x10, 0)),
         _ => Err(anyhow::anyhow!(
-            "PCI Slot has no translation to BDF: {}",
-            slot.0
-        )),
+            "PCI Slot {} has no translation to BDF for type {:?}",
+            slot.0, ty
+        ))
     }
 }
 
@@ -228,7 +236,7 @@ async fn instance_ensure(
 
             // Attach devices which have been requested from the HTTP interface.
             for nic in &nics {
-                let bdf = slot_to_bdf(nic.slot).map_err(|e| {
+                let bdf = slot_to_bdf(nic.slot, SlotType::NIC).map_err(|e| {
                     Error::new(
                         ErrorKind::InvalidData,
                         format!("Cannot parse vnic PCI: {}", e),
