@@ -189,8 +189,8 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
     pub fn create(backing_store: S) -> Result<Arc<Self>> {
         let len = backing_store.len();
         let block_size = match backing_store.block_size() {
-            Some(v) => { v }
-            None => { 512 }
+            Some(v) => v,
+            None => 512,
         };
 
         let this = Self {
