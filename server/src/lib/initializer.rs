@@ -208,8 +208,7 @@ impl<'a> MachineInitializer<'a> {
         bdf: pci::Bdf,
         readonly: bool,
     ) -> Result<(), Error> {
-        let plain =
-            block::create_file_backed_block_device(path.as_ref(), readonly)?;
+        let plain = block::PlainBdev::from_file(path.as_ref(), readonly)?;
 
         let vioblk = virtio::VirtioBlock::create(
             0x100,

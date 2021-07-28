@@ -156,6 +156,18 @@ pub struct PlainBdev<R: BlockReq, S: BlockDevBackingStore> {
     cond: Condvar,
 }
 
+impl<R: BlockReq> PlainBdev<R, FileBlockDevBackingStore> {
+    pub fn from_file(
+        path: impl AsRef<Path>,
+        readonly: bool,
+    ) -> Result<Arc<PlainBdev<R, FileBlockDevBackingStore>>> {
+        let backing_store = FileBlockDevBackingStore::from_path(path, readonly)?;
+        let plain_bdev = PlainBdev::create(backing_store)?;
+
+        Ok(plain_bdev)
+    }
+}
+
 impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
     /// Creates a new block device from a device at `path`.
     pub fn create(backing_store: S) -> Result<Arc<Self>> {
@@ -324,15 +336,4 @@ impl<R: BlockReq, S: BlockDevBackingStore> BlockDev<R> for PlainBdev<R, S> {
             writable: !self.backing_store.is_ro(),
         }
     }
-}
-
-pub fn create_file_backed_block_device<R: BlockReq>(
-    path: impl AsRef<Path>,
-    readonly: bool,
-) -> Result<Arc<PlainBdev<R, FileBlockDevBackingStore>>> {
-    let backing_store = FileBlockDevBackingStore::from_path(path, readonly)?;
-    let plain_bdev =
-        PlainBdev::<R, FileBlockDevBackingStore>::create(backing_store)?;
-
-    Ok(plain_bdev)
 }

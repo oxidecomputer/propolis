@@ -193,10 +193,7 @@ fn main() {
                     }()
                     .unwrap_or(false);
 
-                    let plain = block::create_file_backed_block_device(
-                        disk_path, readonly,
-                    )
-                    .unwrap();
+                    let plain = block::PlainBdev::from_file(disk_path, readonly) .unwrap();
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
@@ -244,10 +241,8 @@ fn main() {
                         dev.options.get("readonly")?.as_str()?.parse().ok()
                     }()
                     .unwrap_or(false);
-                    let plain = block::create_file_backed_block_device(
-                        disk_path, readonly,
-                    )
-                    .unwrap();
+
+                    let plain = block::PlainBdev::from_file(disk_path, readonly).unwrap();
                     let ns = hw::nvme::NvmeNs::create(plain.clone());
 
                     if let Err(e) =
