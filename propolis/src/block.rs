@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::Result;
-use std::os::unix::fs::FileTypeExt;
+use std::io::{Error, ErrorKind};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Condvar;
@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
 use crate::dispatch::{DispCtx, Dispatcher};
+use crate::vmm::{MemCtx, SubMapping};
 
 /// Type of operations which may be issued to a virtual block device.
 #[derive(Copy, Clone, Debug)]
@@ -53,53 +54,156 @@ pub struct BlockInquiry {
 pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
     /// Enqueues a [`BlockReq`] to the underlying device.
     fn enqueue(&self, req: R);
+
     /// Requests metadata about the block device.
     fn inquire(&self) -> BlockInquiry;
 }
 
-/// A block device implementation backed by an underlying file.
-///
-/// Primarily accessed through the [`BlockDev`] interface.
-pub struct PlainBdev<R: BlockReq> {
-    fp: File,
-    is_ro: bool,
-    is_raw: bool,
-    block_size: usize,
-    sectors: usize,
-    reqs: Mutex<VecDeque<R>>,
-    cond: Condvar,
+/// Abstraction over an actual backing store
+pub trait BackingStore: Send + Sync + 'static {
+    /// Read from backing store and write into guest mapping
+    fn issue_read(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize>;
+
+    /// Read from guest mapping and write into backing store
+    fn issue_write(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize>;
+
+    /// Issue flush command to backing store
+    fn issue_flush(&self) -> Result<()>;
+
+    /// Is backing store read only?
+    fn is_ro(&self) -> bool;
+
+    /// return total length in bytes
+    fn len(&self) -> usize;
+
+    /// some backing stores may have block size requirements. optionally return a
+    /// block size in bytes.
+    fn block_size(&self) -> Option<usize>;
 }
 
-impl<R: BlockReq> PlainBdev<R> {
-    /// Creates a new block device from a device at `path`.
-    pub fn create(path: impl AsRef<Path>, readonly: bool) -> Result<Arc<Self>> {
+/// A block device implementation backed by an underlying file.
+pub struct FileBackingStore {
+    fp: File,
+    is_ro: bool,
+    len: usize,
+}
+
+impl FileBackingStore {
+    pub fn from_path(
+        path: impl AsRef<Path>,
+        readonly: bool,
+    ) -> Result<FileBackingStore> {
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;
         let is_ro = readonly || meta.permissions().readonly();
 
         let fp = OpenOptions::new().read(true).write(!is_ro).open(p)?;
-        let is_raw = fp.metadata()?.file_type().is_char_device();
+        let len = fp.metadata().unwrap().len() as usize;
 
-        let mut this = Self {
-            fp,
-            is_ro,
-            block_size: 512,
-            sectors: 0,
-            is_raw,
+        Ok(FileBackingStore { fp, is_ro, len })
+    }
+
+    pub fn get_file(&self) -> &File {
+        &self.fp
+    }
+}
+
+impl BackingStore for FileBackingStore {
+    fn issue_read(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize> {
+        mapping.pread(&self.fp, sz, offset as i64)
+    }
+
+    fn issue_write(
+        &self,
+        offset: usize,
+        sz: usize,
+        mapping: SubMapping,
+    ) -> Result<usize> {
+        mapping.pwrite(&self.fp, sz, offset as i64)
+    }
+
+    fn issue_flush(&self) -> Result<()> {
+        let res = unsafe { libc::fdatasync(self.fp.as_raw_fd()) };
+
+        if res == -1 {
+            Err(Error::new(ErrorKind::Other, "file flush failed"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn is_ro(&self) -> bool {
+        self.is_ro
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn block_size(&self) -> Option<usize> {
+        // Files do not have a block size requirement
+        None
+    }
+}
+
+/// Standard [`BlockDev`] implementation. Requires a backing store.
+pub struct PlainBdev<R: BlockReq, S: BackingStore> {
+    backing_store: S,
+    block_size: usize,
+    sectors: usize,
+    reqs: Mutex<VecDeque<R>>,
+    cond: Condvar,
+}
+
+impl<R: BlockReq> PlainBdev<R, FileBackingStore> {
+    pub fn from_file(
+        path: impl AsRef<Path>,
+        readonly: bool,
+    ) -> Result<Arc<PlainBdev<R, FileBackingStore>>> {
+        let backing_store = FileBackingStore::from_path(path, readonly)?;
+        let plain_bdev = PlainBdev::create(backing_store)?;
+
+        Ok(plain_bdev)
+    }
+}
+
+impl<R: BlockReq, S: BackingStore> PlainBdev<R, S> {
+    /// Creates a new block device from a device at `path`.
+    pub fn create(backing_store: S) -> Result<Arc<Self>> {
+        let len = backing_store.len();
+        let block_size = match backing_store.block_size() {
+            Some(v) => v,
+            None => 512,
+        };
+
+        let this = Self {
+            backing_store,
+            block_size,
+            sectors: len / block_size,
             reqs: Mutex::new(VecDeque::new()),
             cond: Condvar::new(),
         };
-        this.raw_init();
 
         Ok(Arc::new(this))
     }
-    fn raw_init(&mut self) {
-        // TODO: query block size, write cache, discard, etc
-        assert!(!self.is_raw);
-        let len = self.fp.metadata().unwrap().len() as usize;
-        self.sectors = len / self.block_size;
-    }
+
+    /// Consume enqueued requests and process them. Signal completion when done.
     fn process_loop(&self, ctx: &mut DispCtx) {
         let mut reqs = self.reqs.lock().unwrap();
         loop {
@@ -108,67 +212,111 @@ impl<R: BlockReq> PlainBdev<R> {
             }
 
             if let Some(mut req) = reqs.pop_front() {
-                let res = match req.oper() {
-                    BlockOp::Flush => {
-                        let res =
-                            unsafe { libc::fdatasync(self.fp.as_raw_fd()) };
-                        if res == -1 {
-                            BlockResult::Failure
-                        } else {
-                            BlockResult::Success
-                        }
-                    }
-                    BlockOp::Read => self.process_read(&mut req, ctx),
-                    BlockOp::Write => self.process_write(&mut req, ctx),
-                };
-                req.complete(res, ctx);
+                let result = self.process_request(&mut req, ctx);
+                req.complete(result, ctx);
             } else {
                 reqs = self.cond.wait(reqs).unwrap();
             }
         }
     }
-    fn process_read(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
+
+    /// Match against individual BlockReqs and call appropriate processing functions.
+    fn process_request(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
         let mem = ctx.mctx.memctx();
 
         let mut offset = req.offset();
+
         while let Some(buf) = req.next_buf() {
-            if let Some(mapping) = mem.writable_region(&buf) {
-                if let Ok(nread) = mapping.pread(&self.fp, buf.1, offset as i64)
-                {
-                    assert_eq!(nread as usize, buf.1);
-                    offset += buf.1;
-                } else {
-                    // XXX: Error reporting (bad read)
+            let sz = buf.1;
+
+            let result = match req.oper() {
+                BlockOp::Read => {
+                    self.process_read_request(offset, sz, &mem, buf)
+                }
+                BlockOp::Write => self.process_write_request(offset, &mem, buf),
+                BlockOp::Flush => self.process_flush(),
+            };
+
+            // If any BlockReq in this IO request fail, inform the guest that
+            // their IO request failed.
+            match result {
+                BlockResult::Success => {} // ok
+                BlockResult::Failure => {
                     return BlockResult::Failure;
                 }
-            } else {
-                // XXX: Error reporting (bad addr)
-                return BlockResult::Failure;
-            }
+                BlockResult::Unsupported => {
+                    return BlockResult::Unsupported;
+                }
+            };
+
+            offset += sz;
         }
+
         BlockResult::Success
     }
-    fn process_write(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
-        let mem = ctx.mctx.memctx();
 
-        let mut offset = req.offset();
-        while let Some(buf) = req.next_buf() {
-            if let Some(mapping) = mem.readable_region(&buf) {
-                if let Ok(nwritten) =
-                    mapping.pwrite(&self.fp, buf.1, offset as i64)
-                {
-                    assert_eq!(nwritten as usize, buf.1);
-                    offset += buf.1;
-                } else {
-                    // XXX: Error reporting (bad write)
-                    return BlockResult::Failure;
+    /// Delegate a block device read to BlockReqBackingStore.
+    fn process_read_request(
+        &self,
+        offset: usize,
+        sz: usize,
+        mem: &MemCtx,
+        buf: GuestRegion,
+    ) -> BlockResult {
+        if let Some(mapping) = mem.writable_region(&buf) {
+            let nread = self.backing_store.issue_read(offset, sz, mapping);
+            match nread {
+                Ok(nread) => {
+                    assert_eq!(nread as usize, sz);
+                    BlockResult::Success
                 }
-            } else {
-                // XXX: Error reporting (bad addr)
-                return BlockResult::Failure;
+                Err(_) => {
+                    // TODO: Error writing to guest memory
+                    BlockResult::Failure
+                }
+            }
+        } else {
+            // TODO: Error getting writable region
+            BlockResult::Failure
+        }
+    }
+
+    /// Delegate a block device write to BlockReqBackingStore.
+    fn process_write_request(
+        &self,
+        offset: usize,
+        mem: &MemCtx,
+        buf: GuestRegion,
+    ) -> BlockResult {
+        let sz = buf.1;
+
+        if let Some(mapping) = mem.readable_region(&buf) {
+            let nwritten = self.backing_store.issue_write(offset, sz, mapping);
+            match nwritten {
+                Ok(nwritten) => {
+                    assert_eq!(nwritten as usize, sz);
+                    BlockResult::Success
+                }
+                Err(_) => {
+                    // TODO: Error reading from guest memory
+                    BlockResult::Failure
+                }
+            }
+        } else {
+            // TODO: Error getting readable region
+            BlockResult::Failure
+        }
+    }
+
+    /// Send flush to BlockReqBackingStore
+    fn process_flush(&self) -> BlockResult {
+        match self.backing_store.issue_flush() {
+            Ok(()) => BlockResult::Success,
+            Err(_) => {
+                // TODO: encapsulated error here from BlockReqBackingStore here?
+                BlockResult::Failure
             }
         }
-        BlockResult::Success
     }
 
     /// Spawns a new thread named `name` on the dispatcher `disp` which
@@ -192,7 +340,7 @@ impl<R: BlockReq> PlainBdev<R> {
     }
 }
 
-impl<R: BlockReq> BlockDev<R> for PlainBdev<R> {
+impl<R: BlockReq, S: BackingStore> BlockDev<R> for PlainBdev<R, S> {
     fn enqueue(&self, req: R) {
         self.reqs.lock().unwrap().push_back(req);
         self.cond.notify_all();
@@ -202,7 +350,7 @@ impl<R: BlockReq> BlockDev<R> for PlainBdev<R> {
         BlockInquiry {
             total_size: self.sectors as u64,
             block_size: self.block_size as u32,
-            writable: !self.is_ro,
+            writable: !self.backing_store.is_ro(),
         }
     }
 }
