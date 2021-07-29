@@ -176,8 +176,7 @@ impl<R: BlockReq> PlainBdev<R, FileBackingStore> {
         path: impl AsRef<Path>,
         readonly: bool,
     ) -> Result<Arc<PlainBdev<R, FileBackingStore>>> {
-        let backing_store =
-            FileBackingStore::from_path(path, readonly)?;
+        let backing_store = FileBackingStore::from_path(path, readonly)?;
         let plain_bdev = PlainBdev::create(backing_store)?;
 
         Ok(plain_bdev)
