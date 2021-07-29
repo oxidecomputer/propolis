@@ -128,6 +128,33 @@ fn propolis_to_api_state(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SlotType {
+    NIC,
+    #[allow(dead_code)]
+    Disk,
+}
+
+// This is a somewhat hard-coded translation of a stable "PCI slot" to a BDF.
+//
+// For all the devices requested by Nexus (network interfaces, disks, etc),
+// we'd like to assign a stable PCI slot, such that re-allocating these
+// devices on a new instance of propolis produces the same guest-visible
+// BDFs.
+fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
+    match ty {
+        // Slots for NICS: 0x08 -> 0x0F
+        SlotType::NIC if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x8, 0)),
+        // Slots for Disks: 0x10 -> 0x17
+        SlotType::Disk if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x10, 0)),
+        _ => Err(anyhow::anyhow!(
+            "PCI Slot {} has no translation to BDF for type {:?}",
+            slot.0,
+            ty
+        )),
+    }
+}
+
 /*
  * Instances: CRUD API
  */
@@ -143,7 +170,8 @@ async fn instance_ensure(
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
 
-    let properties = request.into_inner().properties;
+    let request = request.into_inner();
+    let (properties, nics) = (request.properties, request.nics);
     if path_params.into_inner().instance_id != properties.id {
         return Err(HttpError::for_internal_error(
             "UUID mismatch (path did not match struct)".to_string(),
@@ -166,6 +194,9 @@ async fn instance_ensure(
         // TODO: The initial implementation does not modify any properties,
         // but we plausibly could do so - need to work out which properties
         // can be changed without rebooting.
+        //
+        // TODO: We presumably would want to alter network interfaces here too.
+        // Might require the instance to be powered off.
         if ctx.properties != properties {
             return Err(HttpError::for_internal_error(
                 "Cannot update running server".to_string(),
@@ -203,6 +234,18 @@ async fn instance_ensure(
             com1 = Some(init.initialize_uart(&chipset)?);
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port(&chipset)?;
+
+            // Attach devices which have been requested from the HTTP interface.
+            for nic in &nics {
+                let bdf =
+                    slot_to_bdf(nic.slot, SlotType::NIC).map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Cannot parse vnic PCI: {}", e),
+                        )
+                    })?;
+                init.initialize_vnic(&chipset, &nic.name, bdf)?;
+            }
 
             // Attach devices which are hard-coded in the config.
             //
@@ -317,6 +360,13 @@ async fn instance_get(
         properties: context.properties.clone(),
         state: propolis_to_api_state(context.instance.current_state()),
         disks: vec![],
+        // TODO: Fix this; we need a way to enumerate attached NICs.
+        // Possibly using the inventory of the instance?
+        //
+        // We *could* record whatever information about the NIC we want
+        // when they're requested (adding fields to the server), but that
+        // would make it difficult for Propolis to update any dynamic info
+        // (i.e., has the device faulted, etc).
         nics: vec![],
     };
 
