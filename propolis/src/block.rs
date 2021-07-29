@@ -60,7 +60,7 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 }
 
 /// Abstraction over an actual backing store
-pub trait BlockDevBackingStore: Send + Sync + 'static {
+pub trait BackingStore: Send + Sync + 'static {
     /// Read from backing store and write into guest mapping
     fn issue_read(
         &self,
@@ -92,17 +92,17 @@ pub trait BlockDevBackingStore: Send + Sync + 'static {
 }
 
 /// A block device implementation backed by an underlying file.
-pub struct FileBlockDevBackingStore {
+pub struct FileBackingStore {
     fp: File,
     is_ro: bool,
     len: usize,
 }
 
-impl FileBlockDevBackingStore {
+impl FileBackingStore {
     pub fn from_path(
         path: impl AsRef<Path>,
         readonly: bool,
-    ) -> Result<FileBlockDevBackingStore> {
+    ) -> Result<FileBackingStore> {
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;
@@ -111,7 +111,7 @@ impl FileBlockDevBackingStore {
         let fp = OpenOptions::new().read(true).write(!is_ro).open(p)?;
         let len = fp.metadata().unwrap().len() as usize;
 
-        Ok(FileBlockDevBackingStore { fp, is_ro, len })
+        Ok(FileBackingStore { fp, is_ro, len })
     }
 
     pub fn get_file(&self) -> &File {
@@ -119,7 +119,7 @@ impl FileBlockDevBackingStore {
     }
 }
 
-impl BlockDevBackingStore for FileBlockDevBackingStore {
+impl BackingStore for FileBackingStore {
     fn issue_read(
         &self,
         offset: usize,
@@ -163,7 +163,7 @@ impl BlockDevBackingStore for FileBlockDevBackingStore {
 }
 
 /// Standard [`BlockDev`] implementation. Requires a backing store.
-pub struct PlainBdev<R: BlockReq, S: BlockDevBackingStore> {
+pub struct PlainBdev<R: BlockReq, S: BackingStore> {
     backing_store: S,
     block_size: usize,
     sectors: usize,
@@ -171,20 +171,20 @@ pub struct PlainBdev<R: BlockReq, S: BlockDevBackingStore> {
     cond: Condvar,
 }
 
-impl<R: BlockReq> PlainBdev<R, FileBlockDevBackingStore> {
+impl<R: BlockReq> PlainBdev<R, FileBackingStore> {
     pub fn from_file(
         path: impl AsRef<Path>,
         readonly: bool,
-    ) -> Result<Arc<PlainBdev<R, FileBlockDevBackingStore>>> {
+    ) -> Result<Arc<PlainBdev<R, FileBackingStore>>> {
         let backing_store =
-            FileBlockDevBackingStore::from_path(path, readonly)?;
+            FileBackingStore::from_path(path, readonly)?;
         let plain_bdev = PlainBdev::create(backing_store)?;
 
         Ok(plain_bdev)
     }
 }
 
-impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
+impl<R: BlockReq, S: BackingStore> PlainBdev<R, S> {
     /// Creates a new block device from a device at `path`.
     pub fn create(backing_store: S) -> Result<Arc<Self>> {
         let len = backing_store.len();
@@ -341,7 +341,7 @@ impl<R: BlockReq, S: BlockDevBackingStore> PlainBdev<R, S> {
     }
 }
 
-impl<R: BlockReq, S: BlockDevBackingStore> BlockDev<R> for PlainBdev<R, S> {
+impl<R: BlockReq, S: BackingStore> BlockDev<R> for PlainBdev<R, S> {
     fn enqueue(&self, req: R) {
         self.reqs.lock().unwrap().push_back(req);
         self.cond.notify_all();
