@@ -57,7 +57,7 @@ impl Handle {
         }
         let mut res = LinkInfo { link_id, ..Default::default() };
         res.link_id = link_id;
-        res.mtu = Self::get_mtu(name)?;
+        res.mtu = Self::get_mtu(name).ok();
         Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
 
         Ok(res)
@@ -141,6 +141,6 @@ const ETHERADDRL: usize = 6;
 #[derive(Copy, Clone, Default)]
 pub struct LinkInfo {
     pub link_id: u32,
-    pub mtu: u16,
+    pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
 }

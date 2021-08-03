@@ -13,7 +13,7 @@ pub struct InstancePathParams {
     pub instance_id: Uuid,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
     pub nics: Vec<NetworkInterfaceRequest>,
@@ -179,22 +179,22 @@ pub struct DiskAttachment {
 
 /// A stable index which is translated by Propolis
 /// into a PCI BDF, visible to the guest.
-#[derive(Copy, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct Slot(pub u8);
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct NetworkInterfaceRequest {
     pub name: String,
     pub slot: Slot,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct NetworkInterface {
     pub name: String,
     pub attachment: NetworkInterfaceAttachmentState,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub enum NetworkInterfaceAttachmentState {
     Attached(Slot),
     Detached,

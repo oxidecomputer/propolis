@@ -36,7 +36,7 @@ impl Inner {
 pub struct VirtioViona {
     dev_features: u32,
     mac_addr: [u8; ETHERADDRL],
-    mtu: u16,
+    mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
 
@@ -110,7 +110,10 @@ impl VirtioViona {
                 ro.write_u16(1);
             }
             NetReg::Mtu => {
-                ro.write_u16(self.mtu);
+                // Guests should not be asking for this value unless
+                // VIRTIO_NET_F_MTU has been set. However, we'd rather lie
+                // (return zero) than unwrap and panic here.
+                ro.write_u16(self.mtu.unwrap_or(0));
             }
         }
     }
@@ -126,7 +129,10 @@ impl VirtioDevice for VirtioViona {
     }
     fn device_get_features(&self) -> u32 {
         let mut feat = VIRTIO_NET_F_MAC;
-        feat |= VIRTIO_NET_F_MTU;
+        // NOTE: We have dropped the "VIRTIO_NET_F_MTU" flag from feat.
+        //
+        // https://www.illumos.org/issues/13992
+        // feat |= VIRTIO_NET_F_MTU;
         feat |= self.dev_features;
 
         feat
