@@ -129,10 +129,13 @@ impl VirtioDevice for VirtioViona {
     }
     fn device_get_features(&self) -> u32 {
         let mut feat = VIRTIO_NET_F_MAC;
-        // NOTE: We have dropped the "VIRTIO_NET_F_MTU" flag from feat.
+        // We drop the "VIRTIO_NET_F_MTU" flag from feat if we are unable to
+        // query it. This can happen when executing within a non-global Zone.
         //
-        // https://www.illumos.org/issues/13992
-        // feat |= VIRTIO_NET_F_MTU;
+        // Context: https://www.illumos.org/issues/13992
+        if self.mtu.is_some() {
+            feat |= VIRTIO_NET_F_MTU;
+        }
         feat |= self.dev_features;
 
         feat
