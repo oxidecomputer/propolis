@@ -45,8 +45,9 @@ fn build_instance(
     name: &str,
     max_cpu: u8,
     lowmem: usize,
+    highmem: usize,
 ) -> Result<Arc<Instance>> {
-    let builder = Builder::new(name, true)?
+    let mut builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
         .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
         .add_rom_region(
@@ -62,6 +63,14 @@ fn build_instance(
             vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
             "dev64",
         )?;
+    if highmem > 0 {
+        builder = builder.add_mem_region(
+            0x1_0000_0000,
+            highmem,
+            Prot::ALL,
+            "highmem",
+        )?;
+    }
     let inst = Instance::create(builder, propolis::vcpu_run_loop)?;
     Ok(inst)
 }
@@ -91,10 +100,15 @@ fn main() {
     let config = parse_args();
 
     let vm_name = config.get_name();
-    let lowmem: usize = config.get_mem() * 1024 * 1024;
     let cpus = config.get_cpus();
 
-    let inst = build_instance(vm_name, cpus, lowmem).unwrap();
+    const GB: usize = 1024 * 1024 * 1024;
+    const MB: usize = 1024 * 1024;
+    let memsize: usize = config.get_mem() * MB;
+    let lowmem = memsize.min(3 * GB);
+    let highmem = memsize.saturating_sub(3 * GB);
+
+    let inst = build_instance(vm_name, cpus, lowmem, highmem).unwrap();
     println!("vm {} created", vm_name);
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
@@ -117,7 +131,7 @@ fn main() {
             }
             Ok(())
         })?;
-        machine.initialize_rtc(lowmem).unwrap();
+        machine.initialize_rtc(lowmem, highmem).unwrap();
 
         let hdl = machine.get_hdl();
         let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));

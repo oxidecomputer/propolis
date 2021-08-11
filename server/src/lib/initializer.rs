@@ -47,8 +47,9 @@ pub fn build_instance(
     name: &str,
     max_cpu: u8,
     lowmem: usize,
+    highmem: usize,
 ) -> Result<Arc<Instance>> {
-    let builder = Builder::new(name, true)?
+    let mut builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
         .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
         .add_rom_region(
@@ -64,6 +65,14 @@ pub fn build_instance(
             vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
             "dev64",
         )?;
+    if highmem > 0 {
+        builder = builder.add_mem_region(
+            0x1_0000_0000,
+            highmem,
+            Prot::ALL,
+            "highmem",
+        )?;
+    }
     let inst = Instance::create(builder, propolis::vcpu_run_loop)?;
     Ok(inst)
 }

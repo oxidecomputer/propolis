@@ -33,14 +33,14 @@ impl Rtc {
     pub fn store_memory_sizing(
         hdl: &VmmHdl,
         lowmem: usize,
-        highmem: Option<usize>,
+        highmem: usize,
     ) -> Result<()> {
         assert!(lowmem >= MEM_BASE);
 
         // physical memory below 4GB (less 16MB base) in 64k chunks
         let low_chunks = (lowmem - MEM_BASE) / MEM_CHUNK;
         // physical memory above 4GB in 64k chunks
-        let high_chunks = highmem.unwrap_or(0) / MEM_CHUNK;
+        let high_chunks = highmem / MEM_CHUNK;
 
         // System software (bootrom) goes looking for this data in the RTC CMOS!
         // Offsets 0x34-0x35 - lowmem
