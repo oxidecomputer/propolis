@@ -76,10 +76,10 @@ impl Machine {
     }
 
     /// Initialize the real-time-clock of the device.
-    pub fn initialize_rtc(&self, lowmem: usize) -> Result<()> {
+    pub fn initialize_rtc(&self, lowmem: usize, highmem: usize) -> Result<()> {
         let lock = self.state_lock.lock().unwrap();
         Rtc::set_time(&self.hdl)?;
-        Rtc::store_memory_sizing(&self.hdl, lowmem, None)?;
+        Rtc::store_memory_sizing(&self.hdl, lowmem, highmem)?;
         drop(lock);
         Ok(())
     }
@@ -291,8 +291,9 @@ impl<'a, T: Copy> Iterator for MemMany<'a, T> {
 ///
 /// let builder = Builder::new("my-machine", true).unwrap()
 ///     .max_cpus(4).unwrap()
-///     .add_mem_region(0, 0x10_0000, Prot::ALL, "lowmem").unwrap()
-///     .add_rom_region(0x1_0000_0000, 0x20_0000, Prot::READ | Prot::EXEC, "bootrom")
+///     .add_mem_region(0, 0xc000_0000, Prot::ALL, "lowmem").unwrap()
+///     .add_mem_region(0x1_0000_0000, 0xc000_0000, Prot::ALL, "highmem").unwrap()
+///     .add_rom_region(0xffe0_0000, 0x20_0000, Prot::READ | Prot::EXEC, "bootrom")
 ///         .unwrap()
 ///     .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32").unwrap();
 /// let inst = Instance::create(builder, propolis::vcpu_run_loop).unwrap();

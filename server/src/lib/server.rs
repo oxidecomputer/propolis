@@ -206,18 +206,27 @@ async fn instance_ensure(
         return Ok(HttpResponseCreated(api::InstanceEnsureResponse {}));
     }
 
+    const MB: usize = 1024 * 1024;
+    const GB: usize = 1024 * 1024 * 1024;
+    let memsize = properties.memory as usize * MB;
+    let lowmem = memsize.min(3 * GB);
+    let highmem = memsize.saturating_sub(3 * GB);
+
     // Create the instance.
     //
     // The VM is named after the UUID, ensuring that it is unique.
-    let lowmem = (properties.memory * 1024 * 1024) as usize;
-    let instance =
-        build_instance(&properties.id.to_string(), properties.vcpus, lowmem)
-            .map_err(|err| {
-                HttpError::for_internal_error(format!(
-                    "Cannot build instance: {}",
-                    err.to_string()
-                ))
-            })?;
+    let instance = build_instance(
+        &properties.id.to_string(),
+        properties.vcpus,
+        lowmem,
+        highmem,
+    )
+    .map_err(|err| {
+        HttpError::for_internal_error(format!(
+            "Cannot build instance: {}",
+            err.to_string()
+        ))
+    })?;
 
     // Initialize (some) of the instance's hardware.
     //
@@ -229,7 +238,7 @@ async fn instance_ensure(
         .initialize(|machine, mctx, disp, inv| {
             let init = MachineInitializer::new(machine, mctx, disp, inv);
             init.initialize_rom(server_context.config.get_bootrom())?;
-            machine.initialize_rtc(lowmem).unwrap();
+            machine.initialize_rtc(lowmem, highmem).unwrap();
             let chipset = init.initialize_chipset()?;
             com1 = Some(init.initialize_uart(&chipset)?);
             init.initialize_ps2(&chipset)?;
