@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
 
-use propolis::bhyve_api;
 use propolis::block;
 use propolis::chardev::Source;
 use propolis::common::PAGE_SIZE;
@@ -133,7 +132,7 @@ impl<'a> MachineInitializer<'a> {
         chipset.attach(self.mctx);
         let id = self
             .inv
-            .register_root(chipset.clone(), "chipset".to_string())
+            .register(&chipset, "chipset".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(RegisteredChipset(chipset, id))
     }
@@ -142,42 +141,30 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<Serial<DispCtx, LpcUart>, Error> {
-        // UARTs
-        let com1 =
-            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM1).unwrap());
-        let com2 =
-            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM2).unwrap());
-        let com3 =
-            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM3).unwrap());
-        let com4 =
-            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap());
-
-        com1.source_set_autodiscard(true);
-        com2.source_set_autodiscard(true);
-        com3.source_set_autodiscard(true);
-        com4.source_set_autodiscard(true);
-
+        let cid = Some(chipset.id());
+        let uarts = vec![
+            (ibmpc::IRQ_COM1, ibmpc::PORT_COM1, "com1"),
+            (ibmpc::IRQ_COM2, ibmpc::PORT_COM2, "com2"),
+            (ibmpc::IRQ_COM3, ibmpc::PORT_COM3, "com3"),
+            (ibmpc::IRQ_COM4, ibmpc::PORT_COM4, "com4"),
+        ];
         let pio = self.mctx.pio();
-        LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-        LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-        LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-        LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        self.inv
-            .register(chipset.id(), com1.clone(), "com1".to_string())
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        self.inv
-            .register(chipset.id(), com2, "com2".to_string())
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        self.inv
-            .register(chipset.id(), com3, "com3".to_string())
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        self.inv
-            .register(chipset.id(), com4, "com4".to_string())
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        let mut com1 = None;
+        for (irq, port, name) in uarts.iter() {
+            let dev = LpcUart::new(chipset.device().irq_pin(*irq).unwrap());
+            dev.source_set_autodiscard(true);
+            LpcUart::attach(&dev, pio, *port);
+            self.inv
+                .register(&dev, name.to_string(), cid)
+                .map_err(|e| -> std::io::Error { e.into() })?;
+            if com1.is_none() {
+                com1 = Some(dev);
+            }
+        }
 
         let sink_size = 15;
         let source_size = 4095;
-        Ok(Serial::new(com1, sink_size, source_size))
+        Ok(Serial::new(com1.unwrap(), sink_size, source_size))
     }
 
     pub fn initialize_ps2(
@@ -188,15 +175,12 @@ impl<'a> MachineInitializer<'a> {
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.device().as_ref());
         self.inv
-            .register(chipset.id(), ps2_ctrl, "ps2_ctrl".to_string())
+            .register(&ps2_ctrl, "ps2_ctrl".to_string(), Some(chipset.id()))
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(())
     }
 
-    pub fn initialize_qemu_debug_port(
-        &self,
-        chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
         let debug = std::fs::File::create("debug.out").unwrap();
         let buffered = std::io::LineWriter::new(debug);
         let pio = self.mctx.pio();
@@ -205,7 +189,7 @@ impl<'a> MachineInitializer<'a> {
             pio,
         );
         self.inv
-            .register(chipset.id(), dbg, "debug".to_string())
+            .register(&dbg, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(())
     }
@@ -266,27 +250,17 @@ impl<'a> MachineInitializer<'a> {
         fwcfg_dev.attach(pio);
 
         self.inv
-            .register(chipset.id(), fwcfg_dev, "fwcfg".to_string())
+            .register(&fwcfg_dev, "fwcfg".to_string(), Some(chipset.id()))
             .map_err(|e| -> std::io::Error { e.into() })?;
         self.inv
-            .register(chipset.id(), ramfb, "ramfb".to_string())
+            .register(&ramfb, "ramfb".to_string(), Some(chipset.id()))
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(())
     }
 
     pub fn initialize_cpus(&self) -> Result<(), Error> {
-        let ncpu = self.mctx.max_cpus();
-        for id in 0..ncpu {
-            let mut vcpu = self.machine.vcpu(id);
+        for mut vcpu in self.mctx.vcpus() {
             vcpu.set_default_capabs().unwrap();
-            vcpu.reboot_state().unwrap();
-            vcpu.activate().unwrap();
-            // Set BSP to start up
-            if id == 0 {
-                vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RIP, 0xfff0)
-                    .unwrap();
-            }
         }
         Ok(())
     }

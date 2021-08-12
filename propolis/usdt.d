@@ -13,4 +13,11 @@ provider propolis {
 
 	/* vm_exit(vcpuid, rip, code) */
 	probe vm_exit(uint32_t, uint64_t, uint32_t);
+
+	/* virtio_vq_notify(virtio_dev_addr, virtqueue_id) */
+	probe virtio_vq_notify(uint64_t, uint16_t);
+	/* virtio_vq_pop(vq_addr, avail_idx) */
+	probe virtio_vq_pop(uint64_t, uint16_t);
+	/* virtio_vq_pop(vq_addr, used_idx, used_len) */
+	probe virtio_vq_push(uint64_t, uint16_t, uint32_t);
 };

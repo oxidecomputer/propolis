@@ -341,6 +341,20 @@ impl VmmHdl {
         self.ioctl(bhyve_api::VM_PMTMR_LOCATE, port as *mut usize)
     }
 
+    pub fn suspend(&self, how: bhyve_api::vm_suspend_how) -> Result<()> {
+        let mut data = bhyve_api::vm_suspend { how: how as u32 };
+        self.ioctl(bhyve_api::VM_SUSPEND, &mut data)
+    }
+
+    pub fn reinit(&self, force_suspend: bool) -> Result<()> {
+        let mut data =
+            bhyve_api::vm_reinit { flags: bhyve_api::VmReinitFlags::empty() };
+        if force_suspend {
+            data.flags.insert(bhyve_api::VmReinitFlags::FORCE_SUSPEND);
+        }
+        self.ioctl(bhyve_api::VM_REINIT, &mut data)
+    }
+
     /// Destroys the VMM.
     // TODO: Should this take "mut self", to consume the object?
     pub fn destroy(&self) -> Result<()> {

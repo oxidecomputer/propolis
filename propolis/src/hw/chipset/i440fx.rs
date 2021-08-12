@@ -6,6 +6,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::ibmpc;
 use crate::hw::pci::{self, Bdf, INTxPinID, PioCfgDecoder};
+use crate::instance;
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 use crate::util::regmap::RegMap;
@@ -13,6 +14,13 @@ use crate::util::self_arc::*;
 use crate::vmm::{MachineCtx, VmmHdl};
 
 use lazy_static::lazy_static;
+
+const HB_DEV: u8 = 0;
+const HB_FUNC: u8 = 0;
+const LPC_DEV: u8 = 1;
+const LPC_FUNC: u8 = 0;
+const PM_DEV: u8 = 1;
+const PM_FUNC: u8 = 3;
 
 pub struct I440Fx {
     pic: Arc<LegacyPIC>,
@@ -55,9 +63,9 @@ impl I440Fx {
         let lpcdev = Piix3Lpc::create(Arc::downgrade(&this));
         let pmdev = Piix3PM::create();
 
-        this.pci_attach(Bdf::new(0, 0, 0), hbdev);
-        this.pci_attach(Bdf::new(0, 1, 0), lpcdev);
-        this.pci_attach(Bdf::new(0, 1, 3), pmdev);
+        this.pci_attach(Bdf::new(0, HB_DEV, HB_FUNC), hbdev);
+        this.pci_attach(Bdf::new(0, LPC_DEV, LPC_FUNC), lpcdev);
+        this.pci_attach(Bdf::new(0, PM_DEV, PM_FUNC), pmdev);
 
         this
     }
@@ -163,7 +171,19 @@ impl SelfArc for I440Fx {
         &self.sa_cell
     }
 }
-impl Entity for I440Fx {}
+impl Entity for I440Fx {
+    fn state_transition(
+        &self,
+        next: instance::State,
+        target: Option<instance::State>,
+        ctx: &DispCtx,
+    ) {
+        // TODO: make it easier to do this automatically
+        let bus = self.pci_bus.lock().unwrap();
+        let pm = bus.device_at(PM_DEV, PM_FUNC).unwrap().as_devinst().unwrap();
+        pm.state_transition(next, target, ctx);
+    }
+}
 
 struct LNKPin {
     inner: Mutex<LNKPinInner>,
@@ -246,6 +266,7 @@ impl Piix4HostBridge {
     }
 }
 impl pci::Device for Piix4HostBridge {}
+impl Entity for Piix4HostBridge {}
 
 pub struct Piix3Lpc {
     reg_pir: Mutex<[u8; PIR_LEN]>,
@@ -275,14 +296,14 @@ impl Piix3Lpc {
         pio.register(
             ibmpc::PORT_FAST_A20,
             ibmpc::LEN_FAST_A20,
-            Arc::downgrade(&self) as Weak<dyn PioDev>,
+            Arc::downgrade(self) as Weak<dyn PioDev>,
             0,
         )
         .unwrap();
         pio.register(
             ibmpc::PORT_POST_CODE,
             ibmpc::LEN_POST_CODE,
-            Arc::downgrade(&self) as Weak<dyn PioDev>,
+            Arc::downgrade(self) as Weak<dyn PioDev>,
             0,
         )
         .unwrap();
@@ -327,6 +348,7 @@ impl pci::Device for Piix3Lpc {
         }
     }
 }
+impl Entity for Piix3Lpc {}
 impl PioDev for Piix3Lpc {
     fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         match port {
@@ -499,6 +521,9 @@ bitflags! {
     }
 }
 
+// Offset within PMBASE region corresponding to PmTmr register
+const PM_TMR_OFFSET: u16 = 0x8;
+
 struct PMRegs {
     pm_base: u16,
     pm_status: PmSts,
@@ -513,6 +538,11 @@ impl Default for PMRegs {
             pm_ena: PmEn::empty(),
             pm_ctrl: PmCntrl::empty(),
         }
+    }
+}
+impl PMRegs {
+    fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -550,7 +580,7 @@ impl Piix3PM {
                 0,
             )
             .unwrap();
-        mctx.hdl().pmtmr_locate(PMBASE_DEFAULT + 0x8).unwrap();
+        mctx.hdl().pmtmr_locate(PMBASE_DEFAULT + PM_TMR_OFFSET).unwrap();
     }
 
     fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp) {
@@ -630,7 +660,10 @@ impl Piix3PM {
                     let suspend_type = (regs.pm_ctrl & PmCntrl::SUS_TYP).bits();
                     if suspend_type == 0 {
                         // 0b000 corresponds to soft-off
-                        ctx.instance_halt();
+                        ctx.trigger_suspend(
+                            instance::SuspendKind::Halt,
+                            instance::SuspendSource::Device("ACPI PmCntrl"),
+                        );
                     }
                 }
             }
@@ -652,6 +685,13 @@ impl Piix3PM {
             PmReg::Reserved => {}
         }
     }
+    fn reset(&self, ctx: &DispCtx) {
+        let mut regs = self.regs.lock().unwrap();
+        regs.reset();
+        // Make sure PM timer is attached to the right IO port
+        // TODO: error handling?
+        ctx.mctx.hdl().pmtmr_locate(PMBASE_DEFAULT + PM_TMR_OFFSET).unwrap();
+    }
 }
 impl pci::Device for Piix3PM {
     fn cfg_rw(&self, region: u8, mut rwo: RWOp) {
@@ -661,6 +701,18 @@ impl pci::Device for Piix3PM {
             RWOp::Read(ro) => self.pmcfg_read(id, ro),
             RWOp::Write(wo) => self.pmcfg_write(id, wo),
         })
+    }
+}
+impl Entity for Piix3PM {
+    fn state_transition(
+        &self,
+        next: instance::State,
+        _target: Option<instance::State>,
+        ctx: &DispCtx,
+    ) {
+        if matches!(next, instance::State::Reset) {
+            self.reset(ctx);
+        }
     }
 }
 impl PioDev for Piix3PM {

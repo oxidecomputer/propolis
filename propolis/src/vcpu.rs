@@ -24,6 +24,10 @@ impl VcpuHdl {
         self.id
     }
 
+    pub fn is_bsp(&self) -> bool {
+        self.id == 0
+    }
+
     /// Sets the capabilities of the virtual CPU.
     pub fn set_default_capabs(&mut self) -> Result<()> {
         // Enable exit-on-HLT so the host CPU does not spin in VM context when

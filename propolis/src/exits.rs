@@ -3,8 +3,6 @@
 use std::convert::TryFrom;
 use std::os::raw::c_void;
 
-use crate::instance::SuspendKind;
-
 use bhyve_api::{
     vm_entry, vm_entry_cmds, vm_entry_payload, vm_exit, vm_exitcode,
     vm_suspend_how,
@@ -106,6 +104,13 @@ impl From<&bhyve_api::vm_inst_emul> for InstEmul {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum Suspend {
+    Halt,
+    Reset,
+    TripleFault,
+}
+
 #[derive(Debug)]
 pub enum VmExitKind {
     Bogus,
@@ -116,7 +121,7 @@ pub enum VmExitKind {
     Wrmsr(u32, u64),
     VmxError(VmxDetail),
     SvmError(SvmDetail),
-    Suspended(SuspendKind),
+    Suspended(Suspend),
     InstEmul(InstEmul),
     Debug,
     Paging(u64, i32),
@@ -202,14 +207,14 @@ impl From<&vm_exit> for VmExitKind {
                 let detail = unsafe { exit.u.suspend };
                 match vm_suspend_how::try_from(detail as u32) {
                     Ok(vm_suspend_how::VM_SUSPEND_RESET) => {
-                        VmExitKind::Suspended(SuspendKind::Reset)
+                        VmExitKind::Suspended(Suspend::Reset)
                     }
                     Ok(vm_suspend_how::VM_SUSPEND_POWEROFF)
                     | Ok(vm_suspend_how::VM_SUSPEND_HALT) => {
-                        VmExitKind::Suspended(SuspendKind::Halt)
+                        VmExitKind::Suspended(Suspend::Halt)
                     }
                     Ok(vm_suspend_how::VM_SUSPEND_TRIPLEFAULT) => {
-                        VmExitKind::Suspended(SuspendKind::TripleFault)
+                        VmExitKind::Suspended(Suspend::TripleFault)
                     }
                     Ok(vm_suspend_how::VM_SUSPEND_NONE) | Err(_) => {
                         panic!("invalid vm_suspend_how: {}", detail);

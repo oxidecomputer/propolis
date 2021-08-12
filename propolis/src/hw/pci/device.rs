@@ -7,7 +7,9 @@ use super::bits::*;
 use super::{Endpoint, INTxPinID};
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::instance;
 use crate::intr_pins::IntrPin;
+use crate::inventory::Entity;
 use crate::mmio::MmioDev;
 use crate::pio::PioDev;
 use crate::util::regmap::{Flags, RegMap};
@@ -297,6 +299,37 @@ impl Bars {
         assert!(!state.registered);
         state.addr = addr;
     }
+    fn reset<F>(&self, changef: F, ctx: &DispCtx)
+    where
+        F: Fn(BarN, &BarDefine, u64),
+    {
+        self.for_each(|barn, def| {
+            if def == &BarDefine::Mmio64High {
+                // The high portion of 64-bit BARs does not require direct
+                // handling, as the low portion bears the necessary information.
+                return;
+            }
+            let mut state = self.entries[barn as usize].state.lock().unwrap();
+            if state.registered {
+                match def {
+                    BarDefine::Pio(_) => {
+                        ctx.mctx.pio().unregister(state.addr as u16).unwrap();
+                    }
+                    BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
+                        ctx.mctx
+                            .mmio()
+                            .unregister(state.addr as usize)
+                            .unwrap();
+                    }
+                    // Already filtered out
+                    BarDefine::Mmio64High => panic!(),
+                }
+                state.registered = false;
+                changef(barn, def, state.addr);
+            }
+            state.addr = 0;
+        });
+    }
 }
 
 struct Cap {
@@ -341,7 +374,6 @@ impl DeviceInst {
 
             state: Mutex::new(State {
                 reg_intr_line: 0xff,
-                reg_command: RegCmd::INTX_DIS,
                 ..Default::default()
             }),
             bars,
@@ -710,6 +742,21 @@ impl DeviceInst {
         let inner = Arc::clone(&self.inner_any);
         f(Arc::downcast(inner).unwrap())
     }
+    fn do_reset(&self, ctx: &DispCtx) {
+        let state = self.state.lock().unwrap();
+        self.affects_intr_mode(state, |state| {
+            state.reg_command.reset();
+            if let Some(msix) = &self.msix_cfg {
+                msix.reset();
+            }
+        });
+        self.bars.reset(
+            |_bar, _def, _addr| {
+                // TODO: notify device of unregistered BARs
+            },
+            ctx,
+        );
+    }
 }
 
 impl Endpoint for DeviceInst {
@@ -771,6 +818,20 @@ impl MmioDev for DeviceInst {
     }
 }
 
+impl Entity for DeviceInst {
+    fn state_transition(
+        &self,
+        next: instance::State,
+        target: Option<instance::State>,
+        ctx: &DispCtx,
+    ) {
+        if matches!(next, instance::State::Reset) {
+            self.do_reset(ctx);
+        }
+        self.inner.state_transition(next, target, ctx);
+    }
+}
+
 impl SelfArc for DeviceInst {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
         &self.sa_cell
@@ -815,7 +876,7 @@ pub enum MsiUpdate {
     Modify(u16),
 }
 
-pub trait Device: Send + Sync + 'static {
+pub trait Device: Send + Sync + 'static + Entity {
     #[allow(unused_variables)]
     fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
         match rwo {
@@ -907,6 +968,14 @@ impl MsixEntry {
             self.pending = false;
             ctx.mctx.hdl().lapic_msi(self.addr, self.data as u64).unwrap();
         }
+    }
+    fn reset(&mut self) {
+        self.addr = 0;
+        self.data = 0;
+        self.mask_vec = false;
+        self.mask_func = false;
+        self.enabled = false;
+        self.pending = false;
     }
 }
 
@@ -1166,6 +1235,13 @@ impl MsixCfg {
             masked: ent.mask_vec || ent.mask_func,
             pending: ent.pending,
         }
+    }
+    fn reset(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.enabled = false;
+        state.func_mask = false;
+        drop(state);
+        self.each_entry(|ent| ent.reset());
     }
 }
 

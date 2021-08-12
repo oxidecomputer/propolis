@@ -14,7 +14,7 @@ use queue::VirtQueue;
 
 pub use block::VirtioBlock;
 
-pub trait VirtioDevice: Send + Sync + 'static {
+pub trait VirtioDevice: Send + Sync + 'static + Entity {
     fn device_cfg_rw(&self, ro: RWOp);
     fn device_get_features(&self) -> u32;
     fn device_set_features(&self, feat: u32);

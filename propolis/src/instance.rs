@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 
 use crate::dispatch::*;
-use crate::inventory::Inventory;
+use crate::inventory::{self, Inventory};
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
@@ -24,7 +24,7 @@ pub enum State {
     /// The instance is in a paused state such that it may
     /// later be booted or maintained.
     Quiesce,
-    /// The insance is no longer running
+    /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
     /// to the "Boot" state.
@@ -38,6 +38,7 @@ impl State {
             return true;
         }
         match (from, to) {
+            // Anything can set us on the road to destruction
             (_, State::Destroy) => true,
             // State begins at initialize, but never returns to it
             (_, State::Initialize) => false,
@@ -50,24 +51,69 @@ impl State {
             (_, _) => true,
         }
     }
+    fn next_transition(&self, target: Option<Self>) -> Option<Self> {
+        if let Some(t) = &target {
+            assert!(Self::valid_target(self, t));
+        }
+        let next = match self {
+            State::Initialize => match target {
+                Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
+                _ => State::Boot,
+            },
+            State::Boot => match target {
+                None | Some(State::Run) => State::Run,
+                _ => State::Quiesce,
+            },
+            State::Run => match target {
+                None | Some(State::Run) => State::Run,
+                Some(_) => State::Quiesce,
+            },
+            State::Quiesce => match target {
+                Some(State::Halt) | Some(State::Destroy) => State::Halt,
+                Some(State::Reset) => State::Reset,
+                // Machine must go through reset before it can be booted
+                Some(State::Boot) => State::Reset,
+                _ => State::Quiesce,
+            },
+            State::Halt => State::Destroy,
+            State::Reset => State::Boot,
+            State::Destroy => State::Destroy,
+        };
+
+        if next == *self {
+            None
+        } else {
+            Some(next)
+        }
+    }
 }
 
-type TransitionFunc = dyn Fn(State) + Send + Sync + 'static;
+/// States which external consumers are permitted to request that the instance
+/// transition to.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum ReqState {
+    Run,
+    Reset,
+    Halt,
+}
 
-struct InnerState {
-    current: State,
-    target: Option<State>,
+type TransitionFunc = dyn Fn(State, &DispCtx) + Send + Sync + 'static;
+
+struct Inner {
+    state_current: State,
+    state_target: Option<State>,
+    suspend_info: Option<(SuspendKind, SuspendSource)>,
     drive_thread: Option<JoinHandle<()>>,
     machine: Arc<Machine>,
-    disp: Dispatcher,
     inv: Inventory,
     transition_funcs: Vec<Box<TransitionFunc>>,
 }
 
 /// A single virtual machine.
 pub struct Instance {
-    state: Mutex<InnerState>,
+    inner: Mutex<Inner>,
     cv: Condvar,
+    disp: Dispatcher,
 }
 impl Instance {
     /// Creates a new virtual machine, absorbing the supplied `builder`.
@@ -81,16 +127,17 @@ impl Instance {
 
         let mut disp = Dispatcher::create(&machine, vcpu_fn)?;
         let this = Arc::new(Self {
-            state: Mutex::new(InnerState {
-                current: State::Initialize,
-                target: None,
+            inner: Mutex::new(Inner {
+                state_current: State::Initialize,
+                state_target: None,
+                suspend_info: None,
                 drive_thread: None,
                 machine,
-                disp,
                 inv: Inventory::new(),
                 transition_funcs: Vec::new(),
             }),
             cv: Condvar::new(),
+            disp,
         });
 
         let driver_hdl = Arc::clone(&this);
@@ -98,10 +145,10 @@ impl Instance {
             .name("instance-driver".to_string())
             .spawn(move || driver_hdl.drive_state())?;
 
-        let mut state = this.state.lock().unwrap();
+        let mut state = this.inner.lock().unwrap();
         state.drive_thread = Some(driver);
-        state.disp.assoc_instance(Arc::downgrade(&this));
         drop(state);
+        this.disp.assoc_instance(Arc::downgrade(&this));
 
         Ok(this)
     }
@@ -121,16 +168,16 @@ impl Instance {
             &Inventory,
         ) -> io::Result<()>,
     {
-        let state = self.state.lock().unwrap();
-        assert_eq!(state.current, State::Initialize);
+        let state = self.inner.lock().unwrap();
+        assert_eq!(state.state_current, State::Initialize);
         let mctx = MachineCtx::new(&state.machine);
-        func(&state.machine, &mctx, &state.disp, &state.inv)
+        func(&state.machine, &mctx, &self.disp, &state.inv)
     }
 
     /// Returns the state of the instance.
     pub fn current_state(&self) -> State {
-        let state = self.state.lock().unwrap();
-        let res = state.current;
+        let state = self.inner.lock().unwrap();
+        let res = state.state_current;
         drop(state);
         res
     }
@@ -138,17 +185,101 @@ impl Instance {
     /// Updates the state of the instance.
     ///
     /// Returns an error if the state transition is invalid.
-    pub fn set_target_state(&self, target: State) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap();
+    pub fn set_target_state(&self, target: ReqState) -> Result<(), ()> {
+        let mut inner = self.inner.lock().unwrap();
 
-        if !State::valid_target(&state.current, &target) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid target",
-            ));
+        if matches!(inner.state_target, Some(State::Halt | State::Destroy)) {
+            // Cannot request any state once the target is halt/destroy
+            return Err(());
+        }
+        if inner.state_target == Some(State::Reset) && target == ReqState::Run {
+            // Requesting a run when already on the road to reboot is an
+            // immediate success.
+            return Ok(());
+        }
+
+        match target {
+            ReqState::Run => {
+                self.set_target_state_locked(&mut inner, State::Run)
+            }
+            ReqState::Reset => self.trigger_suspend_locked(
+                &mut inner,
+                SuspendKind::Reset,
+                SuspendSource::External,
+            ),
+            ReqState::Halt => self.trigger_suspend_locked(
+                &mut inner,
+                SuspendKind::Halt,
+                SuspendSource::External,
+            ),
+        }
+    }
+
+    pub(crate) fn trigger_suspend(
+        &self,
+        kind: SuspendKind,
+        source: SuspendSource,
+    ) -> Result<(), ()> {
+        let mut inner = self.inner.lock().unwrap();
+        self.trigger_suspend_locked(&mut inner, kind, source)
+    }
+
+    fn trigger_suspend_locked(
+        &self,
+        inner: &mut MutexGuard<Inner>,
+        kind: SuspendKind,
+        source: SuspendSource,
+    ) -> Result<(), ()> {
+        if matches!(inner.state_current, State::Halt | State::Destroy) {
+            // No way out from Halt or Destroy
+            return Err(());
+        }
+
+        match kind {
+            SuspendKind::Reset => {
+                match inner.suspend_info {
+                    Some((SuspendKind::Halt, _)) => {
+                        // Cannot supersede active halt
+                        return Err(());
+                    }
+                    Some((SuspendKind::Reset, _)) => {
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+
+                let hdl = inner.machine.get_hdl();
+                let _ =
+                    hdl.suspend(bhyve_api::vm_suspend_how::VM_SUSPEND_RESET);
+                inner.suspend_info = Some((kind, source));
+                self.set_target_state_locked(inner, State::Reset)
+            }
+            SuspendKind::Halt => {
+                if matches!(inner.suspend_info, Some((SuspendKind::Halt, _))) {
+                    return Ok(());
+                }
+                if inner.suspend_info.is_none() {
+                    let hdl = inner.machine.get_hdl();
+                    let _ = hdl.suspend(
+                        bhyve_api::vm_suspend_how::VM_SUSPEND_POWEROFF,
+                    );
+                }
+                inner.suspend_info = Some((kind, source));
+                self.set_target_state_locked(inner, State::Halt)
+            }
+        }
+    }
+
+    fn set_target_state_locked(
+        &self,
+        inner: &mut MutexGuard<Inner>,
+        target: State,
+    ) -> Result<(), ()> {
+        if !State::valid_target(&inner.state_current, &target) {
+            return Err(());
         }
         // XXX: verify validity of transitions
-        state.target = Some(target);
+        inner.state_target = Some(target);
         self.cv.notify_all();
         Ok(())
     }
@@ -156,146 +287,164 @@ impl Instance {
     /// Blocks the calling thread until the machine reaches
     /// the state `target` or [`State::Destroy`].
     pub fn wait_for_state(&self, target: State) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.inner.lock().unwrap();
         self.cv.wait_while(state, |state| {
             // bail if we reach the target state _or Destroy
-            state.current != target || state.current != State::Destroy
+            state.state_current != target
+                || state.state_current != State::Destroy
         });
     }
 
     /// Registers  callback, `func`, which is invoked whenever a state
     /// transition occurs.
     pub fn on_transition(&self, func: Box<TransitionFunc>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.inner.lock().unwrap();
         state.transition_funcs.push(func);
     }
 
-    fn transition_cb(&self, state: &MutexGuard<InnerState>, next_state: State) {
-        for f in state.transition_funcs.iter() {
-            f(next_state)
+    fn transition_actions(
+        &self,
+        inner: &MutexGuard<Inner>,
+        state: State,
+        target: Option<State>,
+    ) {
+        // Allow any entity to act on the new state
+        let ctx = self.disp.ctx();
+        inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
+            rec.entity().state_transition(state, target, &ctx);
+        });
+
+        for f in inner.transition_funcs.iter() {
+            f(state, &ctx)
         }
     }
 
     fn drive_state(&self) {
-        let mut state = self.state.lock().unwrap();
         let mut next_state: Option<State> = None;
+        let mut inner = self.inner.lock().unwrap();
         loop {
-            if let Some(next) = next_state.take() {
-                // under going state transition
-                state.current = next;
-                self.cv.notify_all();
-
-                match state.target.as_ref() {
-                    Some(s) if *s == next => {
-                        // target state has been reached
-                        state.target = None;
-                    }
-                    _ => {}
-                };
-            } else {
-                // waiting for next state target
-                match state.target {
-                    Some(t) => {
-                        if t == state.current {
-                            state.target = None;
-                            continue;
-                        }
-                    }
-                    None => {
-                        state = self.cv.wait(state).unwrap();
+            if next_state.is_none() {
+                if let Some(t) = inner.state_target {
+                    if t == inner.state_current {
+                        inner.state_target = None;
                         continue;
                     }
+                    next_state =
+                        inner.state_current.next_transition(inner.state_target);
+                } else {
+                    // Nothing to do but wait for a new target
+                    inner = self.cv.wait(inner).unwrap();
+                    continue;
                 }
             }
+            let state = next_state.take().unwrap();
 
-            if let Some(t) = state.target.as_ref() {
-                assert!(State::valid_target(&state.current, t));
+            let prev_state = inner.state_current;
+            inner.state_current = state;
+            eprintln!(
+                "Instance transition {:?} -> {:?} (target: {:?})",
+                prev_state, state, &inner.state_target
+            );
+            if matches!(&inner.state_target, Some(s) if *s == state) {
+                // target state has been reached
+                inner.state_target = None;
             }
 
-            let transition = match state.current {
-                State::Initialize => match state.target.as_ref() {
-                    Some(State::Destroy) => State::Destroy,
-                    _ => State::Boot,
-                },
-                State::Boot => {
-                    match state.target.as_ref() {
-                        Some(State::Run) => {
-                            // XXX: pause for conditions
-                            state.disp.release_vcpus();
-                            State::Run
-                        }
-                        _ => State::Quiesce,
-                    }
-                }
-                State::Run => match state.target.as_ref() {
-                    Some(_) => State::Quiesce,
-                    None => State::Run,
-                },
+            // Pre-state-change actions
+            match state {
                 State::Quiesce => {
-                    state.disp.quiesce_workers();
-                    match state.target.as_ref() {
-                        Some(State::Halt) | Some(State::Destroy) => State::Halt,
-                        Some(State::Reset) => State::Reset,
-                        t => panic!("unexpected target {:?}", t),
-                    }
-                }
-                State::Halt => {
-                    // XXX: collect any data?
-                    State::Destroy
-                }
-                State::Reset => {
-                    // XXX: reset devices
-                    state.target = Some(State::Run);
-                    State::Boot
+                    // Worker thread quiesce cannot be done with `inner` lock
+                    // held without risking a deadlock.
+                    drop(inner);
+                    self.disp.quiesce_workers();
+                    inner = self.inner.lock().unwrap();
                 }
                 State::Destroy => {
-                    // XXX: clean up and bail
-                    state.disp.destroy_workers();
-                    self.transition_cb(&state, State::Destroy);
-                    state.machine.get_hdl().destroy().unwrap();
-                    return;
+                    // Like quiesce, worker destruction should not be done with
+                    // `inner` lock held.
+                    drop(inner);
+                    self.disp.destroy_workers();
+                    inner = self.inner.lock().unwrap();
                 }
-            };
-
-            if transition != state.current {
-                eprintln!(
-                    "Instance transition {:?} -> {:?} (target: {:?})",
-                    state.current,
-                    transition,
-                    state.target.as_ref()
-                );
-
-                self.transition_cb(&state, transition);
-                next_state = Some(transition);
+                State::Reset => {
+                    inner.machine.reinitialize().unwrap();
+                }
+                State::Run => {
+                    // Upon entry to the Run state, details about any previous
+                    // suspend become stale.
+                    inner.suspend_info = None;
+                }
+                _ => {}
             }
+
+            self.transition_actions(&inner, state, inner.state_target);
+
+            // Post-state-change actions
+            match state {
+                State::Boot => {
+                    // A reset is as good as fulfilled when transitioning
+                    // through the Boot state.
+                    if inner.state_target == Some(State::Reset) {
+                        inner.state_target = None;
+                    }
+
+                    if matches!(inner.state_target, None | Some(State::Run)) {
+                        self.disp.release_workers();
+                    }
+                }
+                State::Destroy => {
+                    inner.machine.get_hdl().destroy().unwrap();
+                }
+                _ => {}
+            }
+
+            // Notify any waiters about the completed state-change
+            self.cv.notify_all();
+
+            // Bail if completely destroyed
+            if matches!(state, State::Destroy) {
+                break;
+            }
+
+            next_state = state.next_transition(inner.state_target);
         }
     }
 
     pub fn print(&self) {
-        let state = self.state.lock().unwrap();
-        state.inv.print();
+        let state = self.inner.lock().unwrap();
+        state.inv.print()
     }
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        if state.current != State::Destroy {
+        let mut state = self.inner.lock().unwrap();
+        if state.state_current != State::Destroy {
             drop(state);
-            self.set_target_state(State::Destroy).unwrap();
-            state = self.state.lock().unwrap();
+            self.set_target_state(ReqState::Halt).unwrap();
+            state = self.inner.lock().unwrap();
             state = self
                 .cv
-                .wait_while(state, |state| state.current != State::Destroy)
+                .wait_while(state, |state| {
+                    state.state_current != State::Destroy
+                })
                 .unwrap();
         }
         let _joined = state.drive_thread.take().unwrap().join();
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SuspendKind {
     Reset,
     Halt,
-    TripleFault,
+}
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SuspendSource {
+    /// Triple-fault from vCPU ID
+    TripleFault(i32),
+    /// Initiated from named device
+    Device(&'static str),
+    /// External request (power/reset button)
+    External,
 }

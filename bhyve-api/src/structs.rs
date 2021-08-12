@@ -1,5 +1,7 @@
-use libc::size_t;
 use std::os::raw::{c_int, c_uint, c_void};
+
+use bitflags::bitflags;
+use libc::size_t;
 
 // 3:0 - segment type
 /// Descriptor type flag (0 = system, 1 = code/data)
@@ -269,6 +271,28 @@ pub struct vm_capability {
     pub captype: c_int,
     pub capval: c_int,
     pub allcpus: c_int,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_suspend {
+    /// Acceptable values defined by `vm_suspend_how`
+    pub how: u32,
+}
+
+// bit definitions for `vm_reinit.flags`
+bitflags! {
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct VmReinitFlags: u64 {
+        const FORCE_SUSPEND = (1 << 0);
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_reinit {
+    pub flags: VmReinitFlags,
 }
 
 #[repr(C)]
