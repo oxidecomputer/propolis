@@ -292,3 +292,10 @@ impl Drop for Instance {
         let _joined = state.drive_thread.take().unwrap().join();
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+pub enum SuspendKind {
+    Reset,
+    Halt,
+    TripleFault,
+}

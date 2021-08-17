@@ -101,6 +101,32 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                 println!("wrmsr({:x}, {:x})", msr, val);
                 VmEntry::Run
             }
+            VmExitKind::Debug => {
+                // Until there is an interface to delay until a vCPU is no
+                // longer under control of the debugger, we have no choice but
+                // attempt reentry (and probably spin until the debugger is
+                // detached from this vCPU).
+                VmEntry::Run
+            }
+            VmExitKind::InstEmul(inst) => {
+                panic!(
+                    "unemulated instruction {:x?} as rip:{:x}",
+                    inst.bytes(),
+                    exit.rip
+                );
+            }
+            VmExitKind::Paging(gpa, ftype) => {
+                panic!("unhandled paging gpa:{:x} type:{:x}", gpa, ftype);
+            }
+            VmExitKind::VmxError(detail) => {
+                panic!("VMX error: {:?}", detail);
+            }
+            VmExitKind::SvmError(detail) => {
+                panic!("SVM error: {:?}", detail);
+            }
+            VmExitKind::Suspended(kind) => {
+                todo!("drive instance toward {:?} suspension", kind);
+            }
             _ => panic!("unrecognized exit: {:?}", exit.kind),
         }
     }

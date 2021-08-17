@@ -3,8 +3,11 @@
 use std::convert::TryFrom;
 use std::os::raw::c_void;
 
+use crate::instance::SuspendKind;
+
 use bhyve_api::{
     vm_entry, vm_entry_cmds, vm_entry_payload, vm_exit, vm_exitcode,
+    vm_suspend_how,
 };
 
 /// Describes the reason for exiting execution of a vCPU.
@@ -58,6 +61,52 @@ pub enum MmioReq {
 }
 
 #[derive(Debug)]
+pub struct SvmDetail {
+    pub exit_code: u64,
+    pub info1: u64,
+    pub info2: u64,
+}
+#[derive(Debug)]
+pub struct VmxDetail {
+    pub status: i32,
+    pub exit_reason: u32,
+    pub exit_qualification: u64,
+    pub inst_type: i32,
+    pub inst_error: i32,
+}
+impl From<&bhyve_api::vm_exit_vmx> for VmxDetail {
+    fn from(raw: &bhyve_api::vm_exit_vmx) -> Self {
+        Self {
+            status: raw.status,
+            exit_reason: raw.exit_reason,
+            exit_qualification: raw.exit_qualification,
+            inst_type: raw.inst_type,
+            inst_error: raw.inst_error,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct InstEmul {
+    pub inst_data: [u8; 15],
+    pub len: u8,
+}
+impl InstEmul {
+    pub fn bytes(&self) -> &[u8] {
+        &self.inst_data[..usize::min(self.inst_data.len(), self.len as usize)]
+    }
+}
+impl From<&bhyve_api::vm_inst_emul> for InstEmul {
+    fn from(raw: &bhyve_api::vm_inst_emul) -> Self {
+        let mut res = Self { inst_data: [0u8; 15], len: raw.num_valid };
+        assert!(res.len as usize <= res.inst_data.len());
+        res.inst_data.copy_from_slice(&raw.inst[..]);
+
+        res
+    }
+}
+
+#[derive(Debug)]
 pub enum VmExitKind {
     Bogus,
     ReqIdle,
@@ -65,6 +114,12 @@ pub enum VmExitKind {
     Mmio(MmioReq),
     Rdmsr(u32),
     Wrmsr(u32, u64),
+    VmxError(VmxDetail),
+    SvmError(SvmDetail),
+    Suspended(SuspendKind),
+    InstEmul(InstEmul),
+    Debug,
+    Paging(u64, i32),
     Unknown(i32),
 }
 impl VmExitKind {
@@ -76,6 +131,16 @@ impl VmExitKind {
             VmExitKind::Mmio(_) => vm_exitcode::VM_EXITCODE_MMIO as i32,
             VmExitKind::Rdmsr(_) => vm_exitcode::VM_EXITCODE_RDMSR as i32,
             VmExitKind::Wrmsr(_, _) => vm_exitcode::VM_EXITCODE_WRMSR as i32,
+            VmExitKind::VmxError(_) => vm_exitcode::VM_EXITCODE_VMX as i32,
+            VmExitKind::SvmError(_) => vm_exitcode::VM_EXITCODE_SVM as i32,
+            VmExitKind::InstEmul(_) => {
+                vm_exitcode::VM_EXITCODE_INST_EMUL as i32
+            }
+            VmExitKind::Suspended(_) => {
+                vm_exitcode::VM_EXITCODE_SUSPENDED as i32
+            }
+            VmExitKind::Debug => vm_exitcode::VM_EXITCODE_DEBUG as i32,
+            VmExitKind::Paging(_, _) => vm_exitcode::VM_EXITCODE_PAGING as i32,
             VmExitKind::Unknown(code) => *code,
         }
     }
@@ -120,6 +185,74 @@ impl From<&vm_exit> for VmExitKind {
                         bytes: mmio.bytes,
                     }))
                 }
+            }
+            vm_exitcode::VM_EXITCODE_VMX => {
+                let vmx = unsafe { &exit.u.vmx };
+                VmExitKind::VmxError(VmxDetail::from(vmx))
+            }
+            vm_exitcode::VM_EXITCODE_SVM => {
+                let svm = unsafe { &exit.u.svm };
+                VmExitKind::SvmError(SvmDetail {
+                    exit_code: svm.exitcode,
+                    info1: svm.exitinfo1,
+                    info2: svm.exitinfo2,
+                })
+            }
+            vm_exitcode::VM_EXITCODE_SUSPENDED => {
+                let detail = unsafe { exit.u.suspend };
+                match vm_suspend_how::try_from(detail as u32) {
+                    Ok(vm_suspend_how::VM_SUSPEND_RESET) => {
+                        VmExitKind::Suspended(SuspendKind::Reset)
+                    }
+                    Ok(vm_suspend_how::VM_SUSPEND_POWEROFF)
+                    | Ok(vm_suspend_how::VM_SUSPEND_HALT) => {
+                        VmExitKind::Suspended(SuspendKind::Halt)
+                    }
+                    Ok(vm_suspend_how::VM_SUSPEND_TRIPLEFAULT) => {
+                        VmExitKind::Suspended(SuspendKind::TripleFault)
+                    }
+                    Ok(vm_suspend_how::VM_SUSPEND_NONE) | Err(_) => {
+                        panic!("invalid vm_suspend_how: {}", detail);
+                    }
+                }
+            }
+            vm_exitcode::VM_EXITCODE_INST_EMUL => {
+                let inst = unsafe { &exit.u.inst_emul };
+                VmExitKind::InstEmul(InstEmul::from(inst))
+            }
+            vm_exitcode::VM_EXITCODE_PAGING => {
+                let paging = unsafe { &exit.u.paging };
+                // The Paging exit should probably be transformed into an
+                // attempted-MMIO exit to make handling easier, but until then
+                // we just pass the buck.
+                VmExitKind::Paging(paging.gpa, paging.fault_type)
+            }
+            vm_exitcode::VM_EXITCODE_DEBUG => VmExitKind::Debug,
+
+            vm_exitcode::VM_EXITCODE_TASK_SWITCH => {
+                // Intel CPUs do not emulate x86 hardware task switching, so it
+                // is left to userspace.
+                todo!("Implement task-switching emulation on Intel")
+            }
+            vm_exitcode::VM_EXITCODE_HLT | vm_exitcode::VM_EXITCODE_PAUSE => {
+                // Until propolis is changed to request userspace exits for HLT
+                // or PAUSE, we do not ever expect to see them.
+                panic!("Unexpected {:?}", code);
+            }
+            vm_exitcode::VM_EXITCODE_BPT | vm_exitcode::VM_EXITCODE_MTRAP => {
+                // Propolis is not using VMX breakpoints or mtraps (yet)
+                panic!("Unexpected {:?}", code);
+            }
+            vm_exitcode::VM_EXITCODE_MWAIT
+            | vm_exitcode::VM_EXITCODE_MONITOR
+            | vm_exitcode::VM_EXITCODE_VMINSN
+            | vm_exitcode::VM_EXITCODE_IOAPIC_EOI
+            | vm_exitcode::VM_EXITCODE_MMIO_EMUL
+            | vm_exitcode::VM_EXITCODE_HT
+            | vm_exitcode::VM_EXITCODE_RUN_STATE => {
+                // These exitcodes are used (and handled) internally by bhyve
+                // and should never be emitted to userspace.
+                panic!("Unexpected internal exit: {:?}", code);
             }
             c => VmExitKind::Unknown(c as i32),
         }

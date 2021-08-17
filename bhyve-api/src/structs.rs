@@ -79,6 +79,9 @@ pub union vm_exit_payload {
     pub inout: vm_inout,
     pub mmio: vm_mmio,
     pub msr: vm_rwmsr,
+    pub inst_emul: vm_inst_emul,
+    pub suspend: c_int,
+    pub paging: vm_paging,
     pub vmx: vm_exit_vmx,
     pub svm: vm_exit_svm,
     // sized to zero entire union
@@ -129,6 +132,20 @@ pub struct vm_exit_svm {
 pub struct vm_exit_msr {
     pub code: u32,
     pub wval: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_inst_emul {
+    pub inst: [u8; 15],
+    pub num_valid: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_paging {
+    pub gpa: u64,
+    pub fault_type: c_int,
 }
 
 pub const PROT_READ: u8 = 0x1;

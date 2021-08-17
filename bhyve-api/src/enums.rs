@@ -54,7 +54,7 @@ pub enum vm_reg_name {
 
 #[repr(i32)]
 #[allow(non_camel_case_types, unused)]
-#[derive(TryFromPrimitive)]
+#[derive(TryFromPrimitive, Debug)]
 pub enum vm_exitcode {
     VM_EXITCODE_INOUT,
     VM_EXITCODE_VMX,
@@ -107,4 +107,15 @@ pub enum vm_cap_type {
     VM_CAP_PAUSE_EXIT,
     VM_CAP_ENABLE_INVPCID,
     VM_CAP_BPT_EXIT,
+}
+
+#[repr(u32)]
+#[allow(non_camel_case_types, unused)]
+#[derive(TryFromPrimitive)]
+pub enum vm_suspend_how {
+    VM_SUSPEND_NONE,
+    VM_SUSPEND_RESET,
+    VM_SUSPEND_POWEROFF,
+    VM_SUSPEND_HALT,
+    VM_SUSPEND_TRIPLEFAULT,
 }
