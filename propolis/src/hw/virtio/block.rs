@@ -144,6 +144,7 @@ pub struct Request {
     chain: Chain,
     vq: Arc<VirtQueue>,
 }
+
 impl Request {
     fn new_read(
         chain: Chain,
@@ -179,6 +180,7 @@ impl Request {
         }
     }
 }
+
 impl BlockReq for Request {
     fn oper(&self) -> BlockOp {
         self.op
@@ -186,18 +188,6 @@ impl BlockReq for Request {
 
     fn offset(&self) -> usize {
         self.off
-    }
-    fn complete(mut self, res: BlockResult, ctx: &DispCtx) {
-        assert_eq!(self.chain.remain_write_bytes(), 1);
-        let mem = &ctx.mctx.memctx();
-        match res {
-            BlockResult::Success => self.chain.write(&VIRTIO_BLK_S_OK, mem),
-            BlockResult::Failure => self.chain.write(&VIRTIO_BLK_S_IOERR, mem),
-            BlockResult::Unsupported => {
-                self.chain.write(&VIRTIO_BLK_S_UNSUPP, mem)
-            }
-        };
-        self.vq.push_used(&mut self.chain, mem, ctx);
     }
 
     fn next_buf(&mut self) -> Option<GuestRegion> {
@@ -215,6 +205,19 @@ impl BlockReq for Request {
             self.xfer_used += region.1;
         }
         res
+    }
+
+    fn complete(mut self, res: BlockResult, ctx: &DispCtx) {
+        assert_eq!(self.chain.remain_write_bytes(), 1);
+        let mem = &ctx.mctx.memctx();
+        match res {
+            BlockResult::Success => self.chain.write(&VIRTIO_BLK_S_OK, mem),
+            BlockResult::Failure => self.chain.write(&VIRTIO_BLK_S_IOERR, mem),
+            BlockResult::Unsupported => {
+                self.chain.write(&VIRTIO_BLK_S_UNSUPP, mem)
+            }
+        };
+        self.vq.push_used(&mut self.chain, mem, ctx);
     }
 }
 

@@ -518,11 +518,11 @@ impl<'a> SubMapping<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use tempfile::tempfile;
 
-    fn test_vmm(len: u64) -> VmmFile {
+    pub fn test_vmm(len: u64) -> VmmFile {
         let file = tempfile().unwrap();
         file.set_len(len).unwrap();
         unsafe { VmmFile::new(file) }
