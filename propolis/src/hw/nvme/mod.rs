@@ -637,7 +637,7 @@ impl PciNvme {
         // Collect all the IO SQ entries, per namespace
         let mut io_cmds = BTreeMap::new();
         while let Some(sub) = sq.pop(ctx) {
-            io_cmds.entry(sub.nsid).or_insert(vec![]).push(sub);
+            io_cmds.entry(sub.nsid).or_insert_with(Vec::new).push(sub);
         }
 
         drop(sq);

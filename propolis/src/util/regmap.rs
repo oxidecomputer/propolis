@@ -291,15 +291,13 @@ mod test {
     }
 
     fn read(off: usize, len: usize, cb: impl FnOnce(RWOp)) {
-        let mut buf = Vec::with_capacity(len);
-        buf.resize(len, 0);
+        let mut buf = vec![0; len];
         let mut ro = ReadOp::from_buf(off, &mut buf);
         cb(RWOp::Read(&mut ro))
     }
     #[allow(unused)]
     fn write(off: usize, len: usize, cb: impl FnOnce(&mut RWOp)) {
-        let mut buf = Vec::with_capacity(len);
-        buf.resize(len, 0);
+        let mut buf = vec![0; len];
         let mut wo = WriteOp::from_buf(off, &buf);
         cb(&mut RWOp::Write(&mut wo))
     }

@@ -1,5 +1,6 @@
 // Pull in asm!() support for USDT
 #![feature(asm)]
+#![allow(clippy::style)]
 
 use usdt::dtrace_provider;
 

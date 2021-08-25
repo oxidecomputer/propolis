@@ -80,7 +80,7 @@ impl Handle {
             .next()
             .map(|l| l.ok())
             .flatten()
-            .map(|line| u16::from_str_radix(&line, 10).ok())
+            .map(|line| line.parse::<u16>().ok())
             .flatten()
             .ok_or_else(|| Error::new(ErrorKind::Other, "invalid mtu"))
     }
@@ -105,7 +105,7 @@ impl Handle {
             .map(|line| {
                 let fields: Vec<u8> = line
                     .split(':')
-                    .filter_map(|f| u8::from_str_radix(&f, 16).ok())
+                    .filter_map(|f| u8::from_str_radix(f, 16).ok())
                     .collect();
                 match fields.len() {
                     ETHERADDRL => Some(fields),

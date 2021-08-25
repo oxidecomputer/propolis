@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use reqwest;
+
 use ring::digest::{Context, Digest, SHA256};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -36,7 +36,7 @@ impl<'a> Artifact<'a> {
         let source = self.source();
         let destination = self.path();
         if destination.exists() {
-            let r = hash_equals(&destination, &self.expected_digest);
+            let r = hash_equals(&destination, self.expected_digest);
 
             // If we fail to validate a previously existing hash, try removing
             // and re-downloading.
@@ -53,7 +53,7 @@ impl<'a> Artifact<'a> {
         let response = reqwest::get(source).await?;
         let mut file = tokio::fs::File::create(&destination).await?;
         file.write_all(&response.bytes().await?).await?;
-        hash_equals(&destination, &self.expected_digest)?;
+        hash_equals(&destination, self.expected_digest)?;
         Ok(())
     }
 }

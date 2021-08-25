@@ -1096,7 +1096,7 @@ impl MsixCfg {
                         }
                         MsixCapReg::TableOff => {
                             // table always at offset 0 for now
-                            ro.write_u32(0 | self.bar as u8 as u32);
+                            ro.write_u32(self.bar as u8 as u32);
                         }
                         MsixCapReg::PbaOff => {
                             ro.write_u32(self.pba_off | self.bar as u8 as u32);
