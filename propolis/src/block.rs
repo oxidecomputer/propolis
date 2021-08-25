@@ -14,7 +14,7 @@ use crate::dispatch::{DispCtx, Dispatcher};
 use crate::vmm::{MemCtx, SubMapping};
 
 /// Type of operations which may be issued to a virtual block device.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BlockOp {
     Flush,
     Read,
@@ -61,20 +61,27 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 
 /// Abstraction over an actual backing store
 pub trait BackingStore: Send + Sync + 'static {
-    /// Read from backing store and write into guest mapping
-    fn issue_read(
+    /// Depending on the is_read switch:
+    /// - perform a read request: read from backing store and write into guest mappings
+    /// - perform a write request: read from guest mappings and write into backing store
+    ///
+    /// The entire request to the backing store starts at some offset, and the total
+    /// size is the sum of all the mapping's size:
+    ///
+    /// |-----m1-----|--m2--|-m3-|----------m4----------|
+    /// ^                                               ^
+    /// offset                                          offset plus total size
+    ///
+    /// Don't assume mappings are contiguous in guest memory, or that they are ordered.
+    /// Guests can choose to send whatever they want.
+    ///
+    /// Backing stores can choose to perform the above example as one large request, or
+    /// four small ones.
+    fn issue_rw_request(
         &self,
+        is_read: bool,
         offset: usize,
-        sz: usize,
-        mapping: SubMapping,
-    ) -> Result<usize>;
-
-    /// Read from guest mapping and write into backing store
-    fn issue_write(
-        &self,
-        offset: usize,
-        sz: usize,
-        mapping: SubMapping,
+        mappings: Vec<SubMapping>,
     ) -> Result<usize>;
 
     /// Issue flush command to backing store
@@ -120,22 +127,46 @@ impl FileBackingStore {
 }
 
 impl BackingStore for FileBackingStore {
-    fn issue_read(
+    fn issue_rw_request(
         &self,
+        is_read: bool,
         offset: usize,
-        sz: usize,
-        mapping: SubMapping,
+        mappings: Vec<SubMapping>,
     ) -> Result<usize> {
-        mapping.pread(&self.fp, sz, offset as i64)
-    }
+        let mut nbytes = 0;
 
-    fn issue_write(
-        &self,
-        offset: usize,
-        sz: usize,
-        mapping: SubMapping,
-    ) -> Result<usize> {
-        mapping.pwrite(&self.fp, sz, offset as i64)
+        for mapping in mappings {
+            let inner_nbytes = if is_read {
+                mapping.pread(
+                    &self.fp,
+                    mapping.len(),
+                    (offset + nbytes) as i64,
+                )?
+            } else {
+                mapping.pwrite(
+                    &self.fp,
+                    mapping.len(),
+                    (offset + nbytes) as i64,
+                )?
+            };
+
+            if inner_nbytes != mapping.len() {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!(
+                        "{} at offset {} of size {} incomplete! only {} bytes",
+                        if is_read { "read" } else { "write" },
+                        offset + nbytes,
+                        mapping.len(),
+                        inner_nbytes,
+                    ),
+                ));
+            }
+
+            nbytes += inner_nbytes;
+        }
+
+        Ok(nbytes)
     }
 
     fn issue_flush(&self) -> Result<()> {
@@ -217,102 +248,73 @@ impl<R: BlockReq, S: BackingStore> PlainBdev<R, S> {
         }
     }
 
-    /// Match against individual BlockReqs and call appropriate processing functions.
+    /// Gather all buffers from the request and pass as a group to the appropriate backing store
+    /// processing function.
     fn process_request(&self, req: &mut R, ctx: &DispCtx) -> BlockResult {
         let mem = ctx.mctx.memctx();
 
-        let mut offset = req.offset();
+        let offset = req.offset();
+
+        let mut bufs = vec![];
 
         while let Some(buf) = req.next_buf() {
-            let sz = buf.1;
-
-            let result = match req.oper() {
-                BlockOp::Read => {
-                    self.process_read_request(offset, sz, &mem, buf)
-                }
-                BlockOp::Write => self.process_write_request(offset, &mem, buf),
-                BlockOp::Flush => self.process_flush(),
-            };
-
-            // If any BlockReq in this IO request fail, inform the guest that
-            // their IO request failed.
-            match result {
-                BlockResult::Success => {} // ok
-                BlockResult::Failure => {
-                    return BlockResult::Failure;
-                }
-                BlockResult::Unsupported => {
-                    return BlockResult::Unsupported;
-                }
-            };
-
-            offset += sz;
+            bufs.push(buf);
         }
 
-        BlockResult::Success
-    }
-
-    /// Delegate a block device read to BlockReqBackingStore.
-    fn process_read_request(
-        &self,
-        offset: usize,
-        sz: usize,
-        mem: &MemCtx,
-        buf: GuestRegion,
-    ) -> BlockResult {
-        if let Some(mapping) = mem.writable_region(&buf) {
-            let nread = self.backing_store.issue_read(offset, sz, mapping);
-            match nread {
-                Ok(nread) => {
-                    assert_eq!(nread as usize, sz);
-                    BlockResult::Success
-                }
-                Err(_) => {
-                    // TODO: Error writing to guest memory
-                    BlockResult::Failure
-                }
+        let result = match req.oper() {
+            BlockOp::Read => self.process_rw_request(true, offset, &mem, bufs),
+            BlockOp::Write => {
+                self.process_rw_request(false, offset, &mem, bufs)
             }
-        } else {
-            // TODO: Error getting writable region
-            BlockResult::Failure
+            BlockOp::Flush => self.process_flush(),
+        };
+
+        match result {
+            Ok(status) => status,
+            Err(_) => BlockResult::Failure,
         }
     }
 
-    /// Delegate a block device write to BlockReqBackingStore.
-    fn process_write_request(
+    /// Delegate a block device read or write to the backing store.
+    fn process_rw_request(
         &self,
+        is_read: bool,
         offset: usize,
         mem: &MemCtx,
-        buf: GuestRegion,
-    ) -> BlockResult {
-        let sz = buf.1;
+        bufs: Vec<GuestRegion>,
+    ) -> Result<BlockResult> {
+        let mappings: Vec<SubMapping> = bufs
+            .iter()
+            .map(|buf| {
+                if is_read {
+                    mem.writable_region(buf).unwrap()
+                } else {
+                    mem.readable_region(buf).unwrap()
+                }
+            })
+            .collect();
 
-        if let Some(mapping) = mem.readable_region(&buf) {
-            let nwritten = self.backing_store.issue_write(offset, sz, mapping);
-            match nwritten {
-                Ok(nwritten) => {
-                    assert_eq!(nwritten as usize, sz);
-                    BlockResult::Success
-                }
-                Err(_) => {
-                    // TODO: Error reading from guest memory
-                    BlockResult::Failure
-                }
+        let total_size: usize = mappings.iter().map(|x| x.len()).sum();
+
+        let nbytes =
+            self.backing_store.issue_rw_request(is_read, offset, mappings);
+        match nbytes {
+            Ok(nbytes) => {
+                assert_eq!(nbytes as usize, total_size);
+                Ok(BlockResult::Success)
             }
-        } else {
-            // TODO: Error getting readable region
-            BlockResult::Failure
-        }
-    }
-
-    /// Send flush to BlockReqBackingStore
-    fn process_flush(&self) -> BlockResult {
-        match self.backing_store.issue_flush() {
-            Ok(()) => BlockResult::Success,
             Err(_) => {
-                // TODO: encapsulated error here from BlockReqBackingStore here?
-                BlockResult::Failure
+                // TODO: Error writing to guest memory
+                Ok(BlockResult::Failure)
             }
+        }
+    }
+
+    /// Send flush to the backing store.
+    fn process_flush(&self) -> Result<BlockResult> {
+        match self.backing_store.issue_flush() {
+            Ok(_) => Ok(BlockResult::Success),
+            Err(_) => Ok(BlockResult::Failure),
         }
     }
 
@@ -349,5 +351,151 @@ impl<R: BlockReq, S: BackingStore> BlockDev<R> for PlainBdev<R, S> {
             block_size: self.block_size as u32,
             writable: !self.backing_store.is_ro(),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::fs::File;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    use tempfile::tempdir;
+
+    use crate::block::{BackingStore, FileBackingStore};
+    use crate::vmm::mapping::{GuardSpace, Prot};
+
+    #[test]
+    fn test_file_backing_store() {
+        /*
+         * Test the following:
+         * - seed a 512 byte file with a known pattern
+         * - read that file into four mappings
+         * - verify that the known pattern was read correctly into those four mappings
+         * - write another known pattern into another mapping
+         * - write from that mapping into the file
+         * - verify that the file received the full write
+         */
+        let dir = tempdir().expect("cannot create tempdir!");
+        let file_path = dir.path().join("disk.img");
+
+        let mut file =
+            File::create(file_path.clone()).expect("cannot create tempfile!");
+        file.set_len(512).unwrap();
+
+        let backing_store =
+            FileBackingStore::from_path(file_path.clone(), false)
+                .expect("could not create FileBackingStore!");
+        assert_eq!(512, backing_store.len());
+
+        let guard_len = 4096;
+        let mut guard = GuardSpace::new(guard_len).unwrap();
+        let vmm = crate::vmm::mapping::tests::test_vmm(guard_len as u64);
+        let mapping = guard
+            .mapping(guard_len, Prot::READ | Prot::WRITE, &vmm, 0)
+            .unwrap();
+
+        // write into file
+        file.seek(SeekFrom::Start(0)).expect("seek failed!");
+        file.write(&vec![0; 128][..]).expect("write failed!");
+        file.write(&vec![1; 128][..]).expect("write failed!");
+        file.write(&vec![2; 128][..]).expect("write failed!");
+        file.write(&vec![3; 128][..]).expect("write failed!");
+
+        // read into mappings
+        let mappings = vec![
+            mapping.as_ref().subregion(25, 7).unwrap(),
+            mapping.as_ref().subregion(75, 256).unwrap(),
+            mapping.as_ref().subregion(1350, 128).unwrap(),
+            mapping.as_ref().subregion(2048, 121).unwrap(),
+        ];
+        backing_store
+            .issue_rw_request(true, 0, mappings)
+            .expect("read request failed!");
+        backing_store.issue_flush().expect("flush failed!");
+
+        // verify mapping[0] only got zeros
+        let mut bytes = vec![100; 7];
+        mapping
+            .as_ref()
+            .subregion(25, 7)
+            .unwrap()
+            .read_bytes(&mut bytes[..])
+            .unwrap();
+        assert_eq!(&bytes, &vec![0u8; 7]);
+
+        // verify mapping[1] got zeros, ones, and twos
+        // 000000011111111111111111111111122222222
+        // ^      ^                       ^      ^
+        // 7      128                     256    263
+        //
+        let mut bytes = vec![100; 256];
+        mapping
+            .as_ref()
+            .subregion(75, 256)
+            .unwrap()
+            .read_bytes(&mut bytes[..])
+            .unwrap();
+
+        let mut expected = vec![0u8; 128 - 7];
+        expected.append(&mut vec![1u8; 128]);
+        expected.append(&mut vec![2u8; 7]);
+        assert_eq!(bytes, expected);
+
+        // verify mapping[2] got twos and threes
+        // 222222222222223333333
+        // ^             ^     ^
+        // 263           384   391
+        let mut bytes = vec![100; 128];
+        mapping
+            .as_ref()
+            .subregion(1350, 128)
+            .unwrap()
+            .read_bytes(&mut bytes[..])
+            .unwrap();
+
+        let mut expected = vec![2u8; 384 - 263];
+        expected.append(&mut vec![3u8; 391 - 384]);
+        assert_eq!(bytes, expected);
+
+        // verify mapping[3] got threes
+        let mut bytes = vec![100; 121];
+        mapping
+            .as_ref()
+            .subregion(2048, 121)
+            .unwrap()
+            .read_bytes(&mut bytes[..])
+            .unwrap();
+
+        let expected = vec![3u8; 121];
+        assert_eq!(bytes, expected);
+
+        // write into file
+
+        let mut bytes = vec![100u8; 512];
+        mapping
+            .as_ref()
+            .subregion(3072, 512)
+            .unwrap()
+            .write_bytes(&mut bytes[..])
+            .unwrap();
+
+        let mappings = vec![mapping.as_ref().subregion(3072, 512).unwrap()];
+
+        backing_store
+            .issue_rw_request(false, 0, mappings)
+            .expect("write request failed!");
+        backing_store.issue_flush().expect("flush failed!");
+
+        // verify write to file
+
+        let mut file = File::open(file_path).expect("cannot open tempfile!");
+
+        let mut buffer = vec![0; 512];
+        file.seek(SeekFrom::Start(0)).expect("seek failed!");
+        file.read(&mut buffer[..]).expect("buffer read failed!");
+        assert_eq!(buffer, vec![100u8; 512]);
+
+        drop(file);
+        dir.close().expect("could not close dir!");
     }
 }
