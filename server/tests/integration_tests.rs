@@ -128,6 +128,7 @@ async fn test_uninitialized_server() {
     server.close().await.unwrap();
 }
 
+#[cfg(target_os = "illumos")]
 #[tokio::test]
 async fn test_ensure_instance_put_running() {
     let log = initialize_log("test_ensure_instance_put_running");
@@ -164,6 +165,7 @@ async fn test_ensure_instance_put_running() {
     server.close().await.unwrap();
 }
 
+#[cfg(target_os = "illumos")]
 #[tokio::test]
 async fn test_stop_instance_causes_destroy() {
     let log = initialize_log("test_stop_instance_causes_destroy");
@@ -213,6 +215,7 @@ async fn test_stop_instance_causes_destroy() {
     server.close().await.unwrap();
 }
 
+#[cfg(target_os = "illumos")]
 #[tokio::test]
 async fn test_reboot_returns_to_running() {
     let log = initialize_log("test_reboot_returns_to_running");
