@@ -11,6 +11,9 @@ struct Top {
 
     #[serde(default, rename = "dev")]
     devices: BTreeMap<String, Device>,
+
+    #[serde(default, rename = "backing_store")]
+    backing_stores: BTreeMap<String, BackingStore>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -24,6 +27,15 @@ struct Main {
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
+
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BackingStore {
+    #[serde(default, rename = "type")]
+    pub bstype: String,
 
     #[serde(flatten, default)]
     pub options: BTreeMap<String, toml::Value>,
@@ -47,6 +59,9 @@ impl Config {
     }
     pub fn devs(&self) -> IterDevs {
         IterDevs { inner: self.inner.devices.iter() }
+    }
+    pub fn backing_stores(&self) -> btree_map::Iter<String, BackingStore> {
+        self.inner.backing_stores.iter()
     }
 }
 pub struct IterDevs<'a> {
