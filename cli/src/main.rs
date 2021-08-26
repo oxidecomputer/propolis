@@ -220,8 +220,7 @@ fn main() {
                     );
                     chipset.pci_attach(bdf.unwrap(), vioblk);
 
-                    plain
-                        .start_dispatch(format!("bdev-{} thread", name), &disp);
+                    plain.start_dispatch(format!("bdev-{} thread", name), disp);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
@@ -248,10 +247,9 @@ fn main() {
                         .as_str()
                         .unwrap();
 
-                    let nvme = devices.get(nvme_ctrl).expect(&format!(
-                        "no such nvme controller: {}",
-                        nvme_ctrl
-                    ));
+                    let nvme = devices.get(nvme_ctrl).unwrap_or_else(|| {
+                        panic!("no such nvme controller: {}", nvme_ctrl)
+                    });
 
                     let readonly: bool = || -> Option<bool> {
                         dev.options.get("readonly")?.as_str()?.parse().ok()
@@ -271,8 +269,7 @@ fn main() {
                         eprintln!("failed to attach nvme-ns: {}", e);
                         std::process::exit(libc::EXIT_FAILURE);
                     }
-                    plain
-                        .start_dispatch(format!("bdev-{} thread", name), &disp);
+                    plain.start_dispatch(format!("bdev-{} thread", name), disp);
                 }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);

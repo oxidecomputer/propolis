@@ -187,10 +187,7 @@ impl<R: BlockReq, S: BackingStore> PlainBdev<R, S> {
     /// Creates a new block device from a device at `path`.
     pub fn create(backing_store: S) -> Result<Arc<Self>> {
         let len = backing_store.len();
-        let block_size = match backing_store.block_size() {
-            Some(v) => v,
-            None => 512,
-        };
+        let block_size = backing_store.block_size().unwrap_or(512);
 
         let this = Self {
             backing_store,

@@ -134,9 +134,8 @@ impl NvmeCtrl {
                 // We also don't currently support namespace management
                 // and so treat the 'broadcast' NSID (0xffffffff) as invalid
                 // along with any other namespace
-                0 | 0xffffffff | _ => {
-                    cmds::Completion::generic_err(STS_INVALID_NS)
-                }
+                0 | 0xffffffff => cmds::Completion::generic_err(STS_INVALID_NS),
+                _ => cmds::Completion::generic_err(STS_INVALID_NS),
             },
             IDENT_CNS_CONTROLLER => {
                 let ident = bits::IdentifyController {

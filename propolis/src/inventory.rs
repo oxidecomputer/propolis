@@ -559,8 +559,7 @@ mod tests {
         let child = Arc::new(TestEntity {});
         let inv = Inventory::new();
 
-        let root_id =
-            inv.register_root(root.clone(), "root".to_string()).unwrap();
+        let root_id = inv.register_root(root, "root".to_string()).unwrap();
         let _ =
             inv.register(root_id, child.clone(), "child".to_string()).unwrap();
 
