@@ -246,13 +246,12 @@ fn main() {
 
                     let backing_store = backing_stores
                         .remove(&backing_store.to_string())
-                        .expect(
-                            format!(
+                        .unwrap_or_else(|| {
+                            panic!(
                                 "could not find backing store {}!",
                                 backing_store
                             )
-                            .as_str(),
-                        );
+                        });
 
                     let plain =
                         block::PlainBdev::create(backing_store).unwrap();
@@ -304,7 +303,12 @@ fn main() {
 
                     let backing_store = backing_stores
                         .remove(&backing_store.to_string())
-                        .unwrap();
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "could not find backing store {}!",
+                                backing_store
+                            )
+                        });
 
                     let plain =
                         block::PlainBdev::create(backing_store).unwrap();
