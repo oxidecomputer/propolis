@@ -186,6 +186,44 @@ fn main() {
         inv.register(chipset_id, dbg, "debug".to_string())
             .map_err(|e| -> std::io::Error { e.into() })?;
 
+        let mut backing_stores: HashMap<
+            &std::string::String,
+            Box<dyn block::BackingStore>,
+        > = HashMap::new();
+
+        for (name, backing_store) in config.backing_stores() {
+            match &backing_store.bstype as &str {
+                "file" => {
+                    let path = backing_store
+                        .options
+                        .get("path")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
+
+                    let readonly: bool = || -> Option<bool> {
+                        backing_store
+                            .options
+                            .get("readonly")?
+                            .as_str()?
+                            .parse()
+                            .ok()
+                    }()
+                    .unwrap_or(false);
+
+                    let backing_store =
+                        block::FileBackingStore::from_path(path, readonly)?;
+                    backing_stores.insert(name, Box::new(backing_store));
+                }
+                _ => {
+                    panic!(
+                        "unrecognized backing store type {}!",
+                        backing_store.bstype
+                    );
+                }
+            }
+        }
+
         let mut devices = HashMap::new();
 
         for (name, dev) in config.devs() {
@@ -199,17 +237,25 @@ fn main() {
             };
             match driver {
                 "pci-virtio-block" => {
-                    let disk_path =
-                        dev.options.get("disk").unwrap().as_str().unwrap();
+                    let backing_store = dev
+                        .options
+                        .get("backing_store")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
 
-                    let readonly: bool = || -> Option<bool> {
-                        dev.options.get("readonly")?.as_str()?.parse().ok()
-                    }()
-                    .unwrap_or(false);
+                    let backing_store = backing_stores
+                        .remove(&backing_store.to_string())
+                        .expect(
+                            format!(
+                                "could not find backing store {}!",
+                                backing_store
+                            )
+                            .as_str(),
+                        );
 
                     let plain =
-                        block::PlainBdev::from_file(disk_path, readonly)
-                            .unwrap();
+                        block::PlainBdev::create(backing_store).unwrap();
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
@@ -238,8 +284,6 @@ fn main() {
                     chipset.pci_attach(bdf.unwrap(), nvme);
                 }
                 "nvme-ns" => {
-                    let disk_path =
-                        dev.options.get("disk").unwrap().as_str().unwrap();
                     let nvme_ctrl = dev
                         .options
                         .get("controller")
@@ -251,14 +295,20 @@ fn main() {
                         panic!("no such nvme controller: {}", nvme_ctrl)
                     });
 
-                    let readonly: bool = || -> Option<bool> {
-                        dev.options.get("readonly")?.as_str()?.parse().ok()
-                    }()
-                    .unwrap_or(false);
+                    let backing_store = dev
+                        .options
+                        .get("backing_store")
+                        .unwrap()
+                        .as_str()
+                        .unwrap();
+
+                    let backing_store = backing_stores
+                        .remove(&backing_store.to_string())
+                        .unwrap();
 
                     let plain =
-                        block::PlainBdev::from_file(disk_path, readonly)
-                            .unwrap();
+                        block::PlainBdev::create(backing_store).unwrap();
+
                     let ns = hw::nvme::NvmeNs::create(plain.clone());
 
                     if let Err(e) =

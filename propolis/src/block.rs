@@ -163,29 +163,29 @@ impl BackingStore for FileBackingStore {
 }
 
 /// Standard [`BlockDev`] implementation. Requires a backing store.
-pub struct PlainBdev<R: BlockReq, S: BackingStore> {
-    backing_store: S,
+pub struct PlainBdev<R: BlockReq> {
+    backing_store: Box<dyn BackingStore>,
     block_size: usize,
     sectors: usize,
     reqs: Mutex<VecDeque<R>>,
     cond: Condvar,
 }
 
-impl<R: BlockReq> PlainBdev<R, FileBackingStore> {
+impl<R: BlockReq> PlainBdev<R> {
     pub fn from_file(
         path: impl AsRef<Path>,
         readonly: bool,
-    ) -> Result<Arc<PlainBdev<R, FileBackingStore>>> {
+    ) -> Result<Arc<PlainBdev<R>>> {
         let backing_store = FileBackingStore::from_path(path, readonly)?;
-        let plain_bdev = PlainBdev::create(backing_store)?;
+        let plain_bdev = PlainBdev::create(Box::new(backing_store))?;
 
         Ok(plain_bdev)
     }
 }
 
-impl<R: BlockReq, S: BackingStore> PlainBdev<R, S> {
-    /// Creates a new block device from a device at `path`.
-    pub fn create(backing_store: S) -> Result<Arc<Self>> {
+impl<R: BlockReq> PlainBdev<R> {
+    /// Creates a new block device from a backing store.
+    pub fn create(backing_store: Box<dyn BackingStore>) -> Result<Arc<Self>> {
         let len = backing_store.len();
         let block_size = backing_store.block_size().unwrap_or(512);
 
@@ -337,7 +337,7 @@ impl<R: BlockReq, S: BackingStore> PlainBdev<R, S> {
     }
 }
 
-impl<R: BlockReq, S: BackingStore> BlockDev<R> for PlainBdev<R, S> {
+impl<R: BlockReq> BlockDev<R> for PlainBdev<R> {
     fn enqueue(&self, req: R) {
         self.reqs.lock().unwrap().push_back(req);
         self.cond.notify_all();
