@@ -208,8 +208,7 @@ fn main() {
                     .unwrap_or(false);
 
                     let plain =
-                        block::PlainBdev::from_file(disk_path, readonly)
-                            .unwrap();
+                        block::FileBdev::create(disk_path, readonly).unwrap();
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
@@ -257,8 +256,7 @@ fn main() {
                     .unwrap_or(false);
 
                     let plain =
-                        block::PlainBdev::from_file(disk_path, readonly)
-                            .unwrap();
+                        block::FileBdev::create(disk_path, readonly).unwrap();
                     let ns = hw::nvme::NvmeNs::create(plain.clone());
 
                     if let Err(e) =
