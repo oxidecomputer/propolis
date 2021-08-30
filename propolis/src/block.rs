@@ -148,16 +148,20 @@ impl<R: BlockReq> PlainBdev<R> {
         mem: &MemCtx,
         bufs: Vec<GuestRegion>,
     ) -> Result<BlockResult> {
-        let mappings: Vec<SubMapping> = bufs
+        let mappings: Option<Vec<SubMapping>> = bufs
             .iter()
             .map(|buf| {
                 if is_read {
-                    mem.writable_region(buf).unwrap()
+                    mem.writable_region(buf)
                 } else {
-                    mem.readable_region(buf).unwrap()
+                    mem.readable_region(buf)
                 }
             })
             .collect();
+
+        let mappings = mappings.ok_or_else(|| {
+            Error::new(ErrorKind::Other, "getting a region failed!")
+        })?;
 
         let total_size: usize = mappings.iter().map(|x| x.len()).sum();
 
