@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use propolis::bhyve_api;
 use propolis::block;
+use propolis::block::BlockDev;
 use propolis::chardev::Source;
 use propolis::common::PAGE_SIZE;
 use propolis::dispatch::{DispCtx, Dispatcher};

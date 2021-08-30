@@ -60,6 +60,10 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 
     /// Requests metadata about the block device.
     fn inquire(&self) -> BlockInquiry;
+
+    /// Spawns a new thread named `name` on the dispatcher `disp` which
+    /// begins processing incoming requests.
+    fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher);
 }
 
 /// Standard [`BlockDev`] implementation.
@@ -214,10 +218,25 @@ impl<R: BlockReq> FileBdev<R> {
             Ok(BlockResult::Success)
         }
     }
+}
+
+impl<R: BlockReq> BlockDev<R> for FileBdev<R> {
+    fn enqueue(&self, req: R) {
+        self.reqs.lock().unwrap().push_back(req);
+        self.cond.notify_all();
+    }
+
+    fn inquire(&self) -> BlockInquiry {
+        BlockInquiry {
+            total_size: self.sectors as u64,
+            block_size: self.block_size as u32,
+            writable: !self.is_ro,
+        }
+    }
 
     /// Spawns a new thread named `name` on the dispatcher `disp` which
     /// begins processing incoming requests.
-    pub fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher) {
+    fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher) {
         let ww = Arc::downgrade(&self);
 
         disp.spawn(
@@ -233,21 +252,6 @@ impl<R: BlockReq> FileBdev<R> {
             })),
         )
         .unwrap();
-    }
-}
-
-impl<R: BlockReq> BlockDev<R> for FileBdev<R> {
-    fn enqueue(&self, req: R) {
-        self.reqs.lock().unwrap().push_back(req);
-        self.cond.notify_all();
-    }
-
-    fn inquire(&self) -> BlockInquiry {
-        BlockInquiry {
-            total_size: self.sectors as u64,
-            block_size: self.block_size as u32,
-            writable: !self.is_ro,
-        }
     }
 }
 

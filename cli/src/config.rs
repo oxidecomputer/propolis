@@ -1,9 +1,11 @@
 use std::collections::{btree_map, BTreeMap};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde_derive::Deserialize;
 
 use crate::hw::pci;
+use propolis::block::{BlockDev, BlockReq};
 
 #[derive(Deserialize, Debug)]
 struct Top {
@@ -11,6 +13,9 @@ struct Top {
 
     #[serde(default, rename = "dev")]
     devices: BTreeMap<String, Device>,
+
+    #[serde(default, rename = "block_dev")]
+    block_devs: BTreeMap<String, BlockDevice>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -24,6 +29,15 @@ struct Main {
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
+
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BlockDevice {
+    #[serde(default, rename = "type")]
+    pub bdtype: String,
 
     #[serde(flatten, default)]
     pub options: BTreeMap<String, toml::Value>,
@@ -48,7 +62,28 @@ impl Config {
     pub fn devs(&self) -> IterDevs {
         IterDevs { inner: self.inner.devices.iter() }
     }
+
+    pub fn block_dev<R: BlockReq>(&self, name: &str) -> Arc<dyn BlockDev<R>> {
+        let entry = self.inner.block_devs.get(name).unwrap();
+
+        match &entry.bdtype as &str {
+            "file" => {
+                let path = entry.options.get("path").unwrap().as_str().unwrap();
+
+                let readonly: bool = || -> Option<bool> {
+                    entry.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                propolis::block::FileBdev::<R>::create(path, readonly).unwrap()
+            }
+            _ => {
+                panic!("unrecognized block dev type {}!", entry.bdtype);
+            }
+        }
+    }
 }
+
 pub struct IterDevs<'a> {
     inner: btree_map::Iter<'a, String, Device>,
 }
