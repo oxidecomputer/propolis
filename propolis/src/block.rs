@@ -63,7 +63,7 @@ pub trait BlockDev<R: BlockReq>: Send + Sync + 'static {
 }
 
 /// Standard [`BlockDev`] implementation.
-pub struct PlainBdev<R: BlockReq> {
+pub struct FileBdev<R: BlockReq> {
     fp: File,
     is_ro: bool,
 
@@ -73,7 +73,7 @@ pub struct PlainBdev<R: BlockReq> {
     cond: Condvar,
 }
 
-impl<R: BlockReq> PlainBdev<R> {
+impl<R: BlockReq> FileBdev<R> {
     /// Creates a new block device from a device at `path`.
     pub fn create(path: impl AsRef<Path>, readonly: bool) -> Result<Arc<Self>> {
         let p: &Path = path.as_ref();
@@ -236,7 +236,7 @@ impl<R: BlockReq> PlainBdev<R> {
     }
 }
 
-impl<R: BlockReq> BlockDev<R> for PlainBdev<R> {
+impl<R: BlockReq> BlockDev<R> for FileBdev<R> {
     fn enqueue(&self, req: R) {
         self.reqs.lock().unwrap().push_back(req);
         self.cond.notify_all();
@@ -262,7 +262,7 @@ mod test {
 
     use tempfile::tempdir;
 
-    use crate::block::{BlockOp, BlockDev, BlockReq, PlainBdev, BlockResult};
+    use crate::block::{BlockOp, BlockDev, BlockReq, FileBdev, BlockResult};
     use crate::vmm::mapping::{GuardSpace, Prot};
     use crate::common::{GuestAddr, GuestRegion};
     use crate::{DispCtx, Dispatcher, VcpuHdl};
@@ -348,7 +348,7 @@ mod test {
         file.set_len(512).unwrap();
 
         let bdev =
-            PlainBdev::create(file_path.clone(), false)
+            FileBdev::create(file_path.clone(), false)
                 .expect("could not create FileBackingStore!");
 
         let inquiry = bdev.inquire();
