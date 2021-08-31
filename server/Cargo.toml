@@ -32,7 +32,6 @@ slog = "2.7"
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis" }
 propolis-client = { path = "../client" }
-common = { path = "../common" }
 uuid = "0.8"
 
 [dev-dependencies]
