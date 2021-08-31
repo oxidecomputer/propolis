@@ -116,6 +116,16 @@ fn main() {
     let com1_sock = chardev::UDSock::bind(Path::new("./ttya"))
         .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
 
+    // The runtime scope has to be "global" to the initialize function below.
+    let runtime: Option<tokio::runtime::Runtime> = Some(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(10)
+            .thread_name("propolis-cli-tokio")
+            .enable_all()
+            .build()
+            .unwrap(),
+    );
+
     inst.initialize(|machine, mctx, disp, inv| {
         machine.populate_rom("bootrom", |mapping| {
             let mapping = mapping.as_ref();
@@ -203,7 +213,9 @@ fn main() {
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
                     let block_dev = config
-                        .block_dev::<hw::virtio::block::Request>(block_dev);
+                        .block_dev::<hw::virtio::block::Request>(
+                            block_dev, &runtime,
+                        );
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
@@ -244,8 +256,8 @@ fn main() {
                     let block_dev =
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let block_dev =
-                        config.block_dev::<hw::nvme::Request>(block_dev);
+                    let block_dev = config
+                        .block_dev::<hw::nvme::Request>(block_dev, &runtime);
 
                     let ns = hw::nvme::NvmeNs::create(block_dev.clone());
 

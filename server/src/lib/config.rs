@@ -1,6 +1,7 @@
 //! Describes a server config which may be parsed from a TOML file.
 
 use std::collections::{btree_map, BTreeMap};
+use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -63,11 +64,12 @@ impl Config {
     pub fn create_block_device<R: propolis::block::BlockReq>(
         &self,
         name: &str,
+        runtime: Option<tokio::runtime::Runtime>,
     ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
         let entry = self.block_devs.get(name).ok_or_else(|| {
             ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
         })?;
-        entry.create_block_device::<R>()
+        entry.create_block_device::<R>(runtime)
     }
 }
 
@@ -103,6 +105,7 @@ pub struct BlockDevice {
 impl BlockDevice {
     pub fn create_block_device<R: propolis::block::BlockReq>(
         &self,
+        runtime: Option<tokio::runtime::Runtime>,
     ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
         match &self.bdtype as &str {
             "file" => {
@@ -129,6 +132,53 @@ impl BlockDevice {
                 .unwrap_or(false);
 
                 Ok(propolis::block::FileBdev::<R>::create(path, readonly)?)
+            }
+            "crucible" => {
+                let targets: Vec<SocketAddrV4> = self
+                    .options
+                    .get("targets")
+                    .ok_or_else(|| {
+                        ParseError::KeyNotFound(
+                            "targets".to_string(),
+                            "options".to_string(),
+                        )
+                    })?
+                    .as_array()
+                    .ok_or_else(|| {
+                        ParseError::AsError(
+                            "targets".to_string(),
+                            "as_array".to_string(),
+                        )
+                    })?
+                    .to_vec()
+                    .iter()
+                    .map(|x| {
+                        x.as_str()
+                            .ok_or_else(|| {
+                                ParseError::AsError(
+                                    "x".to_string(),
+                                    "as_str".to_string(),
+                                )
+                            })?
+                            .to_string()
+                            .parse()
+                            .map_err(|e| {
+                                ParseError::AsError(
+                                    "x".to_string(),
+                                    format!("parse(): {:?}", e),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<SocketAddrV4>, ParseError>>()?;
+
+                let read_only: bool = || -> Option<bool> {
+                    self.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                Ok(propolis::hw::crucible::block::CrucibleBlockDev::<R>::new(
+                    targets, &runtime, read_only,
+                )?)
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);

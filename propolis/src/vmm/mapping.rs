@@ -629,7 +629,7 @@ pub mod tests {
 
         let input: u64 = 0xDEADBEEF;
         mapping.as_ref().write(&input).unwrap();
-        let output = mapping.as_ref().read().unwrap();
+        let output: u64 = mapping.as_ref().read().unwrap();
         assert_eq!(input, output);
     }
 

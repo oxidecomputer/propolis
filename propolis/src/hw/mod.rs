@@ -7,3 +7,6 @@ pub mod qemu;
 pub mod rtc;
 pub mod uart;
 pub mod virtio;
+
+#[cfg(feature = "crucible")]
+pub mod crucible;

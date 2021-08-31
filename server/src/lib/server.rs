@@ -280,6 +280,7 @@ async fn instance_ensure(
                             .config
                             .create_block_device::<propolis::hw::virtio::block::Request>(
                             block_dev_name,
+                            None,
                         ).map_err(|e| {
                             Error::new(ErrorKind::InvalidData, format!("ParseError: {:?}", e))
                         })?;

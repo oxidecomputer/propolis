@@ -1,4 +1,5 @@
 use std::collections::{btree_map, BTreeMap};
+use std::net::SocketAddrV4;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -46,9 +47,13 @@ impl Config {
         IterDevs { inner: self.inner.devices.iter() }
     }
 
-    pub fn block_dev<R: BlockReq>(&self, name: &str) -> Arc<dyn BlockDev<R>> {
+    pub fn block_dev<R: BlockReq>(
+        &self,
+        name: &str,
+        runtime: &Option<tokio::runtime::Runtime>,
+    ) -> Arc<dyn BlockDev<R>> {
         let entry = self.inner.block_devs.get(name).unwrap();
-        entry.block_dev::<R>()
+        entry.block_dev::<R>(runtime)
     }
 }
 
@@ -72,8 +77,10 @@ pub struct BlockDevice {
 }
 
 impl BlockDevice {
+    #[allow(unused_variables)]
     pub fn block_dev<R: propolis::block::BlockReq>(
         &self,
+        runtime: &Option<tokio::runtime::Runtime>,
     ) -> Arc<dyn propolis::block::BlockDev<R>> {
         match &self.bdtype as &str {
             "file" => {
@@ -85,6 +92,32 @@ impl BlockDevice {
                 .unwrap_or(false);
 
                 propolis::block::FileBdev::<R>::create(path, readonly).unwrap()
+            }
+            "crucible" => {
+                let mut targets: Vec<SocketAddrV4> = Vec::new();
+
+                for target in self
+                    .options
+                    .get("targets")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .to_vec()
+                {
+                    let addr =
+                        target.as_str().unwrap().to_string().parse().unwrap();
+                    targets.push(addr);
+                }
+
+                let read_only: bool = || -> Option<bool> {
+                    self.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                propolis::hw::crucible::block::CrucibleBlockDev::<R>::new(
+                    targets, runtime, read_only,
+                )
+                .unwrap()
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);
