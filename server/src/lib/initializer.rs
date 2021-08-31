@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use propolis::bhyve_api;
 use propolis::block;
-use propolis::block::BlockDev;
 use propolis::chardev::Source;
 use propolis::common::PAGE_SIZE;
 use propolis::dispatch::{DispCtx, Dispatcher};
@@ -211,24 +210,18 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_block<P: AsRef<std::path::Path>>(
+    pub fn initialize_block(
         &self,
         chipset: &RegisteredChipset,
-        path: P,
         bdf: pci::Bdf,
-        readonly: bool,
+        block_dev_name: &str,
+        block_dev: Arc<dyn block::BlockDev<virtio::block::Request>>,
     ) -> Result<(), Error> {
-        let plain = block::FileBdev::create(path.as_ref(), readonly)?;
-
-        let vioblk = virtio::VirtioBlock::create(
-            0x100,
-            Arc::clone(&plain)
-                as Arc<dyn block::BlockDev<virtio::block::Request>>,
-        );
+        let vioblk = virtio::VirtioBlock::create(0x100, Arc::clone(&block_dev));
         chipset.device().pci_attach(bdf, vioblk);
 
-        plain.start_dispatch(
-            format!("bdev-{} thread", path.as_ref().to_string_lossy()),
+        block_dev.start_dispatch(
+            format!("bdev-{} thread", block_dev_name),
             &self.disp,
         );
         Ok(())

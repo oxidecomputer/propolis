@@ -265,14 +265,19 @@ async fn instance_ensure(
                 let driver = &dev.driver as &str;
                 match driver {
                     "pci-virtio-block" => {
-                        let readonly: bool =
-                            dev.get("readonly").unwrap_or(false);
-                        let path = dev.get_string("disk").ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::InvalidData,
-                                "Cannot parse disk path",
-                            )
-                        })?;
+                        let block_dev_name = dev
+                            .options
+                            .get("block_dev")
+                            .unwrap()
+                            .as_str()
+                            .unwrap();
+
+                        let block_dev = server_context
+                            .config
+                            .block_dev::<propolis::hw::virtio::block::Request>(
+                            block_dev_name,
+                        );
+
                         let bdf: pci::Bdf =
                             dev.get("pci-path").ok_or_else(|| {
                                 Error::new(
@@ -280,7 +285,13 @@ async fn instance_ensure(
                                     "Cannot parse disk PCI",
                                 )
                             })?;
-                        init.initialize_block(&chipset, path, bdf, readonly)?;
+
+                        init.initialize_block(
+                            &chipset,
+                            bdf,
+                            block_dev_name,
+                            block_dev,
+                        )?;
                     }
                     "pci-virtio-viona" => {
                         let name = dev.get_string("vnic").ok_or_else(|| {

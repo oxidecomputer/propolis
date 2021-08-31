@@ -3,6 +3,7 @@
 use std::collections::{btree_map, BTreeMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde_derive::Deserialize;
 use thiserror::Error;
@@ -25,6 +26,9 @@ pub struct Config {
 
     #[serde(default, rename = "dev")]
     devices: BTreeMap<String, Device>,
+
+    #[serde(default, rename = "block_dev")]
+    block_devs: BTreeMap<String, BlockDevice>,
 }
 
 impl Config {
@@ -36,8 +40,9 @@ impl Config {
     pub fn new<P: Into<PathBuf>>(
         bootrom: P,
         devices: BTreeMap<String, Device>,
+        block_devs: BTreeMap<String, BlockDevice>,
     ) -> Config {
-        Config { bootrom: bootrom.into(), devices }
+        Config { bootrom: bootrom.into(), devices, block_devs }
     }
 
     pub fn get_bootrom(&self) -> &Path {
@@ -47,6 +52,29 @@ impl Config {
     pub fn devs(&self) -> IterDevs {
         IterDevs { inner: self.devices.iter() }
     }
+
+    pub fn block_dev<R: propolis::block::BlockReq>(
+        &self,
+        name: &str,
+    ) -> Arc<dyn propolis::block::BlockDev<R>> {
+        let entry = self.block_devs.get(name).unwrap();
+
+        match &entry.bdtype as &str {
+            "file" => {
+                let path = entry.options.get("path").unwrap().as_str().unwrap();
+
+                let readonly: bool = || -> Option<bool> {
+                    entry.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                propolis::block::FileBdev::<R>::create(path, readonly).unwrap()
+            }
+            _ => {
+                panic!("unrecognized block dev type {}!", entry.bdtype);
+            }
+        }
+    }
 }
 
 /// A hard-coded device, either enabled by default or accessible locally
@@ -54,6 +82,15 @@ impl Config {
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
+
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BlockDevice {
+    #[serde(default, rename = "type")]
+    pub bdtype: String,
 
     #[serde(flatten, default)]
     pub options: BTreeMap<String, toml::Value>,
