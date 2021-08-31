@@ -1,4 +1,4 @@
-use std::collections::{btree_map, BTreeMap};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -6,6 +6,8 @@ use serde_derive::Deserialize;
 
 use crate::hw::pci;
 use propolis::block::{BlockDev, BlockReq};
+
+use common::config::{BlockDevice, Device, IterDevs};
 
 #[derive(Deserialize, Debug)]
 struct Top {
@@ -24,23 +26,6 @@ struct Main {
     cpus: u8,
     bootrom: String,
     memory: usize,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Device {
-    pub driver: String,
-
-    #[serde(flatten, default)]
-    pub options: BTreeMap<String, toml::Value>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct BlockDevice {
-    #[serde(default, rename = "type")]
-    pub bdtype: String,
-
-    #[serde(flatten, default)]
-    pub options: BTreeMap<String, toml::Value>,
 }
 
 pub struct Config {
@@ -65,33 +50,7 @@ impl Config {
 
     pub fn block_dev<R: BlockReq>(&self, name: &str) -> Arc<dyn BlockDev<R>> {
         let entry = self.inner.block_devs.get(name).unwrap();
-
-        match &entry.bdtype as &str {
-            "file" => {
-                let path = entry.options.get("path").unwrap().as_str().unwrap();
-
-                let readonly: bool = || -> Option<bool> {
-                    entry.options.get("readonly")?.as_str()?.parse().ok()
-                }()
-                .unwrap_or(false);
-
-                propolis::block::FileBdev::<R>::create(path, readonly).unwrap()
-            }
-            _ => {
-                panic!("unrecognized block dev type {}!", entry.bdtype);
-            }
-        }
-    }
-}
-
-pub struct IterDevs<'a> {
-    inner: btree_map::Iter<'a, String, Device>,
-}
-impl<'a> Iterator for IterDevs<'a> {
-    type Item = (&'a String, &'a Device);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        entry.block_dev::<R>()
     }
 }
 

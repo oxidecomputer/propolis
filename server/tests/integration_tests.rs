@@ -1,12 +1,10 @@
+use common::config::{BlockDevice, Device};
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingIfExists, ConfigLoggingLevel,
     HttpServer, HttpServerStarter,
 };
 use propolis_client::{Client, Error as ClientError};
-use propolis_server::{
-    config::{BlockDevice, Config, Device},
-    server,
-};
+use propolis_server::{config::Config, server};
 use slog::{o, Logger};
 use std::collections::BTreeMap;
 use uuid::Uuid;
