@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
 use crate::dispatch::{DispCtx, Dispatcher};
-use crate::vmm::{MemCtx, SubMapping};
+use crate::vmm::{MappingExt, MemCtx, SubMapping};
 
 /// Type of operations which may be issued to a virtual block device.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -165,40 +165,11 @@ impl<R: BlockReq> FileBdev<R> {
 
         let total_size: usize = mappings.iter().map(|x| x.len()).sum();
 
-        let nbytes = {
-            let mut nbytes = 0;
-
-            for mapping in mappings {
-                let inner_nbytes = if is_read {
-                    mapping.pread(
-                        &self.fp,
-                        mapping.len(),
-                        (offset + nbytes) as i64,
-                    )?
-                } else {
-                    mapping.pwrite(
-                        &self.fp,
-                        mapping.len(),
-                        (offset + nbytes) as i64,
-                    )?
-                };
-
-                if inner_nbytes != mapping.len() {
-                    println!(
-                        "{} at offset {} of size {} incomplete! only {} bytes",
-                        if is_read { "read" } else { "write" },
-                        offset + nbytes,
-                        mapping.len(),
-                        inner_nbytes,
-                    );
-                    return Ok(BlockResult::Failure);
-                }
-
-                nbytes += inner_nbytes;
-            }
-
-            nbytes
-        };
+        let nbytes = if is_read {
+            mappings.preadv(&self.fp, offset as i64)
+        } else {
+            mappings.pwritev(&self.fp, offset as i64)
+        }?;
 
         assert_eq!(nbytes as usize, total_size);
         Ok(BlockResult::Success)
