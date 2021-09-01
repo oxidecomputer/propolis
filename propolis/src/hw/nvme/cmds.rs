@@ -545,7 +545,7 @@ enum PrpNext {
 ///     - 2 because PRP entries are expected to be 32-bit aligned.
 ///
 /// See NVMe 1.0e Section 4.3 Physical Region Page Entry and List
-const PRP_LIST_MAX: u16 = 511;
+const PRP_LIST_MAX: u16 = 511; // XXX: 512?
 
 /// A helper object for iterator over a single, 2 or a list of PRPs.
 pub struct PrpIter<'a> {
@@ -553,6 +553,7 @@ pub struct PrpIter<'a> {
     ///
     /// The first PRP entry specifying the start of the data buffer or
     prp1: u64,
+
     /// PRP Entry 2 (PRP2)
     ///
     /// The second PRP entry or a PRP list pointer or reserved if PRP1 was enough.
@@ -589,8 +590,13 @@ impl PrpIter<'_> {
         assert!(self.remain > 0);
         assert!(self.error.is_none());
 
+        // PRP Entry Layout
+        // | 63                                      n + 1 | n . . . . . . . 2 1 0 |
+        // |         page base address                     |      offset     | 0 0 |
         let (addr, size, next) = match self.next {
             PrpNext::Prp1 => {
+                // The first PRP entry contained within the command may have a non-zero offset
+                // within the memory page.
                 let offset = self.prp1 & PAGE_OFFSET as u64;
                 let size = u64::min(PAGE_SIZE as u64 - offset, self.remain);
                 let after = self.remain - size;
@@ -601,8 +607,27 @@ impl PrpIter<'_> {
                     // entry which should be present in PRP2
                     PrpNext::Prp2
                 } else {
-                    let list_off = (self.prp2 & PAGE_OFFSET as u64) / 8;
-                    PrpNext::List(self.prp2, list_off as u16)
+                    /*
+                     * The first PRP List entry (i.e. the first pointer to a memory page containing
+                     * additional PRP entries) that if present is contained in the PRP Entry 2 location
+                     * within the command, shall be Qword aligned and may also have a non-zero offset within
+                     * the memory page.
+                     */
+                    assert!((self.prp2 % 8) == 0);
+
+                    /*
+                     * If this entry is
+                     *
+                     * - not the first PRP entry in the command, or
+                     * - in the PRP List
+                     *
+                     * then the Offset portion of this field shall be cleared to 0h.
+                     */
+                    let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
+                    PrpNext::List(
+                        self.prp2 - (self.prp2 & PAGE_OFFSET as u64),
+                        idx as u16,
+                    )
                 };
                 (self.prp1, size, next)
             }
@@ -623,9 +648,11 @@ impl PrpIter<'_> {
                     .mem
                     .read(GuestAddr(entry_addr))
                     .ok_or_else(|| "Unable to read PRP list entry")?;
+
                 if entry & PAGE_OFFSET as u64 != 0 {
                     return Err("Inappropriate PRP list entry offset");
                 }
+
                 if self.remain <= PAGE_SIZE as u64 {
                     (entry, self.remain, PrpNext::Done)
                 } else {
