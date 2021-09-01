@@ -104,10 +104,22 @@ impl Machine {
         VcpuHdl::new(self.get_hdl(), id as i32)
     }
 }
+impl Drop for Machine {
+    fn drop(&mut self) {
+        // Clear all of the entries from the physmem map so their associated
+        // mappings in the process address space are munmapped.
+        self.map_physmem.clear();
+
+        // Only after that should the VM instance be destroyed.
+        //
+        // TODO: For debugging purposes, we may want to skip destruction under
+        // certain circumstances to inspect the persisting in-kernel state.
+        let _ = self.hdl.destroy();
+    }
+}
 
 /// Wrapper around a [`Machine`] object which exposes helpers for
 /// accessing different aspects of the VMM.
-#[derive(Clone)]
 pub struct MachineCtx {
     vm: Arc<Machine>,
 }

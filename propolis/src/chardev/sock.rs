@@ -1,137 +1,117 @@
-use std::collections::VecDeque;
 use std::fs;
-use std::io::{ErrorKind, Read, Result, Write};
-use std::os::unix::io::AsRawFd;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{ErrorKind, Result};
+use std::os::unix::net::UnixListener as StdUnixListener;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
-use crate::dispatch::events::{Event, EventTarget, FdEvents, Resource, Token};
-use crate::dispatch::DispCtx;
-use crate::util::self_arc::*;
+use crate::chardev::{Sink, Source};
+use crate::dispatch::Dispatcher;
 
-use super::{Sink, Source};
+use tokio::net::unix::SocketAddr;
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Notify;
 
-pub struct UDSock {
-    socks: Mutex<Socks>,
-    sink_driver: Mutex<SinkDriver>,
-    source_driver: Mutex<SourceDriver>,
-    cv: Condvar,
-    sa_cell: SelfArcCell<Self>,
-}
-struct Socks {
-    state: SockState,
-    server: UnixListener,
-    client: Option<UnixStream>,
-    client_token_fd: Option<Token>,
-}
+#[derive(Default)]
 struct SinkDriver {
-    sink: Option<Arc<dyn Sink<DispCtx>>>,
-    buf: VecDeque<u8>,
+    sink: Mutex<Option<Arc<dyn Sink>>>,
+    notify: Notify,
 }
-struct SourceDriver {
-    source: Option<Arc<dyn Source<DispCtx>>>,
-    buf: VecDeque<u8>,
+impl SinkDriver {
+    async fn drive(&self, client: &UnixStream) -> Result<()> {
+        let sink = {
+            let guard = self.sink.lock().unwrap();
+            guard.as_ref().map(|s| Arc::clone(s))
+        };
+        if sink.is_none() {
+            return Ok(());
+        }
+        let sink = sink.unwrap();
+        loop {
+            let mut buf = [0u8];
+            loop {
+                match client.try_read(&mut buf) {
+                    Ok(0) => {
+                        return Ok(());
+                    }
+                    Ok(_n) => {
+                        break;
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        let _ = client.readable().await?;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+            loop {
+                match sink.write(buf[0]) {
+                    true => {
+                        break;
+                    }
+                    false => {
+                        self.notify.notified().await;
+                    }
+                }
+            }
+        }
+    }
 }
 
-impl SinkDriver {
-    fn new(bufsz: usize) -> Self {
-        assert!(bufsz > 0);
-        Self { sink: None, buf: VecDeque::with_capacity(bufsz) }
-    }
+#[derive(Default)]
+struct SourceDriver {
+    source: Mutex<Option<Arc<dyn Source>>>,
+    notify: Notify,
 }
 impl SourceDriver {
-    fn new(bufsz: usize) -> Self {
-        assert!(bufsz > 0);
-        Self { source: None, buf: VecDeque::with_capacity(bufsz) }
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-enum BufState {
-    Steady,
-    ProcessCapable,
-    ProcessRequired,
-}
-
-trait BufDriver {
-    fn drive(&mut self);
-    fn buffer_state(&self) -> BufState;
-
-    fn drive_transfer(&mut self) -> Option<BufState> {
-        let old = self.buffer_state();
-        self.drive();
-        let new = self.buffer_state();
-
-        if new != old {
-            Some(new)
-        } else {
-            None
+    async fn drive(&self, client: &UnixStream) -> Result<()> {
+        let source = {
+            let guard = self.source.lock().unwrap();
+            guard.as_ref().map(|s| Arc::clone(s))
+        };
+        if source.is_none() {
+            return Ok(());
         }
-    }
-}
-
-impl BufDriver for SinkDriver {
-    fn drive(&mut self) {
-        if let Some(sink) = self.sink.as_ref() {
-            while let Some(b) = self.buf.pop_front() {
-                if !sink.sink_write(b) {
-                    self.buf.push_front(b);
-                    break;
+        let source = source.unwrap();
+        loop {
+            let buf = match source.read() {
+                Some(b) => b,
+                None => {
+                    self.notify.notified().await;
+                    continue;
+                }
+            };
+            loop {
+                match client.try_write(&[buf]) {
+                    Ok(_n) => {
+                        break;
+                    }
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        let _ = client.writable().await?;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
                 }
             }
         }
     }
-    fn buffer_state(&self) -> BufState {
-        if self.buf.len() == self.buf.capacity() {
-            BufState::Steady
-        } else if !self.buf.is_empty() {
-            BufState::ProcessCapable
-        } else {
-            BufState::ProcessRequired
-        }
-    }
 }
 
-impl BufDriver for SourceDriver {
-    fn drive(&mut self) {
-        if let Some(source) = self.source.as_ref() {
-            while self.buf.len() < self.buf.capacity() {
-                if let Some(b) = source.source_read() {
-                    self.buf.push_back(b);
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-    fn buffer_state(&self) -> BufState {
-        if self.buf.is_empty() {
-            BufState::Steady
-        } else if self.buf.len() != self.buf.capacity() {
-            BufState::ProcessCapable
-        } else {
-            BufState::ProcessRequired
-        }
-    }
+struct Inner {
+    std_sock: Option<StdUnixListener>,
+    client: Option<SocketAddr>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum SockState {
-    Init,
-    Listen(Token),
-    Connected,
-    ClientGone,
-}
-
-impl SelfArc for UDSock {
-    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
-        &self.sa_cell
-    }
+pub struct UDSock {
+    inner: Mutex<Inner>,
+    cv: Condvar,
+    sink_driver: SinkDriver,
+    source_driver: SourceDriver,
 }
 impl UDSock {
     pub fn bind(path: &Path) -> Result<Arc<Self>> {
-        let sock = match UnixListener::bind(path) {
+        let lsock = match StdUnixListener::bind(path) {
             Ok(sock) => sock,
             Err(e) => {
                 if e.kind() != ErrorKind::AddrInUse {
@@ -143,284 +123,95 @@ impl UDSock {
                 );
                 // XXX just blindly do remove
                 fs::remove_file(path)?;
-                UnixListener::bind(path)?
+                StdUnixListener::bind(path)?
             }
         };
-        sock.set_nonblocking(true)?;
-        let mut this = Arc::new(Self {
-            socks: Mutex::new(Socks {
-                state: SockState::Init,
-                server: sock,
-                client: None,
-                client_token_fd: None,
-            }),
-            sink_driver: Mutex::new(SinkDriver::new(16)),
-            source_driver: Mutex::new(SourceDriver::new(16)),
+        lsock.set_nonblocking(true)?;
+
+        let this = Arc::new(Self {
+            inner: Mutex::new(Inner { std_sock: Some(lsock), client: None }),
             cv: Condvar::new(),
-            sa_cell: SelfArcCell::new(),
+            sink_driver: SinkDriver::default(),
+            source_driver: SourceDriver::default(),
         });
-        SelfArc::self_arc_init(&mut this);
+
         Ok(this)
     }
-
-    pub fn attach_sink(&self, sink: Arc<dyn Sink<DispCtx>>) {
-        let mut state = self.sink_driver.lock().unwrap();
-
-        let cb_self = self.self_weak();
-        sink.sink_set_notifier(Box::new(move |ctx| {
-            if let Some(sock) = Weak::upgrade(&cb_self) {
-                sock.notify_sink_ready(ctx);
+    pub fn attach(
+        self: &Arc<Self>,
+        sink: Arc<dyn Sink>,
+        source: Arc<dyn Source>,
+    ) {
+        let weak = Arc::downgrade(self);
+        sink.set_notifier(Box::new(move |_| {
+            if let Some(driver) = Weak::upgrade(&weak) {
+                driver.notify_sink();
             }
         }));
+        let mut guard = self.sink_driver.sink.lock().unwrap();
+        assert!(guard.is_none());
+        *guard = Some(sink);
+        drop(guard);
 
-        assert!(state.sink.is_none());
-        state.sink = Some(sink);
-    }
-    pub fn attach_source(&self, source: Arc<dyn Source<DispCtx>>) {
-        let mut state = self.source_driver.lock().unwrap();
-
-        let cb_self = self.self_weak();
-        source.source_set_notifier(Box::new(move |ctx| {
-            if let Some(sock) = Weak::upgrade(&cb_self) {
-                sock.notify_source_ready(ctx);
+        let weak = Arc::downgrade(self);
+        source.set_notifier(Box::new(move |_| {
+            if let Some(driver) = Weak::upgrade(&weak) {
+                driver.notify_source();
             }
         }));
+        let mut guard = self.source_driver.source.lock().unwrap();
+        assert!(guard.is_none());
+        *guard = Some(source);
+        drop(guard);
+    }
+    pub fn spawn(self: &Arc<Self>, disp: &Dispatcher) {
+        use crate::dispatch::AsyncCtx;
 
-        assert!(state.source.is_none());
-        state.source = Some(source);
+        let this = Arc::clone(self);
+        disp.spawn_async(|_actx: AsyncCtx| {
+            Box::pin(async move {
+                let _ = this.run().await;
+            })
+        });
     }
 
-    fn notify_sink_ready(&self, ctx: &DispCtx) {
-        let mut sink = self.sink_driver.lock().unwrap();
-        if let Some(_new_state) = sink.drive_transfer() {
-            drop(sink);
-
-            self.config_notifications(
-                &mut self.socks.lock().unwrap(),
-                &mut self.sink_driver.lock().unwrap(),
-                &mut self.source_driver.lock().unwrap(),
-                ctx,
-            );
-        }
+    fn notify_sink(&self) {
+        self.sink_driver.notify.notify_one();
     }
-    fn notify_source_ready(&self, ctx: &DispCtx) {
-        let mut source = self.source_driver.lock().unwrap();
-        if let Some(_new_state) = source.drive_transfer() {
-            drop(source);
+    fn notify_source(&self) {
+        self.source_driver.notify.notify_one();
+    }
 
-            self.config_notifications(
-                &mut self.socks.lock().unwrap(),
-                &mut self.sink_driver.lock().unwrap(),
-                &mut self.source_driver.lock().unwrap(),
-                ctx,
-            );
-        }
+    fn notify_connected(&self, addr: Option<SocketAddr>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.client = addr;
+        self.cv.notify_all();
     }
 
     pub fn wait_for_connect(&self) {
-        let guard = self
-            .cv
-            .wait_while(self.socks.lock().unwrap(), |s| match s.state {
-                SockState::Init => {
-                    panic!("waiting for client on non-listening socket");
-                }
-                SockState::Connected => false,
-                _ => true,
-            })
-            .unwrap();
-        // inner mutex uneeded afterwards
-        drop(guard);
+        let inner = self.inner.lock().unwrap();
+        if inner.client.is_some() {
+            return;
+        }
+        let _inner = self.cv.wait_while(inner, |i| i.client.is_none());
     }
 
-    fn do_listen(&self, socks: &mut Socks, ctx: &DispCtx) {
-        match socks.state {
-            SockState::Init | SockState::ClientGone => {
-                let token = ctx.event.fd_register(
-                    socks.server.as_raw_fd(),
-                    FdEvents::POLLIN,
-                    self.self_weak(),
-                );
-                socks.state = SockState::Listen(token);
-            }
-            _ => {
-                panic!("bad socket state {:?}", socks.state);
-            }
+    pub async fn run(&self) -> Result<()> {
+        let lsock = {
+            let mut inner = self.inner.lock().unwrap();
+            let sock = inner.std_sock.take().unwrap();
+            drop(inner);
+            sock
+        };
+        let lsock = UnixListener::from_std(lsock)?;
+        while let Ok((sock, addr)) = lsock.accept().await {
+            self.notify_connected(Some(addr));
+            let _res = tokio::try_join!(
+                self.sink_driver.drive(&sock),
+                self.source_driver.drive(&sock),
+            )?;
+            self.notify_connected(None);
         }
-    }
-
-    pub fn listen(&self, ctx: &DispCtx) {
-        let mut socks = self.socks.lock().unwrap();
-        self.do_listen(&mut socks, ctx);
-    }
-
-    fn config_notifications(
-        &self,
-        socks: &mut Socks,
-        sink: &mut SinkDriver,
-        source: &mut SourceDriver,
-        ctx: &DispCtx,
-    ) {
-        let (sink_state, source_state) =
-            (sink.buffer_state(), source.buffer_state());
-        match (sink_state, source_state) {
-            (BufState::Steady, BufState::Steady) => {
-                if let Some(cur_token) = socks.client_token_fd {
-                    ctx.event.fd_deregister(cur_token);
-                    socks.client_token_fd = None;
-                }
-            }
-            (BufState::ProcessRequired, _) | (_, BufState::ProcessRequired) => {
-                let mut events = FdEvents::empty();
-                if sink_state != BufState::Steady {
-                    events.insert(FdEvents::POLLIN);
-                }
-                if source_state != BufState::Steady {
-                    events.insert(FdEvents::POLLOUT);
-                }
-
-                if let Some(cur_token) = socks.client_token_fd {
-                    // If the client_token_fd exists, we have already registered
-                    // this fd with the dispatcher - re-registering continues
-                    // providing event notificaitons.
-                    ctx.event.fd_reregister(cur_token, events);
-                } else if let Some(client_fd) =
-                    socks.client.as_ref().map(AsRawFd::as_raw_fd)
-                {
-                    // If the client_token_fd does not exist, but the client exists,
-                    // this is the initial opportunity to register the client_fd for
-                    // subsequent signals.
-                    socks.client_token_fd = Some(ctx.event.fd_register(
-                        client_fd,
-                        events,
-                        self.self_weak(),
-                    ));
-                }
-                // If neither the client_token nor client exist, the client has
-                // been disconnected, and no work should be taken to receive
-                // further notifications.
-            }
-            (BufState::ProcessCapable, BufState::ProcessCapable) => {
-                // TODO: polling
-            }
-            (_, _) => {}
-        }
-    }
-
-    fn drive_device(&self, socks: &mut Socks, ctx: &DispCtx) {
-        let mut sink = self.sink_driver.lock().unwrap();
-        let mut source = self.source_driver.lock().unwrap();
-        sink.drive();
-        source.drive();
-        self.config_notifications(socks, &mut sink, &mut source, ctx);
-    }
-    fn drive_client(
-        &self,
-        socks: &mut Socks,
-        revents: FdEvents,
-        ctx: &DispCtx,
-    ) {
-        let mut client = socks.client.as_ref().unwrap();
-        let mut buf = [0u8];
-        let mut close_client = false;
-
-        if revents.contains(FdEvents::POLLIN) {
-            let mut sink = self.sink_driver.lock().unwrap();
-            while sink.buffer_state() != BufState::Steady {
-                match client.read(&mut buf) {
-                    Ok(0) => {
-                        break;
-                    }
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                        break;
-                    }
-                    Err(_e) => {
-                        close_client = true;
-                        break;
-                    }
-                    Ok(_n) => {
-                        sink.buf.push_back(buf[0]);
-                    }
-                }
-            }
-            drop(sink);
-        }
-        if revents.contains(FdEvents::POLLOUT) && !close_client {
-            let mut source = self.source_driver.lock().unwrap();
-            while source.buffer_state() != BufState::Steady {
-                buf[0] = source.buf.pop_front().unwrap();
-                if match client.write(&buf) {
-                    Ok(0) => true,
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => true,
-                    Err(_e) => {
-                        close_client = true;
-                        true
-                    }
-                    Ok(_n) => false,
-                } {
-                    // failed the write, put the data back
-                    source.buf.push_front(buf[0]);
-                    break;
-                }
-            }
-        }
-        if close_client {
-            self.close_client(socks, ctx);
-        }
-    }
-
-    fn close_client(&self, socks: &mut Socks, ctx: &DispCtx) {
-        assert_eq!(socks.state, SockState::Connected);
-        assert!(socks.client.is_some());
-        if let Some(token) = socks.client_token_fd {
-            ctx.event.fd_deregister(token);
-            socks.client_token_fd = None;
-        }
-        socks.client = None;
-        socks.state = SockState::ClientGone;
-        self.do_listen(socks, ctx);
-    }
-}
-
-impl EventTarget for UDSock {
-    fn event_process(&self, ev: &Event, ctx: &DispCtx) {
-        let mut socks = self.socks.lock().unwrap();
-
-        match socks.state {
-            SockState::Listen(listen_tok) => {
-                match socks.server.accept() {
-                    Ok((client, _addr)) => {
-                        ctx.event.fd_deregister(listen_tok);
-                        socks.client = Some(client);
-                        socks.state = SockState::Connected;
-                        self.config_notifications(
-                            &mut socks,
-                            &mut self.sink_driver.lock().unwrap(),
-                            &mut self.source_driver.lock().unwrap(),
-                            ctx,
-                        );
-                        self.cv.notify_all();
-                    }
-                    Err(_e) => {
-                        // XXX better handling?  for now just take another lap
-                    }
-                }
-            }
-            SockState::Connected => match ev.res {
-                Resource::Fd(cfd, revents) => {
-                    assert_eq!(cfd, socks.client.as_ref().unwrap().as_raw_fd());
-                    assert_eq!(ev.token, socks.client_token_fd.unwrap());
-                    if revents.intersects(FdEvents::POLLHUP | FdEvents::POLLERR)
-                    {
-                        self.close_client(&mut socks, ctx);
-                        return;
-                    }
-                    self.drive_client(&mut socks, revents, ctx);
-                    self.drive_device(&mut socks, ctx);
-                }
-            },
-            state => {
-                panic!("unexpected event {:?} in {:?} state", ev, state);
-            }
-        }
+        Ok(())
     }
 }

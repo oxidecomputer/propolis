@@ -11,13 +11,13 @@ use propolis::chardev::{Sink, Source};
 // Supports two functions:
 // - Moving bytes from a client into a temporary buffer
 // - Moving bytes from that temporary buffer to the underlying device sink
-struct SinkDriver<Ctx> {
-    sink: Arc<dyn Sink<Ctx>>,
+struct SinkDriver {
+    sink: Arc<dyn Sink>,
     buf: VecDeque<u8>,
     waker: Option<Waker>,
 }
 
-impl<Ctx: 'static> SinkDriver<Ctx> {
+impl SinkDriver {
     // Writes to the internal buffer with as much of `buf` as possible.
     // Returns the number of bytes written.
     fn write_to_buffer(&mut self, buf: &[u8]) -> usize {
@@ -30,7 +30,7 @@ impl<Ctx: 'static> SinkDriver<Ctx> {
     fn buffer_to_sink(&mut self) {
         let mut wrote_bytes = false;
         while let Some(b) = self.buf.pop_front() {
-            if !self.sink.sink_write(b) {
+            if !self.sink.write(b) {
                 self.buf.push_front(b);
                 break;
             }
@@ -48,15 +48,15 @@ impl<Ctx: 'static> SinkDriver<Ctx> {
 // Supports two functions:
 // - Moving bytes from a temporary buffer out to a client
 // - Moving bytes from the underlying device source into that temporary buffer
-struct SourceDriver<Ctx> {
-    source: Arc<dyn Source<Ctx>>,
+struct SourceDriver {
+    source: Arc<dyn Source>,
     buf: VecDeque<u8>,
     waker: Option<Waker>,
     source_full: bool,
     source_full_signal: Arc<Notify>,
 }
 
-impl<Ctx: 'static> SourceDriver<Ctx> {
+impl SourceDriver {
     // Reads from the internal buffer to `buf`.
     // Returns the number of bytes read.
     fn read_from_buffer(&mut self, buf: &mut ReadBuf<'_>) -> usize {
@@ -85,7 +85,7 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
     fn source_to_buffer(&mut self) {
         let mut wrote_bytes = false;
         while self.buf.len() != self.buf.capacity() {
-            if let Some(b) = self.source.source_read() {
+            if let Some(b) = self.source.read() {
                 self.buf.push_back(b);
                 wrote_bytes = true;
             } else {
@@ -109,16 +109,16 @@ impl<Ctx: 'static> SourceDriver<Ctx> {
 }
 
 /// Represents a serial connection into the VM.
-pub struct Serial<Ctx, Device: Sink<Ctx> + Source<Ctx>> {
+pub struct Serial<Device: Sink + Source> {
     uart: Arc<Device>,
 
-    sink_driver: Arc<Mutex<SinkDriver<Ctx>>>,
-    source_driver: Arc<Mutex<SourceDriver<Ctx>>>,
+    sink_driver: Arc<Mutex<SinkDriver>>,
+    source_driver: Arc<Mutex<SourceDriver>>,
 
     source_full_signal: Arc<Notify>,
 }
 
-impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
+impl<Device: Sink + Source> Serial<Device> {
     /// Creates a new buffered serial connection on top of `uart.`
     ///
     /// The primary interfaces for interacting with this object
@@ -137,8 +137,8 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
         uart: Arc<Device>,
         sink_size: usize,
         source_size: usize,
-    ) -> Serial<Ctx, Device> {
-        let sink = Arc::clone(&uart) as Arc<dyn Sink<Ctx>>;
+    ) -> Serial<Device> {
+        let sink = Arc::clone(&uart) as Arc<dyn Sink>;
         let sink_driver = Arc::new(Mutex::new(SinkDriver {
             sink: sink.clone(),
             buf: VecDeque::with_capacity(sink_size),
@@ -146,13 +146,13 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
         }));
 
         let notifier_sink = sink_driver.clone();
-        sink.sink_set_notifier(Box::new(move |_| {
+        sink.set_notifier(Box::new(move |_| {
             let mut sink_driver = notifier_sink.lock().unwrap();
             sink_driver.buffer_to_sink();
         }));
 
         let source_full_signal = Arc::new(Notify::new());
-        let source = Arc::clone(&uart) as Arc<dyn Source<Ctx>>;
+        let source = Arc::clone(&uart) as Arc<dyn Source>;
         let source_driver = Arc::new(Mutex::new(SourceDriver {
             source: source.clone(),
             buf: VecDeque::with_capacity(source_size),
@@ -162,12 +162,12 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
         }));
 
         let notifier_source = source_driver.clone();
-        source.source_set_notifier(Box::new(move |_| {
+        source.set_notifier(Box::new(move |_| {
             let mut source_driver = notifier_source.lock().unwrap();
             source_driver.source_to_buffer();
         }));
 
-        uart.source_set_autodiscard(false);
+        uart.set_autodiscard(false);
         Serial { uart, sink_driver, source_driver, source_full_signal }
     }
 
@@ -189,15 +189,13 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> Serial<Ctx, Device> {
     }
 }
 
-impl<Ctx, Device: Sink<Ctx> + Source<Ctx>> Drop for Serial<Ctx, Device> {
+impl<Device: Sink + Source> Drop for Serial<Device> {
     fn drop(&mut self) {
-        self.uart.source_set_autodiscard(true);
+        self.uart.set_autodiscard(true);
     }
 }
 
-impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite
-    for Serial<Ctx, Device>
-{
+impl<Device: Sink + Source> AsyncWrite for Serial<Device> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -238,9 +236,7 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncWrite
     }
 }
 
-impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncRead
-    for Serial<Ctx, Device>
-{
+impl<Device: Sink + Source> AsyncRead for Serial<Device> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -266,7 +262,7 @@ impl<Ctx: 'static, Device: Sink<Ctx> + Source<Ctx>> AsyncRead
 mod tests {
     use super::*;
     use futures::FutureExt;
-    use propolis::chardev::Notifier;
+    use propolis::chardev::{SinkNotifier, SourceNotifier};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -280,8 +276,8 @@ mod tests {
         sink: Mutex<VecDeque<u8>>,
         source_cap: usize,
         source: Mutex<VecDeque<u8>>,
-        sink_notifier: Mutex<Option<Notifier<()>>>,
-        source_notifier: Mutex<Option<Notifier<()>>>,
+        sink_notifier: Mutex<Option<SinkNotifier>>,
+        source_notifier: Mutex<Option<SourceNotifier>>,
         auto_discard: AtomicBool,
     }
 
@@ -307,7 +303,7 @@ mod tests {
         fn notify_source(&self) {
             let source_notifier = self.source_notifier.lock().unwrap();
             if let Some(n) = source_notifier.as_ref() {
-                n(&());
+                n(self as &dyn Source);
             }
         }
 
@@ -319,13 +315,13 @@ mod tests {
         fn notify_sink(&self) {
             let sink_notifier = self.sink_notifier.lock().unwrap();
             if let Some(n) = sink_notifier.as_ref() {
-                n(&());
+                n(self as &dyn Sink);
             }
         }
     }
 
-    impl Sink<()> for TestUart {
-        fn sink_write(&self, data: u8) -> bool {
+    impl Sink for TestUart {
+        fn write(&self, data: u8) -> bool {
             let mut sink = self.sink.lock().unwrap();
             if sink.len() < self.sink_cap {
                 sink.push_back(data);
@@ -334,25 +330,25 @@ mod tests {
                 false
             }
         }
-        fn sink_set_notifier(&self, f: Notifier<()>) {
+        fn set_notifier(&self, f: SinkNotifier) {
             let mut sink_notifier = self.sink_notifier.lock().unwrap();
             assert!(sink_notifier.is_none());
             *sink_notifier = Some(f);
         }
     }
 
-    impl Source<()> for TestUart {
-        fn source_read(&self) -> Option<u8> {
+    impl Source for TestUart {
+        fn read(&self) -> Option<u8> {
             let mut source = self.source.lock().unwrap();
             source.pop_front()
         }
-        fn source_discard(&self, _count: usize) -> usize {
+        fn discard(&self, _count: usize) -> usize {
             panic!();
         }
-        fn source_set_autodiscard(&self, active: bool) {
+        fn set_autodiscard(&self, active: bool) {
             self.auto_discard.store(active, Ordering::SeqCst);
         }
-        fn source_set_notifier(&self, f: Notifier<()>) {
+        fn set_notifier(&self, f: SourceNotifier) {
             let mut source_notifier = self.source_notifier.lock().unwrap();
             assert!(source_notifier.is_none());
             *source_notifier = Some(f);
@@ -428,7 +424,7 @@ mod tests {
         let mut serial = Serial::new(uart.clone(), 3, 3);
         assert_eq!(3, serial.source_driver.lock().unwrap().buf.capacity());
 
-        let buffer_full_signal = |serial: &mut Serial<(), TestUart>| {
+        let buffer_full_signal = |serial: &mut Serial<TestUart>| {
             futures::select! {
                 _ = serial.read_buffer_full().fuse() => true,
                 default => false,

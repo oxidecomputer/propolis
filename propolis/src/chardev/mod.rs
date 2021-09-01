@@ -2,24 +2,25 @@ mod sock;
 
 pub use sock::UDSock;
 
-pub type Notifier<Ctx> = Box<dyn Fn(&Ctx) + Send + Sync + 'static>;
+pub type SinkNotifier = Box<dyn Fn(&dyn Sink) + Send + Sync + 'static>;
+pub type SourceNotifier = Box<dyn Fn(&dyn Source) + Send + Sync + 'static>;
 
-pub trait Sink<Ctx>: Send + Sync + 'static {
+pub trait Sink: Send + Sync + 'static {
     // XXX: make this slice based
-    fn sink_write(&self, data: u8) -> bool;
+    fn write(&self, data: u8) -> bool;
 
     /// Set notifier callback for when sink becomes writable.  If that callback acquires any
     /// exclusion resources (locks, etc), they must not be held setting the notifier.
-    fn sink_set_notifier(&self, f: Notifier<Ctx>);
+    fn set_notifier(&self, f: SinkNotifier);
 }
 
-pub trait Source<Ctx>: Send + Sync + 'static {
+pub trait Source: Send + Sync + 'static {
     // XXX: make this slice based
-    fn source_read(&self) -> Option<u8>;
+    fn read(&self) -> Option<u8>;
 
-    fn source_discard(&self, count: usize) -> usize;
-    fn source_set_autodiscard(&self, active: bool);
+    fn discard(&self, count: usize) -> usize;
+    fn set_autodiscard(&self, active: bool);
     /// Set notifier callback for when source becomes readable.  If that callback acquires any
     /// exclusion resources (locks, etc), they must not be held setting the notifier.
-    fn source_set_notifier(&self, f: Notifier<Ctx>);
+    fn set_notifier(&self, f: SourceNotifier);
 }

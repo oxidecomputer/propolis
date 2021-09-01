@@ -32,12 +32,13 @@ use dispatch::*;
 use exits::*;
 use vcpu::VcpuHdl;
 
-pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
+pub fn vcpu_run_loop(mut vcpu: VcpuHdl, sctx: &mut SyncCtx) {
     let mut next_entry = VmEntry::Run;
     loop {
-        if ctx.check_yield() {
+        if sctx.check_yield() {
             break;
         }
+        let ctx = sctx.dispctx();
         let mctx = &ctx.mctx;
 
         probe_vm_entry!(|| (vcpu.cpuid() as u32));
@@ -57,11 +58,11 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
             }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => {
-                    mctx.pio().handle_out(io.port, io.bytes, val, ctx);
+                    mctx.pio().handle_out(io.port, io.bytes, val, &ctx);
                     VmEntry::InoutFulfill(InoutRes::Out(io))
                 }
                 InoutReq::In(io) => {
-                    let val = mctx.pio().handle_in(io.port, io.bytes, ctx);
+                    let val = mctx.pio().handle_in(io.port, io.bytes, &ctx);
                     VmEntry::InoutFulfill(InoutRes::In(io, val))
                 }
             },
@@ -70,7 +71,7 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                     let val = mctx.mmio().handle_read(
                         read.addr as usize,
                         read.bytes,
-                        ctx,
+                        &ctx,
                     );
                     VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
                         addr: read.addr,
@@ -83,7 +84,7 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
                         write.addr as usize,
                         write.bytes,
                         write.data,
-                        ctx,
+                        &ctx,
                     );
                     VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
                         addr: write.addr,

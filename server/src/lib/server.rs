@@ -27,7 +27,6 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::WebSocketStream;
 
 use propolis::bhyve_api;
-use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
@@ -81,7 +80,7 @@ struct InstanceContext {
     // The instance, which may or may not be instantiated.
     instance: Arc<Instance>,
     properties: api::InstanceProperties,
-    serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
+    serial: Arc<Mutex<Serial<LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
 }
@@ -233,7 +232,7 @@ async fn instance_ensure(
     //
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
-    let mut com1: Option<Serial<DispCtx, LpcUart>> = None;
+    let mut com1: Option<Serial<LpcUart>> = None;
 
     instance
         .initialize(|machine, mctx, disp, inv| {
@@ -309,7 +308,7 @@ async fn instance_ensure(
             }
 
             // Finalize device.
-            chipset.device().pci_finalize(&disp.ctx());
+            chipset.device().pci_finalize(mctx);
             init.initialize_fwcfg(&chipset, properties.vcpus)?;
             init.initialize_cpus()?;
             Ok(())
@@ -479,7 +478,7 @@ async fn instance_state_put(
 
 async fn instance_serial_task(
     mut detach: oneshot::Receiver<()>,
-    serial: Arc<Mutex<Serial<DispCtx, LpcUart>>>,
+    serial: Arc<Mutex<Serial<LpcUart>>>,
     mut ws_stream: WebSocketStream<Upgraded>,
     log: Logger,
 ) -> Result<(), SerialTaskError> {

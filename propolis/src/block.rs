@@ -10,7 +10,7 @@ use std::sync::Condvar;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
-use crate::dispatch::{DispCtx, Dispatcher};
+use crate::dispatch::{DispCtx, Dispatcher, SyncCtx};
 use crate::vmm::{MemCtx, SubMapping};
 
 /// Type of operations which may be issued to a virtual block device.
@@ -98,19 +98,20 @@ impl<R: BlockReq> FileBdev<R> {
     }
 
     /// Consume enqueued requests and process them. Signal completion when done.
-    fn process_loop(&self, ctx: &mut DispCtx) {
+    fn process_loop(&self, sctx: &mut SyncCtx) {
         loop {
             // Check for the yield state prior to acquiring the `reqs` guard.
             // This prevents other threads from becoming stuck while attempting
             // to enqueue a request while this thread has yielded.
-            if ctx.check_yield() {
+            if sctx.check_yield() {
                 break;
             }
 
             let mut reqs = self.reqs.lock().unwrap();
             if let Some(mut req) = reqs.pop_front() {
-                let result = self.process_request(&mut req, ctx);
-                req.complete(result, ctx);
+                let ctx = sctx.dispctx();
+                let result = self.process_request(&mut req, &ctx);
+                req.complete(result, &ctx);
             } else {
                 let _reqs = self.cond.wait(reqs).unwrap();
             }
@@ -223,12 +224,12 @@ impl<R: BlockReq> FileBdev<R> {
     pub fn start_dispatch(self: Arc<Self>, name: String, disp: &Dispatcher) {
         let ww = Arc::downgrade(&self);
 
-        disp.spawn(
+        let bdev = Arc::clone(&self);
+        disp.spawn_sync(
             name,
-            self,
-            |bdev, ctx| {
-                bdev.process_loop(ctx);
-            },
+            Box::new(move |sctx| {
+                bdev.process_loop(sctx);
+            }),
             Some(Box::new(move |_ctx| {
                 if let Some(this) = Weak::upgrade(&ww) {
                     this.cond.notify_all()
