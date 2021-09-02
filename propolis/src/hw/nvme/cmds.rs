@@ -613,7 +613,7 @@ impl PrpIter<'_> {
                      * within the command, shall be Qword aligned and may also have a non-zero offset within
                      * the memory page.
                      */
-                    if ((self.prp2 % 8) != 0) {
+                    if (self.prp2 % 8) != 0 {
                         return Err("PRP2 not Qword aligned!");
                     }
 
@@ -626,10 +626,7 @@ impl PrpIter<'_> {
                      * then the Offset portion of this field shall be cleared to 0h.
                      */
                     let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
-                    PrpNext::List(
-                        self.prp2 & (PAGE_MASK as u64),
-                        idx as u16,
-                    )
+                    PrpNext::List(self.prp2 & (PAGE_MASK as u64), idx as u16)
                 };
                 (self.prp1, size, next)
             }
