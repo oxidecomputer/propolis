@@ -156,6 +156,7 @@ impl NvmeNs {
         cq: Arc<Mutex<CompQueue>>,
         sq: Arc<Mutex<SubQueue>>,
     ) {
+        probe_nvme_read_enqueue!(|| (cid, cmd.slba, cmd.nlb));
         let off = self.nlb_to_size(cmd.slba as usize);
         let size = self.nlb_to_size(cmd.nlb as usize);
         // TODO: handles if it gets unmapped?
@@ -180,6 +181,7 @@ impl NvmeNs {
         cq: Arc<Mutex<CompQueue>>,
         sq: Arc<Mutex<SubQueue>>,
     ) {
+        probe_nvme_write_enqueue!(|| (cid, cmd.slba, cmd.nlb));
         let off = self.nlb_to_size(cmd.slba as usize);
         let size = self.nlb_to_size(cmd.nlb as usize);
         // TODO: handles if it gets unmapped?
@@ -256,6 +258,16 @@ impl BlockReq for Request {
                 bits::STS_READ_CONFLICTING_ATTRS,
             ),
         };
+
+        match self.op {
+            BlockOp::Read => {
+                probe_nvme_read_complete!(|| (self.cid));
+            }
+            BlockOp::Write => {
+                probe_nvme_write_complete!(|| (self.cid));
+            }
+            _ => {}
+        }
 
         let sq = self.sq.lock().unwrap();
         let mut cq = self.cq.lock().unwrap();

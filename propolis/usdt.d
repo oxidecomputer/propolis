@@ -13,4 +13,14 @@ provider propolis {
 
 	/* vm_exit(vcpuid, rip, code) */
 	probe vm_exit(uint32_t, uint64_t, uint32_t);
+
+	/* nvme_read_enqueue(cid, slba, nlb) */
+	probe nvme_read_enqueue(uint16_t, uint64_t, uint16_t);
+	/* nvme_read_complete(cid) */
+	probe nvme_read_complete(uint16_t);
+
+	/* nvme_write_enqueue(cid, slba, nlb) */
+	probe nvme_write_enqueue(uint16_t, uint64_t, uint16_t);
+	/* nvme_write_complete(cid) */
+	probe nvme_write_complete(uint16_t);
 };
