@@ -40,7 +40,7 @@ propolis$target:::nvme_write_complete
     this->cid = args[0];
     this->elapsed = timestamp - io[this->cid].ts;
     this->elapsed_us = this->elapsed / 1000;
-    @time[io[this->cid].op] = quantize(this->elapsed_us);
+    @time[strjoin(io[this->cid].op, " (us)")] = quantize(this->elapsed_us);
     printf("%s(cid=%u) %d blocks from LBA 0x%x in %uus\n",
            io[this->cid].op, this->cid, io[this->cid].nlb, io[this->cid].slba, this->elapsed_us);
 }
