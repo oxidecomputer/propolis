@@ -537,7 +537,7 @@ enum PrpNext {
     Done,
 }
 
-/// The max number of entries in a single Physical Region Page (PRP) List
+/// The last valid PRP list entry index in a single Physical Region Page (PRP) List
 ///
 /// 512 64-bit entries in a PRP list
 /// Note this relies on a Page Size of 4k (2^12).
@@ -545,7 +545,7 @@ enum PrpNext {
 ///     - 2 because PRP entries are expected to be 32-bit aligned.
 ///
 /// See NVMe 1.0e Section 4.3 Physical Region Page Entry and List
-const PRP_LIST_MAX: u16 = 511; // XXX: 512?
+const PRP_LIST_MAX: u16 = 511;
 
 /// A helper object for iterator over a single, 2 or a list of PRPs.
 pub struct PrpIter<'a> {
@@ -591,8 +591,8 @@ impl PrpIter<'_> {
         assert!(self.error.is_none());
 
         // PRP Entry Layout
-        // | 63                                      n + 1 | n . . . . . . . 2 1 0 |
-        // |         page base address                     |      offset     | 0 0 |
+        // | 63 . . . . . . . . . . . . . . . . . . . n + 1 | n . . . . . . 2 | 1 0 |
+        // |         page base address                      |      offset     | 0 0 |
         let (addr, size, next) = match self.next {
             PrpNext::Prp1 => {
                 // The first PRP entry contained within the command may have a non-zero offset
@@ -613,7 +613,9 @@ impl PrpIter<'_> {
                      * within the command, shall be Qword aligned and may also have a non-zero offset within
                      * the memory page.
                      */
-                    assert!((self.prp2 % 8) == 0);
+                    if ((self.prp2 % 8) != 0) {
+                        return Err("PRP2 not Qword aligned!");
+                    }
 
                     /*
                      * If this entry is
@@ -625,7 +627,7 @@ impl PrpIter<'_> {
                      */
                     let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
                     PrpNext::List(
-                        self.prp2 - (self.prp2 & PAGE_OFFSET as u64),
+                        self.prp2 & (PAGE_MASK as u64),
                         idx as u16,
                     )
                 };
