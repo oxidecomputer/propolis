@@ -6,7 +6,10 @@ use std::{
 use anyhow::{anyhow, Context};
 use futures::{SinkExt, StreamExt};
 use propolis_client::{
-    api::{InstanceEnsureRequest, InstanceProperties, InstanceStateRequested},
+    api::{
+        DiskRequest, InstanceEnsureRequest, InstanceProperties,
+        InstanceStateRequested, Slot,
+    },
     Client,
 };
 use slog::{o, Drain, Level, Logger};
@@ -51,6 +54,9 @@ enum Command {
         /// Memory allocated to instance (MiB)
         #[structopt(short, default_value = "1024")]
         memory: u64,
+
+        #[structopt(long)]
+        crucible: bool,
     },
 
     /// Get the properties of a propolis instance
@@ -114,6 +120,7 @@ async fn new_instance(
     name: String,
     vcpus: u8,
     memory: u64,
+    crucible: bool,
 ) -> anyhow::Result<()> {
     // Generate a UUID for the new instance
     let id = Uuid::new_v4();
@@ -133,6 +140,24 @@ async fn new_instance(
         properties,
         // TODO: Allow specifying NICs
         nics: vec![],
+        disks: if crucible {
+            vec![
+                // XXX default
+                DiskRequest {
+                    name: "d1".to_string(),
+                    address: vec![
+                        "127.0.0.1:3801".parse()?,
+                        "127.0.0.1:3802".parse()?,
+                        "127.0.0.1:3803".parse()?,
+                    ],
+                    slot: Slot(0),
+                    read_only: false,
+                    key: None,
+                },
+            ]
+        } else {
+            vec![]
+        },
     };
 
     // Try to create the instance

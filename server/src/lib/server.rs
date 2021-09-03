@@ -131,9 +131,10 @@ fn propolis_to_api_state(
 #[derive(Clone, Copy, Debug)]
 enum SlotType {
     NIC,
-    #[allow(dead_code)]
     Disk,
 }
+
+// TODO: Slot ranges as constants, exposed to Omicron?
 
 // This is a somewhat hard-coded translation of a stable "PCI slot" to a BDF.
 //
@@ -175,8 +176,10 @@ async fn instance_ensure(
     let server_context = rqctx.context();
 
     let request = request.into_inner();
-    let (properties, nics) = (request.properties, request.nics);
-    if path_params.into_inner().instance_id != properties.id {
+    let instance_id = path_params.into_inner().instance_id;
+    let (properties, nics, disks) =
+        (request.properties, request.nics, request.disks);
+    if instance_id != properties.id {
         return Err(HttpError::for_internal_error(
             "UUID mismatch (path did not match struct)".to_string(),
         ));
@@ -244,7 +247,13 @@ async fn instance_ensure(
 
     instance
         .initialize(|machine, mctx, disp, inv| {
-            let init = MachineInitializer::new(machine, mctx, disp, inv);
+            let init = MachineInitializer::new(
+                rqctx.log.new(o!()),
+                machine,
+                mctx,
+                disp,
+                inv,
+            );
             init.initialize_rom(server_context.config.get_bootrom())?;
             machine.initialize_rtc(lowmem, highmem).unwrap();
             let chipset = init.initialize_chipset()?;
@@ -254,6 +263,7 @@ async fn instance_ensure(
 
             // Attach devices which have been requested from the HTTP interface.
             for nic in &nics {
+                info!(rqctx.log, "Creating NIC: {:#?}", nic);
                 let bdf =
                     slot_to_bdf(nic.slot, SlotType::NIC).map_err(|e| {
                         Error::new(
@@ -262,6 +272,20 @@ async fn instance_ensure(
                         )
                     })?;
                 init.initialize_vnic(&chipset, &nic.name, bdf)?;
+            }
+
+            for disk in &disks {
+                info!(rqctx.log, "Creating Disk: {:#?}", disk);
+                let bdf =
+                    slot_to_bdf(disk.slot, SlotType::Disk).map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidData,
+                            format!("Cannot parse disk PCI: {}", e),
+                        )
+                    })?;
+
+                init.initialize_crucible(&chipset, disk, bdf)?;
+                info!(rqctx.log, "Disk {} created successfully", disk.name);
             }
 
             // Attach devices which are hard-coded in the config.
