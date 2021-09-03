@@ -195,7 +195,7 @@ impl NvmeCtrl {
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         if (sqid as usize) >= MAX_NUM_QUEUES {
-            return Err(NvmeError::InvalidSubQueue(cqid));
+            return Err(NvmeError::InvalidSubQueue(sqid));
         }
         if (cqid as usize) >= MAX_NUM_QUEUES
             || self.cqs[cqid as usize].is_none()
@@ -203,7 +203,7 @@ impl NvmeCtrl {
             return Err(NvmeError::InvalidCompQueue(cqid));
         }
         if self.sqs[sqid as usize].is_some() {
-            return Err(NvmeError::SubQueueAlreadyExists(cqid));
+            return Err(NvmeError::SubQueueAlreadyExists(sqid));
         }
         let sq = SubQueue::new(sqid, cqid, size, base, ctx)?;
         self.sqs[sqid as usize] = Some(Arc::new(Mutex::new(sq)));

@@ -228,7 +228,7 @@ pub struct SubQueue {
     id: QueueId,
 
     /// The ID of the corresponding Completion Queue.
-    cqid: u16,
+    cqid: QueueId,
 
     /// Queue state such as the size and current head/tail entry pointers.
     state: QueueState<SubmissionQueueType>,
