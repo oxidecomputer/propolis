@@ -607,24 +607,17 @@ impl PrpIter<'_> {
                     // entry which should be present in PRP2
                     PrpNext::Prp2
                 } else {
-                    /*
-                     * The first PRP List entry (i.e. the first pointer to a memory page containing
-                     * additional PRP entries) that if present is contained in the PRP Entry 2 location
-                     * within the command, shall be Qword aligned and may also have a non-zero offset within
-                     * the memory page.
-                     */
+                    // The first PRP List entry (i.e. the first pointer to a memory page containing
+                    // additional PRP entries) that if present is contained in the PRP Entry 2
+                    // location within the command, shall be Qword aligned and may also have a
+                    // non-zero offset within the memory page.
                     if (self.prp2 % 8) != 0 {
                         return Err("PRP2 not Qword aligned!");
                     }
 
-                    /*
-                     * If this entry is
-                     *
-                     * - not the first PRP entry in the command, or
-                     * - in the PRP List
-                     *
-                     * then the Offset portion of this field shall be cleared to 0h.
-                     */
+                    // PRP2 is allowed to have a non-zero offset into the memory page, but mask it
+                    // out when creating the base part of the PrpNext::List enum - the offset will
+                    // be passed with idx.
                     let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
                     PrpNext::List(self.prp2 & (PAGE_MASK as u64), idx as u16)
                 };
