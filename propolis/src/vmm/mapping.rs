@@ -1,5 +1,7 @@
 //! Module for managing guest memory mappings.
 
+use libc::iovec;
+
 use crate::common::PAGE_SIZE;
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmFile;
@@ -370,7 +372,7 @@ impl<'a> SubMapping<'a> {
         if !self.prot.contains(Prot::WRITE) {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
-                "No read access",
+                "No write access",
             ));
         }
 
@@ -514,6 +516,88 @@ impl<'a> SubMapping<'a> {
         } else {
             None
         }
+    }
+}
+
+pub trait MappingExt {
+    /// preadv from `file` into multiple mappings
+    fn preadv(&self, file: &File, offset: i64) -> Result<usize>;
+
+    /// pwritev from multiple mappings to `file`
+    fn pwritev(&self, file: &File, offset: i64) -> Result<usize>;
+}
+
+impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
+    fn preadv(&self, file: &File, offset: i64) -> Result<usize> {
+        if !self
+            .as_ref()
+            .iter()
+            .all(|mapping| mapping.prot.contains(Prot::WRITE))
+        {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "No write access",
+            ));
+        }
+
+        let iov = self
+            .as_ref()
+            .iter()
+            .map(|mapping| iovec {
+                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                iov_len: mapping.len,
+            })
+            .collect::<Vec<_>>();
+
+        let read = unsafe {
+            libc::preadv(
+                file.as_raw_fd(),
+                iov.as_ptr(),
+                iov.len() as libc::c_int,
+                offset,
+            )
+        };
+        if read == -1 {
+            return Err(Error::last_os_error());
+        }
+
+        Ok(read as usize)
+    }
+
+    fn pwritev(&self, file: &File, offset: i64) -> Result<usize> {
+        if !self
+            .as_ref()
+            .iter()
+            .all(|mapping| mapping.prot.contains(Prot::READ))
+        {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                "No read access",
+            ));
+        }
+
+        let iov = self
+            .as_ref()
+            .iter()
+            .map(|mapping| iovec {
+                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                iov_len: mapping.len,
+            })
+            .collect::<Vec<_>>();
+
+        let written = unsafe {
+            libc::pwritev(
+                file.as_raw_fd(),
+                iov.as_ptr(),
+                iov.len() as libc::c_int,
+                offset,
+            )
+        };
+        if written == -1 {
+            return Err(Error::last_os_error());
+        }
+
+        Ok(written as usize)
     }
 }
 
