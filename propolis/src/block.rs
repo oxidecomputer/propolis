@@ -128,6 +128,7 @@ impl<R: BlockReq> FileBdev<R> {
 
         let result = match req.oper() {
             BlockOp::Read => self.process_rw_request(true, offset, &mem, bufs),
+            BlockOp::Write if self.is_ro => Ok(BlockResult::Failure),
             BlockOp::Write => {
                 self.process_rw_request(false, offset, &mem, bufs)
             }
