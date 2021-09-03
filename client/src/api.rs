@@ -21,6 +21,7 @@ pub struct InstancePathParams {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
+    #[serde(default)]
     pub nics: Vec<NetworkInterfaceRequest>,
 }
 
