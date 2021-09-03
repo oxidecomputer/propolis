@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::convert::TryInto;
+use std::mem;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::common::*;
@@ -68,17 +69,17 @@ pub enum NvmeError {
 /// Internal NVMe Controller State
 #[derive(Debug, Default)]
 struct CtrlState {
-    /// Whether the Controller is enabled
-    ///
-    /// CC.EN
-    /// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
-    enabled: bool,
+    /// Controller Capabilities
+    cap: Capabilities,
 
-    /// Whether the Controller is ready
-    ///
-    /// CSTS.RDY
-    /// See NVMe 1.0e Section 3.1.6 Offset 14h: CSTS - Controller Status
-    ready: bool,
+    /// Controller Configuration
+    cc: Configuration,
+
+    /// Controller Status
+    csts: Status,
+
+    /// Admin Queue Attributes
+    aqa: AdminQueueAttrs,
 
     /// The 64-bit Guest address for the Admin Submission Queue
     ///
@@ -91,16 +92,6 @@ struct CtrlState {
     /// ACQB
     /// See NVMe 1.0e Section 3.1.9 Offset 30h: ACQ - Admin Completion Queue Base Address
     admin_cq_base: u64,
-
-    // Admin Submission Queue Size (ASQS)
-    ///
-    /// See NVMe 1.0e Section 3.1.7 Offset 24h: AQA - Admin Queue Attributes
-    admin_sq_size: u16,
-
-    // Admin Completion Queue Size (ACQS)
-    ///
-    /// See NVMe 1.0e Section 3.1.7 Offset 24h: AQA - Admin Queue Attributes
-    admin_cq_size: u16,
 }
 
 /// The max number of completion or submission queues we support.
@@ -142,14 +133,16 @@ impl NvmeCtrl {
             queue::ADMIN_QUEUE_ID,
             0,
             GuestAddr(self.ctrl.admin_cq_base),
-            self.ctrl.admin_cq_size as u32,
+            // Convert from 0's based
+            self.ctrl.aqa.acqs() as u32 + 1,
             ctx,
         )?;
         self.create_sq(
             queue::ADMIN_QUEUE_ID,
             queue::ADMIN_QUEUE_ID,
             GuestAddr(self.ctrl.admin_sq_base),
-            self.ctrl.admin_sq_size as u32,
+            // Convert from 0's based
+            self.ctrl.aqa.asqs() as u32 + 1,
             ctx,
         )?;
         Ok(())
@@ -316,8 +309,50 @@ impl PciNvme {
             ..Default::default()
         });
 
+        // Initialize the CAP "register" leaving most values
+        // at their defaults (0):
+        //  TO      = 0 => 0ms to wait for controller to be ready
+        //  DSTRD   = 0 => 2^(2+0) byte stride for doorbell registers
+        //  MPSMIN  = 0 => 2^(12+0) bytes, 4K
+        //  MPSMAX  = 0 => 2^(12+0) bytes, 4K
+        let cap = Capabilities(0)
+            // Allow up to the spec max supported queue size
+            // converted to 0's based
+            .with_mqes((queue::MAX_QUEUE_SIZE - 1) as u16)
+            // I/O Queues must be physically contiguous
+            .with_cqr(true)
+            // We support the NVM command set
+            .with_css_nvm(true);
+
+        // Initialize the CC "register" leaving most values
+        // at their defaults (0):
+        //  EN      = 0 => controller initially disabled
+        //  CSS     = 0 => NVM Command Set selected
+        //  MPS     = 0 => 2^(12+0) bytes, 4K pages
+        //  AMS     = 0 => Round Robin Arbitration
+        //  SHN     = 0 => Shutdown Notification Cleared
+        let cc = Configuration(0)
+            // Set our expected Submission Queue Entry Size
+            // NOTE: We have a unit test this is 64 Bytes
+            .with_iosqes(mem::size_of::<RawSubmission>().trailing_zeros() as u8)
+            // Set our expected Completion Queue Entry Size
+            // NOTE: We have a unit test this is 16 Bytes
+            .with_iocqes(mem::size_of::<RawCompletion>().trailing_zeros() as u8);
+
+        // Initialize the CSTS "register" leaving most values
+        // at their defaults (0):
+        //  RDY     = 0 => controller not ready
+        //  CFS     = 0 => no fatal controller errors
+        //  SHST    = 0 => no shutdown in process, normal operation
+        let csts = Status(0);
+
         let state = NvmeCtrl {
-            ctrl: CtrlState::default(),
+            ctrl: CtrlState {
+                cap,
+                cc,
+                csts,
+                ..Default::default()
+            },
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
@@ -346,26 +381,26 @@ impl PciNvme {
     /// Service a write to the NVMe Controller Configuration from the VM
     fn ctrlr_cfg_write(
         &self,
-        val: u32,
+        new: Configuration,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         let mut state = self.state.lock().unwrap();
+        let cur = state.ctrl.cc;
 
-        if !state.ctrl.enabled {
+        if !cur.enabled() {
             // TODO: apply any necessary config changes
         }
 
-        let now_enabled = val & CC_EN != 0;
-        if now_enabled && !state.ctrl.enabled {
-            state.ctrl.enabled = true;
+        if new.enabled() && !cur.enabled() {
+            state.ctrl.cc.set_enabled(true);
 
             // Create the Admin Completion and Submission queues
             state.create_admin_queues(ctx)?;
 
-            state.ctrl.ready = true;
-        } else if !now_enabled && state.ctrl.enabled {
-            state.ctrl.enabled = false;
-            state.ctrl.ready = false;
+            state.ctrl.csts.set_ready(true);
+        } else if !new.enabled() && cur.enabled() {
+            state.ctrl.cc.set_enabled(false);
+            state.ctrl.csts.set_ready(false);
 
             state.reset();
         }
@@ -382,15 +417,8 @@ impl PciNvme {
     ) -> Result<(), NvmeError> {
         match id {
             CtrlrReg::CtrlrCaps => {
-                // MPSMIN = MPSMAX = 0 (4k pages)
-                // CCS = 0x1 - NVM command set
-                // DSTRD = 0 - standard (32-bit) doorbell stride
-                // TO = 0 - 0 * 500ms to wait for controller ready
-                // AMS = 0x0 - no additional abitrary mechs (besides RR)
-                // CQR = 0x1 - contig queues required for now
-                // Convert to 0's based
-                let mqes = (queue::MAX_QUEUE_SIZE - 1) as u64;
-                ro.write_u64(CAP_CCS | CAP_CQR | mqes);
+                let state = self.state.lock().unwrap();
+                ro.write_u64(state.ctrl.cap.0);
             }
             CtrlrReg::Version => {
                 ro.write_u32(NVME_VER_1_0);
@@ -403,28 +431,15 @@ impl PciNvme {
 
             CtrlrReg::CtrlrCfg => {
                 let state = self.state.lock().unwrap();
-                let mut val = if state.ctrl.enabled { 1 } else { 0 };
-                // MPS = 0 (4k pages)
-                // CSS = 0 (NVM command set)
-                val |= 4 << 20 // IOCQES 23:20 - 2^4 = 16 bytes
-                | 6 << 16; // IOSQES 19:16 - 2^6 = 64 bytes
-                ro.write_u32(val);
+                ro.write_u32(state.ctrl.cc.0);
             }
             CtrlrReg::CtrlrStatus => {
                 let state = self.state.lock().unwrap();
-                let mut val = 0;
-
-                if state.ctrl.ready {
-                    val |= CSTS_RDY;
-                }
-                ro.write_u32(val);
+                ro.write_u32(state.ctrl.csts.0);
             }
             CtrlrReg::AdminQueueAttr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u32(
-                    state.ctrl.admin_sq_size as u32
-                        | (state.ctrl.admin_cq_size as u32) << 16,
-                );
+                ro.write_u32(state.ctrl.aqa.0);
             }
             CtrlrReg::AdminSubQAddr => {
                 let state = self.state.lock().unwrap();
@@ -468,30 +483,23 @@ impl PciNvme {
             }
 
             CtrlrReg::CtrlrCfg => {
-                self.ctrlr_cfg_write(wo.read_u32(), ctx)?;
+                self.ctrlr_cfg_write(Configuration(wo.read_u32()), ctx)?;
             }
             CtrlrReg::AdminQueueAttr => {
                 let mut state = self.state.lock().unwrap();
-                if !state.ctrl.enabled {
-                    let val = wo.read_u32();
-                    // bits 27:16 - ACQS, zeroes-based
-                    let compq: u16 = ((val >> 16) & 0xfff) as u16 + 1;
-                    // bits 27:16 - ASQS, zeroes-based
-                    let subq: u16 = (val & 0xfff) as u16 + 1;
-
-                    state.ctrl.admin_cq_size = compq;
-                    state.ctrl.admin_sq_size = subq;
+                if !state.ctrl.cc.enabled() {
+                    state.ctrl.aqa = AdminQueueAttrs(wo.read_u32());
                 }
             }
             CtrlrReg::AdminSubQAddr => {
                 let mut state = self.state.lock().unwrap();
-                if !state.ctrl.enabled {
+                if !state.ctrl.cc.enabled() {
                     state.ctrl.admin_sq_base = wo.read_u64() & PAGE_MASK as u64;
                 }
             }
             CtrlrReg::AdminCompQAddr => {
                 let mut state = self.state.lock().unwrap();
-                if !state.ctrl.enabled {
+                if !state.ctrl.cc.enabled() {
                     state.ctrl.admin_cq_base = wo.read_u64() & PAGE_MASK as u64;
                 }
             }
