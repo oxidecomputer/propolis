@@ -607,19 +607,34 @@ impl PrpIter<'_> {
                     // entry which should be present in PRP2
                     PrpNext::Prp2
                 } else {
-                    // The first PRP List entry (i.e. the first pointer to a memory page containing
-                    // additional PRP entries) that if present is contained in the PRP Entry 2
-                    // location within the command, shall be Qword aligned and may also have a
-                    // non-zero offset within the memory page.
+                    // If the remaining length is larger than the page size, PRP2 points to a list.
+                    //
+                    // The first PRP List entry:
+                    // - shall be Qword aligned, and
+                    // - may also have a non-zero offset within the memory page.
                     if (self.prp2 % 8) != 0 {
                         return Err("PRP2 not Qword aligned!");
                     }
 
-                    // PRP2 is allowed to have a non-zero offset into the memory page, but mask it
-                    // out when creating the base part of the PrpNext::List enum - the offset will
-                    // be passed with idx.
+                    // PRP2 is allowed a non-zero offset into the page, meaning this operation's
+                    // PRP list could start in the middle of the page. For example, idx below could
+                    // be anywhere from 0 to PRP_LIST_MAX:
+                    //
+                    //                | idx
+                    //  --------------| ---
+                    //  PRP List base | 0
+                    //  PRP List base | 1
+                    //  PRP List base | 2
+                    //  ...
+                    //  PRP List base | PRP_LIST_MAX - 1
+                    //  PRP List base | PRP_LIST_MAX
+                    //
+                    // Note that lists cannot cross page boundaries. If idx = PRP_LIST_MAX is
+                    // reached, the last entry will point to another list (unless the remaining
+                    // size is satisfied by the end of the list).
+                    let base = self.prp2 & (PAGE_MASK as u64);
                     let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
-                    PrpNext::List(self.prp2 & (PAGE_MASK as u64), idx as u16)
+                    PrpNext::List(base, idx as u16)
                 };
                 (self.prp1, size, next)
             }
