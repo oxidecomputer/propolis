@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::convert::TryInto;
-use std::mem;
+use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::common::*;
@@ -307,10 +307,10 @@ impl PciNvme {
 
         // We have unit tests that these are 16 and 64 bytes, respectively
         // But just make sure as we specify these as powers of 2 in places
-        debug_assert_eq!(mem::size_of::<RawCompletion>().count_ones(), 1);
-        debug_assert_eq!(mem::size_of::<RawSubmission>().count_ones(), 1);
-        let cqes = mem::size_of::<RawCompletion>().trailing_zeros() as u8;
-        let sqes = mem::size_of::<RawSubmission>().trailing_zeros() as u8;
+        debug_assert!(size_of::<RawCompletion>().is_power_of_two());
+        debug_assert!(size_of::<RawSubmission>().is_power_of_two());
+        let cqes = size_of::<RawCompletion>().trailing_zeros() as u8;
+        let sqes = size_of::<RawSubmission>().trailing_zeros() as u8;
 
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
