@@ -119,8 +119,8 @@ struct NvmeCtrl {
     /// The list of namespaces handled by the controller
     nss: [Option<NvmeNs>; MAX_NUM_NAMESPACES],
 
-    /// The PCI Vendor ID the Controller is initialized with
-    vendor_id: u16,
+    /// The Identify structure returned for Identify controller commands
+    ident: IdentifyController,
 }
 
 impl NvmeCtrl {
@@ -247,6 +247,7 @@ impl NvmeCtrl {
         // Find the first empty spot
         if let Some(spot) = self.nss.iter_mut().find(|n| n.is_none()) {
             *spot = Some(ns);
+            self.ident.nn += 1;
             Ok(())
         } else {
             Err(NvmeError::TooManyNamespaces)
@@ -259,11 +260,6 @@ impl NvmeCtrl {
         self.nss[nsid as usize - 1]
             .as_ref()
             .ok_or(NvmeError::InvalidNamespace(nsid))
-    }
-
-    /// Return the current number of namespaces handled by the controller
-    fn num_ns(&self) -> u32 {
-        self.nss.iter().filter(|ns| ns.is_some()).count() as u32
     }
 
     /// Performs a Controller Reset.
@@ -309,6 +305,31 @@ impl PciNvme {
             ..Default::default()
         });
 
+        // We have unit tests that these are 16 and 64 bytes, respectively
+        // But just make sure as we specify these as powers of 2 in places
+        debug_assert_eq!(mem::size_of::<RawCompletion>().count_ones(), 1);
+        debug_assert_eq!(mem::size_of::<RawSubmission>().count_ones(), 1);
+        let cqes = mem::size_of::<RawCompletion>().trailing_zeros() as u8;
+        let sqes = mem::size_of::<RawSubmission>().trailing_zeros() as u8;
+
+        // Initialize the Identify structure returned when the host issues
+        // an Identify Controller command.
+        let ident = bits::IdentifyController {
+            vid: vendor,
+            ssvid: vendor,
+            // TODO: fill out serial number
+            ieee: [0xA8, 0x40, 0x25], // Oxide OUI
+            // We use standard Completion/Submission Queue Entry structures with no extra
+            // data, so required (minimum) == maximum
+            sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
+            cqes: NvmQueueEntrySize(0).with_maximum(cqes).with_required(cqes),
+            // No namespaces initially
+            nn: 0,
+            // bit 0 indicates volatile write cache is present
+            vwc: 1,
+            ..Default::default()
+        };
+
         // Initialize the CAP "register" leaving most values
         // at their defaults (0):
         //  TO      = 0 => 0ms to wait for controller to be ready
@@ -333,11 +354,9 @@ impl PciNvme {
         //  SHN     = 0 => Shutdown Notification Cleared
         let cc = Configuration(0)
             // Set our expected Submission Queue Entry Size
-            // NOTE: We have a unit test this is 64 Bytes
-            .with_iosqes(mem::size_of::<RawSubmission>().trailing_zeros() as u8)
+            .with_iosqes(sqes)
             // Set our expected Completion Queue Entry Size
-            // NOTE: We have a unit test this is 16 Bytes
-            .with_iocqes(mem::size_of::<RawCompletion>().trailing_zeros() as u8);
+            .with_iocqes(cqes);
 
         // Initialize the CSTS "register" leaving most values
         // at their defaults (0):
@@ -356,8 +375,8 @@ impl PciNvme {
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
-            vendor_id: vendor,
             nss: Default::default(),
+            ident,
         };
 
         let nvme = PciNvme { state: Mutex::new(state) };

@@ -138,25 +138,12 @@ impl NvmeCtrl {
                 _ => cmds::Completion::generic_err(STS_INVALID_NS),
             },
             IDENT_CNS_CONTROLLER => {
-                let ident = bits::IdentifyController {
-                    vid: self.vendor_id,
-                    ssvid: self.vendor_id,
-                    // TODO: fill out serial number
-                    // TODO: move to const somewhere
-                    ieee: [0xA8, 0x40, 0x25], // Oxide OUI
-                    sqes: size_of::<bits::RawSubmission>() as u8,
-                    cqes: size_of::<bits::RawCompletion>() as u8,
-                    nn: self.num_ns(),
-                    // bit 0 indicates volatile write cache is present
-                    vwc: 1,
-                    ..Default::default()
-                };
                 assert!(size_of::<bits::IdentifyController>() <= PAGE_SIZE);
                 let buf = cmd
                     .data(ctx.mctx.memctx())
                     .next()
                     .expect("missing prp entry for ident response");
-                assert!(ctx.mctx.memctx().write(buf.0, &ident));
+                assert!(ctx.mctx.memctx().write(buf.0, &self.ident));
                 cmds::Completion::success()
             }
             // We currently present NVMe version 1.0 in which CNS is a 1-bit field

@@ -737,6 +737,26 @@ pub struct PowerStateDescriptor {
     pub _resv: [u8; 16],
 }
 
+bitstruct! {
+    /// Queue Entry Size Required & Maximum (both Completion & Submission)
+    ///
+    /// Defines the required and maximum Queue entry sizes when using the NVM Command Set.
+    #[derive(Copy, Clone)]
+    pub struct NvmQueueEntrySize(pub u8) {
+        /// The required (minimum) Queue Entry Size.
+        ///
+        /// Specified as 2^required bytes. It shall be 6 (64 bytes).
+        pub required: u8 = 0..4;
+
+        /// The maximum Queue Entry Size and is >= the required size.
+        ///
+        /// Specified as 2^required bytes.
+        /// The recommended maximum is 6 (64 bytes) for standad NVM Command Set.
+        /// Controllers with proprietary extensions may support a larger size.
+        pub maximum: u8 = 4..8;
+    }
+}
+
 /// Identify Controller Data Structure
 ///
 /// Describes the characteristics of the controller.
@@ -853,7 +873,7 @@ pub struct IdentifyController {
     /// The recommended maximum SQES is 6 (64 bytes) for standard NVM Command Set.
     /// Controllers with proprietary extensions may support a larger size.
     /// Both the required and maximum SQES values are in bytes and reported as powers of two (2^n).
-    pub sqes: u8,
+    pub sqes: NvmQueueEntrySize,
     /// Completion Queue Entry Size (CQES)
     ///
     /// Defines the required and maximum Completion Queue entry sizes when using the NVM Command Set.
@@ -863,7 +883,7 @@ pub struct IdentifyController {
     /// The recommended maximum CQES is 4 (16 bytes) for standard NVM Command Set.
     /// Controllers with proprietary extensions may support a larger size.
     /// Both the required and maximum CQES values are in bytes and reported as powers of two (2^n).
-    pub cqes: u8,
+    pub cqes: NvmQueueEntrySize,
     /// Reserved - Bytes 515:514
     pub _resv3: [u8; 2],
     /// Number of Namespaces (NN)
@@ -948,8 +968,8 @@ impl Default for IdentifyController {
             elpe: 0,
             npss: 0,
             avscc: 0,
-            sqes: 0,
-            cqes: 0,
+            sqes: NvmQueueEntrySize(0),
+            cqes: NvmQueueEntrySize(0),
             nn: 0,
             oncs: 0,
             fuses: 0,
