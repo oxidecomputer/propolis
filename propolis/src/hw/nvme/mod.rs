@@ -366,12 +366,7 @@ impl PciNvme {
         let csts = Status(0);
 
         let state = NvmeCtrl {
-            ctrl: CtrlState {
-                cap,
-                cc,
-                csts,
-                ..Default::default()
-            },
+            ctrl: CtrlState { cap, cc, csts, ..Default::default() },
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
@@ -430,7 +425,8 @@ impl PciNvme {
             // TODO: Cleanup properly but for now just immediately indicate
             //       we're done shutting down.
             state.ctrl.csts.set_shst(ShutdownStatus::Complete);
-        } else if !shutdown && state.ctrl.csts.shst() != ShutdownStatus::Normal {
+        } else if !shutdown && state.ctrl.csts.shst() != ShutdownStatus::Normal
+        {
             state.ctrl.csts.set_shst(ShutdownStatus::Normal);
         }
 
