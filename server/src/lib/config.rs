@@ -53,12 +53,12 @@ impl Config {
         IterDevs { inner: self.devices.iter() }
     }
 
-    pub fn block_dev<R: propolis::block::BlockReq>(
+    pub fn create_block_device<R: propolis::block::BlockReq>(
         &self,
         name: &str,
     ) -> Arc<dyn propolis::block::BlockDev<R>> {
         let entry = self.block_devs.get(name).unwrap();
-        entry.block_dev::<R>()
+        entry.create_block_device::<R>()
     }
 }
 
@@ -92,7 +92,7 @@ pub struct BlockDevice {
 }
 
 impl BlockDevice {
-    pub fn block_dev<R: propolis::block::BlockReq>(
+    pub fn create_block_device<R: propolis::block::BlockReq>(
         &self,
     ) -> Arc<dyn propolis::block::BlockDev<R>> {
         match &self.bdtype as &str {

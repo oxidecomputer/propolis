@@ -274,7 +274,7 @@ async fn instance_ensure(
 
                         let block_dev = server_context
                             .config
-                            .block_dev::<propolis::hw::virtio::block::Request>(
+                            .create_block_device::<propolis::hw::virtio::block::Request>(
                             block_dev_name,
                         );
 
