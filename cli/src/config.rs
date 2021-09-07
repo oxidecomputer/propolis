@@ -96,7 +96,7 @@ impl BlockDevice {
 /// Iterator returned from [`Config::devs`] which allows iteration over
 /// all [`Device`] objects.
 pub struct IterDevs<'a> {
-    pub inner: btree_map::Iter<'a, String, Device>,
+    inner: btree_map::Iter<'a, String, Device>,
 }
 
 impl<'a> Iterator for IterDevs<'a> {
