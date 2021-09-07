@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use bitstruct::bitstruct;
+
 /// A Submission Queue Entry as represented in memory.
 ///
 /// See NVMe 1.0e Section 4.2 Submission Queue Entry - Command Format
@@ -153,39 +155,315 @@ pub struct RawCompletion {
 
 // Register bits
 
-/// Controller Capabilities - Command Sets Supported (CAP.CSS)
-///
-/// Bit 37 of CAP register which indicates NVM command set support.
-///
-/// See NVMe 1.0e Section 3.1.1 Offset 00h: CAP - Controller Capabilities
-pub const CAP_CCS: u64 = 1 << 37;
+bitstruct! {
+    /// Representation of the Controller Capabilities (CAP) register.
+    ///
+    /// See NVMe 1.0e Section 3.1.1 Offset 00h: CAP - Controller Capabilities
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Capabilities(pub u64) {
+        /// Maximum Queue Entries Supported (MQES)
+        ///
+        /// The maximum individual queue size that the controller supports.
+        /// This is a 0's based value and the minimum value is 1 (indicating a
+        /// max size of 2).
+        pub mqes: u16 = 0..16;
 
-/// Controller Capabilities - Contiguous Queues Required (CAP.CQR)
-///
-/// Bit 16 of CAP register which indicates that the controller requires
-/// all I/O Submission and Completion Queues to be physically contiguous.
-///
-/// See NVMe 1.0e Section 3.1.1 Offset 00h: CAP - Controller Capabilities
-pub const CAP_CQR: u64 = 1 << 16;
+        /// Contiguous Queues Required  (CQR)
+        ///
+        /// Whether or not the controller requires I/O Completion/Submission
+        /// Queues to be physically contiguous.
+        pub cqr: bool = 16;
 
-/// Controller Configuration - Enable (CC.EN)
-///
-/// Bit 0 of CC register. When set to 1, the the controller should begin
-/// process commands based on Submission Queue Tail doorbell writes.
-/// When cleared to 0, the controller shall not process commands nor post
-/// completion queue entries. Transitioning from 1 to 0 indicates a
-/// (Controller) Reset.
-///
-/// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
-pub const CC_EN: u32 = 0x1;
+        /// Arbitration Mechanism Supported (AMS)
+        ///
+        /// Whether or not the controller supports Weighted Round Robin with Urgent.
+        pub ams_roundrobin: bool = 17;
 
-/// Controller Status - Ready (CSTS.RDY)
-///
-/// Bit 0 of CSTS register. Controller sets to 1 when it is ready to accept
-/// Submission Queue Tail doorbell writes after CC.EN is set to 1.
-///
-/// See NVMe 1.0e Section 3.1.6 Offset 14h: CSTS - Controller Status
-pub const CSTS_RDY: u32 = 0x1;
+        /// Arbitration Mechanism Supported (AMS)
+        ///
+        /// Whether or not the controller supports a vendor specific arbitration mechanism.
+        pub ams_vendor: bool = 18;
+
+        /// Reserved
+        reserved1: u8 = 19..24;
+
+        /// Timeout (TO)
+        ///
+        /// The worst case time that host software shall wait for the controller to become ready.
+        /// Specified as TO * 500ms
+        pub to: u8 = 24..32;
+
+        /// Doorbell Stride (DSTRD)
+        ///
+        /// Size between each completion/submission queue doorbell. Specified as 2^(2 + DSTRD) bytes.
+        pub dstrd: u8 = 32..36;
+
+        /// Reserved
+        reserved2: u8 = 36;
+
+        /// Command Sets Supported (CSS)
+        ///
+        /// Whether or not the controller supports NVM I/O command set.
+        pub css_nvm: bool = 37;
+
+        /// Command Sets Supported (CSS)
+        ///
+        /// Reserved bits for indicating other supported I/O command sets.
+        css_reserved: u8 = 38..45;
+
+        /// Reserved
+        reserved3: u8 = 45..48;
+
+        /// Memory Page Size Minimum (MPSMIN)
+        ///
+        /// The minimum host memory page size the controller supports.
+        /// Specified as 2^(12 + MPSMIN) bytes.
+        pub mpsmin: u8 = 48..52;
+
+        /// Memory Page Size Maximum (MPSMAX)
+        ///
+        /// The maximum host memory page size the controller supports.
+        /// Specified as 2^(12 + MPSMAX) bytes.
+        pub mpsmax: u8 = 52..56;
+
+        /// Reserved
+        reserved4: u8 = 56..64;
+    }
+}
+
+bitstruct! {
+    /// Representation of the Controller Configuration (CC) register.
+    ///
+    /// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Configuration(pub u32) {
+        /// Enable (EN)
+        ///
+        /// When set to 1, the controller shall begin to process commands based
+        /// on Submission Queue Tail Doorbell writes. When cleared to 0, the
+        /// controller shall not process commands nor post completion queue
+        /// entries. Transitioning from 1 to 0 indicates a Controller Reset.
+        pub enabled: bool = 0;
+
+        /// Reserved
+        reserved1: u8 = 1..4;
+
+        /// I/O Command Set Selected (CSS)
+        ///
+        /// The I/O Command Set selected by the host. Must be a supported
+        /// command set as indicated by CAP.CSS. This field shall only be
+        /// changed when the controller is disabled.
+        pub css: IOCommandSet = 4..7;
+
+        /// Memory Page Size (MPS)
+        ///
+        /// The host memory page size, respecting CAP.MPSMIN/MAX.
+        /// Specified as 2^(12 + MPS) bytes.
+        pub mps: u8 = 7..11;
+
+        /// Arbitration Mechanism Selected (AMS)
+        ///
+        /// The Arbitration Mechanism selected by the host. Must be a supportedd
+        /// mechanism as indicated by CAP.AMS. This field shall only be changed
+        /// when the controller is disabled.
+        pub ams: ArbitrationMechanism = 11..14;
+
+        /// Shutdown Notification (SHN)
+        ///
+        /// Host writes to this field to indicate shutdown processing.
+        pub shn: ShutdownNotification = 14..16;
+
+        /// I/O Submission Queue Entry Size (IOSQES)
+        ///
+        /// Defines the I/O Submission Queue Entry size.
+        /// Specified as 2^IOSQES bytes.
+        pub iosqes: u8 = 16..20;
+
+        /// I/O Completion Queue Entry Size (IOCQES)
+        ///
+        /// Defines the I/O Completion Queue Entry size.
+        /// Specified as 2^IOCQES bytes.
+        pub iocqes: u8 = 20..24;
+
+        /// Reserved
+        reserved2: u8 = 24..32;
+    }
+}
+
+// Selected IO Command Set
+#[derive(Clone, Copy, Debug)]
+pub enum IOCommandSet {
+    Nvm,
+    Reserved(u8),
+}
+
+impl bitstruct::FromRaw<u8, IOCommandSet> for Configuration {
+    fn from_raw(raw: u8) -> IOCommandSet {
+        match raw {
+            0b000 => IOCommandSet::Nvm,
+            0b001..=0b111 => IOCommandSet::Reserved(raw),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl bitstruct::IntoRaw<u8, IOCommandSet> for Configuration {
+    fn into_raw(target: IOCommandSet) -> u8 {
+        match target {
+            IOCommandSet::Nvm => 0b000,
+            IOCommandSet::Reserved(raw) => raw,
+        }
+    }
+}
+
+/// Arbitration Mechanisms
+#[derive(Clone, Copy, Debug)]
+pub enum ArbitrationMechanism {
+    RoundRobin,
+    WeightedRoundRobinWithUrgent,
+    Reserved(u8),
+    Vendor,
+}
+
+impl bitstruct::FromRaw<u8, ArbitrationMechanism> for Configuration {
+    fn from_raw(raw: u8) -> ArbitrationMechanism {
+        match raw {
+            0b000 => ArbitrationMechanism::RoundRobin,
+            0b001 => ArbitrationMechanism::WeightedRoundRobinWithUrgent,
+            0b010..=0b110 => ArbitrationMechanism::Reserved(raw),
+            0b111 => ArbitrationMechanism::Vendor,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl bitstruct::IntoRaw<u8, ArbitrationMechanism> for Configuration {
+    fn into_raw(target: ArbitrationMechanism) -> u8 {
+        match target {
+            ArbitrationMechanism::RoundRobin => 0b000,
+            ArbitrationMechanism::WeightedRoundRobinWithUrgent => 0b001,
+            ArbitrationMechanism::Reserved(raw) => raw,
+            ArbitrationMechanism::Vendor => 0b111,
+        }
+    }
+}
+
+/// Shutdown Notification Values
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShutdownNotification {
+    None,
+    Normal,
+    Abrupt,
+    Reserved,
+}
+
+impl bitstruct::FromRaw<u8, ShutdownNotification> for Configuration {
+    fn from_raw(raw: u8) -> ShutdownNotification {
+        match raw {
+            0b00 => ShutdownNotification::None,
+            0b01 => ShutdownNotification::Normal,
+            0b10 => ShutdownNotification::Abrupt,
+            0b11 => ShutdownNotification::Reserved,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl bitstruct::IntoRaw<u8, ShutdownNotification> for Configuration {
+    fn into_raw(target: ShutdownNotification) -> u8 {
+        match target {
+            ShutdownNotification::None => 0b00,
+            ShutdownNotification::Normal => 0b01,
+            ShutdownNotification::Abrupt => 0b10,
+            ShutdownNotification::Reserved => 0b11,
+        }
+    }
+}
+
+bitstruct! {
+    /// Representation of the Controller Status (CSTS) register.
+    ///
+    /// See NVMe 1.0e Section 3.1.6 Offset 1Ch: CSTS - Controller Status
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Status(pub u32) {
+        /// Ready (RDY)
+        ///
+        /// Controller sets this field to 1 to indicate it is ready to accept
+        /// Submission Queue Tail Doorbell writes.
+        pub ready: bool = 0;
+
+        /// Controller Fatal Status (CFS)
+        ///
+        /// Controller sets this field to 1 when a fatal error occurs.
+        pub cfs: bool = 1;
+
+        /// Shutdown Status (SHST)
+        ///
+        /// Indicates the current shutdown processing state.
+        pub shst: ShutdownStatus = 2..4;
+
+        /// Reserved
+        reserved: u32 = 4..32;
+    }
+}
+
+/// Shutdown Status
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShutdownStatus {
+    Normal,
+    Processing,
+    Complete,
+    Reserved,
+}
+
+impl bitstruct::FromRaw<u8, ShutdownStatus> for Status {
+    fn from_raw(raw: u8) -> ShutdownStatus {
+        match raw {
+            0b00 => ShutdownStatus::Normal,
+            0b01 => ShutdownStatus::Processing,
+            0b10 => ShutdownStatus::Complete,
+            0b11 => ShutdownStatus::Reserved,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl bitstruct::IntoRaw<u8, ShutdownStatus> for Status {
+    fn into_raw(target: ShutdownStatus) -> u8 {
+        match target {
+            ShutdownStatus::Normal => 0b00,
+            ShutdownStatus::Processing => 0b01,
+            ShutdownStatus::Complete => 0b10,
+            ShutdownStatus::Reserved => 0b11,
+        }
+    }
+}
+
+bitstruct! {
+    /// Representation of the Admin Queue Attributes (AQA) register.
+    ///
+    /// See NVMe 1.0e Section 3.1.7 Offset 24h: AQA - Admin Queue Attributes
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct AdminQueueAttrs(pub u32) {
+        /// Admin Submission Queue Size (ASQS)
+        ///
+        /// Defines the size of the Admin Submission Queue as a 0's
+        /// based value.
+        pub asqs: u16 = 0..12;
+
+        /// Reserved
+        reserved1: u8 = 12..16;
+
+        /// Admin Completion Queue Size (ACQS)
+        ///
+        /// Defines the size of the Admin Completion Queue as a 0's
+        /// based value.
+        pub acqs: u16 = 16..28;
+
+        /// Reserved
+        reserved2: u8 = 28..32;
+    }
+}
 
 // Version definitions
 
@@ -459,6 +737,26 @@ pub struct PowerStateDescriptor {
     pub _resv: [u8; 16],
 }
 
+bitstruct! {
+    /// Queue Entry Size Required & Maximum (both Completion & Submission)
+    ///
+    /// Defines the required and maximum Queue entry sizes when using the NVM Command Set.
+    #[derive(Copy, Clone)]
+    pub struct NvmQueueEntrySize(pub u8) {
+        /// The required (minimum) Queue Entry Size.
+        ///
+        /// Specified as 2^required bytes. It shall be 6 (64 bytes).
+        pub required: u8 = 0..4;
+
+        /// The maximum Queue Entry Size and is >= the required size.
+        ///
+        /// Specified as 2^required bytes.
+        /// The recommended maximum is 6 (64 bytes) for standad NVM Command Set.
+        /// Controllers with proprietary extensions may support a larger size.
+        pub maximum: u8 = 4..8;
+    }
+}
+
 /// Identify Controller Data Structure
 ///
 /// Describes the characteristics of the controller.
@@ -575,7 +873,7 @@ pub struct IdentifyController {
     /// The recommended maximum SQES is 6 (64 bytes) for standard NVM Command Set.
     /// Controllers with proprietary extensions may support a larger size.
     /// Both the required and maximum SQES values are in bytes and reported as powers of two (2^n).
-    pub sqes: u8,
+    pub sqes: NvmQueueEntrySize,
     /// Completion Queue Entry Size (CQES)
     ///
     /// Defines the required and maximum Completion Queue entry sizes when using the NVM Command Set.
@@ -585,7 +883,7 @@ pub struct IdentifyController {
     /// The recommended maximum CQES is 4 (16 bytes) for standard NVM Command Set.
     /// Controllers with proprietary extensions may support a larger size.
     /// Both the required and maximum CQES values are in bytes and reported as powers of two (2^n).
-    pub cqes: u8,
+    pub cqes: NvmQueueEntrySize,
     /// Reserved - Bytes 515:514
     pub _resv3: [u8; 2],
     /// Number of Namespaces (NN)
@@ -670,8 +968,8 @@ impl Default for IdentifyController {
             elpe: 0,
             npss: 0,
             avscc: 0,
-            sqes: 0,
-            cqes: 0,
+            sqes: NvmQueueEntrySize(0),
+            cqes: NvmQueueEntrySize(0),
             nn: 0,
             oncs: 0,
             fuses: 0,
