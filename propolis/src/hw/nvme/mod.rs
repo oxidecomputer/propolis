@@ -424,6 +424,16 @@ impl PciNvme {
             state.reset();
         }
 
+        let shutdown = new.shn() != ShutdownNotification::None;
+        if shutdown && state.ctrl.csts.shst() == ShutdownStatus::Normal {
+            // Host has indicated to shutdown
+            // TODO: Cleanup properly but for now just immediately indicate
+            //       we're done shutting down.
+            state.ctrl.csts.set_shst(ShutdownStatus::Complete);
+        } else if !shutdown && state.ctrl.csts.shst() != ShutdownStatus::Normal {
+            state.ctrl.csts.set_shst(ShutdownStatus::Normal);
+        }
+
         Ok(())
     }
 
