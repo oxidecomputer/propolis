@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::Result;
 use std::io::{Error, ErrorKind};
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Condvar;
 use std::sync::{Arc, Mutex, Weak};
@@ -178,13 +177,8 @@ impl<R: BlockReq> FileBdev<R> {
 
     /// Send flush to the file
     fn process_flush(&self) -> Result<BlockResult> {
-        let res = unsafe { libc::fdatasync(self.fp.as_raw_fd()) };
-
-        if res == -1 {
-            Err(Error::new(ErrorKind::Other, "file flush failed"))
-        } else {
-            Ok(BlockResult::Success)
-        }
+        self.fp.sync_data()?;
+        Ok(BlockResult::Success)
     }
 
     /// Spawns a new thread named `name` on the dispatcher `disp` which
