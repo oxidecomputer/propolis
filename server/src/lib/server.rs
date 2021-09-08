@@ -261,16 +261,20 @@ async fn instance_ensure(
             // NOTE: This interface is effectively a stop-gap for development
             // purposes. Longer term, peripherals will be attached via separate
             // HTTP interfaces.
-            for (_, dev) in server_context.config.devs() {
+            for (devname, dev) in server_context.config.devs() {
                 let driver = &dev.driver as &str;
                 match driver {
                     "pci-virtio-block" => {
                         let block_dev_name = dev
                             .options
                             .get("block_dev")
-                            .unwrap()
+                            .ok_or_else(|| {
+                                Error::new(ErrorKind::InvalidData, format!("no block_dev key for {}!", devname))
+                            })?
                             .as_str()
-                            .unwrap();
+                            .ok_or_else(|| {
+                                Error::new(ErrorKind::InvalidData, format!("as_str() failed for {}'s block_dev!", devname))
+                            })?;
 
                         let block_dev = server_context
                             .config
