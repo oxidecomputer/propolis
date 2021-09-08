@@ -13,8 +13,15 @@ use thiserror::Error;
 pub enum ParseError {
     #[error("Cannot parse toml: {0}")]
     Toml(#[from] toml::de::Error),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Key {0} not found in {1}")]
+    KeyNotFound(String, String),
+
+    #[error("Could not unmarshall {0} with function {1}")]
+    AsError(String, String),
 }
 
 /// Configuration for the Propolis server.
@@ -56,8 +63,10 @@ impl Config {
     pub fn create_block_device<R: propolis::block::BlockReq>(
         &self,
         name: &str,
-    ) -> Arc<dyn propolis::block::BlockDev<R>> {
-        let entry = self.block_devs.get(name).unwrap();
+    ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
+        let entry = self.block_devs.get(name).ok_or_else(|| {
+            ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
+        })?;
         entry.create_block_device::<R>()
     }
 }
@@ -94,17 +103,32 @@ pub struct BlockDevice {
 impl BlockDevice {
     pub fn create_block_device<R: propolis::block::BlockReq>(
         &self,
-    ) -> Arc<dyn propolis::block::BlockDev<R>> {
+    ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
         match &self.bdtype as &str {
             "file" => {
-                let path = self.options.get("path").unwrap().as_str().unwrap();
+                let path = self
+                    .options
+                    .get("path")
+                    .ok_or_else(|| {
+                        ParseError::KeyNotFound(
+                            "path".to_string(),
+                            "options".to_string(),
+                        )
+                    })?
+                    .as_str()
+                    .ok_or_else(|| {
+                        ParseError::AsError(
+                            "path".to_string(),
+                            "as_str".to_string(),
+                        )
+                    })?;
 
                 let readonly: bool = || -> Option<bool> {
                     self.options.get("readonly")?.as_str()?.parse().ok()
                 }()
                 .unwrap_or(false);
 
-                propolis::block::FileBdev::<R>::create(path, readonly).unwrap()
+                Ok(propolis::block::FileBdev::<R>::create(path, readonly)?)
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);

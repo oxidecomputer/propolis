@@ -276,7 +276,9 @@ async fn instance_ensure(
                             .config
                             .create_block_device::<propolis::hw::virtio::block::Request>(
                             block_dev_name,
-                        );
+                        ).map_err(|e| {
+                            Error::new(ErrorKind::InvalidData, format!("ParseError: {:?}", e))
+                        })?;
 
                         let bdf: pci::Bdf =
                             dev.get("pci-path").ok_or_else(|| {
