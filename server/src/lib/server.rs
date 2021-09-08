@@ -261,18 +261,29 @@ async fn instance_ensure(
             // NOTE: This interface is effectively a stop-gap for development
             // purposes. Longer term, peripherals will be attached via separate
             // HTTP interfaces.
-            for (_, dev) in server_context.config.devs() {
+            for (devname, dev) in server_context.config.devs() {
                 let driver = &dev.driver as &str;
                 match driver {
                     "pci-virtio-block" => {
-                        let readonly: bool =
-                            dev.get("readonly").unwrap_or(false);
-                        let path = dev.get_string("disk").ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::InvalidData,
-                                "Cannot parse disk path",
-                            )
+                        let block_dev_name = dev
+                            .options
+                            .get("block_dev")
+                            .ok_or_else(|| {
+                                Error::new(ErrorKind::InvalidData, format!("no block_dev key for {}!", devname))
+                            })?
+                            .as_str()
+                            .ok_or_else(|| {
+                                Error::new(ErrorKind::InvalidData, format!("as_str() failed for {}'s block_dev!", devname))
+                            })?;
+
+                        let block_dev = server_context
+                            .config
+                            .create_block_device::<propolis::hw::virtio::block::Request>(
+                            block_dev_name,
+                        ).map_err(|e| {
+                            Error::new(ErrorKind::InvalidData, format!("ParseError: {:?}", e))
                         })?;
+
                         let bdf: pci::Bdf =
                             dev.get("pci-path").ok_or_else(|| {
                                 Error::new(
@@ -280,7 +291,13 @@ async fn instance_ensure(
                                     "Cannot parse disk PCI",
                                 )
                             })?;
-                        init.initialize_block(&chipset, path, bdf, readonly)?;
+
+                        init.initialize_block(
+                            &chipset,
+                            bdf,
+                            block_dev_name,
+                            block_dev,
+                        )?;
                     }
                     "pci-virtio-viona" => {
                         let name = dev.get_string("vnic").ok_or_else(|| {

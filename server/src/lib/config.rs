@@ -3,6 +3,7 @@
 use std::collections::{btree_map, BTreeMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde_derive::Deserialize;
 use thiserror::Error;
@@ -12,8 +13,15 @@ use thiserror::Error;
 pub enum ParseError {
     #[error("Cannot parse toml: {0}")]
     Toml(#[from] toml::de::Error),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Key {0} not found in {1}")]
+    KeyNotFound(String, String),
+
+    #[error("Could not unmarshall {0} with function {1}")]
+    AsError(String, String),
 }
 
 /// Configuration for the Propolis server.
@@ -25,6 +33,9 @@ pub struct Config {
 
     #[serde(default, rename = "dev")]
     devices: BTreeMap<String, Device>,
+
+    #[serde(default, rename = "block_dev")]
+    block_devs: BTreeMap<String, BlockDevice>,
 }
 
 impl Config {
@@ -36,8 +47,9 @@ impl Config {
     pub fn new<P: Into<PathBuf>>(
         bootrom: P,
         devices: BTreeMap<String, Device>,
+        block_devs: BTreeMap<String, BlockDevice>,
     ) -> Config {
-        Config { bootrom: bootrom.into(), devices }
+        Config { bootrom: bootrom.into(), devices, block_devs }
     }
 
     pub fn get_bootrom(&self) -> &Path {
@@ -46,6 +58,16 @@ impl Config {
 
     pub fn devs(&self) -> IterDevs {
         IterDevs { inner: self.devices.iter() }
+    }
+
+    pub fn create_block_device<R: propolis::block::BlockReq>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
+        let entry = self.block_devs.get(name).ok_or_else(|| {
+            ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
+        })?;
+        entry.create_block_device::<R>()
     }
 }
 
@@ -69,11 +91,58 @@ impl Device {
     }
 }
 
+#[derive(Deserialize, Debug)]
+pub struct BlockDevice {
+    #[serde(default, rename = "type")]
+    pub bdtype: String,
+
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+impl BlockDevice {
+    pub fn create_block_device<R: propolis::block::BlockReq>(
+        &self,
+    ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
+        match &self.bdtype as &str {
+            "file" => {
+                let path = self
+                    .options
+                    .get("path")
+                    .ok_or_else(|| {
+                        ParseError::KeyNotFound(
+                            "path".to_string(),
+                            "options".to_string(),
+                        )
+                    })?
+                    .as_str()
+                    .ok_or_else(|| {
+                        ParseError::AsError(
+                            "path".to_string(),
+                            "as_str".to_string(),
+                        )
+                    })?;
+
+                let readonly: bool = || -> Option<bool> {
+                    self.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                Ok(propolis::block::FileBdev::<R>::create(path, readonly)?)
+            }
+            _ => {
+                panic!("unrecognized block dev type {}!", self.bdtype);
+            }
+        }
+    }
+}
+
 /// Iterator returned from [`Config::devs`] which allows iteration over
 /// all [`Device`] objects.
 pub struct IterDevs<'a> {
     inner: btree_map::Iter<'a, String, Device>,
 }
+
 impl<'a> Iterator for IterDevs<'a> {
     type Item = (&'a String, &'a Device);
 

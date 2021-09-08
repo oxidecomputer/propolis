@@ -199,27 +199,20 @@ fn main() {
             };
             match driver {
                 "pci-virtio-block" => {
-                    let disk_path =
-                        dev.options.get("disk").unwrap().as_str().unwrap();
+                    let block_dev =
+                        dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let readonly: bool = || -> Option<bool> {
-                        dev.options.get("readonly")?.as_str()?.parse().ok()
-                    }()
-                    .unwrap_or(false);
-
-                    let plain =
-                        block::FileBdev::create(disk_path, readonly).unwrap();
+                    let block_dev = config
+                        .block_dev::<hw::virtio::block::Request>(block_dev);
 
                     let vioblk = hw::virtio::VirtioBlock::create(
                         0x100,
-                        Arc::clone(&plain)
-                            as Arc<
-                                dyn block::BlockDev<hw::virtio::block::Request>,
-                            >,
+                        Arc::clone(&block_dev),
                     );
                     chipset.pci_attach(bdf.unwrap(), vioblk);
 
-                    plain.start_dispatch(format!("bdev-{} thread", name), disp);
+                    block_dev
+                        .start_dispatch(format!("bdev-{} thread", name), disp);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
@@ -237,8 +230,6 @@ fn main() {
                     chipset.pci_attach(bdf.unwrap(), nvme);
                 }
                 "nvme-ns" => {
-                    let disk_path =
-                        dev.options.get("disk").unwrap().as_str().unwrap();
                     let nvme_ctrl = dev
                         .options
                         .get("controller")
@@ -250,14 +241,13 @@ fn main() {
                         panic!("no such nvme controller: {}", nvme_ctrl)
                     });
 
-                    let readonly: bool = || -> Option<bool> {
-                        dev.options.get("readonly")?.as_str()?.parse().ok()
-                    }()
-                    .unwrap_or(false);
+                    let block_dev =
+                        dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let plain =
-                        block::FileBdev::create(disk_path, readonly).unwrap();
-                    let ns = hw::nvme::NvmeNs::create(plain.clone());
+                    let block_dev =
+                        config.block_dev::<hw::nvme::Request>(block_dev);
+
+                    let ns = hw::nvme::NvmeNs::create(block_dev.clone());
 
                     if let Err(e) =
                         nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
@@ -267,7 +257,9 @@ fn main() {
                         eprintln!("failed to attach nvme-ns: {}", e);
                         std::process::exit(libc::EXIT_FAILURE);
                     }
-                    plain.start_dispatch(format!("bdev-{} thread", name), disp);
+
+                    block_dev
+                        .start_dispatch(format!("bdev-{} thread", name), disp);
                 }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);

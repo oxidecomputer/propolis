@@ -11,7 +11,7 @@ use crate::util::regmap::RegMap;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
-pub use ns::NvmeNs;
+pub use ns::{NvmeNs, Request};
 
 mod admin;
 mod bits;

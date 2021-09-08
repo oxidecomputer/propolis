@@ -4,7 +4,7 @@ use dropshot::{
 };
 use propolis_client::{Client, Error as ClientError};
 use propolis_server::{
-    config::{Config, Device},
+    config::{BlockDevice, Config, Device},
     server,
 };
 use slog::{o, Logger};
@@ -31,23 +31,35 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
 
     let mut block_options = BTreeMap::new();
     block_options.insert(
-        "disk".to_string(),
+        "path".to_string(),
         toml::value::Value::String(
             artifacts.image.path().as_path().to_str().unwrap().to_string(),
         ),
     );
-    block_options.insert(
+    let bd0 =
+        BlockDevice { bdtype: "file".to_string(), options: block_options };
+
+    let mut block_devices = BTreeMap::new();
+    block_devices.insert("bd0".to_string(), bd0);
+
+    let mut device_options = BTreeMap::new();
+    device_options.insert(
         "pci-path".to_string(),
         toml::value::Value::String("0.4.0".to_string()),
     );
-    let block = Device {
+    device_options.insert(
+        "block_dev".to_string(),
+        toml::value::Value::String("bd0".to_string()),
+    );
+    let dev = Device {
         driver: "pci-virtio-block".to_string(),
-        options: block_options,
+        options: device_options,
     };
-    let mut devices = BTreeMap::new();
-    devices.insert("block0".to_string(), block);
 
-    let config = Config::new(artifacts.bootrom.path(), devices);
+    let mut devices = BTreeMap::new();
+    devices.insert("block0".to_string(), dev);
+
+    let config = Config::new(artifacts.bootrom.path(), devices, block_devices);
     let context = server::Context::new(config);
 
     let config_dropshot = ConfigDropshot {
@@ -76,6 +88,7 @@ async fn test_uninitialized_server() {
 
 #[cfg(target_os = "illumos")]
 mod illumos_integration_tests {
+    use super::*;
     use anyhow::{bail, Result};
     use propolis_client::api::{InstanceState, InstanceStateRequested};
     use std::str::FromStr;
