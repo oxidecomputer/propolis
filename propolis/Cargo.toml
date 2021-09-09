@@ -22,7 +22,7 @@ bhyve_api = { path = "../bhyve-api" }
 dladm = { path = "../dladm" }
 viona_api = { path = "../viona-api" }
 usdt = "0.1.13"
-crucible = { git = "https://github.com/oxidecomputer/crucible", branch = "main", optional = true }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "9e22a599", optional = true }
 bytes = "1"
 tokio = { version = "1", features = ["full"] }
 
