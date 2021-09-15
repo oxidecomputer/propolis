@@ -15,10 +15,6 @@ struct UartState {
     irq_pin: LegacyPin,
     auto_discard: bool,
 }
-struct Notifiers {
-    notify_readable: Option<SourceNotifier>,
-    notify_writable: Option<SinkNotifier>,
-}
 
 impl UartState {
     fn sync_intr_pin(&self) {
@@ -32,7 +28,8 @@ impl UartState {
 
 pub struct LpcUart {
     state: Mutex<UartState>,
-    notifiers: Mutex<Notifiers>,
+    notify_readable: NotifierCell<dyn Source>,
+    notify_writable: NotifierCell<dyn Sink>,
 }
 
 impl LpcUart {
@@ -43,10 +40,8 @@ impl LpcUart {
                 irq_pin,
                 auto_discard: true,
             }),
-            notifiers: Mutex::new(Notifiers {
-                notify_readable: None,
-                notify_writable: None,
-            }),
+            notify_readable: NotifierCell::new(),
+            notify_writable: NotifierCell::new(),
         })
     }
     pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
@@ -66,25 +61,24 @@ impl LpcUart {
 }
 
 impl Sink for LpcUart {
-    fn write(&self, data: u8) -> bool {
+    fn write(&self, data: u8, _ctx: &DispCtx) -> bool {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_write(data);
         state.sync_intr_pin();
         res
     }
-    fn set_notifier(&self, f: SinkNotifier) {
-        let mut notifiers = self.notifiers.lock().unwrap();
-        notifiers.notify_writable = Some(f);
+    fn set_notifier(&self, f: Option<SinkNotifier>) {
+        self.notify_writable.set(f);
     }
 }
 impl Source for LpcUart {
-    fn read(&self) -> Option<u8> {
+    fn read(&self, _ctx: &DispCtx) -> Option<u8> {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_read();
         state.sync_intr_pin();
         res
     }
-    fn discard(&self, count: usize) -> usize {
+    fn discard(&self, count: usize, _ctx: &DispCtx) -> usize {
         let mut state = self.state.lock().unwrap();
         let mut discarded = 0;
         while discarded < count {
@@ -97,9 +91,8 @@ impl Source for LpcUart {
         state.sync_intr_pin();
         discarded
     }
-    fn set_notifier(&self, f: SourceNotifier) {
-        let mut notifiers = self.notifiers.lock().unwrap();
-        notifiers.notify_readable = Some(f);
+    fn set_notifier(&self, f: Option<SourceNotifier>) {
+        self.notify_readable.set(f);
     }
     fn set_autodiscard(&self, active: bool) {
         let mut state = self.state.lock().unwrap();
@@ -108,7 +101,7 @@ impl Source for LpcUart {
 }
 
 impl PioDev for LpcUart {
-    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
+    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
         assert!(rwo.offset() < REGISTER_LEN);
         assert!(rwo.len() != 0);
         let mut state = self.state.lock().unwrap();
@@ -135,18 +128,11 @@ impl PioDev for LpcUart {
         // The uart state lock cannot be held while dispatching notifications since those callbacks
         // could immediately attempt to read/write the pending data.
         drop(state);
-        if read_notify || write_notify {
-            let notifiers = self.notifiers.lock().unwrap();
-            if read_notify {
-                if let Some(cb) = notifiers.notify_readable.as_ref() {
-                    cb(self as &dyn Source);
-                }
-            }
-            if write_notify {
-                if let Some(cb) = notifiers.notify_writable.as_ref() {
-                    cb(self as &dyn Sink);
-                }
-            }
+        if read_notify {
+            self.notify_readable.notify(self as &dyn Source, ctx);
+        }
+        if write_notify {
+            self.notify_writable.notify(self as &dyn Sink, ctx);
         }
     }
 }
