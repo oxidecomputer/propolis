@@ -118,6 +118,10 @@ impl Dispatcher {
     pub fn cancel_async(&self, id: AsyncTaskId) {
         self.async_disp.cancel(id);
     }
+
+    pub async fn wait_exited(&self, id: AsyncTaskId) {
+        self.async_disp.wait_exited(id).await;
+    }
 }
 impl SelfArc for Dispatcher {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
@@ -177,7 +181,6 @@ impl<'a> DispCtx<'a> {
         let disp = Weak::upgrade(&self.disp).unwrap();
         disp.spawn_async(task)
     }
-
 
     /// Cancel an async task running under the instance dispatcher.
     ///

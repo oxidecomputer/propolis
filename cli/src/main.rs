@@ -13,7 +13,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::Arc;
 
-use propolis::chardev::{Sink, Source};
+use propolis::chardev::{Sink, Source, BlockingSource};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
@@ -145,11 +145,11 @@ fn main() {
         let com3 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM3).unwrap());
         let com4 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
 
-        com1_sock.attach(
+        com1_sock.spawn(
             Arc::clone(&com1) as Arc<dyn Sink>,
             Arc::clone(&com1) as Arc<dyn Source>,
+            disp,
         );
-        com1_sock.spawn(disp);
         com1.set_autodiscard(false);
 
         // XXX: plumb up com2-4, but until then, just auto-discard
@@ -177,13 +177,11 @@ fn main() {
         inv.register(&ps2_ctrl, "ps2_ctrl".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        let debug = std::fs::File::create("debug.out").unwrap();
-        let buffered = std::io::LineWriter::new(debug);
-        let dbg = hw::qemu::debug::QemuDebugPort::create(
-            Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
-            pio,
-        );
-        inv.register(&dbg, "debug".to_string(), None)
+        let debug_file = std::fs::File::create("debug.out").unwrap();
+        let debug_out = chardev::BlockingFileOutput::new(debug_file).unwrap();
+        let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
+        debug_out.attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
+        inv.register(&debug_device, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         let mut devices = HashMap::new();
