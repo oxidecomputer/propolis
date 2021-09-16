@@ -8,10 +8,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#libc = "0.2"
-# TODO: Switch back to "0.2" once a new release is published
-#       See https://github.com/rust-lang/libc/pull/2383
-libc = { git = "https://github.com/rust-lang/libc.git", rev = "796459785" }
+libc = "0.2"
 bitflags = "1.2"
 bitstruct = "0.1"
 byteorder = "1"
