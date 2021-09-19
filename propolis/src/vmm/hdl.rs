@@ -374,3 +374,18 @@ impl VmmHdl {
         }
     }
 }
+
+#[cfg(test)]
+impl VmmHdl {
+    /// Build a VmmHdl instance suitable for unit tests, but nothing else, since
+    /// it will not be backed by any real vmm reousrces.
+    pub(crate) fn new_test() -> Result<Self> {
+        // TODO: use something else
+        let fp = File::open("/dev/null")?;
+        Ok(Self {
+            inner: VmmFile(fp),
+            destroyed: AtomicBool::new(false),
+            name: "TEST-ONLY VMM INSTANCE".to_string(),
+        })
+    }
+}

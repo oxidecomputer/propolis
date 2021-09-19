@@ -462,3 +462,378 @@ fn copy_and_consume(src: &mut Vec<u8>, dest: &mut [u8]) -> usize {
         copy_len
     }
 }
+
+#[cfg(test)]
+impl Params {
+    pub(crate) fn test_defaults() -> Self {
+        Self {
+            poll_interval: Duration::from_millis(10),
+            poll_miss_thresh: 2,
+            buf_size: NonZeroUsize::new(16).unwrap(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::io::Result;
+
+    use super::*;
+    use crate::chardev::*;
+    use crate::dispatch::DispCtx;
+    use crate::instance::{Instance, ReqState};
+
+    use futures::FutureExt;
+    use tokio::runtime::Handle;
+
+    async fn async_inst_test<T, F>(task: T) -> Result<()>
+    where
+        T: FnOnce(AsyncCtx) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let inst = Instance::new_test(Some(Handle::current()))?;
+        let _ = inst.set_target_state(ReqState::Run).unwrap();
+
+        let id = inst.disp.spawn_async(task);
+        inst.disp.wait_exited(id).await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_empty_returns_zero_bytes() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(4, 4));
+            let rpoll = SourceBuffer::new(Params::test_defaults());
+            rpoll.attach(uart.as_ref());
+
+            let mut output = [];
+            let res =
+                rpoll.read(&mut output, uart.as_ref(), &actx).await.unwrap();
+            assert_eq!(res, 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_empty_fills_zero_bytes() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(4, 4));
+            let wpoll = SinkBuffer::new(NonZeroUsize::new(16).unwrap());
+            wpoll.attach(uart.as_ref());
+
+            let input = [];
+            let res = wpoll.write(&input, uart.as_ref(), &actx).await.unwrap();
+            assert_eq!(res, 0);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_byte() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(4, 4));
+            let rpoll = SourceBuffer::new(Params::test_defaults());
+            rpoll.attach(uart.as_ref());
+
+            // If the guest writes a byte...
+            uart.push_source(0xFE);
+            uart.notify_source(&actx).await;
+
+            let mut output = [0u8; 16];
+            // ... We can read that byte.
+            assert_eq!(
+                1,
+                rpoll.read(&mut output, uart.as_ref(), &actx).await.unwrap()
+            );
+            assert_eq!(output[0], 0xFE);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_bytes() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(2, 2));
+            let rpoll = SourceBuffer::new(Params::test_defaults());
+            rpoll.attach(uart.as_ref());
+
+            // If the guest writes multiple bytes...
+            uart.push_source(0x0A);
+            uart.push_source(0x0B);
+            uart.notify_source(&actx).await;
+
+            let mut output = [0u8; 16];
+            // ... We can read them.
+            assert_eq!(
+                2,
+                rpoll.read(&mut output, uart.as_ref(), &actx).await.unwrap()
+            );
+            assert_eq!(output[0], 0x0A);
+            assert_eq!(output[1], 0x0B);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_bytes_beyond_internal_buffer_size() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(5, 5));
+            let mut params = Params::test_defaults();
+            params.buf_size = NonZeroUsize::new(3).unwrap();
+            let rpoll = SourceBuffer::new(params);
+            assert_eq!(3, rpoll.inner.lock().unwrap().buf.capacity());
+            rpoll.attach(uart.as_ref());
+
+            // We write four bytes, yet trigger the notification mechanism once.
+            //
+            // The Serial buffer size (3) is smaller than the Uart's buffer (5).
+            uart.push_source(0x0A);
+            uart.push_source(0x0B);
+            uart.push_source(0x0C);
+            uart.push_source(0x0D);
+            uart.push_source(0x0E);
+            uart.notify_source(&actx).await;
+
+            // We are still able to read the subsequent bytes (without blocking),
+            // just in two batches.  The first batch ends up one-larger than the
+            // internal buffer size since the `read()` attempts to check the
+            // `Source` directly when its buffer empties.
+            let mut output = [0u8; 16];
+            assert_eq!(
+                4,
+                rpoll.read(&mut output, uart.as_ref(), &actx).await.unwrap()
+            );
+            assert_eq!(output[0], 0x0A);
+            assert_eq!(output[1], 0x0B);
+            assert_eq!(output[2], 0x0C);
+            assert_eq!(output[3], 0x0D);
+            assert_eq!(
+                1,
+                rpoll
+                    .read(&mut output[4..], uart.as_ref(), &actx)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(output[4], 0x0E);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_bytes_blocking() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(4, 4));
+            let rpoll = SourceBuffer::new(Params::test_defaults());
+            rpoll.attach(uart.as_ref());
+
+            let mut output = [0u8; 16];
+
+            // Before the source has been filled, reads should not succeed.
+            futures::select! {
+                _ = rpoll.read(&mut output, uart.as_ref(), &actx).fuse() => {
+                    panic!("Shouldn't be readable")
+                }
+                default => {}
+            }
+
+            uart.push_source(0xFE);
+            uart.notify_source(&actx).await;
+
+            // However, once the uart has identified that it is readable, we can
+            // begin reading bytes.
+            assert_eq!(
+                1,
+                rpoll.read(&mut output, uart.as_ref(), &actx).await.unwrap()
+            );
+            assert_eq!(output[0], 0xFE);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_byte() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(4, 4));
+            let wpoll = SinkBuffer::new(NonZeroUsize::new(16).unwrap());
+            wpoll.attach(uart.as_ref());
+
+            let input = [0xFE];
+            // If we write a byte...
+            assert_eq!(
+                1,
+                wpoll.write(&input, uart.as_ref(), &actx).await.unwrap()
+            );
+
+            // ... The guest can read it.
+            assert_eq!(uart.pop_sink().unwrap(), 0xFE);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_bytes() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(4, 4));
+            let wpoll = SinkBuffer::new(NonZeroUsize::new(16).unwrap());
+            wpoll.attach(uart.as_ref());
+
+            let input = [0x0A, 0x0B];
+            // If we write multiple bytes...
+            assert_eq!(
+                2,
+                wpoll.write(&input, uart.as_ref(), &actx).await.unwrap()
+            );
+
+            // ... The guest can read them.
+            assert_eq!(uart.pop_sink().unwrap(), 0x0A);
+            assert_eq!(uart.pop_sink().unwrap(), 0x0B);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_bytes_beyond_internal_buffer_size() {
+        let _ = async_inst_test(|actx| async move {
+            let uart = Arc::new(TestUart::new(1, 1));
+            let wpoll = SinkBuffer::new(NonZeroUsize::new(3).unwrap());
+            wpoll.attach(uart.as_ref());
+            assert_eq!(3, wpoll.inner.lock().unwrap().buf.capacity());
+
+            // By attempting to write five bytes, we fill the following pipeline
+            // in stages:
+            //
+            // [Client] -> [Serial Buffer] -> [UART]
+            //             ^ 3 byte cap       ^ 1 byte cap
+            //
+            // After both the serial buffer and UART are saturated (four bytes
+            // total) the write future will no longer complete successfully.
+            //
+            // Once this occurs, the UART will need to pop data from the
+            // incoming sink to make space for subsequent writes.
+            let input = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E];
+            assert_eq!(
+                4,
+                wpoll.write(&input, uart.as_ref(), &actx).await.unwrap()
+            );
+
+            futures::select! {
+                _ = wpoll.write(&input[4..], uart.as_ref(), &actx).fuse() => {
+                    panic!("Shouldn't be writable")
+                }
+                default => {}
+            }
+
+            assert_eq!(uart.pop_sink().unwrap(), 0x0A);
+            uart.notify_sink(&actx).await;
+
+            // After a byte is popped, the last byte becomes writable.
+            assert_eq!(
+                1,
+                wpoll.write(&input[4..], uart.as_ref(), &actx).await.unwrap()
+            );
+
+            assert_eq!(uart.pop_sink().unwrap(), 0x0B);
+            uart.notify_sink(&actx).await;
+            assert_eq!(uart.pop_sink().unwrap(), 0x0C);
+            uart.notify_sink(&actx).await;
+            assert_eq!(uart.pop_sink().unwrap(), 0x0D);
+            uart.notify_sink(&actx).await;
+            assert_eq!(uart.pop_sink().unwrap(), 0x0E);
+        })
+        .await
+        .unwrap();
+    }
+
+    struct TestUart {
+        // The "capacity" fields here are a little redundant with the underlying
+        // VecDeque capacities, but those values may get rounded up.
+        //
+        // To be more precise with "blocking-on-buffer-full" tests, we preserve
+        // the original requested capacity value, which may be smaller.
+        sink_cap: usize,
+        sink: Mutex<VecDeque<u8>>,
+        source_cap: usize,
+        source: Mutex<VecDeque<u8>>,
+        sink_notifier: NotifierCell<dyn Sink>,
+        source_notifier: NotifierCell<dyn Source>,
+        auto_discard: AtomicBool,
+    }
+
+    impl TestUart {
+        fn new(sink_size: usize, source_size: usize) -> Self {
+            TestUart {
+                sink_cap: sink_size,
+                sink: Mutex::new(VecDeque::with_capacity(sink_size)),
+                source_cap: source_size,
+                source: Mutex::new(VecDeque::with_capacity(source_size)),
+                sink_notifier: NotifierCell::new(),
+                source_notifier: NotifierCell::new(),
+                auto_discard: AtomicBool::new(true),
+            }
+        }
+
+        // Add a byte which can later get popped out of the source.
+        fn push_source(&self, byte: u8) {
+            let mut source = self.source.lock().unwrap();
+            assert!(source.len() < self.source_cap);
+            source.push_back(byte);
+        }
+
+        // Pop a byte out of the sink.
+        fn pop_sink(&self) -> Option<u8> {
+            let mut sink = self.sink.lock().unwrap();
+            sink.pop_front()
+        }
+
+        async fn notify_source(&self, actx: &AsyncCtx) {
+            let ctx = actx.dispctx().await.unwrap();
+            self.source_notifier.notify(self, &ctx);
+        }
+
+        async fn notify_sink(&self, actx: &AsyncCtx) {
+            let ctx = actx.dispctx().await.unwrap();
+            self.sink_notifier.notify(self, &ctx);
+        }
+    }
+
+    impl Sink for TestUart {
+        fn write(&self, data: u8, _ctx: &DispCtx) -> bool {
+            let mut sink = self.sink.lock().unwrap();
+            if sink.len() < self.sink_cap {
+                sink.push_back(data);
+                true
+            } else {
+                false
+            }
+        }
+        fn set_notifier(&self, f: Option<SinkNotifier>) {
+            self.sink_notifier.set(f);
+        }
+    }
+
+    impl Source for TestUart {
+        fn read(&self, _ctx: &DispCtx) -> Option<u8> {
+            let mut source = self.source.lock().unwrap();
+            source.pop_front()
+        }
+        fn discard(&self, _count: usize, _ctx: &DispCtx) -> usize {
+            panic!();
+        }
+        fn set_autodiscard(&self, active: bool) {
+            self.auto_discard.store(active, Ordering::SeqCst);
+        }
+        fn set_notifier(&self, f: Option<SourceNotifier>) {
+            self.source_notifier.set(f);
+        }
+    }
+}

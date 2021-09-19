@@ -118,6 +118,27 @@ impl Drop for Machine {
     }
 }
 
+#[cfg(test)]
+impl Machine {
+    pub(crate) fn new_test() -> Result<Self> {
+        let hdl = VmmHdl::new_test()?;
+
+        // TODO: meaningfully populate these
+        let guard_space = GuardSpace::new(crate::common::PAGE_SIZE)?;
+        let map = ASpace::new(0, MAX_PHYSMEM);
+
+        Ok(Machine {
+            hdl: Arc::new(hdl),
+            max_cpu: 1,
+
+            _guard_space: guard_space,
+            map_physmem: map,
+            bus_mmio: MmioBus::new(MAX_PHYSMEM),
+            bus_pio: PioBus::new(),
+        })
+    }
+}
+
 /// Wrapper around a [`Machine`] object which exposes helpers for
 /// accessing different aspects of the VMM.
 pub struct MachineCtx {

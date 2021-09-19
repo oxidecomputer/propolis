@@ -55,13 +55,18 @@ impl Dispatcher {
     pub(crate) fn finalize(
         &self,
         inst: &Arc<instance::Instance>,
-        vcpu_fn: VcpuRunFunc,
+        vcpu_fn: Option<VcpuRunFunc>,
     ) {
         self.parent.set(inst);
-        let mctx = MachineCtx::new(&self.machine);
-        for vcpu in mctx.vcpus() {
-            let shared = SharedCtx::create(self);
-            self.sync_disp.spawn_vcpu(shared, vcpu, vcpu_fn);
+
+        // Unit tests may instantiate a dispatcher without the need for vCPU
+        // threads to be running.
+        if let Some(func) = vcpu_fn {
+            let mctx = MachineCtx::new(&self.machine);
+            for vcpu in mctx.vcpus() {
+                let shared = SharedCtx::create(self);
+                self.sync_disp.spawn_vcpu(shared, vcpu, func);
+            }
         }
     }
 
