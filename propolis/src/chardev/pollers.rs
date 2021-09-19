@@ -52,11 +52,17 @@ impl SourceBuffer {
         })));
     }
 
+    /// Read data from Source and/or its associated buffer.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.  It can be used in `tokio::select!` and if
+    /// cancelled, it is guaranteed that no data will have been read.
     pub async fn read(
         &self,
         buf: &mut [u8],
         source: &dyn Source,
-        actx: &mut AsyncCtx,
+        actx: &AsyncCtx,
     ) -> Option<usize> {
         if buf.is_empty() {
             return Some(0);
@@ -173,6 +179,11 @@ struct SinkInner {
     buf: VecDeque<u8>,
     wait_empty: bool,
 }
+impl SinkInner {
+    fn is_full(&self) -> bool {
+        self.buf.len() == self.buf.capacity()
+    }
+}
 
 pub struct SinkBuffer {
     notify: Notify,
@@ -212,50 +223,59 @@ impl SinkBuffer {
         }
     }
 
-    pub async fn populate(
+    /// Write data into the Sink and/or its associated buffer.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.  It can be used in `tokio::select!` and if
+    /// cancelled, it is guaranteed that no data will have been written.
+    pub async fn write(
         &self,
-        sink: &dyn Sink,
         mut data: &[u8],
-        actx: &mut AsyncCtx,
-    ) {
+        sink: &dyn Sink,
+        actx: &AsyncCtx,
+    ) -> Option<usize> {
         if data.is_empty() {
-            return;
+            return Some(0);
         }
         loop {
-            let was_empty = {
+            {
+                let ctx = actx.dispctx().await?;
                 let mut inner = self.inner.lock().unwrap();
-                let was_empty = inner.buf.is_empty();
-                while inner.buf.capacity() > inner.buf.len() {
+                let mut nwritten = 0;
+
+                // If the buffer started empty, try to kick the sink into
+                // accepting data.
+                if inner.buf.is_empty() {
+                    while !data.is_empty() {
+                        if sink.write(data[0], &ctx) {
+                            data = &data[1..];
+                            nwritten += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Push whatever is left into the buffer
+                while !inner.is_full() {
                     if let Some((c, rest)) = data.split_first() {
                         inner.buf.push_back(*c);
                         data = rest;
+                        nwritten += 1;
                     } else {
                         break;
                     }
                 }
-                was_empty
-            };
 
-            // If the buffer started empty, try to kick the sink into
-            // accepting (more) data.
-            if was_empty {
-                if let Some(ctx) = actx.dispctx().await {
-                    let mut inner = self.inner.lock().unwrap();
-                    if let Some(c) = inner.buf.front() {
-                        if sink.write(*c, &ctx) {
-                            inner.buf.pop_front();
-                        }
-                    }
+                if nwritten > 0 {
+                    return Some(nwritten);
+                } else {
+                    inner.wait_empty = true;
                 }
             }
 
-            //
-            if !data.is_empty() {
-                // wait for more room to push data (without too many wake-ups
-                self.wait_empty().await;
-            } else {
-                return;
-            }
+            self.notify.notified().await;
         }
     }
 

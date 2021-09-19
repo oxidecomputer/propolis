@@ -1,6 +1,7 @@
 //! Implements utilities for dispatching operations to a virtual CPU.
 
 use std::boxed::Box;
+use std::future::Future;
 use std::io::Result;
 use std::sync::{Arc, Weak};
 
@@ -10,8 +11,7 @@ use crate::util::self_arc::*;
 use crate::vcpu::*;
 use crate::vmm::{Machine, MachineCtx};
 
-use futures::future::BoxFuture;
-use tokio::sync::SemaphorePermit;
+use tokio::runtime::Handle;
 
 mod async_tasks;
 mod sync_tasks;
@@ -35,9 +35,12 @@ impl Dispatcher {
     /// - `vcpu_fn`: A function, which will be invoked by the dispatcher,
     /// to run the CPU. This function is responsible for yielding control
     /// back to the dispatcher when requested.
-    pub fn new(vm: &Arc<Machine>) -> Arc<Self> {
+    pub(crate) fn new(
+        vm: &Arc<Machine>,
+        rt_handle: Option<Handle>,
+    ) -> Arc<Self> {
         let mut this = Arc::new(Self {
-            async_disp: AsyncDispatch::new(),
+            async_disp: AsyncDispatch::new(rt_handle),
             sync_disp: SyncDispatch::new(),
             machine: Arc::clone(vm),
             parent: ParentRef::new(),
@@ -107,10 +110,11 @@ impl Dispatcher {
     }
 
     /// Spawn an async tasks in the dispatcher.
-    pub fn spawn_async(
-        &self,
-        task: impl FnOnce(AsyncCtx) -> BoxFuture<'static, ()>,
-    ) -> AsyncTaskId {
+    pub fn spawn_async<T, F>(&self, task: T) -> AsyncTaskId
+    where
+        T: FnOnce(AsyncCtx) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
         self.async_disp.spawn(SharedCtx::create(self), task)
     }
 
@@ -148,7 +152,7 @@ pub struct DispCtx<'a> {
     pub mctx: &'a MachineCtx,
     disp: &'a Weak<Dispatcher>,
     inst: &'a Weak<instance::Instance>,
-    _async_permit: Option<SemaphorePermit<'a>>,
+    _async_permit: Option<AsyncCtxPermit<'a>>,
 }
 
 impl<'a> DispCtx<'a> {
@@ -174,10 +178,11 @@ impl<'a> DispCtx<'a> {
     }
 
     /// Spawn an async task under the instance dispatcher
-    pub fn spawn_async(
-        &self,
-        task: impl FnOnce(AsyncCtx) -> BoxFuture<'static, ()>,
-    ) -> AsyncTaskId {
+    pub fn spawn_async<T, F>(&self, task: T) -> AsyncTaskId
+    where
+        T: FnOnce(AsyncCtx) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
         let disp = Weak::upgrade(&self.disp).unwrap();
         disp.spawn_async(task)
     }

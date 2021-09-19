@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use crate::dispatch::DispCtx;
 
 mod file_out;
-mod pollers;
+pub mod pollers;
 mod sock;
 
 pub use file_out::BlockingFileOutput;

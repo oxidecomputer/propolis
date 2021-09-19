@@ -13,7 +13,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::Arc;
 
-use propolis::chardev::{Sink, Source, BlockingSource};
+use propolis::chardev::{BlockingSource, Sink, Source};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
@@ -70,7 +70,7 @@ fn build_instance(
             "highmem",
         )?;
     }
-    let inst = Instance::create(builder, propolis::vcpu_run_loop)?;
+    let inst = Instance::create(builder, None, propolis::vcpu_run_loop)?;
     Ok(inst)
 }
 
@@ -180,7 +180,8 @@ fn main() {
         let debug_file = std::fs::File::create("debug.out").unwrap();
         let debug_out = chardev::BlockingFileOutput::new(debug_file).unwrap();
         let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
-        debug_out.attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
+        debug_out
+            .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
         inv.register(&debug_device, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 

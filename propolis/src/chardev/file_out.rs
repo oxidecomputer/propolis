@@ -41,11 +41,9 @@ impl BlockingFileOutput {
         self.poller.attach(source.as_ref());
 
         let poller = Arc::clone(&self.poller);
-        disp.spawn_async(|mut _actx: AsyncCtx| {
-            Box::pin(async move {
-                let afp = File::from_std(fp);
-                let _ = Self::run(poller, afp).await;
-            })
+        disp.spawn_async(|mut _actx: AsyncCtx| async move {
+            let afp = File::from_std(fp);
+            let _ = Self::run(poller, afp).await;
         });
     }
 

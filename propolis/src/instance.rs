@@ -11,6 +11,8 @@ use crate::inventory::{self, Inventory};
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
+use tokio::runtime::Handle;
+
 /// States of operation for an instance.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
@@ -113,7 +115,7 @@ struct Inner {
 pub struct Instance {
     inner: Mutex<Inner>,
     cv: Condvar,
-    disp: Arc<Dispatcher>,
+    pub disp: Arc<Dispatcher>,
 }
 impl Instance {
     /// Creates a new virtual machine, absorbing the supplied `builder`.
@@ -121,10 +123,11 @@ impl Instance {
     /// Uses `vcpu_fn` to determine how to run a virtual CPU for the instance.
     pub fn create(
         builder: Builder,
+        rt_handle: Option<Handle>,
         vcpu_fn: VcpuRunFunc,
     ) -> io::Result<Arc<Self>> {
         let machine = Arc::new(builder.finalize()?);
-        let disp = Dispatcher::new(&machine);
+        let disp = Dispatcher::new(&machine, rt_handle);
 
         let this = Arc::new(Self {
             inner: Mutex::new(Inner {
