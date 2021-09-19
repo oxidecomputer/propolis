@@ -396,10 +396,8 @@ impl VionaPoller {
         }
         let this = Arc::new(Self { epfd, dev });
         let for_spawn = Arc::clone(&this);
-        let task = ctx.spawn_async(move |mut actx| {
-            Box::pin(async move {
-                let _ = for_spawn.poll_interrupts(&mut actx).await;
-            })
+        let task = ctx.spawn_async(move |actx| async move {
+            let _ = for_spawn.poll_interrupts(&actx).await;
         });
 
         Ok((this, task))
@@ -425,7 +423,7 @@ impl VionaPoller {
             }
         }
     }
-    async fn poll_interrupts(&self, actx: &mut AsyncCtx) {
+    async fn poll_interrupts(&self, actx: &AsyncCtx) {
         let afd =
             AsyncFd::with_interest(self.epfd, Interest::READABLE).unwrap();
         loop {

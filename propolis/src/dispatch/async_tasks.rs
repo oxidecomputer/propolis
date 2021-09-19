@@ -1,9 +1,10 @@
 use std::collections::hash_map::HashMap;
+use std::future::Future;
 use std::io::Result;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use futures::future::BoxFuture;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -27,7 +28,7 @@ impl Drop for TaskLife {
 }
 
 struct TaskCtrl {
-    ctx_guard: Semaphore,
+    quiesce_guard: Semaphore,
     quiesce_notify: Semaphore,
 }
 
@@ -84,32 +85,53 @@ impl AsyncInner {
     }
 }
 
+enum RuntimeBacking {
+    Owned(Runtime),
+    External(Handle),
+}
+
 pub(super) struct AsyncDispatch {
     inner: Arc<Mutex<AsyncInner>>,
-    rt: Mutex<Option<Runtime>>,
+    backing: Mutex<Option<RuntimeBacking>>,
 }
 impl AsyncDispatch {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(rt_handle: Option<Handle>) -> Self {
         let (inner, mut receiver) = AsyncInner::create();
-        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+
+        let (backing, handle) = match rt_handle {
+            Some(handle) => {
+                let hc = handle.clone();
+                (RuntimeBacking::External(handle), hc)
+            }
+            None => {
+                let rt =
+                    Builder::new_multi_thread().enable_all().build().unwrap();
+                let handle = rt.handle().clone();
+                (RuntimeBacking::Owned(rt), handle)
+            }
+        };
 
         // Spawn worker to prune tasks from the dispatcher state when they are
         // finished or cancelled.
         let inner_prune = Arc::clone(&inner);
-        runtime.spawn(async move {
+        handle.spawn(async move {
             while let Some(id) = receiver.recv().await {
                 let mut inner = inner_prune.lock().unwrap();
                 inner.prune(id);
             }
         });
 
-        Self { inner, rt: Mutex::new(Some(runtime)) }
+        Self { inner, backing: Mutex::new(Some(backing)) }
     }
-    pub(super) fn spawn(
+    pub(super) fn spawn<T, F>(
         &self,
         shared: SharedCtx,
-        taskfn: impl FnOnce(AsyncCtx) -> BoxFuture<'static, ()>,
-    ) -> AsyncTaskId {
+        taskfn: T,
+    ) -> AsyncTaskId
+    where
+        T: FnOnce(AsyncCtx) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
         let mut inner = self.inner.lock().unwrap();
 
         assert!(!inner.shutdown);
@@ -117,7 +139,7 @@ impl AsyncDispatch {
         let id = inner.next_id();
         let run_sem = Arc::new(Semaphore::new(1));
         let ctrl = Arc::new(TaskCtrl {
-            ctx_guard: Semaphore::new(0),
+            quiesce_guard: Semaphore::new(0),
             quiesce_notify: Semaphore::new(0),
         });
         let life = TaskLife {
@@ -125,20 +147,27 @@ impl AsyncDispatch {
             chan: inner.life_sender.clone(),
             id,
         };
-        let actx = AsyncCtx { shared, ctrl: Arc::clone(&ctrl) };
+        let actx = AsyncCtx::new(shared, Arc::clone(&ctrl));
 
-        let task_fut = taskfn(actx);
+        let task_fut = Box::pin(taskfn(actx));
 
-        let rt = self.rt.lock().unwrap();
-        let hdl = rt.as_ref().unwrap().spawn(async move {
-            if let Ok(_guard) = life.run_sem.acquire().await {
-                task_fut.await;
-            }
+        let hdl = self.with_handle(|hdl| {
+            hdl.spawn(async move {
+                if let Ok(_guard) = life.run_sem.acquire().await {
+                    task_fut.await;
+                }
+            })
         });
+        // let rt = self.backing.lock().unwrap();
+        // let hdl = rt.as_ref().unwrap().spawn(async move {
+        //     if let Ok(_guard) = life.run_sem.acquire().await {
+        //         task_fut.await;
+        //     }
+        // });
 
         if !inner.quiesced {
             // Make the async ctx available if tasks are not quiesced
-            ctrl.ctx_guard.add_permits(1);
+            ctrl.quiesce_guard.add_permits(1);
         } else {
             // Notify task that the ctx is in a quiesced state
             ctrl.quiesce_notify.add_permits(1);
@@ -155,16 +184,18 @@ impl AsyncDispatch {
         }
         inner.quiesced = true;
 
-        let rt = self.rt.lock().unwrap();
-        rt.as_ref().unwrap().block_on(async {
-            for (_id, task) in inner.tasks.iter_mut() {
-                if !task.quiesced {
-                    task.quiesced = true;
-                    task.ctrl.quiesce_notify.add_permits(1);
-                    let permit = task.ctrl.ctx_guard.acquire().await.unwrap();
-                    permit.forget();
+        self.with_handle(|hdl| {
+            hdl.block_on(async {
+                for (_id, task) in inner.tasks.iter_mut() {
+                    if !task.quiesced {
+                        task.quiesced = true;
+                        task.ctrl.quiesce_notify.add_permits(1);
+                        let permit =
+                            task.ctrl.quiesce_guard.acquire().await.unwrap();
+                        permit.forget();
+                    }
                 }
-            }
+            })
         });
     }
     pub(super) fn release_tasks(&self) {
@@ -174,17 +205,18 @@ impl AsyncDispatch {
         }
         inner.quiesced = false;
 
-        let rt = self.rt.lock().unwrap();
-        rt.as_ref().unwrap().block_on(async {
-            for (_id, task) in inner.tasks.iter_mut() {
-                if task.quiesced {
-                    let permit =
-                        task.ctrl.quiesce_notify.acquire().await.unwrap();
-                    permit.forget();
-                    task.ctrl.ctx_guard.add_permits(1);
-                    task.quiesced = false;
+        self.with_handle(|hdl| {
+            hdl.block_on(async {
+                for (_id, task) in inner.tasks.iter_mut() {
+                    if task.quiesced {
+                        let permit =
+                            task.ctrl.quiesce_notify.acquire().await.unwrap();
+                        permit.forget();
+                        task.ctrl.quiesce_guard.add_permits(1);
+                        task.quiesced = false;
+                    }
                 }
-            }
+            })
         });
     }
     /// If a task is still registered with the dispatcher, cancel it.
@@ -213,29 +245,102 @@ impl AsyncDispatch {
         inner.shutdown = true;
         drop(inner);
 
-        let mut guard = self.rt.lock().unwrap();
-        guard.take().unwrap().shutdown_background();
+        let mut guard = self.backing.lock().unwrap();
+        match guard.take().unwrap() {
+            RuntimeBacking::Owned(rt) => rt.shutdown_background(),
+            RuntimeBacking::External(_) => {}
+        }
+    }
+
+    fn with_handle<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Handle) -> R,
+    {
+        let guard = self.backing.lock().unwrap();
+        let backing = guard.as_ref().unwrap();
+        match backing {
+            RuntimeBacking::Owned(rt) => f(rt.handle()),
+            RuntimeBacking::External(h) => f(h),
+        }
     }
 }
 
 pub struct AsyncCtx {
     shared: SharedCtx,
     ctrl: Arc<TaskCtrl>,
+    ctx_live: Semaphore,
+    ctx_count: AtomicUsize,
 }
 impl AsyncCtx {
+    fn new(shared: SharedCtx, ctrl: Arc<TaskCtrl>) -> Self {
+        Self {
+            shared,
+            ctrl,
+            ctx_live: Semaphore::new(0),
+            ctx_count: AtomicUsize::new(0),
+        }
+    }
+
     /// Get access to the `DispCtx` associated with this task.  This will not be
     /// immediately ready if the task is quiesced.  It will fail with a `None`
     /// value if the task is being cancelled or the containing Dispatcher is
     /// being shutdown.
-    pub async fn dispctx(&mut self) -> Option<DispCtx<'_>> {
-        let permit = self.ctrl.ctx_guard.acquire().await.ok()?;
-
+    pub async fn dispctx(&self) -> Option<DispCtx<'_>> {
+        let permit = self.acquire_permit().await?;
         Some(DispCtx {
             mctx: &self.shared.mctx,
             disp: &self.shared.disp,
             inst: &self.shared.inst,
             _async_permit: Some(permit),
         })
+    }
+
+    async fn acquire_permit(&self) -> Option<AsyncCtxPermit<'_>> {
+        tokio::select! {
+            first = self.ctrl.quiesce_guard.acquire() => {
+                let ctrl_permit = first.ok()?;
+                // While this permit is outstanding (in addition to any others
+                // issued in the future), this task cannot transition into the
+                // quiesced state since it is granting access to instance
+                // sources through the issued DispCtx(s).
+                //
+                // Only once all of the `AsyncCtxPermit`s have been expired can
+                // we signal through `quiesce_guard` that this task could be
+                // transitioned into the quiesced state.
+                ctrl_permit.forget();
+                let old = self.ctx_count.swap(1, Ordering::SeqCst);
+                assert_eq!(old, 0);
+                self.ctx_live.add_permits(1);
+                Some(AsyncCtxPermit { parent: self })
+            },
+            existing = self.ctx_live.acquire() => {
+                // One or more `AsyncCtxPermit` instances are outstanding.
+                let live_permit = existing.ok()?;
+                let old = self.ctx_count.fetch_add(1, Ordering::SeqCst);
+                assert!(old > 0);
+                drop(live_permit);
+                Some(AsyncCtxPermit { parent: self })
+            }
+        }
+    }
+
+    fn expire_permit(&self) {
+        let was_last = self.ctx_count.fetch_sub(1, Ordering::SeqCst) == 1;
+        if was_last {
+            // The only other place where `ctx_live` is acquired is in
+            // `acquire_permit` where there are no `await` statements after
+            // acquisition, ensuring that it will finish its manipulation of the
+            // `ctx_count` atomic prior to returning control.  With `AsyncCtx`
+            // only ever being passed to async tasks by reference, this should
+            // prevent it from being manipulated from multiple threads
+            // simultaneously, so the acquisition here should be guaranteed.
+            let live_permit = self.ctx_live.try_acquire().unwrap();
+            live_permit.forget();
+
+            // With the last of the `AsyncCtxPermit`s expired, this task can be
+            // counted as available to enter the quiesced state once again.
+            self.ctrl.quiesce_guard.add_permits(1);
+        }
     }
 
     /// Wait for this task to receive a quiesce request.  This is primarily
@@ -257,10 +362,11 @@ impl AsyncCtx {
     }
 
     /// Spawn an async task under the instance dispatcher
-    pub fn spawn_async(
-        &self,
-        task: impl FnOnce(AsyncCtx) -> BoxFuture<'static, ()>,
-    ) -> AsyncTaskId {
+    pub fn spawn_async<T, F>(&self, task: T) -> AsyncTaskId
+    where
+        T: FnOnce(AsyncCtx) -> F,
+        F: Future<Output = ()> + Send + 'static,
+    {
         let disp = Weak::upgrade(&self.shared.disp).unwrap();
         disp.spawn_async(task)
     }
@@ -277,5 +383,14 @@ impl AsyncCtx {
     pub async fn wait_exited(&self, id: AsyncTaskId) {
         let disp = Weak::upgrade(&self.shared.disp).unwrap();
         disp.wait_exited(id).await;
+    }
+}
+
+pub(crate) struct AsyncCtxPermit<'a> {
+    parent: &'a AsyncCtx,
+}
+impl Drop for AsyncCtxPermit<'_> {
+    fn drop(&mut self) {
+        self.parent.expire_permit();
     }
 }

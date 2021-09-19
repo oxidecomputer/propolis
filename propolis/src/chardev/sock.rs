@@ -73,10 +73,8 @@ impl UDSock {
         self.source_buf.attach(source.as_ref());
 
         let this = Arc::clone(self);
-        disp.spawn_async(|mut actx: AsyncCtx| {
-            Box::pin(async move {
-                let _ = this.run(sink, source, &mut actx).await;
-            })
+        disp.spawn_async(|mut actx: AsyncCtx| async move {
+            let _ = this.run(sink, source, &mut actx).await;
         });
     }
 
@@ -98,7 +96,7 @@ impl UDSock {
         &self,
         sink: Arc<dyn Sink>,
         source: Arc<dyn Source>,
-        actx: &mut AsyncCtx,
+        actx: &AsyncCtx,
     ) -> Result<()> {
         let lsock = {
             let mut inner = self.inner.lock().unwrap();
@@ -113,26 +111,17 @@ impl UDSock {
 
             let sink_buf = Arc::clone(&self.sink_buf);
             let sink_moved = Arc::clone(&sink);
-            let sink_task = actx.spawn_async(|mut actx: AsyncCtx| {
-                Box::pin(async move {
-                    let _ =
-                        Self::run_sink(sink_moved, sink_buf, readh, &mut actx)
-                            .await;
-                })
+            let sink_task = actx.spawn_async(|actx: AsyncCtx| async move {
+                let _ =
+                    Self::run_sink(sink_moved, sink_buf, readh, &actx).await;
             });
 
             let source_buf = Arc::clone(&self.source_buf);
             let source_moved = Arc::clone(&source);
-            let source_task = actx.spawn_async(|mut actx: AsyncCtx| {
-                Box::pin(async move {
-                    let _ = Self::run_source(
-                        source_moved,
-                        source_buf,
-                        writeh,
-                        &mut actx,
-                    )
-                    .await;
-                })
+            let source_task = actx.spawn_async(|actx: AsyncCtx| async move {
+                let _ =
+                    Self::run_source(source_moved, source_buf, writeh, &actx)
+                        .await;
             });
 
             tokio::select! {
@@ -152,19 +141,19 @@ impl UDSock {
         sink: Arc<dyn Sink>,
         sink_buf: Arc<pollers::SinkBuffer>,
         mut readh: OwnedReadHalf,
-        actx: &mut AsyncCtx,
+        actx: &AsyncCtx,
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let num = readh.read(&mut buf).await?;
-            sink_buf.populate(sink.as_ref(), &buf[..num], actx).await;
+            sink_buf.write(&buf[..num], sink.as_ref(), actx).await;
         }
     }
     async fn run_source(
         source: Arc<dyn Source>,
         source_buf: Arc<pollers::SourceBuffer>,
         mut writeh: OwnedWriteHalf,
-        actx: &mut AsyncCtx,
+        actx: &AsyncCtx,
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {

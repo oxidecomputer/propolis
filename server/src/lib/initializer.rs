@@ -1,10 +1,12 @@
 use anyhow::Result;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 
 use propolis::block;
-use propolis::chardev::Source;
+use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::PAGE_SIZE;
 use propolis::dispatch::Dispatcher;
 use propolis::hw::chipset::{i440fx::I440Fx, Chipset};
@@ -72,7 +74,11 @@ pub fn build_instance(
             "highmem",
         )?;
     }
-    let inst = Instance::create(builder, propolis::vcpu_run_loop)?;
+
+    // Allow propolis to use the existing tokio runtime for spawning and
+    // dispatching its tasks
+    let rt_handle = Some(Handle::current());
+    let inst = Instance::create(builder, rt_handle, propolis::vcpu_run_loop)?;
     Ok(inst)
 }
 
@@ -162,8 +168,8 @@ impl<'a> MachineInitializer<'a> {
             }
         }
 
-        let sink_size = 15;
-        let source_size = 4095;
+        let sink_size = NonZeroUsize::new(64).unwrap();
+        let source_size = NonZeroUsize::new(1024).unwrap();
         Ok(Serial::new(com1.unwrap(), sink_size, source_size))
     }
 
@@ -181,13 +187,10 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
-        let debug = std::fs::File::create("debug.out").unwrap();
-        let buffered = std::io::LineWriter::new(debug);
-        let pio = self.mctx.pio();
-        let dbg = QemuDebugPort::create(
-            Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
-            pio,
-        );
+        let dbg = QemuDebugPort::create(self.mctx.pio());
+        let debug_file = std::fs::File::create("debug.out")?;
+        let poller = chardev::BlockingFileOutput::new(debug_file)?;
+        poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>, self.disp);
         self.inv
             .register(&dbg, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;

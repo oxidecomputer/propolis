@@ -5,20 +5,17 @@ use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
-use futures::future::FusedFuture;
-use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
+use futures::future::Fuse;
+use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
+use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, watch, Mutex};
-use tokio::task::JoinHandle;
-use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{
@@ -27,6 +24,7 @@ use tokio_tungstenite::tungstenite::{
 use tokio_tungstenite::WebSocketStream;
 
 use propolis::bhyve_api;
+use propolis::dispatch::{AsyncCtx, AsyncTaskId};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
@@ -55,7 +53,7 @@ enum SerialTaskError {
 
 struct SerialTask {
     /// Handle to attached serial session
-    task: JoinHandle<Result<(), SerialTaskError>>,
+    taskid: AsyncTaskId,
     /// Oneshot channel used to detach an attached serial session
     detach_ch: oneshot::Sender<()>,
 }
@@ -80,7 +78,7 @@ struct InstanceContext {
     // The instance, which may or may not be instantiated.
     instance: Arc<Instance>,
     properties: api::InstanceProperties,
-    serial: Arc<Mutex<Serial<LpcUart>>>,
+    serial: Arc<Serial<LpcUart>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
 }
@@ -355,7 +353,7 @@ async fn instance_ensure(
     *context = Some(InstanceContext {
         instance,
         properties,
-        serial: Arc::new(Mutex::new(com1.unwrap())),
+        serial: Arc::new(com1.unwrap()),
         state_watcher: rx,
         serial_task: None,
     });
@@ -478,16 +476,35 @@ async fn instance_state_put(
 
 async fn instance_serial_task(
     mut detach: oneshot::Receiver<()>,
-    serial: Arc<Mutex<Serial<LpcUart>>>,
-    mut ws_stream: WebSocketStream<Upgraded>,
+    serial: Arc<Serial<LpcUart>>,
+    ws_stream: WebSocketStream<Upgraded>,
     log: Logger,
+    actx: &AsyncCtx,
 ) -> Result<(), SerialTaskError> {
-    let mut serial = serial.lock().await;
-    let read_ready_fut = futures::future::Fuse::terminated();
-    tokio::pin!(read_ready_fut);
+    let mut output = [0u8; 1024];
+    let mut cur_output: Option<Range<usize>> = None;
+    let mut cur_input: Option<(Vec<u8>, usize)> = None;
 
+    let (mut ws_sink, mut ws_stream) = ws_stream.split();
     loop {
-        let mut output = [0u8; 4096];
+        let (uart_read, ws_send) = match &cur_output {
+            None => (
+                serial.read_source(&mut output, actx).fuse(),
+                Fuse::terminated(),
+            ),
+            Some(r) => (
+                Fuse::terminated(),
+                ws_sink.send(Message::binary(&output[r.clone()])).fuse(),
+            ),
+        };
+        let (ws_recv, uart_write) = match &cur_input {
+            None => (ws_stream.next().fuse(), Fuse::terminated()),
+            Some((data, consumed)) => (
+                Fuse::terminated(),
+                serial.write_sink(&data[*consumed..], actx).fuse(),
+            ),
+        };
+
         tokio::select! {
             // Poll in the order written
             biased;
@@ -501,33 +518,48 @@ async fn instance_serial_task(
                     code: CloseCode::Policy,
                     reason: Cow::Borrowed("serial console was detached"),
                 };
-                ws_stream.send(Message::Close(Some(close))).await?;
+                ws_sink.send(Message::Close(Some(close))).await?;
                 break;
             }
 
-            // Go ahead and try to read from the serial port.
-            // Backpressure: The `read_ready_fut` precondition makes sure we only try to read
-            // from the serial port until either the buffer has filled completely, or
-            // (for partial reads) 10ms have elapsed. This prevents spinning on a
-            // serial console which is emitting single bytes at a time.
-            Ok(n) = serial.read(&mut output), if read_ready_fut.is_terminated() => {
-                ws_stream.send(Message::binary(&output[..n])).await?;
-
-                // Queue another read/timeout
-                read_ready_fut.set(timeout(Duration::from_millis(10), serial.read_buffer_full()).fuse());
+            // Write bytes into the UART from the WS
+            written = uart_write => {
+                match written {
+                    Some(0) | None => break,
+                    Some(n) => {
+                        let (data, consumed) = cur_input.as_mut().unwrap();
+                        *consumed += n;
+                        if *consumed == data.len() {
+                            cur_input = None;
+                        }
+                    }
+                }
             }
 
-            // Then check for any incoming data from the client
-            msg = ws_stream.next() => {
+            // Transmit bytes from the UART through the WS
+            write_success = ws_send => {
+                write_success?;
+                cur_output = None;
+            }
+
+            // Read bytes from the UART to be transmitted out the WS
+            nread = uart_read => {
+                match nread {
+                    Some(0) | None => break,
+                    Some(n) => { cur_output = Some(0..n) }
+                }
+            }
+
+            // Receive bytes from the WS to be injected into the UART
+            msg = ws_recv => {
                 match msg {
-                    Some(Ok(Message::Binary(input))) => serial.write_all(&input).await?,
+                    Some(Ok(Message::Binary(input))) => {
+                        cur_input = Some((input, 0));
+                    }
                     Some(Ok(Message::Close(..))) | None => break,
                     _ => continue,
                 }
             }
-
-            // Poll timeout/read_buffer_full future; see above comment
-            _ = &mut read_ready_fut => {}
         }
     }
     Ok(())
@@ -621,26 +653,31 @@ async fn instance_serial(
     let serial = context.serial.clone();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-    let task = tokio::spawn(
-        async move {
-            let upgraded = upgrade_fut.await?;
-            let config = WebSocketConfig {
-                max_send_queue: Some(4096),
-                ..Default::default()
-            };
-            let ws_stream = WebSocketStream::from_raw_socket(
-                upgraded,
-                Role::Server,
-                Some(config),
-            )
-            .await;
-            instance_serial_task(detach_recv, serial, ws_stream, ws_log).await
-        }
-        .inspect_err(move |err| error!(err_log, "Serial Task Failed: {}", err)),
-    );
+    let taskid = context.instance.disp.spawn_async(|actx| async move {
+        let upgraded = match upgrade_fut.await {
+            Ok(u) => u,
+            Err(e) => {
+                error!(err_log, "Serial Task Failed: {}", e);
+                return;
+            }
+        };
+        let config = WebSocketConfig {
+            max_send_queue: Some(4096),
+            ..Default::default()
+        };
+        let ws_stream = WebSocketStream::from_raw_socket(
+            upgraded,
+            Role::Server,
+            Some(config),
+        )
+        .await;
+        let _ =
+            instance_serial_task(detach_recv, serial, ws_stream, ws_log, &actx)
+                .await;
+    });
 
     // Save active serial task handle
-    context.serial_task = Some(SerialTask { task, detach_ch });
+    context.serial_task = Some(SerialTask { taskid, detach_ch });
 
     Ok(Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -686,11 +723,12 @@ async fn instance_serial_detach(
             "couldn't send detach message to serial task".to_string(),
         )
     })?;
-    let _ = serial_task.task.await.map_err(|_| {
-        HttpError::for_internal_error(
-            "failed to complete existing serial task".to_string(),
-        )
-    })?;
+    context.instance.disp.wait_exited(serial_task.taskid).await;
+    // let _ = serial_task.taskid.await.map_err(|_| {
+    //     HttpError::for_internal_error(
+    //         "failed to complete existing serial task".to_string(),
+    //     )
+    // })?;
 
     Ok(HttpResponseUpdatedNoContent {})
 }
