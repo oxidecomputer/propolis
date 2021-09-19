@@ -148,7 +148,7 @@ impl Instance {
             .name("instance-driver".to_string())
             .spawn(move || driver_hdl.drive_state())?;
 
-        this.disp.finalize(&this, vcpu_fn);
+        this.disp.finalize(&this, Some(vcpu_fn));
         let mut state = this.inner.lock().unwrap();
         state.drive_thread = Some(driver);
         drop(state);
@@ -439,6 +439,41 @@ impl Drop for Instance {
                 .unwrap();
         }
         let _joined = state.drive_thread.take().unwrap().join();
+    }
+}
+
+#[cfg(test)]
+impl Instance {
+    pub(crate) fn new_test(rt_handle: Option<Handle>) -> io::Result<Arc<Self>> {
+        let machine = Arc::new(Machine::new_test()?);
+        let disp = Dispatcher::new(&machine, rt_handle);
+
+        let this = Arc::new(Self {
+            inner: Mutex::new(Inner {
+                state_current: State::Initialize,
+                state_target: None,
+                suspend_info: None,
+                drive_thread: None,
+                machine: Some(machine),
+                inv: Inventory::new(),
+                transition_funcs: Vec::new(),
+            }),
+            cv: Condvar::new(),
+            disp,
+        });
+
+        let driver_hdl = Arc::clone(&this);
+        let driver = thread::Builder::new()
+            .name("instance-driver".to_string())
+            .spawn(move || driver_hdl.drive_state())?;
+
+        // Start with no vCPU threads for now.
+        this.disp.finalize(&this, None);
+        let mut state = this.inner.lock().unwrap();
+        state.drive_thread = Some(driver);
+        drop(state);
+
+        Ok(this)
     }
 }
 
