@@ -1,6 +1,8 @@
 use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::fmt::{Display, Formatter};
+use std::fmt::Result as FmtResult;
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -98,6 +100,11 @@ impl Bdf {
     }
     pub fn func(&self) -> u8 {
         self.inner_func
+    }
+}
+impl Display for Bdf {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{}.{}.{}", self.inner_bus, self.inner_dev, self.inner_func)
     }
 }
 
