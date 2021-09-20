@@ -102,17 +102,20 @@ impl<R: BlockReq> FileBdev<R> {
 
     /// Consume enqueued requests and process them. Signal completion when done.
     fn process_loop(&self, ctx: &mut DispCtx) {
-        let mut reqs = self.reqs.lock().unwrap();
         loop {
+            // Check for the yield state prior to acquiring the `reqs` guard.
+            // This prevents other threads from becoming stuck while attempting
+            // to enqueue a request while this thread has yielded.
             if ctx.check_yield() {
                 break;
             }
 
+            let mut reqs = self.reqs.lock().unwrap();
             if let Some(mut req) = reqs.pop_front() {
                 let result = self.process_request(&mut req, ctx);
                 req.complete(result, ctx);
             } else {
-                reqs = self.cond.wait(reqs).unwrap();
+                let _reqs = self.cond.wait(reqs).unwrap();
             }
         }
     }

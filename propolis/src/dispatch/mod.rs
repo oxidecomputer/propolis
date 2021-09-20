@@ -206,12 +206,10 @@ impl Dispatcher {
         )
     }
 
-    pub(crate) fn release_vcpus(&self) {
+    pub(crate) fn release_workers(&self) {
         let workers = self.workers.lock().unwrap();
-        for (id, worker) in workers.iter() {
-            if let Worker::Vcpu(_vcpu) = id {
-                worker.ctrl.release();
-            }
+        for (_id, worker) in workers.iter() {
+            worker.ctrl.release();
         }
     }
 
@@ -393,28 +391,14 @@ impl DispCtx {
         }
     }
 
-    fn with_inst(&self, cb: impl FnOnce(&instance::Instance)) {
+    pub fn trigger_suspend(
+        &self,
+        kind: instance::SuspendKind,
+        source: instance::SuspendSource,
+    ) {
         let guard = self.di.inst.lock().unwrap();
         let inst = Weak::upgrade(&guard.as_ref().unwrap()).unwrap();
-        cb(&inst)
-    }
-
-    /// Halts the instance asssociated with the dispatcher.
-    // TODO: not safe against repeated/concurrent invocation.
-    pub fn instance_halt(&self) {
-        // XXX: record additional metadata about halt?
-        self.with_inst(|inst| {
-            inst.set_target_state(instance::State::Halt).unwrap();
-        });
-    }
-
-    /// Resets the instance associated with the dispatcher.
-    // TODO: not safe against repeated/concurrent invocation.
-    pub fn instance_reset(&self) {
-        // XXX: record additional metadata about reset?
-        self.with_inst(|inst| {
-            inst.set_target_state(instance::State::Reset).unwrap();
-        });
+        let _ = inst.trigger_suspend(kind, source);
     }
 }
 impl Drop for DispCtx {

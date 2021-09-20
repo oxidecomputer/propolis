@@ -135,6 +135,7 @@ impl VirtioDevice for VirtioBlock {
         }
     }
 }
+impl Entity for VirtioBlock {}
 
 pub struct Request {
     op: BlockOp,

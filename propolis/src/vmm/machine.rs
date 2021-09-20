@@ -41,7 +41,6 @@ struct MapEnt {
 pub struct Machine {
     hdl: Arc<VmmHdl>,
     max_cpu: u8,
-    state_lock: Mutex<()>,
 
     _guard_space: GuardSpace,
     map_physmem: ASpace<MapEnt>,
@@ -77,10 +76,20 @@ impl Machine {
 
     /// Initialize the real-time-clock of the device.
     pub fn initialize_rtc(&self, lowmem: usize, highmem: usize) -> Result<()> {
-        let lock = self.state_lock.lock().unwrap();
         Rtc::set_time(&self.hdl)?;
         Rtc::store_memory_sizing(&self.hdl, lowmem, highmem)?;
-        drop(lock);
+        Ok(())
+    }
+
+    pub fn reinitialize(&self) -> Result<()> {
+        self.hdl.reinit(true)?;
+        // Since VM_REINIT unmaps all non-sysmem segments from the address space
+        // of the VM, we must reestablish the ROM mapping(s) now.
+        for (addr, len, ent) in self.map_physmem.iter() {
+            if let MapKind::Rom(segid, prot) = ent.kind {
+                self.hdl.map_memseg(segid, addr, len, 0, prot)?;
+            }
+        }
         Ok(())
     }
 
@@ -125,10 +134,31 @@ impl MachineCtx {
     }
 
     pub fn memctx(&self) -> MemCtx<'_> {
-        MemCtx::new(&self)
+        MemCtx::new(self)
     }
     pub fn max_cpus(&self) -> usize {
         self.vm.max_cpu as usize
+    }
+    pub fn vcpus(&self) -> Vcpus<'_> {
+        Vcpus { mctx: self, id: 0 }
+    }
+}
+
+pub struct Vcpus<'a> {
+    mctx: &'a MachineCtx,
+    id: usize,
+}
+impl Iterator for Vcpus<'_> {
+    type Item = VcpuHdl;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.id < self.mctx.max_cpus() {
+            let vcpu = self.mctx.vcpu(self.id);
+            self.id += 1;
+            Some(vcpu)
+        } else {
+            None
+        }
     }
 }
 
@@ -474,7 +504,6 @@ impl Builder {
         let machine = Machine {
             hdl: arc_hdl,
             max_cpu: self.max_cpu,
-            state_lock: Mutex::new(()),
 
             _guard_space: guard_space,
             map_physmem: map,
