@@ -211,6 +211,9 @@ impl<'a> MachineInitializer<'a> {
             Arc::clone(&plain)
                 as Arc<dyn block::BlockDev<virtio::block::Request>>,
         );
+        self.inv
+            .register(&vioblk, format!("vioblk-{}", bdf), None)
+            .map_err(|e| -> std::io::Error { e.into() })?;
         chipset.device().pci_attach(bdf, vioblk);
 
         plain.start_dispatch(
