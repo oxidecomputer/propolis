@@ -26,6 +26,7 @@ use tokio_tungstenite::tungstenite::{
 };
 use tokio_tungstenite::WebSocketStream;
 
+use propolis::bhyve_api;
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::pci;
@@ -100,9 +101,9 @@ impl Context {
 
 fn api_to_propolis_state(
     state: api::InstanceStateRequested,
-) -> propolis::instance::State {
+) -> propolis::instance::ReqState {
     use api::InstanceStateRequested as ApiState;
-    use propolis::instance::State as PropolisState;
+    use propolis::instance::ReqState as PropolisState;
 
     match state {
         ApiState::Run => PropolisState::Run,
@@ -242,7 +243,7 @@ async fn instance_ensure(
             let chipset = init.initialize_chipset()?;
             com1 = Some(init.initialize_uart(&chipset)?);
             init.initialize_ps2(&chipset)?;
-            init.initialize_qemu_debug_port(&chipset)?;
+            init.initialize_qemu_debug_port()?;
 
             // Attach devices which have been requested from the HTTP interface.
             for nic in &nics {
@@ -343,7 +344,26 @@ async fn instance_ensure(
     });
     instance.print();
 
-    instance.on_transition(Box::new(move |next_state| {
+    instance.on_transition(Box::new(move |next_state, ctx| {
+        match next_state {
+            propolis::instance::State::Boot => {
+                // Set vCPUs to their proper boot (INIT) state
+                for mut vcpu in ctx.mctx.vcpus() {
+                    vcpu.reboot_state().unwrap();
+                    vcpu.activate().unwrap();
+                    // Set BSP to start up
+                    if vcpu.is_bsp() {
+                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                        vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                            0xfff0,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            _ => {}
+        }
         println!("state cb: {:?}", next_state);
         let last = (*tx.borrow()).clone();
         let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
@@ -468,7 +488,7 @@ async fn instance_state_put(
 
     let state = api_to_propolis_state(request.into_inner());
     context.instance.set_target_state(state).map_err(|err| {
-        HttpError::for_internal_error(format!("Failed to set state: {}", err))
+        HttpError::for_internal_error(format!("Failed to set state: {:?}", err))
     })?;
 
     Ok(HttpResponseUpdatedNoContent {})

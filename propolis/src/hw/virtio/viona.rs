@@ -7,6 +7,7 @@ use crate::common::*;
 use crate::dispatch::events::{Event, EventTarget, FdEvents, Resource, Token};
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
+use crate::instance;
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 use crate::util::sys;
@@ -214,6 +215,27 @@ impl VirtioDevice for VirtioViona {
                 self.self_weak() as Weak<dyn EventTarget>,
             );
             inner.event_token = Some(token);
+        }
+    }
+}
+impl Entity for VirtioViona {
+    fn state_transition(
+        &self,
+        next: instance::State,
+        target: Option<instance::State>,
+        _ctx: &DispCtx,
+    ) {
+        if matches!(next, instance::State::Quiesce) {
+            // XXX: This is a dirty hack, but we need to stop the viona rings
+            // from running in order to reset or halt the instance.
+            assert!(matches!(
+                target,
+                Some(instance::State::Reset) | Some(instance::State::Halt)
+            ));
+            let inner = self.inner.lock().unwrap();
+            for vq in inner.queues.iter() {
+                let _ = self.hdl.ring_reset(vq.id);
+            }
         }
     }
 }

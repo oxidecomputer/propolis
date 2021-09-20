@@ -51,8 +51,8 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
         next_entry = match exit.kind {
             VmExitKind::Bogus => VmEntry::Run,
             VmExitKind::ReqIdle => {
-                // another thread came in to use this vCPU
-                // it is likely to push us out for a barrier
+                // another thread came in to use this vCPU it is likely to push
+                // us out for a barrier
                 VmEntry::Run
             }
             VmExitKind::Inout(io) => match io {
@@ -125,8 +125,34 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, ctx: &mut DispCtx) {
             VmExitKind::SvmError(detail) => {
                 panic!("SVM error: {:?}", detail);
             }
-            VmExitKind::Suspended(kind) => {
-                todo!("drive instance toward {:?} suspension", kind);
+            VmExitKind::Suspended(detail) => {
+                let (kind, source) = match detail {
+                    Suspend::TripleFault => (
+                        instance::SuspendKind::Reset,
+                        instance::SuspendSource::TripleFault(
+                            vcpu.cpuid() as i32
+                        ),
+                    ),
+                    // Attempt to trigger non-triple-fault suspensions, despite
+                    // the fact that such exits are likely due in-process
+                    // suspend operations triggered operation by a device or
+                    // external request.  This is harmless as redundant
+                    // suspension requests are ignored.
+                    Suspend::Reset => (
+                        instance::SuspendKind::Reset,
+                        instance::SuspendSource::Device("cpu"),
+                    ),
+                    Suspend::Halt => (
+                        instance::SuspendKind::Halt,
+                        instance::SuspendSource::Device("cpu"),
+                    ),
+                };
+                ctx.trigger_suspend(kind, source);
+
+                // We expect the dispatch machinery to at least cause us to
+                // yield, but we still want to attempt to run for the normal
+                // reset case.
+                VmEntry::Run
             }
             _ => panic!("unrecognized exit: {:?}", exit.kind),
         }

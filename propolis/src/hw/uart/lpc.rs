@@ -4,6 +4,7 @@ use super::base::Uart;
 use crate::chardev::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::instance;
 use crate::intr_pins::{IntrPin, LegacyPin};
 use crate::pio::{PioBus, PioDev};
 
@@ -56,6 +57,11 @@ impl LpcUart {
             0,
         )
         .unwrap();
+    }
+    fn reset(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.uart.reset();
+        state.sync_intr_pin();
     }
 }
 
@@ -144,4 +150,15 @@ impl PioDev for LpcUart {
         }
     }
 }
-impl Entity for LpcUart {}
+impl Entity for LpcUart {
+    fn state_transition(
+        &self,
+        next: instance::State,
+        _target: Option<instance::State>,
+        _ctx: &DispCtx,
+    ) {
+        if next == instance::State::Reset {
+            self.reset();
+        }
+    }
+}

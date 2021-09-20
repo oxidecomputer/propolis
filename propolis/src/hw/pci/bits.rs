@@ -6,12 +6,21 @@ pub const LEN_CFG: usize = 0x100;
 pub const LEN_CFG_STD: usize = 0x40;
 
 bitflags! {
-    #[derive(Default)]
     pub struct RegCmd: u16 {
     const IO_EN = 1 << 0;
     const MMIO_EN = 1 << 1;
     const BUSMSTR_EN = 1 << 2;
     const INTX_DIS = 1 << 10;
+    }
+}
+impl RegCmd {
+    pub fn reset(&mut self) {
+        *self = RegCmd::default()
+    }
+}
+impl Default for RegCmd {
+    fn default() -> Self {
+        RegCmd::INTX_DIS
     }
 }
 

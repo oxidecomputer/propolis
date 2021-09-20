@@ -726,6 +726,7 @@ impl pci::Device for PciNvme {
         self.state.lock().unwrap().msix_hdl = msix_hdl;
     }
 }
+impl Entity for PciNvme {}
 
 /// NVMe Controller Registers
 ///

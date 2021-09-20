@@ -6,6 +6,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
+use crate::instance;
 use crate::intr_pins::LegacyPin;
 use crate::pio::{PioBus, PioDev};
 
@@ -210,7 +211,10 @@ impl PS2Ctrl {
             PS2C_CMD_PULSE_START..=PS2C_CMD_PULSE_END => {
                 let to_pulse = v - PS2C_CMD_PULSE_START;
                 if to_pulse == 0xe {
-                    ctx.instance_reset();
+                    ctx.trigger_suspend(
+                        instance::SuspendKind::Reset,
+                        instance::SuspendSource::Device("PS/2 Controller"),
+                    );
                 }
             }
 

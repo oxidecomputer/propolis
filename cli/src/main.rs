@@ -19,7 +19,7 @@ use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
-use propolis::instance::{Instance, State};
+use propolis::instance::{Instance, ReqState, State};
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
 
@@ -137,7 +137,7 @@ fn main() {
         let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
         chipset.attach(mctx);
         let chipset_id = inv
-            .register_root(chipset.clone(), "chipset".to_string())
+            .register(&chipset, "chipset".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         // UARTs
@@ -162,19 +162,19 @@ fn main() {
         LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
         LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
         LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        inv.register(chipset_id, com1, "com1".to_string())
+        inv.register(&com1, "com1".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(chipset_id, com2, "com2".to_string())
+        inv.register(&com2, "com2".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(chipset_id, com3, "com3".to_string())
+        inv.register(&com3, "com3".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(chipset_id, com4, "com4".to_string())
+        inv.register(&com4, "com4".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         // PS/2
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.as_ref());
-        inv.register(chipset_id, ps2_ctrl, "ps2_ctrl".to_string())
+        inv.register(&ps2_ctrl, "ps2_ctrl".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         let debug = std::fs::File::create("debug.out").unwrap();
@@ -183,7 +183,7 @@ fn main() {
             Some(Box::new(buffered) as Box<dyn std::io::Write + Send>),
             pio,
         );
-        inv.register(chipset_id, dbg, "debug".to_string())
+        inv.register(&dbg, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         let mut devices = HashMap::new();
@@ -209,6 +209,8 @@ fn main() {
                         0x100,
                         Arc::clone(&block_dev),
                     );
+                    inv.register(&vioblk, format!("vioblk-{}", name), None)
+                        .map_err(|e| -> std::io::Error { e.into() })?;
                     chipset.pci_attach(bdf.unwrap(), vioblk);
 
                     block_dev
@@ -222,6 +224,8 @@ fn main() {
                         vnic_name, 0x100, &hdl,
                     )
                     .unwrap();
+                    inv.register(&viona, format!("viona-{}", name), None)
+                        .map_err(|e| -> std::io::Error { e.into() })?;
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
                 "pci-nvme" => {
@@ -286,23 +290,13 @@ fn main() {
         let fwcfg_dev = fwcfg.finalize();
         fwcfg_dev.attach(pio);
 
-        inv.register(chipset_id, fwcfg_dev, "fwcfg".to_string())
+        inv.register(&fwcfg_dev, "fwcfg".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(chipset_id, ramfb, "ramfb".to_string())
+        inv.register(&ramfb, "ramfb".to_string(), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        let ncpu = mctx.max_cpus();
-        for id in 0..ncpu {
-            let mut vcpu = machine.vcpu(id);
+        for mut vcpu in mctx.vcpus() {
             vcpu.set_default_capabs().unwrap();
-            vcpu.reboot_state().unwrap();
-            vcpu.activate().unwrap();
-            // Set BSP to start up
-            if id == 0 {
-                vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RIP, 0xfff0)
-                    .unwrap();
-            }
         }
 
         Ok(())
@@ -317,10 +311,29 @@ fn main() {
     println!("Waiting for a connection to ttya...");
     com1_sock.wait_for_connect();
 
-    inst.on_transition(Box::new(|next_state| {
+    inst.on_transition(Box::new(|next_state, ctx| {
+        match next_state {
+            State::Boot => {
+                for mut vcpu in ctx.mctx.vcpus() {
+                    vcpu.reboot_state().unwrap();
+                    vcpu.activate().unwrap();
+                    // Set BSP to start up
+                    if vcpu.is_bsp() {
+                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                        vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                            0xfff0,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            _ => {}
+        }
+
         println!("state cb: {:?}", next_state);
     }));
-    inst.set_target_state(State::Run).unwrap();
+    inst.set_target_state(ReqState::Run).unwrap();
 
     inst.wait_for_state(State::Destroy);
     drop(inst);

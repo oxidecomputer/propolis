@@ -10,8 +10,8 @@ interface presented by the bhyve kernel component, running on recent illumos
 bits is required.
 
 At a minimum, the build must include the fix for
-[13275](https://www.illumos.org/issues/13275). (Present since commit
-[2606939](https://github.com/illumos/illumos-gate/commit/2606939d92dd3044a9851b2930ebf533c3c03892))
+[14024](https://www.illumos.org/issues/14024). (Present since commit
+[52fac30](https://github.com/illumos/illumos-gate/commit/52fac30e3e977464254b44b1dfb4717fb8d2fbde))
 
 While Propolis is intended to expose a REST API to drive all of its
 functionality, a CLI binary using a static toml configuration is the basis for

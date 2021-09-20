@@ -7,6 +7,7 @@ use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
+use crate::instance;
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 
@@ -307,6 +308,7 @@ impl PciVirtio {
         }
     }
     fn queue_notify(&self, queue: u16, ctx: &DispCtx) {
+        probe_virtio_vq_notify!(|| (self as *const PciVirtio as u64, queue));
         if let Some(vq) = self.queues.get(queue as usize) {
             self.dev.queue_notify(vq, ctx);
         }
@@ -470,6 +472,20 @@ impl pci::Device for PciVirtio {
         }
         state.intr_mode_updating = false;
         self.state_cv.notify_all();
+    }
+}
+impl Entity for PciVirtio {
+    fn state_transition(
+        &self,
+        next: instance::State,
+        target: Option<instance::State>,
+        ctx: &DispCtx,
+    ) {
+        if next == instance::State::Reset {
+            let state = self.state.lock().unwrap();
+            self.device_reset(state, ctx);
+        }
+        self.dev.state_transition(next, target, ctx)
     }
 }
 
