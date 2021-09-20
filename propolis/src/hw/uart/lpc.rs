@@ -16,8 +16,8 @@ struct UartState {
     auto_discard: bool,
 }
 struct Notifiers {
-    notify_readable: Option<Notifier<DispCtx>>,
-    notify_writable: Option<Notifier<DispCtx>>,
+    notify_readable: Option<SourceNotifier>,
+    notify_writable: Option<SinkNotifier>,
 }
 
 impl UartState {
@@ -65,26 +65,26 @@ impl LpcUart {
     }
 }
 
-impl Sink<DispCtx> for LpcUart {
-    fn sink_write(&self, data: u8) -> bool {
+impl Sink for LpcUart {
+    fn write(&self, data: u8) -> bool {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_write(data);
         state.sync_intr_pin();
         res
     }
-    fn sink_set_notifier(&self, f: Notifier<DispCtx>) {
+    fn set_notifier(&self, f: SinkNotifier) {
         let mut notifiers = self.notifiers.lock().unwrap();
         notifiers.notify_writable = Some(f);
     }
 }
-impl Source<DispCtx> for LpcUart {
-    fn source_read(&self) -> Option<u8> {
+impl Source for LpcUart {
+    fn read(&self) -> Option<u8> {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_read();
         state.sync_intr_pin();
         res
     }
-    fn source_discard(&self, count: usize) -> usize {
+    fn discard(&self, count: usize) -> usize {
         let mut state = self.state.lock().unwrap();
         let mut discarded = 0;
         while discarded < count {
@@ -97,18 +97,18 @@ impl Source<DispCtx> for LpcUart {
         state.sync_intr_pin();
         discarded
     }
-    fn source_set_notifier(&self, f: Notifier<DispCtx>) {
+    fn set_notifier(&self, f: SourceNotifier) {
         let mut notifiers = self.notifiers.lock().unwrap();
         notifiers.notify_readable = Some(f);
     }
-    fn source_set_autodiscard(&self, active: bool) {
+    fn set_autodiscard(&self, active: bool) {
         let mut state = self.state.lock().unwrap();
         state.auto_discard = active;
     }
 }
 
 impl PioDev for LpcUart {
-    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, _port: u16, _ident: usize, rwo: RWOp, _ctx: &DispCtx) {
         assert!(rwo.offset() < REGISTER_LEN);
         assert!(rwo.len() != 0);
         let mut state = self.state.lock().unwrap();
@@ -139,12 +139,12 @@ impl PioDev for LpcUart {
             let notifiers = self.notifiers.lock().unwrap();
             if read_notify {
                 if let Some(cb) = notifiers.notify_readable.as_ref() {
-                    cb(ctx);
+                    cb(self as &dyn Source);
                 }
             }
             if write_notify {
                 if let Some(cb) = notifiers.notify_writable.as_ref() {
-                    cb(ctx);
+                    cb(self as &dyn Sink);
                 }
             }
         }

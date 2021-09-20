@@ -130,6 +130,11 @@ impl<T> ASpace<T> {
         };
         Range { inner: self.map.range((fixed_front, tail)) }
     }
+
+    /// Clear all items from the space
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
 }
 
 fn safe_end(start: usize, len: usize) -> Option<usize> {

@@ -14,7 +14,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use propolis::chardev::{Sink, Source};
-use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
@@ -146,16 +145,17 @@ fn main() {
         let com3 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM3).unwrap());
         let com4 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
 
-        let ctx = disp.ctx();
-        com1_sock.listen(&ctx);
-        com1_sock.attach_sink(Arc::clone(&com1) as Arc<dyn Sink<DispCtx>>);
-        com1_sock.attach_source(Arc::clone(&com1) as Arc<dyn Source<DispCtx>>);
-        com1.source_set_autodiscard(false);
+        com1_sock.attach(
+            Arc::clone(&com1) as Arc<dyn Sink>,
+            Arc::clone(&com1) as Arc<dyn Source>,
+        );
+        com1_sock.spawn(disp);
+        com1.set_autodiscard(false);
 
         // XXX: plumb up com2-4, but until then, just auto-discard
-        com2.source_set_autodiscard(true);
-        com3.source_set_autodiscard(true);
-        com4.source_set_autodiscard(true);
+        com2.set_autodiscard(true);
+        com3.set_autodiscard(true);
+        com4.set_autodiscard(true);
 
         let pio = mctx.pio();
         LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
@@ -274,7 +274,7 @@ fn main() {
 
         // with all pci devices attached, place their BARs and wire up access to PCI
         // configuration space
-        chipset.pci_finalize(&ctx);
+        chipset.pci_finalize(mctx);
 
         let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
         fwcfg

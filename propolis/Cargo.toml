@@ -19,6 +19,8 @@ bhyve_api = { path = "../bhyve-api" }
 dladm = { path = "../dladm" }
 viona_api = { path = "../viona-api" }
 usdt = "0.1.11"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3.2"

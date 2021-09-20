@@ -13,6 +13,7 @@ use std::io::{Error, ErrorKind, Result, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::util::sys::ioctl;
 
@@ -74,7 +75,11 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
     // Safety: Files opened within VMM_PATH_PREFIX are VMMs, which may not be
     // truncated.
     let inner = unsafe { VmmFile::new(fp) };
-    Ok(VmmHdl { inner, name: name.to_string() })
+    Ok(VmmHdl {
+        inner,
+        destroyed: AtomicBool::new(false),
+        name: name.to_string(),
+    })
 }
 #[cfg(not(target_os = "illumos"))]
 fn create_vm_impl(_name: &str, _force: bool) -> Result<VmmHdl> {
@@ -140,6 +145,7 @@ impl VmmFile {
 /// A handle to an existing virtual machine monitor.
 pub struct VmmHdl {
     inner: VmmFile,
+    destroyed: AtomicBool,
     name: String,
 }
 impl VmmHdl {
@@ -149,6 +155,9 @@ impl VmmHdl {
     }
     /// Sends an ioctl to the underlying VMM.
     pub fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<()> {
+        if self.destroyed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorKind::NotFound, "instance destroyed"));
+        }
         ioctl(self.fd(), cmd, data)?;
         Ok(())
     }
@@ -358,6 +367,10 @@ impl VmmHdl {
     /// Destroys the VMM.
     // TODO: Should this take "mut self", to consume the object?
     pub fn destroy(&self) -> Result<()> {
-        destroy_vm(&self.name)
+        if self.destroyed.swap(true, Ordering::SeqCst) {
+            Err(Error::new(ErrorKind::NotFound, "already destroyed"))
+        } else {
+            destroy_vm(&self.name)
+        }
     }
 }

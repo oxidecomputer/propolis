@@ -1,11 +1,10 @@
 use std::fs::{File, OpenOptions};
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
-use crate::dispatch::events::{Event, EventTarget, FdEvents, Resource, Token};
-use crate::dispatch::DispCtx;
+use crate::dispatch::{AsyncCtx, AsyncTaskId, DispCtx};
 use crate::hw::pci;
 use crate::instance;
 use crate::util::regmap::RegMap;
@@ -19,16 +18,18 @@ use super::queue::VirtQueue;
 use super::{VirtioDevice, VqChange, VqIntr};
 
 use lazy_static::lazy_static;
+use tokio::io::unix::AsyncFd;
+use tokio::io::Interest;
 
 const ETHERADDRL: usize = 6;
 
 struct Inner {
     queues: Vec<Arc<VirtQueue>>,
-    event_token: Option<Token>,
+    poller: Option<(Arc<VionaPoller>, AsyncTaskId)>,
 }
 impl Inner {
     fn new() -> Self {
-        Self { queues: Vec::new(), event_token: None }
+        Self { queues: Vec::new(), poller: None }
     }
 }
 
@@ -205,47 +206,40 @@ impl VirtioDevice for VirtioViona {
             inner.queues.push(Arc::clone(vq));
         }
     }
-
-    fn device_reset(&self, ctx: &DispCtx) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.event_token.as_ref().is_none() {
-            let token = ctx.event.fd_register(
-                self.hdl.fd(),
-                FdEvents::POLLRDBAND,
-                self.self_weak() as Weak<dyn EventTarget>,
-            );
-            inner.event_token = Some(token);
-        }
-    }
 }
 impl Entity for VirtioViona {
     fn state_transition(
         &self,
         next: instance::State,
         target: Option<instance::State>,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) {
-        if matches!(next, instance::State::Quiesce) {
-            // XXX: This is a dirty hack, but we need to stop the viona rings
-            // from running in order to reset or halt the instance.
-            assert!(matches!(
-                target,
-                Some(instance::State::Reset) | Some(instance::State::Halt)
-            ));
-            let inner = self.inner.lock().unwrap();
-            for vq in inner.queues.iter() {
-                let _ = self.hdl.ring_reset(vq.id);
+        match next {
+            instance::State::Quiesce => {
+                // XXX: This is a dirty hack, but we need to stop the viona
+                // rings from running in order to reset or halt the instance.
+                assert!(matches!(
+                    target,
+                    Some(instance::State::Reset) | Some(instance::State::Halt)
+                ));
+                let mut inner = self.inner.lock().unwrap();
+                let (poller, task) = inner.poller.take().unwrap();
+                ctx.cancel_async(task);
+                drop(poller);
+                for vq in inner.queues.iter() {
+                    let _ = self.hdl.ring_reset(vq.id);
+                }
             }
-        }
-    }
-}
-impl EventTarget for VirtioViona {
-    fn event_process(&self, event: &Event, ctx: &DispCtx) {
-        match event.res {
-            Resource::Fd(fd, _) => {
-                assert_eq!(fd, self.hdl.fd());
-                self.process_interrupts(ctx);
+            instance::State::Boot => {
+                // Get interrupt notification for the rings setup
+                let (poller, task) =
+                    VionaPoller::spawn(self.hdl.fd(), self.self_weak(), ctx)
+                        .unwrap();
+                let mut inner = self.inner.lock().unwrap();
+                assert!(inner.poller.is_none());
+                inner.poller = Some((poller, task));
             }
+            _ => {}
         }
     }
 }
@@ -365,6 +359,104 @@ impl VionaHdl {
             idx as usize,
         )?;
         Ok(())
+    }
+}
+
+// This is an ugly hack to work around tokio's inability to poll for event
+// readiness on states other than POLLIN/POLLOUT, since viona communicates
+// changes to in-kernel ring interrupt state with POLLRDBAND.  In the short
+// term, we can translate that to POLLIN using nested epoll.  The viona fd is
+// added to an epoll handle, subscribing to EPOLLRDBAND.  When that condition is
+// met for the device, epoll will generate an event, making the epoll fd itself
+// readable.  We can subscribe to that using the normal tokio event system.
+//
+// In the long term, viona should probably move to something like eventfd to
+// make polling on those ring interrupt events more accessible.
+struct VionaPoller {
+    epfd: RawFd,
+    dev: Weak<VirtioViona>,
+}
+impl VionaPoller {
+    fn spawn(
+        viona_fd: RawFd,
+        dev: Weak<VirtioViona>,
+        ctx: &DispCtx,
+    ) -> Result<(Arc<Self>, AsyncTaskId)> {
+        let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) } as RawFd;
+        if epfd == -1 {
+            return Err(Error::last_os_error());
+        }
+        let mut event =
+            libc::epoll_event { events: libc::EPOLLRDBAND as u32, u64: 0 };
+        let res = unsafe {
+            libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, viona_fd, &mut event)
+        };
+        if res == -1 {
+            return Err(Error::last_os_error());
+        }
+        let this = Arc::new(Self { epfd, dev });
+        let for_spawn = Arc::clone(&this);
+        let task = ctx.spawn_async(move |mut actx| {
+            Box::pin(async move {
+                let _ = for_spawn.poll_interrupts(&mut actx).await;
+            })
+        });
+
+        Ok((this, task))
+    }
+    fn event_present(&self) -> Result<bool> {
+        let max_events = 1;
+        let mut event = libc::epoll_event { events: 0, u64: 0 };
+        let res =
+            unsafe { libc::epoll_wait(self.epfd, &mut event, max_events, 0) };
+        match res {
+            -1 => {
+                let err = Error::last_os_error();
+                if matches!(err.kind(), ErrorKind::Interrupted) {
+                    Ok(false)
+                } else {
+                    Err(err)
+                }
+            }
+            0 => Ok(false),
+            x if x == max_events => Ok(true),
+            x => {
+                panic!("unexpected {} events", x);
+            }
+        }
+    }
+    async fn poll_interrupts(&self, actx: &mut AsyncCtx) {
+        let afd =
+            AsyncFd::with_interest(self.epfd, Interest::READABLE).unwrap();
+        loop {
+            let readable = afd.readable().await;
+            if readable.is_err() {
+                return;
+            }
+            match self.event_present() {
+                Ok(false) => {
+                    continue;
+                }
+                Ok(true) => {}
+                Err(_) => {
+                    return;
+                }
+            };
+
+            if let Some(ctx) = actx.dispctx().await {
+                let dev = Weak::upgrade(&self.dev).unwrap();
+                dev.process_interrupts(&ctx);
+            } else {
+                return;
+            }
+        }
+    }
+}
+impl Drop for VionaPoller {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.epfd);
+        }
     }
 }
 

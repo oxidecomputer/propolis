@@ -3,7 +3,7 @@
 use std::io::Result;
 use std::sync::Arc;
 
-use crate::dispatch::DispCtx;
+use crate::dispatch::SyncCtx;
 use crate::exits::{VmEntry, VmExit};
 use crate::vmm::VmmHdl;
 
@@ -137,4 +137,4 @@ impl VcpuHdl {
 
 /// Alias for a function acting on a virtualized CPU within a dispatcher
 /// callback.
-pub type VcpuRunFunc = fn(VcpuHdl, &mut DispCtx);
+pub type VcpuRunFunc = fn(VcpuHdl, &mut SyncCtx);

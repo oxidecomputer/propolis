@@ -114,9 +114,9 @@ impl Chipset for I440Fx {
         let mut bus = self.pci_bus.lock().unwrap();
         bus.attach(bdf.dev(), bdf.func(), dev);
     }
-    fn pci_finalize(&self, ctx: &DispCtx) {
+    fn pci_finalize(&self, mctx: &MachineCtx) {
         let cfg_pio = self.self_weak() as Weak<dyn PioDev>;
-        let pio = ctx.mctx.pio();
+        let pio = mctx.pio();
         let cfg_pio2 = Weak::clone(&cfg_pio);
         pio.register(pci::PORT_PCI_CONFIG_ADDR, 4, cfg_pio, 0).unwrap();
         pio.register(pci::PORT_PCI_CONFIG_DATA, 4, cfg_pio2, 0).unwrap();

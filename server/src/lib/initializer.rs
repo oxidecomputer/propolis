@@ -6,7 +6,7 @@ use std::sync::Arc;
 use propolis::block;
 use propolis::chardev::Source;
 use propolis::common::PAGE_SIZE;
-use propolis::dispatch::{DispCtx, Dispatcher};
+use propolis::dispatch::Dispatcher;
 use propolis::hw::chipset::{i440fx::I440Fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
@@ -140,7 +140,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_uart(
         &self,
         chipset: &RegisteredChipset,
-    ) -> Result<Serial<DispCtx, LpcUart>, Error> {
+    ) -> Result<Serial<LpcUart>, Error> {
         let cid = Some(chipset.id());
         let uarts = vec![
             (ibmpc::IRQ_COM1, ibmpc::PORT_COM1, "com1"),
@@ -152,7 +152,7 @@ impl<'a> MachineInitializer<'a> {
         let mut com1 = None;
         for (irq, port, name) in uarts.iter() {
             let dev = LpcUart::new(chipset.device().irq_pin(*irq).unwrap());
-            dev.source_set_autodiscard(true);
+            dev.set_autodiscard(true);
             LpcUart::attach(&dev, pio, *port);
             self.inv
                 .register(&dev, name.to_string(), cid)

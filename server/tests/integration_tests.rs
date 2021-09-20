@@ -91,7 +91,10 @@ mod illumos_integration_tests {
     use super::*;
     use anyhow::{bail, Result};
     use propolis_client::api::{InstanceState, InstanceStateRequested};
+    use propolis_client::{Client, Error as ClientError};
+    use slog::o;
     use std::str::FromStr;
+    use uuid::Uuid;
 
     // Create a new instance.
     //

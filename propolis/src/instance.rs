@@ -104,7 +104,7 @@ struct Inner {
     state_target: Option<State>,
     suspend_info: Option<(SuspendKind, SuspendSource)>,
     drive_thread: Option<JoinHandle<()>>,
-    machine: Arc<Machine>,
+    machine: Option<Arc<Machine>>,
     inv: Inventory,
     transition_funcs: Vec<Box<TransitionFunc>>,
 }
@@ -113,7 +113,7 @@ struct Inner {
 pub struct Instance {
     inner: Mutex<Inner>,
     cv: Condvar,
-    disp: Dispatcher,
+    disp: Arc<Dispatcher>,
 }
 impl Instance {
     /// Creates a new virtual machine, absorbing the supplied `builder`.
@@ -124,15 +124,15 @@ impl Instance {
         vcpu_fn: VcpuRunFunc,
     ) -> io::Result<Arc<Self>> {
         let machine = Arc::new(builder.finalize()?);
+        let disp = Dispatcher::new(&machine);
 
-        let mut disp = Dispatcher::create(&machine, vcpu_fn)?;
         let this = Arc::new(Self {
             inner: Mutex::new(Inner {
                 state_current: State::Initialize,
                 state_target: None,
                 suspend_info: None,
                 drive_thread: None,
-                machine,
+                machine: Some(machine),
                 inv: Inventory::new(),
                 transition_funcs: Vec::new(),
             }),
@@ -145,10 +145,10 @@ impl Instance {
             .name("instance-driver".to_string())
             .spawn(move || driver_hdl.drive_state())?;
 
+        this.disp.finalize(&this, vcpu_fn);
         let mut state = this.inner.lock().unwrap();
         state.drive_thread = Some(driver);
         drop(state);
-        this.disp.assoc_instance(Arc::downgrade(&this));
 
         Ok(this)
     }
@@ -170,8 +170,9 @@ impl Instance {
     {
         let state = self.inner.lock().unwrap();
         assert_eq!(state.state_current, State::Initialize);
-        let mctx = MachineCtx::new(&state.machine);
-        func(&state.machine, &mctx, &self.disp, &state.inv)
+        let machine = state.machine.as_ref().unwrap();
+        let mctx = MachineCtx::new(machine);
+        func(machine, &mctx, &self.disp, &state.inv)
     }
 
     /// Returns the state of the instance.
@@ -248,7 +249,7 @@ impl Instance {
                     _ => {}
                 }
 
-                let hdl = inner.machine.get_hdl();
+                let hdl = inner.machine.as_ref().unwrap().get_hdl();
                 let _ =
                     hdl.suspend(bhyve_api::vm_suspend_how::VM_SUSPEND_RESET);
                 inner.suspend_info = Some((kind, source));
@@ -259,7 +260,7 @@ impl Instance {
                     return Ok(());
                 }
                 if inner.suspend_info.is_none() {
-                    let hdl = inner.machine.get_hdl();
+                    let hdl = inner.machine.as_ref().unwrap().get_hdl();
                     let _ = hdl.suspend(
                         bhyve_api::vm_suspend_how::VM_SUSPEND_POWEROFF,
                     );
@@ -308,15 +309,16 @@ impl Instance {
         state: State,
         target: Option<State>,
     ) {
-        // Allow any entity to act on the new state
-        let ctx = self.disp.ctx();
-        inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
-            rec.entity().state_transition(state, target, &ctx);
-        });
+        self.disp.with_ctx(|ctx| {
+            // Allow any entity to act on the new state
+            inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
+                rec.entity().state_transition(state, target, ctx);
+            });
 
-        for f in inner.transition_funcs.iter() {
-            f(state, &ctx)
-        }
+            for f in inner.transition_funcs.iter() {
+                f(state, ctx)
+            }
+        });
     }
 
     fn drive_state(&self) {
@@ -356,18 +358,18 @@ impl Instance {
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.
                     drop(inner);
-                    self.disp.quiesce_workers();
+                    self.disp.quiesce();
                     inner = self.inner.lock().unwrap();
                 }
                 State::Destroy => {
                     // Like quiesce, worker destruction should not be done with
                     // `inner` lock held.
                     drop(inner);
-                    self.disp.destroy_workers();
+                    self.disp.shutdown();
                     inner = self.inner.lock().unwrap();
                 }
                 State::Reset => {
-                    inner.machine.reinitialize().unwrap();
+                    inner.machine.as_ref().unwrap().reinitialize().unwrap();
                 }
                 State::Run => {
                     // Upon entry to the Run state, details about any previous
@@ -389,12 +391,10 @@ impl Instance {
                     }
 
                     if matches!(inner.state_target, None | Some(State::Run)) {
-                        self.disp.release_workers();
+                        self.disp.release();
                     }
                 }
-                State::Destroy => {
-                    inner.machine.get_hdl().destroy().unwrap();
-                }
+                State::Destroy => {}
                 _ => {}
             }
 
@@ -408,6 +408,11 @@ impl Instance {
 
             next_state = state.next_transition(inner.state_target);
         }
+
+        // Explicitly drop the instance-held reference to the Machine.  If all
+        // the worker tasks (sync or async) are complete, this should be the
+        // last holder and result in its destruction.
+        let _ = inner.machine.take();
     }
 
     pub fn print(&self) {
