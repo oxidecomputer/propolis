@@ -25,6 +25,7 @@ use tokio_tungstenite::tungstenite::{
     self, handshake, protocol::Role, Message,
 };
 use tokio_tungstenite::WebSocketStream;
+use uuid::Uuid;
 
 use propolis::dispatch::DispCtx;
 use propolis::hw::chipset::Chipset;
@@ -363,6 +364,32 @@ async fn instance_ensure(
 
 #[endpoint {
     method = GET,
+    path = "/instances/{instance_id}/uuid",
+    unpublished = true,
+}]
+async fn instance_get_uuid(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstanceNameParams>,
+) -> Result<HttpResponseOk<Uuid>, HttpError> {
+    let context = rqctx.context().context.lock().await;
+
+    let context = context.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+
+    if path_params.into_inner().instance_id != context.properties.name {
+        return Err(HttpError::for_internal_error(
+            "Instance name mismatch (path did not match struct)".to_string(),
+        ));
+    }
+
+    Ok(HttpResponseOk(context.properties.id))
+}
+
+#[endpoint {
+    method = GET,
     path = "/instances/{instance_id}",
 }]
 async fn instance_get(
@@ -697,6 +724,7 @@ async fn instance_serial_detach(
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
+    api.register(instance_get_uuid).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();

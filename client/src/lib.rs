@@ -126,6 +126,12 @@ impl Client {
         self.get(path, None).await
     }
 
+    /// Gets instance UUID, by name.
+    pub async fn instance_get_uuid(&self, name: &str) -> Result<Uuid, Error> {
+        let path = format!("http://{}/instances/{}/uuid", self.address, name);
+        self.get(path, None).await
+    }
+
     /// Long-poll for state changes.
     pub async fn instance_state_monitor(
         &self,

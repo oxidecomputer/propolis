@@ -5,6 +5,7 @@ members = [
   "cli",
   "client",
   "server",
+  "server-cli",
 ]
 
 [profile.dev]
