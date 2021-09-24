@@ -1,5 +1,5 @@
 [package]
-name = "propolis-cli"
+name = "propolis-standalone"
 version = "0.1.0"
 authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"

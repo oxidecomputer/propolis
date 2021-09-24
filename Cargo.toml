@@ -2,10 +2,10 @@
 
 members = [
   "propolis",
-  "cli",
   "client",
   "server",
   "server-cli",
+  "standalone",
 ]
 
 [profile.dev]
