@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    name = "propolis-server-cli",
+    name = "propolis-cli",
     about = "A simple CLI tool to manipulate propolis-server"
 )]
 struct Opt {
