@@ -1,8 +1,8 @@
+use std::fmt::Result as FmtResult;
+use std::fmt::{Display, Formatter};
 use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::fmt::{Display, Formatter};
-use std::fmt::Result as FmtResult;
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
