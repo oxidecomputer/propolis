@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceNameParams {
+    pub instance_id: String,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstancePathParams {
     pub instance_id: Uuid,
 }
@@ -44,7 +49,7 @@ pub struct InstanceStateChange {
     pub state: InstanceStateRequested,
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema)]
 pub enum InstanceStateRequested {
     Run,
     Stop,
@@ -84,7 +89,7 @@ pub struct InstanceProperties {
     pub vcpus: u8,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct Instance {
     pub properties: InstanceProperties,
     pub state: InstanceState,
@@ -162,7 +167,7 @@ pub struct DiskAttachmentInfo {
     pub slot: u16,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub enum DiskAttachmentState {
     Attached(Uuid),
     Detached,
@@ -170,7 +175,7 @@ pub enum DiskAttachmentState {
     Faulted,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DiskAttachment {
     pub generation_id: u64,
     pub disk_id: Uuid,
