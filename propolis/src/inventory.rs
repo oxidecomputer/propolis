@@ -78,7 +78,32 @@ impl Inventory {
         parent_id: Option<EntityID>,
     ) -> Result<EntityID, RegistrationError> {
         let mut inv = self.inner.lock().unwrap();
-        inv.register(ent, name, parent_id)
+        let to_register = ent.child_register();
+        let res = inv.register(ent, name, parent_id)?;
+
+        if let Some(children) = to_register {
+            for child in children {
+                // Since the parent successfully registered, the children should
+                // have no issues.
+                inv.register_inner(
+                    child.ent,
+                    child.ent_any,
+                    child.name,
+                    Some(res),
+                )
+                .unwrap();
+            }
+        }
+        Ok(res)
+    }
+
+    pub fn register_child(
+        &self,
+        reg: ChildRegister,
+        parent_id: EntityID,
+    ) -> Result<EntityID, RegistrationError> {
+        let mut inv = self.inner.lock().unwrap();
+        inv.register_inner(reg.ent, reg.ent_any, reg.name, Some(parent_id))
     }
 
     /// Access the concrete type of an entity by ID.
@@ -404,6 +429,25 @@ pub trait Entity: Send + Sync + 'static {
         target: Option<State>,
         ctx: &DispCtx,
     ) {
+    }
+    #[allow(unused_variables)]
+    fn child_register(&self) -> Option<Vec<ChildRegister>> {
+        None
+    }
+}
+
+pub struct ChildRegister {
+    ent: Arc<dyn Entity>,
+    ent_any: Arc<dyn Any + Send + Sync + 'static>,
+    name: String,
+}
+impl ChildRegister {
+    pub fn new<T: Entity>(ent: &Arc<T>, name: String) -> Self {
+        Self {
+            ent: Arc::clone(ent) as Arc<dyn Entity>,
+            ent_any: Arc::clone(ent) as Arc<dyn Any + Send + Sync + 'static>,
+            name,
+        }
     }
 }
 

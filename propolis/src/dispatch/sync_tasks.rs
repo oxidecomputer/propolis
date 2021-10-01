@@ -350,6 +350,14 @@ impl WorkerCtrl {
         }
     }
 
+    fn pending_reqs(&self) -> bool {
+        if self.active_req.load(Ordering::Acquire) {
+            let inner = self.inner.lock().unwrap();
+            return inner.req_hold || inner.req_exit;
+        }
+        false
+    }
+
     fn wait_until_held(&self) {
         let inner = self.inner.lock().unwrap();
         assert!(inner.req_hold);
@@ -376,13 +384,18 @@ impl SyncCtx {
     }
     /// Returns true if the function holding this [`DispCtx`] object
     /// should yield control back to the dispatcher.
+    ///
+    /// If this thread has been requested to yield, this will block until the
+    /// yield condition passes.
     pub fn check_yield(&mut self) -> bool {
-        if let Some(ctrl) = self.ctrl.as_ref() {
-            ctrl.check_yield()
-        } else {
-            false
-        }
+        self.ctrl.as_ref().map_or(false, |c| c.check_yield())
     }
+
+    /// Are there pending requests for this thread to yield or exit?
+    pub fn pending_reqs(&self) -> bool {
+        self.ctrl.as_ref().map_or(false, |c| c.pending_reqs())
+    }
+
     pub fn dispctx(&mut self) -> DispCtx {
         DispCtx {
             mctx: &self.shared.mctx,

@@ -7,7 +7,6 @@ extern crate serde;
 extern crate serde_derive;
 extern crate toml;
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
@@ -185,7 +184,7 @@ fn main() {
         inv.register(&debug_device, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        let mut devices = HashMap::new();
+        // let mut devices = HashMap::new();
 
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
@@ -201,19 +200,23 @@ fn main() {
                     let block_dev =
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let block_dev = config
-                        .block_dev::<hw::virtio::block::Request>(block_dev);
+                    let (backend, creg) = config.block_dev(block_dev);
 
-                    let vioblk = hw::virtio::VirtioBlock::create(
-                        0x100,
-                        Arc::clone(&block_dev),
-                    );
-                    inv.register(&vioblk, format!("vioblk-{}", name), None)
+                    let info = backend.info();
+                    let vioblk = hw::virtio::VirtioBlock::create(0x100, info);
+                    let id = inv
+                        .register(&vioblk, format!("vioblk-{}", name), None)
                         .map_err(|e| -> std::io::Error { e.into() })?;
-                    chipset.pci_attach(bdf.unwrap(), vioblk);
+                    let _be_id = inv
+                        .register_child(creg, id)
+                        .map_err(|e| -> std::io::Error { e.into() })?;
 
-                    block_dev
-                        .start_dispatch(format!("bdev-{} thread", name), disp);
+                    let blk = vioblk
+                        .inner_dev::<hw::virtio::pci::PciVirtio>()
+                        .inner_dev::<hw::virtio::block::VirtioBlock>();
+                    backend.attach(blk as Arc<dyn block::Device>, disp);
+
+                    chipset.pci_attach(bdf.unwrap(), vioblk);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
@@ -227,43 +230,43 @@ fn main() {
                         .map_err(|e| -> std::io::Error { e.into() })?;
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
-                "pci-nvme" => {
-                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000);
-                    devices.insert(&**name, nvme.clone());
-                    chipset.pci_attach(bdf.unwrap(), nvme);
-                }
-                "nvme-ns" => {
-                    let nvme_ctrl = dev
-                        .options
-                        .get("controller")
-                        .unwrap()
-                        .as_str()
-                        .unwrap();
+                // "pci-nvme" => {
+                //     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000);
+                //     devices.insert(&**name, nvme.clone());
+                //     chipset.pci_attach(bdf.unwrap(), nvme);
+                // }
+                // "nvme-ns" => {
+                //     let nvme_ctrl = dev
+                //         .options
+                //         .get("controller")
+                //         .unwrap()
+                //         .as_str()
+                //         .unwrap();
 
-                    let nvme = devices.get(nvme_ctrl).unwrap_or_else(|| {
-                        panic!("no such nvme controller: {}", nvme_ctrl)
-                    });
+                //     let nvme = devices.get(nvme_ctrl).unwrap_or_else(|| {
+                //         panic!("no such nvme controller: {}", nvme_ctrl)
+                //     });
 
-                    let block_dev =
-                        dev.options.get("block_dev").unwrap().as_str().unwrap();
+                //     let block_dev =
+                //         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let block_dev =
-                        config.block_dev::<hw::nvme::Request>(block_dev);
+                //     let block_dev =
+                //         config.block_dev::<hw::nvme::Request>(block_dev);
 
-                    let ns = hw::nvme::NvmeNs::create(block_dev.clone());
+                //     let ns = hw::nvme::NvmeNs::create(block_dev.clone());
 
-                    if let Err(e) =
-                        nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
-                            nvme.add_ns(ns)
-                        })
-                    {
-                        eprintln!("failed to attach nvme-ns: {}", e);
-                        std::process::exit(libc::EXIT_FAILURE);
-                    }
+                //     if let Err(e) =
+                //         nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
+                //             nvme.add_ns(ns)
+                //         })
+                //     {
+                //         eprintln!("failed to attach nvme-ns: {}", e);
+                //         std::process::exit(libc::EXIT_FAILURE);
+                //     }
 
-                    block_dev
-                        .start_dispatch(format!("bdev-{} thread", name), disp);
-                }
+                //     block_dev
+                //         .start_dispatch(format!("bdev-{} thread", name), disp);
+                // }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);
                     std::process::exit(libc::EXIT_FAILURE);

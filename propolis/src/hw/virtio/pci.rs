@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
@@ -87,30 +88,23 @@ pub struct PciVirtio {
 
     state: Mutex<VirtioState>,
     state_cv: Condvar,
-    queue_size: u16,
-    queues: Vec<Arc<VirtQueue>>,
 
     sa_cell: SelfArcCell<Self>,
 
     dev: Arc<dyn VirtioDevice>,
+    dev_any: Arc<dyn Any + Send + Sync + 'static>,
 }
 impl PciVirtio {
-    pub fn create(
-        queue_size: u16,
-        num_queues: u16,
+    pub(super) fn create<D>(
         msix_count: Option<u16>,
         dev_id: u16,
         dev_class: u8,
         cfg_sz: usize,
-        inner: Arc<dyn VirtioDevice>,
-    ) -> Arc<pci::DeviceInst> {
-        assert!(queue_size > 1 && queue_size.is_power_of_two());
-
-        let mut queues = Vec::new();
-        for id in 0..num_queues {
-            queues.push(Arc::new(VirtQueue::new(id, queue_size)));
-        }
-
+        inner: Arc<D>,
+    ) -> Arc<pci::DeviceInst>
+    where
+        D: VirtioDevice + Send + Sync + 'static,
+    {
         let layout = [
             (VirtioTop::LegacyConfig, LEGACY_REG_SZ),
             (VirtioTop::DeviceConfig, cfg_sz),
@@ -120,6 +114,8 @@ impl PciVirtio {
             (VirtioTop::DeviceConfig, cfg_sz),
         ];
 
+        let dev_any =
+            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
         let mut this = Arc::new(Self {
             map: RegMap::create_packed_passthru(
                 cfg_sz + LEGACY_REG_SZ,
@@ -131,18 +127,17 @@ impl PciVirtio {
             ),
             map_which: AtomicBool::new(false),
 
-            state: Mutex::new(VirtioState::new(num_queues)),
+            state: Mutex::new(VirtioState::new(inner.queues().count().get())),
             state_cv: Condvar::new(),
-            queue_size,
-            queues,
 
             dev: inner,
+            dev_any,
 
             sa_cell: SelfArcCell::new(),
         });
         SelfArc::self_arc_init(&mut this);
 
-        for queue in this.queues.iter() {
+        for queue in this.dev.queues()[..].iter() {
             queue.set_interrupt(IsrIntr::new(this.self_weak()));
         }
 
@@ -175,7 +170,7 @@ impl PciVirtio {
             }
             LegacyReg::QueuePfn => {
                 let state = self.state.lock().unwrap();
-                if let Some(queue) = self.queues.get(state.queue_sel as usize) {
+                if let Some(queue) = self.vq(state.queue_sel) {
                     let addr = queue.ctrl.lock().unwrap().gpa_desc.0;
                     ro.write_u32((addr >> PAGE_SHIFT) as u32);
                 } else {
@@ -184,7 +179,7 @@ impl PciVirtio {
                 }
             }
             LegacyReg::QueueSize => {
-                ro.write_u16(self.queue_size);
+                ro.write_u16(self.dev.queues().queue_size().get());
             }
             LegacyReg::QueueSelect => {
                 let state = self.state.lock().unwrap();
@@ -233,7 +228,7 @@ impl PciVirtio {
                 let mut state = self.state.lock().unwrap();
                 let mut success = false;
                 let pfn = wo.read_u32();
-                if let Some(queue) = self.queues.get(state.queue_sel as usize) {
+                if let Some(queue) = self.vq(state.queue_sel) {
                     success = queue.map_legacy((pfn as u64) << PAGE_SHIFT);
                     self.queue_change(queue, VqChange::Address, ctx);
                 }
@@ -259,7 +254,7 @@ impl PciVirtio {
             LegacyReg::MsixVectorQueue => {
                 let mut state = self.state.lock().unwrap();
                 let sel = state.queue_sel as usize;
-                if let Some(queue) = self.queues.get(sel) {
+                if let Some(queue) = self.vq(state.queue_sel) {
                     let val = wo.read_u16();
 
                     if state.intr_mode != IntrMode::Msi {
@@ -309,7 +304,7 @@ impl PciVirtio {
     }
     fn queue_notify(&self, queue: u16, ctx: &DispCtx) {
         probe_virtio_vq_notify!(|| (self as *const PciVirtio as u64, queue));
-        if let Some(vq) = self.queues.get(queue as usize) {
+        if let Some(vq) = self.vq(queue) {
             self.dev.queue_notify(vq, ctx);
         }
     }
@@ -322,7 +317,7 @@ impl PciVirtio {
         self.dev.queue_change(vq, change, ctx);
     }
     fn device_reset(&self, mut state: MutexGuard<VirtioState>, ctx: &DispCtx) {
-        for queue in self.queues.iter() {
+        for queue in self.dev.queues()[..].iter() {
             queue.reset();
             self.queue_change(queue, VqChange::Reset, ctx);
         }
@@ -362,7 +357,7 @@ impl PciVirtio {
                 // To avoid deadlock, the state lock must be dropped while
                 // updating the interrupts handlers on queues.
                 drop(state);
-                for queue in self.queues.iter() {
+                for queue in self.dev.queues()[..].iter() {
                     queue.set_interrupt(IsrIntr::new(self.self_weak()));
                 }
                 state = self.state.lock().unwrap();
@@ -380,7 +375,7 @@ impl PciVirtio {
                 }
             }
             IntrMode::Msi => {
-                for (idx, queue) in self.queues.iter().enumerate() {
+                for (idx, queue) in self.dev.queues()[..].iter().enumerate() {
                     let vec = *state.msix_queue_vec.get(idx).unwrap();
                     let hdl = state.msix_hdl.as_ref().unwrap().clone();
 
@@ -395,6 +390,18 @@ impl PciVirtio {
         }
         state.intr_mode_updating = false;
         self.state_cv.notify_all();
+    }
+
+    fn vq(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
+        self.dev.queues().get(qid)
+    }
+
+    /// Get access to the inner device emulation.
+    ///
+    /// This will panic if the provided type does not match.
+    pub fn inner_dev<T: Send + Sync + 'static>(&self) -> Arc<T> {
+        let inner = Arc::clone(&self.dev_any);
+        Arc::downcast(inner).unwrap()
     }
 }
 
@@ -429,7 +436,6 @@ impl pci::Device for PciVirtio {
         let mut state = self.state.lock().unwrap();
         state.lintr_pin = lintr_pin;
         state.msix_hdl = msix_hdl;
-        self.dev.attach(&self.queues[..]);
     }
     fn interrupt_mode_change(&self, mode: pci::IntrMode) {
         self.set_intr_mode(match mode {
@@ -450,7 +456,7 @@ impl pci::Device for PciVirtio {
             self.state_cv.wait_while(state, |s| s.intr_mode_updating).unwrap();
         state.intr_mode_updating = true;
 
-        for vq in self.queues.iter() {
+        for vq in self.dev.queues()[..].iter() {
             let val = *state.msix_queue_vec.get(vq.id as usize).unwrap();
 
             // avoid deadlock while modify per-VQ interrupt config

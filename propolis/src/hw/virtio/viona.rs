@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
+use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -14,7 +15,7 @@ use crate::vmm::VmmHdl;
 
 use super::bits::*;
 use super::pci::PciVirtio;
-use super::queue::VirtQueue;
+use super::queue::{VirtQueue, VirtQueues};
 use super::{VirtioDevice, VqChange, VqIntr};
 
 use lazy_static::lazy_static;
@@ -24,12 +25,11 @@ use tokio::io::Interest;
 const ETHERADDRL: usize = 6;
 
 struct Inner {
-    queues: Vec<Arc<VirtQueue>>,
     poller: Option<(Arc<VionaPoller>, AsyncTaskId)>,
 }
 impl Inner {
     fn new() -> Self {
-        Self { queues: Vec::new(), poller: None }
+        Self { poller: None }
     }
 }
 
@@ -41,6 +41,7 @@ pub struct VirtioViona {
     mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
+    queues: VirtQueues,
 
     sa_cell: SelfArcCell<Self>,
 }
@@ -54,12 +55,21 @@ impl VirtioViona {
         let info = dlhdl.query_vnic(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 
+        // TX and RX
+        let queue_count = NonZeroU16::new(2).unwrap();
+        // interrupts for TX, RX, and device config
+        let msix_count = Some(3);
+
+        let queues =
+            VirtQueues::new(NonZeroU16::new(queue_size).unwrap(), queue_count);
+
         let mut this = VirtioViona {
             dev_features: hdl.get_avail_features()?,
             mac_addr: [0; ETHERADDRL],
             mtu: info.mtu,
             hdl,
             inner: Mutex::new(Inner::new()),
+            queues,
             sa_cell: SelfArcCell::new(),
         };
         this.mac_addr.copy_from_slice(&info.mac_addr);
@@ -68,14 +78,7 @@ impl VirtioViona {
         let mut this = Arc::new(this);
         SelfArc::self_arc_init(&mut this);
 
-        // TX and RX
-        let queue_count = 2;
-        // interrupts for TX, RX, and device config
-        let msix_count = Some(3);
-
         Ok(PciVirtio::create(
-            queue_size,
-            queue_count,
             msix_count,
             VIRTIO_DEV_NET,
             pci::bits::CLASS_NETWORK,
@@ -85,17 +88,14 @@ impl VirtioViona {
     }
 
     fn process_interrupts(&self, ctx: &DispCtx) {
-        let inner = self.inner.lock().unwrap();
         self.hdl
             .intr_poll(|vq_idx| {
                 self.hdl.ring_intr_clear(vq_idx).unwrap();
-                if let Some(vq) = inner.queues.get(vq_idx as usize) {
-                    vq.with_intr(|intr| {
-                        if let Some(intr) = intr {
-                            intr.notify(ctx);
-                        }
-                    });
-                }
+                self.queues[vq_idx as usize].with_intr(|intr| {
+                    if let Some(intr) = intr {
+                        intr.notify(ctx);
+                    }
+                });
             })
             .unwrap();
     }
@@ -196,15 +196,8 @@ impl VirtioDevice for VirtioViona {
             }
         }
     }
-
-    fn attach(&self, queues: &[Arc<VirtQueue>]) {
-        let mut inner = self.inner.lock().unwrap();
-        // Keep references to all of the virtqueues around so we can issue
-        // interrupts to them.  This is necessary when MSI is not configured or
-        // is masked (device-wide or for a given queue).
-        for vq in queues {
-            inner.queues.push(Arc::clone(vq));
-        }
+    fn queues(&self) -> &VirtQueues {
+        &self.queues
     }
 }
 impl Entity for VirtioViona {
@@ -226,7 +219,7 @@ impl Entity for VirtioViona {
                 let (poller, task) = inner.poller.take().unwrap();
                 ctx.cancel_async(task);
                 drop(poller);
-                for vq in inner.queues.iter() {
+                for vq in self.queues[..].iter() {
                     let _ = self.hdl.ring_reset(vq.id);
                 }
             }

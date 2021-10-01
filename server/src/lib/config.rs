@@ -1,12 +1,16 @@
 //! Describes a server config which may be parsed from a TOML file.
 
 use std::collections::{btree_map, BTreeMap};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use serde_derive::Deserialize;
 use thiserror::Error;
+
+use propolis::block;
+use propolis::inventory;
 
 /// Errors which may be returned when parsing the server configuration.
 #[derive(Error, Debug)]
@@ -60,14 +64,15 @@ impl Config {
         IterDevs { inner: self.devices.iter() }
     }
 
-    pub fn create_block_device<R: propolis::block::BlockReq>(
+    pub fn create_block_backend(
         &self,
         name: &str,
-    ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
+    ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError>
+    {
         let entry = self.block_devs.get(name).ok_or_else(|| {
             ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
         })?;
-        entry.create_block_device::<R>()
+        entry.create_block_backend()
     }
 }
 
@@ -101,9 +106,10 @@ pub struct BlockDevice {
 }
 
 impl BlockDevice {
-    pub fn create_block_device<R: propolis::block::BlockReq>(
+    pub fn create_block_backend(
         &self,
-    ) -> Result<Arc<dyn propolis::block::BlockDev<R>>, ParseError> {
+    ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError>
+    {
         match &self.bdtype as &str {
             "file" => {
                 let path = self
@@ -127,8 +133,16 @@ impl BlockDevice {
                     self.options.get("readonly")?.as_str()?.parse().ok()
                 }()
                 .unwrap_or(false);
+                let nworkers = NonZeroUsize::new(8).unwrap();
+                let be = propolis::block::FileBackend::create(
+                    path, readonly, nworkers,
+                )?;
+                let child = inventory::ChildRegister::new(
+                    &be,
+                    "backend-file".to_string(),
+                );
 
-                Ok(propolis::block::FileBdev::<R>::create(path, readonly)?)
+                Ok((be, child))
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);

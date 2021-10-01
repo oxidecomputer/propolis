@@ -268,20 +268,34 @@ async fn instance_ensure(
                             .options
                             .get("block_dev")
                             .ok_or_else(|| {
-                                Error::new(ErrorKind::InvalidData, format!("no block_dev key for {}!", devname))
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    format!(
+                                        "no block_dev key for {}!",
+                                        devname
+                                    ),
+                                )
                             })?
                             .as_str()
                             .ok_or_else(|| {
-                                Error::new(ErrorKind::InvalidData, format!("as_str() failed for {}'s block_dev!", devname))
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    format!(
+                                        "as_str() failed for {}'s block_dev!",
+                                        devname
+                                    ),
+                                )
                             })?;
 
-                        let block_dev = server_context
+                        let (backend, creg) = server_context
                             .config
-                            .create_block_device::<propolis::hw::virtio::block::Request>(
-                            block_dev_name,
-                        ).map_err(|e| {
-                            Error::new(ErrorKind::InvalidData, format!("ParseError: {:?}", e))
-                        })?;
+                            .create_block_backend(block_dev_name)
+                            .map_err(|e| {
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    format!("ParseError: {:?}", e),
+                                )
+                            })?;
 
                         let bdf: pci::Bdf =
                             dev.get("pci-path").ok_or_else(|| {
@@ -291,11 +305,8 @@ async fn instance_ensure(
                                 )
                             })?;
 
-                        init.initialize_block(
-                            &chipset,
-                            bdf,
-                            block_dev_name,
-                            block_dev,
+                        init.initialize_virtio_block(
+                            &chipset, bdf, backend, creg,
                         )?;
                     }
                     "pci-virtio-viona" => {
