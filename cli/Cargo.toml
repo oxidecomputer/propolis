@@ -1,16 +1,20 @@
 [package]
 name = "propolis-cli"
 version = "0.1.0"
-authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pico-args = "0.3"
+anyhow = "1.0"
+futures = "0.3"
 libc = "0.2"
-toml = "0.5"
-serde = "1.0"
-serde_derive = "1.0"
-propolis = { path = "../propolis" }
+propolis-client = { path = "../client" }
+slog = "2.7"
+slog-async = "2.7"
+slog-term = "2.8"
+structopt = "0.3"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.14"
+uuid = "0.8"

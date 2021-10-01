@@ -1,339 +1,287 @@
-// Required for USDT
-#![feature(asm)]
+use std::{
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    os::unix::prelude::AsRawFd,
+};
 
-extern crate pico_args;
-extern crate propolis;
-extern crate serde;
-extern crate serde_derive;
-extern crate toml;
+use anyhow::{anyhow, Context};
+use futures::{SinkExt, StreamExt};
+use propolis_client::{
+    api::{InstanceEnsureRequest, InstanceProperties, InstanceStateRequested},
+    Client,
+};
+use slog::{o, Drain, Level, Logger};
+use structopt::StructOpt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
 
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Error, ErrorKind, Result};
-use std::path::Path;
-use std::sync::Arc;
+#[derive(Debug, StructOpt)]
+#[structopt(
+    name = "propolis-cli",
+    about = "A simple CLI tool to manipulate propolis-server"
+)]
+struct Opt {
+    /// propolis-server address
+    #[structopt(short, long, parse(try_from_str = resolve_host))]
+    server: IpAddr,
 
-use propolis::chardev::{BlockingSource, Sink, Source};
-use propolis::hw::chipset::Chipset;
-use propolis::hw::ibmpc;
-use propolis::hw::ps2ctrl::PS2Ctrl;
-use propolis::hw::uart::LpcUart;
-use propolis::instance::{Instance, ReqState, State};
-use propolis::vmm::{Builder, Prot};
-use propolis::*;
+    /// propolis-server port
+    #[structopt(short, long, default_value = "12400")]
+    port: u16,
 
-use propolis::usdt::register_probes;
+    /// Enable debugging
+    #[structopt(short, long)]
+    debug: bool,
 
-mod config;
+    #[structopt(subcommand)]
+    cmd: Command,
+}
 
-const PAGE_OFFSET: u64 = 0xfff;
-// Arbitrary ROM limit for now
-const MAX_ROM_SIZE: usize = 0x20_0000;
+#[derive(Debug, StructOpt)]
+enum Command {
+    /// Create a new propolis instance
+    New {
+        /// Instance name
+        name: String,
 
-fn parse_args() -> config::Config {
-    let args = pico_args::Arguments::from_env();
-    if let Some(cpath) = args.free().ok().map(|mut f| f.pop()).flatten() {
-        config::parse(&cpath)
-    } else {
-        eprintln!("usage: propolis <CONFIG.toml>");
-        std::process::exit(libc::EXIT_FAILURE);
+        /// Number of vCPUs allocated to instance
+        #[structopt(short = "c", default_value = "4")]
+        vcpus: u8,
+
+        /// Memory allocated to instance (MiB)
+        #[structopt(short, default_value = "1024")]
+        memory: u64,
+    },
+
+    /// Get the properties of a propolis instance
+    Get {
+        /// Instance name
+        name: String,
+    },
+
+    /// Transition the instance to a new state
+    State {
+        /// Instance name
+        name: String,
+
+        /// The requested state
+        #[structopt(parse(try_from_str = parse_state))]
+        state: InstanceStateRequested,
+    },
+
+    /// Drop to a Serial console connected to the instance
+    Serial {
+        /// Instance name
+        name: String,
+    },
+}
+
+fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
+    match state.to_lowercase().as_str() {
+        "run" => Ok(InstanceStateRequested::Run),
+        "stop" => Ok(InstanceStateRequested::Stop),
+        "reboot" => Ok(InstanceStateRequested::Reboot),
+        _ => Err(anyhow!(
+            "invalid requested state, must be one of: 'run', 'stop', 'reboot"
+        )),
     }
 }
 
-fn build_instance(
-    name: &str,
-    max_cpu: u8,
-    lowmem: usize,
-    highmem: usize,
-) -> Result<Arc<Instance>> {
-    let mut builder = Builder::new(name, true)?
-        .max_cpus(max_cpu)?
-        .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
-        .add_rom_region(
-            0x1_0000_0000 - MAX_ROM_SIZE,
-            MAX_ROM_SIZE,
-            Prot::READ | Prot::EXEC,
-            "bootrom",
-        )?
-        .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32")?
-        .add_mmio_region(0xe0000000_usize, 0x10000000_usize, "pcicfg")?
-        .add_mmio_region(
-            vmm::MAX_SYSMEM,
-            vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
-            "dev64",
-        )?;
-    if highmem > 0 {
-        builder = builder.add_mem_region(
-            0x1_0000_0000,
-            highmem,
-            Prot::ALL,
-            "highmem",
-        )?;
-    }
-    let inst = Instance::create(builder, None, propolis::vcpu_run_loop)?;
-    Ok(inst)
+/// Given a string representing an host, attempts to resolve it to a specific IP address
+fn resolve_host(server: &str) -> anyhow::Result<IpAddr> {
+    (server, 0)
+        .to_socket_addrs()?
+        .map(|sock_addr| sock_addr.ip())
+        .next()
+        .ok_or_else(|| {
+            anyhow!("failed to resolve server argument '{}'", server)
+        })
 }
 
-fn open_bootrom(path: &str) -> Result<(File, usize)> {
-    let fp = File::open(path)?;
-    let len = fp.metadata()?.len();
-    if len & PAGE_OFFSET != 0 {
-        Err(Error::new(
-            ErrorKind::InvalidData,
-            format!(
-                "rom {} length {:x} not aligned to {:x}",
-                path,
-                len,
-                PAGE_OFFSET + 1
-            ),
-        ))
-    } else {
-        Ok((fp, len as usize))
-    }
+/// Create a top-level logger that outputs to stderr
+fn create_logger(opt: &Opt) -> Logger {
+    let decorator = slog_term::TermDecorator::new().stderr().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let level = if opt.debug { Level::Debug } else { Level::Info };
+    let drain = slog::LevelFilter(drain, level).fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let logger = Logger::root(drain, o!());
+    logger
 }
 
-fn main() {
-    // Ensure proper setup of USDT probes
-    register_probes().unwrap();
+async fn new_instance(
+    client: &Client,
+    name: String,
+    vcpus: u8,
+    memory: u64,
+) -> anyhow::Result<()> {
+    // Generate a UUID for the new instance
+    let id = Uuid::new_v4();
 
-    let config = parse_args();
+    let properties = InstanceProperties {
+        id,
+        name,
+        description: "propolis-server-cli generated instance".to_string(),
+        // TODO: Use real UUID
+        image_id: Uuid::default(),
+        // TODO: Use real UUID
+        bootrom_id: Uuid::default(),
+        memory,
+        vcpus,
+    };
+    let request = InstanceEnsureRequest {
+        properties,
+        // TODO: Allow specifying NICs
+        nics: vec![],
+    };
 
-    let vm_name = config.get_name();
-    let cpus = config.get_cpus();
+    // Try to create the instance
+    client
+        .instance_ensure(&request)
+        .await
+        .with_context(|| anyhow!("failed to create instance"))?;
 
-    const GB: usize = 1024 * 1024 * 1024;
-    const MB: usize = 1024 * 1024;
-    let memsize: usize = config.get_mem() * MB;
-    let lowmem = memsize.min(3 * GB);
-    let highmem = memsize.saturating_sub(3 * GB);
+    Ok(())
+}
 
-    let inst = build_instance(vm_name, cpus, lowmem, highmem).unwrap();
-    println!("vm {} created", vm_name);
+async fn get_instance(client: &Client, name: String) -> anyhow::Result<()> {
+    // Grab the Instance UUID
+    let id = client
+        .instance_get_uuid(&name)
+        .await
+        .with_context(|| anyhow!("failed to get instance UUID"))?;
 
-    let (romfp, rom_len) = open_bootrom(config.get_bootrom())
-        .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
-    let com1_sock = chardev::UDSock::bind(Path::new("./ttya"))
-        .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
+    // Get the rest of the Instance properties
+    let res = client
+        .instance_get(id)
+        .await
+        .with_context(|| anyhow!("failed to get instance properties"))?;
 
-    inst.initialize(|machine, mctx, disp, inv| {
-        machine.populate_rom("bootrom", |mapping| {
-            let mapping = mapping.as_ref();
-            if mapping.len() < rom_len {
-                return Err(Error::new(ErrorKind::InvalidData, "rom too long"));
+    println!("{:#?}", res.instance);
+
+    Ok(())
+}
+
+async fn put_instance(
+    client: &Client,
+    name: String,
+    state: InstanceStateRequested,
+) -> anyhow::Result<()> {
+    // Grab the Instance UUID
+    let id = client
+        .instance_get_uuid(&name)
+        .await
+        .with_context(|| anyhow!("failed to get instance UUID"))?;
+
+    client
+        .instance_state_put(id, state)
+        .await
+        .with_context(|| anyhow!("failed to set instance state"))?;
+
+    Ok(())
+}
+
+async fn serial(
+    client: &Client,
+    addr: SocketAddr,
+    name: String,
+) -> anyhow::Result<()> {
+    // Grab the Instance UUID
+    let id = client
+        .instance_get_uuid(&name)
+        .await
+        .with_context(|| anyhow!("failed to get instance UUID"))?;
+
+    let path = format!("ws://{}/instances/{}/serial", addr, id);
+    let (mut ws, _) = tokio_tungstenite::connect_async(path)
+        .await
+        .with_context(|| anyhow!("failed to create serial websocket stream"))?;
+
+    let _raw_guard = RawTermiosGuard::stdio_guard()
+        .with_context(|| anyhow!("failed to set raw mode"))?;
+
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+
+    loop {
+        tokio::select! {
+            c = stdin.read_u8() => {
+                match c? {
+                    // Exit on Ctrl-C
+                    b'\x03' => break,
+                    c => ws.send(Message::binary(vec![c])).await?,
+                }
             }
-            let offset = mapping.len() - rom_len;
-            let submapping = mapping.subregion(offset, rom_len).unwrap();
-            let nread = submapping.pread(&romfp, rom_len, 0)?;
-            if nread != rom_len {
-                // TODO: Handle short read
-                return Err(Error::new(ErrorKind::InvalidData, "short read"));
-            }
-            Ok(())
-        })?;
-        machine.initialize_rtc(lowmem, highmem).unwrap();
-
-        let hdl = machine.get_hdl();
-        let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
-        chipset.attach(mctx);
-        let chipset_id = inv
-            .register(&chipset, "chipset".to_string(), None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
-
-        // UARTs
-        let com1 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM1).unwrap());
-        let com2 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM2).unwrap());
-        let com3 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM3).unwrap());
-        let com4 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
-
-        com1_sock.spawn(
-            Arc::clone(&com1) as Arc<dyn Sink>,
-            Arc::clone(&com1) as Arc<dyn Source>,
-            disp,
-        );
-        com1.set_autodiscard(false);
-
-        // XXX: plumb up com2-4, but until then, just auto-discard
-        com2.set_autodiscard(true);
-        com3.set_autodiscard(true);
-        com4.set_autodiscard(true);
-
-        let pio = mctx.pio();
-        LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-        LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-        LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-        LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        inv.register(&com1, "com1".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com2, "com2".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com3, "com3".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com4, "com4".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-
-        // PS/2
-        let ps2_ctrl = PS2Ctrl::create();
-        ps2_ctrl.attach(pio, chipset.as_ref());
-        inv.register(&ps2_ctrl, "ps2_ctrl".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-
-        let debug_file = std::fs::File::create("debug.out").unwrap();
-        let debug_out = chardev::BlockingFileOutput::new(debug_file).unwrap();
-        let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
-        debug_out
-            .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
-        inv.register(&debug_device, "debug".to_string(), None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
-
-        let mut devices = HashMap::new();
-
-        for (name, dev) in config.devs() {
-            let driver = &dev.driver as &str;
-            let bdf = if driver.starts_with("pci-") {
-                config::parse_bdf(
-                    dev.options.get("pci-path").unwrap().as_str().unwrap(),
-                )
-            } else {
-                None
-            };
-            match driver {
-                "pci-virtio-block" => {
-                    let block_dev =
-                        dev.options.get("block_dev").unwrap().as_str().unwrap();
-
-                    let block_dev = config
-                        .block_dev::<hw::virtio::block::Request>(block_dev);
-
-                    let vioblk = hw::virtio::VirtioBlock::create(
-                        0x100,
-                        Arc::clone(&block_dev),
-                    );
-                    inv.register(&vioblk, format!("vioblk-{}", name), None)
-                        .map_err(|e| -> std::io::Error { e.into() })?;
-                    chipset.pci_attach(bdf.unwrap(), vioblk);
-
-                    block_dev
-                        .start_dispatch(format!("bdev-{} thread", name), disp);
-                }
-                "pci-virtio-viona" => {
-                    let vnic_name =
-                        dev.options.get("vnic").unwrap().as_str().unwrap();
-
-                    let viona = hw::virtio::viona::VirtioViona::create(
-                        vnic_name, 0x100, &hdl,
-                    )
-                    .unwrap();
-                    inv.register(&viona, format!("viona-{}", name), None)
-                        .map_err(|e| -> std::io::Error { e.into() })?;
-                    chipset.pci_attach(bdf.unwrap(), viona);
-                }
-                "pci-nvme" => {
-                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000);
-                    devices.insert(&**name, nvme.clone());
-                    chipset.pci_attach(bdf.unwrap(), nvme);
-                }
-                "nvme-ns" => {
-                    let nvme_ctrl = dev
-                        .options
-                        .get("controller")
-                        .unwrap()
-                        .as_str()
-                        .unwrap();
-
-                    let nvme = devices.get(nvme_ctrl).unwrap_or_else(|| {
-                        panic!("no such nvme controller: {}", nvme_ctrl)
-                    });
-
-                    let block_dev =
-                        dev.options.get("block_dev").unwrap().as_str().unwrap();
-
-                    let block_dev =
-                        config.block_dev::<hw::nvme::Request>(block_dev);
-
-                    let ns = hw::nvme::NvmeNs::create(block_dev.clone());
-
-                    if let Err(e) =
-                        nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
-                            nvme.add_ns(ns)
-                        })
-                    {
-                        eprintln!("failed to attach nvme-ns: {}", e);
-                        std::process::exit(libc::EXIT_FAILURE);
+            msg = ws.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(input))) => {
+                        stdout.write_all(&input).await?;
+                        stdout.flush().await?;
                     }
-
-                    block_dev
-                        .start_dispatch(format!("bdev-{} thread", name), disp);
-                }
-                _ => {
-                    eprintln!("unrecognized driver: {}", name);
-                    std::process::exit(libc::EXIT_FAILURE);
+                    Some(Ok(Message::Close(..))) | None => break,
+                    _ => continue,
                 }
             }
         }
+    }
 
-        // with all pci devices attached, place their BARs and wire up access to PCI
-        // configuration space
-        chipset.pci_finalize(mctx);
+    Ok(())
+}
 
-        let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
-        fwcfg
-            .add_legacy(
-                hw::qemu::fwcfg::LegacyId::SmpCpuCount,
-                hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
-            )
-            .unwrap();
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let opt = Opt::from_args();
+    let log = create_logger(&opt);
 
-        let ramfb = hw::qemu::ramfb::RamFb::create();
-        ramfb.attach(&mut fwcfg);
+    let addr = SocketAddr::new(opt.server, opt.port);
+    let client = Client::new(addr.clone(), log.new(o!()));
 
-        let fwcfg_dev = fwcfg.finalize();
-        fwcfg_dev.attach(pio);
-
-        inv.register(&fwcfg_dev, "fwcfg".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&ramfb, "ramfb".to_string(), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-
-        for mut vcpu in mctx.vcpus() {
-            vcpu.set_default_capabs().unwrap();
+    match opt.cmd {
+        Command::New { name, vcpus, memory } => {
+            new_instance(&client, name.to_string(), vcpus, memory).await?
         }
+        Command::Get { name } => get_instance(&client, name).await?,
+        Command::State { name, state } => {
+            put_instance(&client, name, state).await?
+        }
+        Command::Serial { name } => serial(&client, addr, name).await?,
+    }
 
-        Ok(())
-    })
-    .unwrap_or_else(|e| panic!("Failed to initialize instance: {}", e));
+    Ok(())
+}
 
-    drop(romfp);
+/// Guard object that will set the terminal to raw mode and restore it
+/// to its previous state when it's dropped
+struct RawTermiosGuard(libc::c_int, libc::termios);
 
-    inst.print();
-
-    // Wait until someone connects to ttya
-    println!("Waiting for a connection to ttya...");
-    com1_sock.wait_for_connect();
-
-    inst.on_transition(Box::new(|next_state, ctx| {
-        match next_state {
-            State::Boot => {
-                for mut vcpu in ctx.mctx.vcpus() {
-                    vcpu.reboot_state().unwrap();
-                    vcpu.activate().unwrap();
-                    // Set BSP to start up
-                    if vcpu.is_bsp() {
-                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                        vcpu.set_reg(
-                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                            0xfff0,
-                        )
-                        .unwrap();
-                    }
-                }
+impl RawTermiosGuard {
+    fn stdio_guard() -> Result<RawTermiosGuard, std::io::Error> {
+        let fd = std::io::stdout().as_raw_fd();
+        let termios = unsafe {
+            let mut curr_termios = std::mem::zeroed();
+            let r = libc::tcgetattr(fd, &mut curr_termios);
+            if r == -1 {
+                return Err(std::io::Error::last_os_error());
             }
-            _ => {}
+            curr_termios
+        };
+        let guard = RawTermiosGuard(fd, termios.clone());
+        unsafe {
+            let mut raw_termios = termios;
+            libc::cfmakeraw(&mut raw_termios);
+            let r = libc::tcsetattr(fd, libc::TCSAFLUSH, &raw_termios);
+            if r == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
         }
-
-        println!("state cb: {:?}", next_state);
-    }));
-    inst.set_target_state(ReqState::Run).unwrap();
-
-    inst.wait_for_state(State::Destroy);
-    drop(inst);
+        Ok(guard)
+    }
+}
+impl Drop for RawTermiosGuard {
+    fn drop(&mut self) {
+        let r = unsafe { libc::tcsetattr(self.0, libc::TCSADRAIN, &self.1) };
+        if r == -1 {
+            Err::<(), _>(std::io::Error::last_os_error()).unwrap();
+        }
+    }
 }
