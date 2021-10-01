@@ -1,7 +1,9 @@
 use std::mem;
-use std::num::Wrapping;
+use std::num::{NonZeroU16, Wrapping};
+use std::ops::Index;
+use std::slice::SliceIndex;
 use std::sync::atomic::{fence, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::bits::*;
 use super::VirtioIntr;
@@ -192,19 +194,6 @@ impl VirtQueue {
         } else {
             None
         }
-    }
-    pub fn avail_count(&self, mem: &MemCtx) -> u16 {
-        let avail = self.avail.lock().unwrap();
-        if !avail.valid {
-            return 0;
-        }
-        if let Some(idx) = mem.read::<u16>(avail.gpa_idx) {
-            let ndesc = Wrapping(idx) - avail.cur_avail_idx;
-            if ndesc.0 != 0 && ndesc.0 < self.size {
-                return ndesc.0;
-            }
-        }
-        0
     }
     pub fn pop_avail(&self, chain: &mut Chain, mem: &MemCtx) -> Option<u32> {
         assert!(chain.idx.is_none());
@@ -404,19 +393,27 @@ impl Chain {
         });
         total == item_sz
     }
-    pub fn readable_buf(&mut self, limit: usize) -> Option<GuestRegion> {
-        if limit == 0 || self.read_stat.bytes_remain == 0 {
+    /// Fetch a string of readable guest regions from the chain, provided there
+    /// are enough to cover a specified length.
+    pub fn readable_bufs(&mut self, len: usize) -> Option<Vec<GuestRegion>> {
+        if len == 0 || (self.read_stat.bytes_remain as usize) < len {
             return None;
         }
 
-        let mut res: Option<GuestRegion> = None;
+        let mut bufs = Vec::new();
+        let mut remain = len;
         self.for_remaining_type(true, |addr, blen| {
-            let to_consume = usize::min(blen, limit);
+            let to_consume = usize::min(blen, remain);
 
-            res = Some(GuestRegion(addr, to_consume));
-            (to_consume, false)
+            bufs.push(GuestRegion(addr, to_consume));
+
+            // Since we checked for enough remaining bytes ahead of time, there
+            // should be no risk of this failing.
+            remain = remain.checked_sub(to_consume).unwrap();
+            (to_consume, remain != 0)
         });
-        res
+        assert_eq!(remain, 0);
+        Some(bufs)
     }
     pub fn write<T: Copy>(&mut self, item: &T, mem: &MemCtx) -> bool {
         let item_sz = mem::size_of::<T>();
@@ -464,19 +461,27 @@ impl Chain {
         });
         true
     }
-    pub fn writable_buf(&mut self, limit: usize) -> Option<GuestRegion> {
-        if limit == 0 || self.write_stat.bytes_remain == 0 {
+    /// Fetch a string of writable guest regions from the chain, provided there
+    /// are enough to cover a specified length.
+    pub fn writable_bufs(&mut self, len: usize) -> Option<Vec<GuestRegion>> {
+        if len == 0 || (self.write_stat.bytes_remain as usize) < len {
             return None;
         }
 
-        let mut res: Option<GuestRegion> = None;
+        let mut bufs = Vec::new();
+        let mut remain = len;
         self.for_remaining_type(false, |addr, blen| {
-            let to_consume = usize::min(blen, limit);
+            let to_consume = usize::min(blen, remain);
 
-            res = Some(GuestRegion(addr, to_consume));
-            (to_consume, false)
+            bufs.push(GuestRegion(addr, to_consume));
+
+            // Since we checked for enough remaining bytes ahead of time, there
+            // should be no risk of this failing.
+            remain = remain.checked_sub(to_consume).unwrap();
+            (to_consume, remain != 0)
         });
-        res
+        assert_eq!(remain, 0);
+        Some(bufs)
     }
 
     pub fn remain_write_bytes(&self) -> usize {
@@ -554,4 +559,37 @@ pub struct MapInfo {
     pub desc_addr: u64,
     pub avail_addr: u64,
     pub used_addr: u64,
+}
+
+pub(super) struct VirtQueues {
+    queues: Vec<Arc<VirtQueue>>,
+    size: NonZeroU16,
+    num: NonZeroU16,
+}
+impl VirtQueues {
+    pub fn new(size: NonZeroU16, num: NonZeroU16) -> Self {
+        assert!(size.get().is_power_of_two());
+        let mut queues = Vec::with_capacity(size.get() as usize);
+        for id in 0..num.get() {
+            queues.push(Arc::new(VirtQueue::new(id, size.get())));
+        }
+        Self { queues, size, num }
+    }
+    pub fn queue_size(&self) -> NonZeroU16 {
+        self.size
+    }
+    pub fn count(&self) -> NonZeroU16 {
+        self.num
+    }
+    pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
+        self.queues.get(qid as usize)
+    }
+}
+
+impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
+    type Output = S::Output;
+
+    fn index(&self, index: S) -> &Self::Output {
+        Index::index(&self.queues, index)
+    }
 }

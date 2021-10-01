@@ -356,15 +356,19 @@ pub struct DeviceInst {
 }
 
 impl DeviceInst {
-    fn new(
+    fn new<D>(
         ident: Ident,
         cfg_space: RegMap<CfgReg>,
         msix_cfg: Option<Arc<MsixCfg>>,
         caps: Vec<Cap>,
         bars: Bars,
-        inner: Arc<dyn Device>,
-        inner_any: Arc<dyn Any + Send + Sync + 'static>,
-    ) -> Self {
+        inner: Arc<D>,
+    ) -> Self
+    where
+        D: Device + Send + Sync + 'static,
+    {
+        let inner_any =
+            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
         Self {
             ident,
             lintr_req: false,
@@ -381,7 +385,7 @@ impl DeviceInst {
 
             sa_cell: SelfArcCell::new(),
 
-            inner,
+            inner: inner as Arc<dyn Device>,
             inner_any,
         }
     }
@@ -734,13 +738,12 @@ impl DeviceInst {
     fn notify_msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {
         self.inner.msi_update(info, ctx);
     }
-    pub fn with_inner<T, F, R>(&self, f: F) -> R
-    where
-        T: Send + Sync + 'static,
-        F: FnOnce(Arc<T>) -> R,
-    {
+    /// Get access to the inner device emulation.
+    ///
+    /// This will panic if the provided type does not match.
+    pub fn inner_dev<T: Send + Sync + 'static>(&self) -> Arc<T> {
         let inner = Arc::clone(&self.inner_any);
-        f(Arc::downcast(inner).unwrap())
+        Arc::downcast(inner).unwrap()
     }
     fn do_reset(&self, ctx: &DispCtx) {
         let state = self.state.lock().unwrap();
@@ -1422,9 +1425,6 @@ impl<I: Device + 'static> Builder<I> {
     pub fn finish(self, inner: Arc<I>) -> Arc<DeviceInst> {
         let bars = Bars::new(&self.bars);
 
-        let inner_any =
-            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
-
         let mut inst = DeviceInst::new(
             self.ident,
             self.cfgmap,
@@ -1432,7 +1432,6 @@ impl<I: Device + 'static> Builder<I> {
             self.caps,
             bars,
             inner,
-            inner_any,
         );
         inst.lintr_req = self.lintr_req;
 

@@ -4,26 +4,25 @@ use std::sync::Arc;
 mod bits;
 
 pub mod block;
-mod pci;
+pub mod pci;
 mod queue;
 pub mod viona;
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use queue::VirtQueue;
+use queue::{VirtQueue, VirtQueues};
 
 pub use block::VirtioBlock;
 
-pub trait VirtioDevice: Send + Sync + 'static + Entity {
+trait VirtioDevice: Send + Sync + 'static + Entity {
     fn device_cfg_rw(&self, ro: RWOp);
     fn device_get_features(&self) -> u32;
     fn device_set_features(&self, feat: u32);
     fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx);
+    fn queues(&self) -> &VirtQueues;
 
     #[allow(unused_variables)]
     fn device_reset(&self, ctx: &DispCtx) {}
-    #[allow(unused_variables)]
-    fn attach(&self, queues: &[Arc<VirtQueue>]) {}
     #[allow(unused_variables)]
     fn queue_change(
         &self,

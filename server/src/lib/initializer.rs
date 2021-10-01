@@ -17,7 +17,7 @@ use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::virtio;
 use propolis::instance::Instance;
-use propolis::inventory::{EntityID, Inventory};
+use propolis::inventory::{ChildRegister, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
 
 use crate::serial::Serial;
@@ -197,23 +197,27 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_block(
+    pub fn initialize_virtio_block(
         &self,
         chipset: &RegisteredChipset,
         bdf: pci::Bdf,
-        block_dev_name: &str,
-        block_dev: Arc<dyn block::BlockDev<virtio::block::Request>>,
+        backend: Arc<dyn block::Backend>,
+        be_register: ChildRegister,
     ) -> Result<(), Error> {
-        let vioblk = virtio::VirtioBlock::create(0x100, Arc::clone(&block_dev));
-        self.inv
+        let be_info = backend.info();
+        let vioblk = virtio::VirtioBlock::create(0x100, be_info);
+        let id = self
+            .inv
             .register(&vioblk, format!("vioblk-{}", bdf), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
+        let _ = self.inv.register_child(be_register, id).unwrap();
+
+        let blk = vioblk
+            .inner_dev::<virtio::pci::PciVirtio>()
+            .inner_dev::<virtio::block::VirtioBlock>();
+        backend.attach(blk, self.disp);
         chipset.device().pci_attach(bdf, vioblk);
 
-        block_dev.start_dispatch(
-            format!("bdev-{} thread", block_dev_name),
-            &self.disp,
-        );
         Ok(())
     }
 

@@ -75,14 +75,10 @@ impl I440Fx {
 
         // XXX: hardcoded attachments for now
         let lpc = bus.device_at(1, 0).unwrap();
-        lpc.as_devinst().unwrap().with_inner(|lpc: Arc<Piix3Lpc>| {
-            lpc.attach(mctx.pio());
-        });
+        lpc.as_devinst().unwrap().inner_dev::<Piix3Lpc>().attach(mctx.pio());
 
         let pm = bus.device_at(1, 3).unwrap();
-        pm.as_devinst().unwrap().with_inner(|pm: Arc<Piix3PM>| {
-            pm.attach(mctx);
-        });
+        pm.as_devinst().unwrap().inner_dev::<Piix3PM>().attach(mctx);
     }
 
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {

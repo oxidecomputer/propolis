@@ -1,11 +1,13 @@
 use std::collections::{btree_map, BTreeMap};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use serde_derive::Deserialize;
 
 use crate::hw::pci;
-use propolis::block::{BlockDev, BlockReq};
+use propolis::block;
+use propolis::inventory::ChildRegister;
 
 #[derive(Deserialize, Debug)]
 struct Top {
@@ -46,9 +48,12 @@ impl Config {
         IterDevs { inner: self.inner.devices.iter() }
     }
 
-    pub fn block_dev<R: BlockReq>(&self, name: &str) -> Arc<dyn BlockDev<R>> {
+    pub fn block_dev(
+        &self,
+        name: &str,
+    ) -> (Arc<dyn block::Backend>, ChildRegister) {
         let entry = self.inner.block_devs.get(name).unwrap();
-        entry.block_dev::<R>()
+        entry.block_dev()
     }
 }
 
@@ -72,9 +77,7 @@ pub struct BlockDevice {
 }
 
 impl BlockDevice {
-    pub fn block_dev<R: propolis::block::BlockReq>(
-        &self,
-    ) -> Arc<dyn propolis::block::BlockDev<R>> {
+    pub fn block_dev(&self) -> (Arc<dyn block::Backend>, ChildRegister) {
         match &self.bdtype as &str {
             "file" => {
                 let path = self.options.get("path").unwrap().as_str().unwrap();
@@ -84,7 +87,14 @@ impl BlockDevice {
                 }()
                 .unwrap_or(false);
 
-                propolis::block::FileBdev::<R>::create(path, readonly).unwrap()
+                let be = block::FileBackend::create(
+                    path,
+                    readonly,
+                    NonZeroUsize::new(8).unwrap(),
+                )
+                .unwrap();
+                let creg = ChildRegister::new(&be, "backend".to_string());
+                (be, creg)
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);

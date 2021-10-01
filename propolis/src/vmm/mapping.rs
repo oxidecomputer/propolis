@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr::{copy_nonoverlapping, NonNull};
 
 // 2MB guard length
@@ -521,14 +521,14 @@ impl<'a> SubMapping<'a> {
 
 pub trait MappingExt {
     /// preadv from `file` into multiple mappings
-    fn preadv(&self, file: &File, offset: i64) -> Result<usize>;
+    fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize>;
 
     /// pwritev from multiple mappings to `file`
-    fn pwritev(&self, file: &File, offset: i64) -> Result<usize>;
+    fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize>;
 }
 
 impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
-    fn preadv(&self, file: &File, offset: i64) -> Result<usize> {
+    fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize> {
         if !self
             .as_ref()
             .iter()
@@ -550,12 +550,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             .collect::<Vec<_>>();
 
         let read = unsafe {
-            libc::preadv(
-                file.as_raw_fd(),
-                iov.as_ptr(),
-                iov.len() as libc::c_int,
-                offset,
-            )
+            libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
         };
         if read == -1 {
             return Err(Error::last_os_error());
@@ -564,7 +559,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
         Ok(read as usize)
     }
 
-    fn pwritev(&self, file: &File, offset: i64) -> Result<usize> {
+    fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize> {
         if !self
             .as_ref()
             .iter()
@@ -586,12 +581,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             .collect::<Vec<_>>();
 
         let written = unsafe {
-            libc::pwritev(
-                file.as_raw_fd(),
-                iov.as_ptr(),
-                iov.len() as libc::c_int,
-                offset,
-            )
+            libc::pwritev(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
         };
         if written == -1 {
             return Err(Error::last_os_error());
