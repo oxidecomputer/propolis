@@ -13,15 +13,69 @@ At a minimum, the build must include the fix for
 [14024](https://www.illumos.org/issues/14024). (Present since commit
 [52fac30](https://github.com/illumos/illumos-gate/commit/52fac30e3e977464254b44b1dfb4717fb8d2fbde))
 
-While Propolis is intended to expose a REST API to drive all of its
-functionality, a CLI binary using a static toml configuration is the basis for
-the initial prototype.  The standard `cargo build` can be used in
-`propolis-cli` to build that binary.
+The main propolis crate is structured as a library providing the building
+blocks to create bhyve backed VM instances. It also provides a number of
+emulated devices that can be exposed to guests (e.g. serial port, virtio
+devices, NVMe).
+
+## propolis-server
+
+Propolis is mostly intended to be used via a REST API to drive all of its
+functionality. The standard `cargo build` will produce a `propolis-server`
+binary you can run:
+
+### Running
+
+```
+# propolis-server run <config_file> <ip:port>
+```
+
+### Example Server Configuration
+
+**Note**: the goal is to move the device config from the toml
+to instead be configured via REST API calls.
+
+```toml
+bootrom = "/path/to/bootrom/OVMF_CODE.fd"
+
+[block_dev.alpine_iso]
+type = file
+path = "/path/to/alpine-extended-3.12.0-x86_64.iso"
+
+[dev.block0]
+driver = "pci-virtio-block"
+block_dev = "alpine_iso"
+pci-path = "0.4.0"
+
+[dev.net0]
+driver = "pci-virtio-viona"
+vnic = "vnic_name"
+pci-path = "0.5.0"
+```
+
+## propolis-cli
+
+Once you've got `propolis-server` running you can interact with it via the REST
+API with any of the usual suspects (e.g. cURL, wget). Alternatively, there's a
+`propolis-cli` binary to make things a bit easier:
+
+### Running
+
+```
+# propolis-cli -s <propolis ip> -p <propolis port> new <VM name>
+# propolis-cli -s <propolis ip> -p <propolis port> state <VM name> run
+# propolis-cli -s <propolis ip> -p <propolis port> serial <VM name>
+```
+
+## propolis-standalone
+
+Server frontend aside, we also provide a standalone binary for quick
+prototyping, `propolis-standalone`. It uses a static toml configuration:
 
 ## Running
 
 ```
-# propolis-cli <config_file>
+# propolis-standalone <config_file>
 ```
 
 Example configuration:
@@ -32,9 +86,13 @@ cpus = 4
 bootrom = "/path/to/bootrom/OVMF_CODE.fd"
 memory = 1024
 
+[block_dev.alpine_iso]
+type = file
+path = "/path/to/alpine-extended-3.12.0-x86_64.iso"
+
 [dev.block0]
 driver = "pci-virtio-block"
-disk = "/path/to/alpine-extended-3.12.0-x86_64.iso"
+block_dev = "alpine_iso"
 pci-path = "0.4.0"
 
 [dev.net0]
@@ -53,7 +111,7 @@ which acts as a serial port. One such tool for accessing this serial port is
 
 ### Quickstart to Alpine
 
-In the aforementioned config file, there are three major components
+In the aforementioned config files, there are three major components
 that need to be supplied: The OVMF file, the ISO, and the VNIC.
 
 Since this is a configuration file, you can supply whatever you'd like, but here
