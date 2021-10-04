@@ -39,7 +39,7 @@ to instead be configured via REST API calls.
 bootrom = "/path/to/bootrom/OVMF_CODE.fd"
 
 [block_dev.alpine_iso]
-type = file
+type = "file"
 path = "/path/to/alpine-extended-3.12.0-x86_64.iso"
 
 [dev.block0]
@@ -87,7 +87,7 @@ bootrom = "/path/to/bootrom/OVMF_CODE.fd"
 memory = 1024
 
 [block_dev.alpine_iso]
-type = file
+type = "file"
 path = "/path/to/alpine-extended-3.12.0-x86_64.iso"
 
 [dev.block0]
