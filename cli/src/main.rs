@@ -121,7 +121,7 @@ async fn new_instance(
     let properties = InstanceProperties {
         id,
         name,
-        description: "propolis-server-cli generated instance".to_string(),
+        description: "propolis-cli generated instance".to_string(),
         // TODO: Use real UUID
         image_id: Uuid::default(),
         // TODO: Use real UUID
