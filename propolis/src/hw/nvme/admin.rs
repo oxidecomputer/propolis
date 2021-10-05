@@ -33,7 +33,7 @@ impl NvmeCtrl {
             cmd.qid,
             cmd.intr_vector,
             GuestAddr(cmd.prp),
-            cmd.qsize as u32,
+            cmd.qsize,
             ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
@@ -67,7 +67,7 @@ impl NvmeCtrl {
             cmd.qid,
             cmd.cqid,
             GuestAddr(cmd.prp),
-            cmd.qsize as u32,
+            cmd.qsize,
             ctx,
         ) {
             Ok(_) => cmds::Completion::success(),

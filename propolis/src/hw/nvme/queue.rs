@@ -14,7 +14,8 @@ pub type QueueId = u16;
 
 /// The minimum number of entries in either a Completion or Submission Queue.
 ///
-/// Note: One entry will always be unavailable for use due to Head and Tail entry pointer defition.
+/// Note: One entry will always be unavailable for use due to the Head and Tail
+///       entry pointer definitions.
 /// See NVMe 1.0e Section 4.1.3 Queue Size
 const MIN_QUEUE_SIZE: u32 = 2;
 
