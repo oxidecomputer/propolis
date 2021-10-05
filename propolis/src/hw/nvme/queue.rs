@@ -473,17 +473,15 @@ impl CompQueue {
         self.state.pop_head_to(idx)
     }
 
-    /// Attempt to add a new entry to the Completion Queue.
-    ///
-    /// TODO: handle the case where the queue may be currently full.
-    fn push(&self, entry: RawCompletion, ctx: &DispCtx) {
-        if let Some(idx) = self.state.push_tail() {
-            let mem = ctx.mctx.memctx();
-            let addr = self.entry_addr(idx);
-            mem.write(addr, &entry);
-            // XXX: handle a guest addr that becomes unmapped later
-            // XXX: figure out interrupts
-        }
+    /// Add a new entry to the Completion Queue while consuming a `CompQueueEntryPermit`.
+    fn push(&self, _: CompQueueEntryPermit, entry: RawCompletion, ctx: &DispCtx) {
+        // Since we have a permit, there should always be at least
+        // one space in the queue and this unwrap shouldn't fail.
+        let idx = self.state.push_tail().unwrap();
+        let mem = ctx.mctx.memctx();
+        let addr = self.entry_addr(idx);
+        mem.write(addr, &entry);
+        // XXX: handle a guest addr that becomes unmapped later
     }
 
     /// Attempt to reserve an entry in the Completion Queue.
@@ -592,10 +590,12 @@ impl CompQueueEntryPermit {
             status_phase: comp.status | self.cq.phase(),
         };
 
-        self.cq.push(completion, ctx);
+        let cq = self.cq.clone();
+
+        cq.push(self, completion, ctx);
 
         // TODO: should this be done here?
-        self.cq.fire_interrupt(ctx);
+        cq.fire_interrupt(ctx);
     }
 
     /// Return the permit without having actually used it.
