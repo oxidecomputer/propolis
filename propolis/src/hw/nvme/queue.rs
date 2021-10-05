@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use super::bits::{self, RawCompletion, RawSubmission};
 use super::cmds::Completion;
@@ -8,6 +8,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
 
+use bitstruct::bitstruct;
 use thiserror::Error;
 
 /// Each queue is identified by a 16-bit ID.
@@ -43,6 +44,56 @@ enum CompletionQueueType {}
 /// Marker type to indicate a Submission Queue.
 enum SubmissionQueueType {}
 
+bitstruct! {
+    /// Completion Queue State we update atomically.
+    struct CompQueueState(pub u64) {
+        /// The Queue Head entry pointer.
+        ///
+        /// The consumer of entries on a queue uses the current Head entry pointer
+        /// to identify the next entry to be pulled off the queue.
+        ///
+        /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
+        head: u16 = 0..16;
+
+        /// The Queue Tail entry pointer.
+        ///
+        /// The submitter of entries to a queue uses the current Tail entry pointer
+        /// to identify the next open queue entry space.
+        ///
+        /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
+        tail: u16 = 16..32;
+
+        /// The current phase tag.
+        ///
+        /// The Phase Tag is used to identify to the host (VM) that a Completion
+        /// entry is new. Flips every time the Tail entry pointer wraps around.
+        ///
+        /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
+        phase: bool = 32;
+    }
+}
+
+bitstruct! {
+    /// Submission Queue State we update atomically.
+    struct SubQueueState(pub u64) {
+        /// The Queue Head entry pointer.
+        ///
+        /// The consumer of entries on a queue uses the current Head entry pointer
+        /// to identify the next entry to be pulled off the queue.
+        ///
+        /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
+        head: u16 = 0..16;
+
+        /// The Queue Tail entry pointer.
+        ///
+        /// The submitter of entries to a queue uses the current Tail entry pointer
+        /// to identify the next open queue entry space.
+        ///
+        /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
+        tail: u16 = 16..32;
+    }
+}
+
 /// Helper for manipulating Completion/Submission Queues
 ///
 /// The type parameter `QT` is used to constrain the set of
@@ -55,37 +106,17 @@ struct QueueState<QT> {
     /// See NVMe 1.0e Section 4.1.3 Queue Size
     size: u32,
 
-    /// The combined current Head and Tail entry pointers.
+    /// The actual atomic state that gets updated during the normal course of operation.
     ///
-    /// The least significant 16 bits represent the Head pointer while
-    /// the next 16 represent the Tail pointer.
-    ///
-    /// Bit 32 is the current phase tag (for completion queues).
-    ///
-    /// The consumer of entries on a queue uses the current Head entry pointer
-    /// to identify the next entry to be pulled off the queue.
-    ///
-    /// The submitter of entries to a queue uses the current Tail entry pointer
-    /// to identify the next open queue entry space.
-    ///
-    /// The Phase Tag is used to identify to the host (VM) that a Completion
-    /// entry is new. Flips every time the Tail entry pointer wraps around.
-    ///
-    /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
-    /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
-    head_tail_phase: AtomicU64,
+    /// Either `CompQueueState` for a Completion Queue or
+    /// a `SubQueueState` for a Submission Queue.
+    inner: AtomicU64,
 
     /// Marker type to indicate what type of Queue we're modeling.
     _qt: PhantomData<QT>,
 }
 
 impl<QT> QueueState<QT> {
-    /// Create a new `QueueState`
-    fn new(size: u32) -> Self {
-        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
-        Self { size, head_tail_phase: AtomicU64::new(1 << 32 /* phase tag */), _qt: PhantomData }
-    }
-
     /// Returns if the queue is currently empty with the given head and tail pointers.
     ///
     /// A queue is empty when the Head entry pointer equals the Tail entry pointer.
@@ -136,38 +167,37 @@ impl<QT> QueueState<QT> {
 }
 
 impl QueueState<CompletionQueueType> {
+    /// Create a new `QueueState` for a Completion Queue
+    fn new_completion_state(size: u32) -> QueueState<CompletionQueueType> {
+        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
+        // As the device side, we start with our phase tag as asserted (1)
+        // as the host side (VM) will create all the Completion Queue entries
+        // with the phase initially zeroed out.
+        let inner = CompQueueState(0).with_phase(true);
+        Self { size, inner: AtomicU64::new(inner.0), _qt: PhantomData }
+    }
+
     /// Attempt to return the Tail entry pointer and then move it forward by 1.
     ///
     /// If the queue is full this method returns [`None`].
     /// Otherwise, this method returns the current Tail entry pointer and then
     /// increments the Tail entry pointer by 1 (wrapping if necessary).
     fn push_tail(&self) -> Option<u16> {
-        self.head_tail_phase
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |head_tail| {
-                let (mut phase, tail, head) = (
-                    (head_tail & (1 << 32)) != 0,
-                    (head_tail >> 16) as u16,
-                    head_tail as u16,
-                );
-                if self.is_full(head, tail) {
+        self.inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let mut state = CompQueueState(state);
+                if self.is_full(state.head(), state.tail()) {
                     return None;
                 }
-                if tail as u32 + 1 >= self.size {
+                if state.tail() as u32 + 1 >= self.size {
                     // We wrapped so flip phase
-                    phase = !phase;
+                    state.set_phase(!state.phase());
                 }
-                let new_tail = self.wrap_add(tail, 1);
-                Some(
-                    (phase as u64) << 32
-                        | (new_tail as u64) << 16
-                        | head as u64,
-                )
+                let new_tail = self.wrap_add(state.tail(), 1);
+                Some(state.with_tail(new_tail).0)
             })
             .ok()
-            .map(|old_head_tail| {
-                let old_tail = (old_head_tail >> 16) as u16;
-                old_tail
-            })
+            .map(|state| CompQueueState(state).tail())
     }
 
     /// How many slots are occupied between the head and the tail i.e., how
@@ -186,19 +216,15 @@ impl QueueState<CompletionQueueType> {
         if idx as u32 >= self.size {
             return Err("invalid index");
         }
-        self.head_tail_phase
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |head_tail| {
-                let (phase, tail, head) = (
-                    (head_tail & (1 << 32)) != 0,
-                    (head_tail >> 16) as u16,
-                    head_tail as u16,
-                );
-                let pop_count = self.wrap_sub(idx, head);
-                if pop_count > self.avail_occupied(head, tail) {
+        self.inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let state = CompQueueState(state);
+                let pop_count = self.wrap_sub(idx, state.head());
+                if pop_count > self.avail_occupied(state.head(), state.tail()) {
                     return None;
                 }
                 // Replace head with given idx
-                Some((phase as u64) << 32 | (tail as u64) << 16 | idx as u64)
+                Some(state.with_head(idx).0)
             })
             .map_err(|_| "index too far")
             .map(|_| ())
@@ -206,23 +232,30 @@ impl QueueState<CompletionQueueType> {
 }
 
 impl QueueState<SubmissionQueueType> {
+    /// Create a new `QueueState` for a Submission Queue
+    fn new_submission_state(size: u32) -> QueueState<SubmissionQueueType> {
+        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
+        let inner = SubQueueState(0);
+        Self { size, inner: AtomicU64::new(inner.0), _qt: PhantomData }
+    }
+
     /// Attempt to return the Head entry pointer and then move it forward by 1.
     ///
     /// If the queue is empty this method returns [`None`].
     /// Otherwise, this method returns the current Head entry pointer and then
     /// increments the Head entry pointer by 1 (wrapping if necessary).
     fn pop_head(&self) -> Option<u16> {
-        self.head_tail_phase
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |head_tail| {
-                let (tail, head) = ((head_tail >> 16) as u16, head_tail as u16);
-                if self.is_empty(head, tail) {
+        self.inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let state = SubQueueState(state);
+                if self.is_empty(state.head(), state.tail()) {
                     return None;
                 }
-                let new_head = self.wrap_add(head, 1);
-                Some((tail as u64) << 16 | new_head as u64)
+                let new_head = self.wrap_add(state.head(), 1);
+                Some(state.with_head(new_head).0)
             })
             .ok()
-            .map(|old_head_tail| old_head_tail as u16)
+            .map(|state| SubQueueState(state).head())
     }
 
     /// How many slots are empty between the tail and the head i.e., how many
@@ -241,15 +274,15 @@ impl QueueState<SubmissionQueueType> {
         if idx as u32 >= self.size {
             return Err("invalid index");
         }
-        self.head_tail_phase
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |head_tail| {
-                let (tail, head) = ((head_tail >> 16) as u16, head_tail as u16);
-                let push_count = self.wrap_sub(idx, tail);
-                if push_count > self.avail_empty(head, tail) {
+        self.inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let state = SubQueueState(state);
+                let push_count = self.wrap_sub(idx, state.tail());
+                if push_count > self.avail_empty(state.head(), state.tail()) {
                     return None;
                 }
                 // Replace tail with given idx
-                Some((idx as u64) << 16 | head as u64)
+                Some(state.with_tail(idx).0)
             })
             .map_err(|_| "index too far")
             .map(|_| ())
@@ -294,7 +327,7 @@ impl SubQueue {
         ctx: &DispCtx,
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(id, base, size, ctx)?;
-        Ok(Self { id, cq, state: QueueState::new(size), base })
+        Ok(Self { id, cq, state: QueueState::new_submission_state(size), base })
     }
 
     /// Attempt to move the Tail entry pointer forward to the given index.
@@ -316,7 +349,7 @@ impl SubQueue {
 
     /// Returns the current Head entry pointer.
     pub fn head(&self) -> u16 {
-        self.state.head_tail_phase.load(Ordering::SeqCst) as u16
+        SubQueueState(self.state.inner.load(Ordering::SeqCst)).head()
     }
 
     /// Returns the ID of this Submission Queue.
@@ -408,7 +441,12 @@ impl CompQueue {
         hdl: pci::MsixHdl,
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(id, base, size, ctx)?;
-        Ok(Self { iv, state: QueueState::new(size), base, hdl })
+        Ok(Self {
+            iv,
+            state: QueueState::new_completion_state(size),
+            base,
+            hdl,
+        })
     }
 
     /// Attempt to move the Head entry pointer forward to the given index.
@@ -436,15 +474,14 @@ impl CompQueue {
     ///
     /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
     pub fn phase(&self) -> u16 {
-        (self.state.head_tail_phase.load(Ordering::SeqCst) >> 32) as u16
+        CompQueueState(self.state.inner.load(Ordering::SeqCst)).phase() as u16
     }
 
     /// Fires an interrupt to the guest with the associated interrupt vector
     /// if the queue is not currently empty.
     pub fn fire_interrupt(&self, ctx: &DispCtx) {
-        let head_tail = self.state.head_tail_phase.load(Ordering::SeqCst);
-        let (tail, head) = ((head_tail >> 16) as u16, head_tail as u16);
-        if !self.state.is_empty(head, tail) {
+        let state = CompQueueState(self.state.inner.load(Ordering::SeqCst));
+        if !self.state.is_empty(state.head(), state.tail()) {
             self.hdl.fire(self.iv, ctx);
         }
     }
