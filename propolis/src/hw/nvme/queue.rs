@@ -1,5 +1,5 @@
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::bits::{self, RawCompletion, RawSubmission};
@@ -315,7 +315,9 @@ pub enum QueueUpdateError {
     #[error("tried to move head or tail pointer to an invalid index")]
     InvalidEntry,
 
-    #[error("tried to push or pop too many entries given the current head/tail")]
+    #[error(
+        "tried to push or pop too many entries given the current head/tail"
+    )]
     TooManyEntries,
 }
 
@@ -433,6 +435,11 @@ pub struct CompQueue {
     /// Queue state such as the size and current head/tail entry pointers.
     state: QueueState<CompletionQueueType>,
 
+    /// Flag set when when've run out of `CompQueueEntryPermit`'s to give out.
+    ///
+    /// Polled on CQ Doorbell events so that we kick the SQ's that wanted a CompQueueEntryPermit.
+    kick: AtomicBool,
+
     /// The [`GuestAddr`] at which the Queue is mapped.
     base: GuestAddr,
 
@@ -455,6 +462,7 @@ impl CompQueue {
         Ok(Self {
             iv,
             state: QueueState::new_completion_state(size),
+            kick: AtomicBool::new(false),
             base,
             hdl,
         })
@@ -492,6 +500,8 @@ impl CompQueue {
                 let avail = state.avail();
                 // No more spots available
                 if avail == 0 {
+                    // Make sure we kick the SQ's when we have space available again
+                    self.kick.store(true, Ordering::SeqCst);
                     return None;
                 }
                 // Otherwise claim a spot
@@ -499,6 +509,11 @@ impl CompQueue {
             })
             .ok()
             .map(|_| CompQueueEntryPermit { cq: self.clone(), sq })
+    }
+
+    /// Returns whether the SQ's should be kicked due to no permits being available previously.
+    pub fn kick(&self) -> bool {
+        self.kick.swap(false, Ordering::SeqCst)
     }
 
     /// Returns the current Phase Tag bit.

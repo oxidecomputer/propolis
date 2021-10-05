@@ -544,7 +544,13 @@ impl PciNvme {
                 let admin_cq = state.get_admin_cq();
                 admin_cq.notify_head(val)?;
 
-                // TODO: post any entries to the CQ now that it has more space
+                // We may have skipped pulling entries off the admin sq
+                // due to no available completion entry permit, so just
+                // kick it here again in case.
+                if admin_cq.kick() {
+                    let admin_sq = state.get_admin_sq();
+                    self.process_admin_queue(state, admin_sq, ctx)?;
+                }
             }
 
             CtrlrReg::IOQueueDoorBells => {
@@ -567,14 +573,23 @@ impl PciNvme {
                     let cq = state.get_cq(y as u16)?;
                     cq.notify_head(val)?;
 
-                    // TODO: post any entries to the CQ now that it has more space
+                    // We may have skipped pulling entries off some SQ due to this
+                    // CQ having no available entry slots. Since we've just free'd
+                    // up some slots, kick the SQs (excl. admin) here just in case.
+                    // TODO: worth kicking only the SQs specifically associated
+                    //       with this CQ?
+                    if cq.kick() {
+                        for sq in state.sqs.iter().skip(1).flatten() {
+                            self.process_io_queue(&state, sq.clone(), ctx)?;
+                        }
+                    }
                 } else {
                     // Submission Queue y Tail Doorbell
                     let y = off >> 3;
                     let sq = state.get_sq(y as u16)?;
                     sq.notify_tail(val)?;
 
-                    self.process_io_queue(state, sq, ctx)?;
+                    self.process_io_queue(&state, sq, ctx)?;
                 }
             }
         }
@@ -635,7 +650,7 @@ impl PciNvme {
     /// Process any new entries in an I/O Submission Queue
     fn process_io_queue(
         &self,
-        state: MutexGuard<NvmeCtrl>,
+        state: &NvmeCtrl,
         sq: Arc<SubQueue>,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
