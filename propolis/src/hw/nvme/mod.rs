@@ -49,6 +49,9 @@ pub enum NvmeError {
     #[error("failed to create queue: {0}")]
     QueueCreateErr(#[from] queue::QueueCreateErr),
 
+    #[error("failed to update queue: {0}")]
+    QueueUpdateError(#[from] queue::QueueUpdateError),
+
     /// MSI-X Interrupt handle is unavailable
     #[error("the MSI-X interrupt handle is unavailable")]
     MsixHdlUnavailable,
@@ -530,10 +533,7 @@ impl PciNvme {
                 let val = wo.read_u32().try_into().unwrap();
                 let state = self.state.lock().unwrap();
                 let admin_sq = state.get_admin_sq();
-                match admin_sq.notify_tail(val) {
-                    Ok(_) => {}
-                    Err(_) => todo!("set controller error state"),
-                }
+                admin_sq.notify_tail(val)?;
 
                 // Process any new SQ entries
                 self.process_admin_queue(state, admin_sq, ctx)?;
@@ -542,10 +542,8 @@ impl PciNvme {
                 let val = wo.read_u32().try_into().unwrap();
                 let state = self.state.lock().unwrap();
                 let admin_cq = state.get_admin_cq();
-                match admin_cq.notify_head(val) {
-                    Ok(_) => {}
-                    Err(_) => todo!("set controller error state"),
-                }
+                admin_cq.notify_head(val)?;
+
                 // TODO: post any entries to the CQ now that it has more space
             }
 
@@ -567,19 +565,15 @@ impl PciNvme {
                     // Completion Queue y Head Doorbell
                     let y = (off - 4) >> 3;
                     let cq = state.get_cq(y as u16)?;
-                    match cq.notify_head(val) {
-                        Ok(_) => {}
-                        Err(_) => todo!("set controller error state"),
-                    }
+                    cq.notify_head(val)?;
+
                     // TODO: post any entries to the CQ now that it has more space
                 } else {
                     // Submission Queue y Tail Doorbell
                     let y = off >> 3;
                     let sq = state.get_sq(y as u16)?;
-                    match sq.notify_tail(val) {
-                        Ok(_) => {}
-                        Err(_) => todo!("set controller error state"),
-                    }
+                    sq.notify_tail(val)?;
+
                     self.process_io_queue(state, sq, ctx)?;
                 }
             }

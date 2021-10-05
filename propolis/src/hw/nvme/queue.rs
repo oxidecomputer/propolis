@@ -219,9 +219,9 @@ impl QueueState<CompletionQueueType> {
     /// must have enough occupied slots otherwise we return an error.
     /// Conceptually this method indicates some entries have been consumed
     /// from the queue.
-    fn pop_head_to(&self, idx: u16) -> Result<(), &'static str> {
+    fn pop_head_to(&self, idx: u16) -> Result<(), QueueUpdateError> {
         if idx as u32 >= self.size {
-            return Err("invalid index");
+            return Err(QueueUpdateError::InvalidEntry);
         }
         self.inner
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
@@ -234,7 +234,7 @@ impl QueueState<CompletionQueueType> {
                 let avail = state.avail() + pop_count;
                 Some(state.with_head(idx).with_avail(avail).0)
             })
-            .map_err(|_| "index too far")
+            .map_err(|_| QueueUpdateError::TooManyEntries)
             .map(|_| ())
     }
 }
@@ -278,9 +278,9 @@ impl QueueState<SubmissionQueueType> {
     /// must have enough empty slots available otherwise we return an error.
     /// Conceptually this method indicates new entries have been added to the
     /// queue.
-    fn push_tail_to(&self, idx: u16) -> Result<(), &'static str> {
+    fn push_tail_to(&self, idx: u16) -> Result<(), QueueUpdateError> {
         if idx as u32 >= self.size {
-            return Err("invalid index");
+            return Err(QueueUpdateError::InvalidEntry);
         }
         self.inner
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
@@ -292,7 +292,7 @@ impl QueueState<SubmissionQueueType> {
                 // Replace tail with given idx
                 Some(state.with_tail(idx).0)
             })
-            .map_err(|_| "index too far")
+            .map_err(|_| QueueUpdateError::TooManyEntries)
             .map(|_| ())
     }
 }
@@ -307,6 +307,16 @@ pub enum QueueCreateErr {
     /// The specified length is invalid.
     #[error("invalid size")]
     InvalidSize,
+}
+
+/// Errors that may be encountered while adjusting Queue head/tail pointers.
+#[derive(Error, Debug)]
+pub enum QueueUpdateError {
+    #[error("tried to move head or tail pointer to an invalid index")]
+    InvalidEntry,
+
+    #[error("tried to push or pop too many entries given the current head/tail")]
+    TooManyEntries,
 }
 
 /// Type for manipulating Submission Queues.
@@ -339,7 +349,7 @@ impl SubQueue {
     }
 
     /// Attempt to move the Tail entry pointer forward to the given index.
-    pub fn notify_tail(&self, idx: u16) -> Result<(), &'static str> {
+    pub fn notify_tail(&self, idx: u16) -> Result<(), QueueUpdateError> {
         self.state.push_tail_to(idx)
     }
 
@@ -451,7 +461,7 @@ impl CompQueue {
     }
 
     /// Attempt to move the Head entry pointer forward to the given index.
-    pub fn notify_head(&self, idx: u16) -> Result<(), &'static str> {
+    pub fn notify_head(&self, idx: u16) -> Result<(), QueueUpdateError> {
         self.state.pop_head_to(idx)
     }
 
