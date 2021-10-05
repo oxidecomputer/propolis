@@ -7,7 +7,7 @@ use crate::{common, dispatch::DispCtx};
 
 use super::bits::{self, RawSubmission};
 use super::cmds::{Completion, ReadCmd, WriteCmd};
-use super::queue::{CompQueue, SubQueue};
+use super::queue::CompQueueEntryPermit;
 use super::NvmeError;
 
 /// Max number of namespaces we support
@@ -69,12 +69,10 @@ impl NvmeNs {
     /// block device as appropriate.
     pub(super) fn queue_io_cmds(
         &self,
-        cmds: Vec<RawSubmission>,
-        cq: Arc<CompQueue>,
-        sq: Arc<SubQueue>,
+        cmds: Vec<(RawSubmission, CompQueueEntryPermit)>,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
-        for sub in cmds {
+        for (sub, cqe_permit) in cmds {
             let cmd = NvmCmd::parse(sub)?;
             match cmd {
                 NvmCmd::Write(_) if self.is_ro => {
@@ -82,38 +80,28 @@ impl NvmeNs {
                         bits::StatusCodeType::CmdSpecific,
                         bits::STS_WRITE_READ_ONLY_RANGE,
                     );
-                    sq.push_completion(sub.cid(), comp, ctx);
+                    cqe_permit.push_completion(sub.cid(), comp, ctx);
                 }
                 NvmCmd::Write(cmd) => {
-                    self.write_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
+                    self.write_cmd(sub.cid(), cmd, ctx, cqe_permit)
                 }
                 NvmCmd::Read(cmd) => {
-                    self.read_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
+                    self.read_cmd(sub.cid(), cmd, ctx, cqe_permit)
                 }
-                NvmCmd::Flush => {
-                    self.flush_cmd(sub.cid(), cq.clone(), sq.clone())
-                }
+                NvmCmd::Flush => self.flush_cmd(sub.cid(), cqe_permit),
                 NvmCmd::Unknown(_) => {
                     // For any other command, just immediately complete it
                     let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
-                    sq.push_completion(sub.cid(), comp, ctx);
+                    cqe_permit.push_completion(sub.cid(), comp, ctx);
                 }
             }
         }
-
-        // Notify for any newly added completions
-        cq.fire_interrupt(ctx);
 
         Ok(())
     }
 
     /// Enqueues a flush to the underlying block device
-    fn flush_cmd(
-        &self,
-        cid: u16,
-        cq: Arc<CompQueue>,
-        sq: Arc<SubQueue>,
-    ) {
+    fn flush_cmd(&self, cid: u16, permit: CompQueueEntryPermit) {
         // TODO: handles if it gets unmapped?
         self.bdev.enqueue(Request {
             op: BlockOp::Flush,
@@ -121,8 +109,7 @@ impl NvmeNs {
             xfer_left: 0,
             bufs: VecDeque::new(),
             cid,
-            cq,
-            sq,
+            permit,
         });
     }
 
@@ -132,8 +119,7 @@ impl NvmeNs {
         cid: u16,
         cmd: ReadCmd,
         ctx: &DispCtx,
-        cq: Arc<CompQueue>,
-        sq: Arc<SubQueue>,
+        permit: CompQueueEntryPermit,
     ) {
         probe_nvme_read_enqueue!(|| (cid, cmd.slba, cmd.nlb));
         let off = self.nlb_to_size(cmd.slba as usize);
@@ -146,8 +132,7 @@ impl NvmeNs {
             xfer_left: size,
             bufs,
             cid,
-            cq,
-            sq,
+            permit,
         });
     }
 
@@ -157,8 +142,7 @@ impl NvmeNs {
         cid: u16,
         cmd: WriteCmd,
         ctx: &DispCtx,
-        cq: Arc<CompQueue>,
-        sq: Arc<SubQueue>,
+        permit: CompQueueEntryPermit,
     ) {
         probe_nvme_write_enqueue!(|| (cid, cmd.slba, cmd.nlb));
         let off = self.nlb_to_size(cmd.slba as usize);
@@ -171,8 +155,7 @@ impl NvmeNs {
             xfer_left: size,
             bufs,
             cid,
-            cq,
-            sq,
+            permit,
         });
     }
 }
@@ -194,11 +177,8 @@ pub struct Request {
     /// The associated command id
     cid: u16,
 
-    /// The associated Completion Queue
-    cq: Arc<CompQueue>,
-
-    /// The associated Submission Queue
-    sq: Arc<SubQueue>,
+    /// The permit for pushing onto the Completion Queue
+    permit: CompQueueEntryPermit,
 }
 
 impl BlockReq for Request {
@@ -248,9 +228,6 @@ impl BlockReq for Request {
             _ => {}
         }
 
-        self.sq.push_completion(self.cid, comp, ctx);
-
-        // TODO: should this be done here?
-        self.cq.fire_interrupt(ctx);
+        self.permit.push_completion(self.cid, comp, ctx);
     }
 }

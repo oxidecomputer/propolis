@@ -63,13 +63,19 @@ bitstruct! {
         /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
         tail: u16 = 16..32;
 
+        /// Number of entries that are available for use.
+        ///
+        /// Starts off as queue size - 1 and gets decremented for each corresponding
+        /// Submission Queue entry we begin servicing.
+        avail: u16 = 32..48;
+
         /// The current phase tag.
         ///
         /// The Phase Tag is used to identify to the host (VM) that a Completion
         /// entry is new. Flips every time the Tail entry pointer wraps around.
         ///
         /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
-        phase: bool = 32;
+        phase: bool = 48;
     }
 }
 
@@ -173,7 +179,8 @@ impl QueueState<CompletionQueueType> {
         // As the device side, we start with our phase tag as asserted (1)
         // as the host side (VM) will create all the Completion Queue entries
         // with the phase initially zeroed out.
-        let inner = CompQueueState(0).with_phase(true);
+        let inner =
+            CompQueueState(0).with_phase(true).with_avail((size - 1) as u16);
         Self { size, inner: AtomicU64::new(inner.0), _qt: PhantomData }
     }
 
@@ -223,8 +230,9 @@ impl QueueState<CompletionQueueType> {
                 if pop_count > self.avail_occupied(state.head(), state.tail()) {
                     return None;
                 }
-                // Replace head with given idx
-                Some(state.with_head(idx).0)
+                // Replace head with given idx and update the number of available slots
+                let avail = state.avail() + pop_count;
+                Some(state.with_head(idx).with_avail(avail).0)
             })
             .map_err(|_| "index too far")
             .map(|_| ())
@@ -336,13 +344,21 @@ impl SubQueue {
     }
 
     /// Returns the next entry off of the Queue or [`None`] if it is empty.
-    pub fn pop(&self, ctx: &DispCtx) -> Option<bits::RawSubmission> {
+    pub fn pop(
+        self: &Arc<SubQueue>,
+        ctx: &DispCtx,
+    ) -> Option<(bits::RawSubmission, CompQueueEntryPermit)> {
+        // Attempt to reserve an entry on the Completion Queue
+        let cqe_permit = self.cq.reserve_entry(self.clone())?;
+        // Reserve some space on the Completion Queue
         if let Some(idx) = self.state.pop_head() {
             let mem = ctx.mctx.memctx();
             let ent: Option<RawSubmission> = mem.read(self.entry_addr(idx));
             // XXX: handle a guest addr that becomes unmapped later
-            ent
+            ent.map(|ent| (ent, cqe_permit))
         } else {
+            // No Submission Queue entry, so return the CQE permit
+            cqe_permit.remit();
             None
         }
     }
@@ -360,21 +376,6 @@ impl SubQueue {
     /// Returns the corresponding Completion Queue
     pub fn cq(&self) -> Arc<CompQueue> {
         self.cq.clone()
-    }
-
-    /// Push a new entry onto this Submission Queue's corresponding
-    /// Completion Queue.
-    pub fn push_completion(&self, cid: u16, comp: Completion, ctx: &DispCtx) {
-        let completion = bits::RawCompletion {
-            dw0: comp.dw0,
-            rsvd: 0,
-            sqhd: self.head(),
-            sqid: self.id(),
-            cid,
-            status_phase: comp.status | self.cq.phase(),
-        };
-
-        self.cq.push(completion, ctx);
     }
 
     /// Returns the corresponding [`GuestAddr`] for a given entry in
@@ -467,6 +468,29 @@ impl CompQueue {
         }
     }
 
+    /// Attempt to reserve an entry in the Completion Queue.
+    ///
+    /// An entry permit allows the user to push onto the Completion Queue.
+    pub fn reserve_entry(
+        self: &Arc<Self>,
+        sq: Arc<SubQueue>,
+    ) -> Option<CompQueueEntryPermit> {
+        self.state
+            .inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let state = CompQueueState(state);
+                let avail = state.avail();
+                // No more spots available
+                if avail == 0 {
+                    return None;
+                }
+                // Otherwise claim a spot
+                Some(state.with_avail(avail - 1).0)
+            })
+            .ok()
+            .map(|_| CompQueueEntryPermit { cq: self.clone(), sq })
+    }
+
     /// Returns the current Phase Tag bit.
     ///
     /// The current Phase Tag to identify to the host (VM) that a Completion
@@ -519,5 +543,48 @@ impl CompQueue {
         let region = memctx.writable_region(&GuestRegion(base, queue_size));
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
+    }
+}
+
+/// A type which allows pushing a Completion Entry onto the Completion Queue.
+pub struct CompQueueEntryPermit {
+    /// The corresponding Completion Queue for which we have a permit.
+    cq: Arc<CompQueue>,
+
+    /// The Submission Queue for which this entry is reserved.
+    sq: Arc<SubQueue>,
+}
+
+impl CompQueueEntryPermit {
+    /// Consume the permit by placing an entry into the Completion Queue.
+    pub fn push_completion(self, cid: u16, comp: Completion, ctx: &DispCtx) {
+        let completion = bits::RawCompletion {
+            dw0: comp.dw0,
+            rsvd: 0,
+            sqhd: self.sq.head(),
+            sqid: self.sq.id(),
+            cid,
+            status_phase: comp.status | self.cq.phase(),
+        };
+
+        self.cq.push(completion, ctx);
+
+        // TODO: should this be done here?
+        self.cq.fire_interrupt(ctx);
+    }
+
+    /// Return the permit without having actually used it.
+    ///
+    /// Frees up the space for someone else to grab it via `CompQueue::reserve_entry`.
+    fn remit(self) {
+        self.cq
+            .state
+            .inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let state = CompQueueState(state);
+                let avail = state.avail();
+                Some(state.with_avail(avail + 1).0)
+            })
+            .unwrap();
     }
 }

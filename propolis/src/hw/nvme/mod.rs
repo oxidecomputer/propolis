@@ -598,7 +598,7 @@ impl PciNvme {
         // Grab the Admin CQ too
         let cq = state.get_admin_cq();
 
-        while let Some(sub) = sq.pop(ctx) {
+        while let Some((sub, cqe_permit)) = sq.pop(ctx) {
             use cmds::AdminCmd;
 
             let parsed = AdminCmd::parse(sub);
@@ -629,7 +629,7 @@ impl PciNvme {
                 }
             };
 
-            sq.push_completion(sub.cid(), comp, ctx);
+            cqe_permit.push_completion(sub.cid(), comp, ctx);
         }
 
         // Notify for any newly added completions
@@ -650,18 +650,16 @@ impl PciNvme {
 
         // Collect all the IO SQ entries, per namespace
         let mut io_cmds = BTreeMap::new();
-        while let Some(sub) = sq.pop(ctx) {
-            io_cmds.entry(sub.nsid).or_insert_with(Vec::new).push(sub);
+        while let Some(sub_permit) = sq.pop(ctx) {
+            io_cmds
+                .entry(sub_permit.0.nsid)
+                .or_insert_with(Vec::new)
+                .push(sub_permit);
         }
 
         // Queue up said IO entries to the underlying block device, per namespace
         for (nsid, io_cmds) in io_cmds {
-            state.get_ns(nsid)?.queue_io_cmds(
-                io_cmds,
-                cq.clone(),
-                sq.clone(),
-                ctx,
-            )?;
+            state.get_ns(nsid)?.queue_io_cmds(io_cmds, ctx)?;
         }
 
         // Notify for any newly added completions
