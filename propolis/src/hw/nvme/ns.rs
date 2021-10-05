@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::block::*;
-use crate::hw::nvme::bits::RawCompletion;
 use crate::hw::nvme::cmds::{self, NvmCmd};
 use crate::{common, dispatch::DispCtx};
 
@@ -83,16 +82,7 @@ impl NvmeNs {
                         bits::StatusCodeType::CmdSpecific,
                         bits::STS_WRITE_READ_ONLY_RANGE,
                     );
-                    let completion = RawCompletion {
-                        dw0: comp.dw0,
-                        rsvd: 0,
-                        sqhd: sq.head(),
-                        sqid: sq.id(),
-                        cid: sub.cid(),
-                        status_phase: comp.status | cq.phase(),
-                    };
-
-                    cq.push(completion, ctx);
+                    sq.push_completion(sub.cid(), comp, ctx);
                 }
                 NvmCmd::Write(cmd) => {
                     self.write_cmd(sub.cid(), cmd, ctx, cq.clone(), sq.clone())
@@ -106,19 +96,13 @@ impl NvmeNs {
                 NvmCmd::Unknown(_) => {
                     // For any other command, just immediately complete it
                     let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
-                    let completion = RawCompletion {
-                        dw0: comp.dw0,
-                        rsvd: 0,
-                        sqhd: sq.head(),
-                        sqid: sq.id(),
-                        cid: sub.cid(),
-                        status_phase: comp.status | cq.phase(),
-                    };
-
-                    cq.push(completion, ctx);
+                    sq.push_completion(sub.cid(), comp, ctx);
                 }
             }
         }
+
+        // Notify for any newly added completions
+        cq.fire_interrupt(ctx);
 
         Ok(())
     }
@@ -264,16 +248,7 @@ impl BlockReq for Request {
             _ => {}
         }
 
-        let completion = bits::RawCompletion {
-            dw0: comp.dw0,
-            rsvd: 0,
-            sqhd: self.sq.head(),
-            sqid: self.sq.id(),
-            cid: self.cid,
-            status_phase: comp.status | self.cq.phase(),
-        };
-
-        self.cq.push(completion, ctx);
+        self.sq.push_completion(self.cid, comp, ctx);
 
         // TODO: should this be done here?
         self.cq.fire_interrupt(ctx);

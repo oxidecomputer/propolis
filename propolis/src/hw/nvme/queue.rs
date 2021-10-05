@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::bits::{self, RawCompletion, RawSubmission};
+use super::cmds::Completion;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
@@ -328,6 +329,21 @@ impl SubQueue {
         self.cq.clone()
     }
 
+    /// Push a new entry onto this Submission Queue's corresponding
+    /// Completion Queue.
+    pub fn push_completion(&self, cid: u16, comp: Completion, ctx: &DispCtx) {
+        let completion = bits::RawCompletion {
+            dw0: comp.dw0,
+            rsvd: 0,
+            sqhd: self.head(),
+            sqid: self.id(),
+            cid,
+            status_phase: comp.status | self.cq.phase(),
+        };
+
+        self.cq.push(completion, ctx);
+    }
+
     /// Returns the corresponding [`GuestAddr`] for a given entry in
     /// the Submission Queue.
     fn entry_addr(&self, idx: u16) -> GuestAddr {
@@ -403,7 +419,7 @@ impl CompQueue {
     /// Attempt to add a new entry to the Completion Queue.
     ///
     /// TODO: handle the case where the queue may be currently full.
-    pub fn push(&self, entry: RawCompletion, ctx: &DispCtx) {
+    fn push(&self, entry: RawCompletion, ctx: &DispCtx) {
         if let Some(idx) = self.state.push_tail() {
             let mem = ctx.mctx.memctx();
             let addr = self.entry_addr(idx);

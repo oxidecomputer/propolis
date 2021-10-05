@@ -629,15 +629,7 @@ impl PciNvme {
                 }
             };
 
-            let completion = RawCompletion {
-                dw0: comp.dw0,
-                rsvd: 0,
-                sqhd: sq.head(),
-                sqid: sq.id(),
-                cid: sub.cid(),
-                status_phase: comp.status | cq.phase(),
-            };
-            cq.push(completion, ctx);
+            sq.push_completion(sub.cid(), comp, ctx);
         }
 
         // Notify for any newly added completions
