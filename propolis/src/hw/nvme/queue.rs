@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::bits::{self, RawCompletion, RawSubmission};
@@ -268,11 +269,11 @@ pub enum QueueCreateErr {
 
 /// Type for manipulating Submission Queues.
 pub struct SubQueue {
-    /// The ID of queue in question.
+    /// The ID of this Submission Queue.
     id: QueueId,
 
-    /// The ID of the corresponding Completion Queue.
-    cqid: QueueId,
+    /// The corresponding Completion Queue.
+    cq: Arc<CompQueue>,
 
     /// Queue state such as the size and current head/tail entry pointers.
     state: QueueState<SubmissionQueueType>,
@@ -286,13 +287,13 @@ impl SubQueue {
     /// given base address.
     pub fn new(
         id: QueueId,
-        cqid: QueueId,
+        cq: Arc<CompQueue>,
         size: u32,
         base: GuestAddr,
         ctx: &DispCtx,
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(id, base, size, ctx)?;
-        Ok(Self { id, cqid, state: QueueState::new(size), base })
+        Ok(Self { id, cq, state: QueueState::new(size), base })
     }
 
     /// Attempt to move the Tail entry pointer forward to the given index.
@@ -322,10 +323,9 @@ impl SubQueue {
         self.id
     }
 
-    /// Returns the ID of the corresponding Completion Queue
-    /// to this Submission Queue.
-    pub fn cqid(&self) -> QueueId {
-        self.cqid
+    /// Returns the corresponding Completion Queue
+    pub fn cq(&self) -> Arc<CompQueue> {
+        self.cq.clone()
     }
 
     /// Returns the corresponding [`GuestAddr`] for a given entry in

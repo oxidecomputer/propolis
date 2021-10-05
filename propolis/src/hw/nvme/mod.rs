@@ -190,22 +190,20 @@ impl NvmeCtrl {
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
         }
-        if (cqid as usize) >= MAX_NUM_QUEUES
-            || self.cqs[cqid as usize].is_none()
-        {
-            return Err(NvmeError::InvalidCompQueue(cqid));
-        }
         if self.sqs[sqid as usize].is_some() {
             return Err(NvmeError::SubQueueAlreadyExists(sqid));
         }
-        let sq = SubQueue::new(sqid, cqid, size, base, ctx)?;
+        let cq = self.get_cq(cqid)?;
+        let sq = SubQueue::new(sqid, cq, size, base, ctx)?;
         self.sqs[sqid as usize] = Some(Arc::new(sq));
         Ok(())
     }
 
     /// Returns a reference to the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
     fn get_cq(&self, cqid: QueueId) -> Result<Arc<CompQueue>, NvmeError> {
-        debug_assert!((cqid as usize) < MAX_NUM_QUEUES);
+        if (cqid as usize) >= MAX_NUM_QUEUES {
+            return Err(NvmeError::InvalidCompQueue(cqid));
+        }
         self.cqs[cqid as usize]
             .as_ref()
             .map(Arc::clone)
@@ -214,7 +212,9 @@ impl NvmeCtrl {
 
     /// Returns a reference to the [`SubQueue`] which corresponds to the given submission queue id (`cqid`).
     fn get_sq(&self, sqid: QueueId) -> Result<Arc<SubQueue>, NvmeError> {
-        debug_assert!((sqid as usize) < MAX_NUM_QUEUES);
+        if (sqid as usize) >= MAX_NUM_QUEUES {
+            return Err(NvmeError::InvalidSubQueue(sqid));
+        }
         self.sqs[sqid as usize]
             .as_ref()
             .map(Arc::clone)
@@ -654,7 +654,7 @@ impl PciNvme {
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         // Grab the corresponding CQ
-        let cq = state.get_cq(sq.cqid())?;
+        let cq = sq.cq();
 
         // Collect all the IO SQ entries, per namespace
         let mut io_cmds = BTreeMap::new();
