@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::block::*;
 use crate::hw::nvme::bits::RawCompletion;
@@ -71,16 +71,14 @@ impl NvmeNs {
     pub(super) fn queue_io_cmds(
         &self,
         cmds: Vec<RawSubmission>,
-        cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>,
+        cq: Arc<CompQueue>,
+        sq: Arc<SubQueue>,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         for sub in cmds {
             let cmd = NvmCmd::parse(sub)?;
             match cmd {
                 NvmCmd::Write(_) if self.is_ro => {
-                    let mut cq = cq.lock().unwrap();
-                    let sq = sq.lock().unwrap();
                     let comp = Completion::specific_err(
                         bits::StatusCodeType::CmdSpecific,
                         bits::STS_WRITE_READ_ONLY_RANGE,
@@ -107,9 +105,6 @@ impl NvmeNs {
                 }
                 NvmCmd::Unknown(_) => {
                     // For any other command, just immediately complete it
-                    let mut cq = cq.lock().unwrap();
-                    let sq = sq.lock().unwrap();
-
                     let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
                     let completion = RawCompletion {
                         dw0: comp.dw0,
@@ -132,8 +127,8 @@ impl NvmeNs {
     fn flush_cmd(
         &self,
         cid: u16,
-        cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>,
+        cq: Arc<CompQueue>,
+        sq: Arc<SubQueue>,
     ) {
         // TODO: handles if it gets unmapped?
         self.bdev.enqueue(Request {
@@ -153,8 +148,8 @@ impl NvmeNs {
         cid: u16,
         cmd: ReadCmd,
         ctx: &DispCtx,
-        cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>,
+        cq: Arc<CompQueue>,
+        sq: Arc<SubQueue>,
     ) {
         probe_nvme_read_enqueue!(|| (cid, cmd.slba, cmd.nlb));
         let off = self.nlb_to_size(cmd.slba as usize);
@@ -178,8 +173,8 @@ impl NvmeNs {
         cid: u16,
         cmd: WriteCmd,
         ctx: &DispCtx,
-        cq: Arc<Mutex<CompQueue>>,
-        sq: Arc<Mutex<SubQueue>>,
+        cq: Arc<CompQueue>,
+        sq: Arc<SubQueue>,
     ) {
         probe_nvme_write_enqueue!(|| (cid, cmd.slba, cmd.nlb));
         let off = self.nlb_to_size(cmd.slba as usize);
@@ -216,10 +211,10 @@ pub struct Request {
     cid: u16,
 
     /// The associated Completion Queue
-    cq: Arc<Mutex<CompQueue>>,
+    cq: Arc<CompQueue>,
 
     /// The associated Submission Queue
-    sq: Arc<Mutex<SubQueue>>,
+    sq: Arc<SubQueue>,
 }
 
 impl BlockReq for Request {
@@ -269,21 +264,18 @@ impl BlockReq for Request {
             _ => {}
         }
 
-        let sq = self.sq.lock().unwrap();
-        let mut cq = self.cq.lock().unwrap();
-
         let completion = bits::RawCompletion {
             dw0: comp.dw0,
             rsvd: 0,
-            sqhd: sq.head(),
-            sqid: sq.id(),
+            sqhd: self.sq.head(),
+            sqid: self.sq.id(),
             cid: self.cid,
-            status_phase: comp.status | cq.phase(),
+            status_phase: comp.status | self.cq.phase(),
         };
 
-        cq.push(completion, ctx);
+        self.cq.push(completion, ctx);
 
         // TODO: should this be done here?
-        cq.fire_interrupt(ctx);
+        self.cq.fire_interrupt(ctx);
     }
 }
