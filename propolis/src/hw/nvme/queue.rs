@@ -362,7 +362,6 @@ impl SubQueue {
     ) -> Option<(bits::RawSubmission, CompQueueEntryPermit)> {
         // Attempt to reserve an entry on the Completion Queue
         let cqe_permit = self.cq.reserve_entry(self.clone())?;
-        // Reserve some space on the Completion Queue
         if let Some(idx) = self.state.pop_head() {
             let mem = ctx.mctx.memctx();
             let ent: Option<RawSubmission> = mem.read(self.entry_addr(idx));
