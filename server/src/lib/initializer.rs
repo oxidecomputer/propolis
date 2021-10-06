@@ -134,9 +134,7 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_chipset(&self) -> Result<RegisteredChipset, Error> {
-        let hdl = self.machine.get_hdl();
-        let chipset = I440Fx::create(Arc::clone(&hdl));
-        chipset.attach(self.mctx);
+        let chipset = I440Fx::create(self.machine);
         let id = self
             .inv
             .register(&chipset, "chipset".to_string(), None)
@@ -213,9 +211,7 @@ impl<'a> MachineInitializer<'a> {
             .map_err(|e| -> std::io::Error { e.into() })?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
-        let blk = vioblk
-            .inner_dev::<virtio::pci::PciVirtio>()
-            .inner_dev::<virtio::block::VirtioBlock>();
+        let blk = vioblk.inner_dev::<virtio::block::VirtioBlock>();
         backend.attach(blk, self.disp);
         chipset.device().pci_attach(bdf, vioblk);
 

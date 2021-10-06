@@ -39,13 +39,13 @@ struct MapEnt {
 /// - The device's physical memory representation
 /// - Buses.
 pub struct Machine {
-    hdl: Arc<VmmHdl>,
+    pub hdl: Arc<VmmHdl>,
     max_cpu: u8,
 
     _guard_space: GuardSpace,
     map_physmem: ASpace<MapEnt>,
-    bus_mmio: MmioBus,
-    bus_pio: PioBus,
+    pub bus_mmio: Arc<MmioBus>,
+    pub bus_pio: Arc<PioBus>,
 }
 
 impl Machine {
@@ -169,8 +169,8 @@ impl Machine {
 
             _guard_space: guard_space,
             map_physmem: map,
-            bus_mmio: MmioBus::new(MAX_PHYSMEM),
-            bus_pio: PioBus::new(),
+            bus_mmio: Arc::new(MmioBus::new(MAX_PHYSMEM)),
+            bus_pio: Arc::new(PioBus::new()),
         }))
     }
 }
@@ -577,8 +577,8 @@ impl Builder {
 
             _guard_space: guard_space,
             map_physmem: map,
-            bus_mmio: MmioBus::new(MAX_PHYSMEM),
-            bus_pio: PioBus::new(),
+            bus_mmio: Arc::new(MmioBus::new(MAX_PHYSMEM)),
+            bus_pio: Arc::new(PioBus::new()),
         };
         Ok(Arc::new(machine))
     }

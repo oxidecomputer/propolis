@@ -131,8 +131,7 @@ fn main() {
         machine.initialize_rtc(lowmem, highmem).unwrap();
 
         let hdl = machine.get_hdl();
-        let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
-        chipset.attach(mctx);
+        let chipset = hw::chipset::i440fx::I440Fx::create(machine);
         let chipset_id = inv
             .register(&chipset, "chipset".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
@@ -208,9 +207,8 @@ fn main() {
                         .register_child(creg, id)
                         .map_err(|e| -> std::io::Error { e.into() })?;
 
-                    let blk = vioblk
-                        .inner_dev::<hw::virtio::pci::PciVirtio>()
-                        .inner_dev::<hw::virtio::block::VirtioBlock>();
+                    let blk =
+                        vioblk.inner_dev::<hw::virtio::block::VirtioBlock>();
                     backend.attach(blk as Arc<dyn block::Device>, disp);
 
                     chipset.pci_attach(bdf.unwrap(), vioblk);
@@ -240,8 +238,7 @@ fn main() {
                         inv.register(&nvme, format!("nvme-{}", name), None)?;
                     let _be_id = inv.register_child(creg, id)?;
 
-                    let blk = nvme.inner_dev::<hw::nvme::PciNvme>();
-                    backend.attach(blk, disp);
+                    backend.attach(nvme.clone(), disp);
 
                     chipset.pci_attach(bdf.unwrap(), nvme);
                 }
@@ -251,10 +248,6 @@ fn main() {
                 }
             }
         }
-
-        // with all pci devices attached, place their BARs and wire up access to PCI
-        // configuration space
-        chipset.pci_finalize(mctx);
 
         let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
         fwcfg

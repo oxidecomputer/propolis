@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::pio::{PioBus, PioDev};
+use crate::pio::{PioBus, PioFn};
 use bits::*;
 
 use byteorder::{ByteOrder, BE, LE};
@@ -378,14 +378,92 @@ impl FwCfg {
             (FW_CFG_IOP_DMA_HI, 4),
             (FW_CFG_IOP_DMA_LO, 4),
         ];
+        let this = self.clone();
+        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
+            this.pio_rw(port, rwo, ctx)
+        }) as Arc<PioFn>;
         for (port, len) in ports.iter() {
-            pio.register(
-                *port,
-                *len,
-                Arc::downgrade(self) as Weak<dyn PioDev>,
-                0,
-            )
-            .unwrap()
+            pio.register(*port, *len, piofn.clone()).unwrap()
+        }
+    }
+
+    fn pio_rw(&self, port: u16, rwo: RWOp, ctx: &DispCtx) {
+        let mut state = self.state.lock().unwrap();
+        match port {
+            FW_CFG_IOP_SELECTOR => match rwo {
+                RWOp::Read(ro) => match ro.len() {
+                    2 => ro.write_u16(state.selector),
+                    1 => ro.write_u8(state.selector as u8),
+                    _ => {}
+                },
+                RWOp::Write(wo) => {
+                    match wo.len() {
+                        2 => state.selector = wo.read_u16(),
+                        1 => state.selector = wo.read_u8() as u16,
+                        _ => {}
+                    }
+                    state.offset = 0;
+                }
+            },
+            FW_CFG_IOP_DATA => {
+                match rwo {
+                    RWOp::Read(mut ro) => {
+                        if ro.len() != 1 {
+                            ro.fill(0);
+                            return;
+                        }
+
+                        let res = self.xfer(
+                            state.selector,
+                            RWOp::Read(&mut ReadOp::new_child(
+                                state.offset as usize,
+                                &mut ro,
+                                0..1,
+                            )),
+                            ctx,
+                        );
+                        if res.is_err() {
+                            ro.write_u8(0);
+                        }
+                        state.offset = state.offset.saturating_add(1);
+                    }
+                    RWOp::Write(_wo) => {
+                        // XXX: ignore writes to data area
+                    }
+                }
+            }
+            FW_CFG_IOP_DMA_HI => match rwo {
+                RWOp::Read(ro) => {
+                    if ro.len() != 4 {
+                        ro.fill(0);
+                    } else {
+                        ro.write_u32(state.addr_high.to_be());
+                    }
+                }
+                RWOp::Write(wo) => {
+                    if wo.len() == 4 {
+                        state.addr_high = u32::from_be(wo.read_u32());
+                    }
+                }
+            },
+            FW_CFG_IOP_DMA_LO => match rwo {
+                RWOp::Read(ro) => {
+                    if ro.len() != 4 {
+                        ro.fill(0);
+                    } else {
+                        ro.write_u32(state.addr_low.to_be());
+                    }
+                }
+                RWOp::Write(wo) => {
+                    if wo.len() == 4 {
+                        state.addr_low = u32::from_be(wo.read_u32());
+                        let _ = self.dma_initiate(state, ctx);
+                    }
+                }
+            },
+            _ => {
+                panic!("unexpected port {:x}", port);
+            }
         }
     }
 
@@ -563,88 +641,6 @@ impl FwCfg {
             self.xfer(selector, RWOp::Write(&mut wo), ctx)?;
         }
         Ok(())
-    }
-}
-
-impl PioDev for FwCfg {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
-        let mut state = self.state.lock().unwrap();
-        match port {
-            FW_CFG_IOP_SELECTOR => match rwo {
-                RWOp::Read(ro) => match ro.len() {
-                    2 => ro.write_u16(state.selector),
-                    1 => ro.write_u8(state.selector as u8),
-                    _ => {}
-                },
-                RWOp::Write(wo) => {
-                    match wo.len() {
-                        2 => state.selector = wo.read_u16(),
-                        1 => state.selector = wo.read_u8() as u16,
-                        _ => {}
-                    }
-                    state.offset = 0;
-                }
-            },
-            FW_CFG_IOP_DATA => {
-                match rwo {
-                    RWOp::Read(mut ro) => {
-                        if ro.len() != 1 {
-                            ro.fill(0);
-                            return;
-                        }
-
-                        let res = self.xfer(
-                            state.selector,
-                            RWOp::Read(&mut ReadOp::new_child(
-                                state.offset as usize,
-                                &mut ro,
-                                0..1,
-                            )),
-                            ctx,
-                        );
-                        if res.is_err() {
-                            ro.write_u8(0);
-                        }
-                        state.offset = state.offset.saturating_add(1);
-                    }
-                    RWOp::Write(_wo) => {
-                        // XXX: ignore writes to data area
-                    }
-                }
-            }
-            FW_CFG_IOP_DMA_HI => match rwo {
-                RWOp::Read(ro) => {
-                    if ro.len() != 4 {
-                        ro.fill(0);
-                    } else {
-                        ro.write_u32(state.addr_high.to_be());
-                    }
-                }
-                RWOp::Write(wo) => {
-                    if wo.len() == 4 {
-                        state.addr_high = u32::from_be(wo.read_u32());
-                    }
-                }
-            },
-            FW_CFG_IOP_DMA_LO => match rwo {
-                RWOp::Read(ro) => {
-                    if ro.len() != 4 {
-                        ro.fill(0);
-                    } else {
-                        ro.write_u32(state.addr_low.to_be());
-                    }
-                }
-                RWOp::Write(wo) => {
-                    if wo.len() == 4 {
-                        state.addr_low = u32::from_be(wo.read_u32());
-                        let _ = self.dma_initiate(state, ctx);
-                    }
-                }
-            },
-            _ => {
-                panic!("unexpected port {:x}", port);
-            }
-        }
     }
 }
 

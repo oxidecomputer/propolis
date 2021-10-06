@@ -134,7 +134,7 @@ pub fn parse_bdf(v: &str) -> Option<pci::Bdf> {
     }
 
     if fields.len() == 3 {
-        pci::Bdf::try_new(fields[0], fields[1], fields[2])
+        pci::Bdf::new(fields[0], fields[1], fields[2])
     } else {
         None
     }

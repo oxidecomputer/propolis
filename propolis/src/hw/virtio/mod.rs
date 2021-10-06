@@ -22,8 +22,6 @@ trait VirtioDevice: Send + Sync + 'static + Entity {
     fn queues(&self) -> &VirtQueues;
 
     #[allow(unused_variables)]
-    fn device_reset(&self, ctx: &DispCtx) {}
-    #[allow(unused_variables)]
     fn queue_change(
         &self,
         vq: &Arc<VirtQueue>,

@@ -52,7 +52,7 @@ impl VirtioViona {
         vnic_name: &str,
         queue_size: u16,
         vm: &VmmHdl,
-    ) -> Result<Arc<pci::DeviceInst>> {
+    ) -> Result<Arc<PciVirtio>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_vnic(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;

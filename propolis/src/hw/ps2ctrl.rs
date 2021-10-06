@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::mem::replace;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -8,7 +8,7 @@ use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::instance;
 use crate::intr_pins::LegacyPin;
-use crate::pio::{PioBus, PioDev};
+use crate::pio::{PioBus, PioFn};
 
 bitflags! {
     #[derive(Default)]
@@ -99,14 +99,34 @@ impl PS2Ctrl {
         Arc::new(Self { state: Mutex::new(PS2State::default()) })
     }
     pub fn attach(self: &Arc<Self>, bus: &PioBus, chipset: &dyn Chipset) {
-        let data_ref = Arc::downgrade(self) as Weak<dyn PioDev>;
-        let cmd_ref = Weak::clone(&data_ref);
-        bus.register(ibmpc::PORT_PS2_DATA, 1, data_ref, 0).unwrap();
-        bus.register(ibmpc::PORT_PS2_CMD_STATUS, 1, cmd_ref, 0).unwrap();
+        let this = Arc::clone(self);
+        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
+            this.pio_rw(port, rwo, ctx)
+        }) as Arc<PioFn>;
+
+        bus.register(ibmpc::PORT_PS2_DATA, 1, Arc::clone(&piofn)).unwrap();
+        bus.register(ibmpc::PORT_PS2_CMD_STATUS, 1, piofn).unwrap();
 
         let mut state = self.state.lock().unwrap();
         state.pri_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_PRI).unwrap());
         state.aux_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap());
+    }
+
+    fn pio_rw(&self, port: u16, rwo: RWOp, ctx: &DispCtx) {
+        assert_eq!(rwo.len(), 1);
+        match port {
+            ibmpc::PORT_PS2_DATA => match rwo {
+                RWOp::Read(ro) => ro.write_u8(self.data_read()),
+                RWOp::Write(wo) => self.data_write(wo.read_u8()),
+            },
+            ibmpc::PORT_PS2_CMD_STATUS => match rwo {
+                RWOp::Read(ro) => ro.write_u8(self.status_read()),
+                RWOp::Write(wo) => self.cmd_write(wo.read_u8(), ctx),
+            },
+            _ => {
+                panic!("unexpected pio in {:x}", port);
+            }
+        }
     }
 
     fn data_write(&self, v: u8) {
@@ -257,24 +277,6 @@ impl PS2Ctrl {
             state.ctrl_cfg.contains(CtrlCfg::AUX_INTR_EN)
                 && state.aux_port.has_output(),
         );
-    }
-}
-impl PioDev for PS2Ctrl {
-    fn pio_rw(&self, port: u16, _ident: usize, rwo: RWOp, ctx: &DispCtx) {
-        assert_eq!(rwo.len(), 1);
-        match port {
-            ibmpc::PORT_PS2_DATA => match rwo {
-                RWOp::Read(ro) => ro.write_u8(self.data_read()),
-                RWOp::Write(wo) => self.data_write(wo.read_u8()),
-            },
-            ibmpc::PORT_PS2_CMD_STATUS => match rwo {
-                RWOp::Read(ro) => ro.write_u8(self.status_read()),
-                RWOp::Write(wo) => self.cmd_write(wo.read_u8(), ctx),
-            },
-            _ => {
-                panic!("unexpected pio in {:x}", port);
-            }
-        }
     }
 }
 impl Entity for PS2Ctrl {}

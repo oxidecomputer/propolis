@@ -430,6 +430,11 @@ pub trait Entity: Send + Sync + 'static {
         ctx: &DispCtx,
     ) {
     }
+    /// Function dedicated to `State::Reset` event delivery so implementers do
+    /// not need to create a more verbose `state_transition` implementation for
+    /// emulating device reset.
+    #[allow(unused_variables)]
+    fn reset(&self, ctx: &DispCtx) {}
     #[allow(unused_variables)]
     fn child_register(&self) -> Option<Vec<ChildRegister>> {
         None
