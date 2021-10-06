@@ -374,19 +374,19 @@ impl SubQueue {
         }
     }
 
+    /// Returns the corresponding Completion Queue
+    pub fn cq(&self) -> Arc<CompQueue> {
+        self.cq.clone()
+    }
+
     /// Returns the current Head entry pointer.
-    pub fn head(&self) -> u16 {
+    fn head(&self) -> u16 {
         SubQueueState(self.state.inner.load(Ordering::SeqCst)).head()
     }
 
     /// Returns the ID of this Submission Queue.
-    pub fn id(&self) -> QueueId {
+    fn id(&self) -> QueueId {
         self.id
-    }
-
-    /// Returns the corresponding Completion Queue
-    pub fn cq(&self) -> Arc<CompQueue> {
-        self.cq.clone()
     }
 
     /// Returns the corresponding [`GuestAddr`] for a given entry in
@@ -472,21 +472,24 @@ impl CompQueue {
         self.state.pop_head_to(idx)
     }
 
-    /// Add a new entry to the Completion Queue while consuming a `CompQueueEntryPermit`.
-    fn push(&self, _: CompQueueEntryPermit, entry: RawCompletion, ctx: &DispCtx) {
-        // Since we have a permit, there should always be at least
-        // one space in the queue and this unwrap shouldn't fail.
-        let idx = self.state.push_tail().unwrap();
-        let mem = ctx.mctx.memctx();
-        let addr = self.entry_addr(idx);
-        mem.write(addr, &entry);
-        // XXX: handle a guest addr that becomes unmapped later
+    /// Fires an interrupt to the guest with the associated interrupt vector
+    /// if the queue is not currently empty.
+    pub fn fire_interrupt(&self, ctx: &DispCtx) {
+        let state = CompQueueState(self.state.inner.load(Ordering::SeqCst));
+        if !self.state.is_empty(state.head(), state.tail()) {
+            self.hdl.fire(self.iv, ctx);
+        }
+    }
+
+    /// Returns whether the SQ's should be kicked due to no permits being available previously.
+    pub fn kick(&self) -> bool {
+        self.kick.swap(false, Ordering::SeqCst)
     }
 
     /// Attempt to reserve an entry in the Completion Queue.
     ///
     /// An entry permit allows the user to push onto the Completion Queue.
-    pub fn reserve_entry(
+    fn reserve_entry(
         self: &Arc<Self>,
         sq: Arc<SubQueue>,
     ) -> Option<CompQueueEntryPermit> {
@@ -508,9 +511,20 @@ impl CompQueue {
             .map(|_| CompQueueEntryPermit { cq: self.clone(), sq })
     }
 
-    /// Returns whether the SQ's should be kicked due to no permits being available previously.
-    pub fn kick(&self) -> bool {
-        self.kick.swap(false, Ordering::SeqCst)
+    /// Add a new entry to the Completion Queue while consuming a `CompQueueEntryPermit`.
+    fn push(
+        &self,
+        _: CompQueueEntryPermit,
+        entry: RawCompletion,
+        ctx: &DispCtx,
+    ) {
+        // Since we have a permit, there should always be at least
+        // one space in the queue and this unwrap shouldn't fail.
+        let idx = self.state.push_tail().unwrap();
+        let mem = ctx.mctx.memctx();
+        let addr = self.entry_addr(idx);
+        mem.write(addr, &entry);
+        // XXX: handle a guest addr that becomes unmapped later
     }
 
     /// Returns the current Phase Tag bit.
@@ -519,17 +533,8 @@ impl CompQueue {
     /// entry is new. Flips every time the Tail entry pointer wraps around.
     ///
     /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
-    pub fn phase(&self) -> u16 {
+    fn phase(&self) -> u16 {
         CompQueueState(self.state.inner.load(Ordering::SeqCst)).phase() as u16
-    }
-
-    /// Fires an interrupt to the guest with the associated interrupt vector
-    /// if the queue is not currently empty.
-    pub fn fire_interrupt(&self, ctx: &DispCtx) {
-        let state = CompQueueState(self.state.inner.load(Ordering::SeqCst));
-        if !self.state.is_empty(state.head(), state.tail()) {
-            self.hdl.fire(self.iv, ctx);
-        }
     }
 
     /// Returns the corresponding [`GuestAddr`] for a given entry in
