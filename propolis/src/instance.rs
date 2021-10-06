@@ -315,7 +315,11 @@ impl Instance {
         self.disp.with_ctx(|ctx| {
             // Allow any entity to act on the new state
             inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
-                rec.entity().state_transition(state, target, ctx);
+                let ent = rec.entity();
+                if matches!(state, State::Reset) {
+                    ent.reset(ctx);
+                }
+                ent.state_transition(state, target, ctx);
             });
 
             for f in inner.transition_funcs.iter() {

@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::fmt::Result as FmtResult;
 use std::fmt::{Display, Formatter};
 use std::io::{Error, ErrorKind};
@@ -8,26 +9,63 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
 
+use num_enum::TryFromPrimitive;
+
+pub mod bar;
 pub mod bits;
+pub mod bus;
 mod device;
 
+pub use bus::Bus;
 pub use device::*;
 
-pub const PORT_PCI_CONFIG_ADDR: u16 = 0xcf8;
-pub const PORT_PCI_CONFIG_DATA: u16 = 0xcfc;
-
-const MASK_FUNC: u8 = 0x07;
-const MASK_DEV: u8 = 0x1f;
-const MASK_BUS: u8 = 0xff;
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
+pub struct BusNum(u8);
+impl BusNum {
+    pub const fn new(n: u8) -> Option<Self> {
+        Some(Self(n))
+    }
+    pub const fn get(&self) -> u8 {
+        self.0
+    }
+}
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
+pub struct DevNum(u8);
+impl DevNum {
+    pub const fn new(n: u8) -> Option<Self> {
+        if n <= bits::MASK_DEV {
+            Some(Self(n))
+        } else {
+            None
+        }
+    }
+    pub const fn get(&self) -> u8 {
+        self.0
+    }
+}
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
+pub struct FuncNum(u8);
+impl FuncNum {
+    pub const fn new(n: u8) -> Option<Self> {
+        if n <= bits::MASK_FUNC {
+            Some(Self(n))
+        } else {
+            None
+        }
+    }
+    pub const fn get(&self) -> u8 {
+        self.0
+    }
+}
 
 /// Bus, Device, Function.
 ///
 /// Acts as an address for PCI and PCIe device functionality.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct Bdf {
-    inner_bus: u8,
-    inner_dev: u8,
-    inner_func: u8,
+    pub bus: BusNum,
+    pub dev: DevNum,
+    pub func: FuncNum,
 }
 
 impl FromStr for Bdf {
@@ -55,7 +93,7 @@ impl FromStr for Bdf {
             ));
         }
 
-        Bdf::try_new(fields[0], fields[1], fields[2]).ok_or_else(|| {
+        Bdf::new(fields[0], fields[1], fields[2]).ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidInput,
                 "Failed to parse as BDF".to_string(),
@@ -65,46 +103,54 @@ impl FromStr for Bdf {
 }
 
 impl Bdf {
-    /// Creates a new Bdf.
-    ///
-    /// The bus/device/function values must be within the acceptable range for
-    /// PCI addressing. If they could be invalid, `Bdf::try_new` should be used
-    /// instead.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `dev` is larger than 0x1F.
-    /// - Panics if `func` is larger than 0x07.
-    pub fn new(bus: u8, dev: u8, func: u8) -> Self {
-        assert!(dev <= MASK_DEV);
-        assert!(func <= MASK_FUNC);
-
-        Self { inner_bus: bus, inner_dev: dev, inner_func: func }
-    }
-
     /// Attempts to make a new BDF.
     ///
     /// Returns [`Option::None`] if the values would not fit within a BDF.
-    pub fn try_new(bus: u8, dev: u8, func: u8) -> Option<Self> {
-        if dev <= MASK_DEV && func <= MASK_FUNC {
-            Some(Self::new(bus, dev, func))
-        } else {
-            None
+    pub const fn new(bus: u8, dev: u8, func: u8) -> Option<Self> {
+        let bnum = BusNum::new(bus);
+        let dnum = DevNum::new(dev);
+        let fnum = FuncNum::new(func);
+        match (bnum, dnum, fnum) {
+            (Some(b), Some(d), Some(f)) => {
+                Some(Self { bus: b, dev: d, func: f })
+            }
+            _ => None,
         }
-    }
-    pub fn bus(&self) -> u8 {
-        self.inner_bus
-    }
-    pub fn dev(&self) -> u8 {
-        self.inner_dev
-    }
-    pub fn func(&self) -> u8 {
-        self.inner_func
     }
 }
 impl Display for Bdf {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}.{}.{}", self.inner_bus, self.inner_dev, self.inner_func)
+        write!(f, "{}.{}.{}", self.bus.0, self.dev.0, self.func.0)
+    }
+}
+
+#[derive(
+    Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd, TryFromPrimitive,
+)]
+#[repr(u8)]
+pub enum BarN {
+    BAR0 = 0,
+    BAR1,
+    BAR2,
+    BAR3,
+    BAR4,
+    BAR5,
+}
+impl BarN {
+    fn iter() -> BarIter {
+        BarIter { n: 0 }
+    }
+}
+struct BarIter {
+    n: u8,
+}
+impl Iterator for BarIter {
+    type Item = BarN;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let res = BarN::try_from(self.n).ok()?;
+        self.n += 1;
+        Some(res)
     }
 }
 
@@ -117,85 +163,12 @@ pub enum INTxPinID {
     IntD = 4,
 }
 
+pub type LintrCfg = (INTxPinID, Arc<dyn IntrPin>);
+
 pub trait Endpoint: Send + Sync {
+    fn attach(&self, attachment: bus::Attachment);
     fn cfg_rw(&self, op: RWOp<'_, '_>, ctx: &DispCtx);
-    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>));
-    fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine));
-    fn bar_place(&self, bar: BarN, addr: u64);
-    fn as_devinst(&self) -> Option<&DeviceInst>;
-}
-
-const SLOTS_PER_BUS: usize = 32;
-const FUNCS_PER_SLOT: usize = 8;
-
-#[derive(Default)]
-pub struct Slot {
-    funcs: [Option<Arc<dyn Endpoint>>; FUNCS_PER_SLOT],
-}
-
-#[derive(Default)]
-pub struct Bus {
-    slots: [Slot; SLOTS_PER_BUS],
-}
-
-impl Bus {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn attach(&mut self, slot: u8, func: u8, dev: Arc<dyn Endpoint>) {
-        assert!((slot as usize) < SLOTS_PER_BUS);
-        assert!((func as usize) < FUNCS_PER_SLOT);
-
-        // XXX be strict for now
-        assert!(self.slots[slot as usize].funcs[func as usize].is_none());
-        self.slots[slot as usize].funcs[func as usize] = Some(dev);
-    }
-
-    pub fn iter(&self) -> Iter {
-        Iter::new(self)
-    }
-
-    pub fn device_at(&self, slot: u8, func: u8) -> Option<&Arc<dyn Endpoint>> {
-        assert!((slot as usize) < SLOTS_PER_BUS);
-        assert!((func as usize) < FUNCS_PER_SLOT);
-
-        self.slots[slot as usize].funcs[func as usize].as_ref()
-    }
-}
-
-pub struct Iter<'a> {
-    bus: &'a Bus,
-    pos: usize,
-}
-impl<'a> Iter<'a> {
-    fn new(bus: &'a Bus) -> Self {
-        Self { bus, pos: 0 }
-    }
-    fn slot_func(&self) -> Option<(usize, usize)> {
-        if self.pos < (SLOTS_PER_BUS * FUNCS_PER_SLOT) as usize {
-            Some((self.pos / FUNCS_PER_SLOT, self.pos & MASK_FUNC as usize))
-        } else {
-            None
-        }
-    }
-}
-impl<'a> Iterator for Iter<'a> {
-    type Item = (u8, u8, &'a Arc<dyn Endpoint>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some((slot, func)) = self.slot_func() {
-            self.pos += 1;
-            if self.bus.slots[slot].funcs[func].is_some() {
-                return Some((
-                    slot as u8,
-                    func as u8,
-                    self.bus.slots[slot].funcs[func].as_ref().unwrap(),
-                ));
-            }
-        }
-        None
-    }
+    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx);
 }
 
 fn cfg_addr_parse(addr: u32) -> Option<(Bdf, u8)> {
@@ -203,12 +176,15 @@ fn cfg_addr_parse(addr: u32) -> Option<(Bdf, u8)> {
         // Enable bit not set
         None
     } else {
-        let offset = addr & 0xff;
-        let func = (addr >> 8) as u8 & MASK_FUNC;
-        let device = (addr >> 11) as u8 & MASK_DEV;
-        let bus = (addr >> 16) as u8 & MASK_BUS;
-
-        Some((Bdf::new(bus, device, func), offset as u8))
+        Some((
+            Bdf::new(
+                (addr >> 16) as u8 & bits::MASK_BUS,
+                (addr >> 11) as u8 & bits::MASK_DEV,
+                (addr >> 8) as u8 & bits::MASK_FUNC,
+            )
+            .unwrap(),
+            (addr & 0xff) as u8,
+        ))
     }
 }
 

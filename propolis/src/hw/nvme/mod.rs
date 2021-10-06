@@ -280,6 +280,9 @@ pub struct PciNvme {
 
     /// Underlying Block Device notifier
     notifier: block::Notifier,
+
+    /// PCI device state
+    pci_state: pci::DeviceState,
 }
 
 impl PciNvme {
@@ -288,7 +291,7 @@ impl PciNvme {
         vendor: u16,
         device: u16,
         binfo: block::DeviceInfo,
-    ) -> Arc<pci::DeviceInst> {
+    ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: vendor,
             device_id: device,
@@ -393,17 +396,20 @@ impl PciNvme {
             binfo,
         };
 
-        let notifier = block::Notifier::new();
-        let nvme = PciNvme { state: Mutex::new(state), notifier };
-
-        builder
+        let pci_state = builder
             // XXX: add room for doorbells
             .add_bar_mmio64(pci::BarN::BAR0, CONTROLLER_REG_SZ as u64)
             // BAR0/1 are used for the main config and doorbell registers
             // BAR2 is for the optional index/data registers
             // Place MSIX in BAR4 for now
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
-            .finish(Arc::new(nvme))
+            .finish();
+
+        Arc::new(PciNvme {
+            state: Mutex::new(state),
+            notifier: block::Notifier::new(),
+            pci_state,
+        })
     }
 
     /// Service a write to the NVMe Controller Configuration from the VM
@@ -684,14 +690,16 @@ impl pci::Device for PciNvme {
         }
     }
 
-    fn attach(
-        &self,
-        lintr_pin: Option<pci::INTxPin>,
-        msix_hdl: Option<pci::MsixHdl>,
-    ) {
-        assert!(lintr_pin.is_none());
-        assert!(msix_hdl.is_some());
-        self.state.lock().unwrap().msix_hdl = msix_hdl;
+    fn attach(&self) {
+        // TODO: Update the controller logic to reach out to `pci_state` to get
+        // access to the MSIX handle, rather than caching it internally
+        let mut state = self.state.lock().unwrap();
+        state.msix_hdl = self.pci_state.msix_hdl();
+        assert!(state.msix_hdl.is_some());
+    }
+
+    fn device_state(&self) -> &pci::DeviceState {
+        &self.pci_state
     }
 }
 impl Entity for PciNvme {}

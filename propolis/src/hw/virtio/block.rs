@@ -23,10 +23,7 @@ pub struct VirtioBlock {
     notifier: block::Notifier,
 }
 impl VirtioBlock {
-    pub fn create(
-        queue_size: u16,
-        info: block::DeviceInfo,
-    ) -> Arc<pci::DeviceInst> {
+    pub fn create(queue_size: u16, info: block::DeviceInfo) -> Arc<PciVirtio> {
         // virtio-block only needs two MSI-X entries for its interrupt needs:
         // - device config changes
         // - queue 0 notification

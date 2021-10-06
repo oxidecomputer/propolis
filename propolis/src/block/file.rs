@@ -105,6 +105,7 @@ impl Driver {
         })
     }
     fn blocking_loop(&self, sctx: &mut SyncCtx) {
+        let mut idled = false;
         loop {
             if sctx.check_yield() {
                 break;
@@ -113,6 +114,7 @@ impl Driver {
             let mut guard = self.queue.lock().unwrap();
             if let Some(req) = guard.pop_front() {
                 drop(guard);
+                idled = false;
                 let ctx = sctx.dispctx();
                 match process_request(&self.fp, &req, &ctx) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
@@ -120,7 +122,10 @@ impl Driver {
                 }
             } else {
                 // wait until more requests are available
-                self.idle_threads.add_permits(1);
+                if !idled {
+                    self.idle_threads.add_permits(1);
+                    idled = true;
+                }
                 let _guard = self
                     .cv
                     .wait_while(guard, |g| {

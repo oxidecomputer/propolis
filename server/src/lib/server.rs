@@ -26,7 +26,6 @@ use uuid::Uuid;
 
 use propolis::bhyve_api;
 use propolis::dispatch::{AsyncCtx, AsyncTaskId};
-use propolis::hw::chipset::Chipset;
 use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
@@ -143,9 +142,13 @@ enum SlotType {
 fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
     match ty {
         // Slots for NICS: 0x08 -> 0x0F
-        SlotType::NIC if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x8, 0)),
+        SlotType::NIC if slot.0 <= 7 => {
+            Ok(pci::Bdf::new(0, slot.0 + 0x8, 0).unwrap())
+        }
         // Slots for Disks: 0x10 -> 0x17
-        SlotType::Disk if slot.0 <= 7 => Ok(pci::Bdf::new(0, slot.0 + 0x10, 0)),
+        SlotType::Disk if slot.0 <= 7 => {
+            Ok(pci::Bdf::new(0, slot.0 + 0x10, 0).unwrap())
+        }
         _ => Err(anyhow::anyhow!(
             "PCI Slot {} has no translation to BDF for type {:?}",
             slot.0,
@@ -334,8 +337,6 @@ async fn instance_ensure(
                 }
             }
 
-            // Finalize device.
-            chipset.device().pci_finalize(mctx);
             init.initialize_fwcfg(&chipset, properties.vcpus)?;
             init.initialize_cpus()?;
             Ok(())
