@@ -38,17 +38,16 @@ impl PciNvme {
         // looking for a request to service
         for sq in state.sqs.iter().skip(1).flatten() {
             if let Some((sub, cqe_permit)) = sq.pop(ctx) {
-                // TODO: Shouldn't panic on malformed input from guest
-                let cmd = NvmCmd::parse(sub).unwrap();
+                let cmd = NvmCmd::parse(sub);
                 match cmd {
-                    NvmCmd::Write(_) if !state.binfo.writable => {
+                    Ok(NvmCmd::Write(_)) if !state.binfo.writable => {
                         let comp = Completion::specific_err(
                             bits::StatusCodeType::CmdSpecific,
                             bits::STS_WRITE_READ_ONLY_RANGE,
                         );
                         cqe_permit.push_completion(sub.cid(), comp, ctx);
                     }
-                    NvmCmd::Write(cmd) => {
+                    Ok(NvmCmd::Write(cmd)) => {
                         return Some(write_op(
                             &state,
                             sub.cid(),
@@ -57,7 +56,7 @@ impl PciNvme {
                             ctx,
                         ));
                     }
-                    NvmCmd::Read(cmd) => {
+                    Ok(NvmCmd::Read(cmd)) => {
                         return Some(read_op(
                             &state,
                             sub.cid(),
@@ -66,11 +65,12 @@ impl PciNvme {
                             ctx,
                         ));
                     }
-                    NvmCmd::Flush => {
+                    Ok(NvmCmd::Flush) => {
                         return Some(flush_op(sub.cid(), cqe_permit));
                     }
-                    NvmCmd::Unknown(_) => {
-                        // For any other command, just immediately complete it
+                    Ok(NvmCmd::Unknown(_)) | Err(_) => {
+                        // For any other unrecognized or malformed command,
+                        // just immediately complete it with an error
                         let comp =
                             Completion::generic_err(bits::STS_INTERNAL_ERR);
                         cqe_permit.push_completion(sub.cid(), comp, ctx);
