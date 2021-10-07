@@ -3,10 +3,10 @@ use std::convert::TryInto;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::{block, common::*};
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::util::regmap::RegMap;
+use crate::{block, common::*};
 
 use lazy_static::lazy_static;
 use thiserror::Error;
@@ -15,6 +15,7 @@ mod admin;
 mod bits;
 mod cmds;
 mod queue;
+mod requests;
 
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
@@ -124,6 +125,9 @@ struct NvmeCtrl {
 
     /// The Identify structure returned for Identify namespace commands
     ns_ident: IdentifyNamespace,
+
+    /// Underlying Block Device info
+    binfo: block::DeviceInfo,
 }
 
 impl NvmeCtrl {
@@ -263,17 +267,29 @@ impl NvmeCtrl {
             *cq = None;
         }
     }
+
+    /// Convert some number of logical blocks to bytes with the currently active LBA data size
+    fn nlb_to_size(&self, b: usize) -> usize {
+        b << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads
+    }
 }
 
 /// NVMe over PCIe
 pub struct PciNvme {
     /// NVMe Controller
     state: Mutex<NvmeCtrl>,
+
+    /// Underlying Block Device notifier
+    notifier: block::Notifier,
 }
 
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
-    pub fn create(vendor: u16, device: u16, info: block::DeviceInfo) -> Arc<pci::DeviceInst> {
+    pub fn create(
+        vendor: u16,
+        device: u16,
+        binfo: block::DeviceInfo,
+    ) -> Arc<pci::DeviceInst> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: vendor,
             device_id: device,
@@ -313,7 +329,7 @@ impl PciNvme {
 
         // Initialize the Identify structure returned when the  host issues
         // an Identify Namespace command.
-        let total_bytes = info.total_size * info.block_size as u64;
+        let total_bytes = binfo.total_size * binfo.block_size as u64;
         let nsze = total_bytes / BLOCK_SZ;
         let mut ns_ident = bits::IdentifyNamespace {
             // No thin provisioning so nsze == ncap == nuse
@@ -326,7 +342,10 @@ impl PciNvme {
         };
 
         // Update the block format we support
-        debug_assert!(BLOCK_SZ.is_power_of_two(), "BLOCK_SZ must be a power of 2");
+        debug_assert!(
+            BLOCK_SZ.is_power_of_two(),
+            "BLOCK_SZ must be a power of 2"
+        );
         debug_assert!(BLOCK_SZ >= 512, "BLOCK_SZ must be at least 512 bytes");
         ns_ident.lbaf[0].lbads = BLOCK_SZ.trailing_zeros() as u8;
 
@@ -372,9 +391,11 @@ impl PciNvme {
             sqs: Default::default(),
             ctrl_ident,
             ns_ident,
+            binfo,
         };
 
-        let nvme = PciNvme { state: Mutex::new(state) };
+        let notifier = block::Notifier::new();
+        let nvme = PciNvme { state: Mutex::new(state), notifier };
 
         builder
             // XXX: add room for doorbells
