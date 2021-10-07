@@ -76,6 +76,9 @@ impl PciNvme {
                         cqe_permit.push_completion(sub.cid(), comp, ctx);
                     }
                 }
+
+                // Notify for any newly added completions
+                sq.cq().fire_interrupt(ctx);
             }
         }
 

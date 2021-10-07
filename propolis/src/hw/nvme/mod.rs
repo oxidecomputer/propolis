@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -594,9 +593,7 @@ impl PciNvme {
                     // TODO: worth kicking only the SQs specifically associated
                     //       with this CQ?
                     if cq.kick() {
-                        for sq in state.sqs.iter().skip(1).flatten() {
-                            self.process_io_queue(&state, sq.clone(), ctx)?;
-                        }
+                        self.notifier.notify(self, ctx);
                     }
                 } else {
                     // Submission Queue y Tail Doorbell
@@ -604,7 +601,8 @@ impl PciNvme {
                     let sq = state.get_sq(y as u16)?;
                     sq.notify_tail(val)?;
 
-                    self.process_io_queue(&state, sq, ctx)?;
+                    // Poke block device to service new requests
+                    self.notifier.notify(self, ctx);
                 }
             }
         }
@@ -654,36 +652,6 @@ impl PciNvme {
             };
 
             cqe_permit.push_completion(sub.cid(), comp, ctx);
-        }
-
-        // Notify for any newly added completions
-        cq.fire_interrupt(ctx);
-
-        Ok(())
-    }
-
-    /// Process any new entries in an I/O Submission Queue
-    fn process_io_queue(
-        &self,
-        state: &NvmeCtrl,
-        sq: Arc<SubQueue>,
-        ctx: &DispCtx,
-    ) -> Result<(), NvmeError> {
-        // Grab the corresponding CQ
-        let cq = sq.cq();
-
-        // Collect all the IO SQ entries, per namespace
-        let mut io_cmds = BTreeMap::new();
-        while let Some(sub_permit) = sq.pop(ctx) {
-            io_cmds
-                .entry(sub_permit.0.nsid)
-                .or_insert_with(Vec::new)
-                .push(sub_permit);
-        }
-
-        // Queue up said IO entries to the underlying block device, per namespace
-        for (nsid, io_cmds) in io_cmds {
-            //state.get_ns(nsid)?.queue_io_cmds(io_cmds, ctx)?;
         }
 
         // Notify for any newly added completions
