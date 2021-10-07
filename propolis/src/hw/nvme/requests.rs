@@ -93,7 +93,7 @@ fn read_op(
     cqe_permit: CompQueueEntryPermit,
     ctx: &DispCtx,
 ) -> Request {
-    //probe_nvme_read_enqueue!(|| (cid, cmd.slba, cmd.nlb));
+    probe_nvme_read_enqueue!(|| (cid, cmd.slba, cmd.nlb));
     let off = state.nlb_to_size(cmd.slba as usize);
     let size = state.nlb_to_size(cmd.nlb as usize);
     let bufs = cmd.data(size as u64, ctx.mctx.memctx()).collect();
@@ -113,7 +113,7 @@ fn write_op(
     cqe_permit: CompQueueEntryPermit,
     ctx: &DispCtx,
 ) -> Request {
-    //probe_nvme_write_enqueue!(|| (cid, cmd.slba, cmd.nlb));
+    probe_nvme_write_enqueue!(|| (cid, cmd.slba, cmd.nlb));
     let off = state.nlb_to_size(cmd.slba as usize);
     let size = state.nlb_to_size(cmd.nlb as usize);
     let bufs = cmd.data(size as u64, ctx.mctx.memctx()).collect();
@@ -131,13 +131,7 @@ fn flush_op(cid: u16, cqe_permit: CompQueueEntryPermit) -> Request {
         0,
         0, // TODO: is 0 enough or do we pass total size?
         Box::new(move |res, ctx| {
-            complete_block_req(
-                cid,
-                BlockOp::Flush,
-                res,
-                cqe_permit,
-                ctx,
-            )
+            complete_block_req(cid, BlockOp::Flush, res, cqe_permit, ctx)
         }),
     )
 }
@@ -163,11 +157,15 @@ fn complete_block_req(
         ),
     };
 
-    // match op {
-    //     BlockOp::Read => probe_nvme_read_complete!(|| (cid)),
-    //     BlockOp::Write => probe_nvme_write_complete!(|| (cid)),
-    //     _ => {}
-    // }
+    match op {
+        BlockOp::Read => {
+            probe_nvme_read_complete!(|| (cid));
+        }
+        BlockOp::Write => {
+            probe_nvme_write_complete!(|| (cid));
+        }
+        _ => {}
+    }
 
     cqe_permit.push_completion(cid, comp, ctx);
 }
