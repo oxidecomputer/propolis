@@ -228,25 +228,24 @@ fn main() {
                         .map_err(|e| -> std::io::Error { e.into() })?;
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
-                // "pci-nvme" => {
-                //     let block_dev =
-                //         dev.options.get("block_dev").unwrap().as_str().unwrap();
+                "pci-nvme" => {
+                    let block_dev =
+                        dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                //     let (backend, creg) = config.block_dev(block_dev);
+                    let (backend, creg) = config.block_dev(block_dev);
 
-                //     let info = backend.info();
-                //     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
+                    let info = backend.info();
+                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
 
-                //     let id = inv
-                //         .register(&nvme, format!("nvme-{}", name), None)?;
-                //     let _be_id = inv
-                //         .register_child(creg, id)?;
+                    let id =
+                        inv.register(&nvme, format!("nvme-{}", name), None)?;
+                    let _be_id = inv.register_child(creg, id)?;
 
-                //     let blk = nvme.inner_dev::<hw::nvme::PciNvme>();
-                //     backend.attach(blk, disp);
+                    let blk = nvme.inner_dev::<hw::nvme::PciNvme>();
+                    backend.attach(blk, disp);
 
-                //     chipset.pci_attach(bdf.unwrap(), nvme);
-                // }
+                    chipset.pci_attach(bdf.unwrap(), nvme);
+                }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);
                     std::process::exit(libc::EXIT_FAILURE);
