@@ -35,7 +35,7 @@ pub enum Result {
 
 pub type CompleteFn = dyn FnOnce(Result, &DispCtx) + Send + Sync + 'static;
 
-/// Trait indicating that a type may be used as a request to a block device.
+/// Block device operation request
 pub struct Request {
     op: Operation,
     regions: Vec<GuestRegion>,

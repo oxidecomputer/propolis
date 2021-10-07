@@ -93,7 +93,7 @@ impl BlockDevice {
                     NonZeroUsize::new(8).unwrap(),
                 )
                 .unwrap();
-                let creg = ChildRegister::new(&be, "backend".to_string());
+                let creg = ChildRegister::new(&be, "backend-file".to_string());
                 (be, creg)
             }
             _ => {

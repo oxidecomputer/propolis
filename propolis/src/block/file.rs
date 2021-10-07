@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fs::{metadata, File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -12,7 +12,6 @@ use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
 use crate::inventory::Entity;
 use crate::vmm::MappingExt;
 
-use libc::fdatasync;
 use tokio::sync::Semaphore;
 
 // XXX: completely arb for now
@@ -20,7 +19,7 @@ const MAX_WORKERS: usize = 32;
 
 /// Standard [`BlockDev`] implementation.
 pub struct FileBackend {
-    fp: File,
+    fp: Arc<File>,
 
     driver: Mutex<Option<Arc<Driver>>>,
     worker_count: NonZeroUsize,
@@ -52,7 +51,7 @@ impl FileBackend {
         let len = fp.metadata().unwrap().len() as usize;
 
         let this = Self {
-            fp,
+            fp: Arc::new(fp),
 
             driver: Mutex::new(None),
             worker_count,
@@ -78,7 +77,7 @@ impl block::Backend for FileBackend {
         let mut driverg = self.driver.lock().unwrap();
         assert!(driverg.is_none());
 
-        let driver = Driver::new(&self.fp, dev);
+        let driver = Driver::new(self.fp.clone(), dev);
         driver.spawn(self.worker_count, disp);
         *driverg = Some(driver);
     }
@@ -86,7 +85,7 @@ impl block::Backend for FileBackend {
 impl Entity for FileBackend {}
 
 struct Driver {
-    fd: RawFd,
+    fp: Arc<File>,
     cv: Condvar,
     queue: Mutex<VecDeque<block::Request>>,
     idle_threads: Semaphore,
@@ -94,10 +93,10 @@ struct Driver {
     waiter: block::AsyncWaiter,
 }
 impl Driver {
-    fn new(fp: &File, dev: Arc<dyn block::Device>) -> Arc<Self> {
+    fn new(fp: Arc<File>, dev: Arc<dyn block::Device>) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
         Arc::new(Self {
-            fd: fp.as_raw_fd(),
+            fp,
             cv: Condvar::new(),
             queue: Mutex::new(VecDeque::new()),
             idle_threads: Semaphore::new(0),
@@ -115,7 +114,7 @@ impl Driver {
             if let Some(req) = guard.pop_front() {
                 drop(guard);
                 let ctx = sctx.dispctx();
-                match process_request(self.fd, &req, &ctx) {
+                match process_request(&self.fp, &req, &ctx) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
                     Err(_) => req.complete(block::Result::Failure, &ctx),
                 }
@@ -187,7 +186,7 @@ impl Driver {
 }
 
 fn process_request(
-    fd: RawFd,
+    fp: &File,
     req: &block::Request,
     ctx: &DispCtx,
 ) -> Result<()> {
@@ -198,7 +197,7 @@ fn process_request(
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
 
-            let nbytes = maps.preadv(fd, off as i64)?;
+            let nbytes = maps.preadv(fp.as_raw_fd(), off as i64)?;
             if nbytes != req.len() {
                 return Err(Error::new(ErrorKind::Other, "bad read length"));
             }
@@ -208,20 +207,13 @@ fn process_request(
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
 
-            let nbytes = maps.pwritev(fd, off as i64)?;
+            let nbytes = maps.pwritev(fp.as_raw_fd(), off as i64)?;
             if nbytes != req.len() {
                 return Err(Error::new(ErrorKind::Other, "bad write length"));
             }
         }
         block::Operation::Flush(_off, _len) => {
-            // SAFETY: The backing fd should be valid and fdatasync() is
-            // doing nothing besides the flush.
-            unsafe {
-                let res = fdatasync(fd);
-                if res != 0 {
-                    return Err(Error::from_raw_os_error(res));
-                }
-            };
+            fp.sync_data()?;
         }
     }
     Ok(())

@@ -138,7 +138,7 @@ impl BlockDevice {
                     path, readonly, nworkers,
                 )?;
                 let child =
-                    inventory::ChildRegister::new(&be, "backend".to_string());
+                    inventory::ChildRegister::new(&be, "backend-file".to_string());
 
                 Ok((be, child))
             }
