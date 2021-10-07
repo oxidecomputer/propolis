@@ -3,7 +3,7 @@ use std::convert::TryInto;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::common::*;
+use crate::{block, common::*};
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::util::regmap::RegMap;
@@ -11,20 +11,20 @@ use crate::util::regmap::RegMap;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
-pub use ns::{NvmeNs, Request};
-
 mod admin;
 mod bits;
 mod cmds;
-mod ns;
 mod queue;
 
 use bits::*;
-use ns::MAX_NUM_NAMESPACES;
 use queue::{CompQueue, QueueId, SubQueue};
 
 /// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
+
+/// Supported block size.
+/// TODO: Support more
+const BLOCK_SZ: u64 = 512;
 
 /// NVMe errors
 #[derive(Debug, Error)]
@@ -119,11 +119,11 @@ struct NvmeCtrl {
     /// The list of Submission Queues handled by the controller
     sqs: [Option<Arc<SubQueue>>; MAX_NUM_QUEUES],
 
-    /// The list of namespaces handled by the controller
-    nss: [Option<NvmeNs>; MAX_NUM_NAMESPACES],
-
     /// The Identify structure returned for Identify controller commands
-    ident: IdentifyController,
+    ctrl_ident: IdentifyController,
+
+    /// The Identify structure returned for Identify namespace commands
+    ns_ident: IdentifyNamespace,
 }
 
 impl NvmeCtrl {
@@ -242,26 +242,6 @@ impl NvmeCtrl {
         self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
     }
 
-    /// Add a new namespace to the controller
-    fn add_ns(&mut self, ns: NvmeNs) -> Result<(), NvmeError> {
-        // Find the first empty spot
-        if let Some(spot) = self.nss.iter_mut().find(|n| n.is_none()) {
-            *spot = Some(ns);
-            self.ident.nn += 1;
-            Ok(())
-        } else {
-            Err(NvmeError::TooManyNamespaces)
-        }
-    }
-
-    /// Returns a reference to the [`NvmeNs`] which corresponds to the given namespace id (`nsid`).
-    fn get_ns(&self, nsid: u32) -> Result<&NvmeNs, NvmeError> {
-        debug_assert!((nsid as usize) <= MAX_NUM_NAMESPACES);
-        self.nss[nsid as usize - 1]
-            .as_ref()
-            .ok_or(NvmeError::InvalidNamespace(nsid))
-    }
-
     /// Performs a Controller Reset.
     ///
     /// The reset deletes all I/O Submission & Completion Queues, resets
@@ -293,7 +273,7 @@ pub struct PciNvme {
 
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
-    pub fn create(vendor: u16, device: u16) -> Arc<pci::DeviceInst> {
+    pub fn create(vendor: u16, device: u16, info: block::DeviceInfo) -> Arc<pci::DeviceInst> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: vendor,
             device_id: device,
@@ -314,7 +294,7 @@ impl PciNvme {
 
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
-        let ident = bits::IdentifyController {
+        let ctrl_ident = bits::IdentifyController {
             vid: vendor,
             ssvid: vendor,
             // TODO: fill out serial number
@@ -323,12 +303,32 @@ impl PciNvme {
             // data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
             cqes: NvmQueueEntrySize(0).with_maximum(cqes).with_required(cqes),
-            // No namespaces initially
-            nn: 0,
+            // Supporting multiple namespaces complicates I/O dispatching,
+            // so for now we limit the device to a single namespace.
+            nn: 1,
             // bit 0 indicates volatile write cache is present
             vwc: 1,
             ..Default::default()
         };
+
+        // Initialize the Identify structure returned when the  host issues
+        // an Identify Namespace command.
+        let total_bytes = info.total_size * info.block_size as u64;
+        let nsze = total_bytes / BLOCK_SZ;
+        let mut ns_ident = bits::IdentifyNamespace {
+            // No thin provisioning so nsze == ncap == nuse
+            nsze,
+            ncap: nsze,
+            nuse: nsze,
+            nlbaf: 0, // We only support a single LBA format (1 but 0-based)
+            flbas: 0, // And it is at index 0 in the lbaf array
+            ..Default::default()
+        };
+
+        // Update the block format we support
+        debug_assert!(BLOCK_SZ.is_power_of_two(), "BLOCK_SZ must be a power of 2");
+        debug_assert!(BLOCK_SZ >= 512, "BLOCK_SZ must be at least 512 bytes");
+        ns_ident.lbaf[0].lbads = BLOCK_SZ.trailing_zeros() as u8;
 
         // Initialize the CAP "register" leaving most values
         // at their defaults (0):
@@ -370,8 +370,8 @@ impl PciNvme {
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
-            nss: Default::default(),
-            ident,
+            ctrl_ident,
+            ns_ident,
         };
 
         let nvme = PciNvme { state: Mutex::new(state) };
@@ -384,12 +384,6 @@ impl PciNvme {
             // Place MSIX in BAR4 for now
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
             .finish(Arc::new(nvme))
-    }
-
-    /// Add a new namespace to the controller
-    pub fn add_ns(&self, ns: NvmeNs) -> Result<(), NvmeError> {
-        let mut state = self.state.lock().unwrap();
-        state.add_ns(ns)
     }
 
     /// Service a write to the NVMe Controller Configuration from the VM
@@ -668,7 +662,7 @@ impl PciNvme {
 
         // Queue up said IO entries to the underlying block device, per namespace
         for (nsid, io_cmds) in io_cmds {
-            state.get_ns(nsid)?.queue_io_cmds(io_cmds, ctx)?;
+            //state.get_ns(nsid)?.queue_io_cmds(io_cmds, ctx)?;
         }
 
         // Notify for any newly added completions

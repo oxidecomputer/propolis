@@ -184,8 +184,6 @@ fn main() {
         inv.register(&debug_device, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        // let mut devices = HashMap::new();
-
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
             let bdf = if driver.starts_with("pci-") {
@@ -231,41 +229,23 @@ fn main() {
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
                 // "pci-nvme" => {
-                //     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000);
-                //     devices.insert(&**name, nvme.clone());
-                //     chipset.pci_attach(bdf.unwrap(), nvme);
-                // }
-                // "nvme-ns" => {
-                //     let nvme_ctrl = dev
-                //         .options
-                //         .get("controller")
-                //         .unwrap()
-                //         .as_str()
-                //         .unwrap();
-
-                //     let nvme = devices.get(nvme_ctrl).unwrap_or_else(|| {
-                //         panic!("no such nvme controller: {}", nvme_ctrl)
-                //     });
-
                 //     let block_dev =
                 //         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                //     let block_dev =
-                //         config.block_dev::<hw::nvme::Request>(block_dev);
+                //     let (backend, creg) = config.block_dev(block_dev);
 
-                //     let ns = hw::nvme::NvmeNs::create(block_dev.clone());
+                //     let info = backend.info();
+                //     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
 
-                //     if let Err(e) =
-                //         nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
-                //             nvme.add_ns(ns)
-                //         })
-                //     {
-                //         eprintln!("failed to attach nvme-ns: {}", e);
-                //         std::process::exit(libc::EXIT_FAILURE);
-                //     }
+                //     let id = inv
+                //         .register(&nvme, format!("nvme-{}", name), None)?;
+                //     let _be_id = inv
+                //         .register_child(creg, id)?;
 
-                //     block_dev
-                //         .start_dispatch(format!("bdev-{} thread", name), disp);
+                //     let blk = nvme.inner_dev::<hw::nvme::PciNvme>();
+                //     backend.attach(blk, disp);
+
+                //     chipset.pci_attach(bdf.unwrap(), nvme);
                 // }
                 _ => {
                     eprintln!("unrecognized driver: {}", name);
