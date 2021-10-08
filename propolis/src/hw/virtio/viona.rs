@@ -377,6 +377,7 @@ struct VionaPoller {
     dev: Weak<VirtioViona>,
 }
 impl VionaPoller {
+    #[cfg(target_os = "illumos")]
     fn spawn(
         viona_fd: RawFd,
         dev: Weak<VirtioViona>,
@@ -402,6 +403,7 @@ impl VionaPoller {
 
         Ok((this, task))
     }
+    #[cfg(target_os = "illumos")]
     fn event_present(&self) -> Result<bool> {
         let max_events = 1;
         let mut event = libc::epoll_event { events: 0, u64: 0 };
@@ -450,6 +452,32 @@ impl VionaPoller {
         }
     }
 }
+
+// macOS doesn't expose the epoll_create1 function as well as some other
+// constants used above. Given viona isn't available on non-illumos systems
+// anyways, we stub with just enough that it builds and can run unit tests.
+#[cfg(not(target_os = "illumos"))]
+impl VionaPoller {
+    fn spawn(
+        viona_fd: RawFd,
+        dev: Weak<VirtioViona>,
+        ctx: &DispCtx,
+    ) -> Result<(Arc<Self>, AsyncTaskId)> {
+        let this = Arc::new(Self { epfd: viona_fd, dev });
+        let for_spawn = Arc::clone(&this);
+        let task = ctx.spawn_async(move |actx| async move {
+            let _ = for_spawn.poll_interrupts(&actx).await;
+        });
+        Ok((this, task))
+    }
+    fn event_present(&self) -> Result<bool> {
+        Err(Error::new(
+            ErrorKind::Other,
+            "viona not available on non-illumos systems",
+        ))
+    }
+}
+
 impl Drop for VionaPoller {
     fn drop(&mut self) {
         unsafe {
