@@ -26,7 +26,12 @@ jobs:
     - name: Test build documentation
       run: cargo doc
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-18.04, macos-10.15 ]
+        toolchain: [ nightly ]
     steps:
     - uses: actions/checkout@v2
     - uses: dtolnay/rust-toolchain@nightly
