@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "illumos"), allow(dead_code, unused_imports))]
+
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroU16;
@@ -369,6 +371,8 @@ struct VionaPoller {
     epfd: RawFd,
     dev: Weak<VirtioViona>,
 }
+
+#[cfg(target_os = "illumos")]
 impl VionaPoller {
     fn spawn(
         viona_fd: RawFd,
@@ -443,6 +447,24 @@ impl VionaPoller {
         }
     }
 }
+
+// macOS doesn't expose the epoll_create1 function as well as some other
+// constants used above. Given viona isn't available on non-illumos systems
+// anyways, we stub with just enough that it builds and can run unit tests.
+#[cfg(not(target_os = "illumos"))]
+impl VionaPoller {
+    fn spawn(
+        _viona_fd: RawFd,
+        _dev: Weak<VirtioViona>,
+        _ctx: &DispCtx,
+    ) -> Result<(Arc<Self>, AsyncTaskId)> {
+        Err(Error::new(
+            ErrorKind::Other,
+            "viona not available on non-illumos systems",
+        ))
+    }
+}
+
 impl Drop for VionaPoller {
     fn drop(&mut self) {
         unsafe {
