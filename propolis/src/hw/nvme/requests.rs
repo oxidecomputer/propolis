@@ -29,7 +29,7 @@ impl PciNvme {
         // Go through all the queues (skip admin as we just want I/O queues)
         // looking for a request to service
         for sq in state.sqs.iter().skip(1).flatten() {
-            if let Some((sub, cqe_permit)) = sq.pop(ctx) {
+            while let Some((sub, cqe_permit)) = sq.pop(ctx) {
                 let cmd = NvmCmd::parse(sub);
                 match cmd {
                     Ok(NvmCmd::Write(_)) if !state.binfo.writable => {
@@ -68,9 +68,6 @@ impl PciNvme {
                         cqe_permit.push_completion(sub.cid(), comp, ctx);
                     }
                 }
-
-                // Notify for any newly added completions
-                sq.cq().fire_interrupt(ctx);
             }
         }
 

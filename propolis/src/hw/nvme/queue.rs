@@ -374,11 +374,6 @@ impl SubQueue {
         }
     }
 
-    /// Returns the corresponding Completion Queue
-    pub fn cq(&self) -> Arc<CompQueue> {
-        self.cq.clone()
-    }
-
     /// Returns the current Head entry pointer.
     fn head(&self) -> u16 {
         SubQueueState(self.state.inner.load(Ordering::SeqCst)).head()
@@ -514,7 +509,7 @@ impl CompQueue {
     /// Add a new entry to the Completion Queue while consuming a `CompQueueEntryPermit`.
     fn push(
         &self,
-        _: CompQueueEntryPermit,
+        _permit: CompQueueEntryPermit,
         entry: RawCompletion,
         ctx: &DispCtx,
     ) {
