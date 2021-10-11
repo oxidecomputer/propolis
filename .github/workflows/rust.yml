@@ -30,8 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-18.04, macos-10.15 ]
-        toolchain: [ nightly ]
+        os: [ ubuntu-18.04, macos-11 ]
     steps:
     - uses: actions/checkout@v2
     - uses: dtolnay/rust-toolchain@nightly
