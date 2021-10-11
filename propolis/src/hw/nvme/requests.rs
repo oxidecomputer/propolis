@@ -1,5 +1,5 @@
 use crate::{
-    block::{self, Request},
+    block::{self, Operation, Request},
     dispatch::DispCtx,
     hw::nvme::{bits, cmds::Completion},
 };
@@ -9,14 +9,6 @@ use super::{
     queue::CompQueueEntryPermit,
     NvmeCtrl, PciNvme,
 };
-
-/// NVMe IO Block Operations
-/// TODO: Seems too generic to be here
-enum BlockOp {
-    Read,
-    Write,
-    Flush,
-}
 
 impl block::Device for PciNvme {
     fn next(&self, ctx: &DispCtx) -> Option<Request> {
@@ -100,8 +92,8 @@ fn read_op(
     Request::new_read(
         off,
         bufs,
-        Box::new(move |res, ctx| {
-            complete_block_req(cid, BlockOp::Read, res, cqe_permit, ctx)
+        Box::new(move |op, res, ctx| {
+            complete_block_req(cid, op, res, cqe_permit, ctx)
         }),
     )
 }
@@ -120,8 +112,8 @@ fn write_op(
     Request::new_write(
         off,
         bufs,
-        Box::new(move |res, ctx| {
-            complete_block_req(cid, BlockOp::Write, res, cqe_permit, ctx)
+        Box::new(move |op, res, ctx| {
+            complete_block_req(cid, op, res, cqe_permit, ctx)
         }),
     )
 }
@@ -130,8 +122,8 @@ fn flush_op(cid: u16, cqe_permit: CompQueueEntryPermit) -> Request {
     Request::new_flush(
         0,
         0, // TODO: is 0 enough or do we pass total size?
-        Box::new(move |res, ctx| {
-            complete_block_req(cid, BlockOp::Flush, res, cqe_permit, ctx)
+        Box::new(move |op, res, ctx| {
+            complete_block_req(cid, op, res, cqe_permit, ctx)
         }),
     )
 }
@@ -141,7 +133,7 @@ fn flush_op(cid: u16, cqe_permit: CompQueueEntryPermit) -> Request {
 /// Place the operation result (success or failure) onto the corresponding Completion Queue.
 fn complete_block_req(
     cid: u16,
-    op: BlockOp,
+    op: Operation,
     res: block::Result,
     cqe_permit: CompQueueEntryPermit,
     ctx: &DispCtx,
@@ -158,10 +150,10 @@ fn complete_block_req(
     };
 
     match op {
-        BlockOp::Read => {
+        Operation::Read(..) => {
             probe_nvme_read_complete!(|| (cid));
         }
-        BlockOp::Write => {
+        Operation::Write(..) => {
             probe_nvme_write_complete!(|| (cid));
         }
         _ => {}
