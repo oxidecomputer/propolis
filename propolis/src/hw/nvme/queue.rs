@@ -1,5 +1,5 @@
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::bits::{self, RawCompletion, RawSubmission};
@@ -76,6 +76,12 @@ bitstruct! {
         ///
         /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
         phase: bool = 48;
+
+        /// Whether the CQ should kick its SQs due to no permits being available previously.
+        ///
+        /// One may only pop something off the SQ if there's at least one space available in
+        /// the corresponding CQ. If there isn't, we set the kick flag.
+        kick: bool = 49;
     }
 }
 
@@ -429,11 +435,6 @@ pub struct CompQueue {
     /// Queue state such as the size and current head/tail entry pointers.
     state: QueueState<CompletionQueueType>,
 
-    /// Flag set when when've run out of `CompQueueEntryPermit`'s to give out.
-    ///
-    /// Polled on CQ Doorbell events so that we kick the SQ's that wanted a CompQueueEntryPermit.
-    kick: AtomicBool,
-
     /// The [`GuestAddr`] at which the Queue is mapped.
     base: GuestAddr,
 
@@ -456,7 +457,6 @@ impl CompQueue {
         Ok(Self {
             iv,
             state: QueueState::new_completion_state(size),
-            kick: AtomicBool::new(false),
             base,
             hdl,
         })
@@ -478,7 +478,16 @@ impl CompQueue {
 
     /// Returns whether the SQ's should be kicked due to no permits being available previously.
     pub fn kick(&self) -> bool {
-        self.kick.swap(false, Ordering::SeqCst)
+        self.state
+            .inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                let state = CompQueueState(state);
+                Some(state.with_kick(false).0)
+            })
+            .ok()
+            .map(|old_state| CompQueueState(old_state).kick())
+            // This unwrap is fine as our fetch_update never returns None
+            .unwrap()
     }
 
     /// Attempt to reserve an entry in the Completion Queue.
@@ -488,7 +497,8 @@ impl CompQueue {
         self: &Arc<Self>,
         sq: Arc<SubQueue>,
     ) -> Option<CompQueueEntryPermit> {
-        self.state
+        let old_state = self
+            .state
             .inner
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
                 let state = CompQueueState(state);
@@ -496,14 +506,20 @@ impl CompQueue {
                 // No more spots available
                 if avail == 0 {
                     // Make sure we kick the SQ's when we have space available again
-                    self.kick.store(true, Ordering::SeqCst);
-                    return None;
+                    Some(state.with_kick(true).0)
+                } else {
+                    // Otherwise claim a spot
+                    Some(state.with_avail(avail - 1).0)
                 }
-                // Otherwise claim a spot
-                Some(state.with_avail(avail - 1).0)
             })
-            .ok()
-            .map(|_| CompQueueEntryPermit { cq: self.clone(), sq })
+            // Unwrap here is fine as our fetch_update never returns None.
+            .unwrap();
+        let old_state = CompQueueState(old_state);
+        if old_state.avail() == 0 {
+            None
+        } else {
+            Some(CompQueueEntryPermit { cq: self.clone(), sq })
+        }
     }
 
     /// Add a new entry to the Completion Queue while consuming a `CompQueueEntryPermit`.
@@ -609,6 +625,7 @@ impl CompQueueEntryPermit {
                 let avail = state.avail();
                 Some(state.with_avail(avail + 1).0)
             })
+            // Unwrap here is fine as our fetch_update never returns None
             .unwrap();
     }
 }
