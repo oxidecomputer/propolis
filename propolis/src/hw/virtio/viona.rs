@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "illumos"), allow(dead_code, unused_imports))]
+
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -376,8 +378,9 @@ struct VionaPoller {
     epfd: RawFd,
     dev: Weak<VirtioViona>,
 }
+
+#[cfg(target_os = "illumos")]
 impl VionaPoller {
-    #[cfg(target_os = "illumos")]
     fn spawn(
         viona_fd: RawFd,
         dev: Weak<VirtioViona>,
@@ -403,7 +406,6 @@ impl VionaPoller {
 
         Ok((this, task))
     }
-    #[cfg(target_os = "illumos")]
     fn event_present(&self) -> Result<bool> {
         let max_events = 1;
         let mut event = libc::epoll_event { events: 0, u64: 0 };
@@ -459,18 +461,10 @@ impl VionaPoller {
 #[cfg(not(target_os = "illumos"))]
 impl VionaPoller {
     fn spawn(
-        viona_fd: RawFd,
-        dev: Weak<VirtioViona>,
-        ctx: &DispCtx,
+        _viona_fd: RawFd,
+        _dev: Weak<VirtioViona>,
+        _ctx: &DispCtx,
     ) -> Result<(Arc<Self>, AsyncTaskId)> {
-        let this = Arc::new(Self { epfd: viona_fd, dev });
-        let for_spawn = Arc::clone(&this);
-        let task = ctx.spawn_async(move |actx| async move {
-            let _ = for_spawn.poll_interrupts(&actx).await;
-        });
-        Ok((this, task))
-    }
-    fn event_present(&self) -> Result<bool> {
         Err(Error::new(
             ErrorKind::Other,
             "viona not available on non-illumos systems",
