@@ -376,7 +376,7 @@ pub struct SyncCtx {
 }
 
 impl SyncCtx {
-    pub(super) fn standalone(shared: SharedCtx) -> Self {
+    pub(crate) fn standalone(shared: SharedCtx) -> Self {
         Self { shared, ctrl: None }
     }
     fn for_worker(shared: SharedCtx, ctrl: Arc<WorkerCtrl>) -> Self {
