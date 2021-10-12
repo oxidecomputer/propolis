@@ -138,13 +138,13 @@ impl SelfArc for Dispatcher {
     }
 }
 
-pub(crate) struct SharedCtx {
+struct SharedCtx {
     mctx: MachineCtx,
     disp: Weak<Dispatcher>,
     inst: Weak<instance::Instance>,
 }
 impl SharedCtx {
-    pub(crate) fn create(disp: &Dispatcher) -> Self {
+    fn create(disp: &Dispatcher) -> Self {
         Self {
             mctx: MachineCtx::new(&disp.machine),
             disp: disp.self_weak(),
