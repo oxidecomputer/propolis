@@ -12,6 +12,11 @@ use tokio::sync::Notify;
 mod file;
 pub use file::FileBackend;
 
+#[cfg(feature = "crucible")]
+mod crucible;
+#[cfg(feature = "crucible")]
+pub use self::crucible::CrucibleBackend;
+
 pub type ByteOffset = usize;
 pub type ByteLen = usize;
 

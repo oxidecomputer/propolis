@@ -168,7 +168,7 @@ impl Driver {
 
             let _ = disp
                 .spawn_sync(
-                    format!("file bdev worker {}", i),
+                    format!("file {:?} bdev worker {}", self.fp, i),
                     Box::new(move |mut sctx| {
                         tself.blocking_loop(&mut sctx);
                     }),

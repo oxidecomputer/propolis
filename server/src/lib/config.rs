@@ -1,6 +1,7 @@
 //! Describes a server config which may be parsed from a TOML file.
 
 use std::collections::{btree_map, BTreeMap};
+use std::net::SocketAddrV4;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -10,6 +11,7 @@ use serde_derive::Deserialize;
 use thiserror::Error;
 
 use propolis::block;
+use propolis::dispatch::Dispatcher;
 use propolis::inventory;
 
 /// Errors which may be returned when parsing the server configuration.
@@ -67,12 +69,13 @@ impl Config {
     pub fn create_block_backend(
         &self,
         name: &str,
+        disp: &Dispatcher,
     ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError>
     {
         let entry = self.block_devs.get(name).ok_or_else(|| {
             ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
         })?;
-        entry.create_block_backend()
+        entry.create_block_backend(disp)
     }
 }
 
@@ -108,6 +111,7 @@ pub struct BlockDevice {
 impl BlockDevice {
     pub fn create_block_backend(
         &self,
+        disp: &Dispatcher,
     ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError>
     {
         match &self.bdtype as &str {
@@ -143,6 +147,77 @@ impl BlockDevice {
                 );
 
                 Ok((be, child))
+            }
+            "crucible" => {
+                let targets: Vec<SocketAddrV4> = self
+                    .options
+                    .get("targets")
+                    .ok_or_else(|| {
+                        ParseError::KeyNotFound(
+                            "targets".to_string(),
+                            "options".to_string(),
+                        )
+                    })?
+                    .as_array()
+                    .ok_or_else(|| {
+                        ParseError::AsError(
+                            "targets".to_string(),
+                            "as_array".to_string(),
+                        )
+                    })?
+                    .to_vec()
+                    .iter()
+                    .map(|x| {
+                        x.as_str()
+                            .ok_or_else(|| {
+                                ParseError::AsError(
+                                    "x".to_string(),
+                                    "as_str".to_string(),
+                                )
+                            })?
+                            .to_string()
+                            .parse()
+                            .map_err(|e| {
+                                ParseError::AsError(
+                                    "x".to_string(),
+                                    format!("parse(): {:?}", e),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<SocketAddrV4>, ParseError>>()?;
+
+                let read_only: bool = || -> Option<bool> {
+                    self.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                let key: Option<Result<String, ParseError>> = self
+                    .options
+                    .get("key")
+                    .map(|x| -> Result<String, ParseError> {
+                        Ok(x.as_str()
+                            .ok_or_else(|| {
+                                ParseError::AsError(
+                                    "x".to_string(),
+                                    "as_str".to_string(),
+                                )
+                            })?
+                            .to_string())
+                    });
+
+                let key: Option<String> =
+                    if let Some(key) = key { Some(key?) } else { None };
+
+                let be = propolis::block::CrucibleBackend::create(
+                    disp, targets, read_only, key,
+                )?;
+
+                let creg = inventory::ChildRegister::new(
+                    &be,
+                    "backend-crucible".to_string(),
+                );
+
+                Ok((be, creg))
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);

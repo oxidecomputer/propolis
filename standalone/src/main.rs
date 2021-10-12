@@ -200,7 +200,7 @@ fn main() {
                     let block_dev =
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let (backend, creg) = config.block_dev(block_dev);
+                    let (backend, creg) = config.block_dev(block_dev, disp);
 
                     let info = backend.info();
                     let vioblk = hw::virtio::VirtioBlock::create(0x100, info);

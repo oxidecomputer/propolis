@@ -13,4 +13,4 @@ libc = "0.2"
 toml = "0.5"
 serde = "1.0"
 serde_derive = "1.0"
-propolis = { path = "../propolis" }
+propolis = { path = "../propolis", features = ["crucible"] }
