@@ -917,6 +917,7 @@ pub trait Device: Send + Sync + 'static + Entity {
     // fn cap_write(&self);
 }
 
+#[derive(Debug)]
 enum MsixBarReg {
     Addr(u16),
     Data(u16),
@@ -946,7 +947,7 @@ const MSIX_VEC_MASK: u32 = 1 << 0;
 const MSIX_MSGCTRL_ENABLE: u16 = 1 << 15;
 const MSIX_MSGCTRL_FMASK: u16 = 1 << 14;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct MsixEntry {
     addr: u64,
     data: u32,
@@ -982,6 +983,7 @@ impl MsixEntry {
     }
 }
 
+#[derive(Debug)]
 struct MsixCfg {
     count: u16,
     bar: BarN,
@@ -990,7 +992,7 @@ struct MsixCfg {
     entries: Vec<Mutex<MsixEntry>>,
     state: Mutex<MsixCfgState>,
 }
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct MsixCfgState {
     enabled: bool,
     func_mask: bool,
@@ -1256,12 +1258,17 @@ pub struct MsiEnt {
     pub pending: bool,
 }
 
+#[derive(Debug)]
 pub struct MsixHdl {
     cfg: Arc<MsixCfg>,
 }
 impl MsixHdl {
     fn new(cfg: &Arc<MsixCfg>) -> Self {
         Self { cfg: Arc::clone(cfg) }
+    }
+    #[cfg(test)]
+    pub(crate) fn new_test() -> Self {
+        Self { cfg: MsixCfg::new(2048, BarN::BAR0).0 }
     }
     pub fn fire(&self, idx: u16, ctx: &DispCtx) {
         self.cfg.fire(idx, ctx);

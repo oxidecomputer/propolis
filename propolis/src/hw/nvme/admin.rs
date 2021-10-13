@@ -33,7 +33,7 @@ impl NvmeCtrl {
             cmd.qid,
             cmd.intr_vector,
             GuestAddr(cmd.prp),
-            cmd.qsize as u32,
+            cmd.qsize,
             ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
@@ -67,7 +67,7 @@ impl NvmeCtrl {
             cmd.qid,
             cmd.cqid,
             GuestAddr(cmd.prp),
-            cmd.qsize as u32,
+            cmd.qsize,
             ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
@@ -117,18 +117,14 @@ impl NvmeCtrl {
     ) -> cmds::Completion {
         match cmd.cns {
             IDENT_CNS_NAMESPACE => match cmd.nsid {
-                n if n > 0 && n <= super::ns::MAX_NUM_NAMESPACES as u32 => {
+                1 => {
                     assert!(size_of::<bits::IdentifyNamespace>() <= PAGE_SIZE);
                     let buf = cmd
                         .data(ctx.mctx.memctx())
                         .next()
                         .expect("missing prp entry for ident response");
-                    if let Ok(ns) = self.get_ns(n) {
-                        assert!(ctx.mctx.memctx().write(buf.0, &ns.ident));
-                        cmds::Completion::success()
-                    } else {
-                        cmds::Completion::generic_err(STS_INVALID_NS)
-                    }
+                    assert!(ctx.mctx.memctx().write(buf.0, &self.ns_ident));
+                    cmds::Completion::success()
                 }
                 // 0 is not a valid NSID (See NVMe 1.0e, Section 6.1 Namespaces)
                 // We also don't currently support namespace management
@@ -143,7 +139,7 @@ impl NvmeCtrl {
                     .data(ctx.mctx.memctx())
                     .next()
                     .expect("missing prp entry for ident response");
-                assert!(ctx.mctx.memctx().write(buf.0, &self.ident));
+                assert!(ctx.mctx.memctx().write(buf.0, &self.ctrl_ident));
                 cmds::Completion::success()
             }
             // We currently present NVMe version 1.0 in which CNS is a 1-bit field

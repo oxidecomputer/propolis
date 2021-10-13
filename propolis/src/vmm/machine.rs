@@ -125,7 +125,43 @@ impl Machine {
 
         // TODO: meaningfully populate these
         let guard_space = GuardSpace::new(crate::common::PAGE_SIZE)?;
-        let map = ASpace::new(0, MAX_PHYSMEM);
+        let mut map = ASpace::new(0, MAX_PHYSMEM);
+        map.register(
+            0,
+            1024 * 1024,
+            MapEnt {
+                kind: MapKind::SysMem(0, Prot::READ),
+                name: "test-readable".to_string(),
+                guest_map: Some(Mapping::new(
+                    1024 * 1024,
+                    Prot::READ,
+                    &hdl.inner,
+                    0,
+                )?),
+                dev_map: None,
+            },
+        )
+        .map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e))
+        })?;
+        map.register(
+            1024 * 1024,
+            1024 * 1024,
+            MapEnt {
+                kind: MapKind::SysMem(0, Prot::WRITE),
+                name: "test-writable".to_string(),
+                guest_map: Some(Mapping::new(
+                    1024 * 1024,
+                    Prot::WRITE,
+                    &hdl.inner,
+                    1024 * 1024,
+                )?),
+                dev_map: None,
+            },
+        )
+        .map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e))
+        })?;
 
         Ok(Machine {
             hdl: Arc::new(hdl),

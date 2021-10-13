@@ -91,7 +91,7 @@ impl VirtioBlock {
                     Ok(block::Request::new_read(
                         breq.sector as usize * SECTOR_SZ,
                         regions,
-                        Box::new(move |res, ctx| {
+                        Box::new(move |_op, res, ctx| {
                             complete_blockreq(res, chain, mvq, ctx);
                         }),
                     ))
@@ -108,7 +108,7 @@ impl VirtioBlock {
                     Ok(block::Request::new_write(
                         breq.sector as usize * SECTOR_SZ,
                         regions,
-                        Box::new(move |res, ctx| {
+                        Box::new(move |_op, res, ctx| {
                             complete_blockreq(res, chain, mvq, ctx);
                         }),
                     ))

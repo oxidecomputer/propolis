@@ -1,6 +1,8 @@
+#![allow(clippy::style)]
 // Pull in asm!() support for USDT
 #![feature(asm)]
-#![allow(clippy::style)]
+// Pull in `assert_matches` for tests
+#![cfg_attr(test, feature(assert_matches))]
 
 use usdt::dtrace_provider;
 

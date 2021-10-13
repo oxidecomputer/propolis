@@ -144,7 +144,7 @@ impl VmmFile {
 
 /// A handle to an existing virtual machine monitor.
 pub struct VmmHdl {
-    inner: VmmFile,
+    pub(super) inner: VmmFile,
     destroyed: AtomicBool,
     name: String,
 }
@@ -380,8 +380,10 @@ impl VmmHdl {
     /// Build a VmmHdl instance suitable for unit tests, but nothing else, since
     /// it will not be backed by any real vmm reousrces.
     pub(crate) fn new_test() -> Result<Self> {
-        // TODO: use something else
-        let fp = File::open("/dev/null")?;
+        use tempfile::tempfile;
+        // Create a 2M temp file to use as our VM "memory"
+        let fp = tempfile()?;
+        fp.set_len(2 * 1024 * 1024).unwrap();
         Ok(Self {
             inner: VmmFile(fp),
             destroyed: AtomicBool::new(false),

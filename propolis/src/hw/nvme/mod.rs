@@ -1,30 +1,30 @@
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::util::regmap::RegMap;
+use crate::{block, common::*};
 
 use lazy_static::lazy_static;
 use thiserror::Error;
 
-pub use ns::{NvmeNs, Request};
-
 mod admin;
 mod bits;
 mod cmds;
-mod ns;
 mod queue;
+mod requests;
 
 use bits::*;
-use ns::MAX_NUM_NAMESPACES;
 use queue::{CompQueue, QueueId, SubQueue};
 
 /// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
+
+/// Supported block size.
+/// TODO: Support more
+const BLOCK_SZ: u64 = 512;
 
 /// NVMe errors
 #[derive(Debug, Error)]
@@ -48,6 +48,9 @@ pub enum NvmeError {
     /// Failed to create Queue
     #[error("failed to create queue: {0}")]
     QueueCreateErr(#[from] queue::QueueCreateErr),
+
+    #[error("failed to update queue: {0}")]
+    QueueUpdateError(#[from] queue::QueueUpdateError),
 
     /// MSI-X Interrupt handle is unavailable
     #[error("the MSI-X interrupt handle is unavailable")]
@@ -111,16 +114,19 @@ struct NvmeCtrl {
     msix_hdl: Option<pci::MsixHdl>,
 
     /// The list of Completion Queues handled by the controller
-    cqs: [Option<Arc<Mutex<CompQueue>>>; MAX_NUM_QUEUES],
+    cqs: [Option<Arc<CompQueue>>; MAX_NUM_QUEUES],
 
     /// The list of Submission Queues handled by the controller
-    sqs: [Option<Arc<Mutex<SubQueue>>>; MAX_NUM_QUEUES],
-
-    /// The list of namespaces handled by the controller
-    nss: [Option<NvmeNs>; MAX_NUM_NAMESPACES],
+    sqs: [Option<Arc<SubQueue>>; MAX_NUM_QUEUES],
 
     /// The Identify structure returned for Identify controller commands
-    ident: IdentifyController,
+    ctrl_ident: IdentifyController,
+
+    /// The Identify structure returned for Identify namespace commands
+    ns_ident: IdentifyNamespace,
+
+    /// Underlying Block Device info
+    binfo: block::DeviceInfo,
 }
 
 impl NvmeCtrl {
@@ -171,7 +177,7 @@ impl NvmeCtrl {
             .ok_or(NvmeError::MsixHdlUnavailable)?
             .clone();
         let cq = CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?;
-        self.cqs[cqid as usize] = Some(Arc::new(Mutex::new(cq)));
+        self.cqs[cqid as usize] = Some(Arc::new(cq));
         Ok(())
     }
 
@@ -190,25 +196,20 @@ impl NvmeCtrl {
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
         }
-        if (cqid as usize) >= MAX_NUM_QUEUES
-            || self.cqs[cqid as usize].is_none()
-        {
-            return Err(NvmeError::InvalidCompQueue(cqid));
-        }
         if self.sqs[sqid as usize].is_some() {
             return Err(NvmeError::SubQueueAlreadyExists(sqid));
         }
-        let sq = SubQueue::new(sqid, cqid, size, base, ctx)?;
-        self.sqs[sqid as usize] = Some(Arc::new(Mutex::new(sq)));
+        let cq = self.get_cq(cqid)?;
+        let sq = SubQueue::new(sqid, cq, size, base, ctx)?;
+        self.sqs[sqid as usize] = Some(Arc::new(sq));
         Ok(())
     }
 
     /// Returns a reference to the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
-    fn get_cq(
-        &self,
-        cqid: QueueId,
-    ) -> Result<Arc<Mutex<CompQueue>>, NvmeError> {
-        debug_assert!((cqid as usize) < MAX_NUM_QUEUES);
+    fn get_cq(&self, cqid: QueueId) -> Result<Arc<CompQueue>, NvmeError> {
+        if (cqid as usize) >= MAX_NUM_QUEUES {
+            return Err(NvmeError::InvalidCompQueue(cqid));
+        }
         self.cqs[cqid as usize]
             .as_ref()
             .map(Arc::clone)
@@ -216,8 +217,10 @@ impl NvmeCtrl {
     }
 
     /// Returns a reference to the [`SubQueue`] which corresponds to the given submission queue id (`cqid`).
-    fn get_sq(&self, sqid: QueueId) -> Result<Arc<Mutex<SubQueue>>, NvmeError> {
-        debug_assert!((sqid as usize) < MAX_NUM_QUEUES);
+    fn get_sq(&self, sqid: QueueId) -> Result<Arc<SubQueue>, NvmeError> {
+        if (sqid as usize) >= MAX_NUM_QUEUES {
+            return Err(NvmeError::InvalidSubQueue(sqid));
+        }
         self.sqs[sqid as usize]
             .as_ref()
             .map(Arc::clone)
@@ -229,7 +232,7 @@ impl NvmeCtrl {
     /// # Panics
     ///
     /// Panics if the Admin Completion Queue hasn't been created yet.
-    fn get_admin_cq(&self) -> Arc<Mutex<CompQueue>> {
+    fn get_admin_cq(&self) -> Arc<CompQueue> {
         self.get_cq(queue::ADMIN_QUEUE_ID).unwrap()
     }
 
@@ -238,28 +241,8 @@ impl NvmeCtrl {
     /// # Panics
     ///
     /// Panics if the Admin Submission Queue hasn't been created yet.
-    fn get_admin_sq(&self) -> Arc<Mutex<SubQueue>> {
+    fn get_admin_sq(&self) -> Arc<SubQueue> {
         self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
-    }
-
-    /// Add a new namespace to the controller
-    fn add_ns(&mut self, ns: NvmeNs) -> Result<(), NvmeError> {
-        // Find the first empty spot
-        if let Some(spot) = self.nss.iter_mut().find(|n| n.is_none()) {
-            *spot = Some(ns);
-            self.ident.nn += 1;
-            Ok(())
-        } else {
-            Err(NvmeError::TooManyNamespaces)
-        }
-    }
-
-    /// Returns a reference to the [`NvmeNs`] which corresponds to the given namespace id (`nsid`).
-    fn get_ns(&self, nsid: u32) -> Result<&NvmeNs, NvmeError> {
-        debug_assert!((nsid as usize) <= MAX_NUM_NAMESPACES);
-        self.nss[nsid as usize - 1]
-            .as_ref()
-            .ok_or(NvmeError::InvalidNamespace(nsid))
     }
 
     /// Performs a Controller Reset.
@@ -283,17 +266,29 @@ impl NvmeCtrl {
             *cq = None;
         }
     }
+
+    /// Convert some number of logical blocks to bytes with the currently active LBA data size
+    fn nlb_to_size(&self, b: usize) -> usize {
+        b << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads
+    }
 }
 
 /// NVMe over PCIe
 pub struct PciNvme {
     /// NVMe Controller
     state: Mutex<NvmeCtrl>,
+
+    /// Underlying Block Device notifier
+    notifier: block::Notifier,
 }
 
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
-    pub fn create(vendor: u16, device: u16) -> Arc<pci::DeviceInst> {
+    pub fn create(
+        vendor: u16,
+        device: u16,
+        binfo: block::DeviceInfo,
+    ) -> Arc<pci::DeviceInst> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: vendor,
             device_id: device,
@@ -314,7 +309,7 @@ impl PciNvme {
 
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
-        let ident = bits::IdentifyController {
+        let ctrl_ident = bits::IdentifyController {
             vid: vendor,
             ssvid: vendor,
             // TODO: fill out serial number
@@ -323,12 +318,35 @@ impl PciNvme {
             // data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
             cqes: NvmQueueEntrySize(0).with_maximum(cqes).with_required(cqes),
-            // No namespaces initially
-            nn: 0,
+            // Supporting multiple namespaces complicates I/O dispatching,
+            // so for now we limit the device to a single namespace.
+            nn: 1,
             // bit 0 indicates volatile write cache is present
             vwc: 1,
             ..Default::default()
         };
+
+        // Initialize the Identify structure returned when the  host issues
+        // an Identify Namespace command.
+        let total_bytes = binfo.total_size * binfo.block_size as u64;
+        let nsze = total_bytes / BLOCK_SZ;
+        let mut ns_ident = bits::IdentifyNamespace {
+            // No thin provisioning so nsze == ncap == nuse
+            nsze,
+            ncap: nsze,
+            nuse: nsze,
+            nlbaf: 0, // We only support a single LBA format (1 but 0-based)
+            flbas: 0, // And it is at index 0 in the lbaf array
+            ..Default::default()
+        };
+
+        // Update the block format we support
+        debug_assert!(
+            BLOCK_SZ.is_power_of_two(),
+            "BLOCK_SZ must be a power of 2"
+        );
+        debug_assert!(BLOCK_SZ >= 512, "BLOCK_SZ must be at least 512 bytes");
+        ns_ident.lbaf[0].lbads = BLOCK_SZ.trailing_zeros() as u8;
 
         // Initialize the CAP "register" leaving most values
         // at their defaults (0):
@@ -370,11 +388,13 @@ impl PciNvme {
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
-            nss: Default::default(),
-            ident,
+            ctrl_ident,
+            ns_ident,
+            binfo,
         };
 
-        let nvme = PciNvme { state: Mutex::new(state) };
+        let notifier = block::Notifier::new();
+        let nvme = PciNvme { state: Mutex::new(state), notifier };
 
         builder
             // XXX: add room for doorbells
@@ -384,12 +404,6 @@ impl PciNvme {
             // Place MSIX in BAR4 for now
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
             .finish(Arc::new(nvme))
-    }
-
-    /// Add a new namespace to the controller
-    pub fn add_ns(&self, ns: NvmeNs) -> Result<(), NvmeError> {
-        let mut state = self.state.lock().unwrap();
-        state.add_ns(ns)
     }
 
     /// Service a write to the NVMe Controller Configuration from the VM
@@ -533,25 +547,24 @@ impl PciNvme {
                 let val = wo.read_u32().try_into().unwrap();
                 let state = self.state.lock().unwrap();
                 let admin_sq = state.get_admin_sq();
-                let mut sq = admin_sq.lock().unwrap();
-                match sq.notify_tail(val) {
-                    Ok(_) => {}
-                    Err(_) => todo!("set controller error state"),
-                }
+                admin_sq.notify_tail(val)?;
 
                 // Process any new SQ entries
-                self.process_admin_queue(state, sq, ctx)?;
+                self.process_admin_queue(state, admin_sq, ctx)?;
             }
             CtrlrReg::DoorBellAdminCQ => {
                 let val = wo.read_u32().try_into().unwrap();
                 let state = self.state.lock().unwrap();
                 let admin_cq = state.get_admin_cq();
-                let mut cq = admin_cq.lock().unwrap();
-                match cq.notify_head(val) {
-                    Ok(_) => {}
-                    Err(_) => todo!("set controller error state"),
+                admin_cq.notify_head(val)?;
+
+                // We may have skipped pulling entries off the admin sq
+                // due to no available completion entry permit, so just
+                // kick it here again in case.
+                if admin_cq.kick() {
+                    let admin_sq = state.get_admin_sq();
+                    self.process_admin_queue(state, admin_sq, ctx)?;
                 }
-                // TODO: post any entries to the CQ now that it has more space
             }
 
             CtrlrReg::IOQueueDoorBells => {
@@ -571,24 +584,25 @@ impl PciNvme {
                 if (off >> 2) & 0b1 == 0b1 {
                     // Completion Queue y Head Doorbell
                     let y = (off - 4) >> 3;
-                    let io_cq = state.get_cq(y as u16)?;
-                    let mut cq = io_cq.lock().unwrap();
-                    match cq.notify_head(val) {
-                        Ok(_) => {}
-                        Err(_) => todo!("set controller error state"),
+                    let cq = state.get_cq(y as u16)?;
+                    cq.notify_head(val)?;
+
+                    // We may have skipped pulling entries off some SQ due to this
+                    // CQ having no available entry slots. Since we've just free'd
+                    // up some slots, kick the SQs (excl. admin) here just in case.
+                    // TODO: worth kicking only the SQs specifically associated
+                    //       with this CQ?
+                    if cq.kick() {
+                        self.notifier.notify(self, ctx);
                     }
-                    // TODO: post any entries to the CQ now that it has more space
                 } else {
                     // Submission Queue y Tail Doorbell
                     let y = off >> 3;
-                    let io_sq = state.get_sq(y as u16)?;
-                    let mut sq = io_sq.lock().unwrap();
-                    match sq.notify_tail(val) {
-                        Ok(_) => {}
-                        Err(_) => todo!("set controller error state"),
-                    }
-                    drop(sq);
-                    self.process_io_queue(state, io_sq, ctx)?;
+                    let sq = state.get_sq(y as u16)?;
+                    sq.notify_tail(val)?;
+
+                    // Poke block device to service new requests
+                    self.notifier.notify(self, ctx);
                 }
             }
         }
@@ -600,14 +614,13 @@ impl PciNvme {
     fn process_admin_queue(
         &self,
         mut state: MutexGuard<NvmeCtrl>,
-        mut sq: MutexGuard<SubQueue>,
+        sq: Arc<SubQueue>,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         // Grab the Admin CQ too
-        let admin_cq = state.get_admin_cq();
-        let mut cq = admin_cq.lock().unwrap();
+        let cq = state.get_admin_cq();
 
-        while let Some(sub) = sq.pop(ctx) {
+        while let Some((sub, cqe_permit)) = sq.pop(ctx) {
             use cmds::AdminCmd;
 
             let parsed = AdminCmd::parse(sub);
@@ -638,55 +651,10 @@ impl PciNvme {
                 }
             };
 
-            let completion = RawCompletion {
-                dw0: comp.dw0,
-                rsvd: 0,
-                sqhd: sq.head(),
-                sqid: sq.id(),
-                cid: sub.cid(),
-                status_phase: comp.status | cq.phase(),
-            };
-            cq.push(completion, ctx);
+            cqe_permit.push_completion(sub.cid(), comp, ctx);
         }
 
         // Notify for any newly added completions
-        cq.fire_interrupt(ctx);
-
-        Ok(())
-    }
-
-    /// Process any new entries in an I/O Submission Queue
-    fn process_io_queue(
-        &self,
-        state: MutexGuard<NvmeCtrl>,
-        io_sq: Arc<Mutex<SubQueue>>,
-        ctx: &DispCtx,
-    ) -> Result<(), NvmeError> {
-        let mut sq = io_sq.lock().unwrap();
-
-        // Grab the corresponding CQ
-        let io_cq = state.get_cq(sq.cqid())?;
-
-        // Collect all the IO SQ entries, per namespace
-        let mut io_cmds = BTreeMap::new();
-        while let Some(sub) = sq.pop(ctx) {
-            io_cmds.entry(sub.nsid).or_insert_with(Vec::new).push(sub);
-        }
-
-        drop(sq);
-
-        // Queue up said IO entries to the underlying block device, per namespace
-        for (nsid, io_cmds) in io_cmds {
-            state.get_ns(nsid)?.queue_io_cmds(
-                io_cmds,
-                io_cq.clone(),
-                io_sq.clone(),
-                ctx,
-            )?;
-        }
-
-        // Notify for any newly added completions
-        let cq = io_cq.lock().unwrap();
         cq.fire_interrupt(ctx);
 
         Ok(())
