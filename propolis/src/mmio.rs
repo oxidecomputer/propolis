@@ -50,7 +50,8 @@ impl MmioBus {
             func(a, RWOp::Write(&mut wo), ctx)
         });
         if !handled {
-            println!("unhandled MMIO write - addr:{:x} len:{}", addr, bytes);
+            slog::info!(ctx.log, "unhandled MMIO";
+                "op" => "write", "addr" => addr, "bytes" => bytes);
         }
         probe_mmio_write!(|| (addr as u64, bytes, val, handled as u8));
     }
@@ -68,7 +69,8 @@ impl MmioBus {
             func(a, RWOp::Read(&mut ro), ctx)
         });
         if !handled {
-            println!("unhandled MMIO read - addr:{:x} len:{}", addr, bytes);
+            slog::info!(ctx.log, "unhandled MMIO";
+                "op" => "read", "addr" => addr, "bytes" => bytes);
         }
 
         let val = LE::read_u64(&buf);

@@ -11,6 +11,7 @@ use crate::inventory::{self, Inventory};
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
+use slog::{self, Drain};
 use tokio::runtime::Handle;
 
 /// States of operation for an instance.
@@ -123,9 +124,13 @@ impl Instance {
     pub fn create(
         machine: Arc<Machine>,
         rt_handle: Option<Handle>,
+        logger: Option<slog::Logger>,
     ) -> io::Result<Arc<Self>> {
-        let disp = Dispatcher::new(&machine, rt_handle);
+        let logger = logger
+            .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
+        let driver_log = logger.new(slog::o!("task" => "instance-driver"));
 
+        let disp = Dispatcher::new(&machine, rt_handle, logger);
         let this = Arc::new(Self {
             inner: Mutex::new(Inner {
                 state_current: State::Initialize,
@@ -143,7 +148,7 @@ impl Instance {
         let driver_hdl = Arc::clone(&this);
         let driver = thread::Builder::new()
             .name("instance-driver".to_string())
-            .spawn(move || driver_hdl.drive_state())?;
+            .spawn(move || driver_hdl.drive_state(driver_log))?;
 
         this.disp.finalize(&this);
         let mut state = this.inner.lock().unwrap();
@@ -349,7 +354,7 @@ impl Instance {
         });
     }
 
-    fn drive_state(&self) {
+    fn drive_state(&self, _log: slog::Logger) {
         let mut next_state: Option<State> = None;
         let mut inner = self.inner.lock().unwrap();
         loop {
@@ -371,9 +376,10 @@ impl Instance {
 
             let prev_state = inner.state_current;
             inner.state_current = state;
-            eprintln!(
-                "Instance transition {:?} -> {:?} (target: {:?})",
-                prev_state, state, &inner.state_target
+            slog::info!(_log, "Instance transition";
+                "state" => ?state,
+                "state_prev" => ?prev_state,
+                "state_target" => ?&inner.state_target
             );
             if matches!(&inner.state_target, Some(s) if *s == state) {
                 // target state has been reached
@@ -470,7 +476,12 @@ impl Drop for Instance {
 #[cfg(test)]
 impl Instance {
     pub fn new_test(rt_handle: Option<Handle>) -> io::Result<Arc<Self>> {
-        Self::create(Machine::new_test()?, rt_handle)
+        let deco = slog_term::PlainDecorator::new(std::io::stdout());
+        let drain = slog_term::CompactFormat::new(deco).build().fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
+        let logger = slog::Logger::root(drain, slog::o!());
+
+        Self::create(Machine::new_test()?, rt_handle, Some(logger))
     }
 }
 

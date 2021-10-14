@@ -395,7 +395,7 @@ impl<'a, T: Copy> Iterator for MemMany<'a, T> {
 ///     .add_rom_region(0xffe0_0000, 0x20_0000, Prot::READ | Prot::EXEC, "bootrom")
 ///         .unwrap()
 ///     .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32").unwrap();
-/// let inst = Instance::create(builder.finalize().unwrap(), None).unwrap();
+/// let inst = Instance::create(builder.finalize().unwrap(), None, None).unwrap();
 /// inst.spawn_vcpu_workers(propolis::vcpu_run_loop).unwrap();
 /// ```
 pub struct Builder {

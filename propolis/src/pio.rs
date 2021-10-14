@@ -44,7 +44,8 @@ impl PioBus {
             func(a, RWOp::Write(&mut wo), ctx)
         });
         if !handled {
-            println!("unhandled IO out - port:{:x} len:{}", port, bytes);
+            slog::info!(ctx.log, "unhandled PIO";
+                "op" => "out", "port" => port, "bytes" => bytes);
         }
         probe_pio_out!(|| (port, bytes, val, handled as u8));
     }
@@ -62,7 +63,8 @@ impl PioBus {
             func(a, RWOp::Read(&mut ro), ctx)
         });
         if !handled {
-            println!("unhandled IO in - port:{:x} len:{}", port, bytes);
+            slog::info!(ctx.log, "unhandled PIO";
+                "op" => "in", "port" => port, "bytes" => bytes);
         }
 
         let val = LE::read_u32(&buf);

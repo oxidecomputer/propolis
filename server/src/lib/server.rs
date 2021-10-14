@@ -87,12 +87,13 @@ struct InstanceContext {
 pub struct Context {
     context: Mutex<Option<InstanceContext>>,
     config: Config,
+    log: Logger,
 }
 
 impl Context {
     /// Creates a new server context object.
-    pub fn new(config: Config) -> Self {
-        Context { context: Mutex::new(None), config }
+    pub fn new(config: Config, log: Logger) -> Self {
+        Context { context: Mutex::new(None), config, log }
     }
 }
 
@@ -214,6 +215,9 @@ async fn instance_ensure(
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
+    // Create child logger for instance-related messages
+    let vmm_log = server_context.log.new(o!("component" => "vmm"));
+
     // Create the instance.
     //
     // The VM is named after the UUID, ensuring that it is unique.
@@ -222,6 +226,7 @@ async fn instance_ensure(
         properties.vcpus,
         lowmem,
         highmem,
+        vmm_log,
     )
     .map_err(|err| {
         HttpError::for_internal_error(format!(
@@ -374,7 +379,6 @@ async fn instance_ensure(
             }
             _ => {}
         }
-        println!("state cb: {:?}", next_state);
         let last = (*tx.borrow()).clone();
         let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
     }));

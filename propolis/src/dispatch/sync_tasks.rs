@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{Builder, JoinHandle};
 
-use super::{DispCtx, SharedCtx};
+use super::{DispCtx, Dispatcher, SharedCtx};
 
 pub type WakeFn = dyn Fn(&DispCtx) + Send + 'static;
 pub type SyncFn = dyn FnOnce(&mut SyncCtx) + Send + 'static;
@@ -68,10 +68,10 @@ impl SyncDispatch {
     /// function should trigger the worker to move to a barrier point.
     pub fn spawn(
         &self,
+        disp: &Dispatcher,
         name: String,
         func: Box<SyncFn>,
         wake: Option<Box<WakeFn>>,
-        shared: SharedCtx,
     ) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         let ctrl = match inner.state {
@@ -87,7 +87,10 @@ impl SyncDispatch {
             }
         };
         let task_id = inner.next_id();
-        let mut sctx = SyncCtx::for_worker(shared, Arc::clone(&ctrl));
+        let mut sctx = SyncCtx::for_worker(
+            SharedCtx::child(disp, slog::o!("sync_task" => name.clone())),
+            Arc::clone(&ctrl),
+        );
         let hdl = Builder::new().name(name.clone()).spawn(move || {
             if sctx.check_yield() {
                 return;
@@ -149,7 +152,7 @@ impl SyncDispatch {
         ctrls
     }
 
-    pub(super) fn quiesce(&self, shared: SharedCtx) {
+    pub(super) fn quiesce(&self, disp: &Dispatcher) {
         let mut inner = self.inner.lock().unwrap();
         match inner.state {
             State::Run => {
@@ -170,6 +173,7 @@ impl SyncDispatch {
             }
         };
 
+        let shared = SharedCtx::create(disp);
         let ctrls = Self::push_to_barrier(shared, &inner);
 
         // wait for all workers to report at their barriers.  This must be done
@@ -187,7 +191,7 @@ impl SyncDispatch {
         self.cv.notify_all();
     }
 
-    pub(super) fn shutdown(&self, shared: SharedCtx) {
+    pub(super) fn shutdown(&self, disp: &Dispatcher) {
         let mut inner = self.inner.lock().unwrap();
 
         let ctrls = match inner.state {
@@ -196,6 +200,10 @@ impl SyncDispatch {
             }
             State::Run => {
                 inner.state = State::WaitShutdown;
+                let shared = SharedCtx::child(
+                    disp,
+                    slog::o!("dispatcher_action" => "shutdown"),
+                );
                 Self::push_to_barrier(shared, &inner)
             }
             _ => {
@@ -371,8 +379,14 @@ impl SyncCtx {
         self.ctrl.as_ref().map_or(false, |c| c.pending_reqs())
     }
 
+    /// Get access to `Logger` associated with this task
+    pub fn log(&self) -> &slog::Logger {
+        &self.shared.log
+    }
+
     pub fn dispctx(&mut self) -> DispCtx {
         DispCtx {
+            log: &self.shared.log,
             mctx: &self.shared.mctx,
             disp: &self.shared.disp,
             inst: &self.shared.inst,

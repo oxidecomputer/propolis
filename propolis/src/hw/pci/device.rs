@@ -24,8 +24,8 @@ pub trait Device: Send + Sync + 'static {
             }
         }
     }
-
-    fn cfg_rw(&self, region: u8, rwo: RWOp) {
+    #[allow(unused_variables)]
+    fn cfg_rw(&self, region: u8, rwo: RWOp, ctx: &DispCtx) {
         match rwo {
             RWOp::Read(ro) => {
                 unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset())
@@ -59,7 +59,7 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
                     RWOp::Write(wo) => ds.cfg_std_write(self, id, wo, ctx),
                 });
             }
-            CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo),
+            CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo, ctx),
             CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
                 ds.cfg_cap_rw(self, id, rwo, ctx)
             }
@@ -502,11 +502,8 @@ impl DeviceState {
                 }
             }
             _ => {
-                println!(
-                    "unhandled cap access id:{:x} off:{:x}",
-                    cap.id,
-                    rwo.offset()
-                );
+                slog::info!(ctx.log, "unhandled PCI cap access";
+                    "id" => cap.id, "offset" => rwo.offset());
             }
         }
     }
