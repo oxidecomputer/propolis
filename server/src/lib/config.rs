@@ -175,7 +175,6 @@ impl BlockDevice {
                                     "as_str".to_string(),
                                 )
                             })?
-                            .to_string()
                             .parse()
                             .map_err(|e| {
                                 ParseError::AsError(
