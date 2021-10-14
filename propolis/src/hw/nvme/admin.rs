@@ -2,6 +2,7 @@ use std::cmp::min;
 use std::mem::size_of;
 
 use super::bits::{self, *};
+use super::queue::{QueueId, ADMIN_QUEUE_ID};
 use crate::common::GuestAddr;
 use crate::{common::PAGE_SIZE, dispatch::DispCtx};
 
@@ -86,6 +87,79 @@ impl NvmeCtrl {
             ),
             Err(NvmeError::QueueCreateErr(err)) => err.into(),
             Err(_) => cmds::Completion::generic_err(STS_INTERNAL_ERR),
+        }
+    }
+
+    /// Service I/O Delete Completion Queue command.
+    ///
+    /// See NVMe 1.0e Section 5.5 Delete I/O Submission Queue command
+    pub(super) fn acmd_delete_io_cq(
+        &mut self,
+        cqid: QueueId,
+        _ctx: &DispCtx,
+    ) -> cmds::Completion {
+        // Not allowed to delete the Admin Completion Queue
+        if cqid == ADMIN_QUEUE_ID {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_DELETE_IO_Q_INVAL_QID,
+            );
+        }
+
+        // Remove the CQ from our list of active CQs.
+        // At this point, all associated SQs should've been deleted
+        // otherwise we'll return an error.
+        match self.delete_cq(cqid) {
+            Ok(()) => cmds::Completion::success(),
+            Err(NvmeError::InvalidCompQueue(_)) => {
+                cmds::Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    STS_DELETE_IO_Q_INVAL_QID,
+                )
+            }
+            Err(NvmeError::AssociatedSubQueuesStillExist(_, _)) => {
+                cmds::Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    STS_DELETE_IO_Q_INVAL_Q_DELETION,
+                )
+            }
+            _ => cmds::Completion::generic_err(STS_INTERNAL_ERR),
+        }
+    }
+
+    /// Service I/O Delete Submission Queue command.
+    ///
+    /// See NVMe 1.0e Section 5.6 Delete I/O Submission Queue command
+    pub(super) fn acmd_delete_io_sq(
+        &mut self,
+        sqid: QueueId,
+        _ctx: &DispCtx,
+    ) -> cmds::Completion {
+        // Not allowed to delete the Admin Submission Queue
+        if sqid == ADMIN_QUEUE_ID {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_DELETE_IO_Q_INVAL_QID,
+            );
+        }
+
+        // Remove the SQ from our list of active SQs which will stop
+        // us from accepting any new requests for it.
+        // That should be the only strong ref left to the SubQueue
+        // Any in-flight I/O requests that haven't been completed yet
+        // only hold a weak ref (via CompQueueEntryPermit).
+        // Note: The NVMe 1.0e spec says "The command causes all commands
+        //       submitted to the indicated Submission Queue that are still in
+        //       progress to be aborted."
+        match self.delete_sq(sqid) {
+            Ok(()) => cmds::Completion::success(),
+            Err(NvmeError::InvalidSubQueue(_)) => {
+                cmds::Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    STS_DELETE_IO_Q_INVAL_QID,
+                )
+            }
+            _ => cmds::Completion::generic_err(STS_INTERNAL_ERR),
         }
     }
 

@@ -38,12 +38,16 @@ pub enum NvmeError {
     InvalidSubQueue(QueueId),
 
     /// The specified Completion Queue ID already exists
-    #[error("the completition queue specified ({0}) already exists")]
+    #[error("the completion queue specified ({0}) already exists")]
     CompQueueAlreadyExists(QueueId),
 
     /// The specified Submission Queue ID already exists
     #[error("the submission queue specified ({0}) already exists")]
     SubQueueAlreadyExists(QueueId),
+
+    /// Can't delete a CQ with associated SQs
+    #[error("the completion queue specified ({0}) still has ({1}) associated submission queue(s)")]
+    AssociatedSubQueuesStillExist(QueueId, usize),
 
     /// Failed to create Queue
     #[error("failed to create queue: {0}")]
@@ -201,7 +205,43 @@ impl NvmeCtrl {
         }
         let cq = self.get_cq(cqid)?;
         let sq = SubQueue::new(sqid, cq, size, base, ctx)?;
-        self.sqs[sqid as usize] = Some(Arc::new(sq));
+        self.sqs[sqid as usize] = Some(sq);
+        Ok(())
+    }
+
+    /// Removes the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
+    fn delete_cq(&mut self, cqid: QueueId) -> Result<(), NvmeError> {
+        if (cqid as usize) >= MAX_NUM_QUEUES
+            || self.cqs[cqid as usize].is_none()
+        {
+            return Err(NvmeError::InvalidCompQueue(cqid));
+        }
+
+        // Make sure this CQ has no more associated SQs
+        let sqs = self.cqs[cqid as usize].as_ref().unwrap().associated_sqs();
+        if sqs > 0 {
+            return Err(NvmeError::AssociatedSubQueuesStillExist(cqid, sqs));
+        }
+
+        // Remove it from the authoritative list of CQs
+        self.cqs[cqid as usize] = None;
+        Ok(())
+    }
+
+    /// Removes the [`SubQueue`] which corresponds to the given submission queue id (`sqid`).
+    ///
+    /// **NOTE:** This only removes the SQ from our list of active SQ and there may still be
+    ///           in-flight IO requests for this SQ. But after this call, we'll no longer
+    ///           answer any new doorbell requests for this SQ.
+    fn delete_sq(&mut self, sqid: QueueId) -> Result<(), NvmeError> {
+        if (sqid as usize) >= MAX_NUM_QUEUES
+            || self.sqs[sqid as usize].is_none()
+        {
+            return Err(NvmeError::InvalidSubQueue(sqid));
+        }
+
+        // Remove it from the authoritative list of SQs
+        self.sqs[sqid as usize] = None;
         Ok(())
     }
 
@@ -641,9 +681,13 @@ impl PciNvme {
                 AdminCmd::SetFeatures(cmd) => {
                     state.acmd_set_features(&cmd, ctx)
                 }
-                AdminCmd::DeleteIOSubQ(_)
-                | AdminCmd::DeleteIOCompQ(_)
-                | AdminCmd::Abort
+                AdminCmd::DeleteIOCompQ(cqid) => {
+                    state.acmd_delete_io_cq(cqid, ctx)
+                }
+                AdminCmd::DeleteIOSubQ(sqid) => {
+                    state.acmd_delete_io_sq(sqid, ctx)
+                }
+                AdminCmd::Abort
                 | AdminCmd::GetFeatures
                 | AdminCmd::AsyncEventReq
                 | AdminCmd::Unknown(_) => {

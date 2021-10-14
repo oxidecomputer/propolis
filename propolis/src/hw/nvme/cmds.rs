@@ -784,6 +784,12 @@ impl From<QueueCreateErr> for Completion {
                 StatusCodeType::CmdSpecific,
                 bits::STS_CREATE_IO_Q_INVAL_QSIZE,
             ),
+            QueueCreateErr::SubQueueIdAlreadyExists(_) => {
+                Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    bits::STS_CREATE_IO_Q_INVAL_QID,
+                )
+            }
         }
     }
 }
