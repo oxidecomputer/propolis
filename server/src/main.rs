@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            let context = server::Context::new(config);
+            let context = server::Context::new(config, log.new(slog::o!()));
             let server = HttpServerStarter::new(
                 &config_dropshot,
                 server::api(),

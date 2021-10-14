@@ -113,20 +113,15 @@ impl I440Fx {
                         return None;
                     }
                     if let Some(dev) = self.pci_bus.device_at(*bdf) {
-                        dev.cfg_rw(rwo, ctx);
+                        // This is pretty noisy during boot
                         // let opname = match rwo {
                         //     RWOp::Read(_) => "cfgread",
                         //     RWOp::Write(_) => "cfgwrite",
                         // };
-                        // println!(
-                        //     "{} bus:{} device:{} func:{} off:{:x}, data:{:x?}",
-                        //     opname,
-                        //     bdf.bus(),
-                        //     bdf.dev(),
-                        //     bdf.func(),
-                        //     rwo.offset(),
-                        //     rwo.buf()
-                        // );
+                        // slog::trace!(ctx.log, "PCI {}", opname;
+                        //     "bdf" => %bdf, "offset" => rwo.offset());
+
+                        dev.cfg_rw(rwo, ctx);
                         Some(())
                     } else {
                         None
@@ -381,7 +376,7 @@ impl pci::Device for Piix3Lpc {
         &self.pci_state
     }
 
-    fn cfg_rw(&self, region: u8, rwo: RWOp) {
+    fn cfg_rw(&self, region: u8, rwo: RWOp, _ctx: &DispCtx) {
         assert_eq!(region as usize, PIR_OFFSET);
         assert!(rwo.offset() + rwo.len() <= PIR_END - PIR_OFFSET);
 
@@ -606,12 +601,12 @@ impl Piix3PM {
 
     fn pio_rw(&self, _port: u16, mut rwo: RWOp, ctx: &DispCtx) {
         PM_REGS.process(&mut rwo, |id, rwo| match rwo {
-            RWOp::Read(ro) => self.pmreg_read(id, ro),
+            RWOp::Read(ro) => self.pmreg_read(id, ro, ctx),
             RWOp::Write(wo) => self.pmreg_write(id, wo, ctx),
         });
     }
 
-    fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp) {
+    fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp, ctx: &DispCtx) {
         match id {
             PmCfg::PmRegMisc => {
                 // Report IO space as enabled
@@ -625,15 +620,18 @@ impl Piix3PM {
             }
             _ => {
                 // XXX: report everything else as zeroed
+                slog::info!(ctx.log, "piix3pm ignored cfg read";
+                    "offset" => ro.offset(), "register" => ?id);
                 ro.fill(0);
             }
         }
     }
-    fn pmcfg_write(&self, id: &PmCfg, _wo: &WriteOp) {
+    fn pmcfg_write(&self, id: &PmCfg, _wo: &WriteOp, ctx: &DispCtx) {
         // XXX: ignore writes for now
-        println!("ignored PM cfg write to {:?}", id);
+        slog::info!(ctx.log, "piix3pm ignored cfg write";
+            "offset" => _wo.offset(), "register" => ?id);
     }
-    fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp) {
+    fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp, ctx: &DispCtx) {
         let regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
@@ -660,7 +658,8 @@ impl Piix3PM {
             | PmReg::GpiReg
             | PmReg::GpoReg => {
                 // TODO: flesh out the rest of PM emulation
-                println!("unhandled PM read {:x}", ro.offset());
+                slog::info!(ctx.log, "piix3pm unhandled read";
+                    "offset" => ro.offset(), "register" => ?id);
                 ro.fill(0);
             }
             PmReg::Reserved => {
@@ -708,7 +707,8 @@ impl Piix3PM {
             | PmReg::DevCtl
             | PmReg::GpiReg
             | PmReg::GpoReg => {
-                println!("unhandled PM write {:x}", wo.offset());
+                slog::info!(ctx.log, "piix3pm unhandled write";
+                    "offset" => wo.offset(), "register" => ?id);
             }
             PmReg::Reserved => {}
         }
@@ -725,12 +725,12 @@ impl pci::Device for Piix3PM {
     fn device_state(&self) -> &pci::DeviceState {
         &self.pci_state
     }
-    fn cfg_rw(&self, region: u8, mut rwo: RWOp) {
+    fn cfg_rw(&self, region: u8, mut rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(region as usize, PMCFG_OFFSET);
 
         PM_CFG_REGS.process(&mut rwo, |id, rwo| match rwo {
-            RWOp::Read(ro) => self.pmcfg_read(id, ro),
-            RWOp::Write(wo) => self.pmcfg_write(id, wo),
+            RWOp::Read(ro) => self.pmcfg_read(id, ro, ctx),
+            RWOp::Write(wo) => self.pmcfg_write(id, wo, ctx),
         })
     }
 }

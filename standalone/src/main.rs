@@ -23,6 +23,8 @@ use propolis::*;
 
 use propolis::usdt::register_probes;
 
+use slog::{o, Drain};
+
 mod config;
 
 const PAGE_OFFSET: u64 = 0xfff;
@@ -44,6 +46,7 @@ fn build_instance(
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
+    log: slog::Logger,
 ) -> Result<Arc<Instance>> {
     let mut builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
@@ -69,7 +72,7 @@ fn build_instance(
             "highmem",
         )?;
     }
-    Instance::create(builder.finalize()?, None)
+    Instance::create(builder.finalize()?, None, Some(log))
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -90,6 +93,14 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
     }
 }
 
+fn build_log() -> slog::Logger {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    slog::Logger::root(drain, o!())
+}
+
 fn main() {
     // Ensure proper setup of USDT probes
     register_probes().unwrap();
@@ -105,8 +116,10 @@ fn main() {
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
-    let inst = build_instance(vm_name, cpus, lowmem, highmem).unwrap();
-    println!("vm {} created", vm_name);
+    let log = build_log();
+    let inst =
+        build_instance(vm_name, cpus, lowmem, highmem, log.clone()).unwrap();
+    slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
         .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
@@ -243,7 +256,7 @@ fn main() {
                     chipset.pci_attach(bdf.unwrap(), nvme);
                 }
                 _ => {
-                    eprintln!("unrecognized driver: {}", name);
+                    slog::error!(log, "unrecognized driver"; "name" => name);
                     std::process::exit(libc::EXIT_FAILURE);
                 }
             }
@@ -284,7 +297,7 @@ fn main() {
     inst.print();
 
     // Wait until someone connects to ttya
-    println!("Waiting for a connection to ttya...");
+    slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
     inst.on_transition(Box::new(|next_state, ctx| {
@@ -306,8 +319,6 @@ fn main() {
             }
             _ => {}
         }
-
-        println!("state cb: {:?}", next_state);
     }));
     inst.set_target_state(ReqState::Run).unwrap();
 

@@ -49,6 +49,7 @@ pub fn build_instance(
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
+    log: slog::Logger,
 ) -> Result<Arc<Instance>> {
     let mut builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
@@ -78,7 +79,7 @@ pub fn build_instance(
     // Allow propolis to use the existing tokio runtime for spawning and
     // dispatching its tasks
     let rt_handle = Some(Handle::current());
-    let inst = Instance::create(builder.finalize()?, rt_handle)?;
+    let inst = Instance::create(builder.finalize()?, rt_handle, Some(log))?;
     inst.spawn_vcpu_workers(propolis::vcpu_run_loop)?;
     Ok(inst)
 }

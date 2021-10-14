@@ -37,10 +37,6 @@ impl UDSock {
                 if e.kind() != ErrorKind::AddrInUse {
                     return Err(e);
                 }
-                eprintln!(
-                    "Couldn't bind to {}, removing and trying again...",
-                    path.to_string_lossy()
-                );
                 // XXX just blindly do remove
                 fs::remove_file(path)?;
                 StdUnixListener::bind(path)?

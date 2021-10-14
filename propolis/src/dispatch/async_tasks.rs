@@ -9,11 +9,21 @@ use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use super::{DispCtx, SharedCtx, SyncFn, WakeFn};
+use super::{DispCtx, Dispatcher, SharedCtx, SyncFn, WakeFn};
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct AsyncTaskId {
     val: usize,
+}
+impl slog::Value for AsyncTaskId {
+    fn serialize(
+        &self,
+        _record: &slog::Record,
+        key: slog::Key,
+        serializer: &mut dyn slog::Serializer,
+    ) -> slog::Result {
+        serializer.emit_usize(key, self.val)
+    }
 }
 
 struct TaskLife {
@@ -125,7 +135,7 @@ impl AsyncDispatch {
     }
     pub(super) fn spawn<T, F>(
         &self,
-        shared: SharedCtx,
+        disp: &Dispatcher,
         taskfn: T,
     ) -> AsyncTaskId
     where
@@ -147,7 +157,10 @@ impl AsyncDispatch {
             chan: inner.life_sender.clone(),
             id,
         };
-        let actx = AsyncCtx::new(shared, Arc::clone(&ctrl));
+        let actx = AsyncCtx::new(
+            SharedCtx::child(disp, slog::o!("async_task" => id)),
+            Arc::clone(&ctrl),
+        );
 
         let task_fut = Box::pin(taskfn(actx));
 
@@ -288,11 +301,17 @@ impl AsyncCtx {
     pub async fn dispctx(&self) -> Option<DispCtx<'_>> {
         let permit = self.acquire_permit().await?;
         Some(DispCtx {
+            log: &self.shared.log,
             mctx: &self.shared.mctx,
             disp: &self.shared.disp,
             inst: &self.shared.inst,
             _async_permit: Some(permit),
         })
+    }
+
+    /// Get access to `Logger` associated with this task
+    pub fn log(&self) -> &slog::Logger {
+        &self.shared.log
     }
 
     async fn acquire_permit(&self) -> Option<AsyncCtxPermit<'_>> {

@@ -812,14 +812,18 @@ impl PciNvme {
 impl pci::Device for PciNvme {
     fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
-        let f = |id: &CtrlrReg, rwo: RWOp<'_, '_>| {
-            let res = match rwo {
+        let f = |id: &CtrlrReg, mut rwo: RWOp<'_, '_>| {
+            let res = match &mut rwo {
                 RWOp::Read(ro) => self.reg_ctrl_read(id, ro, ctx),
                 RWOp::Write(wo) => self.reg_ctrl_write(id, wo, ctx),
             };
             // TODO: is there a better way to report errors
             if let Err(err) = res {
-                eprintln!("nvme reg read/write failed: {}", err);
+                slog::error!(ctx.log, "nvme reg r/w failure";
+                    "offset" => rwo.offset(),
+                    "register" => ?id,
+                    "error" => %err
+                );
             }
         };
 
