@@ -17,6 +17,14 @@ impl NvmeCtrl {
         cmd: &cmds::CreateIOCQCmd,
         ctx: &DispCtx,
     ) -> cmds::Completion {
+        // If the host hasn't specified an IOCQES, fail this request
+        if self.ctrl.cc.iocqes() == 0 {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_CREATE_IO_Q_INVAL_QSIZE,
+            );
+        }
+
         if cmd.intr_vector >= super::NVME_MSIX_COUNT {
             return cmds::Completion::specific_err(
                 StatusCodeType::CmdSpecific,
@@ -58,6 +66,14 @@ impl NvmeCtrl {
         cmd: &cmds::CreateIOSQCmd,
         ctx: &DispCtx,
     ) -> cmds::Completion {
+        // If the host hasn't specified an IOSQES, fail this request
+        if self.ctrl.cc.iosqes() == 0 {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_CREATE_IO_Q_INVAL_QSIZE,
+            );
+        }
+
         // We only support physical contiguous queues
         if !cmd.phys_contig {
             return cmds::Completion::generic_err(bits::STS_INVAL_FIELD);
