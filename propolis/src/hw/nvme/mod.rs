@@ -610,15 +610,21 @@ impl PciNvme {
             }
             CtrlrReg::AdminQueueAttr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u32(state.ctrl.aqa.0);
+                if !state.ctrl.cc.enabled() {
+                    ro.write_u32(state.ctrl.aqa.0);
+                }
             }
             CtrlrReg::AdminSubQAddr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u64(state.ctrl.admin_sq_base);
+                if !state.ctrl.cc.enabled() {
+                    ro.write_u64(state.ctrl.admin_sq_base);
+                }
             }
             CtrlrReg::AdminCompQAddr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u64(state.ctrl.admin_cq_base);
+                if !state.ctrl.cc.enabled() {
+                    ro.write_u64(state.ctrl.admin_cq_base);
+                }
             }
             CtrlrReg::Reserved => {
                 ro.fill(0);
