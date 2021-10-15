@@ -235,7 +235,7 @@ bitstruct! {
     /// Representation of the Controller Configuration (CC) register.
     ///
     /// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Configuration(pub u32) {
         /// Enable (EN)
         ///
@@ -291,7 +291,7 @@ bitstruct! {
 }
 
 // Selected IO Command Set
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IOCommandSet {
     Nvm,
     Reserved(u8),
@@ -317,7 +317,7 @@ impl bitstruct::IntoRaw<u8, IOCommandSet> for Configuration {
 }
 
 /// Arbitration Mechanisms
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArbitrationMechanism {
     RoundRobin,
     WeightedRoundRobinWithUrgent,
