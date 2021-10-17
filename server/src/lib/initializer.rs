@@ -229,6 +229,10 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         let hdl = self.machine.get_hdl();
         let viona = virtio::viona::VirtioViona::create(vnic_name, 0x100, &hdl)?;
+        let _id = self
+            .inv
+            .register(&viona, format!("viona-{}", bdf), None)
+            .map_err(|e| -> std::io::Error { e.into() })?;
         chipset.device().pci_attach(bdf, viona);
         Ok(())
     }
