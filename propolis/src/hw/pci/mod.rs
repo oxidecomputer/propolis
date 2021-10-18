@@ -107,6 +107,8 @@ impl Bdf {
     ///
     /// Returns [`Option::None`] if the values would not fit within a BDF.
     pub const fn new(bus: u8, dev: u8, func: u8) -> Option<Self> {
+        // Until the `?` operator is supported in `const fn`s, this more verbose
+        // implementation is required.
         let bnum = BusNum::new(bus);
         let dnum = DevNum::new(dev);
         let fnum = FuncNum::new(func);

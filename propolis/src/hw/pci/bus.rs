@@ -101,7 +101,7 @@ impl Inner {
         let res = self.slots[bdf.dev.get() as usize].funcs
             [bdf.func.get() as usize]
             .as_ref()
-            .map(|d| Arc::clone(d));
+            .map(Arc::clone);
         res
     }
     fn attach(&mut self, bdf: Bdf, dev: Arc<dyn Endpoint>) {
