@@ -120,7 +120,7 @@ impl Drop for Machine {
 
 #[cfg(test)]
 impl Machine {
-    pub(crate) fn new_test() -> Result<Self> {
+    pub(crate) fn new_test() -> Result<Arc<Self>> {
         let hdl = VmmHdl::new_test()?;
 
         // TODO: meaningfully populate these
@@ -163,7 +163,7 @@ impl Machine {
             std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e))
         })?;
 
-        Ok(Machine {
+        Ok(Arc::new(Machine {
             hdl: Arc::new(hdl),
             max_cpu: 1,
 
@@ -171,7 +171,7 @@ impl Machine {
             map_physmem: map,
             bus_mmio: MmioBus::new(MAX_PHYSMEM),
             bus_pio: PioBus::new(),
-        })
+        }))
     }
 }
 
@@ -395,7 +395,8 @@ impl<'a, T: Copy> Iterator for MemMany<'a, T> {
 ///     .add_rom_region(0xffe0_0000, 0x20_0000, Prot::READ | Prot::EXEC, "bootrom")
 ///         .unwrap()
 ///     .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32").unwrap();
-/// let inst = Instance::create(builder, None, propolis::vcpu_run_loop).unwrap();
+/// let inst = Instance::create(builder.finalize().unwrap(), None).unwrap();
+/// inst.spawn_vcpu_workers(propolis::vcpu_run_loop).unwrap();
 /// ```
 pub struct Builder {
     inner_hdl: Option<VmmHdl>,
@@ -563,7 +564,7 @@ impl Builder {
 
     /// Consumes `self` and creates a new [`Machine`] based
     /// on the provided memory regions.
-    pub fn finalize(mut self) -> Result<Machine> {
+    pub fn finalize(mut self) -> Result<Arc<Machine>> {
         let hdl = std::mem::replace(&mut self.inner_hdl, None).unwrap();
 
         let (guard_space, map) = self.prep_mem_map(&hdl)?;
@@ -579,7 +580,7 @@ impl Builder {
             bus_mmio: MmioBus::new(MAX_PHYSMEM),
             bus_pio: PioBus::new(),
         };
-        Ok(machine)
+        Ok(Arc::new(machine))
     }
 }
 impl Drop for Builder {

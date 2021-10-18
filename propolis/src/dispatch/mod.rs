@@ -8,7 +8,6 @@ use std::sync::{Arc, Weak};
 use crate::common::ParentRef;
 use crate::instance;
 use crate::util::self_arc::*;
-use crate::vcpu::*;
 use crate::vmm::{Machine, MachineCtx};
 
 use tokio::runtime::Handle;
@@ -52,22 +51,8 @@ impl Dispatcher {
 
     /// Perform final setup tasks on the dispatcher, including spawning of
     /// threads for running the instance vCPUs.
-    pub(crate) fn finalize(
-        &self,
-        inst: &Arc<instance::Instance>,
-        vcpu_fn: Option<VcpuRunFunc>,
-    ) {
+    pub(crate) fn finalize(&self, inst: &Arc<instance::Instance>) {
         self.parent.set(inst);
-
-        // Unit tests may instantiate a dispatcher without the need for vCPU
-        // threads to be running.
-        if let Some(func) = vcpu_fn {
-            let mctx = MachineCtx::new(&self.machine);
-            for vcpu in mctx.vcpus() {
-                let shared = SharedCtx::create(self);
-                self.sync_disp.spawn_vcpu(shared, vcpu, func);
-            }
-        }
     }
 
     /// Spawns a new dedicated worker thread named `name` which invokes

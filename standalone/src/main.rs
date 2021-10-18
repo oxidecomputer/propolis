@@ -69,8 +69,7 @@ fn build_instance(
             "highmem",
         )?;
     }
-    let inst = Instance::create(builder, None, propolis::vcpu_run_loop)?;
-    Ok(inst)
+    Instance::create(builder.finalize()?, None)
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -283,6 +282,9 @@ fn main() {
         Ok(())
     })
     .unwrap_or_else(|e| panic!("Failed to initialize instance: {}", e));
+
+    inst.spawn_vcpu_workers(propolis::vcpu_run_loop)
+        .unwrap_or_else(|e| panic!("Failed spawn vCPU workers: {}", e));
 
     drop(romfp);
 

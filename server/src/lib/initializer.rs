@@ -78,7 +78,8 @@ pub fn build_instance(
     // Allow propolis to use the existing tokio runtime for spawning and
     // dispatching its tasks
     let rt_handle = Some(Handle::current());
-    let inst = Instance::create(builder, rt_handle, propolis::vcpu_run_loop)?;
+    let inst = Instance::create(builder.finalize()?, rt_handle)?;
+    inst.spawn_vcpu_workers(propolis::vcpu_run_loop)?;
     Ok(inst)
 }
 

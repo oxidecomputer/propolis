@@ -4,19 +4,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{Builder, JoinHandle};
 
-use crate::vcpu::*;
-
 use super::{DispCtx, SharedCtx};
 
 pub type WakeFn = dyn Fn(&DispCtx) + Send + 'static;
 pub type SyncFn = dyn FnOnce(&mut SyncCtx) + Send + 'static;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
-enum Ident {
-    Vcpu(usize),
-    Custom(String),
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SyncTaskId {
+    val: usize,
 }
+
 struct Detail {
+    #[allow(dead_code)]
+    ident: String,
+
     join: Option<JoinHandle<()>>,
     ctrl: Arc<WorkerCtrl>,
     wake: Option<Box<WakeFn>>,
@@ -33,7 +34,14 @@ enum State {
 
 struct Inner {
     state: State,
-    workers: BTreeMap<Ident, Detail>,
+    next_id: usize,
+    workers: BTreeMap<SyncTaskId, Detail>,
+}
+impl Inner {
+    fn next_id(&mut self) -> SyncTaskId {
+        self.next_id += 1;
+        SyncTaskId { val: self.next_id }
+    }
 }
 
 pub(super) struct SyncDispatch {
@@ -45,46 +53,12 @@ impl SyncDispatch {
     pub(super) fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
+                next_id: 0,
                 state: State::Quiesce,
                 workers: BTreeMap::new(),
             }),
             cv: Condvar::new(),
         }
-    }
-
-    pub(super) fn spawn_vcpu(
-        &self,
-        shared: SharedCtx,
-        vcpu: VcpuHdl,
-        vcpu_fn: VcpuRunFunc,
-    ) {
-        let mut inner = self.inner.lock().unwrap();
-        let ctrl = WorkerCtrl::create_held();
-        let mut ctx = SyncCtx::for_worker(shared, Arc::clone(&ctrl));
-        let id = vcpu.cpuid() as usize;
-        let name = format!("vcpu-{}", id);
-        let hdl = Builder::new()
-            .name(name)
-            .spawn(move || {
-                // wait at dispatch hold point until start
-                if ctx.check_yield() {
-                    return;
-                }
-
-                vcpu_fn(vcpu, &mut ctx);
-            })
-            .unwrap();
-
-        inner.workers.insert(
-            Ident::Vcpu(id),
-            Detail {
-                join: Some(hdl),
-                ctrl,
-                wake: Some(Box::new(move |ctx: &DispCtx| {
-                    let _ = ctx.mctx.vcpu(id).barrier();
-                })),
-            },
-        );
     }
 
     /// Spawns a new dedicated worker thread named `name` which invokes
@@ -112,6 +86,7 @@ impl SyncDispatch {
                 ctrl
             }
         };
+        let task_id = inner.next_id();
         let mut sctx = SyncCtx::for_worker(shared, Arc::clone(&ctrl));
         let hdl = Builder::new().name(name.clone()).spawn(move || {
             if sctx.check_yield() {
@@ -121,8 +96,8 @@ impl SyncDispatch {
         })?;
 
         let res = inner.workers.insert(
-            Ident::Custom(name),
-            Detail { join: Some(hdl), ctrl, wake },
+            task_id,
+            Detail { ident: name, join: Some(hdl), ctrl, wake },
         );
         assert!(res.is_none());
 

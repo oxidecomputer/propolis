@@ -118,15 +118,12 @@ pub struct Instance {
     pub disp: Arc<Dispatcher>,
 }
 impl Instance {
-    /// Creates a new virtual machine, absorbing the supplied `builder`.
-    ///
-    /// Uses `vcpu_fn` to determine how to run a virtual CPU for the instance.
+    /// Creates a new virtual machine, absorbing `machine` generated from
+    /// a `machine::Builder`.
     pub fn create(
-        builder: Builder,
+        machine: Arc<Machine>,
         rt_handle: Option<Handle>,
-        vcpu_fn: VcpuRunFunc,
     ) -> io::Result<Arc<Self>> {
-        let machine = Arc::new(builder.finalize()?);
         let disp = Dispatcher::new(&machine, rt_handle);
 
         let this = Arc::new(Self {
@@ -148,12 +145,36 @@ impl Instance {
             .name("instance-driver".to_string())
             .spawn(move || driver_hdl.drive_state())?;
 
-        this.disp.finalize(&this, Some(vcpu_fn));
+        this.disp.finalize(&this);
         let mut state = this.inner.lock().unwrap();
         state.drive_thread = Some(driver);
         drop(state);
 
         Ok(this)
+    }
+
+    /// Spawn vCPU worker threads, using `vcpu_fn` to drive handling of VM exits
+    ///
+    /// # Panics
+    ///
+    /// - Panics if the instance's state is not [`State::Initialize`].
+    pub fn spawn_vcpu_workers(&self, vcpu_fn: VcpuRunFunc) -> io::Result<()> {
+        self.initialize(|_machine, mctx, disp, inv| {
+            for vcpu in mctx.vcpus() {
+                let vcpu_id = vcpu.cpuid() as usize;
+                let name = format!("vcpu-{}", vcpu_id);
+
+                let func = Box::new(move |sctx: &mut SyncCtx| {
+                    vcpu_fn(vcpu, sctx);
+                });
+                let wake = Box::new(move |ctx: &DispCtx| {
+                    let _ = ctx.mctx.vcpu(vcpu_id).barrier();
+                });
+
+                let _ = disp.spawn_sync(name, func, Some(wake))?;
+            }
+            Ok(())
+        })
     }
 
     /// Invokes `func`, which may operate on the instance's internal state
@@ -444,36 +465,8 @@ impl Drop for Instance {
 
 #[cfg(test)]
 impl Instance {
-    pub(crate) fn new_test(rt_handle: Option<Handle>) -> io::Result<Arc<Self>> {
-        let machine = Arc::new(Machine::new_test()?);
-        let disp = Dispatcher::new(&machine, rt_handle);
-
-        let this = Arc::new(Self {
-            inner: Mutex::new(Inner {
-                state_current: State::Initialize,
-                state_target: None,
-                suspend_info: None,
-                drive_thread: None,
-                machine: Some(machine),
-                inv: Inventory::new(),
-                transition_funcs: Vec::new(),
-            }),
-            cv: Condvar::new(),
-            disp,
-        });
-
-        let driver_hdl = Arc::clone(&this);
-        let driver = thread::Builder::new()
-            .name("instance-driver".to_string())
-            .spawn(move || driver_hdl.drive_state())?;
-
-        // Start with no vCPU threads for now.
-        this.disp.finalize(&this, None);
-        let mut state = this.inner.lock().unwrap();
-        state.drive_thread = Some(driver);
-        drop(state);
-
-        Ok(this)
+    pub fn new_test(rt_handle: Option<Handle>) -> io::Result<Arc<Self>> {
+        Self::create(Machine::new_test()?, rt_handle)
     }
 }
 
