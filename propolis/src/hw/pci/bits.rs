@@ -48,6 +48,10 @@ pub const CLASS_MULTIMEDIA: u8 = 4;
 pub const CLASS_MEMORY: u8 = 5;
 pub const CLASS_BRIDGE: u8 = 6;
 
+pub const HEADER_TYPE_DEVICE: u8 = 0b0;
+pub const HEADER_TYPE_BRIDGE: u8 = 0b1;
+pub const HEADER_TYPE_MULTIFUNC: u8 = 0b1000_0000;
+
 pub const SUBCLASS_NVM: u8 = 8;
 
 pub const PROGIF_ENTERPRISE_NVME: u8 = 2;

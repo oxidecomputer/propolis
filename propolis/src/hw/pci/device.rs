@@ -309,8 +309,17 @@ impl DeviceState {
                 }
             }
             StdCfgReg::HeaderType => {
-                // TODO: add multi-function and other bits
-                ro.write_u8(0);
+                let mut val = HEADER_TYPE_DEVICE;
+                let state = self.state.lock().unwrap();
+                if state
+                    .attach
+                    .as_ref()
+                    .map(bus::Attachment::is_multifunc)
+                    .unwrap_or(false)
+                {
+                    val |= HEADER_TYPE_MULTIFUNC;
+                }
+                ro.write_u8(val);
             }
             StdCfgReg::Reserved => {
                 ro.fill(0);

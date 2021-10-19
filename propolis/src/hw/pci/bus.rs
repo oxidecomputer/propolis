@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::bar::BarDefine;
@@ -27,10 +28,14 @@ impl Bus {
         assert_eq!(bdf.bus, self.n);
 
         let mut inner = self.inner.lock().unwrap();
-        inner.attach(bdf, dev.clone());
+        let slot_state = inner.attach(bdf, dev.clone());
 
-        let attached =
-            Attachment { inner: Arc::downgrade(&self.inner), bdf, lintr_cfg };
+        let attached = Attachment {
+            inner: Arc::downgrade(&self.inner),
+            bdf,
+            lintr_cfg,
+            slot_state,
+        };
         dev.attach(attached);
     }
 
@@ -46,6 +51,7 @@ pub struct Attachment {
     inner: Weak<Mutex<Inner>>,
     bdf: Bdf,
     lintr_cfg: Option<LintrCfg>,
+    slot_state: Arc<SlotState>,
 }
 impl Attachment {
     pub fn bar_register(&self, n: BarN, def: BarDefine, addr: u64) {
@@ -66,6 +72,14 @@ impl Attachment {
     pub fn bdf(&self) -> Bdf {
         self.bdf
     }
+    pub fn is_multifunc(&self) -> bool {
+        self.slot_state.is_multifunc.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Default)]
+struct SlotState {
+    is_multifunc: AtomicBool,
 }
 
 const SLOTS_PER_BUS: usize = 32;
@@ -74,6 +88,23 @@ const FUNCS_PER_SLOT: usize = 8;
 #[derive(Default)]
 struct Slot {
     funcs: [Option<Arc<dyn Endpoint>>; FUNCS_PER_SLOT],
+    state: Arc<SlotState>,
+}
+impl Slot {
+    fn attach(&mut self, bdf: Bdf, dev: Arc<dyn Endpoint>) -> Arc<SlotState> {
+        let _old = self.funcs[bdf.func.get() as usize].replace(dev);
+
+        // XXX be strict for now
+        assert!(matches!(_old, None));
+
+        // Keep multi-func state updated
+        if !self.state.is_multifunc.load(Ordering::Acquire) {
+            if self.funcs.iter().filter(|x| x.is_some()).count() > 1 {
+                self.state.is_multifunc.store(true, Ordering::Release);
+            }
+        }
+        self.state.clone()
+    }
 }
 
 struct BarState {
@@ -104,12 +135,8 @@ impl Inner {
             .map(Arc::clone);
         res
     }
-    fn attach(&mut self, bdf: Bdf, dev: Arc<dyn Endpoint>) {
-        let _old = self.slots[bdf.dev.get() as usize].funcs
-            [bdf.func.get() as usize]
-            .replace(dev);
-        // XXX be strict for now
-        assert!(matches!(_old, None));
+    fn attach(&mut self, bdf: Bdf, dev: Arc<dyn Endpoint>) -> Arc<SlotState> {
+        self.slots[bdf.dev.get() as usize].attach(bdf, dev)
     }
     fn bar_register(&mut self, bdf: Bdf, n: BarN, def: BarDefine, value: u64) {
         let dev = self.device_at(bdf).unwrap();
@@ -176,5 +203,104 @@ impl Inner {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn prep() -> (Arc<PioBus>, Arc<MmioBus>) {
+        (Arc::new(PioBus::new()), Arc::new(MmioBus::new(u32::MAX as usize)))
+    }
+
+    #[derive(Default)]
+    struct TestDev {
+        inner: Mutex<Option<Attachment>>,
+    }
+    impl Endpoint for TestDev {
+        fn attach(&self, attachment: Attachment) {
+            let mut attach = self.inner.lock().unwrap();
+            attach.replace(attachment);
+        }
+        fn cfg_rw(&self, _op: RWOp, _ctx: &DispCtx) {}
+        fn bar_rw(&self, _bar: BarN, _rwo: RWOp, _ctx: &DispCtx) {}
+    }
+    impl TestDev {
+        fn check_multifunc(&self) -> Option<bool> {
+            self.inner.lock().unwrap().as_ref().map(Attachment::is_multifunc)
+        }
+    }
+
+    #[test]
+    fn empty() {
+        let (pio, mmio) = prep();
+        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
+
+        for slot in 0..31 {
+            for func in 0..7 {
+                let bdf = Bdf::new(0, slot, func).unwrap();
+                assert!(
+                    matches!(bus.device_at(bdf), None),
+                    "no device at {:?}",
+                    bdf
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_bus_lookup() {
+        let (pio, mmio) = prep();
+        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
+
+        let bdf = Bdf::new(1, 0, 0).unwrap();
+        let _ = bus.device_at(bdf);
+    }
+
+    #[test]
+    #[should_panic]
+    fn bad_bus_insert() {
+        let (pio, mmio) = prep();
+        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
+
+        let dev = Arc::new(TestDev::default());
+        let bdf = Bdf::new(1, 0, 0).unwrap();
+        bus.attach(bdf, dev as Arc<dyn Endpoint>, None);
+    }
+
+    #[test]
+    fn set_multifunc() {
+        let (pio, mmio) = prep();
+        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
+
+        let first = Arc::new(TestDev::default());
+        let other_slot = Arc::new(TestDev::default());
+        let same_slot = Arc::new(TestDev::default());
+
+        bus.attach(
+            Bdf::new(0, 0, 0).unwrap(),
+            Arc::clone(&first) as Arc<dyn Endpoint>,
+            None,
+        );
+        assert_eq!(first.check_multifunc(), Some(false));
+
+        bus.attach(
+            Bdf::new(0, 1, 0).unwrap(),
+            Arc::clone(&other_slot) as Arc<dyn Endpoint>,
+            None,
+        );
+        assert_eq!(first.check_multifunc(), Some(false));
+        assert_eq!(other_slot.check_multifunc(), Some(false));
+
+        bus.attach(
+            Bdf::new(0, 0, 1).unwrap(),
+            Arc::clone(&same_slot) as Arc<dyn Endpoint>,
+            None,
+        );
+        assert_eq!(first.check_multifunc(), Some(true));
+        assert_eq!(same_slot.check_multifunc(), Some(true));
+        assert_eq!(other_slot.check_multifunc(), Some(false));
     }
 }
