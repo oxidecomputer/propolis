@@ -235,7 +235,7 @@ bitstruct! {
     /// Representation of the Controller Configuration (CC) register.
     ///
     /// See NVMe 1.0e Section 3.1.5 Offset 14h: CC - Controller Configuration
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Configuration(pub u32) {
         /// Enable (EN)
         ///
@@ -291,7 +291,7 @@ bitstruct! {
 }
 
 // Selected IO Command Set
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IOCommandSet {
     Nvm,
     Reserved(u8),
@@ -317,7 +317,7 @@ impl bitstruct::IntoRaw<u8, IOCommandSet> for Configuration {
 }
 
 /// Arbitration Mechanisms
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArbitrationMechanism {
     RoundRobin,
     WeightedRoundRobinWithUrgent,
@@ -583,14 +583,20 @@ pub const STS_COMMAND_SEQ_ERR: u8 = 0xC;
 /// Completion Queue Invalid
 pub const STS_CREATE_IO_Q_INVAL_CQ: u8 = 0x0;
 
-/// Invalid Queue Identifier
+/// Invalid Queue Identifier (Queue Creation)
 pub const STS_CREATE_IO_Q_INVAL_QID: u8 = 0x1;
 
-/// Invalid Queue Size
+/// Invalid Queue Size (Queue Creation)
 pub const STS_CREATE_IO_Q_INVAL_QSIZE: u8 = 0x2;
 
-/// Invalid Interrupt Vector
+/// Invalid Interrupt Vector (Queue Creation)
 pub const STS_CREATE_IO_Q_INVAL_INT_VEC: u8 = 0x8;
+
+/// Invalid Queue Identifier (Queue Deletion)
+pub const STS_DELETE_IO_Q_INVAL_QID: u8 = 0x1;
+
+/// Invalid Queue Deletion
+pub const STS_DELETE_IO_Q_INVAL_Q_DELETION: u8 = 0xC;
 
 // NVM Command Specific Status values
 // See NVMe 1.0e Section 4.5.1.2.2, Figure 20 Status Code - Command Specific Status Values, NVM Command Set

@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
 
 use super::bits::{self, RawCompletion, RawSubmission};
 use super::cmds::Completion;
@@ -291,6 +292,9 @@ pub enum QueueCreateErr {
     /// The specified length is invalid.
     #[error("invalid size")]
     InvalidSize,
+
+    #[error("the SQ ID {0} is already associated with the CQ")]
+    SubQueueIdAlreadyExists(QueueId),
 }
 
 /// Errors that may be encountered while adjusting Queue head/tail pointers.
@@ -321,6 +325,14 @@ pub struct SubQueue {
     base: GuestAddr,
 }
 
+impl Drop for SubQueue {
+    fn drop(&mut self) {
+        // Remove the CQ-SQ link
+        let mut cq_sqs = self.cq.sqs.lock().unwrap();
+        cq_sqs.remove(&self.id).unwrap();
+    }
+}
+
 impl SubQueue {
     /// Create a Submission Queue object backed by the guest memory at the
     /// given base address.
@@ -330,9 +342,27 @@ impl SubQueue {
         size: u32,
         base: GuestAddr,
         ctx: &DispCtx,
-    ) -> Result<Self, QueueCreateErr> {
+    ) -> Result<Arc<Self>, QueueCreateErr> {
+        use std::collections::hash_map::Entry;
         Self::validate(id, base, size, ctx)?;
-        Ok(Self { id, cq, state: QueueState::new_submission_state(size), base })
+        let sq = Arc::new(Self {
+            id,
+            cq,
+            state: QueueState::new_submission_state(size),
+            base,
+        });
+        // Associate this SQ with the given CQ
+        let mut cq_sqs = sq.cq.sqs.lock().unwrap();
+        match cq_sqs.entry(id) {
+            Entry::Occupied(_) => {
+                Err(QueueCreateErr::SubQueueIdAlreadyExists(id))
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(Arc::downgrade(&sq));
+                drop(cq_sqs);
+                Ok(sq)
+            }
+        }
     }
 
     /// Attempt to move the Tail entry pointer forward to the given index.
@@ -421,6 +451,9 @@ pub struct CompQueue {
 
     /// MSI-X object associated with PCIe device to signal host (VM).
     hdl: pci::MsixHdl,
+
+    /// [`SubQueue`]'s associated with this Completion Queue.
+    sqs: Mutex<HashMap<QueueId, Weak<SubQueue>>>,
 }
 
 impl CompQueue {
@@ -440,6 +473,7 @@ impl CompQueue {
             state: QueueState::new_completion_state(size),
             base,
             hdl,
+            sqs: Mutex::new(HashMap::new()),
         })
     }
 
@@ -467,6 +501,12 @@ impl CompQueue {
         old_kick
     }
 
+    /// Returns the number of SQ's associated with this Completion Queue.
+    pub fn associated_sqs(&self) -> usize {
+        let sqs = self.sqs.lock().unwrap();
+        sqs.len()
+    }
+
     /// Attempt to reserve an entry in the Completion Queue.
     ///
     /// An entry permit allows the user to push onto the Completion Queue.
@@ -485,7 +525,10 @@ impl CompQueue {
             // Otherwise claim a spot
             state.avail -= 1;
 
-            Some(CompQueueEntryPermit { cq: self.clone(), sq })
+            Some(CompQueueEntryPermit {
+                cq: Arc::downgrade(self),
+                sq: Arc::downgrade(&sq),
+            })
         }
     }
 
@@ -556,30 +599,44 @@ impl CompQueue {
 #[derive(Debug)]
 pub struct CompQueueEntryPermit {
     /// The corresponding Completion Queue for which we have a permit.
-    cq: Arc<CompQueue>,
+    cq: Weak<CompQueue>,
 
     /// The Submission Queue for which this entry is reserved.
-    sq: Arc<SubQueue>,
+    sq: Weak<SubQueue>,
 }
 
 impl CompQueueEntryPermit {
     /// Consume the permit by placing an entry into the Completion Queue.
     pub fn push_completion(self, cid: u16, comp: Completion, ctx: &DispCtx) {
-        let completion = bits::RawCompletion {
-            dw0: comp.dw0,
-            rsvd: 0,
-            sqhd: self.sq.head(),
-            sqid: self.sq.id(),
-            cid,
-            status_phase: comp.status | self.cq.phase(),
+        let cq = match self.cq.upgrade() {
+            Some(cq) => cq,
+            None => {
+                // The CQ has since been deleted so no way to complete this
+                // request nor to return the permit.
+                assert!(self.sq.upgrade().is_none());
+                return;
+            }
         };
+        if let Some(sq) = self.sq.upgrade() {
+            let completion = bits::RawCompletion {
+                dw0: comp.dw0,
+                rsvd: 0,
+                sqhd: sq.head(),
+                sqid: sq.id(),
+                cid,
+                status_phase: comp.status | cq.phase(),
+            };
 
-        let cq = self.cq.clone();
+            cq.push(self, completion, ctx);
 
-        cq.push(self, completion, ctx);
-
-        // TODO: should this be done here?
-        cq.fire_interrupt(ctx);
+            // TODO: should this be done here?
+            cq.fire_interrupt(ctx);
+        } else {
+            // The SQ has since been deleted so this request has already
+            // implicitly been aborted by the prior Delete Queue command.
+            // Just make sure we return the permit
+            self.remit();
+        }
     }
 
     /// Consume the permit by placing an entry into the Completion Queue.
@@ -590,16 +647,19 @@ impl CompQueueEntryPermit {
     /// Queues in unit tests.
     #[cfg(test)]
     fn push_completion_test(self, ctx: &DispCtx) {
-        let cq = self.cq.clone();
-        cq.push(self, bits::RawCompletion::default(), ctx);
+        if let Some(cq) = self.cq.upgrade() {
+            cq.push(self, bits::RawCompletion::default(), ctx);
+        }
     }
 
     /// Return the permit without having actually used it.
     ///
     /// Frees up the space for someone else to grab it via `CompQueue::reserve_entry`.
     fn remit(self) {
-        let mut state = self.cq.state.inner.lock().unwrap();
-        state.avail += 1;
+        if let Some(cq) = self.cq.upgrade() {
+            let mut state = cq.state.inner.lock().unwrap();
+            state.avail += 1;
+        }
     }
 }
 

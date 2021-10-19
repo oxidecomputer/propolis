@@ -29,6 +29,26 @@ const BLOCK_SZ: u64 = 512;
 /// NVMe errors
 #[derive(Debug, Error)]
 pub enum NvmeError {
+    /// Unsupported CQES requested
+    #[error("the requested CQ entry size is unsupported")]
+    UnsupportedCompQueueEntrySize,
+
+    /// Unsupported SQES requested
+    #[error("the requested SQ entry size is unsupported")]
+    UnsupportedSubQueueEntrySize,
+
+    /// Unsupported AMS requested
+    #[error("the requested arbitration mechanism is unsupported")]
+    UnsupportedArbitrationMechanism,
+
+    /// Unsupported MPS requested
+    #[error("the requested memory page size is unsupported")]
+    UnsupportedMemPageSize,
+
+    /// Unsupported CSS requested
+    #[error("the requested command set is unsupported")]
+    UnsupportedCommandSet,
+
     /// The specified Completion Queue ID did not correspond to a valid Completion Queue
     #[error("the completion queue specified ({0}) is invalid")]
     InvalidCompQueue(QueueId),
@@ -38,12 +58,16 @@ pub enum NvmeError {
     InvalidSubQueue(QueueId),
 
     /// The specified Completion Queue ID already exists
-    #[error("the completition queue specified ({0}) already exists")]
+    #[error("the completion queue specified ({0}) already exists")]
     CompQueueAlreadyExists(QueueId),
 
     /// The specified Submission Queue ID already exists
     #[error("the submission queue specified ({0}) already exists")]
     SubQueueAlreadyExists(QueueId),
+
+    /// Can't delete a CQ with associated SQs
+    #[error("the completion queue specified ({0}) still has ({1}) associated submission queue(s)")]
+    AssociatedSubQueuesStillExist(QueueId, usize),
 
     /// Failed to create Queue
     #[error("failed to create queue: {0}")]
@@ -201,7 +225,43 @@ impl NvmeCtrl {
         }
         let cq = self.get_cq(cqid)?;
         let sq = SubQueue::new(sqid, cq, size, base, ctx)?;
-        self.sqs[sqid as usize] = Some(Arc::new(sq));
+        self.sqs[sqid as usize] = Some(sq);
+        Ok(())
+    }
+
+    /// Removes the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
+    fn delete_cq(&mut self, cqid: QueueId) -> Result<(), NvmeError> {
+        if (cqid as usize) >= MAX_NUM_QUEUES
+            || self.cqs[cqid as usize].is_none()
+        {
+            return Err(NvmeError::InvalidCompQueue(cqid));
+        }
+
+        // Make sure this CQ has no more associated SQs
+        let sqs = self.cqs[cqid as usize].as_ref().unwrap().associated_sqs();
+        if sqs > 0 {
+            return Err(NvmeError::AssociatedSubQueuesStillExist(cqid, sqs));
+        }
+
+        // Remove it from the authoritative list of CQs
+        self.cqs[cqid as usize] = None;
+        Ok(())
+    }
+
+    /// Removes the [`SubQueue`] which corresponds to the given submission queue id (`sqid`).
+    ///
+    /// **NOTE:** This only removes the SQ from our list of active SQ and there may still be
+    ///           in-flight IO requests for this SQ. But after this call, we'll no longer
+    ///           answer any new doorbell requests for this SQ.
+    fn delete_sq(&mut self, sqid: QueueId) -> Result<(), NvmeError> {
+        if (sqid as usize) >= MAX_NUM_QUEUES
+            || self.sqs[sqid as usize].is_none()
+        {
+            return Err(NvmeError::InvalidSubQueue(sqid));
+        }
+
+        // Remove it from the authoritative list of SQs
+        self.sqs[sqid as usize] = None;
         Ok(())
     }
 
@@ -245,6 +305,69 @@ impl NvmeCtrl {
         self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
     }
 
+    /// Configure Controller
+    fn configure(&mut self, cc: Configuration) -> Result<(), NvmeError> {
+        let mut inner = || {
+            // Make sure the requested Queue sizes match our expectations
+            // Note: we only compare to `required` as we mandate that
+            //       required == maximum. See `Capabilities::mqes` value.
+            if cc.iocqes() > 0 {
+                if cc.iocqes() != self.ctrl_ident.cqes.required() {
+                    return Err(NvmeError::UnsupportedCompQueueEntrySize);
+                }
+                self.ctrl.cc.set_iocqes(cc.iocqes());
+            }
+            if cc.iosqes() > 0 {
+                if cc.iosqes() != self.ctrl_ident.sqes.required() {
+                    return Err(NvmeError::UnsupportedSubQueueEntrySize);
+                }
+                self.ctrl.cc.set_iosqes(cc.iosqes());
+            }
+
+            // These may only be configured while we're disabled
+            if !self.ctrl.cc.enabled() {
+                // We only support round robin arbitration
+                if cc.ams() != ArbitrationMechanism::RoundRobin {
+                    return Err(NvmeError::UnsupportedArbitrationMechanism);
+                }
+
+                // We only supported an MPS of 0 (4K pages)
+                if cc.mps() < self.ctrl.cap.mpsmin()
+                    || cc.mps() > self.ctrl.cap.mpsmax()
+                {
+                    return Err(NvmeError::UnsupportedMemPageSize);
+                }
+
+                // No non-standard command sets
+                if cc.css() != IOCommandSet::Nvm {
+                    return Err(NvmeError::UnsupportedCommandSet);
+                }
+
+                self.ctrl.cc.set_ams(cc.ams());
+                self.ctrl.cc.set_mps(cc.mps());
+                self.ctrl.cc.set_css(cc.css());
+            }
+
+            Ok(())
+        };
+
+        if let Err(e) = inner() {
+            // Got some bad config, set Controller Fail Status
+            self.ctrl.csts.set_cfs(true);
+            Err(e)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Get the controller in a state ready to process requests
+    fn enable(&mut self, ctx: &DispCtx) -> Result<(), NvmeError> {
+        // Create the Admin Queues
+        self.create_admin_queues(ctx)?;
+
+        Ok(())
+    }
+
     /// Performs a Controller Reset.
     ///
     /// The reset deletes all I/O Submission & Completion Queues, resets
@@ -257,14 +380,23 @@ impl NvmeCtrl {
     /// that have had corresponding completion queue entries posted to an I/O
     /// Completion Queue prior to the reset operation.
     fn reset(&mut self) {
-        // TODO: handle any pending commands
-
+        // Remove our references to the Qs which should be the only strong refs
+        // at this point. Any in-flight I/O commands will just implicitly be
+        // aborted once they try to issue their completions.
         for sq in &mut self.sqs {
             *sq = None;
         }
         for cq in &mut self.cqs {
             *cq = None;
         }
+
+        // Clear the CC & CSTS registers
+        // Sets CC.EN=0 and CSTS.RDY=0
+        self.ctrl.cc = Configuration(0);
+        self.ctrl.csts = Status(0);
+
+        // The other registers (e.g. CAP/VS) we never modify
+        // and thus don't need to do anything on reset
     }
 
     /// Convert some number of logical blocks to bytes with the currently active LBA data size
@@ -366,18 +498,15 @@ impl PciNvme {
             // We support the NVM command set
             .with_css_nvm(true);
 
-        // Initialize the CC "register" leaving most values
-        // at their defaults (0):
+        // Initialize the CC "register"
         //  EN      = 0 => controller initially disabled
         //  CSS     = 0 => NVM Command Set selected
         //  MPS     = 0 => 2^(12+0) bytes, 4K pages
         //  AMS     = 0 => Round Robin Arbitration
         //  SHN     = 0 => Shutdown Notification Cleared
-        let cc = Configuration(0)
-            // Set our expected Submission Queue Entry Size
-            .with_iosqes(sqes)
-            // Set our expected Completion Queue Entry Size
-            .with_iocqes(cqes);
+        //  IOCQES  = 0 => No I/O CQ Entry Size set yet
+        //  IOSQES  = 0 => No I/O SQ Entry Size set yet
+        let cc = Configuration(0);
 
         // Initialize the CSTS "register" leaving most values
         // at their defaults (0):
@@ -419,31 +548,34 @@ impl PciNvme {
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         let mut state = self.state.lock().unwrap();
-        let cur = state.ctrl.cc;
 
-        if !cur.enabled() {
-            // TODO: apply any necessary config changes
+        // Propogate any CC changes first
+        if state.ctrl.cc != new {
+            state.configure(new)?;
         }
 
+        let cur = state.ctrl.cc;
         if new.enabled() && !cur.enabled() {
-            state.ctrl.cc.set_enabled(true);
-
-            // Create the Admin Completion and Submission queues
-            state.create_admin_queues(ctx)?;
-
-            state.ctrl.csts.set_ready(true);
+            // Get the controller ready to service requests
+            if let Err(e) = state.enable(ctx) {
+                // Couldn't enable controller, set Controller Fail Status
+                state.ctrl.csts.set_cfs(true);
+                return Err(e);
+            } else {
+                // Controller now ready to start servicing requests
+                // Set CC.EN=1 and CSTS.RDY=1
+                state.ctrl.cc.set_enabled(true);
+                state.ctrl.csts.set_ready(true);
+            }
         } else if !new.enabled() && cur.enabled() {
-            state.ctrl.cc.set_enabled(false);
-            state.ctrl.csts.set_ready(false);
-
+            // Reset controller state which will set CC.EN=0 and CSTS.RDY=0
             state.reset();
         }
 
         let shutdown = new.shn() != ShutdownNotification::None;
         if shutdown && state.ctrl.csts.shst() == ShutdownStatus::Normal {
             // Host has indicated to shutdown
-            // TODO: Cleanup properly but for now just immediately indicate
-            //       we're done shutting down.
+            // TODO: Issue flush to underlying block devices
             state.ctrl.csts.set_shst(ShutdownStatus::Complete);
         } else if !shutdown && state.ctrl.csts.shst() != ShutdownStatus::Normal
         {
@@ -484,15 +616,21 @@ impl PciNvme {
             }
             CtrlrReg::AdminQueueAttr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u32(state.ctrl.aqa.0);
+                if !state.ctrl.cc.enabled() {
+                    ro.write_u32(state.ctrl.aqa.0);
+                }
             }
             CtrlrReg::AdminSubQAddr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u64(state.ctrl.admin_sq_base);
+                if !state.ctrl.cc.enabled() {
+                    ro.write_u64(state.ctrl.admin_sq_base);
+                }
             }
             CtrlrReg::AdminCompQAddr => {
                 let state = self.state.lock().unwrap();
-                ro.write_u64(state.ctrl.admin_cq_base);
+                if !state.ctrl.cc.enabled() {
+                    ro.write_u64(state.ctrl.admin_cq_base);
+                }
             }
             CtrlrReg::Reserved => {
                 ro.fill(0);
@@ -647,9 +785,13 @@ impl PciNvme {
                 AdminCmd::SetFeatures(cmd) => {
                     state.acmd_set_features(&cmd, ctx)
                 }
-                AdminCmd::DeleteIOSubQ(_)
-                | AdminCmd::DeleteIOCompQ(_)
-                | AdminCmd::Abort
+                AdminCmd::DeleteIOCompQ(cqid) => {
+                    state.acmd_delete_io_cq(cqid, ctx)
+                }
+                AdminCmd::DeleteIOSubQ(sqid) => {
+                    state.acmd_delete_io_sq(sqid, ctx)
+                }
+                AdminCmd::Abort
                 | AdminCmd::GetFeatures
                 | AdminCmd::AsyncEventReq
                 | AdminCmd::Unknown(_) => {
