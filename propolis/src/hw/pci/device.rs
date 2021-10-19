@@ -49,6 +49,7 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
     fn attach(&self, attachment: bus::Attachment) {
         let ds = self.device_state();
         ds.attach(attachment);
+        self.attach();
     }
     fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
         let ds = self.device_state();
