@@ -29,8 +29,8 @@ slog = "2.7"
 crossbeam-channel = "0.5"
 rand = "0.8"
 tempfile = "3.2"
+slog-term = "2.7"
+slog-async = "2.7"
 
 [features]
 default = []
-slog-term = "2.7"
-slog-async = "2.7"

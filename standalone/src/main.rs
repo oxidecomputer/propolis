@@ -242,7 +242,7 @@ fn main() {
                     let block_dev =
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                    let (backend, creg) = config.block_dev(block_dev);
+                    let (backend, creg) = config.block_dev(block_dev, disp);
 
                     let info = backend.info();
                     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
