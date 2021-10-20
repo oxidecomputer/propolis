@@ -61,7 +61,7 @@ impl AdminCmd {
                 };
                 AdminCmd::CreateIOSubQ(CreateIOSQCmd {
                     prp: raw.prp1,
-                    qsize: (raw.cdw10 >> 16) as u16 + 1, // Convert from 0's based
+                    qsize: (raw.cdw10 >> 16) + 1, // Convert from 0's based
                     qid: raw.cdw10 as u16,
                     cqid: (raw.cdw11 >> 16) as u16,
                     queue_prio,
@@ -84,7 +84,7 @@ impl AdminCmd {
             bits::ADMIN_OPC_CREATE_IO_CQ => {
                 AdminCmd::CreateIOCompQ(CreateIOCQCmd {
                     prp: raw.prp1,
-                    qsize: (raw.cdw10 >> 16) as u16 + 1, // Convert from 0's based
+                    qsize: (raw.cdw10 >> 16) + 1, // Convert from 0's based
                     qid: raw.cdw10 as u16,
                     intr_vector: (raw.cdw11 >> 16) as u16,
                     intr_enable: (raw.cdw11 & 0b10) != 0,
@@ -132,7 +132,8 @@ pub struct CreateIOCQCmd {
     ///
     /// The size of the Completion Queue to be created.
     /// See NVMe 1.0e Section 4.1.3 Queue Size
-    pub qsize: u16,
+    /// NOTE: This has already been converted from a 0's based value.
+    pub qsize: u32,
 
     /// Queue Identifier (QID)
     ///
@@ -171,7 +172,8 @@ pub struct CreateIOSQCmd {
     ///
     /// The size of the Completion Queue to be created.
     /// See NVMe 1.0e Section 4.1.3 Queue Size
-    pub qsize: u16,
+    /// NOTE: This has already been converted from a 0's based value.
+    pub qsize: u32,
 
     /// Queue Identifier (QID)
     ///
@@ -782,6 +784,12 @@ impl From<QueueCreateErr> for Completion {
                 StatusCodeType::CmdSpecific,
                 bits::STS_CREATE_IO_Q_INVAL_QSIZE,
             ),
+            QueueCreateErr::SubQueueIdAlreadyExists(_) => {
+                Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    bits::STS_CREATE_IO_Q_INVAL_QID,
+                )
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -7,12 +7,10 @@ pub use crate::util::aspace::{Error, Result};
 
 use byteorder::{ByteOrder, LE};
 
-pub trait MmioDev: Send + Sync {
-    fn mmio_rw(&self, addr: usize, ident: usize, rwop: RWOp, ctx: &DispCtx);
-}
+pub type MmioFn = dyn Fn(usize, RWOp, &DispCtx) + Send + Sync + 'static;
 
 pub struct MmioBus {
-    map: Mutex<ASpace<(Weak<dyn MmioDev>, usize)>>,
+    map: Mutex<ASpace<Arc<MmioFn>>>,
 }
 impl MmioBus {
     pub fn new(max: usize) -> Self {
@@ -24,16 +22,12 @@ impl MmioBus {
         &self,
         start: usize,
         len: usize,
-        dev: Weak<dyn MmioDev>,
-        ident: usize,
+        func: Arc<MmioFn>,
     ) -> Result<()> {
-        self.map.lock().unwrap().register(start, len, (dev, ident))
+        self.map.lock().unwrap().register(start, len, func)
     }
-    pub fn unregister(
-        &self,
-        addr: usize,
-    ) -> Result<(Weak<dyn MmioDev>, usize)> {
-        self.map.lock().unwrap().unregister(addr)
+    pub fn unregister(&self, addr: usize) -> Result<()> {
+        self.map.lock().unwrap().unregister(addr).map(|_| ())
     }
 
     pub fn handle_write(
@@ -51,12 +45,13 @@ impl MmioBus {
             8 => &buf[0..],
             _ => panic!(),
         };
-        let handled = self.do_mmio(addr, |a, o, dev, ident| {
+        let handled = self.do_mmio(addr, |a, o, func| {
             let mut wo = WriteOp::from_buf(o as usize, data);
-            dev.mmio_rw(a, ident, RWOp::Write(&mut wo), ctx)
+            func(a, RWOp::Write(&mut wo), ctx)
         });
         if !handled {
-            println!("unhandled MMIO write - addr:{:x} len:{}", addr, bytes);
+            slog::info!(ctx.log, "unhandled MMIO";
+                "op" => "write", "addr" => addr, "bytes" => bytes);
         }
         probe_mmio_write!(|| (addr as u64, bytes, val, handled as u8));
     }
@@ -69,12 +64,13 @@ impl MmioBus {
             8 => &mut buf[0..],
             _ => panic!(),
         };
-        let handled = self.do_mmio(addr, |a, o, dev, ident| {
+        let handled = self.do_mmio(addr, |a, o, func| {
             let mut ro = ReadOp::from_buf(o as usize, &mut data);
-            dev.mmio_rw(a, ident, RWOp::Read(&mut ro), ctx)
+            func(a, RWOp::Read(&mut ro), ctx)
         });
         if !handled {
-            println!("unhandled MMIO read - addr:{:x} len:{}", addr, bytes);
+            slog::info!(ctx.log, "unhandled MMIO";
+                "op" => "read", "addr" => addr, "bytes" => bytes);
         }
 
         let val = LE::read_u64(&buf);
@@ -84,15 +80,14 @@ impl MmioBus {
 
     fn do_mmio<F>(&self, addr: usize, f: F) -> bool
     where
-        F: FnOnce(usize, usize, &Arc<dyn MmioDev>, usize),
+        F: FnOnce(usize, usize, &Arc<MmioFn>),
     {
         let map = self.map.lock().unwrap();
-        if let Ok((start, _len, (weak, ident))) = map.region_at(addr) {
-            let dev = Weak::upgrade(weak).unwrap();
-            let identv = *ident;
+        if let Ok((start, _len, func)) = map.region_at(addr) {
+            let func = Arc::clone(func);
             // unlock map before entering handler
             drop(map);
-            f(start, addr - start, &dev, identv);
+            f(start, addr - start, &func);
             true
         } else {
             false

@@ -9,8 +9,8 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::instance;
+use crate::intr_pins::IntrPin;
 use crate::util::regmap::RegMap;
-use crate::util::self_arc::*;
 
 use lazy_static::lazy_static;
 
@@ -42,11 +42,8 @@ struct VirtioState {
     status: Status,
     queue_sel: u16,
     nego_feat: u32,
-    isr_status: u8,
     intr_mode: IntrMode,
     intr_mode_updating: bool,
-    lintr_pin: Option<pci::INTxPin>,
-    msix_hdl: Option<pci::MsixHdl>,
     msix_cfg_vec: u16,
     msix_queue_vec: Vec<u16>,
 }
@@ -59,11 +56,8 @@ impl VirtioState {
             status: Status::RESET,
             queue_sel: 0,
             nego_feat: 0,
-            isr_status: 0,
             intr_mode: IntrMode::IsrOnly,
             intr_mode_updating: false,
-            lintr_pin: None,
-            msix_hdl: None,
             msix_cfg_vec: VIRTIO_MSI_NO_VECTOR,
             msix_queue_vec,
         }
@@ -72,15 +66,13 @@ impl VirtioState {
         self.status = Status::RESET;
         self.queue_sel = 0;
         self.nego_feat = 0;
-        self.isr_status = 0;
-        if let Some(pin) = self.lintr_pin.as_ref() {
-            pin.deassert();
-        }
         self.msix_cfg_vec = VIRTIO_MSI_NO_VECTOR;
     }
 }
 
 pub struct PciVirtio {
+    pci_state: pci::DeviceState,
+
     map: RegMap<VirtioTop>,
     map_nomsix: RegMap<VirtioTop>,
     /// Quick access to register map for MSIX (true) or non-MSIX (false)
@@ -88,8 +80,7 @@ pub struct PciVirtio {
 
     state: Mutex<VirtioState>,
     state_cv: Condvar,
-
-    sa_cell: SelfArcCell<Self>,
+    isr_state: Arc<IsrState>,
 
     dev: Arc<dyn VirtioDevice>,
     dev_any: Arc<dyn Any + Send + Sync + 'static>,
@@ -101,46 +92,10 @@ impl PciVirtio {
         dev_class: u8,
         cfg_sz: usize,
         inner: Arc<D>,
-    ) -> Arc<pci::DeviceInst>
+    ) -> Arc<Self>
     where
         D: VirtioDevice + Send + Sync + 'static,
     {
-        let layout = [
-            (VirtioTop::LegacyConfig, LEGACY_REG_SZ),
-            (VirtioTop::DeviceConfig, cfg_sz),
-        ];
-        let layout_nomsix = [
-            (VirtioTop::LegacyConfig, LEGACY_REG_SZ_NO_MSIX),
-            (VirtioTop::DeviceConfig, cfg_sz),
-        ];
-
-        let dev_any =
-            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
-        let mut this = Arc::new(Self {
-            map: RegMap::create_packed_passthru(
-                cfg_sz + LEGACY_REG_SZ,
-                &layout,
-            ),
-            map_nomsix: RegMap::create_packed_passthru(
-                cfg_sz + LEGACY_REG_SZ_NO_MSIX,
-                &layout_nomsix,
-            ),
-            map_which: AtomicBool::new(false),
-
-            state: Mutex::new(VirtioState::new(inner.queues().count().get())),
-            state_cv: Condvar::new(),
-
-            dev: inner,
-            dev_any,
-
-            sa_cell: SelfArcCell::new(),
-        });
-        SelfArc::self_arc_init(&mut this);
-
-        for queue in this.dev.queues()[..].iter() {
-            queue.set_interrupt(IsrIntr::new(this.self_weak()));
-        }
-
         let mut builder = pci::Builder::new(pci::Ident {
             vendor_id: VIRTIO_VENDOR,
             device_id: dev_id,
@@ -156,7 +111,46 @@ impl PciVirtio {
         }
 
         // XXX: properly size the legacy cfg BAR
-        builder.add_bar_io(pci::BarN::BAR0, 0x200).finish(this)
+        builder = builder.add_bar_io(pci::BarN::BAR0, 0x200);
+        let pci_state = builder.finish();
+
+        let layout = [
+            (VirtioTop::LegacyConfig, LEGACY_REG_SZ),
+            (VirtioTop::DeviceConfig, cfg_sz),
+        ];
+        let layout_nomsix = [
+            (VirtioTop::LegacyConfig, LEGACY_REG_SZ_NO_MSIX),
+            (VirtioTop::DeviceConfig, cfg_sz),
+        ];
+
+        let dev_any =
+            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
+        let this = Arc::new(Self {
+            pci_state,
+
+            map: RegMap::create_packed_passthru(
+                cfg_sz + LEGACY_REG_SZ,
+                &layout,
+            ),
+            map_nomsix: RegMap::create_packed_passthru(
+                cfg_sz + LEGACY_REG_SZ_NO_MSIX,
+                &layout_nomsix,
+            ),
+            map_which: AtomicBool::new(false),
+
+            state: Mutex::new(VirtioState::new(inner.queues().count().get())),
+            state_cv: Condvar::new(),
+            isr_state: IsrState::new(),
+
+            dev: inner,
+            dev_any,
+        });
+
+        for queue in this.dev.queues()[..].iter() {
+            queue.set_interrupt(IsrIntr::new(&this.isr_state));
+        }
+
+        this
     }
 
     fn legacy_read(&self, id: &LegacyReg, ro: &mut ReadOp, _ctx: &DispCtx) {
@@ -191,15 +185,8 @@ impl PciVirtio {
                 ro.write_u8(state.status.bits());
             }
             LegacyReg::IsrStatus => {
-                let mut state = self.state.lock().unwrap();
-                let isr = state.isr_status;
-                if isr != 0 {
-                    // reading ISR Status clears it as well
-                    state.isr_status = 0;
-                    if let Some(pin) = state.lintr_pin.as_ref() {
-                        pin.deassert();
-                    }
-                }
+                // reading ISR Status clears it as well
+                let isr = self.isr_state.read_clear();
                 ro.write_u8(isr);
             }
             LegacyReg::MsixVectorConfig => {
@@ -252,6 +239,7 @@ impl PciVirtio {
                 state.msix_cfg_vec = wo.read_u16();
             }
             LegacyReg::MsixVectorQueue => {
+                let hdl = self.pci_state.msix_hdl().unwrap();
                 let mut state = self.state.lock().unwrap();
                 let sel = state.queue_sel as usize;
                 if let Some(queue) = self.vq(state.queue_sel) {
@@ -267,7 +255,6 @@ impl PciVirtio {
                             .unwrap();
                         state.intr_mode_updating = true;
                         state.msix_queue_vec[sel] = val;
-                        let hdl = state.msix_hdl.as_ref().unwrap().clone();
 
                         // State lock cannot be held while updating queue
                         // interrupt handlers due to deadlock possibility.
@@ -296,7 +283,7 @@ impl PciVirtio {
         let mut state = self.state.lock().unwrap();
         let val = Status::from_bits_truncate(status);
         if val == Status::RESET && state.status != Status::RESET {
-            self.device_reset(state, ctx)
+            self.virtio_reset(state, ctx)
         } else {
             // XXX: better device status FSM
             state.status = val;
@@ -316,21 +303,18 @@ impl PciVirtio {
     ) {
         self.dev.queue_change(vq, change, ctx);
     }
-    fn device_reset(&self, mut state: MutexGuard<VirtioState>, ctx: &DispCtx) {
+
+    /// Reset the virtio portion of the device
+    ///
+    /// This leaves PCI state (such as configured BARs) unchanged
+    fn virtio_reset(&self, mut state: MutexGuard<VirtioState>, ctx: &DispCtx) {
         for queue in self.dev.queues()[..].iter() {
             queue.reset();
             self.queue_change(queue, VqChange::Reset, ctx);
         }
         state.reset();
-        self.dev.device_reset(ctx);
-    }
-
-    fn raise_isr(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.isr_status |= 1;
-        if let Some(pin) = state.lintr_pin.as_ref() {
-            pin.assert()
-        }
+        let _ = self.isr_state.read_clear();
+        self.dev.reset(ctx);
     }
 
     fn set_intr_mode(&self, new_mode: IntrMode) {
@@ -347,9 +331,7 @@ impl PciVirtio {
         match old_mode {
             IntrMode::IsrLintr => {
                 // When leaving lintr-pin mode, deassert anything on said pin
-                if let Some(pin) = state.lintr_pin.as_ref() {
-                    pin.deassert();
-                }
+                self.isr_state.disable();
             }
             IntrMode::Msi => {
                 // When leaving MSI mode, re-wire the Isr interrupt handling
@@ -358,7 +340,7 @@ impl PciVirtio {
                 // updating the interrupts handlers on queues.
                 drop(state);
                 for queue in self.dev.queues()[..].iter() {
-                    queue.set_interrupt(IsrIntr::new(self.self_weak()));
+                    queue.set_interrupt(IsrIntr::new(&self.isr_state));
                 }
                 state = self.state.lock().unwrap();
             }
@@ -368,21 +350,17 @@ impl PciVirtio {
         state.intr_mode = new_mode;
         match new_mode {
             IntrMode::IsrLintr => {
-                if let Some(pin) = state.lintr_pin.as_ref() {
-                    if state.isr_status != 0 {
-                        pin.assert()
-                    }
-                }
+                self.isr_state.enable();
             }
             IntrMode::Msi => {
+                let hdl = self.pci_state.msix_hdl().unwrap();
                 for (idx, queue) in self.dev.queues()[..].iter().enumerate() {
                     let vec = *state.msix_queue_vec.get(idx).unwrap();
-                    let hdl = state.msix_hdl.as_ref().unwrap().clone();
 
                     // State lock cannot be held while updating queue interrupt
                     // handlers due to deadlock possibility.
                     drop(state);
-                    queue.set_interrupt(MsiIntr::new(hdl, vec));
+                    queue.set_interrupt(MsiIntr::new(hdl.clone(), vec));
                     state = self.state.lock().unwrap();
                 }
             }
@@ -405,13 +383,10 @@ impl PciVirtio {
     }
 }
 
-impl SelfArc for PciVirtio {
-    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
-        &self.sa_cell
-    }
-}
-
 impl pci::Device for PciVirtio {
+    fn device_state(&self) -> &pci::DeviceState {
+        &self.pci_state
+    }
     fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp, ctx: &DispCtx) {
         assert_eq!(bar, pci::BarN::BAR0);
         let map = match self.map_which.load(Ordering::SeqCst) {
@@ -428,14 +403,10 @@ impl pci::Device for PciVirtio {
             VirtioTop::DeviceConfig => self.dev.device_cfg_rw(rwo),
         });
     }
-    fn attach(
-        &self,
-        lintr_pin: Option<pci::INTxPin>,
-        msix_hdl: Option<pci::MsixHdl>,
-    ) {
-        let mut state = self.state.lock().unwrap();
-        state.lintr_pin = lintr_pin;
-        state.msix_hdl = msix_hdl;
+    fn attach(&self) {
+        if let Some(pin) = self.pci_state.lintr_pin() {
+            self.isr_state.set_pin(pin);
+        }
     }
     fn interrupt_mode_change(&self, mode: pci::IntrMode) {
         self.set_intr_mode(match mode {
@@ -487,26 +458,88 @@ impl Entity for PciVirtio {
         target: Option<instance::State>,
         ctx: &DispCtx,
     ) {
-        if next == instance::State::Reset {
-            let state = self.state.lock().unwrap();
-            self.device_reset(state, ctx);
-        }
         self.dev.state_transition(next, target, ctx)
+    }
+    fn reset(&self, ctx: &DispCtx) {
+        let state = self.state.lock().unwrap();
+        self.virtio_reset(state, ctx);
+        self.pci_state.reset(self);
+    }
+}
+
+#[derive(Default)]
+struct IsrInner {
+    disabled: bool,
+    value: u8,
+    pin: Option<Arc<dyn IntrPin>>,
+}
+struct IsrState {
+    inner: Mutex<IsrInner>,
+}
+impl IsrState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { inner: Mutex::new(IsrInner::default()) })
+    }
+    fn raise(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.value |= 1;
+        if !inner.disabled {
+            if let Some(pin) = inner.pin.as_ref() {
+                pin.assert()
+            }
+        }
+    }
+    fn read_clear(&self) -> u8 {
+        let mut inner = self.inner.lock().unwrap();
+        let val = inner.value;
+        if val != 0 {
+            inner.value = 0;
+            if let Some(pin) = inner.pin.as_ref() {
+                pin.deassert();
+            }
+        }
+        val
+    }
+    fn disable(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.disabled {
+            if let Some(pin) = inner.pin.as_ref() {
+                pin.deassert();
+            }
+            inner.disabled = true;
+        }
+    }
+    fn enable(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.disabled {
+            if inner.value != 0 {
+                if let Some(pin) = inner.pin.as_ref() {
+                    pin.deassert();
+                }
+            }
+            inner.disabled = false;
+        }
+    }
+    fn set_pin(&self, pin: Arc<dyn IntrPin>) {
+        let mut inner = self.inner.lock().unwrap();
+        let old = inner.pin.replace(pin);
+        // XXX: strict for now
+        assert!(old.is_none());
     }
 }
 
 struct IsrIntr {
-    outer: Weak<PciVirtio>,
+    state: Weak<IsrState>,
 }
 impl IsrIntr {
-    fn new(outer: Weak<PciVirtio>) -> Box<Self> {
-        Box::new(Self { outer })
+    fn new(state: &Arc<IsrState>) -> Box<Self> {
+        Box::new(Self { state: Arc::downgrade(state) })
     }
 }
 impl VirtioIntr for IsrIntr {
     fn notify(&self, _ctx: &DispCtx) {
-        if let Some(dev) = Weak::upgrade(&self.outer) {
-            dev.raise_isr();
+        if let Some(state) = Weak::upgrade(&self.state) {
+            state.raise()
         }
     }
     fn read(&self) -> VqIntr {

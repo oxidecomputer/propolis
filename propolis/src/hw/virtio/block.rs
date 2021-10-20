@@ -23,10 +23,7 @@ pub struct VirtioBlock {
     notifier: block::Notifier,
 }
 impl VirtioBlock {
-    pub fn create(
-        queue_size: u16,
-        info: block::DeviceInfo,
-    ) -> Arc<pci::DeviceInst> {
+    pub fn create(queue_size: u16, info: block::DeviceInfo) -> Arc<PciVirtio> {
         // virtio-block only needs two MSI-X entries for its interrupt needs:
         // - device config changes
         // - queue 0 notification
@@ -91,7 +88,7 @@ impl VirtioBlock {
                     Ok(block::Request::new_read(
                         breq.sector as usize * SECTOR_SZ,
                         regions,
-                        Box::new(move |res, ctx| {
+                        Box::new(move |_op, res, ctx| {
                             complete_blockreq(res, chain, mvq, ctx);
                         }),
                     ))
@@ -108,7 +105,7 @@ impl VirtioBlock {
                     Ok(block::Request::new_write(
                         breq.sector as usize * SECTOR_SZ,
                         regions,
-                        Box::new(move |res, ctx| {
+                        Box::new(move |_op, res, ctx| {
                             complete_blockreq(res, chain, mvq, ctx);
                         }),
                     ))

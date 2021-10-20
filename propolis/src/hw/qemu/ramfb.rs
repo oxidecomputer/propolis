@@ -113,14 +113,11 @@ impl Item for RamFb {
         });
         if rwo.is_write() {
             let valid_after = config.verify(ctx).is_some();
-            if valid_after != valid_before {
-                println!(
-                    "ramfb {} valid",
-                    if valid_after { "became" } else { "ceased to be" }
-                );
-            }
+
             if valid_after {
-                println!("ramfb config: {:x?}", config);
+                slog::info!(ctx.log, "ramfb change"; "state" => "valid", "config" => ?config);
+            } else if valid_before {
+                slog::info!(ctx.log, "ramfb change"; "state" => "invalid");
             }
             match (valid_before, valid_after) {
                 (true, _) | (false, true) => {

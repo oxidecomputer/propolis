@@ -2,6 +2,7 @@ use std::cmp::min;
 use std::mem::size_of;
 
 use super::bits::{self, *};
+use super::queue::{QueueId, ADMIN_QUEUE_ID};
 use crate::common::GuestAddr;
 use crate::{common::PAGE_SIZE, dispatch::DispCtx};
 
@@ -16,6 +17,14 @@ impl NvmeCtrl {
         cmd: &cmds::CreateIOCQCmd,
         ctx: &DispCtx,
     ) -> cmds::Completion {
+        // If the host hasn't specified an IOCQES, fail this request
+        if self.ctrl.cc.iocqes() == 0 {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_CREATE_IO_Q_INVAL_QSIZE,
+            );
+        }
+
         if cmd.intr_vector >= super::NVME_MSIX_COUNT {
             return cmds::Completion::specific_err(
                 StatusCodeType::CmdSpecific,
@@ -33,7 +42,7 @@ impl NvmeCtrl {
             cmd.qid,
             cmd.intr_vector,
             GuestAddr(cmd.prp),
-            cmd.qsize as u32,
+            cmd.qsize,
             ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
@@ -57,6 +66,14 @@ impl NvmeCtrl {
         cmd: &cmds::CreateIOSQCmd,
         ctx: &DispCtx,
     ) -> cmds::Completion {
+        // If the host hasn't specified an IOSQES, fail this request
+        if self.ctrl.cc.iosqes() == 0 {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_CREATE_IO_Q_INVAL_QSIZE,
+            );
+        }
+
         // We only support physical contiguous queues
         if !cmd.phys_contig {
             return cmds::Completion::generic_err(bits::STS_INVAL_FIELD);
@@ -67,7 +84,7 @@ impl NvmeCtrl {
             cmd.qid,
             cmd.cqid,
             GuestAddr(cmd.prp),
-            cmd.qsize as u32,
+            cmd.qsize,
             ctx,
         ) {
             Ok(_) => cmds::Completion::success(),
@@ -86,6 +103,79 @@ impl NvmeCtrl {
             ),
             Err(NvmeError::QueueCreateErr(err)) => err.into(),
             Err(_) => cmds::Completion::generic_err(STS_INTERNAL_ERR),
+        }
+    }
+
+    /// Service I/O Delete Completion Queue command.
+    ///
+    /// See NVMe 1.0e Section 5.5 Delete I/O Submission Queue command
+    pub(super) fn acmd_delete_io_cq(
+        &mut self,
+        cqid: QueueId,
+        _ctx: &DispCtx,
+    ) -> cmds::Completion {
+        // Not allowed to delete the Admin Completion Queue
+        if cqid == ADMIN_QUEUE_ID {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_DELETE_IO_Q_INVAL_QID,
+            );
+        }
+
+        // Remove the CQ from our list of active CQs.
+        // At this point, all associated SQs should've been deleted
+        // otherwise we'll return an error.
+        match self.delete_cq(cqid) {
+            Ok(()) => cmds::Completion::success(),
+            Err(NvmeError::InvalidCompQueue(_)) => {
+                cmds::Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    STS_DELETE_IO_Q_INVAL_QID,
+                )
+            }
+            Err(NvmeError::AssociatedSubQueuesStillExist(_, _)) => {
+                cmds::Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    STS_DELETE_IO_Q_INVAL_Q_DELETION,
+                )
+            }
+            _ => cmds::Completion::generic_err(STS_INTERNAL_ERR),
+        }
+    }
+
+    /// Service I/O Delete Submission Queue command.
+    ///
+    /// See NVMe 1.0e Section 5.6 Delete I/O Submission Queue command
+    pub(super) fn acmd_delete_io_sq(
+        &mut self,
+        sqid: QueueId,
+        _ctx: &DispCtx,
+    ) -> cmds::Completion {
+        // Not allowed to delete the Admin Submission Queue
+        if sqid == ADMIN_QUEUE_ID {
+            return cmds::Completion::specific_err(
+                StatusCodeType::CmdSpecific,
+                STS_DELETE_IO_Q_INVAL_QID,
+            );
+        }
+
+        // Remove the SQ from our list of active SQs which will stop
+        // us from accepting any new requests for it.
+        // That should be the only strong ref left to the SubQueue
+        // Any in-flight I/O requests that haven't been completed yet
+        // only hold a weak ref (via CompQueueEntryPermit).
+        // Note: The NVMe 1.0e spec says "The command causes all commands
+        //       submitted to the indicated Submission Queue that are still in
+        //       progress to be aborted."
+        match self.delete_sq(sqid) {
+            Ok(()) => cmds::Completion::success(),
+            Err(NvmeError::InvalidSubQueue(_)) => {
+                cmds::Completion::specific_err(
+                    StatusCodeType::CmdSpecific,
+                    STS_DELETE_IO_Q_INVAL_QID,
+                )
+            }
+            _ => cmds::Completion::generic_err(STS_INTERNAL_ERR),
         }
     }
 
@@ -117,18 +207,14 @@ impl NvmeCtrl {
     ) -> cmds::Completion {
         match cmd.cns {
             IDENT_CNS_NAMESPACE => match cmd.nsid {
-                n if n > 0 && n <= super::ns::MAX_NUM_NAMESPACES as u32 => {
+                1 => {
                     assert!(size_of::<bits::IdentifyNamespace>() <= PAGE_SIZE);
                     let buf = cmd
                         .data(ctx.mctx.memctx())
                         .next()
                         .expect("missing prp entry for ident response");
-                    if let Ok(ns) = self.get_ns(n) {
-                        assert!(ctx.mctx.memctx().write(buf.0, &ns.ident));
-                        cmds::Completion::success()
-                    } else {
-                        cmds::Completion::generic_err(STS_INVALID_NS)
-                    }
+                    assert!(ctx.mctx.memctx().write(buf.0, &self.ns_ident));
+                    cmds::Completion::success()
                 }
                 // 0 is not a valid NSID (See NVMe 1.0e, Section 6.1 Namespaces)
                 // We also don't currently support namespace management
@@ -143,7 +229,7 @@ impl NvmeCtrl {
                     .data(ctx.mctx.memctx())
                     .next()
                     .expect("missing prp entry for ident response");
-                assert!(ctx.mctx.memctx().write(buf.0, &self.ident));
+                assert!(ctx.mctx.memctx().write(buf.0, &self.ctrl_ident));
                 cmds::Completion::success()
             }
             // We currently present NVMe version 1.0 in which CNS is a 1-bit field

@@ -4,12 +4,14 @@ use std::ops::Bound::Included;
 use super::aspace::ASpace;
 use crate::common::*;
 
+#[derive(Debug)]
 struct RegDef<ID> {
     id: ID,
     flags: Flags,
 }
 
 /// Represents a mapping of registers within an address space.
+#[derive(Debug)]
 pub struct RegMap<ID> {
     len: usize,
     space: ASpace<RegDef<ID>>,

@@ -1,22 +1,86 @@
-use std::any::Any;
-use std::convert::TryFrom;
-use std::marker::PhantomData;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
+use super::bar::{BarDefine, Bars};
 use super::bits::*;
-use super::{Endpoint, INTxPinID};
+use super::{bus, BarN, Endpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::instance;
 use crate::intr_pins::IntrPin;
-use crate::inventory::Entity;
-use crate::mmio::MmioDev;
-use crate::pio::PioDev;
 use crate::util::regmap::{Flags, RegMap};
-use crate::util::self_arc::*;
 
 use lazy_static::lazy_static;
-use num_enum::TryFromPrimitive;
+
+pub trait Device: Send + Sync + 'static {
+    fn device_state(&self) -> &DeviceState;
+
+    #[allow(unused_variables)]
+    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
+        match rwo {
+            RWOp::Read(ro) => {
+                unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset())
+            }
+            RWOp::Write(wo) => {
+                unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset())
+            }
+        }
+    }
+    #[allow(unused_variables)]
+    fn cfg_rw(&self, region: u8, rwo: RWOp, ctx: &DispCtx) {
+        match rwo {
+            RWOp::Read(ro) => {
+                unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset())
+            }
+            RWOp::Write(wo) => {
+                unimplemented!("CFG write ({:x} @ {:x})", region, wo.offset())
+            }
+        }
+    }
+    fn attach(&self) {}
+    #[allow(unused_variables)]
+    fn interrupt_mode_change(&self, mode: IntrMode) {}
+    #[allow(unused_variables)]
+    fn msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {}
+    // TODO
+    // fn cap_read(&self);
+    // fn cap_write(&self);
+}
+
+impl<D: Device + Send + Sync + 'static> Endpoint for D {
+    fn attach(&self, attachment: bus::Attachment) {
+        let ds = self.device_state();
+        ds.attach(attachment);
+        self.attach();
+    }
+    fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
+        let ds = self.device_state();
+        ds.cfg_space.process(&mut rwo, |id, mut rwo| match id {
+            CfgReg::Std => {
+                STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
+                    RWOp::Read(ro) => ds.cfg_std_read(id, ro, ctx),
+                    RWOp::Write(wo) => ds.cfg_std_write(self, id, wo, ctx),
+                });
+            }
+            CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo, ctx),
+            CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
+                ds.cfg_cap_rw(self, id, rwo, ctx)
+            }
+        });
+    }
+    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
+        let ds = self.device_state();
+        if let Some(msix) = ds.msix_cfg.as_ref() {
+            if msix.bar_match(bar) {
+                msix.bar_rw(
+                    rwo,
+                    |info| ds.notify_msi_update(self, info, ctx),
+                    ctx,
+                );
+                return;
+            }
+        }
+        Device::bar_rw(self, bar, rwo, ctx);
+    }
+}
 
 enum CfgReg {
     Std,
@@ -51,25 +115,6 @@ enum StdCfgReg {
     IntrPin,
     MinGrant,
     MaxLatency,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
-#[repr(u8)]
-pub enum BarN {
-    BAR0 = 0,
-    BAR1,
-    BAR2,
-    BAR3,
-    BAR4,
-    BAR5,
-}
-
-#[derive(Eq, PartialEq, Clone, Copy, Debug)]
-pub enum BarDefine {
-    Pio(u16),
-    Mmio(u32),
-    Mmio64(u64),
-    Mmio64High,
 }
 
 lazy_static! {
@@ -120,215 +165,29 @@ pub struct Ident {
     pub sub_device_id: u16,
 }
 
-#[derive(Default)]
 struct State {
     reg_command: RegCmd,
     reg_intr_line: u8,
     reg_intr_pin: u8,
 
-    lintr_pin: Option<Arc<dyn IntrPin>>,
+    attach: Option<bus::Attachment>,
+    bars: Bars,
 
     update_in_progress: bool,
 }
-
-#[derive(Default)]
-struct BarState {
-    addr: u64,
-    registered: bool,
-}
-struct BarEntry {
-    define: Option<BarDefine>,
-    state: Mutex<BarState>,
-}
-impl BarEntry {
-    fn new() -> Self {
-        Self { define: None, state: Mutex::new(Default::default()) }
-    }
-}
-
-struct Bars {
-    entries: [BarEntry; 6],
-}
-
-impl Bars {
-    fn new(defs: &[Option<BarDefine>; 6]) -> Self {
-        let mut this = Self {
-            entries: [
-                BarEntry::new(),
-                BarEntry::new(),
-                BarEntry::new(),
-                BarEntry::new(),
-                BarEntry::new(),
-                BarEntry::new(),
-            ],
-        };
-        for (idx, def) in
-            defs.iter().enumerate().filter_map(|(n, def)| def.map(|d| (n, d)))
-        {
-            // Make sure 64-bit BAR definitions are playing by the rules
-            if matches!(def, BarDefine::Mmio64(_)) {
-                assert!(idx < 5);
-                assert!(matches!(defs[idx + 1], Some(BarDefine::Mmio64High)));
-            }
-            if matches!(def, BarDefine::Mmio64High) {
-                assert_ne!(idx, 0);
-                assert!(matches!(defs[idx - 1], Some(BarDefine::Mmio64(_))));
-            }
-            this.entries[idx].define = Some(def);
-        }
-
-        this
-    }
-    fn reg_read(&self, bar: BarN) -> u32 {
-        let idx = bar as usize;
-        let ent = &self.entries[idx];
-        if ent.define.is_none() {
-            return 0;
-        }
-        let state = ent.state.lock().unwrap();
-        match ent.define.as_ref().unwrap() {
-            BarDefine::Pio(_) => state.addr as u32 | BAR_TYPE_IO,
-            BarDefine::Mmio(_) => state.addr as u32 | BAR_TYPE_MEM,
-            BarDefine::Mmio64(_) => state.addr as u32 | BAR_TYPE_MEM64,
-            BarDefine::Mmio64High => {
-                assert_ne!(idx, 0);
-                drop(state);
-                let prev = self.entries[idx - 1].state.lock().unwrap();
-                (prev.addr >> 32) as u32
-            }
+impl State {
+    fn new(bars: Bars) -> Self {
+        Self {
+            reg_command: RegCmd::empty(),
+            reg_intr_line: 0xff,
+            reg_intr_pin: 0,
+            attach: None,
+            bars,
+            update_in_progress: false,
         }
     }
-    fn reg_write<F>(&self, bar: BarN, val: u32, register: F)
-    where
-        F: Fn(&BarDefine, u64, u64) -> bool,
-    {
-        let idx = bar as usize;
-        if self.entries[idx].define.is_none() {
-            return;
-        }
-        let mut ent = &self.entries[idx];
-        let mut state = self.entries[idx].state.lock().unwrap();
-        let (old, mut state) = match ent.define.as_ref().unwrap() {
-            BarDefine::Pio(size) => {
-                let mask = !(size - 1) as u32;
-                let old = state.addr;
-                state.addr = (val & mask) as u64;
-                (old, state)
-            }
-            BarDefine::Mmio(size) => {
-                let mask = !(size - 1);
-                let old = state.addr;
-                state.addr = (val & mask) as u64;
-                (old, state)
-            }
-            BarDefine::Mmio64(size) => {
-                let old = state.addr;
-                let mask = !(size - 1) as u32;
-                let low = val as u32 & mask;
-                state.addr = (old & (0xffffffff << 32)) | low as u64;
-                (old, state)
-            }
-            BarDefine::Mmio64High => {
-                assert!(idx > 0);
-                drop(state);
-                ent = &self.entries[idx - 1];
-                let mut state = ent.state.lock().unwrap();
-                let size = match ent.define.as_ref().unwrap() {
-                    BarDefine::Mmio64(sz) => sz,
-                    _ => panic!(),
-                };
-                let mask = !(size - 1);
-                let old = state.addr;
-                let high = (((val as u64) << 32) & mask) & 0xffffffff00000000;
-                state.addr = high | (old & 0xffffffff);
-                (old, state)
-            }
-        };
-        if state.registered && old != state.addr {
-            // attempt to register BAR at new location
-            state.registered =
-                register(ent.define.as_ref().unwrap(), old, state.addr);
-        }
-    }
-    fn change_registrations<F>(&self, changef: F)
-    where
-        F: Fn(BarN, &BarDefine, u64, bool) -> Option<bool>,
-    {
-        self.for_each(|barn, def| {
-            if def == &BarDefine::Mmio64High {
-                // The high portion of 64-bit BARs does not require direct
-                // handling, as the low portion bears the necessary information.
-                return;
-            }
-            let mut state = self.entries[barn as usize].state.lock().unwrap();
-            if let Some(new_reg_state) =
-                changef(barn, def, state.addr, state.registered)
-            {
-                state.registered = new_reg_state;
-            }
-        });
-    }
-    fn for_each<F>(&self, mut f: F)
-    where
-        F: FnMut(BarN, &BarDefine),
-    {
-        for (n, bar) in
-            self.entries.iter().enumerate().filter(|(_n, b)| b.define.is_some())
-        {
-            let barn = BarN::try_from(n as u8).unwrap();
-            f(barn, bar.define.as_ref().unwrap());
-        }
-    }
-    fn place(&self, bar: BarN, addr: u64) {
-        let idx = bar as usize;
-        assert!(self.entries[idx].define.is_some());
-
-        let ent = &self.entries[idx].define.as_ref().unwrap();
-        let mut state = self.entries[idx].state.lock().unwrap();
-        match ent {
-            BarDefine::Pio(_) => {
-                assert!(addr <= u16::MAX as u64);
-            }
-            BarDefine::Mmio(_) => {
-                assert!(addr <= u32::MAX as u64);
-            }
-            BarDefine::Mmio64(_) => {}
-            BarDefine::Mmio64High => panic!(),
-        }
-        // initial BAR placement is a necessary step prior to registration
-        assert!(!state.registered);
-        state.addr = addr;
-    }
-    fn reset<F>(&self, changef: F, ctx: &DispCtx)
-    where
-        F: Fn(BarN, &BarDefine, u64),
-    {
-        self.for_each(|barn, def| {
-            if def == &BarDefine::Mmio64High {
-                // The high portion of 64-bit BARs does not require direct
-                // handling, as the low portion bears the necessary information.
-                return;
-            }
-            let mut state = self.entries[barn as usize].state.lock().unwrap();
-            if state.registered {
-                match def {
-                    BarDefine::Pio(_) => {
-                        ctx.mctx.pio().unregister(state.addr as u16).unwrap();
-                    }
-                    BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
-                        ctx.mctx
-                            .mmio()
-                            .unregister(state.addr as usize)
-                            .unwrap();
-                    }
-                    // Already filtered out
-                    BarDefine::Mmio64High => panic!(),
-                }
-                state.registered = false;
-                changef(barn, def, state.addr);
-            }
-            state.addr = 0;
-        });
+    fn attached(&self) -> &bus::Attachment {
+        self.attach.as_ref().unwrap()
     }
 }
 
@@ -337,7 +196,7 @@ struct Cap {
     offset: u8,
 }
 
-pub struct DeviceInst {
+pub struct DeviceState {
     ident: Ident,
     lintr_req: bool,
     cfg_space: RegMap<CfgReg>,
@@ -345,48 +204,27 @@ pub struct DeviceInst {
     caps: Vec<Cap>,
 
     state: Mutex<State>,
-    bars: Bars,
     cond: Condvar,
-
-    sa_cell: SelfArcCell<Self>,
-
-    inner: Arc<dyn Device>,
-    // Keep a 'dyn Any' copy around for downcasting
-    inner_any: Arc<dyn Any + Send + Sync + 'static>,
 }
 
-impl DeviceInst {
-    fn new<D>(
+impl DeviceState {
+    fn new(
         ident: Ident,
+        lintr_req: bool,
         cfg_space: RegMap<CfgReg>,
         msix_cfg: Option<Arc<MsixCfg>>,
         caps: Vec<Cap>,
         bars: Bars,
-        inner: Arc<D>,
-    ) -> Self
-    where
-        D: Device + Send + Sync + 'static,
-    {
-        let inner_any =
-            Arc::clone(&inner) as Arc<dyn Any + Send + Sync + 'static>;
+    ) -> Self {
         Self {
             ident,
-            lintr_req: false,
+            lintr_req,
             cfg_space,
             msix_cfg,
             caps,
 
-            state: Mutex::new(State {
-                reg_intr_line: 0xff,
-                ..Default::default()
-            }),
-            bars,
+            state: Mutex::new(State::new(bars)),
             cond: Condvar::new(),
-
-            sa_cell: SelfArcCell::new(),
-
-            inner: inner as Arc<dyn Device>,
-            inner_any,
         }
     }
 
@@ -397,22 +235,24 @@ impl DeviceInst {
     /// protection provided against other such updates which might race.
     fn affects_intr_mode(
         &self,
+        dev: &dyn Device,
         mut state: MutexGuard<State>,
         f: impl FnOnce(&mut State),
-    ) {
+    ) -> MutexGuard<State> {
         state = self.cond.wait_while(state, |s| s.update_in_progress).unwrap();
         f(&mut state);
         let next_mode = self.next_intr_mode(&state);
 
         state.update_in_progress = true;
         drop(state);
-        // inner is notified of mode change w/o state locked
-        self.inner.interrupt_mode_change(next_mode);
+        // device is notified of mode change w/o state locked
+        dev.interrupt_mode_change(next_mode);
 
         let mut state = self.state.lock().unwrap();
         assert!(state.update_in_progress);
         state.update_in_progress = false;
         self.cond.notify_all();
+        state
     }
 
     fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, _ctx: &DispCtx) {
@@ -436,7 +276,7 @@ impl DeviceInst {
                 let mut val = RegStatus::empty();
                 if self.lintr_req {
                     let state = self.state.lock().unwrap();
-                    if let Some(pin) = state.lintr_pin.as_ref() {
+                    if let Some((_id, pin)) = state.attached().lintr_cfg() {
                         if pin.is_asserted() {
                             val.insert(RegStatus::INTR_STATUS);
                         }
@@ -453,7 +293,10 @@ impl DeviceInst {
             StdCfgReg::IntrPin => {
                 ro.write_u8(self.state.lock().unwrap().reg_intr_pin)
             }
-            StdCfgReg::Bar(bar) => ro.write_u32(self.bars.reg_read(*bar)),
+            StdCfgReg::Bar(bar) => {
+                let state = self.state.lock().unwrap();
+                ro.write_u32(state.bars.reg_read(*bar))
+            }
             StdCfgReg::ExpansionRomAddr => {
                 // no rom for now
                 ro.write_u32(0);
@@ -466,8 +309,17 @@ impl DeviceInst {
                 }
             }
             StdCfgReg::HeaderType => {
-                // TODO: add multi-function and other bits
-                ro.write_u8(0);
+                let mut val = HEADER_TYPE_DEVICE;
+                let state = self.state.lock().unwrap();
+                if state
+                    .attach
+                    .as_ref()
+                    .map(bus::Attachment::is_multifunc)
+                    .unwrap_or(false)
+                {
+                    val |= HEADER_TYPE_MULTIFUNC;
+                }
+                ro.write_u8(val);
             }
             StdCfgReg::Reserved => {
                 ro.fill(0);
@@ -483,57 +335,37 @@ impl DeviceInst {
             }
         }
     }
-    fn cfg_std_write(&self, id: &StdCfgReg, wo: &mut WriteOp, ctx: &DispCtx) {
+    fn cfg_std_write(
+        &self,
+        dev: &dyn Device,
+        id: &StdCfgReg,
+        wo: &mut WriteOp,
+        _ctx: &DispCtx,
+    ) {
         assert!(wo.offset() == 0 || *id == StdCfgReg::Reserved);
 
         match id {
             StdCfgReg::Command => {
                 let new = RegCmd::from_bits_truncate(wo.read_u16());
-                self.reg_cmd_write(new, ctx);
+                self.reg_cmd_write(dev, new);
             }
             StdCfgReg::IntrLine => {
                 self.state.lock().unwrap().reg_intr_line = wo.read_u8();
             }
             StdCfgReg::Bar(bar) => {
                 let val = wo.read_u32();
-                let state = self.state.lock().unwrap();
-                self.bars.reg_write(*bar, val, |def, old, new| {
-                    // fail move for now
-                    match def {
-                        BarDefine::Pio(sz) => {
-                            if !state.reg_command.contains(RegCmd::IO_EN) {
-                                // pio mappings are disabled via cmd reg
-                                return false;
-                            }
-                            let bus = ctx.mctx.pio();
-                            // We know this was previously registered
-                            let (dev, old_bar) =
-                                bus.unregister(old as u16).unwrap();
-                            assert_eq!(old_bar, *bar as usize);
-                            bus.register(new as u16, *sz, dev, *bar as usize)
-                                .is_err()
-                        }
-                        BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
-                            if !state.reg_command.contains(RegCmd::MMIO_EN) {
-                                // mmio mappings are disabled via cmd reg
-                                return false;
-                            }
-                            let sz = match def {
-                                BarDefine::Mmio(s) => *s as usize,
-                                BarDefine::Mmio64(s) => *s as usize,
-                                _ => panic!(),
-                            };
-                            let bus = ctx.mctx.mmio();
-                            // We know this was previously registered
-                            let (dev, old_bar) =
-                                bus.unregister(old as usize).unwrap();
-                            assert_eq!(old_bar, *bar as usize);
-                            bus.register(new as usize, sz, dev, *bar as usize)
-                                .is_err()
-                        }
-                        BarDefine::Mmio64High => panic!(),
+                let mut state = self.state.lock().unwrap();
+                if let Some((def, _old, new)) = state.bars.reg_write(*bar, val)
+                {
+                    let pio_en = state.reg_command.contains(RegCmd::IO_EN);
+                    let mmio_en = state.reg_command.contains(RegCmd::MMIO_EN);
+
+                    let attach = state.attached();
+                    if (pio_en && def.is_pio()) || (mmio_en && def.is_mmio()) {
+                        attach.bar_unregister(*bar);
+                        attach.bar_register(*bar, def, new);
                     }
-                });
+                }
             }
             StdCfgReg::VendorId
             | StdCfgReg::DeviceId
@@ -566,13 +398,40 @@ impl DeviceInst {
             }
         }
     }
-    fn reg_cmd_write(&self, val: RegCmd, ctx: &DispCtx) {
+    fn reg_cmd_write(&self, dev: &dyn Device, val: RegCmd) {
         let mut state = self.state.lock().unwrap();
+        let attach = state.attached();
         let diff = val ^ state.reg_command;
-        self.update_bar_registration(diff, val, ctx);
+
+        // Update BAR registrations
+        if diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
+            for n in BarN::iter() {
+                let bar = state.bars.get(n);
+                if bar.is_none() {
+                    continue;
+                }
+                let (def, v) = bar.unwrap();
+
+                if diff.contains(RegCmd::IO_EN) && def.is_pio() {
+                    if val.contains(RegCmd::IO_EN) {
+                        attach.bar_register(n, def, v);
+                    } else {
+                        attach.bar_unregister(n);
+                    }
+                }
+                if diff.contains(RegCmd::MMIO_EN) && def.is_mmio() {
+                    if val.contains(RegCmd::MMIO_EN) {
+                        attach.bar_register(n, def, v);
+                    } else {
+                        attach.bar_unregister(n);
+                    }
+                }
+            }
+        }
+
         if diff.intersects(RegCmd::INTX_DIS) {
             // special handling required for INTx enable/disable
-            self.affects_intr_mode(state, |state| {
+            let _state = self.affects_intr_mode(dev, state, |state| {
                 state.reg_command = val;
             });
         } else {
@@ -586,98 +445,24 @@ impl DeviceInst {
         {
             return IntrMode::Msix;
         }
-        if state.lintr_pin.is_some()
-            && !state.reg_command.contains(RegCmd::INTX_DIS)
-        {
-            return IntrMode::INTxPin;
+        if let Some(attach) = state.attach.as_ref() {
+            if attach.lintr_cfg().is_some()
+                && !state.reg_command.contains(RegCmd::INTX_DIS)
+            {
+                return IntrMode::INTxPin;
+            }
         }
 
         IntrMode::Disabled
     }
 
-    fn update_bar_registration(
+    fn cfg_cap_rw(
         &self,
-        diff: RegCmd,
-        new: RegCmd,
+        dev: &dyn Device,
+        id: &CfgReg,
+        rwo: RWOp,
         ctx: &DispCtx,
     ) {
-        if !diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
-            return;
-        }
-
-        self.bars.change_registrations(
-            |bar, def, addr, registered| match def {
-                BarDefine::Pio(sz) => {
-                    if !diff.intersects(RegCmd::IO_EN) {
-                        return None;
-                    }
-
-                    if registered && !new.contains(RegCmd::IO_EN) {
-                        ctx.mctx.pio().unregister(addr as u16).unwrap();
-                        return Some(false);
-                    } else if !registered && new.contains(RegCmd::IO_EN) {
-                        let reg_attempt = ctx
-                            .mctx
-                            .pio()
-                            .register(
-                                addr as u16,
-                                *sz as u16,
-                                self.self_weak(),
-                                bar as usize,
-                            )
-                            .is_ok();
-                        return Some(reg_attempt);
-                    }
-                    None
-                }
-                BarDefine::Mmio(_) | BarDefine::Mmio64(_) => {
-                    if !diff.intersects(RegCmd::MMIO_EN) {
-                        return None;
-                    }
-
-                    let sz = match def {
-                        BarDefine::Mmio(s) => *s as u64,
-                        BarDefine::Mmio64(s) => *s,
-                        _ => panic!(),
-                    };
-
-                    if registered && !new.contains(RegCmd::IO_EN) {
-                        ctx.mctx.mmio().unregister(addr as usize).unwrap();
-                        return Some(false);
-                    } else if !registered && new.contains(RegCmd::IO_EN) {
-                        let reg_attempt = ctx
-                            .mctx
-                            .mmio()
-                            .register(
-                                addr as usize,
-                                sz as usize,
-                                self.self_weak(),
-                                bar as usize,
-                            )
-                            .is_ok();
-                        return Some(reg_attempt);
-                    }
-
-                    None
-                }
-                // Registration for the high portion of a 64-bit BAR is not
-                // handled separately.
-                BarDefine::Mmio64High => panic!(),
-            },
-        );
-    }
-    fn bar_rw(&self, ident: usize, rwo: RWOp, ctx: &DispCtx) {
-        let bar = BarN::try_from(ident as u8).unwrap();
-        if let Some(msix) = self.msix_cfg.as_ref() {
-            if msix.bar_match(bar) {
-                msix.bar_rw(rwo, |info| self.notify_msi_update(info, ctx), ctx);
-                return;
-            }
-        }
-        self.inner.bar_rw(bar, rwo, ctx);
-    }
-
-    fn cfg_cap_rw(&self, id: &CfgReg, rwo: RWOp, ctx: &DispCtx) {
         match id {
             CfgReg::CapId(i) => {
                 if let RWOp::Read(ro) = rwo {
@@ -694,13 +479,13 @@ impl DeviceInst {
                     }
                 }
             }
-            CfgReg::CapBody(i) => self.do_cap_rw(*i, rwo, ctx),
+            CfgReg::CapBody(i) => self.do_cap_rw(dev, *i, rwo, ctx),
 
             // Should be filtered down to only cap regs by now
             _ => panic!(),
         }
     }
-    fn do_cap_rw(&self, idx: u8, rwo: RWOp, ctx: &DispCtx) {
+    fn do_cap_rw(&self, dev: &dyn Device, idx: u8, rwo: RWOp, ctx: &DispCtx) {
         assert!(idx < self.caps.len() as u8);
         // XXX: no fancy capability support for now
         let cap = &self.caps[idx as usize];
@@ -711,158 +496,74 @@ impl DeviceInst {
                     // MSI-X cap writes may result in a change to the interrupt
                     // mode of the device which requires extra locking concerns.
                     let state = self.state.lock().unwrap();
-                    self.affects_intr_mode(state, |_state| {
+                    let _state = self.affects_intr_mode(dev, state, |_state| {
                         msix_cfg.cfg_rw(
                             rwo,
-                            |info| self.notify_msi_update(info, ctx),
+                            |info| self.notify_msi_update(dev, info, ctx),
                             ctx,
                         );
                     });
                 } else {
                     msix_cfg.cfg_rw(
                         rwo,
-                        |info| self.notify_msi_update(info, ctx),
+                        |info| self.notify_msi_update(dev, info, ctx),
                         ctx,
                     );
                 }
             }
             _ => {
-                println!(
-                    "unhandled cap access id:{:x} off:{:x}",
-                    cap.id,
-                    rwo.offset()
-                );
+                slog::info!(ctx.log, "unhandled PCI cap access";
+                    "id" => cap.id, "offset" => rwo.offset());
             }
         }
     }
-    fn notify_msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {
-        self.inner.msi_update(info, ctx);
+    fn notify_msi_update(
+        &self,
+        dev: &dyn Device,
+        info: MsiUpdate,
+        ctx: &DispCtx,
+    ) {
+        dev.msi_update(info, ctx);
     }
-    /// Get access to the inner device emulation.
-    ///
-    /// This will panic if the provided type does not match.
-    pub fn inner_dev<T: Send + Sync + 'static>(&self) -> Arc<T> {
-        let inner = Arc::clone(&self.inner_any);
-        Arc::downcast(inner).unwrap()
-    }
-    fn do_reset(&self, ctx: &DispCtx) {
+    pub fn reset(&self, dev: &dyn Device) {
         let state = self.state.lock().unwrap();
-        self.affects_intr_mode(state, |state| {
+
+        let mut state = self.affects_intr_mode(dev, state, |state| {
             state.reg_command.reset();
             if let Some(msix) = &self.msix_cfg {
                 msix.reset();
             }
         });
-        self.bars.reset(
-            |_bar, _def, _addr| {
-                // TODO: notify device of unregistered BARs
-            },
-            ctx,
-        );
-    }
-}
 
-impl Endpoint for DeviceInst {
-    fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
-        self.cfg_space.process(&mut rwo, |id, mut rwo| match id {
-            CfgReg::Std => {
-                STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
-                    RWOp::Read(ro) => self.cfg_std_read(id, ro, ctx),
-                    RWOp::Write(wo) => self.cfg_std_write(id, wo, ctx),
-                });
+        // Both IO and MMIO BARs should be disabled at this point
+        debug_assert!(!state
+            .reg_command
+            .intersects(RegCmd::IO_EN | RegCmd::MMIO_EN));
+        for n in BarN::iter() {
+            if let Some(_) = state.bars.get(n) {
+                state.bars.set(n, 0);
+                let attach = state.attached();
+                attach.bar_unregister(n);
+                // TODO: notify device of zeroed BARs
             }
-            CfgReg::Custom(region) => self.inner.cfg_rw(*region, rwo),
-            CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
-                self.cfg_cap_rw(id, rwo, ctx)
-            }
-        });
+        }
     }
-    fn attach(&self, get_lintr: &dyn Fn() -> (INTxPinID, Arc<dyn IntrPin>)) {
+    fn attach(&self, attachment: bus::Attachment) {
         let mut state = self.state.lock().unwrap();
-        if self.lintr_req {
-            let (intx, isa_pin) = get_lintr();
-            state.reg_intr_pin = intx as u8;
-            state.lintr_pin = Some(isa_pin);
-        }
-        drop(state);
-
-        let lintr_pin = match self.lintr_req {
-            true => Some(INTxPin::new(self.self_weak())),
-            false => None,
-        };
-        let msix_hdl = self.msix_cfg.as_ref().map(|msix| MsixHdl::new(msix));
-        self.inner.attach(lintr_pin, msix_hdl);
+        let _old = state.attach.replace(attachment);
+        assert!(_old.is_none());
     }
 
-    fn bar_for_each(&self, cb: &mut dyn FnMut(BarN, &BarDefine)) {
-        self.bars.for_each(cb)
-    }
-
-    fn bar_place(&self, bar: BarN, addr: u64) {
-        // Expect that IO/MMIO is disabled while we are placing BARs
+    pub fn lintr_pin(&self) -> Option<Arc<dyn IntrPin>> {
         let state = self.state.lock().unwrap();
-        assert!(state.reg_command == RegCmd::INTX_DIS);
+        let attach = state.attach.as_ref()?;
+        let (_id, pin) = attach.lintr_cfg()?;
+        Some(Arc::clone(pin))
+    }
 
-        self.bars.place(bar, addr);
-    }
-    fn as_devinst(&self) -> Option<&DeviceInst> {
-        Some(self)
-    }
-}
-
-impl PioDev for DeviceInst {
-    fn pio_rw(&self, _port: u16, ident: usize, rwo: RWOp, ctx: &DispCtx) {
-        self.bar_rw(ident, rwo, ctx);
-    }
-}
-impl MmioDev for DeviceInst {
-    fn mmio_rw(&self, _addr: usize, ident: usize, rwo: RWOp, ctx: &DispCtx) {
-        self.bar_rw(ident, rwo, ctx);
-    }
-}
-
-impl Entity for DeviceInst {
-    fn state_transition(
-        &self,
-        next: instance::State,
-        target: Option<instance::State>,
-        ctx: &DispCtx,
-    ) {
-        if matches!(next, instance::State::Reset) {
-            self.do_reset(ctx);
-        }
-        self.inner.state_transition(next, target, ctx);
-    }
-}
-
-impl SelfArc for DeviceInst {
-    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
-        &self.sa_cell
-    }
-}
-
-#[derive(Clone)]
-pub struct INTxPin {
-    outer: Weak<DeviceInst>,
-}
-impl INTxPin {
-    fn new(outer: Weak<DeviceInst>) -> Self {
-        Self { outer }
-    }
-    pub fn assert(&self) {
-        self.with_pin(|pin| pin.assert());
-    }
-    pub fn deassert(&self) {
-        self.with_pin(|pin| pin.deassert());
-    }
-    pub fn pulse(&self) {
-        self.with_pin(|pin| pin.pulse());
-    }
-    fn with_pin(&self, f: impl FnOnce(&dyn IntrPin)) {
-        if let Some(dev) = Weak::upgrade(&self.outer) {
-            let state = dev.state.lock().unwrap();
-            f(state.lintr_pin.as_ref().unwrap().as_ref());
-        }
+    pub fn msix_hdl(&self) -> Option<MsixHdl> {
+        let cfg = self.msix_cfg.as_ref()?;
+        Some(MsixHdl::new(cfg))
     }
 }
 
@@ -879,44 +580,7 @@ pub enum MsiUpdate {
     Modify(u16),
 }
 
-pub trait Device: Send + Sync + 'static + Entity {
-    #[allow(unused_variables)]
-    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
-        match rwo {
-            RWOp::Read(ro) => {
-                unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset())
-            }
-            RWOp::Write(wo) => {
-                unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset())
-            }
-        }
-    }
-
-    fn cfg_rw(&self, region: u8, rwo: RWOp) {
-        match rwo {
-            RWOp::Read(ro) => {
-                unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset())
-            }
-            RWOp::Write(wo) => {
-                unimplemented!("CFG write ({:x} @ {:x})", region, wo.offset())
-            }
-        }
-    }
-    fn attach(&self, lintr_pin: Option<INTxPin>, msix_hdl: Option<MsixHdl>) {
-        // A device model has no reason to request interrupt resources but not
-        // make use of them.
-        assert!(lintr_pin.is_none());
-        assert!(msix_hdl.is_none());
-    }
-    #[allow(unused_variables)]
-    fn interrupt_mode_change(&self, mode: IntrMode) {}
-    #[allow(unused_variables)]
-    fn msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {}
-    // TODO
-    // fn cap_read(&self);
-    // fn cap_write(&self);
-}
-
+#[derive(Debug)]
 enum MsixBarReg {
     Addr(u16),
     Data(u16),
@@ -946,7 +610,7 @@ const MSIX_VEC_MASK: u32 = 1 << 0;
 const MSIX_MSGCTRL_ENABLE: u16 = 1 << 15;
 const MSIX_MSGCTRL_FMASK: u16 = 1 << 14;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct MsixEntry {
     addr: u64,
     data: u32,
@@ -982,6 +646,7 @@ impl MsixEntry {
     }
 }
 
+#[derive(Debug)]
 struct MsixCfg {
     count: u16,
     bar: BarN,
@@ -990,7 +655,7 @@ struct MsixCfg {
     entries: Vec<Mutex<MsixEntry>>,
     state: Mutex<MsixCfgState>,
 }
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct MsixCfgState {
     enabled: bool,
     func_mask: bool,
@@ -1256,12 +921,17 @@ pub struct MsiEnt {
     pub pending: bool,
 }
 
+#[derive(Debug)]
 pub struct MsixHdl {
     cfg: Arc<MsixCfg>,
 }
 impl MsixHdl {
     fn new(cfg: &Arc<MsixCfg>) -> Self {
         Self { cfg: Arc::clone(cfg) }
+    }
+    #[cfg(test)]
+    pub(crate) fn new_test() -> Self {
+        Self { cfg: MsixCfg::new(2048, BarN::BAR0).0 }
     }
     pub fn fire(&self, idx: u16, ctx: &DispCtx) {
         self.cfg.fire(idx, ctx);
@@ -1279,7 +949,7 @@ impl Clone for MsixHdl {
     }
 }
 
-pub struct Builder<I> {
+pub struct Builder {
     ident: Ident,
     lintr_req: bool,
     msix_cfg: Option<Arc<MsixCfg>>,
@@ -1288,11 +958,9 @@ pub struct Builder<I> {
 
     cap_next_alloc: usize,
     caps: Vec<Cap>,
-
-    _phantom: PhantomData<I>,
 }
 
-impl<I: Device + 'static> Builder<I> {
+impl Builder {
     pub fn new(ident: Ident) -> Self {
         let mut cfgmap = RegMap::new(LEN_CFG);
         cfgmap.define_with_flags(0, LEN_CFG_STD, CfgReg::Std, Flags::PASSTHRU);
@@ -1306,8 +974,6 @@ impl<I: Device + 'static> Builder<I> {
             caps: Vec::new(),
             // capabilities can start immediately after std cfg area
             cap_next_alloc: LEN_CFG_STD,
-
-            _phantom: PhantomData,
         }
     }
 
@@ -1361,7 +1027,7 @@ impl<I: Device + 'static> Builder<I> {
         assert!(self.bars[idx + 1].is_none());
 
         self.bars[idx] = Some(BarDefine::Mmio64(size));
-        self.bars[idx + 1] = Some(BarDefine::Mmio64High);
+        // TODO: prevent later BAR definition from occupying high word
         self
     }
 
@@ -1422,75 +1088,21 @@ impl<I: Device + 'static> Builder<I> {
         self
     }
 
-    pub fn finish(self, inner: Arc<I>) -> Arc<DeviceInst> {
-        let bars = Bars::new(&self.bars);
-
-        let mut inst = DeviceInst::new(
+    pub fn finish(self) -> DeviceState {
+        DeviceState::new(
             self.ident,
+            self.lintr_req,
             self.cfgmap,
             self.msix_cfg,
             self.caps,
-            bars,
-            inner,
-        );
-        inst.lintr_req = self.lintr_req;
-
-        let mut done = Arc::new(inst);
-        SelfArc::self_arc_init(&mut done);
-        done
+            Bars::new(&self.bars),
+        )
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    fn bar_setup() -> Bars {
-        let bar_defs = [
-            Some(BarDefine::Pio(0x100)),
-            Some(BarDefine::Mmio(0x20000)),
-            Some(BarDefine::Mmio64(0x40000)),
-            Some(BarDefine::Mmio64High),
-            Some(BarDefine::Mmio64(0x200000000)),
-            Some(BarDefine::Mmio64High),
-        ];
-        let bars = Bars::new(&bar_defs);
-        bars.place(BarN::BAR0, 0x1000);
-        bars.place(BarN::BAR1, 0xc000000);
-        bars.place(BarN::BAR2, 0xd000000);
-        bars.place(BarN::BAR4, 0x800000000);
-
-        bars
-    }
-    #[test]
-    fn bar_init() {
-        let _ = bar_setup();
-    }
-
-    #[test]
-    fn bar_limits() {
-        let bars = bar_setup();
-
-        assert_eq!(bars.reg_read(BarN::BAR0), 0x1001);
-        assert_eq!(bars.reg_read(BarN::BAR1), 0xc000000);
-        assert_eq!(bars.reg_read(BarN::BAR2), 0xd000004);
-        assert_eq!(bars.reg_read(BarN::BAR3), 0);
-        assert_eq!(bars.reg_read(BarN::BAR4), 0x4);
-        assert_eq!(bars.reg_read(BarN::BAR5), 0x8);
-        for i in 0..=5u8 {
-            bars.reg_write(
-                BarN::try_from(i).unwrap(),
-                0xffffffff,
-                |_, _, _| false,
-            );
-        }
-        assert_eq!(bars.reg_read(BarN::BAR0), 0x0000ff01);
-        assert_eq!(bars.reg_read(BarN::BAR1), 0xfffe0000);
-        assert_eq!(bars.reg_read(BarN::BAR2), 0xfffc0004);
-        assert_eq!(bars.reg_read(BarN::BAR3), 0xffffffff);
-        assert_eq!(bars.reg_read(BarN::BAR4), 0x00000004);
-        assert_eq!(bars.reg_read(BarN::BAR5), 0xfffffffe);
-    }
 
     #[test]
     #[should_panic]

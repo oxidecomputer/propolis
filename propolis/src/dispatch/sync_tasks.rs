@@ -4,19 +4,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{Builder, JoinHandle};
 
-use crate::vcpu::*;
-
-use super::{DispCtx, SharedCtx};
+use super::{DispCtx, Dispatcher, SharedCtx};
 
 pub type WakeFn = dyn Fn(&DispCtx) + Send + 'static;
 pub type SyncFn = dyn FnOnce(&mut SyncCtx) + Send + 'static;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd)]
-enum Ident {
-    Vcpu(usize),
-    Custom(String),
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SyncTaskId {
+    val: usize,
 }
+
 struct Detail {
+    #[allow(dead_code)]
+    ident: String,
+
     join: Option<JoinHandle<()>>,
     ctrl: Arc<WorkerCtrl>,
     wake: Option<Box<WakeFn>>,
@@ -33,7 +34,14 @@ enum State {
 
 struct Inner {
     state: State,
-    workers: BTreeMap<Ident, Detail>,
+    next_id: usize,
+    workers: BTreeMap<SyncTaskId, Detail>,
+}
+impl Inner {
+    fn next_id(&mut self) -> SyncTaskId {
+        self.next_id += 1;
+        SyncTaskId { val: self.next_id }
+    }
 }
 
 pub(super) struct SyncDispatch {
@@ -45,46 +53,12 @@ impl SyncDispatch {
     pub(super) fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
+                next_id: 0,
                 state: State::Quiesce,
                 workers: BTreeMap::new(),
             }),
             cv: Condvar::new(),
         }
-    }
-
-    pub(super) fn spawn_vcpu(
-        &self,
-        shared: SharedCtx,
-        vcpu: VcpuHdl,
-        vcpu_fn: VcpuRunFunc,
-    ) {
-        let mut inner = self.inner.lock().unwrap();
-        let ctrl = WorkerCtrl::create_held();
-        let mut ctx = SyncCtx::for_worker(shared, Arc::clone(&ctrl));
-        let id = vcpu.cpuid() as usize;
-        let name = format!("vcpu-{}", id);
-        let hdl = Builder::new()
-            .name(name)
-            .spawn(move || {
-                // wait at dispatch hold point until start
-                if ctx.check_yield() {
-                    return;
-                }
-
-                vcpu_fn(vcpu, &mut ctx);
-            })
-            .unwrap();
-
-        inner.workers.insert(
-            Ident::Vcpu(id),
-            Detail {
-                join: Some(hdl),
-                ctrl,
-                wake: Some(Box::new(move |ctx: &DispCtx| {
-                    let _ = ctx.mctx.vcpu(id).barrier();
-                })),
-            },
-        );
     }
 
     /// Spawns a new dedicated worker thread named `name` which invokes
@@ -94,10 +68,10 @@ impl SyncDispatch {
     /// function should trigger the worker to move to a barrier point.
     pub fn spawn(
         &self,
+        disp: &Dispatcher,
         name: String,
         func: Box<SyncFn>,
         wake: Option<Box<WakeFn>>,
-        shared: SharedCtx,
     ) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         let ctrl = match inner.state {
@@ -112,7 +86,11 @@ impl SyncDispatch {
                 ctrl
             }
         };
-        let mut sctx = SyncCtx::for_worker(shared, Arc::clone(&ctrl));
+        let task_id = inner.next_id();
+        let mut sctx = SyncCtx::for_worker(
+            SharedCtx::child(disp, slog::o!("sync_task" => name.clone())),
+            Arc::clone(&ctrl),
+        );
         let hdl = Builder::new().name(name.clone()).spawn(move || {
             if sctx.check_yield() {
                 return;
@@ -121,8 +99,8 @@ impl SyncDispatch {
         })?;
 
         let res = inner.workers.insert(
-            Ident::Custom(name),
-            Detail { join: Some(hdl), ctrl, wake },
+            task_id,
+            Detail { ident: name, join: Some(hdl), ctrl, wake },
         );
         assert!(res.is_none());
 
@@ -174,7 +152,7 @@ impl SyncDispatch {
         ctrls
     }
 
-    pub(super) fn quiesce(&self, shared: SharedCtx) {
+    pub(super) fn quiesce(&self, disp: &Dispatcher) {
         let mut inner = self.inner.lock().unwrap();
         match inner.state {
             State::Run => {
@@ -195,6 +173,7 @@ impl SyncDispatch {
             }
         };
 
+        let shared = SharedCtx::create(disp);
         let ctrls = Self::push_to_barrier(shared, &inner);
 
         // wait for all workers to report at their barriers.  This must be done
@@ -212,7 +191,7 @@ impl SyncDispatch {
         self.cv.notify_all();
     }
 
-    pub(super) fn shutdown(&self, shared: SharedCtx) {
+    pub(super) fn shutdown(&self, disp: &Dispatcher) {
         let mut inner = self.inner.lock().unwrap();
 
         let ctrls = match inner.state {
@@ -221,6 +200,10 @@ impl SyncDispatch {
             }
             State::Run => {
                 inner.state = State::WaitShutdown;
+                let shared = SharedCtx::child(
+                    disp,
+                    slog::o!("dispatcher_action" => "shutdown"),
+                );
                 Self::push_to_barrier(shared, &inner)
             }
             _ => {
@@ -396,8 +379,14 @@ impl SyncCtx {
         self.ctrl.as_ref().map_or(false, |c| c.pending_reqs())
     }
 
+    /// Get access to `Logger` associated with this task
+    pub fn log(&self) -> &slog::Logger {
+        &self.shared.log
+    }
+
     pub fn dispctx(&mut self) -> DispCtx {
         DispCtx {
+            log: &self.shared.log,
             mctx: &self.shared.mctx,
             disp: &self.shared.disp,
             inst: &self.shared.inst,

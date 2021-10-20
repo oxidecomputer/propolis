@@ -38,7 +38,8 @@ pub enum Result {
     Unsupported,
 }
 
-pub type CompleteFn = dyn FnOnce(Result, &DispCtx) + Send + Sync + 'static;
+pub type CompleteFn =
+    dyn FnOnce(Operation, Result, &DispCtx) + Send + Sync + 'static;
 
 /// Block device operation request
 pub struct Request {
@@ -105,7 +106,7 @@ impl Request {
     /// Indiciate disposition of completed request
     pub fn complete(mut self, res: Result, ctx: &DispCtx) {
         let func = self.donef.take().unwrap();
-        func(res, ctx);
+        func(self.op, res, ctx);
     }
 }
 impl Drop for Request {

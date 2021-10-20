@@ -23,9 +23,14 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "35d9d882", optional = true }
 anyhow = "1"
+slog = "2.7"
 
 [dev-dependencies]
+crossbeam-channel = "0.5"
+rand = "0.8"
 tempfile = "3.2"
 
 [features]
 default = []
+slog-term = "2.7"
+slog-async = "2.7"

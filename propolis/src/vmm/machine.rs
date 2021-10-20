@@ -39,13 +39,13 @@ struct MapEnt {
 /// - The device's physical memory representation
 /// - Buses.
 pub struct Machine {
-    hdl: Arc<VmmHdl>,
+    pub hdl: Arc<VmmHdl>,
     max_cpu: u8,
 
     _guard_space: GuardSpace,
     map_physmem: ASpace<MapEnt>,
-    bus_mmio: MmioBus,
-    bus_pio: PioBus,
+    pub bus_mmio: Arc<MmioBus>,
+    pub bus_pio: Arc<PioBus>,
 }
 
 impl Machine {
@@ -120,22 +120,58 @@ impl Drop for Machine {
 
 #[cfg(test)]
 impl Machine {
-    pub(crate) fn new_test() -> Result<Self> {
+    pub(crate) fn new_test() -> Result<Arc<Self>> {
         let hdl = VmmHdl::new_test()?;
 
         // TODO: meaningfully populate these
         let guard_space = GuardSpace::new(crate::common::PAGE_SIZE)?;
-        let map = ASpace::new(0, MAX_PHYSMEM);
+        let mut map = ASpace::new(0, MAX_PHYSMEM);
+        map.register(
+            0,
+            1024 * 1024,
+            MapEnt {
+                kind: MapKind::SysMem(0, Prot::READ),
+                name: "test-readable".to_string(),
+                guest_map: Some(Mapping::new(
+                    1024 * 1024,
+                    Prot::READ,
+                    &hdl.inner,
+                    0,
+                )?),
+                dev_map: None,
+            },
+        )
+        .map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e))
+        })?;
+        map.register(
+            1024 * 1024,
+            1024 * 1024,
+            MapEnt {
+                kind: MapKind::SysMem(0, Prot::WRITE),
+                name: "test-writable".to_string(),
+                guest_map: Some(Mapping::new(
+                    1024 * 1024,
+                    Prot::WRITE,
+                    &hdl.inner,
+                    1024 * 1024,
+                )?),
+                dev_map: None,
+            },
+        )
+        .map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e))
+        })?;
 
-        Ok(Machine {
+        Ok(Arc::new(Machine {
             hdl: Arc::new(hdl),
             max_cpu: 1,
 
             _guard_space: guard_space,
             map_physmem: map,
-            bus_mmio: MmioBus::new(MAX_PHYSMEM),
-            bus_pio: PioBus::new(),
-        })
+            bus_mmio: Arc::new(MmioBus::new(MAX_PHYSMEM)),
+            bus_pio: Arc::new(PioBus::new()),
+        }))
     }
 }
 
@@ -359,7 +395,8 @@ impl<'a, T: Copy> Iterator for MemMany<'a, T> {
 ///     .add_rom_region(0xffe0_0000, 0x20_0000, Prot::READ | Prot::EXEC, "bootrom")
 ///         .unwrap()
 ///     .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32").unwrap();
-/// let inst = Instance::create(builder, None, propolis::vcpu_run_loop).unwrap();
+/// let inst = Instance::create(builder.finalize().unwrap(), None, None).unwrap();
+/// inst.spawn_vcpu_workers(propolis::vcpu_run_loop).unwrap();
 /// ```
 pub struct Builder {
     inner_hdl: Option<VmmHdl>,
@@ -527,7 +564,7 @@ impl Builder {
 
     /// Consumes `self` and creates a new [`Machine`] based
     /// on the provided memory regions.
-    pub fn finalize(mut self) -> Result<Machine> {
+    pub fn finalize(mut self) -> Result<Arc<Machine>> {
         let hdl = std::mem::replace(&mut self.inner_hdl, None).unwrap();
 
         let (guard_space, map) = self.prep_mem_map(&hdl)?;
@@ -540,10 +577,10 @@ impl Builder {
 
             _guard_space: guard_space,
             map_physmem: map,
-            bus_mmio: MmioBus::new(MAX_PHYSMEM),
-            bus_pio: PioBus::new(),
+            bus_mmio: Arc::new(MmioBus::new(MAX_PHYSMEM)),
+            bus_pio: Arc::new(PioBus::new()),
         };
-        Ok(machine)
+        Ok(Arc::new(machine))
     }
 }
 impl Drop for Builder {

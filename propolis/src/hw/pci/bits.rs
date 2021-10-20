@@ -48,6 +48,19 @@ pub const CLASS_MULTIMEDIA: u8 = 4;
 pub const CLASS_MEMORY: u8 = 5;
 pub const CLASS_BRIDGE: u8 = 6;
 
+pub const HEADER_TYPE_DEVICE: u8 = 0b0;
+pub const HEADER_TYPE_BRIDGE: u8 = 0b1;
+pub const HEADER_TYPE_MULTIFUNC: u8 = 0b1000_0000;
+
 pub const SUBCLASS_NVM: u8 = 8;
 
 pub const PROGIF_ENTERPRISE_NVME: u8 = 2;
+
+pub(super) const MASK_FUNC: u8 = 0x07;
+pub(super) const MASK_DEV: u8 = 0x1f;
+pub(super) const MASK_BUS: u8 = 0xff;
+
+pub const PORT_PCI_CONFIG_ADDR: u16 = 0xcf8;
+pub const LEN_PCI_CONFIG_ADDR: u16 = 4;
+pub const PORT_PCI_CONFIG_DATA: u16 = 0xcfc;
+pub const LEN_PCI_CONFIG_DATA: u16 = 4;

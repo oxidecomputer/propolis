@@ -1,6 +1,8 @@
+#![allow(clippy::style)]
 // Pull in asm!() support for USDT
 #![feature(asm)]
-#![allow(clippy::style)]
+// Pull in `assert_matches` for tests
+#![cfg_attr(test, feature(assert_matches))]
 
 use usdt::dtrace_provider;
 
@@ -93,14 +95,14 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, sctx: &mut SyncCtx) {
                 }
             },
             VmExitKind::Rdmsr(msr) => {
-                println!("rdmsr({:x})", msr);
+                slog::info!(ctx.log, "rdmsr"; "msr" => msr);
                 // XXX just emulate with 0 for now
                 vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
                 vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
                 VmEntry::Run
             }
             VmExitKind::Wrmsr(msr, val) => {
-                println!("wrmsr({:x}, {:x})", msr, val);
+                slog::info!(ctx.log, "wrmsr"; "msr" => msr, "value" => val);
                 VmEntry::Run
             }
             VmExitKind::Debug => {

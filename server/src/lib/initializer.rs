@@ -49,6 +49,7 @@ pub fn build_instance(
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
+    log: slog::Logger,
 ) -> Result<Arc<Instance>> {
     let mut builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
@@ -78,7 +79,8 @@ pub fn build_instance(
     // Allow propolis to use the existing tokio runtime for spawning and
     // dispatching its tasks
     let rt_handle = Some(Handle::current());
-    let inst = Instance::create(builder, rt_handle, propolis::vcpu_run_loop)?;
+    let inst = Instance::create(builder.finalize()?, rt_handle, Some(log))?;
+    inst.spawn_vcpu_workers(propolis::vcpu_run_loop)?;
     Ok(inst)
 }
 
@@ -133,9 +135,7 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_chipset(&self) -> Result<RegisteredChipset, Error> {
-        let hdl = self.machine.get_hdl();
-        let chipset = I440Fx::create(Arc::clone(&hdl));
-        chipset.attach(self.mctx);
+        let chipset = I440Fx::create(self.machine);
         let id = self
             .inv
             .register(&chipset, "chipset".to_string(), None)
@@ -212,9 +212,7 @@ impl<'a> MachineInitializer<'a> {
             .map_err(|e| -> std::io::Error { e.into() })?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
-        let blk = vioblk
-            .inner_dev::<virtio::pci::PciVirtio>()
-            .inner_dev::<virtio::block::VirtioBlock>();
+        let blk = vioblk.inner_dev::<virtio::block::VirtioBlock>();
         backend.attach(blk, self.disp);
         chipset.device().pci_attach(bdf, vioblk);
 
@@ -229,6 +227,10 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         let hdl = self.machine.get_hdl();
         let viona = virtio::viona::VirtioViona::create(vnic_name, 0x100, &hdl)?;
+        let _id = self
+            .inv
+            .register(&viona, format!("viona-{}", bdf), None)
+            .map_err(|e| -> std::io::Error { e.into() })?;
         chipset.device().pci_attach(bdf, viona);
         Ok(())
     }

@@ -23,6 +23,8 @@ use propolis::*;
 
 use propolis::usdt::register_probes;
 
+use slog::{o, Drain};
+
 mod config;
 
 const PAGE_OFFSET: u64 = 0xfff;
@@ -44,6 +46,7 @@ fn build_instance(
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
+    log: slog::Logger,
 ) -> Result<Arc<Instance>> {
     let mut builder = Builder::new(name, true)?
         .max_cpus(max_cpu)?
@@ -69,8 +72,7 @@ fn build_instance(
             "highmem",
         )?;
     }
-    let inst = Instance::create(builder, None, propolis::vcpu_run_loop)?;
-    Ok(inst)
+    Instance::create(builder.finalize()?, None, Some(log))
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -91,6 +93,14 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
     }
 }
 
+fn build_log() -> slog::Logger {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+
+    slog::Logger::root(drain, o!())
+}
+
 fn main() {
     // Ensure proper setup of USDT probes
     register_probes().unwrap();
@@ -106,8 +116,10 @@ fn main() {
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
-    let inst = build_instance(vm_name, cpus, lowmem, highmem).unwrap();
-    println!("vm {} created", vm_name);
+    let log = build_log();
+    let inst =
+        build_instance(vm_name, cpus, lowmem, highmem, log.clone()).unwrap();
+    slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
         .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
@@ -132,8 +144,7 @@ fn main() {
         machine.initialize_rtc(lowmem, highmem).unwrap();
 
         let hdl = machine.get_hdl();
-        let chipset = hw::chipset::i440fx::I440Fx::create(Arc::clone(&hdl));
-        chipset.attach(mctx);
+        let chipset = hw::chipset::i440fx::I440Fx::create(machine);
         let chipset_id = inv
             .register(&chipset, "chipset".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
@@ -184,8 +195,6 @@ fn main() {
         inv.register(&debug_device, "debug".to_string(), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        // let mut devices = HashMap::new();
-
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
             let bdf = if driver.starts_with("pci-") {
@@ -211,9 +220,8 @@ fn main() {
                         .register_child(creg, id)
                         .map_err(|e| -> std::io::Error { e.into() })?;
 
-                    let blk = vioblk
-                        .inner_dev::<hw::virtio::pci::PciVirtio>()
-                        .inner_dev::<hw::virtio::block::VirtioBlock>();
+                    let blk =
+                        vioblk.inner_dev::<hw::virtio::block::VirtioBlock>();
                     backend.attach(blk as Arc<dyn block::Device>, disp);
 
                     chipset.pci_attach(bdf.unwrap(), vioblk);
@@ -230,53 +238,29 @@ fn main() {
                         .map_err(|e| -> std::io::Error { e.into() })?;
                     chipset.pci_attach(bdf.unwrap(), viona);
                 }
-                // "pci-nvme" => {
-                //     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000);
-                //     devices.insert(&**name, nvme.clone());
-                //     chipset.pci_attach(bdf.unwrap(), nvme);
-                // }
-                // "nvme-ns" => {
-                //     let nvme_ctrl = dev
-                //         .options
-                //         .get("controller")
-                //         .unwrap()
-                //         .as_str()
-                //         .unwrap();
+                "pci-nvme" => {
+                    let block_dev =
+                        dev.options.get("block_dev").unwrap().as_str().unwrap();
 
-                //     let nvme = devices.get(nvme_ctrl).unwrap_or_else(|| {
-                //         panic!("no such nvme controller: {}", nvme_ctrl)
-                //     });
+                    let (backend, creg) = config.block_dev(block_dev);
 
-                //     let block_dev =
-                //         dev.options.get("block_dev").unwrap().as_str().unwrap();
+                    let info = backend.info();
+                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
 
-                //     let block_dev =
-                //         config.block_dev::<hw::nvme::Request>(block_dev);
+                    let id =
+                        inv.register(&nvme, format!("nvme-{}", name), None)?;
+                    let _be_id = inv.register_child(creg, id)?;
 
-                //     let ns = hw::nvme::NvmeNs::create(block_dev.clone());
+                    backend.attach(nvme.clone(), disp);
 
-                //     if let Err(e) =
-                //         nvme.with_inner(|nvme: Arc<hw::nvme::PciNvme>| {
-                //             nvme.add_ns(ns)
-                //         })
-                //     {
-                //         eprintln!("failed to attach nvme-ns: {}", e);
-                //         std::process::exit(libc::EXIT_FAILURE);
-                //     }
-
-                //     block_dev
-                //         .start_dispatch(format!("bdev-{} thread", name), disp);
-                // }
+                    chipset.pci_attach(bdf.unwrap(), nvme);
+                }
                 _ => {
-                    eprintln!("unrecognized driver: {}", name);
+                    slog::error!(log, "unrecognized driver"; "name" => name);
                     std::process::exit(libc::EXIT_FAILURE);
                 }
             }
         }
-
-        // with all pci devices attached, place their BARs and wire up access to PCI
-        // configuration space
-        chipset.pci_finalize(mctx);
 
         let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
         fwcfg
@@ -305,12 +289,15 @@ fn main() {
     })
     .unwrap_or_else(|e| panic!("Failed to initialize instance: {}", e));
 
+    inst.spawn_vcpu_workers(propolis::vcpu_run_loop)
+        .unwrap_or_else(|e| panic!("Failed spawn vCPU workers: {}", e));
+
     drop(romfp);
 
     inst.print();
 
     // Wait until someone connects to ttya
-    println!("Waiting for a connection to ttya...");
+    slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
     inst.on_transition(Box::new(|next_state, ctx| {
@@ -332,8 +319,6 @@ fn main() {
             }
             _ => {}
         }
-
-        println!("state cb: {:?}", next_state);
     }));
     inst.set_target_state(ReqState::Run).unwrap();
 

@@ -8,9 +8,9 @@ use std::sync::{Arc, Weak};
 use crate::common::ParentRef;
 use crate::instance;
 use crate::util::self_arc::*;
-use crate::vcpu::*;
 use crate::vmm::{Machine, MachineCtx};
 
+use slog;
 use tokio::runtime::Handle;
 
 mod async_tasks;
@@ -24,6 +24,7 @@ pub struct Dispatcher {
     sync_disp: SyncDispatch,
     machine: Arc<Machine>,
     parent: ParentRef<instance::Instance>,
+    logger: slog::Logger,
     sa_cell: SelfArcCell<Self>,
 }
 
@@ -38,12 +39,14 @@ impl Dispatcher {
     pub(crate) fn new(
         vm: &Arc<Machine>,
         rt_handle: Option<Handle>,
+        logger: slog::Logger,
     ) -> Arc<Self> {
         let mut this = Arc::new(Self {
             async_disp: AsyncDispatch::new(rt_handle),
             sync_disp: SyncDispatch::new(),
             machine: Arc::clone(vm),
             parent: ParentRef::new(),
+            logger,
             sa_cell: SelfArcCell::new(),
         });
         SelfArc::self_arc_init(&mut this);
@@ -52,22 +55,8 @@ impl Dispatcher {
 
     /// Perform final setup tasks on the dispatcher, including spawning of
     /// threads for running the instance vCPUs.
-    pub(crate) fn finalize(
-        &self,
-        inst: &Arc<instance::Instance>,
-        vcpu_fn: Option<VcpuRunFunc>,
-    ) {
+    pub(crate) fn finalize(&self, inst: &Arc<instance::Instance>) {
         self.parent.set(inst);
-
-        // Unit tests may instantiate a dispatcher without the need for vCPU
-        // threads to be running.
-        if let Some(func) = vcpu_fn {
-            let mctx = MachineCtx::new(&self.machine);
-            for vcpu in mctx.vcpus() {
-                let shared = SharedCtx::create(self);
-                self.sync_disp.spawn_vcpu(shared, vcpu, func);
-            }
-        }
     }
 
     /// Spawns a new dedicated worker thread named `name` which invokes
@@ -81,11 +70,14 @@ impl Dispatcher {
         func: Box<SyncFn>,
         wake: Option<Box<WakeFn>>,
     ) -> Result<()> {
-        self.sync_disp.spawn(name, func, wake, SharedCtx::create(self))
+        self.sync_disp.spawn(self, name, func, wake)
     }
 
     pub(crate) fn with_ctx(&self, func: impl FnOnce(&DispCtx)) {
-        let mut sctx = SyncCtx::standalone(SharedCtx::create(self));
+        let mut sctx = SyncCtx::standalone(SharedCtx::child(
+            self,
+            slog::o!("dispatcher_action" => "ad-hoc"),
+        ));
         let ctx = sctx.dispctx();
         func(&ctx);
     }
@@ -96,7 +88,7 @@ impl Dispatcher {
     /// `actx.dispctx()`.  Tasks will be held outside these yield points until
     /// released or canceled.
     pub(crate) fn quiesce(&self) {
-        self.sync_disp.quiesce(SharedCtx::create(self));
+        self.sync_disp.quiesce(self);
         self.async_disp.quiesce_tasks();
     }
 
@@ -110,7 +102,7 @@ impl Dispatcher {
     /// (sync threads and async tasks).  New work cannot be started in the
     /// dispatcher after this point.
     pub(crate) fn shutdown(&self) {
-        self.sync_disp.shutdown(SharedCtx::create(self));
+        self.sync_disp.shutdown(self);
         self.async_disp.shutdown();
     }
 
@@ -120,7 +112,7 @@ impl Dispatcher {
         T: FnOnce(AsyncCtx) -> F,
         F: Future<Output = ()> + Send + 'static,
     {
-        self.async_disp.spawn(SharedCtx::create(self), task)
+        self.async_disp.spawn(self, task)
     }
 
     /// Cancel an async task running under the dispatcher
@@ -142,6 +134,7 @@ struct SharedCtx {
     mctx: MachineCtx,
     disp: Weak<Dispatcher>,
     inst: Weak<instance::Instance>,
+    log: slog::Logger,
 }
 impl SharedCtx {
     fn create(disp: &Dispatcher) -> Self {
@@ -149,11 +142,24 @@ impl SharedCtx {
             mctx: MachineCtx::new(&disp.machine),
             disp: disp.self_weak(),
             inst: disp.parent.get_weak(),
+            log: disp.logger.clone(),
+        }
+    }
+    fn child<T: slog::SendSyncRefUnwindSafeKV + 'static>(
+        disp: &Dispatcher,
+        param: slog::OwnedKV<T>,
+    ) -> Self {
+        Self {
+            mctx: MachineCtx::new(&disp.machine),
+            disp: disp.self_weak(),
+            inst: disp.parent.get_weak(),
+            log: disp.logger.new(param),
         }
     }
 }
 
 pub struct DispCtx<'a> {
+    pub log: &'a slog::Logger,
     pub mctx: &'a MachineCtx,
     disp: &'a Weak<Dispatcher>,
     inst: &'a Weak<instance::Instance>,

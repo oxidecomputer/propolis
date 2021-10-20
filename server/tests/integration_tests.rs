@@ -60,7 +60,7 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
     devices.insert("block0".to_string(), dev);
 
     let config = Config::new(artifacts.bootrom.path(), devices, block_devices);
-    let context = server::Context::new(config);
+    let context = server::Context::new(config, log.new(slog::o!()));
 
     let config_dropshot = ConfigDropshot {
         bind_address: "127.0.0.1:0".parse().unwrap(),
