@@ -476,9 +476,11 @@ impl Drop for Instance {
 #[cfg(test)]
 impl Instance {
     pub fn new_test(rt_handle: Option<Handle>) -> io::Result<Arc<Self>> {
-        let deco = slog_term::PlainDecorator::new(std::io::stdout());
-        let drain = slog_term::CompactFormat::new(deco).build().fuse();
-        let drain = slog_async::Async::new(drain).build().fuse();
+        let drain = slog_term::FullFormat::new(
+            slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter),
+        )
+        .build()
+        .fuse();
         let logger = slog::Logger::root(drain, slog::o!());
 
         Self::create(Machine::new_test()?, rt_handle, Some(logger))
