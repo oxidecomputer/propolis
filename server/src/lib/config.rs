@@ -190,7 +190,7 @@ impl BlockDevice {
                 }()
                 .unwrap_or(false);
 
-                let key: Option<Result<String, ParseError>> = self
+                let key: Option<String> = self
                     .options
                     .get("key")
                     .map(|x| -> Result<String, ParseError> {
@@ -202,10 +202,8 @@ impl BlockDevice {
                                 )
                             })?
                             .to_string())
-                    });
-
-                let key: Option<String> =
-                    if let Some(key) = key { Some(key?) } else { None };
+                    })
+                    .map_or(Ok(None), |r| r.map(Some))?;
 
                 let be = propolis::block::CrucibleBackend::create(
                     disp, targets, read_only, key,
