@@ -194,9 +194,6 @@ impl SyncDriver {
     }
 
     fn spawn(self: &Arc<Self>, worker_count: NonZeroUsize, disp: &Dispatcher) {
-        // XXX unwraps!
-        let upstairs_uuid = self.guest.query_upstairs_uuid().unwrap();
-
         for i in 0..worker_count.get() {
             let tself = Arc::clone(self);
 
@@ -216,7 +213,7 @@ impl SyncDriver {
 
             let _ = disp
                 .spawn_sync(
-                    format!("crucible {:?} bdev worker {}", upstairs_uuid, i),
+                    format!("crucible bdev {}", i),
                     Box::new(move |mut sctx| {
                         tself.blocking_loop(&mut sctx);
                     }),
