@@ -7,7 +7,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
-use crate::dispatch::{AsyncCtx, AsyncTaskId, DispCtx};
+use crate::dispatch::{AsyncCtx, DispCtx};
 use crate::hw::pci;
 use crate::instance;
 use crate::util::regmap::RegMap;
@@ -23,11 +23,12 @@ use super::{VirtioDevice, VqChange, VqIntr};
 use lazy_static::lazy_static;
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
+use tokio::task::JoinHandle;
 
 const ETHERADDRL: usize = 6;
 
 struct Inner {
-    poller: Option<(Arc<VionaPoller>, AsyncTaskId)>,
+    poller: Option<(Arc<VionaPoller>, JoinHandle<()>)>,
 }
 impl Inner {
     fn new() -> Self {
@@ -219,7 +220,7 @@ impl Entity for VirtioViona {
                 ));
                 let mut inner = self.inner.lock().unwrap();
                 let (poller, task) = inner.poller.take().unwrap();
-                ctx.cancel_async(task);
+                task.abort();
                 drop(poller);
                 for vq in self.queues[..].iter() {
                     let _ = self.hdl.ring_reset(vq.id);
@@ -378,7 +379,7 @@ impl VionaPoller {
         viona_fd: RawFd,
         dev: Weak<VirtioViona>,
         ctx: &DispCtx,
-    ) -> Result<(Arc<Self>, AsyncTaskId)> {
+    ) -> Result<(Arc<Self>, JoinHandle<()>)> {
         let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) } as RawFd;
         if epfd == -1 {
             return Err(Error::last_os_error());
@@ -392,11 +393,12 @@ impl VionaPoller {
             return Err(Error::last_os_error());
         }
         let this = Arc::new(Self { epfd, dev });
-        let for_spawn = Arc::clone(&this);
-        let task = ctx.spawn_async(move |actx| async move {
-            let _ = for_spawn.poll_interrupts(&actx).await;
-        });
 
+        let for_spawn = Arc::clone(&this);
+        let actx = ctx.async_ctx();
+        let task = tokio::spawn(async move {
+            for_spawn.poll_interrupts(&actx).await;
+        });
         Ok((this, task))
     }
     fn event_present(&self) -> Result<bool> {
@@ -457,7 +459,7 @@ impl VionaPoller {
         _viona_fd: RawFd,
         _dev: Weak<VirtioViona>,
         _ctx: &DispCtx,
-    ) -> Result<(Arc<Self>, AsyncTaskId)> {
+    ) -> Result<(Arc<Self>, JoinHandle<()>)> {
         Err(Error::new(
             ErrorKind::Other,
             "viona not available on non-illumos systems",

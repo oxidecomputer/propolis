@@ -1,97 +1,76 @@
 use std::collections::hash_map::HashMap;
-use std::future::Future;
 use std::io::Result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use tokio::runtime::{Builder, Handle, Runtime};
-use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use super::{DispCtx, Dispatcher, SharedCtx, SyncFn, WakeFn};
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
-pub struct AsyncTaskId {
-    val: usize,
-}
-impl slog::Value for AsyncTaskId {
-    fn serialize(
-        &self,
-        _record: &slog::Record,
-        key: slog::Key,
-        serializer: &mut dyn slog::Serializer,
-    ) -> slog::Result {
-        serializer.emit_usize(key, self.val)
-    }
-}
+type CtxId = usize;
 
-struct TaskLife {
-    run_sem: Arc<Semaphore>,
-    id: AsyncTaskId,
-    chan: mpsc::UnboundedSender<AsyncTaskId>,
-}
-impl Drop for TaskLife {
-    fn drop(&mut self) {
-        let _ = self.chan.send(self.id);
-    }
-}
-
-struct TaskCtrl {
+struct CtxCtrl {
     quiesce_guard: Semaphore,
     quiesce_notify: Semaphore,
+    id: CtxId,
+    container: Weak<Mutex<HashMap<CtxId, CtxEntry>>>,
 }
 
-struct AsyncTask {
-    hdl: JoinHandle<()>,
-    ctrl: Arc<TaskCtrl>,
-    run_sem: Arc<Semaphore>,
+struct CtxEntry {
+    ctrl: Arc<CtxCtrl>,
     quiesced: bool,
 }
 
-struct AsyncInner {
-    next_id: usize,
+struct InnerState {
+    next_id: CtxId,
     quiesced: bool,
     shutdown: bool,
-    tasks: HashMap<AsyncTaskId, AsyncTask>,
-    life_sender: mpsc::UnboundedSender<AsyncTaskId>,
 }
-impl AsyncInner {
-    fn next_id(&mut self) -> AsyncTaskId {
-        self.next_id += 1;
-        AsyncTaskId { val: self.next_id }
-    }
-    fn create() -> (Arc<Mutex<Self>>, mpsc::UnboundedReceiver<AsyncTaskId>) {
-        let (life_sender, life_receiver) = mpsc::unbounded_channel();
-        let this = Self {
-            next_id: 0,
-            quiesced: false,
-            shutdown: false,
-            tasks: HashMap::new(),
-            life_sender,
-        };
-        (Arc::new(Mutex::new(this)), life_receiver)
-    }
-    fn prune(&mut self, id: AsyncTaskId) {
-        let _ = self.tasks.remove(&id);
-    }
-    async fn wait_gone(inner: &Mutex<Self>, id: AsyncTaskId) {
-        // TODO: In theory, if the runtime takes its time to actually execute
-        // the future associated with this task, it may not proceed to acquiring
-        // its permit from the run semaphore before some other actor attempts to
-        // `wait_exited` it, causing this loop to spin tightly.  It is not a
-        // large concern for now.
-        loop {
-            let sem = {
-                let guard = inner.lock().unwrap();
-                if let Some(task) = guard.tasks.get(&id) {
-                    Arc::clone(&task.run_sem)
-                } else {
-                    return;
-                }
-            };
-            let _ = sem.acquire().await;
+
+struct Inner {
+    state: Mutex<InnerState>,
+    ctrls: Arc<Mutex<HashMap<CtxId, CtxEntry>>>,
+}
+impl Inner {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(InnerState {
+                next_id: 0,
+                quiesced: false,
+                shutdown: false,
+            }),
+            ctrls: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn get_ctrl(&self) -> Arc<CtxCtrl> {
+        let mut state = self.state.lock().unwrap();
+        let mut ctrls = self.ctrls.lock().unwrap();
+
+        let id = state.next_id;
+        state.next_id += 1;
+        let ctrl = Arc::new(CtxCtrl {
+            quiesce_guard: Semaphore::new(0),
+            quiesce_notify: Semaphore::new(0),
+            id,
+            container: Arc::downgrade(&self.ctrls),
+        });
+
+        if !state.quiesced {
+            // Make the async ctx available if tasks are not quiesced
+            ctrl.quiesce_guard.add_permits(1);
+        } else {
+            // Notify task that the ctx is in a quiesced state
+            ctrl.quiesce_notify.add_permits(1);
+        }
+        ctrls.insert(
+            id,
+            CtxEntry { ctrl: ctrl.clone(), quiesced: state.quiesced },
+        );
+
+        ctrl
     }
 }
 
@@ -101,105 +80,47 @@ enum RuntimeBacking {
 }
 
 pub(super) struct AsyncDispatch {
-    inner: Arc<Mutex<AsyncInner>>,
+    inner: Inner,
     backing: Mutex<Option<RuntimeBacking>>,
+    /// Tasks which should be cancelled when the dispatcher is shutdown
+    tracked: Mutex<Vec<JoinHandle<()>>>,
 }
 impl AsyncDispatch {
     pub(super) fn new(rt_handle: Option<Handle>) -> Self {
-        let (inner, mut receiver) = AsyncInner::create();
-
-        let (backing, handle) = match rt_handle {
-            Some(handle) => {
-                let hc = handle.clone();
-                (RuntimeBacking::External(handle), hc)
-            }
+        let backing = match rt_handle {
+            Some(handle) => RuntimeBacking::External(handle),
             None => {
                 let rt =
                     Builder::new_multi_thread().enable_all().build().unwrap();
-                let handle = rt.handle().clone();
-                (RuntimeBacking::Owned(rt), handle)
+                RuntimeBacking::Owned(rt)
             }
         };
-
-        // Spawn worker to prune tasks from the dispatcher state when they are
-        // finished or cancelled.
-        let inner_prune = Arc::clone(&inner);
-        handle.spawn(async move {
-            while let Some(id) = receiver.recv().await {
-                let mut inner = inner_prune.lock().unwrap();
-                inner.prune(id);
-            }
-        });
-
-        Self { inner, backing: Mutex::new(Some(backing)) }
-    }
-    pub(super) fn spawn<T, F>(
-        &self,
-        disp: &Dispatcher,
-        taskfn: T,
-    ) -> AsyncTaskId
-    where
-        T: FnOnce(AsyncCtx) -> F,
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let mut inner = self.inner.lock().unwrap();
-
-        assert!(!inner.shutdown);
-
-        let id = inner.next_id();
-        let run_sem = Arc::new(Semaphore::new(1));
-        let ctrl = Arc::new(TaskCtrl {
-            quiesce_guard: Semaphore::new(0),
-            quiesce_notify: Semaphore::new(0),
-        });
-        let life = TaskLife {
-            run_sem: Arc::clone(&run_sem),
-            chan: inner.life_sender.clone(),
-            id,
-        };
-        let actx = AsyncCtx::new(
-            SharedCtx::child(disp, slog::o!("async_task" => id)),
-            Arc::clone(&ctrl),
-        );
-
-        let task_fut = Box::pin(taskfn(actx));
-
-        let hdl = self.with_handle(|hdl| {
-            hdl.spawn(async move {
-                if let Ok(_guard) = life.run_sem.acquire().await {
-                    task_fut.await;
-                }
-            })
-        });
-        // let rt = self.backing.lock().unwrap();
-        // let hdl = rt.as_ref().unwrap().spawn(async move {
-        //     if let Ok(_guard) = life.run_sem.acquire().await {
-        //         task_fut.await;
-        //     }
-        // });
-
-        if !inner.quiesced {
-            // Make the async ctx available if tasks are not quiesced
-            ctrl.quiesce_guard.add_permits(1);
-        } else {
-            // Notify task that the ctx is in a quiesced state
-            ctrl.quiesce_notify.add_permits(1);
+        Self {
+            inner: Inner::new(),
+            backing: Mutex::new(Some(backing)),
+            tracked: Mutex::new(Vec::new()),
         }
-        let task = AsyncTask { hdl, ctrl, run_sem, quiesced: inner.quiesced };
-        inner.tasks.insert(id, task);
-
-        id
     }
-    pub(super) fn quiesce_tasks(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.quiesced {
+
+    pub(super) fn context(&self, disp: &Dispatcher) -> AsyncCtx {
+        let ctrl = self.inner.get_ctrl();
+        AsyncCtx::new(
+            SharedCtx::child(disp, slog::o!("async_task" => ctrl.id)),
+            ctrl,
+        )
+    }
+
+    pub(super) fn quiesce_contexts(&self) {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.quiesced {
             return;
         }
-        inner.quiesced = true;
+        state.quiesced = true;
+        let mut ctrls = self.inner.ctrls.lock().unwrap();
 
-        self.with_handle(|hdl| {
+        if let Some(hdl) = self.handle() {
             hdl.block_on(async {
-                for (_id, task) in inner.tasks.iter_mut() {
+                for (_id, task) in ctrls.iter_mut() {
                     if !task.quiesced {
                         task.quiesced = true;
                         task.ctrl.quiesce_notify.add_permits(1);
@@ -209,18 +130,19 @@ impl AsyncDispatch {
                     }
                 }
             })
-        });
+        }
     }
-    pub(super) fn release_tasks(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.quiesced {
+    pub(super) fn release_contexts(&self) {
+        let mut state = self.inner.state.lock().unwrap();
+        if !state.quiesced {
             return;
         }
-        inner.quiesced = false;
+        state.quiesced = false;
+        let mut ctrls = self.inner.ctrls.lock().unwrap();
 
-        self.with_handle(|hdl| {
+        if let Some(hdl) = self.handle() {
             hdl.block_on(async {
-                for (_id, task) in inner.tasks.iter_mut() {
+                for (_id, task) in ctrls.iter_mut() {
                     if task.quiesced {
                         let permit =
                             task.ctrl.quiesce_notify.acquire().await.unwrap();
@@ -230,62 +152,53 @@ impl AsyncDispatch {
                     }
                 }
             })
-        });
-    }
-    /// If a task is still registered with the dispatcher, cancel it.
-    pub(super) fn cancel(&self, id: AsyncTaskId) -> bool {
-        let inner = self.inner.lock().unwrap();
-        if let Some(task) = inner.tasks.get(&id) {
-            task.hdl.abort();
-            false
-        } else {
-            true
         }
     }
 
-    pub(super) async fn wait_exited(&self, id: AsyncTaskId) {
-        AsyncInner::wait_gone(&self.inner, id).await;
+    /// Track an async task so it is aborted when the dispatcher is shutdown
+    pub(super) fn track(&self, hdl: JoinHandle<()>) {
+        let mut tracked = self.tracked.lock().unwrap();
+        tracked.push(hdl);
     }
 
     pub(super) fn shutdown(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.shutdown {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.shutdown {
             return;
         }
-        for (_id, task) in inner.tasks.iter() {
-            task.hdl.abort();
-        }
-        inner.shutdown = true;
-        drop(inner);
+        state.shutdown = true;
+        drop(state);
 
-        let mut guard = self.backing.lock().unwrap();
-        match guard.take().unwrap() {
+        let mut tracked = self.tracked.lock().unwrap();
+        let to_cancel = std::mem::replace(tracked.as_mut(), Vec::new());
+        for hdl in to_cancel.into_iter() {
+            hdl.abort();
+        }
+
+        let mut backing = self.backing.lock().unwrap();
+        match backing.take().unwrap() {
             RuntimeBacking::Owned(rt) => rt.shutdown_background(),
             RuntimeBacking::External(_) => {}
         }
     }
 
-    fn with_handle<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&Handle) -> R,
-    {
+    pub fn handle(&self) -> Option<Handle> {
         let guard = self.backing.lock().unwrap();
-        let backing = guard.as_ref().unwrap();
-        match backing {
-            RuntimeBacking::Owned(rt) => f(rt.handle()),
-            RuntimeBacking::External(h) => f(h),
+        match guard.as_ref()? {
+            RuntimeBacking::Owned(rt) => Some(rt.handle().clone()),
+            RuntimeBacking::External(h) => Some(h.clone()),
         }
     }
 }
 
 pub struct AsyncCtx {
     shared: SharedCtx,
-    ctrl: Arc<TaskCtrl>,
+    ctrl: Arc<CtxCtrl>,
     ctx_live: Semaphore,
     ctx_count: AtomicUsize,
 }
 impl AsyncCtx {
-    fn new(shared: SharedCtx, ctrl: Arc<TaskCtrl>) -> Self {
+    fn new(shared: SharedCtx, ctrl: Arc<CtxCtrl>) -> Self {
         Self {
             shared,
             ctrl,
@@ -380,28 +293,26 @@ impl AsyncCtx {
         disp.spawn_sync(name, func, wake)
     }
 
-    /// Spawn an async task under the instance dispatcher
-    pub fn spawn_async<T, F>(&self, task: T) -> AsyncTaskId
-    where
-        T: FnOnce(AsyncCtx) -> F,
-        F: Future<Output = ()> + Send + 'static,
-    {
+    /// Acquire an `AsyncCtx`, useful for accessing instance state from
+    /// emulation running in an async runtime
+    pub fn async_ctx(&self) -> AsyncCtx {
         let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.spawn_async(task)
+        disp.async_ctx()
     }
 
-    /// Cancel an async task running under the instance dispatcher.
-    ///
-    /// Returns when the task has been cancelled or exited on its own.  A task
-    /// must not attempt to cancel itself.
-    pub fn cancel_async(&self, id: AsyncTaskId) {
+    pub fn handle(&self) -> Option<Handle> {
         let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.cancel_async(id);
+        disp.handle()
     }
-
-    pub async fn wait_exited(&self, id: AsyncTaskId) {
-        let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.wait_exited(id).await;
+}
+impl Drop for AsyncCtx {
+    fn drop(&mut self) {
+        assert_eq!(self.ctx_count.load(Ordering::Acquire), 0);
+        if let Some(ctrls) = Weak::upgrade(&self.ctrl.container) {
+            let mut guard = ctrls.lock().unwrap();
+            let ent = guard.remove(&self.ctrl.id).unwrap();
+            assert_eq!(Arc::as_ptr(&ent.ctrl), Arc::as_ptr(&self.ctrl));
+        }
     }
 }
 

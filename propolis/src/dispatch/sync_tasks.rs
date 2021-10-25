@@ -91,10 +91,15 @@ impl SyncDispatch {
             SharedCtx::child(disp, slog::o!("sync_task" => name.clone())),
             Arc::clone(&ctrl),
         );
+        let rt_hdl = disp.handle().unwrap();
         let hdl = Builder::new().name(name.clone()).spawn(move || {
             if sctx.check_yield() {
                 return;
             }
+            // Ensure that worker thread can manipulate any tokio runtime
+            // related state by entering said runtime
+            let _rt_guard = rt_hdl.enter();
+
             func(&mut sctx);
         })?;
 

@@ -139,7 +139,7 @@ impl Driver {
         }
     }
 
-    async fn do_scheduling(&self, actx: &mut AsyncCtx) {
+    async fn do_scheduling(&self, actx: &AsyncCtx) {
         loop {
             let avail = self.idle_threads.acquire().await.unwrap();
             avail.forget();
@@ -182,11 +182,13 @@ impl Driver {
                 .unwrap();
         }
 
-        // TODO: do we need the task for later?
         let sched_self = Arc::clone(self);
-        let _sched_task = disp.spawn_async(|mut actx| async move {
-            let _ = sched_self.do_scheduling(&mut actx).await;
+        let actx = disp.async_ctx();
+        let sched_task = tokio::spawn(async move {
+            sched_self.do_scheduling(&actx).await;
         });
+        // TODO: do we need to manipulate the task later?
+        disp.track(sched_task);
     }
 }
 

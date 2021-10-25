@@ -69,9 +69,11 @@ impl UDSock {
         self.source_buf.attach(source.as_ref());
 
         let this = Arc::clone(self);
-        disp.spawn_async(|mut actx: AsyncCtx| async move {
-            let _ = this.run(sink, source, &mut actx).await;
+        let actx = disp.async_ctx();
+        let task = tokio::spawn(async move {
+            let _ = this.run(sink, source, &actx).await;
         });
+        disp.track(task);
     }
 
     fn notify_connected(&self, addr: Option<SocketAddr>) {
@@ -105,28 +107,19 @@ impl UDSock {
             self.notify_connected(Some(addr));
             let (readh, writeh) = sock.into_split();
 
-            let sink_buf = Arc::clone(&self.sink_buf);
-            let sink_moved = Arc::clone(&sink);
-            let sink_task = actx.spawn_async(|actx: AsyncCtx| async move {
-                let _ =
-                    Self::run_sink(sink_moved, sink_buf, readh, &actx).await;
-            });
-
-            let source_buf = Arc::clone(&self.source_buf);
-            let source_moved = Arc::clone(&source);
-            let source_task = actx.spawn_async(|actx: AsyncCtx| async move {
-                let _ =
-                    Self::run_source(source_moved, source_buf, writeh, &actx)
-                        .await;
-            });
-
             tokio::select! {
-                _ = actx.wait_exited(sink_task) => {
-                    actx.cancel_async(source_task);
-                },
-                _ = actx.wait_exited(source_task) => {
-                    actx.cancel_async(sink_task);
-                },
+                _sink_done = Self::run_sink(
+                    sink.as_ref(),
+                    &self.sink_buf,
+                    readh,
+                    actx
+                ) => {},
+                _source_done = Self::run_source(
+                    source.as_ref(),
+                    &self.source_buf,
+                    writeh,
+                    actx
+                ) => {},
             };
 
             self.notify_connected(None);
@@ -134,28 +127,26 @@ impl UDSock {
         Ok(())
     }
     async fn run_sink(
-        sink: Arc<dyn Sink>,
-        sink_buf: Arc<pollers::SinkBuffer>,
+        sink: &dyn Sink,
+        sink_buf: &pollers::SinkBuffer,
         mut readh: OwnedReadHalf,
         actx: &AsyncCtx,
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let num = readh.read(&mut buf).await?;
-            sink_buf.write(&buf[..num], sink.as_ref(), actx).await;
+            sink_buf.write(&buf[..num], sink, actx).await;
         }
     }
     async fn run_source(
-        source: Arc<dyn Source>,
-        source_buf: Arc<pollers::SourceBuffer>,
+        source: &dyn Source,
+        source_buf: &pollers::SourceBuffer,
         mut writeh: OwnedWriteHalf,
         actx: &AsyncCtx,
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
-            if let Some(n) =
-                source_buf.read(&mut buf, source.as_ref(), actx).await
-            {
+            if let Some(n) = source_buf.read(&mut buf, source, actx).await {
                 writeh.write(&buf[..n]).await?;
             }
         }
