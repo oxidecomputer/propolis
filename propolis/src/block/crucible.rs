@@ -68,29 +68,39 @@ impl CrucibleBackend {
             driver: Mutex::new(None),
         };
 
+        // XXX Crucible uses std::sync::mpsc::Receiver, not
+        // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
+        // Remove that when Crucible changes over to the tokio mpsc.
+
         // After up_main has returned successfully, wait for active negotiation
-        let uuid = guest.query_upstairs_uuid()?;
+        let uuid = tokio::task::block_in_place(|| guest.query_upstairs_uuid())?;
 
         println!("Calling activate for {:?}", uuid);
-        guest.activate()?;
+        tokio::task::block_in_place(|| guest.activate())?;
 
         let mut active = false;
         for _ in 0..10 {
-            if guest.query_is_active()? {
+            if tokio::task::block_in_place(|| guest.query_is_active())? {
                 println!("{:?} is active", uuid);
                 active = true;
                 break;
             }
 
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            tokio::task::block_in_place(|| {
+                std::thread::sleep(std::time::Duration::from_secs(2))
+            });
         }
         if !active {
             return Err(crucible::CrucibleError::UpstairsInactive);
         }
 
         // After active negotiation, set sizes
-        be.block_size = guest.query_block_size()?;
-        be.total_size = guest.query_total_size()?;
+        be.block_size =
+            tokio::task::block_in_place(|| guest.query_block_size())?;
+
+        be.total_size =
+            tokio::task::block_in_place(|| guest.query_total_size())?;
+
         be.sectors = be.total_size / be.block_size;
 
         Ok(Arc::new(be))
