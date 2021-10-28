@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde_derive::Deserialize;
+use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use propolis::block;
@@ -31,7 +31,7 @@ pub enum ParseError {
 /// Configuration for the Propolis server.
 // NOTE: This is expected to change over time; portions of the hard-coded
 // configuration will likely become more dynamic.
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     bootrom: PathBuf,
 
@@ -78,7 +78,7 @@ impl Config {
 
 /// A hard-coded device, either enabled by default or accessible locally
 /// on a machine.
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Device {
     pub driver: String,
 
@@ -96,7 +96,7 @@ impl Device {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct BlockDevice {
     #[serde(default, rename = "type")]
     pub bdtype: String,
