@@ -75,7 +75,7 @@ impl Inner {
 }
 
 enum RuntimeBacking {
-    Owned(Runtime),
+    Owned(Box<Runtime>),
     External(Handle),
 }
 
@@ -92,7 +92,7 @@ impl AsyncDispatch {
             None => {
                 let rt =
                     Builder::new_multi_thread().enable_all().build().unwrap();
-                RuntimeBacking::Owned(rt)
+                RuntimeBacking::Owned(Box::new(rt))
             }
         };
         Self {
