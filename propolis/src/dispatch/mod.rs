@@ -106,11 +106,13 @@ impl Dispatcher {
         self.async_disp.shutdown();
     }
 
-    /// Spawn an async tasks in the dispatcher.
+    /// Get an `AsyncCtx`, useful for async tasks which require access to
+    /// instance resources.
     pub fn async_ctx(&self) -> AsyncCtx {
         self.async_disp.context(self)
     }
 
+    ///  Get access to the underlying tokio runtime handle
     pub fn handle(&self) -> Option<Handle> {
         self.async_disp.handle()
     }

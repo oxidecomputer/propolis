@@ -293,16 +293,18 @@ impl AsyncCtx {
         disp.spawn_sync(name, func, wake)
     }
 
-    /// Acquire an `AsyncCtx`, useful for accessing instance state from
-    /// emulation running in an async runtime
-    pub fn async_ctx(&self) -> AsyncCtx {
-        let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.async_ctx()
-    }
-
+    ///  Get access to the underlying tokio runtime handle
     pub fn handle(&self) -> Option<Handle> {
         let disp = Weak::upgrade(&self.shared.disp).unwrap();
         disp.handle()
+    }
+}
+impl Clone for AsyncCtx {
+    /// Acquire an new `AsyncCtx`, useful for accessing instance state from
+    /// emulation running in an async runtime
+    fn clone(&self) -> Self {
+        let disp = Weak::upgrade(&self.shared.disp).unwrap();
+        disp.async_ctx()
     }
 }
 impl Drop for AsyncCtx {
