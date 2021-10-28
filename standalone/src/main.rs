@@ -212,7 +212,7 @@ fn main() {
                     let (backend, creg) = config.block_dev(block_dev);
 
                     let info = backend.info();
-                    let vioblk = hw::virtio::VirtioBlock::create(0x100, info);
+                    let vioblk = hw::virtio::PciVirtioBlock::new(0x100, info);
                     let id = inv
                         .register(&vioblk, format!("vioblk-{}", name), None)
                         .map_err(|e| -> std::io::Error { e.into() })?;
@@ -220,9 +220,8 @@ fn main() {
                         .register_child(creg, id)
                         .map_err(|e| -> std::io::Error { e.into() })?;
 
-                    let blk =
-                        vioblk.inner_dev::<hw::virtio::block::VirtioBlock>();
-                    backend.attach(blk as Arc<dyn block::Device>, disp);
+                    backend
+                        .attach(vioblk.clone() as Arc<dyn block::Device>, disp);
 
                     chipset.pci_attach(bdf.unwrap(), vioblk);
                 }
@@ -230,10 +229,9 @@ fn main() {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
 
-                    let viona = hw::virtio::viona::VirtioViona::create(
+                    let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name, 0x100, &hdl,
-                    )
-                    .unwrap();
+                    )?;
                     inv.register(&viona, format!("viona-{}", name), None)
                         .map_err(|e| -> std::io::Error { e.into() })?;
                     chipset.pci_attach(bdf.unwrap(), viona);
