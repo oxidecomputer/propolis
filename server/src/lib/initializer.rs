@@ -205,15 +205,14 @@ impl<'a> MachineInitializer<'a> {
         be_register: ChildRegister,
     ) -> Result<(), Error> {
         let be_info = backend.info();
-        let vioblk = virtio::VirtioBlock::create(0x100, be_info);
+        let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
         let id = self
             .inv
             .register(&vioblk, format!("vioblk-{}", bdf), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
-        let blk = vioblk.inner_dev::<virtio::block::VirtioBlock>();
-        backend.attach(blk, self.disp);
+        backend.attach(vioblk.clone(), self.disp);
         chipset.device().pci_attach(bdf, vioblk);
 
         Ok(())
@@ -226,7 +225,7 @@ impl<'a> MachineInitializer<'a> {
         bdf: pci::Bdf,
     ) -> Result<(), Error> {
         let hdl = self.machine.get_hdl();
-        let viona = virtio::viona::VirtioViona::create(vnic_name, 0x100, &hdl)?;
+        let viona = virtio::PciVirtioViona::new(vnic_name, 0x100, &hdl)?;
         let _id = self
             .inv
             .register(&viona, format!("viona-{}", bdf), None)

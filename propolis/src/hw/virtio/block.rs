@@ -8,7 +8,7 @@ use crate::hw::pci;
 use crate::util::regmap::RegMap;
 
 use super::bits::*;
-use super::pci::PciVirtio;
+use super::pci::{PciVirtio, PciVirtioState};
 use super::queue::{Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 
@@ -17,31 +17,33 @@ use lazy_static::lazy_static;
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
 
-pub struct VirtioBlock {
+pub struct PciVirtioBlock {
+    virtio_state: PciVirtioState,
+    pci_state: pci::DeviceState,
+
     info: block::DeviceInfo,
-    queues: VirtQueues,
     notifier: block::Notifier,
 }
-impl VirtioBlock {
-    pub fn create(queue_size: u16, info: block::DeviceInfo) -> Arc<PciVirtio> {
-        // virtio-block only needs two MSI-X entries for its interrupt needs:
-        // - device config changes
-        // - queue 0 notification
-        let msix_count = Some(2);
-
+impl PciVirtioBlock {
+    pub fn new(queue_size: u16, info: block::DeviceInfo) -> Arc<Self> {
         let queues = VirtQueues::new(
             NonZeroU16::new(queue_size).unwrap(),
             NonZeroU16::new(1).unwrap(),
         );
-
-        let notifier = block::Notifier::new();
-        PciVirtio::create(
+        // virtio-block only needs two MSI-X entries for its interrupt needs:
+        // - device config changes
+        // - queue 0 notification
+        let msix_count = Some(2);
+        let (virtio_state, pci_state) = PciVirtioState::create(
+            queues,
             msix_count,
             VIRTIO_DEV_BLOCK,
             pci::bits::CLASS_STORAGE,
             VIRTIO_BLK_CFG_SIZE,
-            Arc::new(Self { info, queues, notifier }),
-        )
+        );
+
+        let notifier = block::Notifier::new();
+        Arc::new(Self { pci_state, virtio_state, info, notifier })
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
@@ -67,7 +69,7 @@ impl VirtioBlock {
     }
 
     fn next_req(&self, ctx: &DispCtx) -> Option<block::Request> {
-        let vq = &self.queues[0];
+        let vq = &self.virtio_state.queues[0];
         let mem = &ctx.mctx.memctx();
 
         let mut chain = Chain::with_capacity(4);
@@ -130,8 +132,9 @@ impl VirtioBlock {
         }
     }
 }
-impl VirtioDevice for VirtioBlock {
-    fn device_cfg_rw(&self, mut rwo: RWOp) {
+
+impl VirtioDevice for PciVirtioBlock {
+    fn cfg_rw(&self, mut rwo: RWOp) {
         BLOCK_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.block_cfg_read(id, ro),
             RWOp::Write(_) => {
@@ -139,7 +142,7 @@ impl VirtioDevice for VirtioBlock {
             }
         });
     }
-    fn device_get_features(&self) -> u32 {
+    fn get_features(&self) -> u32 {
         let mut feat = VIRTIO_BLK_F_BLK_SIZE;
         feat |= VIRTIO_BLK_F_SEG_MAX;
 
@@ -148,15 +151,34 @@ impl VirtioDevice for VirtioBlock {
         }
         feat
     }
-    fn device_set_features(&self, _feat: u32) {
+    fn set_features(&self, _feat: u32) {
         // XXX: real features
     }
 
     fn queue_notify(&self, _vq: &Arc<VirtQueue>, ctx: &DispCtx) {
         self.notifier.notify(self, ctx);
     }
-    fn queues(&self) -> &VirtQueues {
-        &self.queues
+}
+impl PciVirtio for PciVirtioBlock {
+    fn virtio_state(&self) -> &PciVirtioState {
+        &self.virtio_state
+    }
+    fn pci_state(&self) -> &pci::DeviceState {
+        &self.pci_state
+    }
+}
+impl block::Device for PciVirtioBlock {
+    fn next(&self, ctx: &DispCtx) -> Option<block::Request> {
+        self.notifier.next_arming(|| self.next_req(ctx))
+    }
+
+    fn set_notifier(&self, val: Option<Box<block::NotifierFn>>) {
+        self.notifier.set(val);
+    }
+}
+impl Entity for PciVirtioBlock {
+    fn reset(&self, ctx: &DispCtx) {
+        self.virtio_state.reset(self, ctx);
     }
 }
 
@@ -174,17 +196,6 @@ fn complete_blockreq(
     };
     vq.push_used(&mut chain, mem, ctx);
 }
-
-impl block::Device for VirtioBlock {
-    fn next(&self, ctx: &DispCtx) -> Option<block::Request> {
-        self.notifier.next_arming(|| self.next_req(ctx))
-    }
-
-    fn set_notifier(&self, val: Option<Box<block::NotifierFn>>) {
-        self.notifier.set(val);
-    }
-}
-impl Entity for VirtioBlock {}
 
 #[derive(Copy, Clone, Debug, Default)]
 #[repr(C)]
