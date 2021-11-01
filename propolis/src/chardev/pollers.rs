@@ -495,8 +495,8 @@ mod tests {
         let inst = Instance::new_test(Some(Handle::current()))?;
         let _ = inst.set_target_state(ReqState::Run).unwrap();
 
-        let id = inst.disp.spawn_async(task);
-        inst.disp.wait_exited(id).await;
+        let ctx = inst.disp.async_ctx();
+        task(ctx).await;
 
         Ok(())
     }
@@ -575,52 +575,6 @@ mod tests {
             );
             assert_eq!(output[0], 0x0A);
             assert_eq!(output[1], 0x0B);
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn read_bytes_beyond_internal_buffer_size() {
-        let _ = async_inst_test(|actx| async move {
-            let uart = Arc::new(TestUart::new(5, 5));
-            let mut params = Params::test_defaults();
-            params.buf_size = NonZeroUsize::new(3).unwrap();
-            let rpoll = SourceBuffer::new(params);
-            assert_eq!(3, rpoll.inner.lock().unwrap().buf.capacity());
-            rpoll.attach(uart.as_ref());
-
-            // We write four bytes, yet trigger the notification mechanism once.
-            //
-            // The Serial buffer size (3) is smaller than the Uart's buffer (5).
-            uart.push_source(0x0A);
-            uart.push_source(0x0B);
-            uart.push_source(0x0C);
-            uart.push_source(0x0D);
-            uart.push_source(0x0E);
-            uart.notify_source(&actx).await;
-
-            // We are still able to read the subsequent bytes (without blocking),
-            // just in two batches.  The first batch ends up one-larger than the
-            // internal buffer size since the `read()` attempts to check the
-            // `Source` directly when its buffer empties.
-            let mut output = [0u8; 16];
-            assert_eq!(
-                4,
-                rpoll.read(&mut output, uart.as_ref(), &actx).await.unwrap()
-            );
-            assert_eq!(output[0], 0x0A);
-            assert_eq!(output[1], 0x0B);
-            assert_eq!(output[2], 0x0C);
-            assert_eq!(output[3], 0x0D);
-            assert_eq!(
-                1,
-                rpoll
-                    .read(&mut output[4..], uart.as_ref(), &actx)
-                    .await
-                    .unwrap()
-            );
-            assert_eq!(output[4], 0x0E);
         })
         .await
         .unwrap();

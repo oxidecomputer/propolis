@@ -201,6 +201,7 @@ impl Instance {
         assert_eq!(state.state_current, State::Initialize);
         let machine = state.machine.as_ref().unwrap();
         let mctx = MachineCtx::new(machine);
+        let rt_guard = self.disp.handle().unwrap().enter();
         func(machine, &mctx, &self.disp, &state.inv)
     }
 
@@ -357,6 +358,10 @@ impl Instance {
     fn drive_state(&self, _log: slog::Logger) {
         let mut next_state: Option<State> = None;
         let mut inner = self.inner.lock().unwrap();
+
+        // Run with the context of the tokio runtime availble
+        let rt_guard = self.disp.handle().unwrap().enter();
+
         loop {
             if next_state.is_none() {
                 if let Some(t) = inner.state_target {

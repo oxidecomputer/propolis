@@ -1,7 +1,6 @@
 //! Implements utilities for dispatching operations to a virtual CPU.
 
 use std::boxed::Box;
-use std::future::Future;
 use std::io::Result;
 use std::sync::{Arc, Weak};
 
@@ -12,6 +11,7 @@ use crate::vmm::{Machine, MachineCtx};
 
 use slog;
 use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
 
 mod async_tasks;
 mod sync_tasks;
@@ -93,13 +93,13 @@ impl Dispatcher {
     /// released or canceled.
     pub(crate) fn quiesce(&self) {
         self.sync_disp.quiesce(self);
-        self.async_disp.quiesce_tasks();
+        self.async_disp.quiesce_contexts();
     }
 
     /// Release tasks running in the dispatcher from their quiesce points.
     pub(crate) fn release(&self) {
         self.sync_disp.release();
-        self.async_disp.release_tasks();
+        self.async_disp.release_contexts();
     }
 
     /// Shutdown the dispatcher.  This will quiesce and stop all managed work
@@ -110,22 +110,20 @@ impl Dispatcher {
         self.async_disp.shutdown();
     }
 
-    /// Spawn an async tasks in the dispatcher.
-    pub fn spawn_async<T, F>(&self, task: T) -> AsyncTaskId
-    where
-        T: FnOnce(AsyncCtx) -> F,
-        F: Future<Output = ()> + Send + 'static,
-    {
-        self.async_disp.spawn(self, task)
+    /// Get an `AsyncCtx`, useful for async tasks which require access to
+    /// instance resources.
+    pub fn async_ctx(&self) -> AsyncCtx {
+        self.async_disp.context(self)
     }
 
-    /// Cancel an async task running under the dispatcher
-    pub fn cancel_async(&self, id: AsyncTaskId) {
-        self.async_disp.cancel(id);
+    ///  Get access to the underlying tokio runtime handle
+    pub fn handle(&self) -> Option<Handle> {
+        self.async_disp.handle()
     }
 
-    pub async fn wait_exited(&self, id: AsyncTaskId) {
-        self.async_disp.wait_exited(id).await;
+    /// Track an async task so it is aborted when the dispatcher is shutdown
+    pub fn track(&self, hdl: JoinHandle<()>) {
+        self.async_disp.track(hdl);
     }
 }
 impl SelfArc for Dispatcher {
@@ -192,22 +190,15 @@ impl<'a> DispCtx<'a> {
         disp.spawn_sync(name, func, wake)
     }
 
-    /// Spawn an async task under the instance dispatcher
-    pub fn spawn_async<T, F>(&self, task: T) -> AsyncTaskId
-    where
-        T: FnOnce(AsyncCtx) -> F,
-        F: Future<Output = ()> + Send + 'static,
-    {
+    /// Acquire an `AsyncCtx`, useful for accessing instance state from
+    /// emulation running in an async runtime
+    pub fn async_ctx(&self) -> AsyncCtx {
         let disp = Weak::upgrade(&self.disp).unwrap();
-        disp.spawn_async(task)
+        disp.async_ctx()
     }
 
-    /// Cancel an async task running under the instance dispatcher.
-    ///
-    /// Returns when the task has been cancelled or exited on its own.  A task
-    /// must not attempt to cancel itself.
-    pub fn cancel_async(&self, id: AsyncTaskId) {
+    pub fn handle(&self) -> Option<Handle> {
         let disp = Weak::upgrade(&self.disp).unwrap();
-        disp.cancel_async(id);
+        disp.handle()
     }
 }

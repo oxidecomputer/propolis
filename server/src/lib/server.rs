@@ -16,6 +16,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{oneshot, watch, Mutex};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{
@@ -25,7 +26,7 @@ use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
 use propolis::bhyve_api;
-use propolis::dispatch::{AsyncCtx, AsyncTaskId};
+use propolis::dispatch::AsyncCtx;
 use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
@@ -53,7 +54,7 @@ enum SerialTaskError {
 
 struct SerialTask {
     /// Handle to attached serial session
-    taskid: AsyncTaskId,
+    task: JoinHandle<()>,
     /// Oneshot channel used to detach an attached serial session
     detach_ch: oneshot::Sender<()>,
 }
@@ -713,7 +714,8 @@ async fn instance_serial(
     let serial = context.serial.clone();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-    let taskid = context.instance.disp.spawn_async(|actx| async move {
+    let actx = context.instance.disp.async_ctx();
+    let task = tokio::spawn(async move {
         let upgraded = match upgrade_fut.await {
             Ok(u) => u,
             Err(e) => {
@@ -737,7 +739,7 @@ async fn instance_serial(
     });
 
     // Save active serial task handle
-    context.serial_task = Some(SerialTask { taskid, detach_ch });
+    context.serial_task = Some(SerialTask { task, detach_ch });
 
     Ok(Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -783,12 +785,11 @@ async fn instance_serial_detach(
             "couldn't send detach message to serial task".to_string(),
         )
     })?;
-    context.instance.disp.wait_exited(serial_task.taskid).await;
-    // let _ = serial_task.taskid.await.map_err(|_| {
-    //     HttpError::for_internal_error(
-    //         "failed to complete existing serial task".to_string(),
-    //     )
-    // })?;
+    let _ = serial_task.task.await.map_err(|_| {
+        HttpError::for_internal_error(
+            "failed to complete existing serial task".to_string(),
+        )
+    })?;
 
     Ok(HttpResponseUpdatedNoContent {})
 }

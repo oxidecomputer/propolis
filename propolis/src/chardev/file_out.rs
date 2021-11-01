@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::chardev::pollers;
 use crate::chardev::BlockingSource;
-use crate::dispatch::{AsyncCtx, Dispatcher};
+use crate::dispatch::Dispatcher;
 
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -41,10 +41,11 @@ impl BlockingFileOutput {
         self.poller.attach(source.as_ref());
 
         let poller = Arc::clone(&self.poller);
-        disp.spawn_async(|mut _actx: AsyncCtx| async move {
+        let task = tokio::spawn(async move {
             let afp = File::from_std(fp);
             let _ = Self::run(poller, afp).await;
         });
+        disp.track(task);
     }
 
     async fn run(poller: Arc<pollers::BlockingSourceBuffer>, mut fp: File) {
