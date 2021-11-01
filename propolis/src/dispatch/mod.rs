@@ -53,6 +53,10 @@ impl Dispatcher {
         this
     }
 
+    pub fn logger(&self) -> &slog::Logger {
+        &self.logger
+    }
+
     /// Perform final setup tasks on the dispatcher, including spawning of
     /// threads for running the instance vCPUs.
     pub(crate) fn finalize(&self, inst: &Arc<instance::Instance>) {

@@ -75,13 +75,13 @@ impl CrucibleBackend {
         // After up_main has returned successfully, wait for active negotiation
         let uuid = tokio::task::block_in_place(|| guest.query_upstairs_uuid())?;
 
-        println!("Calling activate for {:?}", uuid);
+        slog::info!(disp.logger(), "Calling activate for {:?}", uuid);
         tokio::task::block_in_place(|| guest.activate())?;
 
         let mut active = false;
         for _ in 0..10 {
             if tokio::task::block_in_place(|| guest.query_is_active())? {
-                println!("{:?} is active", uuid);
+                slog::info!(disp.logger(), "{:?} is active", uuid);
                 active = true;
                 break;
             }
