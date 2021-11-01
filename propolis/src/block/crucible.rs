@@ -54,7 +54,7 @@ impl CrucibleBackend {
         let guest = Arc::new(crucible::Guest::new());
 
         let guest_copy = guest.clone();
-        disp.spawn_async(|mut _actx| async move {
+        tokio::spawn(async move {
             // XXX result eaten here!
             let _ = crucible::up_main(opts, guest_copy).await;
         });
@@ -189,7 +189,7 @@ impl SyncDriver {
         }
     }
 
-    async fn do_scheduling(&self, actx: &mut AsyncCtx) {
+    async fn do_scheduling(&self, actx: &AsyncCtx) {
         loop {
             let avail = self.idle_threads.acquire().await.unwrap();
             avail.forget();
@@ -234,8 +234,9 @@ impl SyncDriver {
 
         // TODO: do we need the task for later?
         let sched_self = Arc::clone(self);
-        let _sched_task = disp.spawn_async(|mut actx| async move {
-            let _ = sched_self.do_scheduling(&mut actx).await;
+        let actx = disp.async_ctx();
+        let _sched_task = tokio::spawn(async move {
+            let _ = sched_self.do_scheduling(&actx).await;
         });
     }
 }
