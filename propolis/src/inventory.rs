@@ -74,12 +74,12 @@ impl Inventory {
     pub fn register<T: Entity>(
         &self,
         ent: &Arc<T>,
-        name: String,
+        instance_name: Option<String>,
         parent_id: Option<EntityID>,
     ) -> Result<EntityID, RegistrationError> {
         let mut inv = self.inner.lock().unwrap();
         let to_register = ent.child_register();
-        let res = inv.register(ent, name, parent_id)?;
+        let res = inv.register(ent, instance_name, parent_id)?;
 
         if let Some(children) = to_register {
             for child in children {
@@ -88,7 +88,7 @@ impl Inventory {
                 inv.register_inner(
                     child.ent,
                     child.ent_any,
-                    child.name,
+                    child.instance_name,
                     Some(res),
                 )
                 .unwrap();
@@ -103,7 +103,12 @@ impl Inventory {
         parent_id: EntityID,
     ) -> Result<EntityID, RegistrationError> {
         let mut inv = self.inner.lock().unwrap();
-        inv.register_inner(reg.ent, reg.ent_any, reg.name, Some(parent_id))
+        inv.register_inner(
+            reg.ent,
+            reg.ent_any,
+            reg.instance_name,
+            Some(parent_id),
+        )
     }
 
     /// Access the concrete type of an entity by ID.
@@ -178,19 +183,19 @@ impl InventoryInner {
     pub fn register<T: Entity>(
         &mut self,
         ent: &Arc<T>,
-        name: String,
+        instance_name: Option<String>,
         parent_id: Option<EntityID>,
     ) -> Result<EntityID, RegistrationError> {
         let any = Arc::clone(ent) as Arc<dyn Any + Send + Sync>;
         let dyn_ent = Arc::clone(ent) as Arc<dyn Entity>;
-        self.register_inner(dyn_ent, any, name, parent_id)
+        self.register_inner(dyn_ent, any, instance_name, parent_id)
     }
 
     fn register_inner(
         &mut self,
         ent: Arc<dyn Entity>,
         any: Arc<dyn Any + Send + Sync + 'static>,
-        name: String,
+        instance_name: Option<String>,
         parent_id: Option<EntityID>,
     ) -> Result<EntityID, RegistrationError> {
         let id = self.next_id();
@@ -214,6 +219,10 @@ impl InventoryInner {
         } else {
             self.roots.insert(id);
         }
+
+        let name = instance_name
+            .map(|inst| format!("{}-{}", ent.type_name(), inst))
+            .unwrap_or_else(|| ent.type_name().to_string());
 
         let rec = Record::new(ent, any, name, parent_id);
         self.entities.insert(id, rec);
@@ -422,6 +431,9 @@ impl Record {
 }
 
 pub trait Entity: Send + Sync + 'static {
+    /// Unique name for entities for a given type
+    fn type_name(&self) -> &'static str;
+
     #[allow(unused_variables)]
     fn state_transition(
         &self,
@@ -444,14 +456,14 @@ pub trait Entity: Send + Sync + 'static {
 pub struct ChildRegister {
     ent: Arc<dyn Entity>,
     ent_any: Arc<dyn Any + Send + Sync + 'static>,
-    name: String,
+    instance_name: Option<String>,
 }
 impl ChildRegister {
-    pub fn new<T: Entity>(ent: &Arc<T>, name: String) -> Self {
+    pub fn new<T: Entity>(ent: &Arc<T>, instance_name: Option<String>) -> Self {
         Self {
             ent: Arc::clone(ent) as Arc<dyn Entity>,
             ent_any: Arc::clone(ent) as Arc<dyn Any + Send + Sync + 'static>,
-            name,
+            instance_name,
         }
     }
 }
@@ -474,13 +486,17 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     struct TestEntity {}
-    impl Entity for TestEntity {}
+    impl Entity for TestEntity {
+        fn type_name(&self) -> &'static str {
+            "test"
+        }
+    }
 
     #[test]
     fn register_root() {
         let entity = Arc::new(TestEntity {});
         let inv = Inventory::new();
-        inv.register(&entity, "root".to_string(), None).unwrap();
+        inv.register(&entity, Some("root".to_string()), None).unwrap();
     }
 
     #[test]
@@ -491,9 +507,9 @@ mod tests {
         let ent2 = Arc::new(TestEntity {});
         let ent3 = Arc::new(TestEntity {});
 
-        inv.register(&ent1, "root1".to_string(), None).unwrap();
-        inv.register(&ent2, "root2".to_string(), None).unwrap();
-        inv.register(&ent3, "root3".to_string(), None).unwrap();
+        inv.register(&ent1, Some("root1".to_string()), None).unwrap();
+        inv.register(&ent2, Some("root2".to_string()), None).unwrap();
+        inv.register(&ent3, Some("root3".to_string()), None).unwrap();
     }
 
     #[test]
@@ -502,9 +518,11 @@ mod tests {
         let child = Arc::new(TestEntity {});
         let inv = Inventory::new();
 
-        let root_id = inv.register(&root, "root".to_string(), None).unwrap();
-        let child_id =
-            inv.register(&child, "child".to_string(), Some(root_id)).unwrap();
+        let root_id =
+            inv.register(&root, Some("root".to_string()), None).unwrap();
+        let child_id = inv
+            .register(&child, Some("child".to_string()), Some(root_id))
+            .unwrap();
 
         // The root is accessible as an entity, or as a concrete object.
         inv.for_record(root_id, |maybe_record| assert!(maybe_record.is_some()));
@@ -525,10 +543,14 @@ mod tests {
         let root = Arc::new(TestEntity {});
         let inv = Inventory::new();
 
-        let root_id = inv.register(&root, "root".to_string(), None).unwrap();
+        let root_id = inv.register(&root, None, None).unwrap();
 
         struct OtherEntity {}
-        impl Entity for OtherEntity {}
+        impl Entity for OtherEntity {
+            fn type_name(&self) -> &'static str {
+                "other-entity"
+            }
+        }
         assert!(inv.get_concrete::<OtherEntity>(root_id).is_none());
     }
 
@@ -540,9 +562,10 @@ mod tests {
         let inv = Inventory::new();
 
         // Register the root and child...
-        let root_id = inv.register(&root, "root".to_string(), None).unwrap();
-        let child_id =
-            inv.register(&child, "child".to_string(), Some(root_id)).unwrap();
+        let root_id = inv.register(&root, None, None).unwrap();
+        let child_id = inv
+            .register(&child, Some("child".to_string()), Some(root_id))
+            .unwrap();
 
         // ... But if the child disappears before we add the grandchild...
         inv.deregister(child_id).unwrap();
@@ -551,8 +574,12 @@ mod tests {
         // parent error.
         assert_eq!(
             RegistrationError::MissingParent(child_id),
-            inv.register(&grandchild, "grandchild".to_string(), Some(child_id))
-                .unwrap_err()
+            inv.register(
+                &grandchild,
+                Some("grandchild".to_string()),
+                Some(child_id)
+            )
+            .unwrap_err()
         );
     }
 
@@ -562,21 +589,26 @@ mod tests {
         let child = Arc::new(TestEntity {});
         let inv = Inventory::new();
 
-        let root_id = inv.register(&root, "root".to_string(), None).unwrap();
-        let _ =
-            inv.register(&child, "child".to_string(), Some(root_id)).unwrap();
+        let root_id = inv.register(&root, None, None).unwrap();
+        let _ = inv
+            .register(&child, Some("child".to_string()), Some(root_id))
+            .unwrap();
 
         // Inserting the same object is disallowed.
         assert_eq!(
             RegistrationError::AlreadyRegistered,
-            inv.register(&child, "child".to_string(), Some(root_id))
+            inv.register(&child, Some("child".to_string()), Some(root_id))
                 .unwrap_err()
         );
 
         // However, inserting new objects is still fine.
         let other_child = Arc::new(TestEntity {});
-        inv.register(&other_child, "other-child".to_string(), Some(root_id))
-            .unwrap();
+        inv.register(
+            &other_child,
+            Some("other-child".to_string()),
+            Some(root_id),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -585,8 +617,9 @@ mod tests {
         let child = Arc::new(TestEntity {});
         let inv = Inventory::new();
 
-        let root_id = inv.register(&root, "root".to_string(), None).unwrap();
-        inv.register(&child, "child".to_string(), Some(root_id)).unwrap();
+        let root_id =
+            inv.register(&root, Some("root".to_string()), None).unwrap();
+        inv.register(&child, Some("child".to_string()), Some(root_id)).unwrap();
         inv.deregister(root_id).unwrap();
 
         // Peek into the internals of the inventory to check that it is empty.
@@ -599,9 +632,11 @@ mod tests {
         let child = Arc::new(TestEntity {});
         let inv = Inventory::new();
 
-        let root_id = inv.register(&root, "root".to_string(), None).unwrap();
-        let child_id =
-            inv.register(&child, "child".to_string(), Some(root_id)).unwrap();
+        let root_id =
+            inv.register(&root, Some("root".to_string()), None).unwrap();
+        let child_id = inv
+            .register(&child, Some("child".to_string()), Some(root_id))
+            .unwrap();
         inv.deregister(root_id).unwrap();
 
         // Neither the root nor child device may be deregistered multiple times.
@@ -630,11 +665,11 @@ mod tests {
         //   B   C
         //  / \
         // D   E
-        let a_id = inv.register(&a, "a".to_string(), None).unwrap();
-        let b_id = inv.register(&b, "b".to_string(), Some(a_id)).unwrap();
-        let _ = inv.register(&c, "c".to_string(), Some(a_id)).unwrap();
-        let _ = inv.register(&d, "d".to_string(), Some(b_id)).unwrap();
-        let _ = inv.register(&e, "e".to_string(), Some(b_id)).unwrap();
+        let a_id = inv.register(&a, Some("a".to_string()), None).unwrap();
+        let b_id = inv.register(&b, Some("b".to_string()), Some(a_id)).unwrap();
+        let _ = inv.register(&c, Some("c".to_string()), Some(a_id)).unwrap();
+        let _ = inv.register(&d, Some("d".to_string()), Some(b_id)).unwrap();
+        let _ = inv.register(&e, Some("e".to_string()), Some(b_id)).unwrap();
         inv
     }
 
@@ -643,11 +678,11 @@ mod tests {
         let test_inv = build_iter_tree();
         let inv = test_inv.inner.lock().unwrap();
         let mut iter = inv.iter(Order::Post);
-        assert_eq!(iter.next().unwrap().1.name(), "d");
-        assert_eq!(iter.next().unwrap().1.name(), "e");
-        assert_eq!(iter.next().unwrap().1.name(), "b");
-        assert_eq!(iter.next().unwrap().1.name(), "c");
-        assert_eq!(iter.next().unwrap().1.name(), "a");
+        assert_eq!(iter.next().unwrap().1.name(), "test-d");
+        assert_eq!(iter.next().unwrap().1.name(), "test-e");
+        assert_eq!(iter.next().unwrap().1.name(), "test-b");
+        assert_eq!(iter.next().unwrap().1.name(), "test-c");
+        assert_eq!(iter.next().unwrap().1.name(), "test-a");
         assert!(iter.next().is_none());
     }
 
@@ -656,11 +691,11 @@ mod tests {
         let test_inv = build_iter_tree();
         let inv = test_inv.inner.lock().unwrap();
         let mut iter = inv.iter(Order::Pre);
-        assert_eq!(iter.next().unwrap().1.name(), "a");
-        assert_eq!(iter.next().unwrap().1.name(), "b");
-        assert_eq!(iter.next().unwrap().1.name(), "d");
-        assert_eq!(iter.next().unwrap().1.name(), "e");
-        assert_eq!(iter.next().unwrap().1.name(), "c");
+        assert_eq!(iter.next().unwrap().1.name(), "test-a");
+        assert_eq!(iter.next().unwrap().1.name(), "test-b");
+        assert_eq!(iter.next().unwrap().1.name(), "test-d");
+        assert_eq!(iter.next().unwrap().1.name(), "test-e");
+        assert_eq!(iter.next().unwrap().1.name(), "test-c");
         assert!(iter.next().is_none());
     }
 
@@ -668,15 +703,15 @@ mod tests {
     fn iterator_root_only_returns_root() {
         let root = Arc::new(TestEntity {});
         let inv = Inventory::new();
-        let _ = inv.register(&root, "root".to_string(), None).unwrap();
+        let _ = inv.register(&root, Some("root".to_string()), None).unwrap();
 
         let inv = inv.inner.lock().unwrap();
         let mut iter = inv.iter(Order::Pre);
-        assert_eq!(iter.next().unwrap().1.name(), "root");
+        assert_eq!(iter.next().unwrap().1.name(), "test-root");
         assert!(iter.next().is_none());
 
         let mut iter = inv.iter(Order::Post);
-        assert_eq!(iter.next().unwrap().1.name(), "root");
+        assert_eq!(iter.next().unwrap().1.name(), "test-root");
         assert!(iter.next().is_none());
     }
 
@@ -691,10 +726,10 @@ mod tests {
     fn for_each_node() {
         let inv = Inventory::new();
         let root = Arc::new(TestEntity {});
-        let _ = inv.register(&root, "root".to_string(), None).unwrap();
+        let _ = inv.register(&root, Some("root".to_string()), None).unwrap();
 
         inv.for_each_node(Order::Pre, |_eid, record| {
-            assert_eq!(record.name(), "root");
+            assert_eq!(record.name(), "test-root");
             assert_eq!(record.concrete::<TestEntity>().unwrap(), root);
         });
     }

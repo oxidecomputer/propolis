@@ -100,7 +100,7 @@ impl BlockDevice {
                 )
                 .unwrap();
 
-                let creg = ChildRegister::new(&be, "backend-file".to_string());
+                let creg = ChildRegister::new(&be, None);
                 (be, creg)
             }
             "crucible" => {
@@ -141,8 +141,8 @@ impl BlockDevice {
                 )
                 .unwrap();
 
-                let creg =
-                    ChildRegister::new(&be, "backend-crucible".to_string());
+                // TODO: use volume ID or something for instance name
+                let creg = ChildRegister::new(&be, None);
                 (be, creg)
             }
             _ => {

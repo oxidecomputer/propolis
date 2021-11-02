@@ -129,4 +129,8 @@ impl Item for RamFb {
         Ok(())
     }
 }
-impl Entity for RamFb {}
+impl Entity for RamFb {
+    fn type_name(&self) -> &'static str {
+        "qemu-ramfb"
+    }
+}

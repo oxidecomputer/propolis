@@ -177,6 +177,9 @@ impl block::Device for PciVirtioBlock {
     }
 }
 impl Entity for PciVirtioBlock {
+    fn type_name(&self) -> &'static str {
+        "pci-virtio-block"
+    }
     fn reset(&self, ctx: &DispCtx) {
         self.virtio_state.reset(self, ctx);
     }

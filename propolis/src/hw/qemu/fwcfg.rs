@@ -644,7 +644,11 @@ impl FwCfg {
     }
 }
 
-impl Entity for FwCfg {}
+impl Entity for FwCfg {
+    fn type_name(&self) -> &'static str {
+        "qemu-fwcfg"
+    }
+}
 
 mod bits {
     #![allow(unused)]

@@ -145,14 +145,14 @@ impl Chipset for I440Fx {
     }
 }
 impl Entity for I440Fx {
+    fn type_name(&self) -> &'static str {
+        "chipset-i440fx"
+    }
     fn child_register(&self) -> Option<Vec<inventory::ChildRegister>> {
         Some(vec![
-            inventory::ChildRegister::new(
-                &self.dev_hb,
-                "hostbridge".to_string(),
-            ),
-            inventory::ChildRegister::new(&self.dev_lpc, "lpc".to_string()),
-            inventory::ChildRegister::new(&self.dev_pm, "pm".to_string()),
+            inventory::ChildRegister::new(&self.dev_hb, None),
+            inventory::ChildRegister::new(&self.dev_lpc, None),
+            inventory::ChildRegister::new(&self.dev_pm, None),
         ])
     }
 }
@@ -281,6 +281,9 @@ impl pci::Device for Piix4HostBridge {
     }
 }
 impl Entity for Piix4HostBridge {
+    fn type_name(&self) -> &'static str {
+        "pci-piix4-hb"
+    }
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
     }
@@ -396,6 +399,9 @@ impl pci::Device for Piix3Lpc {
     }
 }
 impl Entity for Piix3Lpc {
+    fn type_name(&self) -> &'static str {
+        "pci-piix3-lpc"
+    }
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
     }
@@ -735,6 +741,9 @@ impl pci::Device for Piix3PM {
     }
 }
 impl Entity for Piix3PM {
+    fn type_name(&self) -> &'static str {
+        "pci-piix3-pm"
+    }
     fn reset(&self, ctx: &DispCtx) {
         self.pci_state.reset(self);
         self.reset(ctx);

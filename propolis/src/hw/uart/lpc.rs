@@ -133,6 +133,9 @@ impl Source for LpcUart {
 }
 
 impl Entity for LpcUart {
+    fn type_name(&self) -> &'static str {
+        "lpc-uart"
+    }
     fn state_transition(
         &self,
         next: instance::State,

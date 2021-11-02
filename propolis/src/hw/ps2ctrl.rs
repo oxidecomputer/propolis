@@ -279,7 +279,11 @@ impl PS2Ctrl {
         );
     }
 }
-impl Entity for PS2Ctrl {}
+impl Entity for PS2Ctrl {
+    fn type_name(&self) -> &'static str {
+        "lpc-ps2ctrl"
+    }
+}
 
 const PS2K_CMD_SET_LEDS: u8 = 0xed;
 const PS2K_CMD_SCAN_CODE: u8 = 0xf0;

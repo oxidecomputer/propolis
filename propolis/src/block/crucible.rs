@@ -129,7 +129,11 @@ impl block::Backend for CrucibleBackend {
     }
 }
 
-impl Entity for CrucibleBackend {}
+impl Entity for CrucibleBackend {
+    fn type_name(&self) -> &'static str {
+        "block-crucible"
+    }
+}
 
 struct SyncDriver {
     cv: Condvar,

@@ -208,6 +208,9 @@ impl VirtioDevice for PciVirtioViona {
     }
 }
 impl Entity for PciVirtioViona {
+    fn type_name(&self) -> &'static str {
+        "pci-virtio-viona"
+    }
     fn state_transition(
         &self,
         next: instance::State,

@@ -146,7 +146,7 @@ fn main() {
         let hdl = machine.get_hdl();
         let chipset = hw::chipset::i440fx::I440Fx::create(machine);
         let chipset_id = inv
-            .register(&chipset, "chipset".to_string(), None)
+            .register(&chipset, None, None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         // UARTs
@@ -172,19 +172,19 @@ fn main() {
         LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
         LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
         LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        inv.register(&com1, "com1".to_string(), Some(chipset_id))
+        inv.register(&com1, Some("com1".to_string()), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com2, "com2".to_string(), Some(chipset_id))
+        inv.register(&com2, Some("com2".to_string()), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com3, "com3".to_string(), Some(chipset_id))
+        inv.register(&com3, Some("com3".to_string()), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com4, "com4".to_string(), Some(chipset_id))
+        inv.register(&com4, Some("com4".to_string()), Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         // PS/2
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.as_ref());
-        inv.register(&ps2_ctrl, "ps2_ctrl".to_string(), Some(chipset_id))
+        inv.register(&ps2_ctrl, None, Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         let debug_file = std::fs::File::create("debug.out").unwrap();
@@ -192,7 +192,7 @@ fn main() {
         let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
         debug_out
             .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
-        inv.register(&debug_device, "debug".to_string(), None)
+        inv.register(&debug_device, None, None)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         for (name, dev) in config.devs() {
@@ -210,11 +210,12 @@ fn main() {
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
                     let (backend, creg) = config.block_dev(block_dev, disp);
+                    let bdf = bdf.unwrap();
 
                     let info = backend.info();
                     let vioblk = hw::virtio::PciVirtioBlock::new(0x100, info);
                     let id = inv
-                        .register(&vioblk, format!("vioblk-{}", name), None)
+                        .register(&vioblk, Some(bdf.to_string()), None)
                         .map_err(|e| -> std::io::Error { e.into() })?;
                     let _be_id = inv
                         .register_child(creg, id)
@@ -223,35 +224,37 @@ fn main() {
                     backend
                         .attach(vioblk.clone() as Arc<dyn block::Device>, disp);
 
-                    chipset.pci_attach(bdf.unwrap(), vioblk);
+                    chipset.pci_attach(bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
+                    let bdf = bdf.unwrap();
 
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name, 0x100, &hdl,
                     )?;
-                    inv.register(&viona, format!("viona-{}", name), None)
+                    inv.register(&viona, Some(bdf.to_string()), None)
                         .map_err(|e| -> std::io::Error { e.into() })?;
-                    chipset.pci_attach(bdf.unwrap(), viona);
+                    chipset.pci_attach(bdf, viona);
                 }
                 "pci-nvme" => {
                     let block_dev =
                         dev.options.get("block_dev").unwrap().as_str().unwrap();
 
                     let (backend, creg) = config.block_dev(block_dev, disp);
+                    let bdf = bdf.unwrap();
 
                     let info = backend.info();
                     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
 
                     let id =
-                        inv.register(&nvme, format!("nvme-{}", name), None)?;
+                        inv.register(&nvme, Some(bdf.to_string()), None)?;
                     let _be_id = inv.register_child(creg, id)?;
 
                     backend.attach(nvme.clone(), disp);
 
-                    chipset.pci_attach(bdf.unwrap(), nvme);
+                    chipset.pci_attach(bdf, nvme);
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver"; "name" => name);
@@ -274,9 +277,9 @@ fn main() {
         let fwcfg_dev = fwcfg.finalize();
         fwcfg_dev.attach(pio);
 
-        inv.register(&fwcfg_dev, "fwcfg".to_string(), Some(chipset_id))
+        inv.register(&fwcfg_dev, None, Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&ramfb, "ramfb".to_string(), Some(chipset_id))
+        inv.register(&ramfb, None, Some(chipset_id))
             .map_err(|e| -> std::io::Error { e.into() })?;
 
         for mut vcpu in mctx.vcpus() {
