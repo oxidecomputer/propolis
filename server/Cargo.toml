@@ -30,7 +30,7 @@ serde = "1.0"
 serde_derive = "1.0"
 slog = "2.7"
 structopt = { version = "0.3", default-features = false }
-propolis = { path = "../propolis" }
+propolis = { path = "../propolis", default-features = false }
 propolis-client = { path = "../client" }
 uuid = "0.8"
 
@@ -39,3 +39,7 @@ hex = "0.4.3"
 reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 ring = "0.16"
 slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_debug" ] }
+
+[features]
+default = ["dtrace-probes"]
+dtrace-probes = ["propolis/dtrace-probes"]

@@ -1,13 +1,31 @@
 #![allow(clippy::style)]
 // Pull in asm!() support for USDT
-#![feature(asm)]
+#![cfg_attr(feature = "dtrace-probes", feature(asm))]
 // Pull in `assert_matches` for tests
 #![cfg_attr(test, feature(assert_matches))]
 
-use usdt::dtrace_provider;
-
 // Define probe macros prior to module imports below.
-dtrace_provider!("usdt.d", format = "probe_{probe}");
+#[usdt::provider(format = "probe_{probe}")]
+mod propolis {
+    fn pio_in(port: u16, bytes: u8, value: u32, was_handled: u8) {}
+    fn pio_out(port: u16, bytes: u8, value: u32, was_handled: u8) {}
+    fn mmio_read(addr: u64, bytes: u8, value: u64, was_handled: u8) {}
+    fn mmio_write(addr: u64, bytes: u8, value: u64, was_handled: u8) {}
+
+    fn vm_entry(vcpuid: u32) {}
+
+    fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
+
+    fn nvme_read_enqueue(cid: u16, slba: u64, nlb: u16) {}
+    fn nvme_read_complete(cid: u16) {}
+
+    fn nvme_write_enqueue(cid: u16, slba: u64, nlb: u16) {}
+    fn nvme_write_complete(cid: u16) {}
+
+    fn virtio_vq_notify(virtio_dev_addr: u64, virtqueue_id: u16) {}
+    fn virtio_vq_pop(cq_addr: u64, avail_idx: u16) {}
+    fn virtio_vq_push(vq_addr: u64, used_idx: u16, used_len: u32) {}
+}
 
 pub extern crate bhyve_api;
 pub extern crate usdt;
