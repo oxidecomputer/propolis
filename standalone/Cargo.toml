@@ -13,7 +13,11 @@ libc = "0.2"
 toml = "0.5"
 serde = "1.0"
 serde_derive = "1.0"
-propolis = { path = "../propolis" }
+propolis = { path = "../propolis", default-features = false }
 slog = "2.7"
 slog-async = "2.7"
 slog-term = "2.7"
+
+[features]
+default = ["dtrace-probes"]
+dtrace-probes = ["propolis/dtrace-probes"]

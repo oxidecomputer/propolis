@@ -1,5 +1,5 @@
 // Required for USDT
-#![feature(asm)]
+#![cfg_attr(feature = "dtrace-probes", feature(asm))]
 
 use anyhow::anyhow;
 use dropshot::{

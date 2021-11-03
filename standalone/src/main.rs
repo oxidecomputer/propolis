@@ -1,5 +1,5 @@
 // Required for USDT
-#![feature(asm)]
+#![cfg_attr(feature = "dtrace-probes", feature(asm))]
 
 extern crate pico_args;
 extern crate propolis;
