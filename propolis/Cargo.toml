@@ -23,7 +23,6 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 slog = "2.7"
 serde = { version = "1" }
-serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 crossbeam-channel = "0.5"
@@ -34,4 +33,4 @@ slog-async = "2.7"
 
 [features]
 default = ["dtrace-probes"]
-dtrace-probes = ["usdt/asm", "serde_json"]
+dtrace-probes = ["usdt/asm"]
