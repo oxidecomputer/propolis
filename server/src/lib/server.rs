@@ -298,7 +298,7 @@ async fn instance_ensure(
 
                         let (backend, creg) = server_context
                             .config
-                            .create_block_backend(block_dev_name)
+                            .create_block_backend(block_dev_name, &disp)
                             .map_err(|e| {
                                 Error::new(
                                     ErrorKind::InvalidData,

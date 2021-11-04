@@ -1,4 +1,5 @@
 use std::collections::{btree_map, BTreeMap};
+use std::net::SocketAddrV4;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use serde_derive::Deserialize;
 
 use crate::hw::pci;
 use propolis::block;
+use propolis::dispatch::Dispatcher;
 use propolis::inventory::ChildRegister;
 
 #[derive(Deserialize, Debug)]
@@ -51,9 +53,10 @@ impl Config {
     pub fn block_dev(
         &self,
         name: &str,
+        disp: &Dispatcher,
     ) -> (Arc<dyn block::Backend>, ChildRegister) {
         let entry = self.inner.block_devs.get(name).unwrap();
-        entry.block_dev()
+        entry.block_dev(disp)
     }
 }
 
@@ -77,7 +80,10 @@ pub struct BlockDevice {
 }
 
 impl BlockDevice {
-    pub fn block_dev(&self) -> (Arc<dyn block::Backend>, ChildRegister) {
+    pub fn block_dev(
+        &self,
+        disp: &Dispatcher,
+    ) -> (Arc<dyn block::Backend>, ChildRegister) {
         match &self.bdtype as &str {
             "file" => {
                 let path = self.options.get("path").unwrap().as_str().unwrap();
@@ -93,7 +99,43 @@ impl BlockDevice {
                     NonZeroUsize::new(8).unwrap(),
                 )
                 .unwrap();
+
                 let creg = ChildRegister::new(&be, "backend-file".to_string());
+                (be, creg)
+            }
+            "crucible" => {
+                let mut targets: Vec<SocketAddrV4> = Vec::new();
+
+                for target in self
+                    .options
+                    .get("targets")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .to_vec()
+                {
+                    let addr =
+                        target.as_str().unwrap().to_string().parse().unwrap();
+                    targets.push(addr);
+                }
+
+                let read_only: bool = || -> Option<bool> {
+                    self.options.get("readonly")?.as_str()?.parse().ok()
+                }()
+                .unwrap_or(false);
+
+                let key: Option<String> = self
+                    .options
+                    .get("key")
+                    .map(|x| x.as_str().unwrap().to_string());
+
+                let be = propolis::block::CrucibleBackend::create(
+                    disp, targets, read_only, key,
+                )
+                .unwrap();
+
+                let creg =
+                    ChildRegister::new(&be, "backend-crucible".to_string());
                 (be, creg)
             }
             _ => {

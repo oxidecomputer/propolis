@@ -30,7 +30,7 @@ serde = "1.0"
 serde_derive = "1.0"
 slog = "2.7"
 structopt = { version = "0.3", default-features = false }
-propolis = { path = "../propolis", default-features = false }
+propolis = { path = "../propolis", features = ["crucible"], default-features = false }
 propolis-client = { path = "../client" }
 uuid = "0.8"
 
