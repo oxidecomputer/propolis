@@ -561,7 +561,7 @@ pub struct MapInfo {
     pub used_addr: u64,
 }
 
-pub(super) struct VirtQueues {
+pub struct VirtQueues {
     queues: Vec<Arc<VirtQueue>>,
     size: NonZeroU16,
     num: NonZeroU16,

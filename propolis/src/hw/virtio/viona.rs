@@ -16,7 +16,7 @@ use crate::util::sys;
 use crate::vmm::VmmHdl;
 
 use super::bits::*;
-use super::pci::PciVirtio;
+use super::pci::{PciVirtio, PciVirtioState};
 use super::queue::{VirtQueue, VirtQueues};
 use super::{VirtioDevice, VqChange, VqIntr};
 
@@ -38,22 +38,24 @@ impl Inner {
 
 /// Represents a connection to the kernel's Viona (VirtIO Network Adapter)
 /// driver.
-pub struct VirtioViona {
+pub struct PciVirtioViona {
+    virtio_state: PciVirtioState,
+    pci_state: pci::DeviceState,
+
     dev_features: u32,
     mac_addr: [u8; ETHERADDRL],
     mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
-    queues: VirtQueues,
 
     sa_cell: SelfArcCell<Self>,
 }
-impl VirtioViona {
-    pub fn create(
+impl PciVirtioViona {
+    pub fn new(
         vnic_name: &str,
         queue_size: u16,
         vm: &VmmHdl,
-    ) -> Result<Arc<PciVirtio>> {
+    ) -> Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_vnic(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
@@ -66,13 +68,24 @@ impl VirtioViona {
         let queues =
             VirtQueues::new(NonZeroU16::new(queue_size).unwrap(), queue_count);
 
-        let mut this = VirtioViona {
+        let (virtio_state, pci_state) = PciVirtioState::create(
+            queues,
+            msix_count,
+            VIRTIO_DEV_NET,
+            pci::bits::CLASS_NETWORK,
+            VIRTIO_NET_CFG_SIZE,
+        );
+
+        let mut this = PciVirtioViona {
+            virtio_state,
+            pci_state,
+
             dev_features: hdl.get_avail_features()?,
             mac_addr: [0; ETHERADDRL],
             mtu: info.mtu,
             hdl,
             inner: Mutex::new(Inner::new()),
-            queues,
+
             sa_cell: SelfArcCell::new(),
         };
         this.mac_addr.copy_from_slice(&info.mac_addr);
@@ -81,20 +94,14 @@ impl VirtioViona {
         let mut this = Arc::new(this);
         SelfArc::self_arc_init(&mut this);
 
-        Ok(PciVirtio::create(
-            msix_count,
-            VIRTIO_DEV_NET,
-            pci::bits::CLASS_NETWORK,
-            VIRTIO_NET_CFG_SIZE,
-            this,
-        ))
+        Ok(this)
     }
 
     fn process_interrupts(&self, ctx: &DispCtx) {
         self.hdl
             .intr_poll(|vq_idx| {
                 self.hdl.ring_intr_clear(vq_idx).unwrap();
-                self.queues[vq_idx as usize].with_intr(|intr| {
+                self.virtio_state.queues[vq_idx as usize].with_intr(|intr| {
                     if let Some(intr) = intr {
                         intr.notify(ctx);
                     }
@@ -123,8 +130,8 @@ impl VirtioViona {
         }
     }
 }
-impl VirtioDevice for VirtioViona {
-    fn device_cfg_rw(&self, mut rwo: RWOp) {
+impl VirtioDevice for PciVirtioViona {
+    fn cfg_rw(&self, mut rwo: RWOp) {
         NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {
@@ -132,7 +139,7 @@ impl VirtioDevice for VirtioViona {
             }
         });
     }
-    fn device_get_features(&self) -> u32 {
+    fn get_features(&self) -> u32 {
         let mut feat = VIRTIO_NET_F_MAC;
         // We drop the "VIRTIO_NET_F_MTU" flag from feat if we are unable to
         // query it. This can happen when executing within a non-global Zone.
@@ -145,7 +152,7 @@ impl VirtioDevice for VirtioViona {
 
         feat
     }
-    fn device_set_features(&self, feat: u32) {
+    fn set_features(&self, feat: u32) {
         self.hdl
             .set_features(feat)
             .unwrap_or_else(|_| todo!("viona error handling"));
@@ -199,11 +206,8 @@ impl VirtioDevice for VirtioViona {
             }
         }
     }
-    fn queues(&self) -> &VirtQueues {
-        &self.queues
-    }
 }
-impl Entity for VirtioViona {
+impl Entity for PciVirtioViona {
     fn state_transition(
         &self,
         next: instance::State,
@@ -222,7 +226,7 @@ impl Entity for VirtioViona {
                 let (poller, task) = inner.poller.take().unwrap();
                 task.abort();
                 drop(poller);
-                for vq in self.queues[..].iter() {
+                for vq in self.virtio_state.queues[..].iter() {
                     let _ = self.hdl.ring_reset(vq.id);
                 }
             }
@@ -238,8 +242,19 @@ impl Entity for VirtioViona {
             _ => {}
         }
     }
+    fn reset(&self, ctx: &DispCtx) {
+        self.virtio_state.reset(self, ctx);
+    }
 }
-impl SelfArc for VirtioViona {
+impl PciVirtio for PciVirtioViona {
+    fn virtio_state(&self) -> &PciVirtioState {
+        &self.virtio_state
+    }
+    fn pci_state(&self) -> &pci::DeviceState {
+        &self.pci_state
+    }
+}
+impl SelfArc for PciVirtioViona {
     fn self_arc_cell(&self) -> &SelfArcCell<Self> {
         &self.sa_cell
     }
@@ -370,14 +385,14 @@ impl VionaHdl {
 // make polling on those ring interrupt events more accessible.
 struct VionaPoller {
     epfd: RawFd,
-    dev: Weak<VirtioViona>,
+    dev: Weak<PciVirtioViona>,
 }
 
 #[cfg(target_os = "illumos")]
 impl VionaPoller {
     fn spawn(
         viona_fd: RawFd,
-        dev: Weak<VirtioViona>,
+        dev: Weak<PciVirtioViona>,
         ctx: &DispCtx,
     ) -> Result<(Arc<Self>, JoinHandle<()>)> {
         let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) } as RawFd;
@@ -457,7 +472,7 @@ impl VionaPoller {
 impl VionaPoller {
     fn spawn(
         _viona_fd: RawFd,
-        _dev: Weak<VirtioViona>,
+        _dev: Weak<PciVirtioViona>,
         _ctx: &DispCtx,
     ) -> Result<(Arc<Self>, JoinHandle<()>)> {
         Err(Error::new(
