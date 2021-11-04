@@ -3,7 +3,7 @@ use std::{
     os::unix::prelude::AsRawFd,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use futures::{SinkExt, StreamExt};
 use propolis_client::{
     api::{
@@ -57,6 +57,9 @@ enum Command {
 
         #[structopt(long)]
         crucible: bool,
+
+        #[structopt(long)]
+        crucible_target: Vec<SocketAddr>,
     },
 
     /// Get the properties of a propolis instance
@@ -121,7 +124,14 @@ async fn new_instance(
     vcpus: u8,
     memory: u64,
     crucible: bool,
+    crucible_target: Vec<SocketAddr>,
 ) -> anyhow::Result<()> {
+    if crucible {
+        if crucible_target.len() != 3 {
+            bail!("Three crucible targets required!");
+        }
+    }
+
     // Generate a UUID for the new instance
     let id = Uuid::new_v4();
 
@@ -136,6 +146,7 @@ async fn new_instance(
         memory,
         vcpus,
     };
+
     let request = InstanceEnsureRequest {
         properties,
         // TODO: Allow specifying NICs
@@ -145,11 +156,7 @@ async fn new_instance(
                 // XXX default
                 DiskRequest {
                     name: "d1".to_string(),
-                    address: vec![
-                        "127.0.0.1:3801".parse()?,
-                        "127.0.0.1:3802".parse()?,
-                        "127.0.0.1:3803".parse()?,
-                    ],
+                    address: crucible_target,
                     slot: Slot(0),
                     read_only: false,
                     key: None,
@@ -262,8 +269,16 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(addr.clone(), log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, vcpus, memory } => {
-            new_instance(&client, name.to_string(), vcpus, memory).await?
+        Command::New { name, vcpus, memory, crucible, crucible_target } => {
+            new_instance(
+                &client,
+                name.to_string(),
+                vcpus,
+                memory,
+                crucible,
+                crucible_target,
+            )
+            .await?
         }
         Command::Get { name } => get_instance(&client, name).await?,
         Command::State { name, state } => {
