@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use super::bits::*;
+use super::probes;
 use super::queue::VirtQueues;
 use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
@@ -378,7 +379,7 @@ impl PciVirtioState {
         }
     }
     fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16, ctx: &DispCtx) {
-        probe_virtio_vq_notify!(|| (
+        probes::virtio_vq_notify!(|| (
             dev as *const dyn VirtioDevice as *const c_void as u64,
             queue
         ));

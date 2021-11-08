@@ -56,3 +56,10 @@ pub enum VqIntr {
     /// MSI(-X) with address, data, and masked state
     Msi(u64, u32, bool),
 }
+
+#[usdt::provider]
+mod probes {
+    fn virtio_vq_notify(virtio_dev_addr: u64, virtqueue_id: u16) {}
+    fn virtio_vq_pop(cq_addr: u64, avail_idx: u16) {}
+    fn virtio_vq_push(vq_addr: u64, used_idx: u16, used_len: u32) {}
+}
