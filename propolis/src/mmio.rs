@@ -7,8 +7,8 @@ pub use crate::util::aspace::{Error, Result};
 
 use byteorder::{ByteOrder, LE};
 
-#[usdt::provider]
-mod probes {
+#[usdt::provider(probe_path = "probes")]
+mod propolis {
     fn mmio_read(addr: u64, bytes: u8, value: u64, was_handled: u8) {}
     fn mmio_write(addr: u64, bytes: u8, value: u64, was_handled: u8) {}
 }
