@@ -156,6 +156,7 @@ async fn new_instance(
             slot: Slot(disk_i),
             read_only: false,
             key: None,
+            gen: 0,
         });
         disk_i += 1;
     }

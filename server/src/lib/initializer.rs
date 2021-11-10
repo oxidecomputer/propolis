@@ -264,10 +264,11 @@ impl<'a> MachineInitializer<'a> {
             addresses,
             disk.read_only,
             disk.key.clone(),
+            Some(disk.gen),
         )?;
 
         info!(self.log, "Creating ChildRegister");
-        let creg = ChildRegister::new(&be, "backend-crucible".to_string());
+        let creg = ChildRegister::new(&be, None);
 
         // TODO: this assumes virtio, what about NVMe?
         info!(self.log, "Calling initialize_virtio_block");
