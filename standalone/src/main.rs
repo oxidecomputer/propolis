@@ -301,7 +301,7 @@ fn main() {
     slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
-    inst.on_transition(Box::new(|next_state, ctx| {
+    inst.on_transition(Box::new(|next_state, inv, ctx| {
         match next_state {
             State::Boot => {
                 for mut vcpu in ctx.mctx.vcpus() {
@@ -318,6 +318,24 @@ fn main() {
                     }
                 }
             }
+            State::Quiesce => {
+                println!("Device state at quiesce:");
+                inv.for_each_node(
+                    propolis::inventory::Order::Post,
+                    |_id, record| {
+                        let ent = record.entity();
+                        if let Some(mig_ent) = ent.migrate() {
+                            let data = mig_ent.export();
+                            let output = DevExport {
+                                id: record.name().to_string(),
+                                data,
+                            };
+                            serde_json::to_writer(std::io::stdout(), &output)
+                                .unwrap();
+                        }
+                    },
+                );
+            }
             _ => {}
         }
     }));
@@ -325,4 +343,12 @@ fn main() {
 
     inst.wait_for_state(State::Destroy);
     drop(inst);
+}
+
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct DevExport {
+    id: String,
+    data: Box<dyn erased_serde::Serialize>,
 }

@@ -5,6 +5,7 @@ use crate::block;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
+use crate::migrate::Migrate;
 use crate::util::regmap::RegMap;
 
 use super::bits::*;
@@ -12,6 +13,7 @@ use super::pci::{PciVirtio, PciVirtioState};
 use super::queue::{Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 
+use erased_serde::Serialize;
 use lazy_static::lazy_static;
 
 /// Sizing for virtio-block is specified in 512B sectors
@@ -183,6 +185,16 @@ impl Entity for PciVirtioBlock {
     fn reset(&self, ctx: &DispCtx) {
         self.virtio_state.reset(self, ctx);
     }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for PciVirtioBlock {
+    fn export(&self) -> Box<dyn Serialize> {
+        Box::new(migrate::PciVirtioBlockV1 {
+            pci_virtio_state: self.virtio_state.export(&self.pci_state),
+        })
+    }
 }
 
 fn complete_blockreq(
@@ -260,6 +272,16 @@ lazy_static! {
             Some(BlockReg::Unused),
         )
     };
+}
+
+pub mod migrate {
+    use crate::hw::virtio::pci::migrate::PciVirtioStateV1;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct PciVirtioBlockV1 {
+        pub pci_virtio_state: PciVirtioStateV1,
+    }
 }
 
 mod bits {

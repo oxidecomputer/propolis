@@ -9,10 +9,12 @@ use crate::hw::pci::{self, Bdf, BusNum, INTxPinID, PioCfgDecoder};
 use crate::instance;
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::inventory;
+use crate::migrate::Migrate;
 use crate::pio::{PioBus, PioFn};
 use crate::util::regmap::RegMap;
 use crate::vmm::{Machine, VmmHdl};
 
+use erased_serde::Serialize;
 use lazy_static::lazy_static;
 
 const HB_DEV: u8 = 0;
@@ -144,6 +146,11 @@ impl Chipset for I440Fx {
         self.irq_config.pic.pin_handle(irq)
     }
 }
+impl Migrate for I440Fx {
+    fn export(&self) -> Box<dyn Serialize> {
+        Box::new(migrate::I440TopV1 { pci_cfg_addr: self.pci_cfg.addr() })
+    }
+}
 impl Entity for I440Fx {
     fn type_name(&self) -> &'static str {
         "chipset-i440fx"
@@ -154,6 +161,9 @@ impl Entity for I440Fx {
             inventory::ChildRegister::new(&self.dev_lpc, None),
             inventory::ChildRegister::new(&self.dev_pm, None),
         ])
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
     }
 }
 
@@ -287,6 +297,16 @@ impl Entity for Piix4HostBridge {
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
     }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for Piix4HostBridge {
+    fn export(&self) -> Box<dyn Serialize> {
+        Box::new(migrate::Piix4HostBridgeV1 {
+            pci_state: self.pci_state.export(),
+        })
+    }
 }
 
 pub struct Piix3Lpc {
@@ -404,6 +424,19 @@ impl Entity for Piix3Lpc {
     }
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for Piix3Lpc {
+    fn export(&self) -> Box<dyn Serialize> {
+        let pir = self.reg_pir.lock().unwrap();
+        Box::new(migrate::Piix3LpcV1 {
+            pci_state: self.pci_state.export(),
+            pir_regs: *pir,
+            post_code: self.post_code.load(Ordering::Acquire),
+        })
     }
 }
 
@@ -747,5 +780,48 @@ impl Entity for Piix3PM {
     fn reset(&self, ctx: &DispCtx) {
         self.pci_state.reset(self);
         self.reset(ctx);
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for Piix3PM {
+    fn export(&self) -> Box<dyn Serialize> {
+        let regs = self.regs.lock().unwrap();
+        Box::new(migrate::Piix3PmV1 {
+            pci_state: self.pci_state.export(),
+            pm_base: regs.pm_base,
+            pm_status: regs.pm_status.bits(),
+            pm_ena: regs.pm_ena.bits(),
+            pm_ctrl: regs.pm_ctrl.bits(),
+        })
+    }
+}
+
+mod migrate {
+    use crate::hw::pci::migrate::PciStateV1;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct I440TopV1 {
+        pub pci_cfg_addr: u32,
+    }
+    #[derive(Serialize)]
+    pub struct Piix4HostBridgeV1 {
+        pub pci_state: PciStateV1,
+    }
+    #[derive(Serialize)]
+    pub struct Piix3LpcV1 {
+        pub pci_state: PciStateV1,
+        pub pir_regs: [u8; super::PIR_LEN],
+        pub post_code: u8,
+    }
+    #[derive(Serialize)]
+    pub struct Piix3PmV1 {
+        pub pci_state: PciStateV1,
+        pub pm_base: u16,
+        pub pm_status: u16,
+        pub pm_ena: u16,
+        pub pm_ctrl: u16,
     }
 }

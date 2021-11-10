@@ -25,6 +25,7 @@ crucible = { git = "https://github.com/oxidecomputer/crucible", branch = "main",
 anyhow = "1"
 slog = "2.7"
 serde = { version = "1" }
+erased-serde = "0.3"
 
 [dev-dependencies]
 crossbeam-channel = "0.5"

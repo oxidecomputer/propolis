@@ -100,7 +100,8 @@ pub enum ReqState {
     Halt,
 }
 
-type TransitionFunc = dyn Fn(State, &DispCtx) + Send + Sync + 'static;
+type TransitionFunc =
+    dyn Fn(State, &Inventory, &DispCtx) + Send + Sync + 'static;
 
 struct Inner {
     state_current: State,
@@ -350,7 +351,7 @@ impl Instance {
             });
 
             for f in inner.transition_funcs.iter() {
-                f(state, ctx)
+                f(state, &inner.inv, ctx)
             }
         });
     }

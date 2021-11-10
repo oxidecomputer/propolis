@@ -6,7 +6,10 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::instance;
 use crate::intr_pins::{IntrPin, LegacyPin};
+use crate::migrate::Migrate;
 use crate::pio::{PioBus, PioFn};
+
+use erased_serde::Serialize;
 
 pub const REGISTER_LEN: usize = 8;
 
@@ -145,5 +148,24 @@ impl Entity for LpcUart {
         if next == instance::State::Reset {
             self.reset();
         }
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for LpcUart {
+    fn export(&self) -> Box<dyn Serialize> {
+        let state = self.state.lock().unwrap();
+        Box::new(migrate::LpcUartV1 { uart_state: state.uart.export() })
+    }
+}
+
+pub mod migrate {
+    use crate::hw::uart::base::migrate::UartV1;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct LpcUartV1 {
+        pub uart_state: UartV1,
     }
 }

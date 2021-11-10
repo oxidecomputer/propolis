@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::dispatch::DispCtx;
 use crate::instance::State;
+use crate::migrate::Migrate;
 
 /// Errors returned while registering or deregistering from [`Inventory`].
 #[derive(Error, Debug, PartialEq)]
@@ -449,6 +450,9 @@ pub trait Entity: Send + Sync + 'static {
     fn reset(&self, ctx: &DispCtx) {}
     #[allow(unused_variables)]
     fn child_register(&self) -> Option<Vec<ChildRegister>> {
+        None
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
         None
     }
 }
