@@ -204,9 +204,16 @@ impl BlockDevice {
                             .to_string())
                     })
                     .map_or(Ok(None), |r| r.map(Some))?;
+                let gen: Option<u64> = self
+                    .options
+                    .get("gen")
+                    .map(|x| x.as_str())
+                    .flatten()
+                    .map(|x| u64::from_str(x).ok())
+                    .flatten();
 
                 let be = propolis::block::CrucibleBackend::create(
-                    disp, targets, read_only, key,
+                    disp, targets, read_only, key, gen,
                 )?;
 
                 let creg = inventory::ChildRegister::new(
