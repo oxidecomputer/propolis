@@ -100,7 +100,7 @@ impl BlockDevice {
                 )
                 .unwrap();
 
-                let creg = ChildRegister::new(&be, "backend-file".to_string());
+                let creg = ChildRegister::new(&be, None);
                 (be, creg)
             }
             "crucible" => {
@@ -128,14 +128,21 @@ impl BlockDevice {
                     .options
                     .get("key")
                     .map(|x| x.as_str().unwrap().to_string());
+                let gen: Option<u64> = self
+                    .options
+                    .get("gen")
+                    .map(|x| x.as_str())
+                    .flatten()
+                    .map(|x| u64::from_str(x).ok())
+                    .flatten();
 
                 let be = propolis::block::CrucibleBackend::create(
-                    disp, targets, read_only, key,
+                    disp, targets, read_only, key, gen,
                 )
                 .unwrap();
 
-                let creg =
-                    ChildRegister::new(&be, "backend-crucible".to_string());
+                // TODO: use volume ID or something for instance name
+                let creg = ChildRegister::new(&be, None);
                 (be, creg)
             }
             _ => {

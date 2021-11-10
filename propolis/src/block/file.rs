@@ -82,7 +82,11 @@ impl block::Backend for FileBackend {
         *driverg = Some(driver);
     }
 }
-impl Entity for FileBackend {}
+impl Entity for FileBackend {
+    fn type_name(&self) -> &'static str {
+        "block-file"
+    }
+}
 
 struct Driver {
     fp: Arc<File>,

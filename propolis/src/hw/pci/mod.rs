@@ -233,4 +233,12 @@ impl PioCfgDecoder {
             };
         }
     }
+    pub fn addr(&self) -> u32 {
+        let addr = self.addr.lock().unwrap();
+        *addr
+    }
+}
+
+pub mod migrate {
+    pub use super::device::migrate::*;
 }

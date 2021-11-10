@@ -384,7 +384,7 @@ async fn instance_ensure(
     });
     instance.print();
 
-    instance.on_transition(Box::new(move |next_state, ctx| {
+    instance.on_transition(Box::new(move |next_state, _inv, ctx| {
         match next_state {
             propolis::instance::State::Boot => {
                 // Set vCPUs to their proper boot (INIT) state

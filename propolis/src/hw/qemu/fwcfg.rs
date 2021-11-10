@@ -3,10 +3,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::migrate::Migrate;
 use crate::pio::{PioBus, PioFn};
 use bits::*;
 
 use byteorder::{ByteOrder, BE, LE};
+use erased_serde::Serialize;
 
 pub type Result = std::result::Result<(), &'static str>;
 
@@ -361,6 +363,11 @@ struct AccessState {
     selector: u16,
     offset: u32,
 }
+impl AccessState {
+    fn dma_addr(&self) -> u64 {
+        (self.addr_high as u64) << 32 | self.addr_low as u64
+    }
+}
 
 pub struct FwCfg {
     dir: ItemDir,
@@ -496,7 +503,7 @@ impl FwCfg {
         mut state: MutexGuard<AccessState>,
         ctx: &DispCtx,
     ) -> Result {
-        let req_addr = (state.addr_high as u64) << 32 | state.addr_low as u64;
+        let req_addr = state.dma_addr();
         // initiating a DMA transfer clears the addr contents
         state.addr_high = 0;
         state.addr_low = 0;
@@ -644,7 +651,35 @@ impl FwCfg {
     }
 }
 
-impl Entity for FwCfg {}
+impl Entity for FwCfg {
+    fn type_name(&self) -> &'static str {
+        "qemu-fwcfg"
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for FwCfg {
+    fn export(&self) -> Box<dyn Serialize> {
+        let state = self.state.lock().unwrap();
+        Box::new(migrate::FwCfgV1 {
+            dma_addr: state.dma_addr(),
+            selector: state.selector,
+            offset: state.offset,
+        })
+    }
+}
+
+pub mod migrate {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct FwCfgV1 {
+        pub dma_addr: u64,
+        pub selector: u16,
+        pub offset: u32,
+    }
+}
 
 mod bits {
     #![allow(unused)]

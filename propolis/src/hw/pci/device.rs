@@ -565,6 +565,18 @@ impl DeviceState {
         let cfg = self.msix_cfg.as_ref()?;
         Some(MsixHdl::new(cfg))
     }
+
+    pub fn export(&self) -> migrate::PciStateV1 {
+        let state = self.state.lock().unwrap();
+        let msix = self.msix_cfg.as_ref().map(|cfg| cfg.export());
+        migrate::PciStateV1 {
+            reg_command: state.reg_command.bits(),
+            reg_intr_line: state.reg_intr_line,
+            reg_intr_pin: state.reg_intr_pin,
+            bars: state.bars.export(),
+            msix,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -911,6 +923,25 @@ impl MsixCfg {
         drop(state);
         self.each_entry(|ent| ent.reset());
     }
+    fn export(&self) -> migrate::MsixStateV1 {
+        let state = self.state.lock().unwrap();
+        let mut entries = Vec::new();
+        for entry in self.entries.iter() {
+            let lentry = entry.lock().unwrap();
+            entries.push(migrate::MsixEntryV1 {
+                addr: lentry.addr,
+                data: lentry.data,
+                is_pending: lentry.pending,
+                is_vec_masked: lentry.mask_vec,
+            });
+        }
+        migrate::MsixStateV1 {
+            count: self.count,
+            is_enabled: state.enabled,
+            is_func_masked: state.func_mask,
+            entries,
+        }
+    }
 }
 
 // public struct for exposing MSI(-X) values
@@ -1097,6 +1128,37 @@ impl Builder {
             self.caps,
             Bars::new(&self.bars),
         )
+    }
+}
+
+pub mod migrate {
+    use crate::hw::pci::bar;
+
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct MsixEntryV1 {
+        pub addr: u64,
+        pub data: u32,
+        pub is_pending: bool,
+        pub is_vec_masked: bool,
+    }
+
+    #[derive(Serialize)]
+    pub struct MsixStateV1 {
+        pub count: u16,
+        pub is_enabled: bool,
+        pub is_func_masked: bool,
+        pub entries: Vec<MsixEntryV1>,
+    }
+
+    #[derive(Serialize)]
+    pub struct PciStateV1 {
+        pub reg_command: u16,
+        pub reg_intr_line: u8,
+        pub reg_intr_pin: u8,
+        pub bars: bar::migrate::BarStateV1,
+        pub msix: Option<MsixStateV1>,
     }
 }
 

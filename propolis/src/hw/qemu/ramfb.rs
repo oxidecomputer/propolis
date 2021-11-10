@@ -3,8 +3,10 @@ use std::sync::{Arc, Mutex};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::qemu::fwcfg::{self, FwCfgBuilder, Item};
+use crate::migrate::Migrate;
 use crate::util::regmap::RegMap;
 
+use erased_serde::Serialize;
 use lazy_static::lazy_static;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -129,4 +131,38 @@ impl Item for RamFb {
         Ok(())
     }
 }
-impl Entity for RamFb {}
+impl Entity for RamFb {
+    fn type_name(&self) -> &'static str {
+        "qemu-ramfb"
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for RamFb {
+    fn export(&self) -> Box<dyn Serialize> {
+        let state = self.config.lock().unwrap();
+        Box::new(migrate::RamFbV1 {
+            addr: state.addr,
+            fourcc: state.fourcc,
+            flags: state.flags,
+            width: state.width,
+            height: state.height,
+            stride: state.stride,
+        })
+    }
+}
+
+pub mod migrate {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct RamFbV1 {
+        pub addr: u64,
+        pub fourcc: u32,
+        pub flags: u32,
+        pub width: u32,
+        pub height: u32,
+        pub stride: u32,
+    }
+}

@@ -848,7 +848,11 @@ impl pci::Device for PciNvme {
         &self.pci_state
     }
 }
-impl Entity for PciNvme {}
+impl Entity for PciNvme {
+    fn type_name(&self) -> &'static str {
+        "pci-nvme"
+    }
+}
 
 /// NVMe Controller Registers
 ///

@@ -142,7 +142,7 @@ impl<'a> MachineInitializer<'a> {
         let chipset = I440Fx::create(self.machine);
         let id = self
             .inv
-            .register(&chipset, "chipset".to_string(), None)
+            .register(&chipset, None, None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(RegisteredChipset(chipset, id))
     }
@@ -165,7 +165,7 @@ impl<'a> MachineInitializer<'a> {
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, pio, *port);
             self.inv
-                .register(&dev, name.to_string(), cid)
+                .register(&dev, Some(name.to_string()), cid)
                 .map_err(|e| -> std::io::Error { e.into() })?;
             if com1.is_none() {
                 com1 = Some(dev);
@@ -185,7 +185,7 @@ impl<'a> MachineInitializer<'a> {
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.device().as_ref());
         self.inv
-            .register(&ps2_ctrl, "ps2_ctrl".to_string(), Some(chipset.id()))
+            .register(&ps2_ctrl, None, Some(chipset.id()))
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(())
     }
@@ -196,7 +196,7 @@ impl<'a> MachineInitializer<'a> {
         let poller = chardev::BlockingFileOutput::new(debug_file)?;
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>, self.disp);
         self.inv
-            .register(&dbg, "debug".to_string(), None)
+            .register(&dbg, None, None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(())
     }
@@ -212,7 +212,7 @@ impl<'a> MachineInitializer<'a> {
         let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
         let id = self
             .inv
-            .register(&vioblk, format!("vioblk-{}", bdf), None)
+            .register(&vioblk, Some(bdf.to_string()), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
@@ -232,7 +232,7 @@ impl<'a> MachineInitializer<'a> {
         let viona = virtio::PciVirtioViona::new(vnic_name, 0x100, &hdl)?;
         let _id = self
             .inv
-            .register(&viona, format!("viona-{}", bdf), None)
+            .register(&viona, Some(bdf.to_string()), None)
             .map_err(|e| -> std::io::Error { e.into() })?;
         chipset.device().pci_attach(bdf, viona);
         Ok(())
@@ -295,10 +295,10 @@ impl<'a> MachineInitializer<'a> {
         fwcfg_dev.attach(pio);
 
         self.inv
-            .register(&fwcfg_dev, "fwcfg".to_string(), Some(chipset.id()))
+            .register(&fwcfg_dev, None, Some(chipset.id()))
             .map_err(|e| -> std::io::Error { e.into() })?;
         self.inv
-            .register(&ramfb, "ramfb".to_string(), Some(chipset.id()))
+            .register(&ramfb, None, Some(chipset.id()))
             .map_err(|e| -> std::io::Error { e.into() })?;
         Ok(())
     }

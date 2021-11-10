@@ -37,8 +37,9 @@ impl CrucibleBackend {
         targets: Vec<SocketAddrV4>,
         read_only: bool,
         key: Option<String>,
+        gen: Option<u64>,
     ) -> Result<Arc<Self>> {
-        CrucibleBackend::_create(disp, targets, read_only, key)
+        CrucibleBackend::_create(disp, targets, read_only, key, gen)
             .map_err(map_crucible_error_to_io)
     }
 
@@ -47,6 +48,7 @@ impl CrucibleBackend {
         targets: Vec<SocketAddrV4>,
         read_only: bool,
         key: Option<String>,
+        gen: Option<u64>,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
         // spawn Crucible tasks
         let opts =
@@ -76,7 +78,7 @@ impl CrucibleBackend {
         let uuid = tokio::task::block_in_place(|| guest.query_upstairs_uuid())?;
 
         slog::info!(disp.logger(), "Calling activate for {:?}", uuid);
-        tokio::task::block_in_place(|| guest.activate())?;
+        tokio::task::block_in_place(|| guest.activate(gen.unwrap_or(0)))?;
 
         let mut active = false;
         for _ in 0..10 {
@@ -127,7 +129,11 @@ impl block::Backend for CrucibleBackend {
     }
 }
 
-impl Entity for CrucibleBackend {}
+impl Entity for CrucibleBackend {
+    fn type_name(&self) -> &'static str {
+        "block-crucible"
+    }
+}
 
 struct SyncDriver {
     cv: Condvar,

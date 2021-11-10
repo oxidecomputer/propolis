@@ -253,6 +253,20 @@ impl Uart {
             self.reg_line_status &= !LSR_DR;
         }
     }
+    pub(super) fn export(&self) -> migrate::UartV1 {
+        migrate::UartV1 {
+            intr_enable: self.reg_intr_enable,
+            intr_status: self.reg_intr_status,
+            line_ctrl: self.reg_line_ctrl,
+            line_status: self.reg_line_status,
+            modem_ctrl: self.reg_modem_ctrl,
+            modem_status: self.reg_modem_status,
+            scratch: self.reg_scratch,
+            div_low: self.reg_div_low,
+            div_high: self.reg_div_high,
+            thre_state: self.thre_intr,
+        }
+    }
 }
 
 struct Fifo {
@@ -283,6 +297,24 @@ impl Fifo {
     }
     fn is_full(&self) -> bool {
         self.buf.len() == self.len
+    }
+}
+
+pub mod migrate {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct UartV1 {
+        pub intr_enable: u8,
+        pub intr_status: u8,
+        pub line_ctrl: u8,
+        pub line_status: u8,
+        pub modem_ctrl: u8,
+        pub modem_status: u8,
+        pub scratch: u8,
+        pub div_low: u8,
+        pub div_high: u8,
+        pub thre_state: bool,
     }
 }
 

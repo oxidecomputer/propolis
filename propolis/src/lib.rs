@@ -4,29 +4,6 @@
 // Pull in `assert_matches` for tests
 #![cfg_attr(test, feature(assert_matches))]
 
-// Define probe macros prior to module imports below.
-#[usdt::provider(format = "probe_{probe}")]
-mod propolis {
-    fn pio_in(port: u16, bytes: u8, value: u32, was_handled: u8) {}
-    fn pio_out(port: u16, bytes: u8, value: u32, was_handled: u8) {}
-    fn mmio_read(addr: u64, bytes: u8, value: u64, was_handled: u8) {}
-    fn mmio_write(addr: u64, bytes: u8, value: u64, was_handled: u8) {}
-
-    fn vm_entry(vcpuid: u32) {}
-
-    fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
-
-    fn nvme_read_enqueue(cid: u16, slba: u64, nlb: u16) {}
-    fn nvme_read_complete(cid: u16) {}
-
-    fn nvme_write_enqueue(cid: u16, slba: u64, nlb: u16) {}
-    fn nvme_write_complete(cid: u16) {}
-
-    fn virtio_vq_notify(virtio_dev_addr: u64, virtqueue_id: u16) {}
-    fn virtio_vq_pop(cq_addr: u64, avail_idx: u16) {}
-    fn virtio_vq_push(vq_addr: u64, used_idx: u16, used_len: u32) {}
-}
-
 pub extern crate bhyve_api;
 pub extern crate usdt;
 #[macro_use]
@@ -41,6 +18,7 @@ pub mod hw;
 pub mod instance;
 pub mod intr_pins;
 pub mod inventory;
+pub mod migrate;
 pub mod mmio;
 pub mod pio;
 pub mod util;
@@ -52,6 +30,12 @@ use dispatch::*;
 use exits::*;
 use vcpu::VcpuHdl;
 
+#[usdt::provider(probe_path = "probes")]
+mod propolis {
+    fn vm_entry(vcpuid: u32) {}
+    fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
+}
+
 pub fn vcpu_run_loop(mut vcpu: VcpuHdl, sctx: &mut SyncCtx) {
     let mut next_entry = VmEntry::Run;
     loop {
@@ -61,9 +45,9 @@ pub fn vcpu_run_loop(mut vcpu: VcpuHdl, sctx: &mut SyncCtx) {
         let ctx = sctx.dispctx();
         let mctx = &ctx.mctx;
 
-        probe_vm_entry!(|| (vcpu.cpuid() as u32));
+        probes::vm_entry!(|| (vcpu.cpuid() as u32));
         let exit = vcpu.run(&next_entry).unwrap();
-        probe_vm_exit!(|| (
+        probes::vm_exit!(|| (
             vcpu.cpuid() as u32,
             exit.rip,
             exit.kind.code() as u32

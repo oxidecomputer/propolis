@@ -8,7 +8,10 @@ use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::instance;
 use crate::intr_pins::LegacyPin;
+use crate::migrate::Migrate;
 use crate::pio::{PioBus, PioFn};
+
+use erased_serde::Serialize;
 
 bitflags! {
     #[derive(Default)]
@@ -76,13 +79,16 @@ const PS2C_CMD_PULSE_END: u8 = 0xff;
 const PS2C_R_CTRL_TEST_PASS: u8 = 0x55;
 const PS2C_R_PORT_TEST_PASS: u8 = 0x00;
 
+const PS2C_RAM_LEN: usize =
+    (PS2C_CMD_WRITE_RAM_END - PS2C_CMD_WRITE_RAM_START) as usize;
+
 #[derive(Default)]
 struct PS2State {
     resp: Option<u8>,
     cmd_prefix: Option<u8>,
     ctrl_cfg: CtrlCfg,
     ctrl_out_port: CtrlOutPort,
-    ram: [u8; 0x1e],
+    ram: [u8; PS2C_RAM_LEN],
 
     pri_port: PS2Kbd,
     aux_port: PS2Mouse,
@@ -279,7 +285,45 @@ impl PS2Ctrl {
         );
     }
 }
-impl Entity for PS2Ctrl {}
+impl Entity for PS2Ctrl {
+    fn type_name(&self) -> &'static str {
+        "lpc-ps2ctrl"
+    }
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for PS2Ctrl {
+    fn export(&self) -> Box<dyn Serialize> {
+        let state = self.state.lock().unwrap();
+        let kbd = &state.pri_port;
+        let mouse = &state.aux_port;
+        Box::new(migrate::PS2CtrlV1 {
+            ctrl: migrate::PS2CtrlStateV1 {
+                response: state.resp,
+                cmd_prefix: state.cmd_prefix,
+                ctrl_cfg: state.ctrl_cfg.bits(),
+                ctrl_out_port: state.ctrl_out_port.bits(),
+                ram: state.ram,
+            },
+            kbd: migrate::PS2KbdV1 {
+                buf: kbd.buf.clone().into(),
+                current_cmd: kbd.cur_cmd,
+                enabled: kbd.enabled,
+                led_status: kbd.led_status,
+                typematic: kbd.typematic,
+                scan_code_set: kbd.scan_code_set.as_byte(),
+            },
+            mouse: migrate::PS2MouseV1 {
+                buf: mouse.buf.clone().into(),
+                current_cmd: mouse.cur_cmd,
+                status: mouse.status.bits(),
+                resolution: mouse.resolution,
+                sample_rate: mouse.sample_rate,
+            },
+        })
+    }
+}
 
 const PS2K_CMD_SET_LEDS: u8 = 0xed;
 const PS2K_CMD_SCAN_CODE: u8 = 0xf0;
@@ -630,5 +674,42 @@ impl PS2Mouse {
 impl Default for PS2Mouse {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub mod migrate {
+    use super::PS2C_RAM_LEN;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct PS2CtrlV1 {
+        pub ctrl: PS2CtrlStateV1,
+        pub kbd: PS2KbdV1,
+        pub mouse: PS2MouseV1,
+    }
+    #[derive(Serialize)]
+    pub struct PS2CtrlStateV1 {
+        pub response: Option<u8>,
+        pub cmd_prefix: Option<u8>,
+        pub ctrl_cfg: u8,
+        pub ctrl_out_port: u8,
+        pub ram: [u8; PS2C_RAM_LEN],
+    }
+    #[derive(Serialize)]
+    pub struct PS2KbdV1 {
+        pub buf: Vec<u8>,
+        pub current_cmd: Option<u8>,
+        pub enabled: bool,
+        pub led_status: u8,
+        pub typematic: u8,
+        pub scan_code_set: u8,
+    }
+    #[derive(Serialize)]
+    pub struct PS2MouseV1 {
+        pub buf: Vec<u8>,
+        pub current_cmd: Option<u8>,
+        pub status: u8,
+        pub resolution: u8,
+        pub sample_rate: u8,
     }
 }

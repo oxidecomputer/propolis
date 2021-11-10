@@ -42,4 +42,4 @@ slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_deb
 
 [features]
 default = ["dtrace-probes"]
-dtrace-probes = ["propolis/dtrace-probes"]
+dtrace-probes = ["propolis/dtrace-probes", "dropshot/usdt-probes"]

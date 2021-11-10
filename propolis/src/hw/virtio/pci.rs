@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use super::bits::*;
+use super::probes;
 use super::queue::VirtQueues;
 use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
@@ -66,6 +67,15 @@ impl VirtioState {
         self.queue_sel = 0;
         self.nego_feat = 0;
         self.msix_cfg_vec = VIRTIO_MSI_NO_VECTOR;
+    }
+    pub fn export(&self) -> migrate::VirtioStateV1 {
+        migrate::VirtioStateV1 {
+            status: self.status.bits(),
+            queue_sel: self.queue_sel,
+            nego_feat: self.nego_feat,
+            msix_cfg_vec: self.msix_cfg_vec,
+            msix_queue_vec: self.msix_queue_vec.clone(),
+        }
     }
 }
 
@@ -378,7 +388,7 @@ impl PciVirtioState {
         }
     }
     fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16, ctx: &DispCtx) {
-        probe_virtio_vq_notify!(|| (
+        probes::virtio_vq_notify!(|| (
             dev as *const dyn VirtioDevice as *const c_void as u64,
             queue
         ));
@@ -468,6 +478,21 @@ impl PciVirtioState {
         }
         state.intr_mode_updating = false;
         self.state_cv.notify_all();
+    }
+    pub fn export(
+        &self,
+        pci_state: &pci::DeviceState,
+    ) -> migrate::PciVirtioStateV1 {
+        let state = self.state.lock().unwrap();
+        let isr_inner = self.isr_state.inner.lock().unwrap();
+        let queues = self.queues[..].iter().map(|q| q.export()).collect();
+
+        migrate::PciVirtioStateV1 {
+            pci: pci_state.export(),
+            state: state.export(),
+            queues,
+            isr: isr_inner.value != 0,
+        }
     }
 }
 
@@ -614,4 +639,27 @@ lazy_static! {
         ];
         RegMap::create_packed(LEGACY_REG_SZ, &layout, None)
     };
+}
+
+pub mod migrate {
+    use crate::hw::pci::migrate::PciStateV1;
+    use crate::hw::virtio::queue;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct VirtioStateV1 {
+        pub status: u8,
+        pub queue_sel: u16,
+        pub nego_feat: u32,
+        pub msix_cfg_vec: u16,
+        pub msix_queue_vec: Vec<u16>,
+    }
+
+    #[derive(Serialize)]
+    pub struct PciVirtioStateV1 {
+        pub pci: PciStateV1,
+        pub state: VirtioStateV1,
+        pub queues: Vec<queue::migrate::VirtQueueV1>,
+        pub isr: bool,
+    }
 }

@@ -141,10 +141,7 @@ impl BlockDevice {
                 let be = propolis::block::FileBackend::create(
                     path, readonly, nworkers,
                 )?;
-                let child = inventory::ChildRegister::new(
-                    &be,
-                    "backend-file".to_string(),
-                );
+                let child = inventory::ChildRegister::new(&be, None);
 
                 Ok((be, child))
             }
@@ -204,15 +201,20 @@ impl BlockDevice {
                             .to_string())
                     })
                     .map_or(Ok(None), |r| r.map(Some))?;
+                let gen: Option<u64> = self
+                    .options
+                    .get("gen")
+                    .map(|x| x.as_str())
+                    .flatten()
+                    .map(|x| u64::from_str(x).ok())
+                    .flatten();
 
                 let be = propolis::block::CrucibleBackend::create(
-                    disp, targets, read_only, key,
+                    disp, targets, read_only, key, gen,
                 )?;
 
-                let creg = inventory::ChildRegister::new(
-                    &be,
-                    "backend-crucible".to_string(),
-                );
+                // TODO: use volume ID or something for instance name
+                let creg = inventory::ChildRegister::new(&be, None);
 
                 Ok((be, creg))
             }

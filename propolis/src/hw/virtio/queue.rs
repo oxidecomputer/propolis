@@ -6,6 +6,7 @@ use std::sync::atomic::{fence, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::bits::*;
+use super::probes;
 use super::VirtioIntr;
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -205,7 +206,7 @@ impl VirtQueue {
         let mut count = 0;
         let mut len = 0;
         chain.idx = Some(id);
-        probe_virtio_vq_pop!(|| (self as *const VirtQueue as u64, id));
+        probes::virtio_vq_pop!(|| (self as *const VirtQueue as u64, id));
 
         // non-indirect descriptor(s)
         while !flags.contains(DescFlag::INDIRECT) {
@@ -277,7 +278,7 @@ impl VirtQueue {
         let id = mem::replace(&mut chain.idx, None).unwrap();
         // XXX: for now, just go off of the write stats
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
-        probe_virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
+        probes::virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
         used.write_used(id, len, self.size, mem);
         if !used.suppress_intr(mem) {
             if let Some(i) = used.interrupt.as_ref() {
@@ -295,6 +296,26 @@ impl VirtQueue {
     pub fn with_intr(&self, mut f: impl FnMut(Option<&dyn VirtioIntr>)) {
         let used = self.used.lock().unwrap();
         f(used.interrupt.as_ref().map(|x| x.as_ref()))
+    }
+
+    pub fn export(&self) -> migrate::VirtQueueV1 {
+        let ctrl = self.ctrl.lock().unwrap();
+        let avail = self.avail.lock().unwrap();
+        let used = self.used.lock().unwrap();
+
+        migrate::VirtQueueV1 {
+            id: self.id,
+            size: self.size,
+            descr_gpa: ctrl.gpa_desc.0,
+
+            avail_gpa: avail.gpa_idx.0,
+            avail_valid: avail.valid,
+            avail_cur_idx: avail.cur_avail_idx.0,
+
+            used_gpa: used.gpa_idx.0,
+            used_valid: used.valid,
+            used_idx: used.used_idx.0,
+        }
     }
 }
 
@@ -591,5 +612,24 @@ impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
 
     fn index(&self, index: S) -> &Self::Output {
         Index::index(&self.queues, index)
+    }
+}
+
+pub mod migrate {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct VirtQueueV1 {
+        pub id: u16,
+        pub size: u16,
+        pub descr_gpa: u64,
+
+        pub avail_gpa: u64,
+        pub avail_valid: bool,
+        pub avail_cur_idx: u16,
+
+        pub used_gpa: u64,
+        pub used_valid: bool,
+        pub used_idx: u16,
     }
 }
