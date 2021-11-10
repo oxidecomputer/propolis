@@ -55,10 +55,8 @@ enum Command {
         #[structopt(short, default_value = "1024")]
         memory: u64,
 
-        #[structopt(long)]
-        crucible: bool,
-
-        #[structopt(long)]
+        // Specify multiple disks in groups of 3 targets
+        #[structopt(long, use_delimiter = true)]
         crucible_target: Vec<SocketAddr>,
     },
 
@@ -123,12 +121,11 @@ async fn new_instance(
     name: String,
     vcpus: u8,
     memory: u64,
-    crucible: bool,
     crucible_target: Vec<SocketAddr>,
 ) -> anyhow::Result<()> {
-    if crucible {
-        if crucible_target.len() != 3 {
-            bail!("Three crucible targets required!");
+    if !crucible_target.is_empty() {
+        if crucible_target.len() % 3 != 0 {
+            bail!("Multiple of three crucible targets required!");
         }
     }
 
@@ -147,24 +144,27 @@ async fn new_instance(
         vcpus,
     };
 
+    let mut disks: Vec<DiskRequest> =
+        Vec::with_capacity(crucible_target.len() / 3);
+
+    let mut disk_i = 0;
+    for target_group in crucible_target.chunks(3) {
+        assert_eq!(target_group.len(), 3);
+        disks.push(DiskRequest {
+            name: format!("d{}", disk_i),
+            address: target_group.to_vec(),
+            slot: Slot(disk_i),
+            read_only: false,
+            key: None,
+        });
+        disk_i += 1;
+    }
+
     let request = InstanceEnsureRequest {
         properties,
         // TODO: Allow specifying NICs
         nics: vec![],
-        disks: if crucible {
-            vec![
-                // XXX default
-                DiskRequest {
-                    name: "d1".to_string(),
-                    address: crucible_target,
-                    slot: Slot(0),
-                    read_only: false,
-                    key: None,
-                },
-            ]
-        } else {
-            vec![]
-        },
+        disks,
     };
 
     // Try to create the instance
@@ -269,13 +269,12 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(addr.clone(), log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, vcpus, memory, crucible, crucible_target } => {
+        Command::New { name, vcpus, memory, crucible_target } => {
             new_instance(
                 &client,
                 name.to_string(),
                 vcpus,
                 memory,
-                crucible,
                 crucible_target,
             )
             .await?
