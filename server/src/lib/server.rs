@@ -248,7 +248,7 @@ async fn instance_ensure(
     instance
         .initialize(|machine, mctx, disp, inv| {
             let init = MachineInitializer::new(
-                rqctx.log.new(o!()),
+                rqctx.log.clone(),
                 machine,
                 mctx,
                 disp,
