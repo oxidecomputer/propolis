@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
+use crate::migrate::Migrate;
 use crate::util::regmap::RegMap;
 use crate::{block, common::*};
 
@@ -851,6 +852,30 @@ impl pci::Device for PciNvme {
 impl Entity for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
+    }
+    fn reset(&self, _ctx: &DispCtx) {
+        let mut ctrl = self.state.lock().unwrap();
+        ctrl.reset();
+        self.pci_state.reset(self);
+    }
+    fn migrate(&self) -> Option<&dyn crate::migrate::Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for PciNvme {
+    fn export(&self) -> Box<dyn erased_serde::Serialize> {
+        Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
+    }
+}
+
+pub mod migrate {
+    use crate::hw::pci::migrate::PciStateV1;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct PciNvmeStateV1 {
+        pub pci: PciStateV1,
+        // TODO: Add the rest of the controller state
     }
 }
 
