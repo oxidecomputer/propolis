@@ -190,7 +190,7 @@ impl Entity for PciVirtioBlock {
     }
 }
 impl Migrate for PciVirtioBlock {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciVirtioBlockV1 {
             pci_virtio_state: self.virtio_state.export(&self.pci_state),
         })

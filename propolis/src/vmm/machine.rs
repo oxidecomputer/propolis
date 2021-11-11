@@ -6,7 +6,6 @@ use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use crate::common::{GuestAddr, GuestRegion};
-use crate::hw::rtc::Rtc;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
@@ -72,13 +71,6 @@ impl Machine {
         assert!(ent.dev_map.is_some());
         let mapping = ent.dev_map.as_ref().unwrap().lock().unwrap();
         func(&*mapping)
-    }
-
-    /// Initialize the real-time-clock of the device.
-    pub fn initialize_rtc(&self, lowmem: usize, highmem: usize) -> Result<()> {
-        Rtc::set_time(&self.hdl)?;
-        Rtc::store_memory_sizing(&self.hdl, lowmem, highmem)?;
-        Ok(())
     }
 
     pub fn reinitialize(&self) -> Result<()> {

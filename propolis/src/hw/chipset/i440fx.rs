@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use super::Chipset;
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::ibmpc;
 use crate::hw::pci::{self, Bdf, BusNum, INTxPinID, PioCfgDecoder};
 use crate::instance;
@@ -32,6 +33,8 @@ pub struct I440Fx {
     dev_hb: Arc<Piix4HostBridge>,
     dev_lpc: Arc<Piix3Lpc>,
     dev_pm: Arc<Piix3PM>,
+
+    pm_timer: Arc<BhyvePmTimer>,
 }
 impl I440Fx {
     pub fn create(machine: &Machine) -> Arc<Self> {
@@ -50,6 +53,8 @@ impl I440Fx {
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
             dev_pm: Piix3PM::create(),
+
+            pm_timer: BhyvePmTimer::create(),
         });
 
         this.pci_attach(
@@ -147,7 +152,7 @@ impl Chipset for I440Fx {
     }
 }
 impl Migrate for I440Fx {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::I440TopV1 { pci_cfg_addr: self.pci_cfg.addr() })
     }
 }
@@ -160,6 +165,7 @@ impl Entity for I440Fx {
             inventory::ChildRegister::new(&self.dev_hb, None),
             inventory::ChildRegister::new(&self.dev_lpc, None),
             inventory::ChildRegister::new(&self.dev_pm, None),
+            inventory::ChildRegister::new(&self.pm_timer, None),
         ])
     }
     fn migrate(&self) -> Option<&dyn Migrate> {
@@ -302,7 +308,7 @@ impl Entity for Piix4HostBridge {
     }
 }
 impl Migrate for Piix4HostBridge {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::Piix4HostBridgeV1 {
             pci_state: self.pci_state.export(),
         })
@@ -430,7 +436,7 @@ impl Entity for Piix3Lpc {
     }
 }
 impl Migrate for Piix3Lpc {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         let pir = self.reg_pir.lock().unwrap();
         Box::new(migrate::Piix3LpcV1 {
             pci_state: self.pci_state.export(),
@@ -786,7 +792,7 @@ impl Entity for Piix3PM {
     }
 }
 impl Migrate for Piix3PM {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         let regs = self.regs.lock().unwrap();
         Box::new(migrate::Piix3PmV1 {
             pci_state: self.pci_state.export(),

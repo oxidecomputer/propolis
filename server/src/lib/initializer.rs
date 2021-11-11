@@ -1,9 +1,8 @@
-use anyhow::Result;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use tokio::runtime::Handle;
+use std::time::SystemTime;
 
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
@@ -23,6 +22,9 @@ use slog::info;
 use std::net::SocketAddr;
 
 use crate::serial::Serial;
+
+use anyhow::Result;
+use tokio::runtime::Handle;
 
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -91,9 +93,6 @@ impl RegisteredChipset {
     pub fn device(&self) -> &Arc<I440Fx> {
         &self.0
     }
-    pub fn id(&self) -> EntityID {
-        self.1
-    }
 }
 
 pub struct MachineInitializer<'a> {
@@ -138,12 +137,29 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
+    pub fn initialize_kernel_devs(
+        &self,
+        lowmem: usize,
+        highmem: usize,
+    ) -> Result<(), Error> {
+        let hdl = self.mctx.hdl();
+
+        let (pic, pit, hpet, ioapic, rtc) = propolis::hw::bhyve::defaults();
+        rtc.memsize_to_nvram(lowmem, highmem, hdl)?;
+        rtc.set_time(SystemTime::now(), hdl)?;
+
+        self.inv.register(&pic)?;
+        self.inv.register(&pit)?;
+        self.inv.register(&hpet)?;
+        self.inv.register(&ioapic)?;
+        self.inv.register(&rtc)?;
+
+        Ok(())
+    }
+
     pub fn initialize_chipset(&self) -> Result<RegisteredChipset, Error> {
         let chipset = I440Fx::create(self.machine);
-        let id = self
-            .inv
-            .register(&chipset, None, None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        let id = self.inv.register(&chipset)?;
         Ok(RegisteredChipset(chipset, id))
     }
 
@@ -151,7 +167,6 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
-        let cid = Some(chipset.id());
         let uarts = vec![
             (ibmpc::IRQ_COM1, ibmpc::PORT_COM1, "com1"),
             (ibmpc::IRQ_COM2, ibmpc::PORT_COM2, "com2"),
@@ -164,9 +179,7 @@ impl<'a> MachineInitializer<'a> {
             let dev = LpcUart::new(chipset.device().irq_pin(*irq).unwrap());
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, pio, *port);
-            self.inv
-                .register(&dev, Some(name.to_string()), cid)
-                .map_err(|e| -> std::io::Error { e.into() })?;
+            self.inv.register_instance(&dev, name)?;
             if com1.is_none() {
                 com1 = Some(dev);
             }
@@ -184,9 +197,7 @@ impl<'a> MachineInitializer<'a> {
         let pio = self.mctx.pio();
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.device().as_ref());
-        self.inv
-            .register(&ps2_ctrl, None, Some(chipset.id()))
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        self.inv.register(&ps2_ctrl)?;
         Ok(())
     }
 
@@ -195,9 +206,7 @@ impl<'a> MachineInitializer<'a> {
         let debug_file = std::fs::File::create("debug.out")?;
         let poller = chardev::BlockingFileOutput::new(debug_file)?;
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>, self.disp);
-        self.inv
-            .register(&dbg, None, None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        self.inv.register(&dbg)?;
         Ok(())
     }
 
@@ -210,10 +219,7 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         let be_info = backend.info();
         let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
-        let id = self
-            .inv
-            .register(&vioblk, Some(bdf.to_string()), None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        let id = self.inv.register_instance(&vioblk, bdf.to_string())?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
         backend.attach(vioblk.clone(), self.disp);
@@ -230,10 +236,7 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         let hdl = self.machine.get_hdl();
         let viona = virtio::PciVirtioViona::new(vnic_name, 0x100, &hdl)?;
-        let _id = self
-            .inv
-            .register(&viona, Some(bdf.to_string()), None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        let _id = self.inv.register_instance(&viona, bdf.to_string())?;
         chipset.device().pci_attach(bdf, viona);
         Ok(())
     }
@@ -275,11 +278,7 @@ impl<'a> MachineInitializer<'a> {
         self.initialize_virtio_block(chipset, bdf, be, creg)
     }
 
-    pub fn initialize_fwcfg(
-        &self,
-        chipset: &RegisteredChipset,
-        cpus: u8,
-    ) -> Result<(), Error> {
+    pub fn initialize_fwcfg(&self, cpus: u8) -> Result<(), Error> {
         let mut fwcfg = fwcfg::FwCfgBuilder::new();
         fwcfg
             .add_legacy(
@@ -295,12 +294,8 @@ impl<'a> MachineInitializer<'a> {
         let pio = self.mctx.pio();
         fwcfg_dev.attach(pio);
 
-        self.inv
-            .register(&fwcfg_dev, None, Some(chipset.id()))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        self.inv
-            .register(&ramfb, None, Some(chipset.id()))
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        self.inv.register(&fwcfg_dev)?;
+        self.inv.register(&ramfb)?;
         Ok(())
     }
 

@@ -8,6 +8,7 @@ use crate::migrate::Migrate;
 use crate::util::regmap::RegMap;
 use crate::{block, common::*};
 
+use erased_serde::Serialize;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
@@ -863,7 +864,7 @@ impl Entity for PciNvme {
     }
 }
 impl Migrate for PciNvme {
-    fn export(&self) -> Box<dyn erased_serde::Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
     }
 }

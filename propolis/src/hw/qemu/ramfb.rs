@@ -140,7 +140,7 @@ impl Entity for RamFb {
     }
 }
 impl Migrate for RamFb {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         let state = self.config.lock().unwrap();
         Box::new(migrate::RamFbV1 {
             addr: state.addr,
