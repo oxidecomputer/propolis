@@ -6,6 +6,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -21,7 +22,12 @@ pub struct InstancePathParams {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
+
+    #[serde(default)]
     pub nics: Vec<NetworkInterfaceRequest>,
+
+    #[serde(default)]
+    pub disks: Vec<DiskRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -160,6 +166,16 @@ pub const DISK_FLAG_WRITE: u32 = 0b0000_0010;
 #[allow(dead_code)]
 pub const DISK_FLAG_READ_WRITE: u32 = DISK_FLAG_READ | DISK_FLAG_WRITE;
 type DiskFlags = u32;
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct DiskRequest {
+    pub name: String,
+    pub address: Vec<SocketAddr>,
+    pub slot: Slot,
+    pub read_only: bool,
+    pub key: Option<String>,
+    pub gen: u64,
+}
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct DiskAttachmentInfo {

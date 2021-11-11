@@ -10,11 +10,11 @@ use crate::common::*;
 use crate::dispatch::{AsyncCtx, DispCtx};
 use crate::hw::pci;
 use crate::instance;
+use crate::migrate::Migrate;
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 use crate::util::sys;
 use crate::vmm::VmmHdl;
-use crate::migrate::Migrate;
 
 use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};

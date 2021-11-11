@@ -19,6 +19,8 @@ use propolis::hw::virtio;
 use propolis::instance::Instance;
 use propolis::inventory::{ChildRegister, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
+use slog::info;
+use std::net::SocketAddr;
 
 use crate::serial::Serial;
 
@@ -95,6 +97,7 @@ impl RegisteredChipset {
 }
 
 pub struct MachineInitializer<'a> {
+    log: slog::Logger,
     machine: &'a Machine,
     mctx: &'a MachineCtx,
     disp: &'a Dispatcher,
@@ -103,12 +106,13 @@ pub struct MachineInitializer<'a> {
 
 impl<'a> MachineInitializer<'a> {
     pub fn new(
+        log: slog::Logger,
         machine: &'a Machine,
         mctx: &'a MachineCtx,
         disp: &'a Dispatcher,
         inv: &'a Inventory,
     ) -> Self {
-        MachineInitializer { machine, mctx, disp, inv }
+        MachineInitializer { log, machine, mctx, disp, inv }
     }
 
     pub fn initialize_rom<P: AsRef<std::path::Path>>(
@@ -232,6 +236,43 @@ impl<'a> MachineInitializer<'a> {
             .map_err(|e| -> std::io::Error { e.into() })?;
         chipset.device().pci_attach(bdf, viona);
         Ok(())
+    }
+
+    pub fn initialize_crucible(
+        &self,
+        chipset: &RegisteredChipset,
+        disk: &propolis_client::api::DiskRequest,
+        bdf: pci::Bdf,
+    ) -> Result<(), Error> {
+        // TODO: This is hacky. Why are we assuming the addresses are v4?
+        let addresses = disk
+            .address
+            .clone()
+            .into_iter()
+            .map(|a| {
+                if let SocketAddr::V4(v4) = a {
+                    v4
+                } else {
+                    panic!("no ipv6, apparently")
+                }
+            })
+            .collect();
+
+        info!(self.log, "Creating Crucible disk from {:#?}", addresses);
+        let be = propolis::block::CrucibleBackend::create(
+            self.disp,
+            addresses,
+            disk.read_only,
+            disk.key.clone(),
+            Some(disk.gen),
+        )?;
+
+        info!(self.log, "Creating ChildRegister");
+        let creg = ChildRegister::new(&be, None);
+
+        // TODO: this assumes virtio, what about NVMe?
+        info!(self.log, "Calling initialize_virtio_block");
+        self.initialize_virtio_block(chipset, bdf, be, creg)
     }
 
     pub fn initialize_fwcfg(
