@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use propolis::chardev::{BlockingSource, Sink, Source};
 use propolis::hw::chipset::Chipset;
@@ -141,13 +142,20 @@ fn main() {
             }
             Ok(())
         })?;
-        machine.initialize_rtc(lowmem, highmem).unwrap();
+
+        let (pic, pit, hpet, ioapic, rtc) = propolis::hw::bhyve::defaults();
+        rtc.memsize_to_nvram(lowmem, highmem, mctx.hdl())?;
+        rtc.set_time(SystemTime::now(), mctx.hdl())?;
+
+        inv.register(&pic)?;
+        inv.register(&pit)?;
+        inv.register(&hpet)?;
+        inv.register(&ioapic)?;
+        inv.register(&rtc)?;
 
         let hdl = machine.get_hdl();
         let chipset = hw::chipset::i440fx::I440Fx::create(machine);
-        let chipset_id = inv
-            .register(&chipset, None, None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(&chipset)?;
 
         // UARTs
         let com1 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM1).unwrap());
@@ -172,28 +180,22 @@ fn main() {
         LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
         LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
         LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-        inv.register(&com1, Some("com1".to_string()), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com2, Some("com2".to_string()), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com3, Some("com3".to_string()), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&com4, Some("com4".to_string()), Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register_instance(&com1, "com1")?;
+        inv.register_instance(&com2, "com2")?;
+        inv.register_instance(&com3, "com3")?;
+        inv.register_instance(&com4, "com4")?;
 
         // PS/2
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(pio, chipset.as_ref());
-        inv.register(&ps2_ctrl, None, Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(&ps2_ctrl)?;
 
         let debug_file = std::fs::File::create("debug.out").unwrap();
         let debug_out = chardev::BlockingFileOutput::new(debug_file).unwrap();
         let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
         debug_out
             .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
-        inv.register(&debug_device, None, None)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(&debug_device)?;
 
         for (name, dev) in config.devs() {
             let driver = &dev.driver as &str;
@@ -214,12 +216,8 @@ fn main() {
 
                     let info = backend.info();
                     let vioblk = hw::virtio::PciVirtioBlock::new(0x100, info);
-                    let id = inv
-                        .register(&vioblk, Some(bdf.to_string()), None)
-                        .map_err(|e| -> std::io::Error { e.into() })?;
-                    let _be_id = inv
-                        .register_child(creg, id)
-                        .map_err(|e| -> std::io::Error { e.into() })?;
+                    let id = inv.register_instance(&vioblk, bdf.to_string())?;
+                    let _be_id = inv.register_child(creg, id)?;
 
                     backend
                         .attach(vioblk.clone() as Arc<dyn block::Device>, disp);
@@ -234,8 +232,7 @@ fn main() {
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name, 0x100, &hdl,
                     )?;
-                    inv.register(&viona, Some(bdf.to_string()), None)
-                        .map_err(|e| -> std::io::Error { e.into() })?;
+                    inv.register_instance(&viona, bdf.to_string())?;
                     chipset.pci_attach(bdf, viona);
                 }
                 "pci-nvme" => {
@@ -248,8 +245,7 @@ fn main() {
                     let info = backend.info();
                     let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
 
-                    let id =
-                        inv.register(&nvme, Some(bdf.to_string()), None)?;
+                    let id = inv.register_instance(&nvme, bdf.to_string())?;
                     let _be_id = inv.register_child(creg, id)?;
 
                     backend.attach(nvme.clone(), disp);
@@ -277,10 +273,8 @@ fn main() {
         let fwcfg_dev = fwcfg.finalize();
         fwcfg_dev.attach(pio);
 
-        inv.register(&fwcfg_dev, None, Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
-        inv.register(&ramfb, None, Some(chipset_id))
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        inv.register(&fwcfg_dev)?;
+        inv.register(&ramfb)?;
 
         for mut vcpu in mctx.vcpus() {
             vcpu.set_default_capabs().unwrap();
@@ -325,7 +319,7 @@ fn main() {
                     |_id, record| {
                         let ent = record.entity();
                         if let Some(mig_ent) = ent.migrate() {
-                            let data = mig_ent.export();
+                            let data = mig_ent.export(ctx);
                             let output = DevExport {
                                 id: record.name().to_string(),
                                 data,

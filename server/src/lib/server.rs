@@ -255,7 +255,7 @@ async fn instance_ensure(
                 inv,
             );
             init.initialize_rom(server_context.config.get_bootrom())?;
-            machine.initialize_rtc(lowmem, highmem).unwrap();
+            init.initialize_kernel_devs(lowmem, highmem)?;
             let chipset = init.initialize_chipset()?;
             com1 = Some(init.initialize_uart(&chipset)?);
             init.initialize_ps2(&chipset)?;
@@ -367,7 +367,7 @@ async fn instance_ensure(
                 }
             }
 
-            init.initialize_fwcfg(&chipset, properties.vcpus)?;
+            init.initialize_fwcfg(properties.vcpus)?;
             init.initialize_cpus()?;
             Ok(())
         })

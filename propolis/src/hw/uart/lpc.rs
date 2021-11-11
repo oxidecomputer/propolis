@@ -154,7 +154,7 @@ impl Entity for LpcUart {
     }
 }
 impl Migrate for LpcUart {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         let state = self.state.lock().unwrap();
         Box::new(migrate::LpcUartV1 { uart_state: state.uart.export() })
     }

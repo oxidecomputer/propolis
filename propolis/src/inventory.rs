@@ -75,27 +75,22 @@ impl Inventory {
     pub fn register<T: Entity>(
         &self,
         ent: &Arc<T>,
-        instance_name: Option<String>,
-        parent_id: Option<EntityID>,
     ) -> Result<EntityID, RegistrationError> {
         let mut inv = self.inner.lock().unwrap();
-        let to_register = ent.child_register();
-        let res = inv.register(ent, instance_name, parent_id)?;
+        inv.register(ent, None)
+    }
 
-        if let Some(children) = to_register {
-            for child in children {
-                // Since the parent successfully registered, the children should
-                // have no issues.
-                inv.register_inner(
-                    child.ent,
-                    child.ent_any,
-                    child.instance_name,
-                    Some(res),
-                )
-                .unwrap();
-            }
-        }
-        Ok(res)
+    /// Registers a new entity, bearing an instance name, with the inventory.
+    ///
+    /// Returns an error if the object has already been registered.
+    /// Returns an error if the parent is not registered.
+    pub fn register_instance<T: Entity>(
+        &self,
+        ent: &Arc<T>,
+        instance: impl ToString,
+    ) -> Result<EntityID, RegistrationError> {
+        let mut inv = self.inner.lock().unwrap();
+        inv.register(ent, Some(instance.to_string()))
     }
 
     pub fn register_child(
@@ -177,7 +172,7 @@ struct InventoryInner {
 }
 
 impl InventoryInner {
-    /// Registers a new entity with the inventory.
+    /// Registers a new entity (and its children) with the inventory.
     ///
     /// Returns an error if the object has already been registered.
     /// Returns an error if the parent is not registered.
@@ -185,11 +180,27 @@ impl InventoryInner {
         &mut self,
         ent: &Arc<T>,
         instance_name: Option<String>,
-        parent_id: Option<EntityID>,
     ) -> Result<EntityID, RegistrationError> {
         let any = Arc::clone(ent) as Arc<dyn Any + Send + Sync>;
         let dyn_ent = Arc::clone(ent) as Arc<dyn Entity>;
-        self.register_inner(dyn_ent, any, instance_name, parent_id)
+        let children_to_register = ent.child_register();
+
+        let id = self.register_inner(dyn_ent, any, instance_name, None)?;
+
+        if let Some(children) = children_to_register {
+            for child in children {
+                // Since the parent successfully registered, the children should
+                // have no issues.
+                self.register_inner(
+                    child.ent,
+                    child.ent_any,
+                    child.instance_name,
+                    Some(id),
+                )
+                .unwrap();
+            }
+        }
+        Ok(id)
     }
 
     fn register_inner(
@@ -481,260 +492,5 @@ pub struct EntityID {
 impl From<EntityID> for u64 {
     fn from(id: EntityID) -> Self {
         id.num
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct TestEntity {}
-    impl Entity for TestEntity {
-        fn type_name(&self) -> &'static str {
-            "test"
-        }
-    }
-
-    #[test]
-    fn register_root() {
-        let entity = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-        inv.register(&entity, Some("root".to_string()), None).unwrap();
-    }
-
-    #[test]
-    fn register_multiple_roots() {
-        let inv = Inventory::new();
-
-        let ent1 = Arc::new(TestEntity {});
-        let ent2 = Arc::new(TestEntity {});
-        let ent3 = Arc::new(TestEntity {});
-
-        inv.register(&ent1, Some("root1".to_string()), None).unwrap();
-        inv.register(&ent2, Some("root2".to_string()), None).unwrap();
-        inv.register(&ent3, Some("root3".to_string()), None).unwrap();
-    }
-
-    #[test]
-    fn register_root_and_child() {
-        let root = Arc::new(TestEntity {});
-        let child = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        let root_id =
-            inv.register(&root, Some("root".to_string()), None).unwrap();
-        let child_id = inv
-            .register(&child, Some("child".to_string()), Some(root_id))
-            .unwrap();
-
-        // The root is accessible as an entity, or as a concrete object.
-        inv.for_record(root_id, |maybe_record| assert!(maybe_record.is_some()));
-        let concrete_root = inv.get_concrete::<TestEntity>(root_id).unwrap();
-        assert!(Arc::ptr_eq(&root, &concrete_root));
-
-        // The child is accessible as an entity, or as a concrete object.
-        inv.for_record(
-            child_id,
-            |maybe_record| assert!(maybe_record.is_some()),
-        );
-        let concrete_child = inv.get_concrete::<TestEntity>(child_id).unwrap();
-        assert!(Arc::ptr_eq(&child, &concrete_child));
-    }
-
-    #[test]
-    fn get_concrete_wrong_type_returns_none() {
-        let root = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        let root_id = inv.register(&root, None, None).unwrap();
-
-        struct OtherEntity {}
-        impl Entity for OtherEntity {
-            fn type_name(&self) -> &'static str {
-                "other-entity"
-            }
-        }
-        assert!(inv.get_concrete::<OtherEntity>(root_id).is_none());
-    }
-
-    #[test]
-    fn register_with_missing_parent() {
-        let root = Arc::new(TestEntity {});
-        let child = Arc::new(TestEntity {});
-        let grandchild = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        // Register the root and child...
-        let root_id = inv.register(&root, None, None).unwrap();
-        let child_id = inv
-            .register(&child, Some("child".to_string()), Some(root_id))
-            .unwrap();
-
-        // ... But if the child disappears before we add the grandchild...
-        inv.deregister(child_id).unwrap();
-
-        // ... The registration of the grandchild entity will see a missing
-        // parent error.
-        assert_eq!(
-            RegistrationError::MissingParent(child_id),
-            inv.register(
-                &grandchild,
-                Some("grandchild".to_string()),
-                Some(child_id)
-            )
-            .unwrap_err()
-        );
-    }
-
-    #[test]
-    fn double_registration_disallowed() {
-        let root = Arc::new(TestEntity {});
-        let child = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        let root_id = inv.register(&root, None, None).unwrap();
-        let _ = inv
-            .register(&child, Some("child".to_string()), Some(root_id))
-            .unwrap();
-
-        // Inserting the same object is disallowed.
-        assert_eq!(
-            RegistrationError::AlreadyRegistered,
-            inv.register(&child, Some("child".to_string()), Some(root_id))
-                .unwrap_err()
-        );
-
-        // However, inserting new objects is still fine.
-        let other_child = Arc::new(TestEntity {});
-        inv.register(
-            &other_child,
-            Some("other-child".to_string()),
-            Some(root_id),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn deregister_root_and_child() {
-        let root = Arc::new(TestEntity {});
-        let child = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        let root_id =
-            inv.register(&root, Some("root".to_string()), None).unwrap();
-        inv.register(&child, Some("child".to_string()), Some(root_id)).unwrap();
-        inv.deregister(root_id).unwrap();
-
-        // Peek into the internals of the inventory to check that it is empty.
-        assert!(inv.is_empty());
-    }
-
-    #[test]
-    fn double_deregister_throws_error() {
-        let root = Arc::new(TestEntity {});
-        let child = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        let root_id =
-            inv.register(&root, Some("root".to_string()), None).unwrap();
-        let child_id = inv
-            .register(&child, Some("child".to_string()), Some(root_id))
-            .unwrap();
-        inv.deregister(root_id).unwrap();
-
-        // Neither the root nor child device may be deregistered multiple times.
-        assert_eq!(
-            RegistrationError::MissingEntity(root_id),
-            inv.deregister(root_id).unwrap_err()
-        );
-        assert_eq!(
-            RegistrationError::MissingEntity(child_id),
-            inv.deregister(child_id).unwrap_err()
-        );
-    }
-
-    fn build_iter_tree() -> Inventory {
-        let a = Arc::new(TestEntity {});
-        let b = Arc::new(TestEntity {});
-        let c = Arc::new(TestEntity {});
-        let d = Arc::new(TestEntity {});
-        let e = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-
-        // Tree structure:
-        //
-        //     A
-        //    / \
-        //   B   C
-        //  / \
-        // D   E
-        let a_id = inv.register(&a, Some("a".to_string()), None).unwrap();
-        let b_id = inv.register(&b, Some("b".to_string()), Some(a_id)).unwrap();
-        let _ = inv.register(&c, Some("c".to_string()), Some(a_id)).unwrap();
-        let _ = inv.register(&d, Some("d".to_string()), Some(b_id)).unwrap();
-        let _ = inv.register(&e, Some("e".to_string()), Some(b_id)).unwrap();
-        inv
-    }
-
-    #[test]
-    fn iterate_over_inventory_child_first() {
-        let test_inv = build_iter_tree();
-        let inv = test_inv.inner.lock().unwrap();
-        let mut iter = inv.iter(Order::Post);
-        assert_eq!(iter.next().unwrap().1.name(), "test-d");
-        assert_eq!(iter.next().unwrap().1.name(), "test-e");
-        assert_eq!(iter.next().unwrap().1.name(), "test-b");
-        assert_eq!(iter.next().unwrap().1.name(), "test-c");
-        assert_eq!(iter.next().unwrap().1.name(), "test-a");
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn iterate_over_inventory_parent_first() {
-        let test_inv = build_iter_tree();
-        let inv = test_inv.inner.lock().unwrap();
-        let mut iter = inv.iter(Order::Pre);
-        assert_eq!(iter.next().unwrap().1.name(), "test-a");
-        assert_eq!(iter.next().unwrap().1.name(), "test-b");
-        assert_eq!(iter.next().unwrap().1.name(), "test-d");
-        assert_eq!(iter.next().unwrap().1.name(), "test-e");
-        assert_eq!(iter.next().unwrap().1.name(), "test-c");
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn iterator_root_only_returns_root() {
-        let root = Arc::new(TestEntity {});
-        let inv = Inventory::new();
-        let _ = inv.register(&root, Some("root".to_string()), None).unwrap();
-
-        let inv = inv.inner.lock().unwrap();
-        let mut iter = inv.iter(Order::Pre);
-        assert_eq!(iter.next().unwrap().1.name(), "test-root");
-        assert!(iter.next().is_none());
-
-        let mut iter = inv.iter(Order::Post);
-        assert_eq!(iter.next().unwrap().1.name(), "test-root");
-        assert!(iter.next().is_none());
-    }
-
-    #[test]
-    fn iterator_empty_returns_none() {
-        let inv = Inventory::new();
-        assert!(inv.inner.lock().unwrap().iter(Order::Pre).next().is_none());
-        assert!(inv.inner.lock().unwrap().iter(Order::Post).next().is_none());
-    }
-
-    #[test]
-    fn for_each_node() {
-        let inv = Inventory::new();
-        let root = Arc::new(TestEntity {});
-        let _ = inv.register(&root, Some("root".to_string()), None).unwrap();
-
-        inv.for_each_node(Order::Pre, |_eid, record| {
-            assert_eq!(record.name(), "test-root");
-            assert_eq!(record.concrete::<TestEntity>().unwrap(), root);
-        });
     }
 }

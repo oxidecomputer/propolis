@@ -660,7 +660,7 @@ impl Entity for FwCfg {
     }
 }
 impl Migrate for FwCfg {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         let state = self.state.lock().unwrap();
         Box::new(migrate::FwCfgV1 {
             dma_addr: state.dma_addr(),

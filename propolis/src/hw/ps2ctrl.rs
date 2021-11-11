@@ -294,7 +294,7 @@ impl Entity for PS2Ctrl {
     }
 }
 impl Migrate for PS2Ctrl {
-    fn export(&self) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         let state = self.state.lock().unwrap();
         let kbd = &state.pri_port;
         let mouse = &state.aux_port;

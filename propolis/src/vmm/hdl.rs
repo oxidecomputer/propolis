@@ -266,6 +266,13 @@ impl VmmHdl {
         let mut data = bhyve_api::vm_rtc_data { offset: offset as i32, value };
         self.ioctl(bhyve_api::VM_RTC_WRITE, &mut data)
     }
+    /// Reads from the registers within the RTC device.
+    pub fn rtc_read(&self, offset: u8) -> Result<u8> {
+        let mut data =
+            bhyve_api::vm_rtc_data { offset: offset as i32, value: 0 };
+        self.ioctl(bhyve_api::VM_RTC_READ, &mut data)?;
+        Ok(data.value)
+    }
 
     /// Asserts the requested IRQ for the virtual interrupt controller.
     ///
