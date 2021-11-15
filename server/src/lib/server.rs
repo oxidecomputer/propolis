@@ -34,6 +34,7 @@ use propolis_client::api;
 
 use crate::config::Config;
 use crate::initializer::{build_instance, MachineInitializer};
+use crate::migrate;
 use crate::serial::Serial;
 
 // TODO(error) Do a pass of HTTP codes (error and ok)
@@ -874,6 +875,33 @@ async fn instance_serial_detach(
     Ok(HttpResponseUpdatedNoContent {})
 }
 
+#[endpoint {
+    method = PUT,
+    path = "/instances/{instance_id}/migrate/initiate"
+}]
+async fn instance_migrate_initiate(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstancePathParams>,
+    request: TypedBody<api::InstanceMigrateStartRequest>,
+) -> Result<HttpResponseOk<()>, HttpError> {
+    let instance_id = path_params.into_inner().instance_id;
+    migrate::dest_initiate(rqctx, instance_id, request.into_inner())
+        .await
+        .map_err(Into::into)
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/instances/{instance_id}/migrate/start"
+}]
+async fn instance_migrate_start(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstancePathParams>,
+) -> Result<Response<Body>, HttpError> {
+    let instance_id = path_params.into_inner().instance_id;
+    migrate::source_start(rqctx, instance_id).await.map_err(Into::into)
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
@@ -884,5 +912,7 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
     api.register(instance_serial_detach).unwrap();
+    api.register(instance_migrate_initiate).unwrap();
+    api.register(instance_migrate_start).unwrap();
     api
 }

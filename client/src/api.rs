@@ -33,6 +33,12 @@ pub struct InstanceEnsureRequest {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureResponse {}
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateStartRequest {
+    pub src_addr: String,
+    pub src_uuid: Uuid,
+}
+
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceGetResponse {
     pub instance: Instance,
