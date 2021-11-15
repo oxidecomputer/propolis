@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dropshot::{HttpError, HttpResponseOk, RequestContext};
-use hyper::{header, Body, Response, StatusCode};
+use hyper::{Body, Method, Response, StatusCode, header};
 use propolis_client::api;
 use slog::{error, info, o};
 use thiserror::Error;
@@ -158,6 +158,7 @@ pub async fn dest_initiate(
     // Build upgrade request to the source instance
     let dst_protocol = MIGRATION_PROTOCOL_STR;
     let req = hyper::Request::builder()
+        .method(Method::PUT)
         .uri(src_migrate_url)
         .header(header::CONNECTION, "upgrade")
         // TODO: move to constant
