@@ -883,11 +883,13 @@ async fn instance_migrate_initiate(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceMigrateStartRequest>,
-) -> Result<HttpResponseOk<()>, HttpError> {
+) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let instance_id = path_params.into_inner().instance_id;
     migrate::dest_initiate(rqctx, instance_id, request.into_inner())
         .await
-        .map_err(Into::into)
+        .map_err(<_ as Into<HttpError>>::into)?;
+
+    Ok(HttpResponseUpdatedNoContent {})
 }
 
 #[endpoint {

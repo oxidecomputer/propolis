@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use dropshot::{HttpError, HttpResponseOk, RequestContext};
+use dropshot::{HttpError, RequestContext};
 use hyper::{Body, Method, Response, StatusCode, header};
 use propolis_client::api;
 use slog::{error, info, o};
@@ -139,7 +139,7 @@ pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
     instance_id: Uuid,
     migrate_info: api::InstanceMigrateStartRequest,
-) -> Result<HttpResponseOk<()>, MigrateError> {
+) -> Result<(), MigrateError> {
     // Create a new log context for the migration
     let log = rqctx.log.new(o!(
         "migrate_role" => "destination",
@@ -199,5 +199,5 @@ pub async fn dest_initiate(
     // Good to go, ready to migrate from the source via `conn`
     // TODO: wrap in a tokio codec::Framed or such
 
-    Ok(HttpResponseOk(()))
+    Ok(())
 }
