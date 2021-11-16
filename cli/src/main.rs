@@ -50,6 +50,10 @@ enum Command {
         /// Instance name
         name: String,
 
+        /// Instance uuid (if specified)
+        #[structopt(short = "u")]
+        uuid: Option<Uuid>,
+
         /// Number of vCPUs allocated to instance
         #[structopt(short = "c", default_value = "4")]
         vcpus: u8,
@@ -83,6 +87,24 @@ enum Command {
     Serial {
         /// Instance name
         name: String,
+    },
+
+    /// Migrate instance to new propolis-server
+    Migrate {
+        /// Instance name
+        name: String,
+
+        /// Destination propolis-server address
+        #[structopt(parse(try_from_str = resolve_host))]
+        dst_server: IpAddr,
+
+        /// Destination propolis-server port
+        #[structopt(short = "p", default_value = "12400")]
+        dst_port: u16,
+
+        /// Uuid for the destination instance
+        #[structopt(short = "u")]
+        dst_uuid: Option<Uuid>,
     },
 }
 
@@ -128,13 +150,11 @@ fn create_logger(opt: &Opt) -> Logger {
 async fn new_instance(
     client: &Client,
     name: String,
+    id: Uuid,
     vcpus: u8,
     memory: u64,
     disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
-    // Generate a UUID for the new instance
-    let id = Uuid::new_v4();
-
     let properties = InstanceProperties {
         id,
         name,
@@ -261,6 +281,25 @@ async fn serial(
     Ok(())
 }
 
+async fn migrate_instance(
+    src_client: Client,
+    dst_client: Client,
+    src_name: String,
+    src_addr: String,
+    dst_uuid: Uuid,
+) -> anyhow::Result<()> {
+    // Grab the src instance UUID
+    let src_uuid = src_client
+        .instance_get_uuid(&src_name)
+        .await
+        .with_context(|| anyhow!("failed to get src instance UUID"))?;
+
+    // Initiate the migration via the destination instance
+    dst_client.instance_migrate_initiate(dst_uuid, src_uuid, src_addr).await?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::from_args();
@@ -270,20 +309,40 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(addr, log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, vcpus, memory, crucible_disks } => {
+        Command::New { name, uuid, vcpus, memory, crucible_disks } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_crucible_disks(&crucible_disks)?
             } else {
                 vec![]
             };
-            new_instance(&client, name.to_string(), vcpus, memory, disks)
-                .await?
+            new_instance(
+                &client,
+                name.to_string(),
+                uuid.unwrap_or_else(Uuid::new_v4),
+                vcpus,
+                memory,
+                disks
+            )
+            .await?
         }
         Command::Get { name } => get_instance(&client, name).await?,
         Command::State { name, state } => {
             put_instance(&client, name, state).await?
         }
         Command::Serial { name } => serial(&client, addr, name).await?,
+        Command::Migrate { name, dst_server, dst_port, dst_uuid } => {
+            let dst_addr = SocketAddr::new(dst_server, dst_port);
+            let dst_client = Client::new(dst_addr, log.clone());
+            let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
+            migrate_instance(
+                client,
+                dst_client,
+                name,
+                addr.to_string(),
+                dst_uuid,
+            )
+            .await?
+        }
     }
 
     Ok(())
