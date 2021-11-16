@@ -34,7 +34,7 @@ pub struct InstanceEnsureRequest {
 pub struct InstanceEnsureResponse {}
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceMigrateStartRequest {
+pub struct InstanceMigrateInitiateRequest {
     pub src_addr: String,
     pub src_uuid: Uuid,
 }

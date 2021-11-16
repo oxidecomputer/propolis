@@ -157,7 +157,7 @@ pub async fn source_start(
 pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
     _instance_id: Uuid,
-    migrate_info: api::InstanceMigrateStartRequest,
+    migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<(), MigrateError> {
     // Create a new log context for the migration
     let log = rqctx.log.new(o!(
