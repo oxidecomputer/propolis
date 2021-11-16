@@ -41,8 +41,10 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
 }
 
 /// Handle and context for an ongoing migration from a source instance
+#[allow(dead_code)]
 pub struct MigrateSourceTask {
-    _task: JoinHandle<()>,
+    migration_id: Uuid,
+    task: JoinHandle<()>,
 }
 
 /// Errors which may occur during the course of a migration
@@ -131,9 +133,13 @@ async fn source_migrate_task(
 pub async fn source_start(
     rqctx: Arc<RequestContext<Context>>,
     instance_id: Uuid,
+    migration_id: Uuid,
 ) -> Result<Response<Body>, MigrateError> {
     // Create a new log context for the migration
-    let log = rqctx.log.new(o!("migrate_role" => "source"));
+    let log = rqctx.log.new(o!(
+        "migration_id" => migration_id.to_string(),
+        "migrate_role" => "source"
+    ));
     info!(log, "Migration Source");
 
     let mut context = rqctx.context().context.lock().await;
@@ -204,7 +210,7 @@ pub async fn source_start(
     });
 
     // Save active migration task handle
-    context.migrate_task = Some(MigrateSourceTask { _task: task });
+    context.migrate_task = Some(MigrateSourceTask { migration_id, task });
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -227,8 +233,13 @@ pub async fn dest_initiate(
     _instance_id: Uuid,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<(), MigrateError> {
+    // Create a new UUID to refer to this migration across both the source
+    // and destination instances
+    let migration_id = Uuid::new_v4();
+
     // Create a new log context for the migration
     let log = rqctx.log.new(o!(
+        "migration_id" => migration_id.to_string(),
         "migrate_role" => "destination",
         "migrate_src_addr" => migrate_info.src_addr.clone()
     ));
@@ -249,6 +260,13 @@ pub async fn dest_initiate(
     );
     info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
 
+    let body = Body::from(
+        serde_json::to_string(&api::InstanceMigrateStartRequest {
+            migration_id,
+        })
+        .unwrap(),
+    );
+
     // Build upgrade request to the source instance
     let dst_protocol = MIGRATION_PROTOCOL_STR;
     let req = hyper::Request::builder()
@@ -257,7 +275,7 @@ pub async fn dest_initiate(
         .header(header::CONNECTION, "upgrade")
         // TODO: move to constant
         .header(header::UPGRADE, dst_protocol)
-        .body(Body::empty())
+        .body(body)
         .unwrap();
 
     // Kick off the request

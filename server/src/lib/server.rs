@@ -901,9 +901,13 @@ async fn instance_migrate_initiate(
 async fn instance_migrate_start(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<api::InstancePathParams>,
+    request: TypedBody<api::InstanceMigrateStartRequest>,
 ) -> Result<Response<Body>, HttpError> {
     let instance_id = path_params.into_inner().instance_id;
-    migrate::source_start(rqctx, instance_id).await.map_err(Into::into)
+    let migration_id = request.into_inner().migration_id;
+    migrate::source_start(rqctx, instance_id, migration_id)
+        .await
+        .map_err(Into::into)
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
