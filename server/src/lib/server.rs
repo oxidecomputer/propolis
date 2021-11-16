@@ -83,6 +83,7 @@ pub(crate) struct InstanceContext {
     serial: Arc<Serial<LpcUart>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
+    pub migrate_task: Option<migrate::MigrateSourceTask>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -472,6 +473,7 @@ async fn instance_ensure(
         serial: Arc::new(com1.unwrap()),
         state_watcher: rx,
         serial_task: None,
+        migrate_task: None,
     });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))

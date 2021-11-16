@@ -6,7 +6,10 @@ use propolis::instance::Instance;
 use propolis_client::api;
 use slog::{error, info, o};
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    task::JoinHandle,
+};
 use uuid::Uuid;
 
 use crate::server::Context;
@@ -37,6 +40,11 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
     }
 }
 
+/// Handle and context for an ongoing migration from a source instance
+pub struct MigrateSourceTask {
+    _task: JoinHandle<()>,
+}
+
 /// Errors which may occur during the course of a migration
 #[derive(Error, Debug)]
 pub enum MigrateError {
@@ -61,6 +69,9 @@ pub enum MigrateError {
     #[error("unexpected Uuid")]
     UuidMismatch,
 
+    #[error("a migration from the current instance is already in progress")]
+    MigrationAlreadyInProgress,
+
     #[error("protocol error")]
     // TODO: just for testing rn
     Protocol,
@@ -82,7 +93,9 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::DestinationAlreadyInitialized
             | MigrateError::SourceNotInitialized
             | MigrateError::UuidMismatch => HttpError::for_internal_error(msg),
-            MigrateError::Protocol | MigrateError::UpgradeExpected => {
+            MigrateError::MigrationAlreadyInProgress
+            | MigrateError::Protocol
+            | MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)
             }
         }
@@ -123,12 +136,18 @@ pub async fn source_start(
     let log = rqctx.log.new(o!("migrate_role" => "source"));
     info!(log, "Migration Source");
 
-    let context = rqctx.context().context.lock().await;
+    let mut context = rqctx.context().context.lock().await;
     let context =
-        context.as_ref().ok_or_else(|| MigrateError::SourceNotInitialized)?;
+        context.as_mut().ok_or_else(|| MigrateError::SourceNotInitialized)?;
 
     if instance_id != context.properties.id {
         return Err(MigrateError::UuidMismatch);
+    }
+
+    // Bail if there's already one in progress
+    // TODO: Should we just instead hold the context lock during the whole process?
+    if context.migrate_task.is_some() {
+        return Err(MigrateError::MigrationAlreadyInProgress);
     }
 
     let request = &mut *rqctx.request.lock().await;
@@ -167,7 +186,7 @@ pub async fn source_start(
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
-    let _task = tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let conn = match upgrade.await {
             Ok(upgraded) => upgraded,
             Err(e) => {
@@ -183,6 +202,9 @@ pub async fn source_start(
             return;
         }
     });
+
+    // Save active migration task handle
+    context.migrate_task = Some(MigrateSourceTask { _task: task });
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
