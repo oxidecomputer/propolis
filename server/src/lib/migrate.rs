@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
-use hyper::{header, Body, Method, Response, StatusCode};
+use hyper::{header, upgrade::Upgraded, Body, Method, Response, StatusCode};
+use propolis::instance::Instance;
 use propolis_client::api;
 use slog::{error, info, o};
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::server::Context;
@@ -58,6 +60,10 @@ pub enum MigrateError {
 
     #[error("unexpected Uuid")]
     UuidMismatch,
+
+    #[error("protocol error")]
+    // TODO: just for testing rn
+    Protocol,
 }
 
 impl MigrateError {
@@ -76,11 +82,33 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::DestinationAlreadyInitialized
             | MigrateError::SourceNotInitialized
             | MigrateError::UuidMismatch => HttpError::for_internal_error(msg),
-            MigrateError::UpgradeExpected => {
+            MigrateError::Protocol | MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)
             }
         }
     }
+}
+
+async fn source_migrate_task(
+    _instance: Arc<Instance>,
+    mut conn: Upgraded,
+    log: slog::Logger,
+) -> Result<(), MigrateError> {
+    info!(log, "Enter Migrate Task");
+
+    // TODO: actual migration protocol, for now just send some stuff back and forth
+    for x in 0..10 {
+        let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
+        info!(log, "Src Read: {:?}", read);
+        assert_eq!(read, x);
+    }
+    for x in 10..20 {
+        conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
+    }
+
+    info!(log, "Migrate Successful");
+
+    Ok(())
 }
 
 /// Begin the migration process (source-side).
@@ -134,9 +162,27 @@ pub async fn source_start(
         return Err(MigrateError::incompatible(src_protocol, dst_protocol));
     }
 
+    let upgrade = hyper::upgrade::on(&mut *request);
+    let instance = context.instance.clone();
+
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
-    let _task = tokio::spawn(async move {});
+    let _task = tokio::spawn(async move {
+        let conn = match upgrade.await {
+            Ok(upgraded) => upgraded,
+            Err(e) => {
+                error!(log, "Migrate Task Failed: {}", e);
+                return;
+            }
+        };
+
+        // Good to go, ready to migrate to the dest via `conn`
+        // TODO: wrap in a tokio codec::Framed or such
+        if let Err(e) = source_migrate_task(instance, conn, log.clone()).await {
+            error!(log, "Migrate Task Failed: {}", e);
+            return;
+        }
+    });
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -220,10 +266,21 @@ pub async fn dest_initiate(
     }
 
     // Now co-opt the socket for the migration protocol
-    let _conn = hyper::upgrade::on(res).await?;
+    let mut conn = hyper::upgrade::on(res).await?;
 
     // Good to go, ready to migrate from the source via `conn`
     // TODO: wrap in a tokio codec::Framed or such
+    //       for now, we just send some fake traffic back and forth
+    for x in 0..10 {
+        conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
+    }
+    for x in 10..20 {
+        let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
+        info!(log, "Dest Read: {:?}", read);
+        assert_eq!(read, x);
+    }
+
+    info!(log, "Migrate Successful");
 
     Ok(())
 }
