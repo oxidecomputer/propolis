@@ -76,10 +76,10 @@ struct StateChange {
 }
 
 // All context for a single propolis instance.
-struct InstanceContext {
+pub(crate) struct InstanceContext {
     // The instance, which may or may not be instantiated.
     instance: Arc<Instance>,
-    properties: api::InstanceProperties,
+    pub properties: api::InstanceProperties,
     serial: Arc<Serial<LpcUart>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
@@ -87,7 +87,7 @@ struct InstanceContext {
 
 /// Contextual information accessible from HTTP callbacks.
 pub struct Context {
-    context: Mutex<Option<InstanceContext>>,
+    pub(crate) context: Mutex<Option<InstanceContext>>,
     config: Config,
     log: Logger,
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
-use hyper::{Body, Method, Response, StatusCode, header};
+use hyper::{header, Body, Method, Response, StatusCode};
 use propolis_client::api;
 use slog::{error, info, o};
 use thiserror::Error;
@@ -49,6 +49,15 @@ pub enum MigrateError {
 
     #[error("expected connection upgrade")]
     UpgradeExpected,
+
+    #[error("destination instance already initialized")]
+    DestinationAlreadyInitialized,
+
+    #[error("source instance is not initialized")]
+    SourceNotInitialized,
+
+    #[error("unexpected Uuid")]
+    UuidMismatch,
 }
 
 impl MigrateError {
@@ -63,9 +72,10 @@ impl Into<HttpError> for MigrateError {
         match &self {
             MigrateError::Http(_)
             | MigrateError::Initiate
-            | MigrateError::Incompatible(_, _) => {
-                HttpError::for_internal_error(msg)
-            }
+            | MigrateError::Incompatible(_, _)
+            | MigrateError::DestinationAlreadyInitialized
+            | MigrateError::SourceNotInitialized
+            | MigrateError::UuidMismatch => HttpError::for_internal_error(msg),
             MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)
             }
@@ -83,6 +93,15 @@ pub async fn source_start(
 ) -> Result<Response<Body>, MigrateError> {
     // Create a new log context for the migration
     let log = rqctx.log.new(o!("migrate_role" => "source"));
+    info!(log, "Migration Source");
+
+    let context = rqctx.context().context.lock().await;
+    let context =
+        context.as_ref().ok_or_else(|| MigrateError::SourceNotInitialized)?;
+
+    if instance_id != context.properties.id {
+        return Err(MigrateError::UuidMismatch);
+    }
 
     let request = &mut *rqctx.request.lock().await;
 
@@ -117,7 +136,7 @@ pub async fn source_start(
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
-    let task = tokio::spawn(async move {});
+    let _task = tokio::spawn(async move {});
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -137,7 +156,7 @@ pub async fn source_start(
 /// process (destination-side).
 pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
-    instance_id: Uuid,
+    _instance_id: Uuid,
     migrate_info: api::InstanceMigrateStartRequest,
 ) -> Result<(), MigrateError> {
     // Create a new log context for the migration
@@ -145,10 +164,17 @@ pub async fn dest_initiate(
         "migrate_role" => "destination",
         "migrate_src_addr" => migrate_info.src_addr.clone()
     ));
+    info!(log, "Migration Destination");
+
+    {
+        let context = rqctx.context().context.lock().await;
+        if context.is_some() {
+            return Err(MigrateError::DestinationAlreadyInitialized);
+        }
+    }
 
     // TODO: https
     // TODO: We need to make sure the src_addr is a valid target
-    // TODO: will src_uuid be different than dst_uuid (i.e. instance_id)?
     let src_migrate_url = format!(
         "http://{}/instances/{}/migrate/start",
         migrate_info.src_addr, migrate_info.src_uuid
@@ -194,7 +220,7 @@ pub async fn dest_initiate(
     }
 
     // Now co-opt the socket for the migration protocol
-    let conn = hyper::upgrade::on(res).await?;
+    let _conn = hyper::upgrade::on(res).await?;
 
     // Good to go, ready to migrate from the source via `conn`
     // TODO: wrap in a tokio codec::Framed or such
