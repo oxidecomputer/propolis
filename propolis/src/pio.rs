@@ -7,8 +7,8 @@ pub use crate::util::aspace::{Error, Result};
 
 use byteorder::{ByteOrder, LE};
 
-#[usdt::provider(probe_path = "probes")]
-mod propolis {
+#[usdt::provider(provider = "propolis")]
+mod probes {
     fn pio_in(port: u16, bytes: u8, value: u32, was_handled: u8) {}
     fn pio_out(port: u16, bytes: u8, value: u32, was_handled: u8) {}
 }

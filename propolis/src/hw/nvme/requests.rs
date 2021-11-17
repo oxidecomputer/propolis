@@ -10,8 +10,8 @@ use super::{
     NvmeCtrl, PciNvme,
 };
 
-#[usdt::provider(probe_path = "probes")]
-mod propolis {
+#[usdt::provider(provider = "propolis")]
+mod probes {
     fn nvme_read_enqueue(cid: u16, slba: u64, nlb: u16) {}
     fn nvme_read_complete(cid: u16) {}
 
