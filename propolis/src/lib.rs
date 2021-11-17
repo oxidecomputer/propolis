@@ -30,8 +30,8 @@ use dispatch::*;
 use exits::*;
 use vcpu::VcpuHdl;
 
-#[usdt::provider(probe_path = "probes")]
-mod propolis {
+#[usdt::provider(provider = "propolis")]
+mod probes {
     fn vm_entry(vcpuid: u32) {}
     fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
 }

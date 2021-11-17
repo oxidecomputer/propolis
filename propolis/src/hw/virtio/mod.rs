@@ -57,8 +57,8 @@ pub enum VqIntr {
     Msi(u64, u32, bool),
 }
 
-#[usdt::provider(probe_path = "probes")]
-mod propolis {
+#[usdt::provider(provider = "propolis")]
+mod probes {
     fn virtio_vq_notify(virtio_dev_addr: u64, virtqueue_id: u16) {}
     fn virtio_vq_pop(cq_addr: u64, avail_idx: u16) {}
     fn virtio_vq_push(vq_addr: u64, used_idx: u16, used_len: u32) {}
