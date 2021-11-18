@@ -143,11 +143,16 @@ async fn source_migrate_task(
     }
 
     // Random state demonstration
-    migrate_context.set_state(MigrationState::Resume).await;
+    migrate_context.set_state(MigrationState::Arch).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     for x in 10..20 {
         conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
     }
+
+    // More random state demonstration
+    migrate_context.set_state(MigrationState::Resume).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     migrate_context.set_state(MigrationState::Finish).await;
 
@@ -277,12 +282,17 @@ async fn dest_migrate_task(
 
     // Random state demonstration
     migrate_context.set_state(MigrationState::Device).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     for x in 10..20 {
         let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
         info!(log, "Dest Read: {:?}", read);
         assert_eq!(read, x);
     }
+
+    // More random state demonstration
+    migrate_context.set_state(MigrationState::Resume).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     migrate_context.set_state(MigrationState::Finish).await;
 

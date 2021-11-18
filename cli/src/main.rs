@@ -4,14 +4,15 @@ use std::path::{Path, PathBuf};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     os::unix::prelude::AsRawFd,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
-use futures::{SinkExt, StreamExt};
+use futures::{future, SinkExt, StreamExt};
 use propolis_client::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceProperties,
-        InstanceStateRequested,
+        InstanceStateRequested, MigrationState,
     },
     Client,
 };
@@ -295,7 +296,34 @@ async fn migrate_instance(
         .with_context(|| anyhow!("failed to get src instance UUID"))?;
 
     // Initiate the migration via the destination instance
-    dst_client.instance_migrate_initiate(dst_uuid, src_uuid, src_addr).await?;
+    let migration_id = dst_client
+        .instance_migrate_initiate(dst_uuid, src_uuid, src_addr)
+        .await?
+        .migration_id;
+
+    // Wait for the migration to complete by polling both source and destination
+    // TODO: replace with into_iter method call after edition upgrade
+    let handles = IntoIterator::into_iter([
+        ("src", src_client, src_uuid),
+        ("dst", dst_client, dst_uuid),
+    ])
+    .map(|(role, client, id)| {
+        tokio::spawn(async move {
+            loop {
+                let state = client
+                    .instance_migrate_status(id, migration_id)
+                    .await?
+                    .state;
+                println!("{}({}) migration state={:?}", role, id, state);
+                if state == MigrationState::Finish {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+    });
+
+    future::join_all(handles).await;
 
     Ok(())
 }
