@@ -391,7 +391,7 @@ pub async fn dest_initiate(
     let conn = hyper::upgrade::on(res).await?;
 
     let migrate_context = Arc::new(MigrateContext {
-        migration_id: migration_id.clone(),
+        migration_id,
         state: RwLock::new(MigrationState::Sync),
     });
 
