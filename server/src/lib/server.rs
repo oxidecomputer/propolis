@@ -83,12 +83,12 @@ pub(crate) struct InstanceContext {
     serial: Arc<Serial<LpcUart>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
-    pub migrate_task: Option<migrate::MigrateSourceTask>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
 pub struct Context {
     pub(crate) context: Mutex<Option<InstanceContext>>,
+    pub(crate) migrate_task: Mutex<Option<migrate::MigrateTask>>,
     config: Config,
     log: Logger,
 }
@@ -96,7 +96,12 @@ pub struct Context {
 impl Context {
     /// Creates a new server context object.
     pub fn new(config: Config, log: Logger) -> Self {
-        Context { context: Mutex::new(None), config, log }
+        Context {
+            context: Mutex::new(None),
+            migrate_task: Mutex::new(None),
+            config,
+            log,
+        }
     }
 }
 
@@ -473,7 +478,6 @@ async fn instance_ensure(
         serial: Arc::new(com1.unwrap()),
         state_watcher: rx,
         serial_task: None,
-        migrate_task: None,
     });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))

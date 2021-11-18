@@ -40,9 +40,9 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
     }
 }
 
-/// Handle and context for an ongoing migration from a source instance
+/// Handle and context for an ongoing migration
 #[allow(dead_code)]
-pub struct MigrateSourceTask {
+pub struct MigrateTask {
     migration_id: Uuid,
     task: JoinHandle<()>,
 }
@@ -152,7 +152,8 @@ pub async fn source_start(
 
     // Bail if there's already one in progress
     // TODO: Should we just instead hold the context lock during the whole process?
-    if context.migrate_task.is_some() {
+    let mut migrate_task = rqctx.context().migrate_task.lock().await;
+    if migrate_task.is_some() {
         return Err(MigrateError::MigrationAlreadyInProgress);
     }
 
@@ -210,7 +211,7 @@ pub async fn source_start(
     });
 
     // Save active migration task handle
-    context.migrate_task = Some(MigrateSourceTask { migration_id, task });
+    *migrate_task = Some(MigrateTask { migration_id, task });
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -220,6 +221,29 @@ pub async fn source_start(
         .header(header::UPGRADE, src_protocol)
         .body(Body::empty())
         .unwrap())
+}
+
+async fn dest_migrate_task(
+    mut conn: Upgraded,
+    log: slog::Logger,
+) -> Result<(), MigrateError> {
+    info!(log, "Enter Migrate Task");
+
+    // Good to go, ready to migrate from the source via `conn`
+    // TODO: wrap in a tokio codec::Framed or such
+    //       for now, we just send some fake traffic back and forth
+    for x in 0..10 {
+        conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
+    }
+    for x in 10..20 {
+        let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
+        info!(log, "Dest Read: {:?}", read);
+        assert_eq!(read, x);
+    }
+
+    info!(log, "Migrate Successful");
+
+    Ok(())
 }
 
 /// Initiate a migration to the given source instance.
@@ -245,12 +269,15 @@ pub async fn dest_initiate(
     ));
     info!(log, "Migration Destination");
 
-    {
-        let context = rqctx.context().context.lock().await;
-        if context.is_some() {
-            return Err(MigrateError::DestinationAlreadyInitialized);
-        }
+    let context = rqctx.context().context.lock().await;
+    if context.is_some() {
+        return Err(MigrateError::DestinationAlreadyInitialized);
     }
+
+    let mut migrate_task = rqctx.context().migrate_task.lock().await;
+
+    // This should be a fresh propolis-server
+    assert!(migrate_task.is_none());
 
     // TODO: https
     // TODO: We need to make sure the src_addr is a valid target
@@ -306,21 +333,19 @@ pub async fn dest_initiate(
     }
 
     // Now co-opt the socket for the migration protocol
-    let mut conn = hyper::upgrade::on(res).await?;
+    let conn = hyper::upgrade::on(res).await?;
 
-    // Good to go, ready to migrate from the source via `conn`
-    // TODO: wrap in a tokio codec::Framed or such
-    //       for now, we just send some fake traffic back and forth
-    for x in 0..10 {
-        conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
-    }
-    for x in 10..20 {
-        let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
-        info!(log, "Dest Read: {:?}", read);
-        assert_eq!(read, x);
-    }
+    // We've successfully negotiated a migration protocol w/ the source.
+    // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let task = tokio::spawn(async move {
+        if let Err(e) = dest_migrate_task(conn, log.clone()).await {
+            error!(log, "Migrate Task Failed: {}", e);
+            return;
+        }
+    });
 
-    info!(log, "Migrate Successful");
+    // Save active migration task handle
+    *migrate_task = Some(MigrateTask { migration_id, task });
 
     Ok(())
 }
