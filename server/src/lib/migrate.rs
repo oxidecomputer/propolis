@@ -8,6 +8,7 @@ use slog::{error, info, o};
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
+    sync::RwLock,
     task::JoinHandle,
 };
 use uuid::Uuid;
@@ -40,12 +41,27 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
     }
 }
 
-/// Handle and context for an ongoing migration
-#[allow(dead_code)]
-pub struct MigrateTask {
+pub struct MigrateContext {
     migration_id: Uuid,
-    state: MigrationState,
+    state: RwLock<MigrationState>,
+}
+
+impl MigrateContext {
+    async fn get_state(&self) -> MigrationState {
+        let state = self.state.read().await;
+        *state
+    }
+
+    async fn set_state(&self, new: MigrationState) {
+        let mut state = self.state.write().await;
+        *state = new;
+    }
+}
+
+pub struct MigrateTask {
+    #[allow(dead_code)]
     task: JoinHandle<()>,
+    context: Arc<MigrateContext>,
 }
 
 /// Errors which may occur during the course of a migration
@@ -112,6 +128,7 @@ impl Into<HttpError> for MigrateError {
 }
 
 async fn source_migrate_task(
+    migrate_context: Arc<MigrateContext>,
     _instance: Arc<Instance>,
     mut conn: Upgraded,
     log: slog::Logger,
@@ -124,9 +141,15 @@ async fn source_migrate_task(
         info!(log, "Src Read: {:?}", read);
         assert_eq!(read, x);
     }
+
+    // Random state demonstration
+    migrate_context.set_state(MigrationState::Resume).await;
+
     for x in 10..20 {
         conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
     }
+
+    migrate_context.set_state(MigrationState::Finish).await;
 
     info!(log, "Migrate Successful");
 
@@ -198,8 +221,14 @@ pub async fn source_start(
     let upgrade = hyper::upgrade::on(&mut *request);
     let instance = context.instance.clone();
 
+    let migrate_context = Arc::new(MigrateContext {
+        migration_id,
+        state: RwLock::new(MigrationState::Sync),
+    });
+
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let mctx = migrate_context.clone();
     let task = tokio::spawn(async move {
         let conn = match upgrade.await {
             Ok(upgraded) => upgraded,
@@ -211,15 +240,16 @@ pub async fn source_start(
 
         // Good to go, ready to migrate to the dest via `conn`
         // TODO: wrap in a tokio codec::Framed or such
-        if let Err(e) = source_migrate_task(instance, conn, log.clone()).await {
+        if let Err(e) =
+            source_migrate_task(mctx, instance, conn, log.clone()).await
+        {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }
     });
 
     // Save active migration task handle
-    *migrate_task =
-        Some(MigrateTask { migration_id, state: MigrationState::Sync, task });
+    *migrate_task = Some(MigrateTask { task, context: migrate_context });
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -232,6 +262,7 @@ pub async fn source_start(
 }
 
 async fn dest_migrate_task(
+    migrate_context: Arc<MigrateContext>,
     mut conn: Upgraded,
     log: slog::Logger,
 ) -> Result<(), MigrateError> {
@@ -243,11 +274,17 @@ async fn dest_migrate_task(
     for x in 0..10 {
         conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
     }
+
+    // Random state demonstration
+    migrate_context.set_state(MigrationState::Device).await;
+
     for x in 10..20 {
         let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
         info!(log, "Dest Read: {:?}", read);
         assert_eq!(read, x);
     }
+
+    migrate_context.set_state(MigrationState::Finish).await;
 
     info!(log, "Migrate Successful");
 
@@ -343,21 +380,23 @@ pub async fn dest_initiate(
     // Now co-opt the socket for the migration protocol
     let conn = hyper::upgrade::on(res).await?;
 
+    let migrate_context = Arc::new(MigrateContext {
+        migration_id: migration_id.clone(),
+        state: RwLock::new(MigrationState::Sync),
+    });
+
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let mctx = migrate_context.clone();
     let task = tokio::spawn(async move {
-        if let Err(e) = dest_migrate_task(conn, log.clone()).await {
+        if let Err(e) = dest_migrate_task(mctx, conn, log.clone()).await {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }
     });
 
     // Save active migration task handle
-    *migrate_task = Some(MigrateTask {
-        migration_id: migration_id.clone(),
-        state: MigrationState::Sync,
-        task,
-    });
+    *migrate_task = Some(MigrateTask { task, context: migrate_context });
 
     Ok(api::InstanceMigrateInitiateResponse { migration_id })
 }
@@ -372,9 +411,11 @@ pub async fn migrate_status(
         .as_ref()
         .ok_or_else(|| MigrateError::NoMigrationInProgress)?;
 
-    if migration_id != migrate_task.migration_id {
+    if migration_id != migrate_task.context.migration_id {
         return Err(MigrateError::UuidMismatch);
     }
 
-    Ok(api::InstanceMigrateStatusResponse { state: migrate_task.state })
+    Ok(api::InstanceMigrateStatusResponse {
+        state: migrate_task.context.get_state().await,
+    })
 }

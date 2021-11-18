@@ -921,7 +921,7 @@ async fn instance_migrate_start(
 }]
 async fn instance_migrate_status(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
+    _path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
     let migration_id = request.into_inner().migration_id;

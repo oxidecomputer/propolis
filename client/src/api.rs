@@ -59,7 +59,18 @@ pub struct InstanceMigrateStatusResponse {
     pub state: MigrationState,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    JsonSchema,
+)]
 pub enum MigrationState {
     Sync,
     Ram,
