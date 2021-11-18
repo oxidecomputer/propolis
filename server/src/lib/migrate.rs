@@ -235,6 +235,9 @@ pub async fn source_start(
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
     let task = tokio::spawn(async move {
+        // We have to await on the HTTP upgrade future in a new
+        // task because it won't complete until the response is
+        // sent, i.e., the outer function returns the 101 Resposne.
         let conn = match upgrade.await {
             Ok(upgraded) => upgraded,
             Err(e) => {
