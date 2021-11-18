@@ -256,7 +256,7 @@ pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
     _instance_id: Uuid,
     migrate_info: api::InstanceMigrateInitiateRequest,
-) -> Result<(), MigrateError> {
+) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
     // Create a new UUID to refer to this migration across both the source
     // and destination instances
     let migration_id = Uuid::new_v4();
@@ -345,7 +345,8 @@ pub async fn dest_initiate(
     });
 
     // Save active migration task handle
-    *migrate_task = Some(MigrateTask { migration_id, task });
+    *migrate_task =
+        Some(MigrateTask { migration_id: migration_id.clone(), task });
 
-    Ok(())
+    Ok(api::InstanceMigrateInitiateResponse { migration_id })
 }

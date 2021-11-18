@@ -40,6 +40,11 @@ pub struct InstanceMigrateInitiateRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateInitiateResponse {
+    pub migration_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceMigrateStartRequest {
     pub migration_id: Uuid,
 }

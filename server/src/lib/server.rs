@@ -889,13 +889,14 @@ async fn instance_migrate_initiate(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceMigrateInitiateRequest>,
-) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+) -> Result<HttpResponseOk<api::InstanceMigrateInitiateResponse>, HttpError> {
     let instance_id = path_params.into_inner().instance_id;
-    migrate::dest_initiate(rqctx, instance_id, request.into_inner())
+    let res = migrate::dest_initiate(rqctx, instance_id, request.into_inner())
         .await
         .map_err(<_ as Into<HttpError>>::into)?;
 
-    Ok(HttpResponseUpdatedNoContent {})
+    // TODO: Replace with HTTP Accepted 202
+    Ok(HttpResponseOk(res))
 }
 
 #[endpoint {
