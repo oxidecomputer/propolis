@@ -147,10 +147,6 @@ async fn new_instance(
         vcpus,
     };
 
-    for disk in &disks {
-        assert_eq!(disk.address.len(), 3);
-    }
-
     let request = InstanceEnsureRequest {
         properties,
         // TODO: Allow specifying NICs
