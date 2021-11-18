@@ -2,8 +2,9 @@
 
 use anyhow::Result;
 use dropshot::{
-    endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
-    HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
+    endpoint, ApiDescription, HttpError, HttpResponseAccepted,
+    HttpResponseCreated, HttpResponseOk, HttpResponseUpdatedNoContent, Path,
+    RequestContext, TypedBody,
 };
 use futures::future::Fuse;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -889,14 +890,13 @@ async fn instance_migrate_initiate(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceMigrateInitiateRequest>,
-) -> Result<HttpResponseOk<api::InstanceMigrateInitiateResponse>, HttpError> {
+) -> Result<HttpResponseAccepted<api::InstanceMigrateInitiateResponse>, HttpError>
+{
     let instance_id = path_params.into_inner().instance_id;
-    let res = migrate::dest_initiate(rqctx, instance_id, request.into_inner())
+    migrate::dest_initiate(rqctx, instance_id, request.into_inner())
         .await
-        .map_err(<_ as Into<HttpError>>::into)?;
-
-    // TODO: Replace with HTTP Accepted 202
-    Ok(HttpResponseOk(res))
+        .map_err(<_ as Into<HttpError>>::into)
+        .map(HttpResponseAccepted)
 }
 
 #[endpoint {
