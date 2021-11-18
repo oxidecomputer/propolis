@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     os::unix::prelude::AsRawFd,
@@ -60,7 +60,7 @@ enum Command {
 
         // file with a JSON array of DiskRequest structs
         #[structopt(long, parse(from_os_str))]
-        crucible_disks: PathBuf,
+        crucible_disks: Option<PathBuf>,
     },
 
     /// Get the properties of a propolis instance
@@ -97,7 +97,7 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     }
 }
 
-fn parse_crucible_disks(path: &PathBuf) -> anyhow::Result<Vec<DiskRequest>> {
+fn parse_crucible_disks(path: &Path) -> anyhow::Result<Vec<DiskRequest>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader).map_err(|e| e.into())
@@ -121,8 +121,8 @@ fn create_logger(opt: &Opt) -> Logger {
     let level = if opt.debug { Level::Debug } else { Level::Info };
     let drain = slog::LevelFilter(drain, level).fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
-    let logger = Logger::root(drain, o!());
-    logger
+
+    Logger::root(drain, o!())
 }
 
 async fn new_instance(
@@ -257,11 +257,15 @@ async fn main() -> anyhow::Result<()> {
     let log = create_logger(&opt);
 
     let addr = SocketAddr::new(opt.server, opt.port);
-    let client = Client::new(addr.clone(), log.new(o!()));
+    let client = Client::new(addr, log.new(o!()));
 
     match opt.cmd {
         Command::New { name, vcpus, memory, crucible_disks } => {
-            let disks = parse_crucible_disks(&crucible_disks)?;
+            let disks = if let Some(crucible_disks) = crucible_disks {
+                parse_crucible_disks(&crucible_disks)?
+            } else {
+                vec![]
+            };
             new_instance(&client, name.to_string(), vcpus, memory, disks)
                 .await?
         }
@@ -290,7 +294,7 @@ impl RawTermiosGuard {
             }
             curr_termios
         };
-        let guard = RawTermiosGuard(fd, termios.clone());
+        let guard = RawTermiosGuard(fd, termios);
         unsafe {
             let mut raw_termios = termios;
             libc::cfmakeraw(&mut raw_termios);
