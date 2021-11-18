@@ -83,7 +83,6 @@ impl Inventory {
     /// Registers a new entity, bearing an instance name, with the inventory.
     ///
     /// Returns an error if the object has already been registered.
-    /// Returns an error if the parent is not registered.
     pub fn register_instance<T: Entity>(
         &self,
         ent: &Arc<T>,
@@ -93,6 +92,10 @@ impl Inventory {
         inv.register(ent, Some(instance.to_string()))
     }
 
+    /// Registers a new entity, bearing a specific parent, with the inventory.
+    ///
+    /// Returns an error if the object has already been registered.
+    /// Returns an error if the parent is not registered.
     pub fn register_child(
         &self,
         reg: ChildRegister,
@@ -175,7 +178,6 @@ impl InventoryInner {
     /// Registers a new entity (and its children) with the inventory.
     ///
     /// Returns an error if the object has already been registered.
-    /// Returns an error if the parent is not registered.
     pub fn register<T: Entity>(
         &mut self,
         ent: &Arc<T>,
@@ -203,6 +205,10 @@ impl InventoryInner {
         Ok(id)
     }
 
+    /// Internal interface to register new entity with the inventory.
+    ///
+    /// Returns an error if the object has already been registered.
+    /// Returns an error if the parent is not registered.
     fn register_inner(
         &mut self,
         ent: Arc<dyn Entity>,
