@@ -49,6 +49,28 @@ pub struct InstanceMigrateStartRequest {
     pub migration_id: Uuid,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateStatusRequest {
+    pub migration_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateStatusResponse {
+    pub state: MigrationState,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
+pub enum MigrationState {
+    Sync,
+    Ram,
+    Pause,
+    RamDirty,
+    Device,
+    Arch,
+    Resume,
+    Finish,
+}
+
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceGetResponse {
     pub instance: Instance,

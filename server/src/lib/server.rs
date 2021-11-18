@@ -915,6 +915,22 @@ async fn instance_migrate_start(
         .map_err(Into::into)
 }
 
+#[endpoint {
+    method = GET,
+    path = "/instances/{instance_id}/migrate/status"
+}]
+async fn instance_migrate_status(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstancePathParams>,
+    request: TypedBody<api::InstanceMigrateStatusRequest>,
+) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
+    let migration_id = request.into_inner().migration_id;
+    migrate::migrate_status(rqctx, migration_id)
+        .await
+        .map_err(Into::into)
+        .map(HttpResponseOk)
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
@@ -927,5 +943,6 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_serial_detach).unwrap();
     api.register(instance_migrate_initiate).unwrap();
     api.register(instance_migrate_start).unwrap();
+    api.register(instance_migrate_status).unwrap();
     api
 }

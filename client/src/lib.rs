@@ -164,7 +164,7 @@ impl Client {
         id: Uuid,
         src_uuid: Uuid,
         src_addr: String,
-    ) -> Result<(), Error> {
+    ) -> Result<api::InstanceMigrateInitiateResponse, Error> {
         let path = format!(
             "http://{}/instances/{}/migrate/initiate",
             self.address, id
@@ -176,6 +176,6 @@ impl Client {
             })
             .unwrap(),
         );
-        self.put_no_response(path, Some(body)).await
+        self.put(path, Some(body)).await
     }
 }

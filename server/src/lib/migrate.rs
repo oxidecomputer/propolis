@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, upgrade::Upgraded, Body, Method, Response, StatusCode};
 use propolis::instance::Instance;
-use propolis_client::api;
+use propolis_client::api::{self, MigrationState};
 use slog::{error, info, o};
 use thiserror::Error;
 use tokio::{
@@ -44,6 +44,7 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
 #[allow(dead_code)]
 pub struct MigrateTask {
     migration_id: Uuid,
+    state: MigrationState,
     task: JoinHandle<()>,
 }
 
@@ -74,6 +75,9 @@ pub enum MigrateError {
     #[error("a migration from the current instance is already in progress")]
     MigrationAlreadyInProgress,
 
+    #[error("no migration is currently in progress")]
+    NoMigrationInProgress,
+
     #[error("protocol error")]
     // TODO: just for testing rn
     Protocol,
@@ -93,10 +97,13 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
             | MigrateError::DestinationAlreadyInitialized
-            | MigrateError::SourceNotInitialized
-            | MigrateError::UuidMismatch => HttpError::for_internal_error(msg),
+            | MigrateError::SourceNotInitialized => {
+                HttpError::for_internal_error(msg)
+            }
             MigrateError::MigrationAlreadyInProgress
+            | MigrateError::NoMigrationInProgress
             | MigrateError::Protocol
+            | MigrateError::UuidMismatch
             | MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)
             }
@@ -211,7 +218,8 @@ pub async fn source_start(
     });
 
     // Save active migration task handle
-    *migrate_task = Some(MigrateTask { migration_id, task });
+    *migrate_task =
+        Some(MigrateTask { migration_id, state: MigrationState::Sync, task });
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -345,8 +353,28 @@ pub async fn dest_initiate(
     });
 
     // Save active migration task handle
-    *migrate_task =
-        Some(MigrateTask { migration_id: migration_id.clone(), task });
+    *migrate_task = Some(MigrateTask {
+        migration_id: migration_id.clone(),
+        state: MigrationState::Sync,
+        task,
+    });
 
     Ok(api::InstanceMigrateInitiateResponse { migration_id })
+}
+
+/// Return the current status of an ongoing migration
+pub async fn migrate_status(
+    rqctx: Arc<RequestContext<Context>>,
+    migration_id: Uuid,
+) -> Result<api::InstanceMigrateStatusResponse, MigrateError> {
+    let migrate_task = rqctx.context().migrate_task.lock().await;
+    let migrate_task = migrate_task
+        .as_ref()
+        .ok_or_else(|| MigrateError::NoMigrationInProgress)?;
+
+    if migration_id != migrate_task.migration_id {
+        return Err(MigrateError::UuidMismatch);
+    }
+
+    Ok(api::InstanceMigrateStatusResponse { state: migrate_task.state })
 }
