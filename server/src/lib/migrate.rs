@@ -270,6 +270,7 @@ pub async fn source_start(
 }
 
 async fn dest_migrate_task(
+    _rqctx: Arc<RequestContext<Context>>,
     migrate_context: Arc<MigrateContext>,
     mut conn: Upgraded,
     log: slog::Logger,
@@ -401,8 +402,11 @@ pub async fn dest_initiate(
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
+    let task_rqctx = rqctx.clone();
     let task = tokio::spawn(async move {
-        if let Err(e) = dest_migrate_task(mctx, conn, log.clone()).await {
+        if let Err(e) =
+            dest_migrate_task(task_rqctx, mctx, conn, log.clone()).await
+        {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }
