@@ -223,7 +223,7 @@ pub async fn source_start(
         return Err(MigrateError::incompatible(src_protocol, dst_protocol));
     }
 
-    let upgrade = hyper::upgrade::on(&mut *request);
+    let upgrade = hyper::upgrade::on(request);
     let instance = context.instance.clone();
 
     let migrate_context = Arc::new(MigrateContext {

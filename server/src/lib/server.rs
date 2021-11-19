@@ -798,7 +798,7 @@ async fn instance_serial(
 
     let (detach_ch, detach_recv) = oneshot::channel();
 
-    let upgrade_fut = upgrade::on(&mut *request);
+    let upgrade_fut = upgrade::on(request);
     let serial = context.serial.clone();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
