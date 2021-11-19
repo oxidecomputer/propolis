@@ -113,6 +113,7 @@ mod illumos_integration_tests {
                 memory: 256,
                 vcpus: 2,
             },
+            disks: vec![],
             nics: vec![],
         }
     }
