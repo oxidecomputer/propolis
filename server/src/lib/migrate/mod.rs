@@ -1,19 +1,23 @@
 use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
+use futures::{SinkExt, StreamExt};
 use hyper::{header, upgrade::Upgraded, Body, Method, Response, StatusCode};
 use propolis::instance::Instance;
 use propolis_client::api::{self, MigrationState};
 use slog::{error, info, o};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     sync::RwLock,
     task::JoinHandle,
 };
+use tokio_util::codec::Framed;
 use uuid::Uuid;
 
 use crate::server::Context;
+
+mod codec;
+mod status;
 
 /// Our migration protocol version
 const MIGRATION_PROTOCOL_VERION: usize = 0;
@@ -126,25 +130,29 @@ impl Into<HttpError> for MigrateError {
 async fn source_migrate_task(
     migrate_context: Arc<MigrateContext>,
     _instance: Arc<Instance>,
-    mut conn: Upgraded,
+    conn: Upgraded,
     log: slog::Logger,
 ) -> Result<(), MigrateError> {
     info!(log, "Enter Migrate Task");
+    let mut framer = Framed::new(conn, codec::LiveMigrationFramer::new());
 
     // TODO: actual migration protocol, for now just send some stuff back and forth
-    for x in 0..10 {
-        let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
+    for _x in 0..10 {
+        let v = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8];
+        let b = codec::Message::Blob(v);
+        let read = framer.next().await.unwrap().map_err(|_| MigrateError::Protocol)?;
+        framer.send(b).await.map_err(|_| MigrateError::Protocol)?;
         info!(log, "Src Read: {:?}", read);
-        assert_eq!(read, x);
+        //assert_eq!(read, b);
     }
 
     // Random state demonstration
     migrate_context.set_state(MigrationState::Arch).await;
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    for x in 10..20 {
-        conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
-    }
+    // for x in 10..20 {
+    //     conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
+    // }
 
     // More random state demonstration
     migrate_context.set_state(MigrationState::Resume).await;
@@ -268,27 +276,31 @@ pub async fn source_start(
 async fn dest_migrate_task(
     _rqctx: Arc<RequestContext<Context>>,
     migrate_context: Arc<MigrateContext>,
-    mut conn: Upgraded,
+    conn: Upgraded,
     log: slog::Logger,
 ) -> Result<(), MigrateError> {
     info!(log, "Enter Migrate Task");
+    let mut framer = Framed::new(conn, codec::LiveMigrationFramer::new());
 
-    // Good to go, ready to migrate from the source via `conn`
-    // TODO: wrap in a tokio codec::Framed or such
-    //       for now, we just send some fake traffic back and forth
-    for x in 0..10 {
-        conn.write_u32(x).await.map_err(|_| MigrateError::Protocol)?;
+    // TODO: actual migration protocol, for now just send some stuff back and forth
+    for _x in 0..10 {
+        let v = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8];
+        let b = codec::Message::Blob(v);
+        framer.send(b).await.map_err(|_| MigrateError::Protocol)?;
+        let read = framer.next().await.unwrap().map_err(|_| MigrateError::Protocol)?;
+        info!(log, "Src Read: {:?}", read);
+        //assert_eq!(read, b);
     }
 
     // Random state demonstration
     migrate_context.set_state(MigrationState::Device).await;
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    for x in 10..20 {
-        let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
-        info!(log, "Dest Read: {:?}", read);
-        assert_eq!(read, x);
-    }
+    // for x in 10..20 {
+    //     let read = conn.read_u32().await.map_err(|_| MigrateError::Protocol)?;
+    //     info!(log, "Dest Read: {:?}", read);
+    //     assert_eq!(read, x);
+    // }
 
     // More random state demonstration
     migrate_context.set_state(MigrationState::Resume).await;
