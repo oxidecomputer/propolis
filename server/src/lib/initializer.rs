@@ -14,7 +14,7 @@ use propolis::hw::pci;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
-use propolis::hw::virtio;
+use propolis::hw::{nvme, virtio};
 use propolis::instance::Instance;
 use propolis::inventory::{ChildRegister, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
@@ -228,6 +228,24 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
+    pub fn initialize_nvme_block(
+        &self,
+        chipset: &RegisteredChipset,
+        bdf: pci::Bdf,
+        backend: Arc<dyn block::Backend>,
+        be_register: ChildRegister,
+    ) -> Result<(), Error> {
+        let be_info = backend.info();
+        let nvme = nvme::PciNvme::create(0x1de, 0x1000, be_info);
+        let id = self.inv.register_instance(&nvme, bdf.to_string())?;
+        let _ = self.inv.register_child(be_register, id).unwrap();
+
+        backend.attach(nvme.clone(), self.disp);
+        chipset.device().pci_attach(bdf, nvme);
+
+        Ok(())
+    }
+
     pub fn initialize_vnic(
         &self,
         chipset: &RegisteredChipset,
@@ -273,9 +291,20 @@ impl<'a> MachineInitializer<'a> {
         info!(self.log, "Creating ChildRegister");
         let creg = ChildRegister::new(&be, None);
 
-        // TODO: this assumes virtio, what about NVMe?
-        info!(self.log, "Calling initialize_virtio_block");
-        self.initialize_virtio_block(chipset, bdf, be, creg)
+        match disk.device.as_ref() {
+            "virtio" => {
+                info!(self.log, "Calling initialize_virtio_block");
+                self.initialize_virtio_block(chipset, bdf, be, creg)
+            }
+            "nvme" => {
+                info!(self.log, "Calling initialize_nvme_block");
+                self.initialize_nvme_block(chipset, bdf, be, creg)
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Bad disk device!",
+            )),
+        }
     }
 
     pub fn initialize_fwcfg(&self, cpus: u8) -> Result<(), Error> {

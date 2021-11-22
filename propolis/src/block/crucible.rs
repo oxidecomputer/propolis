@@ -24,7 +24,6 @@ fn map_crucible_error_to_io(x: CrucibleError) -> std::io::Error {
 pub struct CrucibleBackend {
     guest: Arc<crucible::Guest>,
     block_size: u64,
-    total_size: u64,
     sectors: u64,
     read_only: bool,
 
@@ -64,7 +63,6 @@ impl CrucibleBackend {
         let mut be = Self {
             guest: guest.clone(),
             block_size: 0,
-            total_size: 0,
             sectors: 0,
             read_only,
             driver: Mutex::new(None),
@@ -100,10 +98,10 @@ impl CrucibleBackend {
         be.block_size =
             tokio::task::block_in_place(|| guest.query_block_size())?;
 
-        be.total_size =
+        let total_size =
             tokio::task::block_in_place(|| guest.query_total_size())?;
 
-        be.sectors = be.total_size / be.block_size;
+        be.sectors = total_size / be.block_size;
 
         Ok(Arc::new(be))
     }

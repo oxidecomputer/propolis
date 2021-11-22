@@ -242,10 +242,7 @@ async fn instance_ensure(
         vmm_log,
     )
     .map_err(|err| {
-        HttpError::for_internal_error(format!(
-            "Cannot build instance: {}",
-            err.to_string()
-        ))
+        HttpError::for_internal_error(format!("Cannot build instance: {}", err))
     })?;
 
     // Initialize (some) of the instance's hardware.
@@ -383,7 +380,7 @@ async fn instance_ensure(
         .map_err(|err| {
             HttpError::for_internal_error(format!(
                 "Failed to initialize machine: {}",
-                err.to_string()
+                err
             ))
         })?;
 
