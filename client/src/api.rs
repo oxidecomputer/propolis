@@ -175,6 +175,7 @@ pub struct DiskRequest {
     pub read_only: bool,
     pub key: Option<String>,
     pub gen: u64,
+    pub device: String,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
