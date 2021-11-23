@@ -185,6 +185,15 @@ async fn instance_ensure(
         ));
     }
 
+    for disk in &disks {
+        if disk.address.len() != 3 {
+            return Err(HttpError::for_bad_request(
+                None,
+                "Crucible requires three targets per disk".to_string(),
+            ));
+        }
+    }
+
     // Handle requsts to an instance that has already been initialized.
     let mut context = server_context.context.lock().await;
     if let Some(ctx) = &*context {

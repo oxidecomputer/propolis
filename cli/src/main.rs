@@ -1,14 +1,17 @@
+use std::fs::File;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     os::unix::prelude::AsRawFd,
 };
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, Context};
 use futures::{SinkExt, StreamExt};
 use propolis_client::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceProperties,
-        InstanceStateRequested, Slot,
+        InstanceStateRequested,
     },
     Client,
 };
@@ -55,9 +58,9 @@ enum Command {
         #[structopt(short, default_value = "1024")]
         memory: u64,
 
-        // Specify multiple disks in groups of 3 targets
-        #[structopt(long, use_delimiter = true)]
-        crucible_target: Vec<SocketAddr>,
+        // file with a JSON array of DiskRequest structs
+        #[structopt(long, parse(from_os_str))]
+        crucible_disks: Option<PathBuf>,
     },
 
     /// Get the properties of a propolis instance
@@ -94,6 +97,12 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     }
 }
 
+fn parse_crucible_disks(path: &Path) -> anyhow::Result<Vec<DiskRequest>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader).map_err(|e| e.into())
+}
+
 /// Given a string representing an host, attempts to resolve it to a specific IP address
 fn resolve_host(server: &str) -> anyhow::Result<IpAddr> {
     (server, 0)
@@ -112,8 +121,8 @@ fn create_logger(opt: &Opt) -> Logger {
     let level = if opt.debug { Level::Debug } else { Level::Info };
     let drain = slog::LevelFilter(drain, level).fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
-    let logger = Logger::root(drain, o!());
-    logger
+
+    Logger::root(drain, o!())
 }
 
 async fn new_instance(
@@ -121,14 +130,8 @@ async fn new_instance(
     name: String,
     vcpus: u8,
     memory: u64,
-    crucible_target: Vec<SocketAddr>,
+    disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
-    if !crucible_target.is_empty() {
-        if crucible_target.len() % 3 != 0 {
-            bail!("Multiple of three crucible targets required!");
-        }
-    }
-
     // Generate a UUID for the new instance
     let id = Uuid::new_v4();
 
@@ -144,28 +147,11 @@ async fn new_instance(
         vcpus,
     };
 
-    let mut disks: Vec<DiskRequest> =
-        Vec::with_capacity(crucible_target.len() / 3);
-
-    let mut disk_i = 0;
-    for target_group in crucible_target.chunks(3) {
-        assert_eq!(target_group.len(), 3);
-        disks.push(DiskRequest {
-            name: format!("d{}", disk_i),
-            address: target_group.to_vec(),
-            slot: Slot(disk_i),
-            read_only: false,
-            key: None,
-            gen: 0,
-        });
-        disk_i += 1;
-    }
-
     let request = InstanceEnsureRequest {
         properties,
         // TODO: Allow specifying NICs
         nics: vec![],
-        disks,
+        disks: disks.to_vec(),
     };
 
     // Try to create the instance
@@ -267,18 +253,17 @@ async fn main() -> anyhow::Result<()> {
     let log = create_logger(&opt);
 
     let addr = SocketAddr::new(opt.server, opt.port);
-    let client = Client::new(addr.clone(), log.new(o!()));
+    let client = Client::new(addr, log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, vcpus, memory, crucible_target } => {
-            new_instance(
-                &client,
-                name.to_string(),
-                vcpus,
-                memory,
-                crucible_target,
-            )
-            .await?
+        Command::New { name, vcpus, memory, crucible_disks } => {
+            let disks = if let Some(crucible_disks) = crucible_disks {
+                parse_crucible_disks(&crucible_disks)?
+            } else {
+                vec![]
+            };
+            new_instance(&client, name.to_string(), vcpus, memory, disks)
+                .await?
         }
         Command::Get { name } => get_instance(&client, name).await?,
         Command::State { name, state } => {
@@ -305,7 +290,7 @@ impl RawTermiosGuard {
             }
             curr_termios
         };
-        let guard = RawTermiosGuard(fd, termios.clone());
+        let guard = RawTermiosGuard(fd, termios);
         unsafe {
             let mut raw_termios = termios;
             libc::cfmakeraw(&mut raw_termios);
