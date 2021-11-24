@@ -10,6 +10,7 @@ use crate::{block, common::*};
 
 use erased_serde::Serialize;
 use lazy_static::lazy_static;
+use rand::{distributions::Alphanumeric, Rng};
 use thiserror::Error;
 
 mod admin;
@@ -23,10 +24,6 @@ use queue::{CompQueue, QueueId, SubQueue};
 
 /// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
-
-/// Supported block size.
-/// TODO: Support more
-const BLOCK_SZ: u64 = 512;
 
 /// NVMe errors
 #[derive(Debug, Error)]
@@ -444,12 +441,20 @@ impl PciNvme {
         let cqes = size_of::<RawCompletion>().trailing_zeros() as u8;
         let sqes = size_of::<RawSubmission>().trailing_zeros() as u8;
 
+        // Random serial number
+        let sn: [u8; 20] = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(20)
+            .collect::<Vec<u8>>()
+            .try_into()
+            .expect("Expected vector of 20!");
+
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
             vid: vendor,
             ssvid: vendor,
-            // TODO: fill out serial number
+            sn,
             ieee: [0xA8, 0x40, 0x25], // Oxide OUI
             // We use standard Completion/Submission Queue Entry structures with no extra
             // data, so required (minimum) == maximum
@@ -466,7 +471,7 @@ impl PciNvme {
         // Initialize the Identify structure returned when the  host issues
         // an Identify Namespace command.
         let total_bytes = binfo.total_size * binfo.block_size as u64;
-        let nsze = total_bytes / BLOCK_SZ;
+        let nsze = total_bytes / (binfo.block_size as u64);
         let mut ns_ident = bits::IdentifyNamespace {
             // No thin provisioning so nsze == ncap == nuse
             nsze,
@@ -479,11 +484,15 @@ impl PciNvme {
 
         // Update the block format we support
         debug_assert!(
-            BLOCK_SZ.is_power_of_two(),
-            "BLOCK_SZ must be a power of 2"
+            binfo.block_size.is_power_of_two(),
+            "binfo.block_size must be a power of 2"
         );
-        debug_assert!(BLOCK_SZ >= 512, "BLOCK_SZ must be at least 512 bytes");
-        ns_ident.lbaf[0].lbads = BLOCK_SZ.trailing_zeros() as u8;
+        debug_assert!(
+            binfo.block_size >= 512,
+            "binfo.block_size must be at least 512 bytes"
+        );
+
+        ns_ident.lbaf[0].lbads = binfo.block_size.trailing_zeros() as u8;
 
         // Initialize the CAP "register" leaving most values
         // at their defaults (0):

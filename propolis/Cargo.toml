@@ -27,10 +27,10 @@ slog = "2.7"
 serde = { version = "1" }
 serde_arrays = "0.1"
 erased-serde = "0.3"
+rand = "0.8"
 
 [dev-dependencies]
 crossbeam-channel = "0.5"
-rand = "0.8"
 tempfile = "3.2"
 slog-term = "2.7"
 slog-async = "2.7"

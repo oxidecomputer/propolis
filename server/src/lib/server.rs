@@ -348,6 +348,52 @@ async fn instance_ensure(
                             &chipset, bdf, backend, creg,
                         )?;
                     }
+                    "pci-nvme" => {
+                        let block_dev_name = dev
+                            .options
+                            .get("block_dev")
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    format!(
+                                        "no block_dev key for {}!",
+                                        devname
+                                    ),
+                                )
+                            })?
+                            .as_str()
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    format!(
+                                        "as_str() failed for {}'s block_dev!",
+                                        devname
+                                    ),
+                                )
+                            })?;
+
+                        let (backend, creg) = server_context
+                            .config
+                            .create_block_backend(block_dev_name, &disp)
+                            .map_err(|e| {
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    format!("ParseError: {:?}", e),
+                                )
+                            })?;
+
+                        let bdf: pci::Bdf =
+                            dev.get("pci-path").ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidData,
+                                    "Cannot parse disk PCI",
+                                )
+                            })?;
+
+                        init.initialize_nvme_block(
+                            &chipset, bdf, backend, creg,
+                        )?;
+                    }
                     "pci-virtio-viona" => {
                         let name = dev.get_string("vnic").ok_or_else(|| {
                             Error::new(

@@ -169,10 +169,19 @@ impl SyncDriver {
             if let Some(req) = guard.pop_front() {
                 drop(guard);
                 idled = false;
+                let logger = sctx.log().clone();
                 let ctx = sctx.dispctx();
                 match process_request(self.guest.clone(), &req, &ctx) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
-                    Err(_) => req.complete(block::Result::Failure, &ctx),
+                    Err(e) => {
+                        slog::error!(
+                            logger,
+                            "{:?} error on req {:?}",
+                            e,
+                            req.op
+                        );
+                        req.complete(block::Result::Failure, &ctx)
+                    }
                 }
             } else {
                 // wait until more requests are available
