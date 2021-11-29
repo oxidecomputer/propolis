@@ -10,6 +10,7 @@
 use super::mapping::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result, Write};
+use std::os::raw::c_void;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
@@ -254,6 +255,26 @@ impl VmmHdl {
         prot: Prot,
     ) -> Result<Mapping> {
         guard_space.mapping(size, prot, &self.inner, offset as i64)
+    }
+
+    /// Tracks dirty pages in the guest's physical address space.
+    ///
+    /// # Arguments:
+    /// - `start_gpa`: The start of the guest physical address range to track.
+    /// Must be page aligned.
+    /// - `bitmap`: A mutable bitmap of dirty pages, one bit per guest PFN
+    /// relative to `start_gpa`.
+    pub fn track_dirty_pages(
+        &self,
+        start_gpa: u64,
+        bitmap: &mut [u8],
+    ) -> Result<()> {
+        let mut tracker = bhyve_api::vm_dirty_tracker {
+            start_gpa,
+            len: bitmap.len(),
+            pfns: bitmap.as_mut_ptr() as *mut c_void,
+        };
+        self.ioctl(bhyve_api::VM_TRACK_DIRTY_PAGES, &mut tracker)
     }
 
     /// Issues a request to update the virtual RTC time.
