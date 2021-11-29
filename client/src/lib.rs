@@ -158,27 +158,6 @@ impl Client {
         self.put_no_response(path, Some(body)).await
     }
 
-    /// Initiate a migration from the specified source instance
-    pub async fn instance_migrate_initiate(
-        &self,
-        id: Uuid,
-        src_uuid: Uuid,
-        src_addr: String,
-    ) -> Result<api::InstanceMigrateInitiateResponse, Error> {
-        let path = format!(
-            "http://{}/instances/{}/migrate/initiate",
-            self.address, id
-        );
-        let body = Body::from(
-            serde_json::to_string(&api::InstanceMigrateInitiateRequest {
-                src_addr,
-                src_uuid,
-            })
-            .unwrap(),
-        );
-        self.put(path, Some(body)).await
-    }
-
     /// Get the status of an ongoing migration
     pub async fn instance_migrate_status(
         &self,

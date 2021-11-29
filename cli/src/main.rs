@@ -11,8 +11,8 @@ use anyhow::{anyhow, Context};
 use futures::{future, SinkExt, StreamExt};
 use propolis_client::{
     api::{
-        DiskRequest, InstanceEnsureRequest, InstanceProperties,
-        InstanceStateRequested, MigrationState,
+        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
+        InstanceProperties, InstanceStateRequested, MigrationState,
     },
     Client,
 };
@@ -172,7 +172,8 @@ async fn new_instance(
         properties,
         // TODO: Allow specifying NICs
         nics: vec![],
-        disks: disks.to_vec(),
+        disks,
+        migrate: None,
     };
 
     // Try to create the instance
@@ -286,7 +287,7 @@ async fn migrate_instance(
     src_client: Client,
     dst_client: Client,
     src_name: String,
-    src_addr: String,
+    src_addr: SocketAddr,
     dst_uuid: Uuid,
 ) -> anyhow::Result<()> {
     // Grab the src instance UUID
@@ -295,10 +296,30 @@ async fn migrate_instance(
         .await
         .with_context(|| anyhow!("failed to get src instance UUID"))?;
 
+    // Grab the instance details
+    let src_instance = src_client
+        .instance_get(src_uuid)
+        .await
+        .with_context(|| anyhow!("failed to get src instance properties"))?;
+
+    let request = InstanceEnsureRequest {
+        properties: InstanceProperties {
+            // Use a new ID for the destination instance we're creating
+            id: dst_uuid,
+            ..src_instance.instance.properties
+        },
+        // TODO: Handle migrating NICs & disks
+        nics: vec![],
+        disks: vec![],
+        migrate: Some(InstanceMigrateInitiateRequest { src_addr, src_uuid }),
+    };
+
     // Initiate the migration via the destination instance
     let migration_id = dst_client
-        .instance_migrate_initiate(dst_uuid, src_uuid, src_addr)
+        .instance_ensure(&request)
         .await?
+        .migrate
+        .ok_or_else(|| anyhow!("no migrate id on response"))?
         .migration_id;
 
     // Wait for the migration to complete by polling both source and destination
@@ -366,7 +387,7 @@ async fn main() -> anyhow::Result<()> {
                 client,
                 dst_client,
                 name,
-                addr.to_string(),
+                addr,
                 dst_uuid,
             )
             .await?

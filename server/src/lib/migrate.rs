@@ -79,9 +79,6 @@ pub enum MigrateError {
     #[error("expected connection upgrade")]
     UpgradeExpected,
 
-    #[error("destination instance already initialized")]
-    DestinationAlreadyInitialized,
-
     #[error("source instance is not initialized")]
     SourceNotInitialized,
 
@@ -112,7 +109,6 @@ impl Into<HttpError> for MigrateError {
             MigrateError::Http(_)
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
-            | MigrateError::DestinationAlreadyInitialized
             | MigrateError::SourceNotInitialized => {
                 HttpError::for_internal_error(msg)
             }
@@ -327,11 +323,6 @@ pub async fn dest_initiate(
         "migrate_src_addr" => migrate_info.src_addr.clone()
     ));
     info!(log, "Migration Destination");
-
-    let context = rqctx.context().context.lock().await;
-    if context.is_some() {
-        return Err(MigrateError::DestinationAlreadyInitialized);
-    }
 
     let mut migrate_task = rqctx.context().migrate_task.lock().await;
 

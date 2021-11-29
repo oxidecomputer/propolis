@@ -28,14 +28,18 @@ pub struct InstanceEnsureRequest {
 
     #[serde(default)]
     pub disks: Vec<DiskRequest>,
+
+    pub migrate: Option<InstanceMigrateInitiateRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceEnsureResponse {}
+pub struct InstanceEnsureResponse {
+    pub migrate: Option<InstanceMigrateInitiateResponse>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceMigrateInitiateRequest {
-    pub src_addr: String,
+    pub src_addr: SocketAddr,
     pub src_uuid: Uuid,
 }
 
