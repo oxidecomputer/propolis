@@ -322,9 +322,9 @@ pub struct vm_run_state {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_dirty_tracker {
-    pub start_gpa: u64,
-    pub len: size_t,
-    pub pfns: *mut c_void,
+    pub vdt_start_gpa: u64,
+    pub vdt_len: size_t,
+    pub vdt_pfns: *mut c_void,
 }
 
 pub const VM_MAX_NAMELEN: usize = 128;

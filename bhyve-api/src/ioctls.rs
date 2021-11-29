@@ -88,4 +88,5 @@ pub const VM_SUSPEND_CPU: i32 = VMM_IOC_BASE | 0x1d;
 pub const VM_RESUME_CPU: i32 = VMM_IOC_BASE | 0x1e;
 
 pub const VM_TRACK_DIRTY_PAGES: i32 = VMM_IOC_BASE | 0x20;
+
 pub const VM_DEVMEM_GETOFFSET: i32 = VMM_IOC_BASE | 0xff;

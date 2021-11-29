@@ -16,6 +16,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::common::PAGE_SIZE;
 use crate::util::sys::ioctl;
 
 /// Creates a new virtual machine with the provided `name`.
@@ -270,9 +271,9 @@ impl VmmHdl {
         bitmap: &mut [u8],
     ) -> Result<()> {
         let mut tracker = bhyve_api::vm_dirty_tracker {
-            start_gpa,
-            len: bitmap.len(),
-            pfns: bitmap.as_mut_ptr() as *mut c_void,
+            vdt_start_gpa: start_gpa,
+            vdt_len: bitmap.len() * PAGE_SIZE,
+            vdt_pfns: bitmap.as_mut_ptr() as *mut c_void,
         };
         self.ioctl(bhyve_api::VM_TRACK_DIRTY_PAGES, &mut tracker)
     }
