@@ -19,7 +19,7 @@
 //! the implied invariants: higher level software is responsible
 //! for that.
 
-use super::status;
+use super::MigrateError;
 use bytes::{Buf, BufMut, BytesMut};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::convert::TryFrom;
@@ -35,7 +35,7 @@ use tokio_util::codec;
 #[derive(Debug)]
 pub(crate) enum Message {
     Okay,
-    Error(status::Error),
+    Error(MigrateError),
     Serialized(String),
     Blob(Vec<u8>),
     Page(Vec<u8>),
@@ -357,7 +357,7 @@ mod live_migration_encoder_tests {
         let mut encoder = LiveMigrationFramer {};
         let v = Vec::new();
         encoder.put_bitmap(&v, &mut bytes);
-        assert_eq!(&bytes[..], &[]);
+        assert!(&bytes[..].is_empty());
     }
 
     #[test]
@@ -387,7 +387,7 @@ mod encoder_tests {
     #[test]
     fn encode_error() {
         let mut bytes = BytesMut::new();
-        let error = status::Error(status::ErrorCode::Bad, "foo".into());
+        let error = MigrateError::Initiate;
         let mut encoder = LiveMigrationFramer {};
         encoder.encode(Message::Error(error), &mut bytes).ok();
         assert_eq!(&bytes[..5], &[16, 0, 0, 0, MessageType::Error as u8]);
@@ -433,9 +433,7 @@ mod encoder_tests {
         let mut bytes = BytesMut::new();
         let page = [0u8; 4096];
         let mut encoder = LiveMigrationFramer {};
-        encoder
-            .encode(Message::Page(page.to_vec()), &mut bytes)
-            .ok();
+        encoder.encode(Message::Page(page.to_vec()), &mut bytes).ok();
         assert_eq!(
             &bytes[..5],
             [5, 0b0001_0000, 0, 0, MessageType::Page as u8]
@@ -473,9 +471,7 @@ mod encoder_tests {
     fn encode_mem_end() {
         let mut bytes = BytesMut::new();
         let mut encoder = LiveMigrationFramer {};
-        encoder
-            .encode(Message::MemEnd(0, 8 * 4096), &mut bytes)
-            .ok();
+        encoder.encode(Message::MemEnd(0, 8 * 4096), &mut bytes).ok();
         assert_eq!(&bytes[..5], [21, 0, 0, 0, MessageType::MemEnd as u8]);
         assert_eq!(&bytes[5..5 + 8], &[0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(
@@ -528,9 +524,8 @@ mod live_migration_decoder_tests {
         let mut bytes = BytesMut::new();
         bytes.put_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
         let mut decoder = LiveMigrationFramer {};
-        let (_, start, end) = decoder
-            .get_start_end(bytes.remaining(), &mut bytes)
-            .unwrap();
+        let (_, start, end) =
+            decoder.get_start_end(bytes.remaining(), &mut bytes).unwrap();
         assert_eq!(start, 1);
         assert_eq!(end, 2);
     }
@@ -590,10 +585,10 @@ mod decoder_tests {
     fn decode_error() {
         let mut bytes = BytesMut::with_capacity(16);
         bytes.put_slice(&[16, 0, 0, 0, MessageType::Error as u8]);
-        bytes.put_slice(&br#"(Bad,"foo")"#[..]);
+        bytes.put_slice(&br#"Http("foo")"#[..]);
         let mut decoder = LiveMigrationFramer {};
         let decoded = decoder.decode(&mut bytes);
-        let expected = status::Error(status::ErrorCode::Bad, "foo".into());
+        let expected = MigrateError::Http("foo".into());
         assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
     }
 
@@ -606,10 +601,10 @@ mod decoder_tests {
         bytes.put_slice(&br#"(Bad,"bar")"#[..]);
         let mut decoder = LiveMigrationFramer {};
         let decoded = decoder.decode(&mut bytes);
-        let expected = status::Error(status::ErrorCode::Bad, "foo".into());
+        let expected = MigrateError::Http("foo".into());
         assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
         let decoded = decoder.decode(&mut bytes);
-        let expected = status::Error(status::ErrorCode::Bad, "bar".into());
+        let expected = MigrateError::Http("bar".into());
         assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
     }
 
