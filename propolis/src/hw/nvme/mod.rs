@@ -470,8 +470,7 @@ impl PciNvme {
 
         // Initialize the Identify structure returned when the  host issues
         // an Identify Namespace command.
-        let total_bytes = binfo.total_size * binfo.block_size as u64;
-        let nsze = total_bytes / (binfo.block_size as u64);
+        let nsze = binfo.total_size;
         let mut ns_ident = bits::IdentifyNamespace {
             // No thin provisioning so nsze == ncap == nuse
             nsze,
