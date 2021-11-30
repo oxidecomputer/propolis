@@ -370,7 +370,7 @@ async fn main() -> anyhow::Result<()> {
                 uuid.unwrap_or_else(Uuid::new_v4),
                 vcpus,
                 memory,
-                disks
+                disks,
             )
             .await?
         }
@@ -383,14 +383,7 @@ async fn main() -> anyhow::Result<()> {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
             let dst_client = Client::new(dst_addr, log.clone());
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
-            migrate_instance(
-                client,
-                dst_client,
-                name,
-                addr,
-                dst_uuid,
-            )
-            .await?
+            migrate_instance(client, dst_client, name, addr, dst_uuid).await?
         }
     }
 
