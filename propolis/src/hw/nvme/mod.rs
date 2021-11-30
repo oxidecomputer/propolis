@@ -10,7 +10,6 @@ use crate::{block, common::*};
 
 use erased_serde::Serialize;
 use lazy_static::lazy_static;
-use rand::{distributions::Alphanumeric, Rng};
 use thiserror::Error;
 
 mod admin;
@@ -421,6 +420,7 @@ impl PciNvme {
     pub fn create(
         vendor: u16,
         device: u16,
+        serial_number: String,
         binfo: block::DeviceInfo,
     ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
@@ -441,13 +441,9 @@ impl PciNvme {
         let cqes = size_of::<RawCompletion>().trailing_zeros() as u8;
         let sqes = size_of::<RawSubmission>().trailing_zeros() as u8;
 
-        // Random serial number
-        let sn: [u8; 20] = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(20)
-            .collect::<Vec<u8>>()
-            .try_into()
-            .expect("Expected vector of 20!");
+        let sz = std::cmp::min(20, serial_number.len());
+        let mut sn: [u8; 20] = [0u8; 20];
+        sn[..sz].clone_from_slice(&serial_number.as_bytes()[..sz]);
 
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.

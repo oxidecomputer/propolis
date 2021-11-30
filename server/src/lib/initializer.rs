@@ -232,11 +232,12 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
         bdf: pci::Bdf,
+        name: String,
         backend: Arc<dyn block::Backend>,
         be_register: ChildRegister,
     ) -> Result<(), Error> {
         let be_info = backend.info();
-        let nvme = nvme::PciNvme::create(0x1de, 0x1000, be_info);
+        let nvme = nvme::PciNvme::create(0x1de, 0x1000, name, be_info);
         let id = self.inv.register_instance(&nvme, bdf.to_string())?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
@@ -298,7 +299,13 @@ impl<'a> MachineInitializer<'a> {
             }
             "nvme" => {
                 info!(self.log, "Calling initialize_nvme_block");
-                self.initialize_nvme_block(chipset, bdf, be, creg)
+                self.initialize_nvme_block(
+                    chipset,
+                    bdf,
+                    disk.name.clone(),
+                    be,
+                    creg,
+                )
             }
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,

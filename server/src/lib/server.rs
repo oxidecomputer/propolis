@@ -391,7 +391,11 @@ async fn instance_ensure(
                             })?;
 
                         init.initialize_nvme_block(
-                            &chipset, bdf, backend, creg,
+                            &chipset,
+                            bdf,
+                            block_dev_name.to_string(),
+                            backend,
+                            creg,
                         )?;
                     }
                     "pci-virtio-viona" => {
