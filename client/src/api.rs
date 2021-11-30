@@ -77,12 +77,13 @@ pub struct InstanceMigrateStatusResponse {
 )]
 pub enum MigrationState {
     Sync,
-    Ram,
+    RamPush,
     Pause,
-    RamDirty,
+    RamPushDirty,
     Device,
     Arch,
     Resume,
+    RamPull,
     Finish,
 }
 

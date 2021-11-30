@@ -13,6 +13,7 @@ use crate::server::Context;
 
 mod codec;
 mod destination;
+mod preamble;
 mod source;
 
 /// Our migration protocol version
@@ -94,6 +95,9 @@ pub enum MigrateError {
     #[error("protocol error")]
     // TODO: just for testing rn
     Protocol,
+
+    #[error("encoding error")]
+    Encoding,
 }
 
 impl From<hyper::Error> for MigrateError {
@@ -121,6 +125,7 @@ impl Into<HttpError> for MigrateError {
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
             | MigrateError::Protocol
+            | MigrateError::Encoding
             | MigrateError::UuidMismatch
             | MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)
