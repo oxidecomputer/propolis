@@ -1,5 +1,9 @@
 // Required for USDT
 #![cfg_attr(feature = "dtrace-probes", feature(asm))]
+#![cfg_attr(
+    all(feature = "dtrace-probes", target_os = "macos"),
+    feature(asm_sym)
+)]
 
 use anyhow::anyhow;
 use dropshot::{
