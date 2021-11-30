@@ -221,14 +221,28 @@ async fn serial(
 
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
+    let mut next_raw = false;
 
     loop {
         tokio::select! {
             c = stdin.read_u8() => {
                 match c? {
-                    // Exit on Ctrl-C
-                    b'\x03' => break,
-                    c => ws.send(Message::binary(vec![c])).await?,
+                    // Ctrl-A means send next one raw
+                    b'\x01' if !next_raw => {
+                        next_raw = true;
+                    }
+                    c => {
+                        // Exit on non-raw Ctrl-C
+                        if c == b'\x03' && !next_raw {
+                            break;
+                        }
+
+                        ws.send(Message::binary(vec![c])).await?;
+
+                        if next_raw {
+                            next_raw = false;
+                        }
+                    },
                 }
             }
             msg = ws.next() => {

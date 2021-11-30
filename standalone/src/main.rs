@@ -247,7 +247,12 @@ fn main() {
                     let bdf = bdf.unwrap();
 
                     let info = backend.info();
-                    let nvme = hw::nvme::PciNvme::create(0x1de, 0x1000, info);
+                    let nvme = hw::nvme::PciNvme::create(
+                        0x1de,
+                        0x1000,
+                        block_dev.to_string(),
+                        info,
+                    );
 
                     let id = inv.register_instance(&nvme, bdf.to_string())?;
                     let _be_id = inv.register_child(creg, id)?;
