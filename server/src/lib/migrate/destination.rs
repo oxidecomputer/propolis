@@ -93,11 +93,10 @@ impl DestinationProtocol {
         self.send_msg(codec::Message::MemDone).await
     }
 
-
     async fn finish(&mut self) -> Result<()> {
         self.migrate_context.set_state(MigrationState::Finish).await;
         self.send_msg(codec::Message::Okay).await?;
-        let _ = self.read_ok().await;  // A failure here is ok.
+        let _ = self.read_ok().await; // A failure here is ok.
         Ok(())
     }
 
