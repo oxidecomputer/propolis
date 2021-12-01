@@ -157,4 +157,21 @@ impl Client {
         let body = Body::from(serde_json::to_string(&state).unwrap());
         self.put_no_response(path, Some(body)).await
     }
+
+    /// Get the status of an ongoing migration
+    pub async fn instance_migrate_status(
+        &self,
+        id: Uuid,
+        migration_id: Uuid,
+    ) -> Result<api::InstanceMigrateStatusResponse, Error> {
+        let path =
+            format!("http://{}/instances/{}/migrate/status", self.address, id);
+        let body = Body::from(
+            serde_json::to_string(&api::InstanceMigrateStatusRequest {
+                migration_id,
+            })
+            .unwrap(),
+        );
+        self.get(path, Some(body)).await
+    }
 }

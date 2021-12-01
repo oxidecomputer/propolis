@@ -34,6 +34,7 @@ use propolis_client::api;
 
 use crate::config::Config;
 use crate::initializer::{build_instance, MachineInitializer};
+use crate::migrate;
 use crate::serial::Serial;
 
 // TODO(error) Do a pass of HTTP codes (error and ok)
@@ -75,18 +76,19 @@ struct StateChange {
 }
 
 // All context for a single propolis instance.
-struct InstanceContext {
+pub(crate) struct InstanceContext {
     // The instance, which may or may not be instantiated.
-    instance: Arc<Instance>,
-    properties: api::InstanceProperties,
-    serial: Arc<Serial<LpcUart>>,
+    pub instance: Arc<Instance>,
+    pub properties: api::InstanceProperties,
+    serial: Option<Arc<Serial<LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
 pub struct Context {
-    context: Mutex<Option<InstanceContext>>,
+    pub(crate) context: Mutex<Option<InstanceContext>>,
+    pub(crate) migrate_task: Mutex<Option<migrate::MigrateTask>>,
     config: Config,
     log: Logger,
 }
@@ -94,7 +96,12 @@ pub struct Context {
 impl Context {
     /// Creates a new server context object.
     pub fn new(config: Config, log: Logger) -> Self {
-        Context { context: Mutex::new(None), config, log }
+        Context {
+            context: Mutex::new(None),
+            migrate_task: Mutex::new(None),
+            config,
+            log,
+        }
     }
 }
 
@@ -219,7 +226,9 @@ async fn instance_ensure(
             ));
         }
 
-        return Ok(HttpResponseCreated(api::InstanceEnsureResponse {}));
+        return Ok(HttpResponseCreated(api::InstanceEnsureResponse {
+            migrate: None,
+        }));
     }
 
     const MB: usize = 1024 * 1024;
@@ -245,11 +254,66 @@ async fn instance_ensure(
         HttpError::for_internal_error(format!("Cannot build instance: {}", err))
     })?;
 
+    let (tx, rx) = watch::channel(StateChange {
+        gen: 0,
+        state: propolis::instance::State::Initialize,
+    });
+
+    instance.on_transition(Box::new(move |next_state, _inv, ctx| {
+        match next_state {
+            propolis::instance::State::Boot => {
+                // Set vCPUs to their proper boot (INIT) state
+                for mut vcpu in ctx.mctx.vcpus() {
+                    vcpu.reboot_state().unwrap();
+                    vcpu.activate().unwrap();
+                    // Set BSP to start up
+                    if vcpu.is_bsp() {
+                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                        vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                            0xfff0,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            _ => {}
+        }
+        let last = (*tx.borrow()).clone();
+        let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
+    }));
+
+    // Is this part of a migration?
+    if let Some(migrate_request) = request.migrate {
+        // We stop short of the usual intialization routines because this is
+        // a migrate request and so we should try to establish a connection
+        // with the source instance.
+
+        // Save the created Instance in the server's context as-is.
+        // We'll update it as part of the migration process later.
+        *context = Some(InstanceContext {
+            instance,
+            properties,
+            serial: None,
+            state_watcher: rx,
+            serial_task: None,
+        });
+        drop(context);
+
+        let res = migrate::dest_initiate(rqctx, instance_id, migrate_request)
+            .await
+            .map_err(<_ as Into<HttpError>>::into)?;
+        // TODO: This should be HttpResponseAccepted
+        return Ok(HttpResponseCreated(api::InstanceEnsureResponse {
+            migrate: Some(res),
+        }));
+    }
+
     // Initialize (some) of the instance's hardware.
     //
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
-    let mut com1: Option<Serial<LpcUart>> = None;
+    let mut com1: Option<Arc<Serial<LpcUart>>> = None;
 
     instance
         .initialize(|machine, mctx, disp, inv| {
@@ -263,7 +327,7 @@ async fn instance_ensure(
             init.initialize_rom(server_context.config.get_bootrom())?;
             init.initialize_kernel_devs(lowmem, highmem)?;
             let chipset = init.initialize_chipset()?;
-            com1 = Some(init.initialize_uart(&chipset)?);
+            com1 = Some(Arc::new(init.initialize_uart(&chipset)?));
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port()?;
 
@@ -434,46 +498,18 @@ async fn instance_ensure(
             ))
         })?;
 
-    let (tx, rx) = watch::channel(StateChange {
-        gen: 0,
-        state: propolis::instance::State::Initialize,
-    });
     instance.print();
-
-    instance.on_transition(Box::new(move |next_state, _inv, ctx| {
-        match next_state {
-            propolis::instance::State::Boot => {
-                // Set vCPUs to their proper boot (INIT) state
-                for mut vcpu in ctx.mctx.vcpus() {
-                    vcpu.reboot_state().unwrap();
-                    vcpu.activate().unwrap();
-                    // Set BSP to start up
-                    if vcpu.is_bsp() {
-                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                        vcpu.set_reg(
-                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                            0xfff0,
-                        )
-                        .unwrap();
-                    }
-                }
-            }
-            _ => {}
-        }
-        let last = (*tx.borrow()).clone();
-        let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
-    }));
 
     // Save the newly created instance in the server's context.
     *context = Some(InstanceContext {
         instance,
         properties,
-        serial: Arc::new(com1.unwrap()),
+        serial: com1,
         state_watcher: rx,
         serial_task: None,
     });
 
-    Ok(HttpResponseCreated(api::InstanceEnsureResponse {}))
+    Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate: None }))
 }
 
 #[endpoint {
@@ -733,6 +769,16 @@ async fn instance_serial(
         ));
     }
 
+    let serial = context
+        .serial
+        .as_ref()
+        .ok_or_else(|| {
+            HttpError::for_internal_error(
+                "Instance present but serial not initialized".to_string(),
+            )
+        })?
+        .clone();
+
     let request = &mut *rqctx.request.lock().await;
 
     if !request
@@ -790,8 +836,7 @@ async fn instance_serial(
 
     let (detach_ch, detach_recv) = oneshot::channel();
 
-    let upgrade_fut = upgrade::on(&mut *request);
-    let serial = context.serial.clone();
+    let upgrade_fut = upgrade::on(request);
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
     let actx = context.instance.disp.async_ctx();
@@ -874,6 +919,43 @@ async fn instance_serial_detach(
     Ok(HttpResponseUpdatedNoContent {})
 }
 
+// This endpoint is meant to only be called during a migration from the destination
+// instance to the source instance as part of the HTTP connection upgrade used to
+// establish the migration link. We don't actually want this exported via OpenAPI
+// clients.
+#[endpoint {
+    method = PUT,
+    path = "/instances/{instance_id}/migrate/start",
+    unpublished = true,
+}]
+async fn instance_migrate_start(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::InstancePathParams>,
+    request: TypedBody<api::InstanceMigrateStartRequest>,
+) -> Result<Response<Body>, HttpError> {
+    let instance_id = path_params.into_inner().instance_id;
+    let migration_id = request.into_inner().migration_id;
+    migrate::source_start(rqctx, instance_id, migration_id)
+        .await
+        .map_err(Into::into)
+}
+
+#[endpoint {
+    method = GET,
+    path = "/instances/{instance_id}/migrate/status"
+}]
+async fn instance_migrate_status(
+    rqctx: Arc<RequestContext<Context>>,
+    _path_params: Path<api::InstancePathParams>,
+    request: TypedBody<api::InstanceMigrateStatusRequest>,
+) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
+    let migration_id = request.into_inner().migration_id;
+    migrate::migrate_status(rqctx, migration_id)
+        .await
+        .map_err(Into::into)
+        .map(HttpResponseOk)
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
@@ -884,5 +966,7 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
     api.register(instance_serial_detach).unwrap();
+    api.register(instance_migrate_start).unwrap();
+    api.register(instance_migrate_status).unwrap();
     api
 }

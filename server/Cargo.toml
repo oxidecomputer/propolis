@@ -18,6 +18,7 @@ doc = false
 
 [dependencies]
 anyhow = "1.0"
+const_format = "0.2"
 # dropshot = "0.6"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 futures = "0.3"
@@ -28,6 +29,7 @@ tokio-tungstenite = "0.14"
 toml = "0.5"
 serde = "1.0"
 serde_derive = "1.0"
+serde_json = "1.0"
 slog = "2.7"
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis", features = ["crucible"], default-features = false }

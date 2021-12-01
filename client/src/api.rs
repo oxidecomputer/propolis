@@ -28,10 +28,63 @@ pub struct InstanceEnsureRequest {
 
     #[serde(default)]
     pub disks: Vec<DiskRequest>,
+
+    pub migrate: Option<InstanceMigrateInitiateRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceEnsureResponse {}
+pub struct InstanceEnsureResponse {
+    pub migrate: Option<InstanceMigrateInitiateResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateInitiateRequest {
+    pub src_addr: SocketAddr,
+    pub src_uuid: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateInitiateResponse {
+    pub migration_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateStartRequest {
+    pub migration_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateStatusRequest {
+    pub migration_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceMigrateStatusResponse {
+    pub state: MigrationState,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    JsonSchema,
+)]
+pub enum MigrationState {
+    Sync,
+    Ram,
+    Pause,
+    RamDirty,
+    Device,
+    Arch,
+    Resume,
+    Finish,
+}
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceGetResponse {
