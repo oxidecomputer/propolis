@@ -390,8 +390,8 @@ mod encoder_tests {
         let error = MigrateError::Initiate;
         let mut encoder = LiveMigrationFramer {};
         encoder.encode(Message::Error(error), &mut bytes).ok();
-        assert_eq!(&bytes[..5], &[16, 0, 0, 0, MessageType::Error as u8]);
-        assert_eq!(&bytes[5..], br#"(Bad,"foo")"#);
+        assert_eq!(&bytes[..5], &[13, 0, 0, 0, MessageType::Error as u8]);
+        assert_eq!(&bytes[5..], br#"Initiate"#);
     }
 
     #[test]
@@ -596,9 +596,9 @@ mod decoder_tests {
     fn decode_two_errors() {
         let mut bytes = BytesMut::with_capacity(16 * 2);
         bytes.put_slice(&[16, 0, 0, 0, MessageType::Error as u8]);
-        bytes.put_slice(&br#"(Bad,"foo")"#[..]);
+        bytes.put_slice(&br#"Http("foo")"#[..]);
         bytes.put_slice(&[16, 0, 0, 0, MessageType::Error as u8]);
-        bytes.put_slice(&br#"(Bad,"bar")"#[..]);
+        bytes.put_slice(&br#"Http("bar")"#[..]);
         let mut decoder = LiveMigrationFramer {};
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
