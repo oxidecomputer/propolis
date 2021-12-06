@@ -1,18 +1,20 @@
 use futures::{future, SinkExt, StreamExt};
+use hyper::upgrade::Upgraded;
+use propolis::common::GuestAddr;
+use propolis::instance::ReqState;
 use propolis::inventory::{Entity, Order};
+use slog::{error, info, warn};
 use std::io;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
-
-use hyper::upgrade::Upgraded;
-use propolis::instance::ReqState;
-use slog::{error, info, warn};
 use tokio_util::codec::Framed;
 
 use crate::migrate::codec::{self, LiveMigrationFramer};
+use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
-use crate::migrate::{MigrateContext, MigrateError, MigrationState};
+use crate::migrate::{MigrateContext, MigrateError, MigrationState, PageIter};
 
 pub async fn migrate(
     mctx: Arc<MigrateContext>,
@@ -22,6 +24,7 @@ pub async fn migrate(
     proto.start();
     proto.sync().await?;
     proto.ram_push().await?;
+    proto.pause().await?;
     proto.device_state().await?;
     proto.arch_state().await?;
     proto.ram_pull().await?;
@@ -76,14 +79,79 @@ impl SourceProtocol {
 
     async fn ram_push(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::RamPush).await;
-        let m = self.read_msg().await?;
-        info!(self.log(), "ram_push: got query {:?}", m);
-        // TODO(cross): Implement the rest of the RAM transfer protocol here. :-)
-        self.pause().await?;
-        self.mctx.set_state(MigrationState::RamPushDirty).await;
-        self.send_msg(codec::Message::MemEnd(0, !0)).await?;
-        let m = self.read_msg().await?;
-        info!(self.log(), "ram_push: got done {:?}", m);
+        let vmm_ram_range = self.vmm_ram_bounds().await?;
+        let req_ram_range = self.read_mem_query().await?;
+        info!(
+            self.log(),
+            "ram_push: got query for range {:?}, vm range {:?}",
+            req_ram_range,
+            vmm_ram_range
+        );
+        self.offer_ram(vmm_ram_range, req_ram_range).await?;
+
+        loop {
+            let m = self.read_msg().await?;
+            info!(self.log(), "ram_push: source xfer phase recvd {:?}", m);
+            match m {
+                codec::Message::MemDone => break,
+                codec::Message::MemFetch(start, end, bits) => {
+                    if !memx::validate_bitmap(start, end, &bits) {
+                        error!(self.log(), "invalid bitmap");
+                        return Err(MigrateError::Protocol);
+                    }
+                    // XXX: We should do stricter validation on the fetch
+                    // request here.  For instance, we shouldn't "push" MMIO
+                    // space or non-existent RAM regions.  While we de facto
+                    // do not because of the way access is implemented, we
+                    // should probably disallow it at the protocol level.
+                    self.xfer_ram(start, end, &bits).await?;
+                }
+                _ => return Err(MigrateError::Protocol),
+            };
+        }
+        info!(self.log(), "ram_push: done sending ram");
+        self.mctx.set_state(MigrationState::Pause).await;
+        Ok(())
+    }
+
+    async fn offer_ram(
+        &mut self,
+        vmm_ram_range: Range<GuestAddr>,
+        req_ram_range: Range<u64>,
+    ) -> Result<(), MigrateError> {
+        info!(self.log(), "offering ram");
+        let vmm_ram_start = vmm_ram_range.start;
+        let vmm_ram_end = vmm_ram_range.end;
+        let mut bits = [0u8; 4096];
+        let req_start_gpa = req_ram_range.start;
+        let req_end_gpa = req_ram_range.end;
+        let start_gpa = req_start_gpa.max(vmm_ram_start.0);
+        let end_gpa = req_end_gpa.min(vmm_ram_end.0);
+        let step = bits.len() * 8 * 4096;
+        for gpa in (start_gpa..end_gpa).step_by(step) {
+            self.track_dirty(GuestAddr(0), &mut bits).await?;
+            if bits.iter().all(|&b| b == 0) {
+                continue;
+            }
+            let end = end_gpa.min(gpa + step as u64);
+            self.send_msg(memx::make_mem_offer(gpa, end, &bits)).await?;
+        }
+        self.send_msg(codec::Message::MemEnd(req_start_gpa, req_end_gpa)).await
+    }
+
+    async fn xfer_ram(
+        &mut self,
+        start: u64,
+        end: u64,
+        bits: &[u8],
+    ) -> Result<(), MigrateError> {
+        info!(self.log(), "ram_push: xfer RAM between {} and {}", start, end);
+        self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
+        for addr in PageIter::new(start, end, bits) {
+            let mut bytes = [0u8; 4096];
+            self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
+            self.send_msg(codec::Message::Page(bytes.into())).await?;
+        }
         Ok(())
     }
 
@@ -211,10 +279,75 @@ impl SourceProtocol {
         }
     }
 
+    async fn read_mem_query(&mut self) -> Result<Range<u64>, MigrateError> {
+        match self.read_msg().await? {
+            codec::Message::MemQuery(start, end) => {
+                if start % 4096 != 0 || (end % 4096 != 0 && end != !0) {
+                    return Err(MigrateError::Protocol);
+                }
+                Ok(start..end)
+            }
+            msg => {
+                error!(self.log(), "expected `MemQuery` but received: {msg:?}");
+                Err(MigrateError::UnexpectedMessage)
+            }
+        }
+    }
+
     async fn send_msg(
         &mut self,
         m: codec::Message,
     ) -> Result<(), MigrateError> {
         Ok(self.conn.send(m).await?)
+    }
+
+    async fn vmm_ram_bounds(
+        &mut self,
+    ) -> Result<Range<GuestAddr>, MigrateError> {
+        let memctx = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or(MigrateError::InstanceNotInitialized)?
+            .mctx
+            .memctx();
+        memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
+    }
+
+    async fn track_dirty(
+        &mut self,
+        start_gpa: GuestAddr,
+        bits: &mut [u8],
+    ) -> Result<(), MigrateError> {
+        let handle = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or(MigrateError::InstanceNotInitialized)?
+            .mctx
+            .hdl();
+        handle
+            .track_dirty_pages(start_gpa.0, bits)
+            .map_err(|_| MigrateError::InvalidInstanceState)
+    }
+
+    async fn read_guest_mem(
+        &mut self,
+        addr: GuestAddr,
+        buf: &mut [u8],
+    ) -> Result<(), MigrateError> {
+        let memctx = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or(MigrateError::InstanceNotInitialized)?
+            .mctx
+            .memctx();
+        let len = buf.len();
+        memctx.direct_read_into(addr, buf, len);
+        Ok(())
     }
 }

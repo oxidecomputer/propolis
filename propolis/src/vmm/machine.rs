@@ -3,6 +3,7 @@
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::ops::Range;
 use std::sync::Arc;
 
 use crate::common::{GuestAddr, GuestRegion};
@@ -270,6 +271,20 @@ impl<'a> MemCtx<'a> {
             None
         }
     }
+    /// Reads bytes from guest memory into a buffer, using the direct
+    /// mapping.
+    pub fn direct_read_into(
+        &self,
+        addr: GuestAddr,
+        buf: &mut [u8],
+        len: usize,
+    ) -> Option<usize> {
+        let len = usize::min(buf.len(), len);
+        let region = GuestRegion(addr, len);
+        let mapping = self.direct_readable_region(&region)?;
+        mapping.read_bytes(&mut buf[..len]).ok()
+    }
+
     /// Reads multiple objects from a guest address.
     pub fn read_many<T: Copy>(
         &self,
@@ -404,6 +419,19 @@ impl<'a> MemCtx<'a> {
         } else {
             None
         }
+    }
+
+    /// Returns the [lowest, highest] memory addresses in the space, inclusive.
+    pub fn mem_bounds(&self) -> Option<Range<GuestAddr>> {
+        let lowest = self
+            .map
+            .lowest_addr(|entry| matches!(entry.kind, MapKind::SysMem(_, _)))?
+            as u64;
+        let highest = self
+            .map
+            .highest_addr(|entry| matches!(entry.kind, MapKind::SysMem(_, _)))?
+            as u64;
+        Some(GuestAddr(lowest)..GuestAddr(highest))
     }
 }
 

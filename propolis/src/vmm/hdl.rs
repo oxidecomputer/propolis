@@ -272,7 +272,7 @@ impl VmmHdl {
     ) -> Result<()> {
         let mut tracker = bhyve_api::vm_dirty_tracker {
             vdt_start_gpa: start_gpa,
-            vdt_len: bitmap.len() * PAGE_SIZE,
+            vdt_len: bitmap.len() * 8 * PAGE_SIZE,
             vdt_pfns: bitmap.as_mut_ptr() as *mut c_void,
         };
         self.ioctl(bhyve_api::VM_TRACK_DIRTY_PAGES, &mut tracker)
