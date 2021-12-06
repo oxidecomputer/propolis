@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bit_field::BitField;
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
 use propolis::{
@@ -17,6 +18,7 @@ use crate::server::Context;
 
 mod codec;
 mod destination;
+mod memx;
 mod preamble;
 mod source;
 
@@ -147,6 +149,10 @@ pub enum MigrateError {
     /// Failed to pause the source instance's devices or tasks
     #[error("failed to pause source instance")]
     SourcePause,
+
+    /// Phase error, improper or corrupted message in protocol.
+    #[error("phase, improper or corrupted message in protocol")]
+    Protocol,
 }
 
 impl MigrateError {
@@ -191,6 +197,7 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
             | MigrateError::UnexpectedMessage
+            | MigrateError::Protocol
             | MigrateError::SourcePause => HttpError::for_internal_error(msg),
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
@@ -443,4 +450,36 @@ pub async fn migrate_status(
     Ok(api::InstanceMigrateStatusResponse {
         state: migrate_task.context.get_state().await,
     })
+}
+
+// We should probably turn this into some kind of ValidatedBitmap
+// data structure, so that we're only parsing it once.
+struct PageIter<'a> {
+    start: u64,
+    current: u64,
+    end: u64,
+    bits: &'a [u8],
+}
+
+impl<'a> PageIter<'a> {
+    pub fn new(start: u64, end: u64, bits: &'a [u8]) -> PageIter<'a> {
+        let current = start;
+        PageIter { start, current, end, bits }
+    }
+}
+
+impl<'a> Iterator for PageIter<'a> {
+    type Item = u64;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current < self.end {
+            let addr = self.current;
+            self.current += 4096;
+            let page_offset = ((addr - self.start) / 4096) as usize;
+            let b = self.bits[page_offset / 8];
+            if b.get_bit(page_offset % 8) {
+                return Some(addr);
+            }
+        }
+        None
+    }
 }

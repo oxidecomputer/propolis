@@ -166,7 +166,7 @@ impl LiveMigrationFramer {
     }
 
     // Retrieves a bitmap from the buffer.  Validates that enough
-    // bytes are in the buffer to
+    // bytes are in the buffer to satisfy the request.
     fn get_bitmap(
         &mut self,
         len: usize,

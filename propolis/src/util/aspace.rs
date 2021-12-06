@@ -92,6 +92,31 @@ impl<T> ASpace<T> {
         Iter { inner: self.map.iter() }
     }
 
+    pub fn lowest_addr<P>(&self, mut predicate: P) -> Option<usize>
+    where
+        P: FnMut(&T) -> bool,
+    {
+        let (&k, _) = self
+            .map
+            .iter()
+            .filter(|(_, (_, entry))| predicate(entry))
+            .next()?;
+        Some(k)
+    }
+
+    pub fn highest_addr<P>(&self, mut predicate: P) -> Option<usize>
+    where
+        P: FnMut(&T) -> bool,
+    {
+        let (&k, &(len, _)) = self
+            .map
+            .iter()
+            .rev()
+            .filter(|(_, (_, entry))| predicate(entry))
+            .next()?;
+        Some(k + len - 1)
+    }
+
     /// Get an iterator for all empty space, sorted by starting point
     ///
     /// Returns all space which does not overlap with registered regions.
@@ -361,7 +386,20 @@ mod tests {
         assert_eq!(s.region_at(end + 1), Err(Error::OutOfRange));
         assert_eq!(s.region_at(end + 10), Err(Error::OutOfRange));
     }
+    #[test]
+    fn bounds_accessors() {
+        let start = 0x1000;
+        let end = 0xffff;
+        let mut s: ASpace<u32> = ASpace::new(start, end);
 
+        assert!(s.register(0x2000, 0x1000, 0).is_ok());
+        assert!(s.register(0x3000, 0x1000, 1).is_ok());
+        assert!(s.register(0x5000, 0x1000, 2).is_ok());
+        assert!(s.register(0xa000, 0x1000, 3).is_ok());
+
+        assert_eq!(s.lowest_addr(|_| true), Some(0x2000));
+        assert_eq!(s.highest_addr(|_| true), Some(0xafff));
+    }
     #[test]
     fn inverse_iterator_alloc_middle() {
         let end = 100;
