@@ -265,9 +265,7 @@ impl<'a> MachineInitializer<'a> {
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
     ) -> Result<(), Error> {
-        let addresses = disk
-            .address
-            .clone();
+        let addresses = disk.address.clone();
 
         info!(self.log, "Creating Crucible disk from {:#?}", addresses);
         let be = propolis::block::CrucibleBackend::create(
