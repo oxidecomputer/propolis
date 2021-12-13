@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Result};
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -33,7 +33,7 @@ pub struct CrucibleBackend {
 impl CrucibleBackend {
     pub fn create(
         disp: &Dispatcher,
-        targets: Vec<SocketAddrV4>,
+        targets: Vec<SocketAddr>,
         read_only: bool,
         key: Option<String>,
         gen: Option<u64>,
@@ -44,7 +44,7 @@ impl CrucibleBackend {
 
     fn _create(
         disp: &Dispatcher,
-        targets: Vec<SocketAddrV4>,
+        targets: Vec<SocketAddr>,
         read_only: bool,
         key: Option<String>,
         gen: Option<u64>,

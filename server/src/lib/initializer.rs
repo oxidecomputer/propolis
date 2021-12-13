@@ -19,7 +19,6 @@ use propolis::instance::Instance;
 use propolis::inventory::{ChildRegister, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
 use slog::info;
-use std::net::SocketAddr;
 
 use crate::serial::Serial;
 
@@ -266,19 +265,9 @@ impl<'a> MachineInitializer<'a> {
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
     ) -> Result<(), Error> {
-        // TODO: This is hacky. Why are we assuming the addresses are v4?
         let addresses = disk
             .address
-            .clone()
-            .into_iter()
-            .map(|a| {
-                if let SocketAddr::V4(v4) = a {
-                    v4
-                } else {
-                    panic!("no ipv6, apparently")
-                }
-            })
-            .collect();
+            .clone();
 
         info!(self.log, "Creating Crucible disk from {:#?}", addresses);
         let be = propolis::block::CrucibleBackend::create(

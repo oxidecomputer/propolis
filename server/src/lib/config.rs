@@ -1,7 +1,7 @@
 //! Describes a server config which may be parsed from a TOML file.
 
 use std::collections::{btree_map, BTreeMap};
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -146,7 +146,7 @@ impl BlockDevice {
                 Ok((be, child))
             }
             "crucible" => {
-                let targets: Vec<SocketAddrV4> = self
+                let targets: Vec<SocketAddr> = self
                     .options
                     .get("targets")
                     .ok_or_else(|| {
@@ -180,7 +180,7 @@ impl BlockDevice {
                                 )
                             })
                     })
-                    .collect::<Result<Vec<SocketAddrV4>, ParseError>>()?;
+                    .collect::<Result<Vec<SocketAddr>, ParseError>>()?;
 
                 let read_only: bool = || -> Option<bool> {
                     self.options.get("readonly")?.as_str()?.parse().ok()
