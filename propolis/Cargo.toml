@@ -21,6 +21,9 @@ viona_api = { path = "../viona-api" }
 usdt = { version = "0.2.1", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+# The crucible branch should be switched back to main when the Crucible PR
+# https://github.com/oxidecomputer/crucible/pull/143 is merged back to
+# crucible main.  This is here now to allow propolis with crucible to build.
 crucible = { git = "https://github.com/oxidecomputer/crucible", branch = "ipv6", optional = true }
 anyhow = "1"
 slog = "2.7"
