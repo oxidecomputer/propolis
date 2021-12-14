@@ -1,5 +1,5 @@
 use std::collections::{btree_map, BTreeMap};
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -104,7 +104,7 @@ impl BlockDevice {
                 (be, creg)
             }
             "crucible" => {
-                let mut targets: Vec<SocketAddrV4> = Vec::new();
+                let mut targets: Vec<SocketAddr> = Vec::new();
 
                 for target in self
                     .options
