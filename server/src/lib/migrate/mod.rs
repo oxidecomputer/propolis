@@ -252,9 +252,7 @@ pub async fn dest_initiate(
     _instance_id: Uuid,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
-    // Create a new UUID to refer to this migration across both the source
-    // and destination instances
-    let migration_id = Uuid::new_v4();
+    let migration_id = migrate_info.migration_id;
 
     // Create a new log context for the migration
     let log = rqctx.log.new(o!(

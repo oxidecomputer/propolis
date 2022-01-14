@@ -311,7 +311,11 @@ async fn migrate_instance(
         // TODO: Handle migrating NICs & disks
         nics: vec![],
         disks: vec![],
-        migrate: Some(InstanceMigrateInitiateRequest { src_addr, src_uuid }),
+        migrate: Some(InstanceMigrateInitiateRequest {
+            migration_id: Uuid::new_v4(),
+            src_addr,
+            src_uuid,
+        }),
     };
 
     // Initiate the migration via the destination instance

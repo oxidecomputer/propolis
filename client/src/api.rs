@@ -39,6 +39,7 @@ pub struct InstanceEnsureResponse {
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceMigrateInitiateRequest {
+    pub migration_id: Uuid,
     pub src_addr: SocketAddr,
     pub src_uuid: Uuid,
 }
