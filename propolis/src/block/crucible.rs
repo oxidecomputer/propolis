@@ -50,8 +50,12 @@ impl CrucibleBackend {
         gen: Option<u64>,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
         // spawn Crucible tasks
-        let opts =
-            crucible::CrucibleOpts { target: targets, lossy: false, key };
+        let opts = crucible::CrucibleOpts {
+            target: targets,
+            lossy: false,
+            key,
+            ..Default::default()
+        };
         let guest = Arc::new(crucible::Guest::new());
 
         let guest_copy = guest.clone();
