@@ -14,13 +14,13 @@ use crate::server::Context;
 type Result<T> = anyhow::Result<T, MigrateError>;
 
 pub async fn migrate(
-    request_context: Arc<RequestContext<Context>>,
+    _request_context: Arc<RequestContext<Context>>,
     migrate_context: Arc<MigrateContext>,
     conn: Upgraded,
     log: slog::Logger,
 ) -> Result<()> {
     let mut proto = DestinationProtocol {
-        request_context,
+        _request_context,
         migrate_context,
         conn: Framed::new(conn, codec::LiveMigrationFramer::new()),
         log,
@@ -37,7 +37,7 @@ pub async fn migrate(
 }
 
 struct DestinationProtocol {
-    request_context: Arc<RequestContext<Context>>,
+    _request_context: Arc<RequestContext<Context>>,
     migrate_context: Arc<MigrateContext>,
     conn: Framed<Upgraded, codec::LiveMigrationFramer>,
     log: slog::Logger,
