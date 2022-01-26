@@ -12,6 +12,7 @@ use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
 use slog::{self, Drain};
+use thiserror::Error;
 use tokio::runtime::Handle;
 
 /// States of operation for an instance.
@@ -98,6 +99,20 @@ pub enum ReqState {
     Run,
     Reset,
     Halt,
+}
+
+/// Errors that may be returned when an instance is requested to transition
+/// to a different state.
+#[derive(Debug, Error)]
+pub enum TransitionError {
+    #[error("cannot reset instance while halted")]
+    ResetWhileHalted,
+
+    #[error("cannot transition from {current:?} state to {target:?}")]
+    InvalidTarget { current: State, target: State },
+
+    #[error("cannot transition away from terminal state")]
+    Terminal,
 }
 
 type TransitionFunc =
@@ -217,12 +232,15 @@ impl Instance {
     /// Updates the state of the instance.
     ///
     /// Returns an error if the state transition is invalid.
-    pub fn set_target_state(&self, target: ReqState) -> Result<(), ()> {
+    pub fn set_target_state(
+        &self,
+        target: ReqState,
+    ) -> Result<(), TransitionError> {
         let mut inner = self.inner.lock().unwrap();
 
         if matches!(inner.state_target, Some(State::Halt | State::Destroy)) {
             // Cannot request any state once the target is halt/destroy
-            return Err(());
+            return Err(TransitionError::Terminal);
         }
         if inner.state_target == Some(State::Reset) && target == ReqState::Run {
             // Requesting a run when already on the road to reboot is an
@@ -251,7 +269,7 @@ impl Instance {
         &self,
         kind: SuspendKind,
         source: SuspendSource,
-    ) -> Result<(), ()> {
+    ) -> Result<(), TransitionError> {
         let mut inner = self.inner.lock().unwrap();
         self.trigger_suspend_locked(&mut inner, kind, source)
     }
@@ -261,10 +279,10 @@ impl Instance {
         inner: &mut MutexGuard<Inner>,
         kind: SuspendKind,
         source: SuspendSource,
-    ) -> Result<(), ()> {
+    ) -> Result<(), TransitionError> {
         if matches!(inner.state_current, State::Halt | State::Destroy) {
             // No way out from Halt or Destroy
-            return Err(());
+            return Err(TransitionError::Terminal);
         }
 
         match kind {
@@ -272,7 +290,7 @@ impl Instance {
                 match inner.suspend_info {
                     Some((SuspendKind::Halt, _)) => {
                         // Cannot supersede active halt
-                        return Err(());
+                        return Err(TransitionError::ResetWhileHalted);
                     }
                     Some((SuspendKind::Reset, _)) => {
                         return Ok(());
@@ -306,9 +324,12 @@ impl Instance {
         &self,
         inner: &mut MutexGuard<Inner>,
         target: State,
-    ) -> Result<(), ()> {
+    ) -> Result<(), TransitionError> {
         if !State::valid_target(&inner.state_current, &target) {
-            return Err(());
+            return Err(TransitionError::InvalidTarget {
+                current: inner.state_current,
+                target,
+            });
         }
         // XXX: verify validity of transitions
         inner.state_target = Some(target);
