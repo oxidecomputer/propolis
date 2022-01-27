@@ -15,6 +15,13 @@ use slog::{self, Drain};
 use thiserror::Error;
 use tokio::runtime::Handle;
 
+/// The role of an instance during a migration.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MigrateRole {
+    Source,
+    Destination,
+}
+
 /// States of operation for an instance.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
@@ -28,6 +35,8 @@ pub enum State {
     /// The instance is in a paused state such that it may
     /// later be booted or maintained.
     Quiesce,
+    /// The instance is being migrated.
+    Migrate(MigrateRole),
     /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
@@ -51,6 +60,12 @@ impl State {
             // Halt can only go to destroy (covered above), nothing else
             (State::Halt, _) => false,
 
+            // A source instance can only be destroyed once the migration
+            // is complete, so disallow any other transition.
+            // TODO: Support rolling back a migration?
+            (State::Migrate(MigrateRole::Source), State::Destroy) => true,
+            (State::Migrate(MigrateRole::Source), _) => false,
+
             // XXX: more exclusions?
             (_, _) => true,
         }
@@ -70,6 +85,7 @@ impl State {
             },
             State::Run => match target {
                 None | Some(State::Run) => State::Run,
+                Some(State::Migrate(role)) => State::Migrate(role),
                 Some(_) => State::Quiesce,
             },
             State::Quiesce => match target {
@@ -77,6 +93,14 @@ impl State {
                 Some(State::Reset) => State::Reset,
                 // Machine must go through reset before it can be booted
                 Some(State::Boot) => State::Reset,
+                Some(State::Migrate(role)) => State::Migrate(role),
+                _ => State::Quiesce,
+            },
+            // Once the migration is done, the source machine is destroyed...
+            State::Migrate(MigrateRole::Source) => State::Destroy,
+            // whereas the destination machine is permitted to continue running
+            State::Migrate(MigrateRole::Destination) => match target {
+                None | Some(State::Run) => State::Run,
                 _ => State::Quiesce,
             },
             State::Halt => State::Destroy,
