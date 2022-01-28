@@ -1,26 +1,25 @@
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 
-use dropshot::RequestContext;
 use hyper::upgrade::Upgraded;
+use propolis::instance::Instance;
 use slog::info;
 use tokio_util::codec::Framed;
 
 use crate::migrate::codec;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::{MigrateContext, MigrateError, MigrationState};
-use crate::server::Context;
 
 type Result<T> = anyhow::Result<T, MigrateError>;
 
 pub async fn migrate(
-    _request_context: Arc<RequestContext<Context>>,
     migrate_context: Arc<MigrateContext>,
+    instance: Arc<Instance>,
     conn: Upgraded,
     log: slog::Logger,
 ) -> Result<()> {
     let mut proto = DestinationProtocol {
-        _request_context,
+        instance,
         migrate_context,
         conn: Framed::new(conn, codec::LiveMigrationFramer::new()),
         log,
@@ -37,7 +36,7 @@ pub async fn migrate(
 }
 
 struct DestinationProtocol {
-    _request_context: Arc<RequestContext<Context>>,
+    instance: Arc<Instance>,
     migrate_context: Arc<MigrateContext>,
     conn: Framed<Upgraded, codec::LiveMigrationFramer>,
     log: slog::Logger,

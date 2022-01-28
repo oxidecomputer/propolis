@@ -18,6 +18,8 @@ pub async fn migrate(
     conn: Upgraded,
     log: slog::Logger,
 ) -> Result<()> {
+    let machine = instance.as_ref().machine();
+    let hdl = machine.get_hdl();
     let mut proto = SourceProtocol {
         migrate_context,
         instance,

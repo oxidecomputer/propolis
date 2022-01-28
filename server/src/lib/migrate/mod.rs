@@ -331,10 +331,12 @@ pub async fn dest_initiate(
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
-    let task_rqctx = rqctx.clone();
+    let context = rqctx.context().context.lock().await;
+    let context = context.as_ref().unwrap();
+    let instance = context.instance.clone();
     let task = tokio::spawn(async move {
         if let Err(e) =
-            destination::migrate(task_rqctx, mctx, conn, log.clone()).await
+            destination::migrate(mctx, instance, conn, log.clone()).await
         {
             error!(log, "Migrate Task Failed: {}", e);
             return;

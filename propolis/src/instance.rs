@@ -221,6 +221,11 @@ impl Instance {
         func(machine, &mctx, &self.disp, &state.inv)
     }
 
+    pub fn machine(&self) -> Arc<Machine> {
+        let state = self.inner.lock().unwrap();
+        state.machine.clone().unwrap()
+    }
+
     /// Returns the state of the instance.
     pub fn current_state(&self) -> State {
         let state = self.inner.lock().unwrap();
