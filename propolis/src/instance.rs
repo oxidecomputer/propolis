@@ -96,13 +96,7 @@ impl State {
                 Some(State::Migrate(role)) => State::Migrate(role),
                 _ => State::Quiesce,
             },
-            // Once the migration is done, the source machine is destroyed...
-            State::Migrate(MigrateRole::Source) => State::Destroy,
-            // whereas the destination machine is permitted to continue running
-            State::Migrate(MigrateRole::Destination) => match target {
-                None | Some(State::Run) => State::Run,
-                _ => State::Quiesce,
-            },
+            State::Migrate(role) => State::Migrate(*role),
             State::Halt => State::Destroy,
             State::Reset => State::Boot,
             State::Destroy => State::Destroy,
