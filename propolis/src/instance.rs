@@ -137,6 +137,9 @@ pub enum TransitionError {
 
     #[error("cannot transition away from terminal state")]
     Terminal,
+
+    #[error("an outstanding migration task already exists")]
+    MigrationAlreadyInProgress,
 }
 
 type TransitionFunc =
@@ -150,6 +153,7 @@ struct Inner {
     machine: Option<Arc<Machine>>,
     inv: Inventory,
     transition_funcs: Vec<Box<TransitionFunc>>,
+    migrate_ctx: Option<CtxId>,
 }
 
 /// A single virtual machine.
@@ -180,6 +184,7 @@ impl Instance {
                 machine: Some(machine),
                 inv: Inventory::new(),
                 transition_funcs: Vec::new(),
+                migrate_ctx: None,
             }),
             cv: Condvar::new(),
             disp,
@@ -287,6 +292,19 @@ impl Instance {
                 SuspendSource::External,
             ),
         }
+    }
+
+    pub fn begin_migrate(
+        &self,
+        role: MigrateRole,
+        migrate_ctx_id: CtxId,
+    ) -> Result<(), TransitionError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(_) = inner.migrate_ctx {
+            return Err(TransitionError::MigrationAlreadyInProgress);
+        }
+        inner.migrate_ctx = Some(migrate_ctx_id);
+        self.set_target_state_locked(&mut inner, State::Migrate(role))
     }
 
     pub(crate) fn trigger_suspend(
@@ -460,6 +478,16 @@ impl Instance {
                     // Upon entry to the Run state, details about any previous
                     // suspend become stale.
                     inner.suspend_info = None;
+                }
+                State::Migrate(_) => {
+                    let migrate_ctx = inner.migrate_ctx.unwrap();
+                    // Worker thread quiesce cannot be done with `inner` lock
+                    // held without risking a deadlock.
+                    drop(inner);
+                    self.disp.quiesce();
+                    // We explicitly allow the migrate task to run
+                    self.disp.release_one(migrate_ctx);
+                    inner = self.inner.lock().unwrap();
                 }
                 _ => {}
             }
