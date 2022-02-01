@@ -9,7 +9,8 @@ use tokio::task::JoinHandle;
 
 use super::{DispCtx, Dispatcher, SharedCtx, SyncFn, WakeFn};
 
-type CtxId = usize;
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct CtxId(usize);
 
 struct CtxCtrl {
     quiesce_guard: Semaphore,
@@ -37,7 +38,7 @@ impl Inner {
     fn new() -> Self {
         Self {
             state: Mutex::new(InnerState {
-                next_id: 0,
+                next_id: CtxId(0),
                 quiesced: false,
                 shutdown: false,
             }),
@@ -50,7 +51,7 @@ impl Inner {
         let mut ctrls = self.ctrls.lock().unwrap();
 
         let id = state.next_id;
-        state.next_id += 1;
+        state.next_id.0 += 1;
         let ctrl = Arc::new(CtxCtrl {
             quiesce_guard: Semaphore::new(0),
             quiesce_notify: Semaphore::new(0),
@@ -106,7 +107,7 @@ impl AsyncDispatch {
     pub(super) fn context(&self, disp: &Dispatcher) -> AsyncCtx {
         let ctrl = self.inner.get_ctrl();
         AsyncCtx::new(
-            SharedCtx::child(disp, slog::o!("async_task" => ctrl.id)),
+            SharedCtx::child(disp, slog::o!("async_task" => ctrl.id.0)),
             ctrl,
         )
     }
@@ -133,6 +134,7 @@ impl AsyncDispatch {
             })
         }
     }
+
     pub(super) fn release_contexts(&self) {
         let mut state = self.inner.state.lock().unwrap();
         if !state.quiesced {
@@ -144,6 +146,28 @@ impl AsyncDispatch {
         if let Some(hdl) = self.handle() {
             hdl.block_on(async {
                 for (_id, task) in ctrls.iter_mut() {
+                    if task.quiesced {
+                        let permit =
+                            task.ctrl.quiesce_notify.acquire().await.unwrap();
+                        permit.forget();
+                        task.ctrl.quiesce_guard.add_permits(1);
+                        task.quiesced = false;
+                    }
+                }
+            })
+        }
+    }
+
+    pub(super) fn release_context(&self, id: CtxId) {
+        let state = self.inner.state.lock().unwrap();
+        if !state.quiesced {
+            return;
+        }
+
+        let mut ctrls = self.inner.ctrls.lock().unwrap();
+        if let Some(hdl) = self.handle() {
+            hdl.block_on(async {
+                if let Some(task) = ctrls.get_mut(&id) {
                     if task.quiesced {
                         let permit =
                             task.ctrl.quiesce_notify.acquire().await.unwrap();
@@ -226,6 +250,11 @@ impl AsyncCtx {
     /// Get access to `Logger` associated with this task
     pub fn log(&self) -> &slog::Logger {
         &self.shared.log
+    }
+
+    /// Return the ID for the context associated with this task.
+    pub fn context_id(&self) -> CtxId {
+        self.ctrl.id
     }
 
     async fn acquire_permit(&self) -> Option<AsyncCtxPermit<'_>> {
