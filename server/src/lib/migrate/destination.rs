@@ -20,6 +20,14 @@ pub async fn migrate(
     conn: Upgraded,
     log: slog::Logger,
 ) -> Result<()> {
+    {
+        // TODO: Not exactly the right error
+        let ctx =
+            async_context.dispctx().await.ok_or(MigrateError::SourceNotInitialized)?;
+        let machine = ctx.mctx;
+        let _vmm_hdl = machine.hdl();
+    }
+
     let mut proto = DestinationProtocol {
         migrate_context,
         instance,

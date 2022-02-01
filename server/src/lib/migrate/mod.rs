@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
+use propolis::instance::{MigrateRole, TransitionError};
 use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
@@ -98,11 +99,27 @@ pub enum MigrateError {
 
     #[error("encoding error")]
     Encoding,
+
+    #[error("encountered invalid instance state")]
+    InvalidInstanceState,
 }
 
 impl From<hyper::Error> for MigrateError {
     fn from(err: hyper::Error) -> MigrateError {
         MigrateError::Http(err.to_string())
+    }
+}
+
+impl From<TransitionError> for MigrateError {
+    fn from(err: TransitionError) -> Self {
+        match err {
+            TransitionError::ResetWhileHalted
+            | TransitionError::InvalidTarget { .. }
+            | TransitionError::Terminal => MigrateError::InvalidInstanceState,
+            TransitionError::MigrationAlreadyInProgress => {
+                MigrateError::MigrationAlreadyInProgress
+            }
+        }
     }
 }
 
@@ -119,7 +136,8 @@ impl Into<HttpError> for MigrateError {
             MigrateError::Http(_)
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
-            | MigrateError::SourceNotInitialized => {
+            | MigrateError::SourceNotInitialized
+            | MigrateError::InvalidInstanceState => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
@@ -206,10 +224,16 @@ pub async fn source_start(
 
     // The migration task needs an async descriptor context.
     let async_ctx = instance.disp.async_ctx();
+    let migrate_ctx_id = async_ctx.context_id();
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
+
+    // Request instance to enter 'migrating' state
+    // and allow our migrate task access to the DispCtx & Machine
+    instance.begin_migrate(MigrateRole::Source, migrate_ctx_id)?;
+
     let task = tokio::spawn(async move {
         // We have to await on the HTTP upgrade future in a new
         // task because it won't complete until the response is
@@ -341,6 +365,12 @@ pub async fn dest_initiate(
     let instance = context.instance.clone();
     // The migration task needs an async descriptor context.
     let async_context = instance.disp.async_ctx();
+    let migrate_ctx_id = async_context.context_id();
+
+    // Request instance to enter 'migrating' state
+    // and allow our migrate task access to the DispCtx & Machine
+    instance.begin_migrate(MigrateRole::Destination, migrate_ctx_id)?;
+
     let task = tokio::spawn(async move {
         if let Err(e) = destination::migrate(
             mctx,
