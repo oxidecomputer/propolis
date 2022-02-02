@@ -81,6 +81,9 @@ impl State {
             },
             State::Boot => match target {
                 None | Some(State::Run) => State::Run,
+                Some(State::Migrate(MigrateRole::Destination)) => {
+                    State::Migrate(MigrateRole::Destination)
+                }
                 _ => State::Quiesce,
             },
             State::Run => match target {
