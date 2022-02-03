@@ -259,61 +259,17 @@ async fn instance_ensure(
         state: propolis::instance::State::Initialize,
     });
 
-    instance.on_transition(Box::new(move |next_state, _inv, ctx| {
-        match next_state {
-            propolis::instance::State::Boot => {
-                // Set vCPUs to their proper boot (INIT) state
-                for mut vcpu in ctx.mctx.vcpus() {
-                    vcpu.reboot_state().unwrap();
-                    vcpu.activate().unwrap();
-                    // Set BSP to start up
-                    if vcpu.is_bsp() {
-                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                        vcpu.set_reg(
-                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                            0xfff0,
-                        )
-                        .unwrap();
-                    }
-                }
-            }
-            _ => {}
-        }
+    instance.on_transition(Box::new(move |next_state, _inv, _ctx| {
         let last = (*tx.borrow()).clone();
         let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
     }));
 
-    // Is this part of a migration?
-    if let Some(migrate_request) = request.migrate {
-        // We stop short of the usual intialization routines because this is
-        // a migrate request and so we should try to establish a connection
-        // with the source instance.
-
-        // Save the created Instance in the server's context as-is.
-        // We'll update it as part of the migration process later.
-        *context = Some(InstanceContext {
-            instance,
-            properties,
-            serial: None,
-            state_watcher: rx,
-            serial_task: None,
-        });
-        drop(context);
-
-        let res = migrate::dest_initiate(rqctx, instance_id, migrate_request)
-            .await
-            .map_err(<_ as Into<HttpError>>::into)?;
-        // TODO: This should be HttpResponseAccepted
-        return Ok(HttpResponseCreated(api::InstanceEnsureResponse {
-            migrate: Some(res),
-        }));
-    }
+    let mut com1 = None;
 
     // Initialize (some) of the instance's hardware.
     //
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
-    let mut com1: Option<Arc<Serial<LpcUart>>> = None;
 
     instance
         .initialize(|machine, mctx, disp, inv| {
@@ -498,18 +454,52 @@ async fn instance_ensure(
             ))
         })?;
 
-    instance.print();
-
     // Save the newly created instance in the server's context.
     *context = Some(InstanceContext {
-        instance,
+        instance: instance.clone(),
         properties,
         serial: com1,
         state_watcher: rx,
         serial_task: None,
     });
+    drop(context);
 
-    Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate: None }))
+    // Is this part of a migration?
+    let migrate = if let Some(migrate_request) = request.migrate {
+        // This is a migrate request and so we should try to establish a
+        // connection with the source instance.
+        let res = migrate::dest_initiate(rqctx, instance_id, migrate_request)
+            .await
+            .map_err(<_ as Into<HttpError>>::into)?;
+        Some(res)
+    } else {
+        instance.on_transition(Box::new(move |next_state, _inv, ctx| {
+            match next_state {
+                propolis::instance::State::Boot => {
+                    // Set vCPUs to their proper boot (INIT) state
+                    for mut vcpu in ctx.mctx.vcpus() {
+                        vcpu.reboot_state().unwrap();
+                        vcpu.activate().unwrap();
+                        // Set BSP to start up
+                        if vcpu.is_bsp() {
+                            vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                            vcpu.set_reg(
+                                bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                                0xfff0,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }));
+
+        None
+    };
+    instance.print();
+
+    Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))
 }
 
 #[endpoint {

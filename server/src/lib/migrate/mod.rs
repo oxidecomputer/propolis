@@ -204,6 +204,9 @@ pub async fn source_start(
         state: RwLock::new(MigrationState::Sync),
     });
 
+    // The migration task needs an async descriptor context.
+    let async_ctx = instance.disp.async_ctx();
+
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
@@ -221,7 +224,8 @@ pub async fn source_start(
 
         // Good to go, ready to migrate to the dest via `conn`
         // TODO: wrap in a tokio codec::Framed or such
-        if let Err(e) = source::migrate(mctx, instance, conn, log.clone()).await
+        if let Err(e) =
+            source::migrate(mctx, instance, async_ctx, conn, log.clone()).await
         {
             error!(log, "Migrate Task Failed: {}", e);
             return;
@@ -331,10 +335,21 @@ pub async fn dest_initiate(
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
-    let task_rqctx = rqctx.clone();
+    let context = rqctx.context().context.lock().await;
+    let context =
+        context.as_ref().ok_or_else(|| MigrateError::SourceNotInitialized)?;
+    let instance = context.instance.clone();
+    // The migration task needs an async descriptor context.
+    let async_context = instance.disp.async_ctx();
     let task = tokio::spawn(async move {
-        if let Err(e) =
-            destination::migrate(task_rqctx, mctx, conn, log.clone()).await
+        if let Err(e) = destination::migrate(
+            mctx,
+            instance,
+            async_context,
+            conn,
+            log.clone(),
+        )
+        .await
         {
             error!(log, "Migrate Task Failed: {}", e);
             return;
