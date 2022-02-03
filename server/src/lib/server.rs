@@ -468,7 +468,6 @@ async fn instance_ensure(
     let migrate = if let Some(migrate_request) = request.migrate {
         // This is a migrate request and so we should try to establish a
         // connection with the source instance.
-        let rqctx = rqctx.clone();
         let res = migrate::dest_initiate(rqctx, instance_id, migrate_request)
             .await
             .map_err(<_ as Into<HttpError>>::into)?;
