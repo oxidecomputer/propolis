@@ -454,11 +454,20 @@ async fn instance_ensure(
             ))
         })?;
 
+    // Save the newly created instance in the server's context.
+    *context = Some(InstanceContext {
+        instance: instance.clone(),
+        properties,
+        serial: com1,
+        state_watcher: rx,
+        serial_task: None,
+    });
+    drop(context);
+
     // Is this part of a migration?
     let migrate = if let Some(migrate_request) = request.migrate {
-        // We stop short of the usual intialization routines because this is
-        // a migrate request and so we should try to establish a connection
-        // with the source instance.
+        // This is a migrate request and so we should try to establish a
+        // connection with the source instance.
         let rqctx = rqctx.clone();
         let res = migrate::dest_initiate(rqctx, instance_id, migrate_request)
             .await
@@ -490,15 +499,6 @@ async fn instance_ensure(
         None
     };
     instance.print();
-
-    // Save the newly created instance in the server's context.
-    *context = Some(InstanceContext {
-        instance,
-        properties,
-        serial: com1,
-        state_watcher: rx,
-        serial_task: None,
-    });
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))
 }

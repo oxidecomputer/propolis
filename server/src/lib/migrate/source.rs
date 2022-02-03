@@ -2,6 +2,7 @@ use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 
 use hyper::upgrade::Upgraded;
+use propolis::dispatch::AsyncCtx;
 use propolis::instance::Instance;
 use slog::info;
 use tokio_util::codec::Framed;
@@ -15,14 +16,14 @@ type Result<T> = anyhow::Result<T, MigrateError>;
 pub async fn migrate(
     migrate_context: Arc<MigrateContext>,
     instance: Arc<Instance>,
+    async_context: AsyncCtx,
     conn: Upgraded,
     log: slog::Logger,
 ) -> Result<()> {
-    let machine = instance.as_ref().machine();
-    let hdl = machine.get_hdl();
     let mut proto = SourceProtocol {
         migrate_context,
         instance,
+        async_context,
         conn: Framed::new(conn, codec::LiveMigrationFramer::new()),
         log,
     };
@@ -40,6 +41,7 @@ pub async fn migrate(
 struct SourceProtocol {
     migrate_context: Arc<MigrateContext>,
     instance: Arc<Instance>,
+    async_context: AsyncCtx,
     conn: Framed<Upgraded, codec::LiveMigrationFramer>,
     log: slog::Logger,
 }
