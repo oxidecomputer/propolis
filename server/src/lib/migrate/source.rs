@@ -41,6 +41,7 @@ pub async fn migrate(
 struct SourceProtocol {
     migrate_context: Arc<MigrateContext>,
     instance: Arc<Instance>,
+    #[allow(dead_code)]
     async_context: AsyncCtx,
     conn: Framed<Upgraded, codec::LiveMigrationFramer>,
     log: slog::Logger,
