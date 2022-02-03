@@ -93,7 +93,11 @@ impl State {
                 Some(State::Migrate(role)) => State::Migrate(role),
                 _ => State::Quiesce,
             },
-            State::Migrate(role) => State::Migrate(*role),
+            State::Migrate(role) => match target {
+                Some(State::Run) => State::Run,
+                Some(State::Halt) | Some(State::Destroy) => State::Halt,
+                _ => State::Migrate(*role),
+            },
             State::Halt => State::Destroy,
             State::Reset => State::Boot,
             State::Destroy => State::Destroy,
