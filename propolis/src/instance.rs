@@ -60,12 +60,6 @@ impl State {
             // Halt can only go to destroy (covered above), nothing else
             (State::Halt, _) => false,
 
-            // A source instance can only be destroyed once the migration
-            // is complete, so disallow any other transition.
-            // TODO: Support rolling back a migration?
-            (State::Migrate(MigrateRole::Source), State::Destroy) => true,
-            (State::Migrate(MigrateRole::Source), _) => false,
-
             // XXX: more exclusions?
             (_, _) => true,
         }
