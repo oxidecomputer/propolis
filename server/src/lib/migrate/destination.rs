@@ -22,8 +22,10 @@ pub async fn migrate(
 ) -> Result<()> {
     {
         // TODO: Not exactly the right error
-        let ctx =
-            async_context.dispctx().await.ok_or(MigrateError::SourceNotInitialized)?;
+        let ctx = async_context
+            .dispctx()
+            .await
+            .ok_or(MigrateError::InstanceNotInitialized)?;
         let machine = ctx.mctx;
         let _vmm_hdl = machine.hdl();
     }

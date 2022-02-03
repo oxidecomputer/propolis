@@ -81,8 +81,8 @@ pub enum MigrateError {
     #[error("expected connection upgrade")]
     UpgradeExpected,
 
-    #[error("source instance is not initialized")]
-    SourceNotInitialized,
+    #[error("instance is not initialized")]
+    InstanceNotInitialized,
 
     #[error("unexpected Uuid")]
     UuidMismatch,
@@ -136,7 +136,7 @@ impl Into<HttpError> for MigrateError {
             MigrateError::Http(_)
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
-            | MigrateError::SourceNotInitialized
+            | MigrateError::InstanceNotInitialized
             | MigrateError::InvalidInstanceState => {
                 HttpError::for_internal_error(msg)
             }
@@ -170,7 +170,7 @@ pub async fn source_start(
 
     let mut context = rqctx.context().context.lock().await;
     let context =
-        context.as_mut().ok_or_else(|| MigrateError::SourceNotInitialized)?;
+        context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
 
     if instance_id != context.properties.id {
         return Err(MigrateError::UuidMismatch);
@@ -277,7 +277,7 @@ pub async fn source_start(
 /// process (destination-side).
 pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
-    _instance_id: Uuid,
+    instance_id: Uuid,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -289,6 +289,14 @@ pub async fn dest_initiate(
         "migrate_src_addr" => migrate_info.src_addr.clone()
     ));
     info!(log, "Migration Destination");
+
+    let mut context = rqctx.context().context.lock().await;
+    let context =
+        context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+
+    if instance_id != context.properties.id {
+        return Err(MigrateError::UuidMismatch);
+    }
 
     let mut migrate_task = rqctx.context().migrate_task.lock().await;
 
@@ -359,10 +367,8 @@ pub async fn dest_initiate(
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
-    let context = rqctx.context().context.lock().await;
-    let context =
-        context.as_ref().ok_or_else(|| MigrateError::SourceNotInitialized)?;
     let instance = context.instance.clone();
+
     // The migration task needs an async descriptor context.
     let async_context = instance.disp.async_ctx();
     let migrate_ctx_id = async_context.context_id();
