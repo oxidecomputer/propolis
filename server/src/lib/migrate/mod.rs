@@ -342,8 +342,14 @@ pub async fn dest_initiate(
     // The migration task needs an async descriptor context.
     let async_context = instance.disp.async_ctx();
     let task = tokio::spawn(async move {
-        if let Err(e) =
-            destination::migrate(mctx, instance, async_context, conn, log.clone()).await
+        if let Err(e) = destination::migrate(
+            mctx,
+            instance,
+            async_context,
+            conn,
+            log.clone(),
+        )
+        .await
         {
             error!(log, "Migrate Task Failed: {}", e);
             return;
