@@ -15,6 +15,13 @@ use slog::{self, Drain};
 use thiserror::Error;
 use tokio::runtime::Handle;
 
+/// The role of an instance during a migration.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MigrateRole {
+    Source,
+    Destination,
+}
+
 /// States of operation for an instance.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
@@ -28,6 +35,8 @@ pub enum State {
     /// The instance is in a paused state such that it may
     /// later be booted or maintained.
     Quiesce,
+    /// The instance is being migrated.
+    Migrate(MigrateRole),
     /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
@@ -66,10 +75,14 @@ impl State {
             },
             State::Boot => match target {
                 None | Some(State::Run) => State::Run,
+                Some(State::Migrate(MigrateRole::Destination)) => {
+                    State::Migrate(MigrateRole::Destination)
+                }
                 _ => State::Quiesce,
             },
             State::Run => match target {
                 None | Some(State::Run) => State::Run,
+                Some(State::Migrate(role)) => State::Migrate(role),
                 Some(_) => State::Quiesce,
             },
             State::Quiesce => match target {
@@ -77,7 +90,13 @@ impl State {
                 Some(State::Reset) => State::Reset,
                 // Machine must go through reset before it can be booted
                 Some(State::Boot) => State::Reset,
+                Some(State::Migrate(role)) => State::Migrate(role),
                 _ => State::Quiesce,
+            },
+            State::Migrate(role) => match target {
+                Some(State::Run) => State::Run,
+                Some(State::Halt) | Some(State::Destroy) => State::Halt,
+                _ => State::Migrate(*role),
             },
             State::Halt => State::Destroy,
             State::Reset => State::Boot,
@@ -113,6 +132,9 @@ pub enum TransitionError {
 
     #[error("cannot transition away from terminal state")]
     Terminal,
+
+    #[error("an outstanding migration task already exists")]
+    MigrationAlreadyInProgress,
 }
 
 type TransitionFunc =
@@ -126,6 +148,7 @@ struct Inner {
     machine: Option<Arc<Machine>>,
     inv: Inventory,
     transition_funcs: Vec<Box<TransitionFunc>>,
+    migrate_ctx: Option<CtxId>,
 }
 
 /// A single virtual machine.
@@ -156,6 +179,7 @@ impl Instance {
                 machine: Some(machine),
                 inv: Inventory::new(),
                 transition_funcs: Vec::new(),
+                migrate_ctx: None,
             }),
             cv: Condvar::new(),
             disp,
@@ -263,6 +287,19 @@ impl Instance {
                 SuspendSource::External,
             ),
         }
+    }
+
+    pub fn begin_migrate(
+        &self,
+        role: MigrateRole,
+        migrate_ctx_id: CtxId,
+    ) -> Result<(), TransitionError> {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(_) = inner.migrate_ctx {
+            return Err(TransitionError::MigrationAlreadyInProgress);
+        }
+        inner.migrate_ctx = Some(migrate_ctx_id);
+        self.set_target_state_locked(&mut inner, State::Migrate(role))
     }
 
     pub(crate) fn trigger_suspend(
@@ -436,6 +473,16 @@ impl Instance {
                     // Upon entry to the Run state, details about any previous
                     // suspend become stale.
                     inner.suspend_info = None;
+                }
+                State::Migrate(_) => {
+                    let migrate_ctx = inner.migrate_ctx.unwrap();
+                    // Worker thread quiesce cannot be done with `inner` lock
+                    // held without risking a deadlock.
+                    drop(inner);
+                    self.disp.quiesce();
+                    // We explicitly allow the migrate task to run
+                    self.disp.release_one(migrate_ctx);
+                    inner = self.inner.lock().unwrap();
                 }
                 _ => {}
             }

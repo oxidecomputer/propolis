@@ -102,6 +102,11 @@ impl Dispatcher {
         self.async_disp.release_contexts();
     }
 
+    /// Release a specific task running in the dispatcher from its quiesce points.
+    pub(crate) fn release_one(&self, id: CtxId) {
+        self.async_disp.release_context(id);
+    }
+
     /// Shutdown the dispatcher.  This will quiesce and stop all managed work
     /// (sync threads and async tasks).  New work cannot be started in the
     /// dispatcher after this point.

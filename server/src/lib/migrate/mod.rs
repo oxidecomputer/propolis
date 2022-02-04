@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
+use propolis::instance::{MigrateRole, TransitionError};
 use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
@@ -80,8 +81,8 @@ pub enum MigrateError {
     #[error("expected connection upgrade")]
     UpgradeExpected,
 
-    #[error("source instance is not initialized")]
-    SourceNotInitialized,
+    #[error("instance is not initialized")]
+    InstanceNotInitialized,
 
     #[error("unexpected Uuid")]
     UuidMismatch,
@@ -98,11 +99,27 @@ pub enum MigrateError {
 
     #[error("encoding error")]
     Encoding,
+
+    #[error("encountered invalid instance state")]
+    InvalidInstanceState,
 }
 
 impl From<hyper::Error> for MigrateError {
     fn from(err: hyper::Error) -> MigrateError {
         MigrateError::Http(err.to_string())
+    }
+}
+
+impl From<TransitionError> for MigrateError {
+    fn from(err: TransitionError) -> Self {
+        match err {
+            TransitionError::ResetWhileHalted
+            | TransitionError::InvalidTarget { .. }
+            | TransitionError::Terminal => MigrateError::InvalidInstanceState,
+            TransitionError::MigrationAlreadyInProgress => {
+                MigrateError::MigrationAlreadyInProgress
+            }
+        }
     }
 }
 
@@ -119,7 +136,8 @@ impl Into<HttpError> for MigrateError {
             MigrateError::Http(_)
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
-            | MigrateError::SourceNotInitialized => {
+            | MigrateError::InstanceNotInitialized
+            | MigrateError::InvalidInstanceState => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
@@ -152,7 +170,7 @@ pub async fn source_start(
 
     let mut context = rqctx.context().context.lock().await;
     let context =
-        context.as_mut().ok_or_else(|| MigrateError::SourceNotInitialized)?;
+        context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
 
     if instance_id != context.properties.id {
         return Err(MigrateError::UuidMismatch);
@@ -206,10 +224,16 @@ pub async fn source_start(
 
     // The migration task needs an async descriptor context.
     let async_ctx = instance.disp.async_ctx();
+    let migrate_ctx_id = async_ctx.context_id();
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
+
+    // Request instance to enter 'migrating' state
+    // and allow our migrate task access to the DispCtx & Machine
+    instance.begin_migrate(MigrateRole::Source, migrate_ctx_id)?;
+
     let task = tokio::spawn(async move {
         // We have to await on the HTTP upgrade future in a new
         // task because it won't complete until the response is
@@ -253,7 +277,7 @@ pub async fn source_start(
 /// process (destination-side).
 pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
-    _instance_id: Uuid,
+    instance_id: Uuid,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -265,6 +289,14 @@ pub async fn dest_initiate(
         "migrate_src_addr" => migrate_info.src_addr.clone()
     ));
     info!(log, "Migration Destination");
+
+    let mut context = rqctx.context().context.lock().await;
+    let context =
+        context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+
+    if instance_id != context.properties.id {
+        return Err(MigrateError::UuidMismatch);
+    }
 
     let mut migrate_task = rqctx.context().migrate_task.lock().await;
 
@@ -335,12 +367,16 @@ pub async fn dest_initiate(
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
-    let context = rqctx.context().context.lock().await;
-    let context =
-        context.as_ref().ok_or_else(|| MigrateError::SourceNotInitialized)?;
     let instance = context.instance.clone();
+
     // The migration task needs an async descriptor context.
     let async_context = instance.disp.async_ctx();
+    let migrate_ctx_id = async_context.context_id();
+
+    // Request instance to enter 'migrating' state
+    // and allow our migrate task access to the DispCtx & Machine
+    instance.begin_migrate(MigrateRole::Destination, migrate_ctx_id)?;
+
     let task = tokio::spawn(async move {
         if let Err(e) = destination::migrate(
             mctx,

@@ -20,6 +20,16 @@ pub async fn migrate(
     conn: Upgraded,
     log: slog::Logger,
 ) -> Result<()> {
+    {
+        // TODO: Not exactly the right error
+        let ctx = async_context
+            .dispctx()
+            .await
+            .ok_or(MigrateError::InstanceNotInitialized)?;
+        let machine = ctx.mctx;
+        let _vmm_hdl = machine.hdl();
+    }
+
     let mut proto = DestinationProtocol {
         migrate_context,
         instance,
@@ -40,7 +50,9 @@ pub async fn migrate(
 
 struct DestinationProtocol {
     migrate_context: Arc<MigrateContext>,
+    #[allow(dead_code)]
     instance: Arc<Instance>,
+    #[allow(dead_code)]
     async_context: AsyncCtx,
     conn: Framed<Upgraded, codec::LiveMigrationFramer>,
     log: slog::Logger,
