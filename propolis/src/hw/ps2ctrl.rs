@@ -284,10 +284,26 @@ impl PS2Ctrl {
                 && state.aux_port.has_output(),
         );
     }
+    fn reset(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.pri_port.reset();
+        state.aux_port.reset();
+        state.resp = None;
+        state.cmd_prefix = None;
+        state.ctrl_cfg = CtrlCfg::default();
+        state.ctrl_out_port = CtrlOutPort::default();
+        for b in state.ram.iter_mut() {
+            *b = 0;
+        }
+        self.update_intr(&mut state);
+    }
 }
 impl Entity for PS2Ctrl {
     fn type_name(&self) -> &'static str {
         "lpc-ps2ctrl"
+    }
+    fn reset(&self, _ctx: &DispCtx) {
+        PS2Ctrl::reset(self);
     }
     fn migrate(&self) -> Option<&dyn Migrate> {
         Some(self)
@@ -476,6 +492,7 @@ impl PS2Kbd {
     }
     fn reset(&mut self) {
         // XXX  what should the defaults be?
+        self.cur_cmd = None;
         self.enabled = true;
         self.led_status = 0;
         self.typematic = 0;
@@ -652,6 +669,10 @@ impl PS2Mouse {
     fn reset(&mut self) {
         // XXX  what should the defaults be?
         self.buf.clear();
+        self.cur_cmd = None;
+        self.status = PS2MStatus::empty();
+        self.resolution = 0;
+        self.sample_rate = 10;
     }
     fn has_output(&self) -> bool {
         !self.buf.is_empty()
