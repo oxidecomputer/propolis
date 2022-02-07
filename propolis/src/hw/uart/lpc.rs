@@ -4,7 +4,6 @@ use super::base::Uart;
 use crate::chardev::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::instance;
 use crate::intr_pins::{IntrPin, LegacyPin};
 use crate::migrate::Migrate;
 use crate::pio::{PioBus, PioFn};
@@ -139,15 +138,8 @@ impl Entity for LpcUart {
     fn type_name(&self) -> &'static str {
         "lpc-uart"
     }
-    fn state_transition(
-        &self,
-        next: instance::State,
-        _target: Option<instance::State>,
-        _ctx: &DispCtx,
-    ) {
-        if next == instance::State::Reset {
-            self.reset();
-        }
+    fn reset(&self, _ctx: &DispCtx) {
+        LpcUart::reset(self);
     }
     fn migrate(&self) -> Option<&dyn Migrate> {
         Some(self)

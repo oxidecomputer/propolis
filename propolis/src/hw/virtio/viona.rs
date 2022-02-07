@@ -217,6 +217,7 @@ impl Entity for PciVirtioViona {
         &self,
         next: instance::State,
         target: Option<instance::State>,
+        _phase: instance::TransitionPhase,
         ctx: &DispCtx,
     ) {
         match next {

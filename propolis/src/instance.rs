@@ -111,6 +111,14 @@ impl State {
     }
 }
 
+/// An instance state transition can be broken down into different phases
+/// visible to consumers.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TransitionPhase {
+    Pre,
+    Post,
+}
+
 /// States which external consumers are permitted to request that the instance
 /// transition to.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -397,19 +405,30 @@ impl Instance {
         inner: &MutexGuard<Inner>,
         state: State,
         target: Option<State>,
+        phase: TransitionPhase,
     ) {
         self.disp.with_ctx(|ctx| {
             // Allow any entity to act on the new state
             inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
                 let ent = rec.entity();
-                if matches!(state, State::Reset) {
+
+                // Entities using the `reset` shortcut will be notified of the
+                // new state in the `Pre` phase, so they can complete any
+                // clean-up or reset activities before the in-kernel state is
+                // reinitialized.
+                if state == State::Reset && phase == TransitionPhase::Pre {
                     ent.reset(ctx);
                 }
-                ent.state_transition(state, target, ctx);
+
+                ent.state_transition(state, target, phase, ctx);
             });
 
-            for f in inner.transition_funcs.iter() {
-                f(state, &inner.inv, ctx)
+            // Transition-func consumers only expect post-state-change
+            // notifications for now.
+            if phase == TransitionPhase::Post {
+                for f in inner.transition_funcs.iter() {
+                    f(state, &inner.inv, ctx)
+                }
             }
         });
     }
@@ -451,6 +470,14 @@ impl Instance {
             }
 
             // Pre-state-change actions
+            self.transition_actions(
+                &inner,
+                state,
+                inner.state_target,
+                TransitionPhase::Pre,
+            );
+
+            // Implicit actions for a state change
             match state {
                 State::Quiesce => {
                     // Worker thread quiesce cannot be done with `inner` lock
@@ -487,9 +514,15 @@ impl Instance {
                 _ => {}
             }
 
-            self.transition_actions(&inner, state, inner.state_target);
-
             // Post-state-change actions
+            self.transition_actions(
+                &inner,
+                state,
+                inner.state_target,
+                TransitionPhase::Post,
+            );
+
+            // Implicit post-state-change actions
             match state {
                 State::Boot => {
                     // A reset is as good as fulfilled when transitioning

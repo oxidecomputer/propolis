@@ -7,7 +7,7 @@ use crate::dispatch::DispCtx;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::ibmpc;
 use crate::hw::pci::{self, Bdf, BusNum, INTxPinID, PioCfgDecoder};
-use crate::instance;
+use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::inventory;
 use crate::migrate::Migrate;
@@ -733,8 +733,8 @@ impl Piix3PM {
                     if suspend_type == 0 {
                         // 0b000 corresponds to soft-off
                         ctx.trigger_suspend(
-                            instance::SuspendKind::Halt,
-                            instance::SuspendSource::Device("ACPI PmCntrl"),
+                            SuspendKind::Halt,
+                            SuspendSource::Device("ACPI PmCntrl"),
                         );
                     }
                 }
@@ -758,7 +758,7 @@ impl Piix3PM {
             PmReg::Reserved => {}
         }
     }
-    fn reset(&self, ctx: &DispCtx) {
+    fn post_reset(&self, ctx: &DispCtx) {
         let mut regs = self.regs.lock().unwrap();
         regs.reset();
         // Make sure PM timer is attached to the right IO port
@@ -783,12 +783,22 @@ impl Entity for Piix3PM {
     fn type_name(&self) -> &'static str {
         "pci-piix3-pm"
     }
-    fn reset(&self, ctx: &DispCtx) {
+    fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
-        self.reset(ctx);
     }
     fn migrate(&self) -> Option<&dyn Migrate> {
         Some(self)
+    }
+    fn state_transition(
+        &self,
+        next: State,
+        _target: Option<State>,
+        phase: TransitionPhase,
+        ctx: &DispCtx,
+    ) {
+        if next == State::Reset && phase == TransitionPhase::Post {
+            self.post_reset(ctx);
+        }
     }
 }
 impl Migrate for Piix3PM {

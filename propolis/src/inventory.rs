@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use crate::dispatch::DispCtx;
-use crate::instance::State;
+use crate::instance::{State, TransitionPhase};
 use crate::migrate::Migrate;
 
 /// Errors returned while registering or deregistering from [`Inventory`].
@@ -457,12 +457,17 @@ pub trait Entity: Send + Sync + 'static {
         &self,
         next: State,
         target: Option<State>,
+        phase: TransitionPhase,
         ctx: &DispCtx,
     ) {
     }
     /// Function dedicated to `State::Reset` event delivery so implementers do
     /// not need to create a more verbose `state_transition` implementation for
     /// emulating device reset.
+    ///
+    /// This is called as part of `TransitionPhase::Pre`.  Entities which
+    /// require logic in the `Post` phase should do so via the
+    /// `state_transition` hook.
     #[allow(unused_variables)]
     fn reset(&self, ctx: &DispCtx) {}
     #[allow(unused_variables)]
