@@ -492,6 +492,7 @@ impl PS2Kbd {
     }
     fn reset(&mut self) {
         // XXX  what should the defaults be?
+        self.cur_cmd = None;
         self.enabled = true;
         self.led_status = 0;
         self.typematic = 0;
