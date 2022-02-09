@@ -217,11 +217,12 @@ impl Entity for PciVirtioViona {
         &self,
         next: instance::State,
         target: Option<instance::State>,
-        _phase: instance::TransitionPhase,
+        phase: instance::TransitionPhase,
         ctx: &DispCtx,
     ) {
-        match next {
-            instance::State::Quiesce => {
+        use crate::instance::{State, TransitionPhase};
+        match (next, phase) {
+            (State::Quiesce, TransitionPhase::Pre) => {
                 // XXX: This is a dirty hack, but we need to stop the viona
                 // rings from running in order to reset or halt the instance.
                 assert!(matches!(
@@ -236,7 +237,7 @@ impl Entity for PciVirtioViona {
                     let _ = self.hdl.ring_reset(vq.id);
                 }
             }
-            instance::State::Boot => {
+            (instance::State::Boot, TransitionPhase::Post) => {
                 // Get interrupt notification for the rings setup
                 let (poller, task) =
                     VionaPoller::spawn(self.hdl.fd(), self.self_weak(), ctx)
