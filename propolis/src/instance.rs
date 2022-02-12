@@ -166,7 +166,7 @@ struct Inner {
     suspend_info: Option<(SuspendKind, SuspendSource)>,
     drive_thread: Option<JoinHandle<()>>,
     machine: Option<Arc<Machine>>,
-    inv: Inventory,
+    inv: Arc<Inventory>,
     transition_funcs: Vec<Box<TransitionFunc>>,
     migrate_ctx: Option<CtxId>,
 }
@@ -197,7 +197,7 @@ impl Instance {
                 suspend_info: None,
                 drive_thread: None,
                 machine: Some(machine),
-                inv: Inventory::new(),
+                inv: Arc::new(Inventory::new()),
                 transition_funcs: Vec::new(),
                 migrate_ctx: None,
             }),
@@ -579,6 +579,12 @@ impl Instance {
     pub fn print(&self) {
         let state = self.inner.lock().unwrap();
         state.inv.print()
+    }
+
+    /// Return the [`Inventory`] describing the device tree of this Instance.s
+    pub fn inv(&self) -> Arc<Inventory> {
+        let state = self.inner.lock().unwrap();
+        Arc::clone(&state.inv)
     }
 }
 

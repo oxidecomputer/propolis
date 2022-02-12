@@ -1,4 +1,5 @@
 use futures::{SinkExt, StreamExt};
+use propolis::inventory::Order;
 use std::sync::Arc;
 
 use hyper::upgrade::Upgraded;
@@ -66,11 +67,46 @@ impl SourceProtocol {
         let m = self.read_msg().await?;
         info!(self.log, "ram_push: got query {:?}", m);
         // TODO(cross): Implement the rest of the RAM transfer protocol here. :-)
-        self.migrate_context.set_state(MigrationState::Pause).await;
+        self.pause().await?;
         self.migrate_context.set_state(MigrationState::RamPushDirty).await;
         self.send_msg(codec::Message::MemEnd(0, !0)).await?;
         let m = self.read_msg().await?;
         info!(self.log, "ram_push: got done {:?}", m);
+        Ok(())
+    }
+
+    async fn pause(&mut self) -> Result<()> {
+        self.migrate_context.set_state(MigrationState::Pause).await;
+
+        // Grab a reference all the devices that are a part of this Instance
+        let mut devices = vec![];
+
+        // Go over all the devices in this Instance
+        let inv = self.instance.inv();
+        inv.for_each_node(Order::Pre, |_, rec| {
+            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
+        });
+
+        let dispctx = self
+            .async_context
+            .dispctx()
+            .await
+            .ok_or(MigrateError::InstanceNotInitialized)?;
+
+        // Inform each device to pause and collect the resulting futures together
+        let mut migrate_ready_futs = vec![];
+        for (name, device) in &devices {
+            if let Some(migrate_hdl) = device.migrate() {
+                migrate_ready_futs.push(migrate_hdl.pause(&dispctx));
+            } else {
+                info!(self.log, "No migrate handle for {}", name);
+                continue;
+            }
+        }
+
+        // Now we wait for all the devices to have paused
+        futures::future::join_all(migrate_ready_futs).await;
+
         Ok(())
     }
 
