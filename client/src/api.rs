@@ -115,6 +115,7 @@ pub enum InstanceStateRequested {
     Run,
     Stop,
     Reboot,
+    MigrateStart,
 }
 
 /// Current state of an Instance.

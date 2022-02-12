@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
-use propolis::instance::{MigrateRole, TransitionError};
+use propolis::instance::{MigratePhase, MigrateRole, State, TransitionError};
 use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
@@ -174,6 +174,14 @@ pub async fn source_start(
 
     if instance_id != context.properties.id {
         return Err(MigrateError::UuidMismatch);
+    }
+
+    // Bail if the instance hasn't been preset to Migrate Start state.
+    if !matches!(
+        context.instance.current_state(),
+        State::Migrate(MigrateRole::Source, MigratePhase::Start)
+    ) {
+        return Err(MigrateError::InvalidInstanceState);
     }
 
     // Bail if there's already one in progress

@@ -115,6 +115,7 @@ fn api_to_propolis_state(
         ApiState::Run => PropolisState::Run,
         ApiState::Stop => PropolisState::Halt,
         ApiState::Reboot => PropolisState::Reset,
+        ApiState::MigrateStart => PropolisState::StartMigrate,
     }
 }
 
@@ -129,7 +130,7 @@ fn propolis_to_api_state(
         PropolisState::Boot => ApiState::Starting,
         PropolisState::Run => ApiState::Running,
         PropolisState::Quiesce => ApiState::Stopping,
-        PropolisState::Migrate(_) => ApiState::Migrating,
+        PropolisState::Migrate(_, _) => ApiState::Migrating,
         PropolisState::Halt => ApiState::Stopped,
         PropolisState::Reset => ApiState::Rebooting,
         PropolisState::Destroy => ApiState::Destroyed,

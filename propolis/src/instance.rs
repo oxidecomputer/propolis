@@ -22,6 +22,13 @@ pub enum MigrateRole {
     Destination,
 }
 
+/// Phases an Instance may transition through during a migration.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MigratePhase {
+    /// The initial migration phase an Instance enters.
+    Start,
+}
+
 /// States of operation for an instance.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
@@ -36,7 +43,7 @@ pub enum State {
     /// later be booted or maintained.
     Quiesce,
     /// The instance is being migrated.
-    Migrate(MigrateRole),
+    Migrate(MigrateRole, MigratePhase),
     /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
@@ -75,14 +82,16 @@ impl State {
             },
             State::Boot => match target {
                 None | Some(State::Run) => State::Run,
-                Some(State::Migrate(MigrateRole::Destination)) => {
-                    State::Migrate(MigrateRole::Destination)
+                Some(State::Migrate(MigrateRole::Destination, phase)) => {
+                    State::Migrate(MigrateRole::Destination, phase)
                 }
                 _ => State::Quiesce,
             },
             State::Run => match target {
                 None | Some(State::Run) => State::Run,
-                Some(State::Migrate(role)) => State::Migrate(role),
+                Some(State::Migrate(role, phase)) => {
+                    State::Migrate(role, phase)
+                }
                 Some(_) => State::Quiesce,
             },
             State::Quiesce => match target {
@@ -90,13 +99,15 @@ impl State {
                 Some(State::Reset) => State::Reset,
                 // Machine must go through reset before it can be booted
                 Some(State::Boot) => State::Reset,
-                Some(State::Migrate(role)) => State::Migrate(role),
+                Some(State::Migrate(role, phase)) => {
+                    State::Migrate(role, phase)
+                }
                 _ => State::Quiesce,
             },
-            State::Migrate(role) => match target {
+            State::Migrate(role, phase) => match target {
                 Some(State::Run) => State::Run,
                 Some(State::Halt) | Some(State::Destroy) => State::Halt,
-                _ => State::Migrate(*role),
+                _ => State::Migrate(*role, *phase),
             },
             State::Halt => State::Destroy,
             State::Reset => State::Boot,
@@ -126,6 +137,7 @@ pub enum ReqState {
     Run,
     Reset,
     Halt,
+    StartMigrate,
 }
 
 /// Errors that may be returned when an instance is requested to transition
@@ -294,6 +306,10 @@ impl Instance {
                 SuspendKind::Halt,
                 SuspendSource::External,
             ),
+            ReqState::StartMigrate => self.set_target_state_locked(
+                &mut inner,
+                State::Migrate(MigrateRole::Source, MigratePhase::Start),
+            ),
         }
     }
 
@@ -307,7 +323,11 @@ impl Instance {
             return Err(TransitionError::MigrationAlreadyInProgress);
         }
         inner.migrate_ctx = Some(migrate_ctx_id);
-        self.set_target_state_locked(&mut inner, State::Migrate(role))
+        // TODO: Choose appropriate phase
+        self.set_target_state_locked(
+            &mut inner,
+            State::Migrate(role, MigratePhase::Start),
+        )
     }
 
     pub(crate) fn trigger_suspend(
@@ -501,15 +521,15 @@ impl Instance {
                     // suspend become stale.
                     inner.suspend_info = None;
                 }
-                State::Migrate(_) => {
-                    let migrate_ctx = inner.migrate_ctx.unwrap();
-                    // Worker thread quiesce cannot be done with `inner` lock
-                    // held without risking a deadlock.
-                    drop(inner);
-                    self.disp.quiesce();
-                    // We explicitly allow the migrate task to run
-                    self.disp.release_one(migrate_ctx);
-                    inner = self.inner.lock().unwrap();
+                State::Migrate(_, _phase) => {
+                    // let migrate_ctx = inner.migrate_ctx.unwrap();
+                    // // Worker thread quiesce cannot be done with `inner` lock
+                    // // held without risking a deadlock.
+                    // drop(inner);
+                    // self.disp.quiesce();
+                    // // We explicitly allow the migrate task to run
+                    // self.disp.release_one(migrate_ctx);
+                    // inner = self.inner.lock().unwrap();
                 }
                 _ => {}
             }
