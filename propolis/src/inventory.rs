@@ -474,6 +474,7 @@ pub trait Entity: Send + Sync + 'static {
     fn child_register(&self) -> Option<Vec<ChildRegister>> {
         None
     }
+
     fn migrate(&self) -> Option<&dyn Migrate> {
         None
     }
