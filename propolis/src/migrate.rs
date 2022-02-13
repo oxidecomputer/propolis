@@ -10,7 +10,7 @@ pub trait Migrate: Send + Sync + 'static {
     /// requests. The returned future should become ready
     /// once the device has stopped servicing the guest and
     /// any pending operations have been completed or cancelled.
-    fn pause(&self, _ctx: &DispCtx) -> BoxFuture<()> {
+    fn pause(&self, _ctx: &DispCtx) -> BoxFuture<'static, ()> {
         Box::pin(future::ready(()))
     }
 }

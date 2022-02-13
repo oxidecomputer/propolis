@@ -496,9 +496,7 @@ impl CompQueue {
     /// If the value was true, it will also get reset to false.
     pub fn kick(&self) -> bool {
         let mut state = self.state.inner.lock().unwrap();
-        let old_kick = state.kick;
-        state.kick = false;
-        old_kick
+        std::mem::replace(&mut state.kick, false)
     }
 
     /// Returns the number of SQ's associated with this Completion Queue.

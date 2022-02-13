@@ -1,11 +1,12 @@
 use futures::{SinkExt, StreamExt};
 use propolis::inventory::Order;
 use std::sync::Arc;
+use tokio::task;
 
 use hyper::upgrade::Upgraded;
 use propolis::dispatch::AsyncCtx;
 use propolis::instance::{Instance, ReqState};
-use slog::info;
+use slog::{info, warn};
 use tokio_util::codec::Framed;
 
 use crate::migrate::codec;
@@ -97,9 +98,15 @@ impl SourceProtocol {
         let mut migrate_ready_futs = vec![];
         for (name, device) in &devices {
             if let Some(migrate_hdl) = device.migrate() {
-                migrate_ready_futs.push(migrate_hdl.pause(&dispctx));
+                let log = self.log.new(slog::o!("device" => name.clone()));
+                info!(log, "Pausing device");
+                let pause_fut = migrate_hdl.pause(&dispctx);
+                migrate_ready_futs.push(task::spawn(async move {
+                    pause_fut.await;
+                    info!(log, "Paused device");
+                }));
             } else {
-                info!(self.log, "No migrate handle for {}", name);
+                warn!(self.log, "No migrate handle for {}", name);
                 continue;
             }
         }
