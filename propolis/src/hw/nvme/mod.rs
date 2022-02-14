@@ -10,7 +10,7 @@ use crate::util::regmap::RegMap;
 use crate::{block, common::*};
 
 use erased_serde::Serialize;
-use futures::future::{self, BoxFuture};
+use futures::future::BoxFuture;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
@@ -893,8 +893,11 @@ impl Migrate for PciNvme {
         Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
     }
 
-    fn pause(&self, _ctx: &DispCtx) -> BoxFuture<'static, ()> {
+    fn pause(&self, _ctx: &DispCtx) {
         let mut ctrl = self.state.lock().unwrap();
+
+        // Stop responding to any requests
+        assert!(!ctrl.paused);
         ctrl.paused = true;
 
         // Create a new notifier and stash it in the shared reference
@@ -907,22 +910,27 @@ impl Migrate for PciNvme {
         assert!(reqs_notifier.is_none());
         let notify = Arc::new(Notify::new());
         *reqs_notifier = Some(Arc::clone(&notify));
-        drop(reqs_notifier);
 
         if ctrl.reqs_outstanding.load(Ordering::Acquire) == 0 {
             // Since we hold the `state` lock, no new request can be submitted
             // (`PciNvme::next_req`) until it's released. But we also just
             // updated `paused = true` and so we can be sure there won't be
-            // any new requests once we release the lock. Hence, we have nothing
-            // to wait for and can indicate the NVMe device is immediately ready
-            // to be paused.
-            Box::pin(future::ready(()))
-        } else {
-            // Otherwise, there are still some in-flight I/O requests.
-            // Once the last outstanding request is complete, it will
-            // signal the notifier.
-            Box::pin(async move { notify.notified().await })
+            // any new reqests once we release the lock. But it may be the
+            // case that we hit 0 outstanding requests right before we created
+            // the notifier above. To handle that case, we just make sure
+            // there's a permit available.
+            notify.notify_one();
         }
+    }
+
+    fn paused(&self) -> BoxFuture<'static, ()> {
+        let ctrl = self.state.lock().unwrap();
+        assert!(ctrl.paused);
+
+        let reqs_notifier = ctrl.reqs_notifier.lock().unwrap();
+        let notify = Arc::clone(reqs_notifier.as_ref().unwrap());
+
+        Box::pin(async move { notify.notified().await })
     }
 }
 

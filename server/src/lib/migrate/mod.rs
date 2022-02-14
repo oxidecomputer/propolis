@@ -232,15 +232,10 @@ pub async fn source_start(
 
     // The migration task needs an async descriptor context.
     let async_ctx = instance.disp.async_ctx();
-    let migrate_ctx_id = async_ctx.context_id();
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let mctx = migrate_context.clone();
-
-    // Request instance to enter 'migrating' state
-    // and allow our migrate task access to the DispCtx & Machine
-    instance.begin_migrate(MigrateRole::Source, migrate_ctx_id)?;
 
     let task = tokio::spawn(async move {
         // We have to await on the HTTP upgrade future in a new
@@ -379,11 +374,6 @@ pub async fn dest_initiate(
 
     // The migration task needs an async descriptor context.
     let async_context = instance.disp.async_ctx();
-    let migrate_ctx_id = async_context.context_id();
-
-    // Request instance to enter 'migrating' state
-    // and allow our migrate task access to the DispCtx & Machine
-    instance.begin_migrate(MigrateRole::Destination, migrate_ctx_id)?;
 
     let task = tokio::spawn(async move {
         if let Err(e) = destination::migrate(

@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures::{future, SinkExt, StreamExt};
 use propolis::inventory::Order;
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,6 +80,13 @@ impl SourceProtocol {
     async fn pause(&mut self) -> Result<()> {
         self.migrate_context.set_state(MigrationState::Pause).await;
 
+        // Ask the instance to begin transitioning to the paused state
+        // This will inform each device to pause.
+        info!(self.log, "Pausing devices");
+        let (pause_tx, pause_rx) = std::sync::mpsc::channel();
+        self.instance
+            .migrate_pause(self.async_context.context_id(), pause_rx)?;
+
         // Grab a reference to all the devices that are a part of this Instance
         let mut devices = vec![];
         let inv = self.instance.inv();
@@ -87,27 +94,21 @@ impl SourceProtocol {
             devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
         });
 
-        let dispctx = self
-            .async_context
-            .dispctx()
-            .await
-            .ok_or(MigrateError::InstanceNotInitialized)?;
-
-        // Inform each device to pause and collect the resulting futures together
+        // Ask each device for a future indicating they've finishing pausing
         let mut migrate_ready_futs = vec![];
         for (name, device) in &devices {
             if let Some(migrate_hdl) = device.migrate() {
                 let log = self.log.new(slog::o!("device" => name.clone()));
-                info!(log, "Pausing device");
-                let pause_fut = migrate_hdl.pause(&dispctx);
+                let pause_fut = migrate_hdl.paused();
                 migrate_ready_futs.push(task::spawn(async move {
                     if let Err(_) =
                         time::timeout(Duration::from_secs(2), pause_fut).await
                     {
-                        error!(log, "Timeed out pausing device");
-                        return;
+                        error!(log, "Timed out pausing device");
+                        return Err(());
                     }
                     info!(log, "Paused device");
+                    Ok(())
                 }));
             } else {
                 warn!(self.log, "No migrate handle for {}", name);
@@ -116,7 +117,21 @@ impl SourceProtocol {
         }
 
         // Now we wait for all the devices to have paused
-        futures::future::join_all(migrate_ready_futs).await;
+        future::join_all(migrate_ready_futs)
+            .await
+            // Hoist out the JoinError's
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            // TODO: Better error
+            .map_err(|_| MigrateError::InvalidInstanceState)?
+            // Hoist out the pause task errors if any
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            // TODO: Better error
+            .map_err(|_| MigrateError::Protocol)?;
+
+        // Inform the instance state machine we're done pausing
+        pause_tx.send(()).unwrap();
 
         Ok(())
     }

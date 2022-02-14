@@ -226,6 +226,7 @@ fn complete_block_req(
     cqe_permit.push_completion(cid, comp, ctx);
 
     if reqs_outstanding.fetch_sub(1, Ordering::Release) == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
         if let Some(notifier) = &*reqs_notifier.lock().unwrap() {
             notifier.notify_one();
         }
