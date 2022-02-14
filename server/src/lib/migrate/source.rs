@@ -1,12 +1,13 @@
 use futures::{SinkExt, StreamExt};
 use propolis::inventory::Order;
 use std::sync::Arc;
-use tokio::task;
+use std::time::Duration;
+use tokio::{task, time};
 
 use hyper::upgrade::Upgraded;
 use propolis::dispatch::AsyncCtx;
 use propolis::instance::{Instance, ReqState};
-use slog::{info, warn};
+use slog::{error, info, warn};
 use tokio_util::codec::Framed;
 
 use crate::migrate::codec;
@@ -79,10 +80,8 @@ impl SourceProtocol {
     async fn pause(&mut self) -> Result<()> {
         self.migrate_context.set_state(MigrationState::Pause).await;
 
-        // Grab a reference all the devices that are a part of this Instance
+        // Grab a reference to all the devices that are a part of this Instance
         let mut devices = vec![];
-
-        // Go over all the devices in this Instance
         let inv = self.instance.inv();
         inv.for_each_node(Order::Pre, |_, rec| {
             devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
@@ -102,7 +101,12 @@ impl SourceProtocol {
                 info!(log, "Pausing device");
                 let pause_fut = migrate_hdl.pause(&dispctx);
                 migrate_ready_futs.push(task::spawn(async move {
-                    pause_fut.await;
+                    if let Err(_) =
+                        time::timeout(Duration::from_secs(2), pause_fut).await
+                    {
+                        error!(log, "Timeed out pausing device");
+                        return;
+                    }
                     info!(log, "Paused device");
                 }));
             } else {
