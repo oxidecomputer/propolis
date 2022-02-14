@@ -12,7 +12,7 @@ use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
 use crate::inventory::Entity;
 use crate::vmm::SubMapping;
 
-use crucible::CrucibleError;
+use crucible::{BlockIO, CrucibleError};
 
 use tokio::sync::Semaphore;
 
