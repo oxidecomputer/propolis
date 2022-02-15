@@ -480,6 +480,12 @@ pub trait Entity: Send + Sync + 'static {
     }
 }
 
+impl std::fmt::Debug for dyn Entity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Entity ({})", self.type_name())
+    }
+}
+
 pub struct ChildRegister {
     ent: Arc<dyn Entity>,
     ent_any: Arc<dyn Any + Send + Sync + 'static>,
