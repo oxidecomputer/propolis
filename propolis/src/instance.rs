@@ -3,17 +3,29 @@
 #![allow(unused)]
 
 use std::io;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::dispatch::*;
-use crate::inventory::{self, Inventory};
+use crate::inventory::{self, Entity, Inventory, Order};
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
+use futures::future;
 use slog::{self, Drain};
 use thiserror::Error;
 use tokio::runtime::Handle;
+use tokio::task;
+use tokio::time::timeout;
+
+/// Possible errors during migration
+#[derive(Debug, Error)]
+pub enum MigrateError {
+    /// We failed to pause some devices on the Instance
+    #[error("failed to pause devices on instance")]
+    PauseDevices { failed: Vec<Arc<dyn Entity>> },
+}
 
 /// The role of an instance during a migration.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -30,6 +42,9 @@ pub enum MigratePhase {
 
     /// Wind down the instance and give devices a chance to complete in-flight requests.
     Pause,
+
+    /// We encountered an error during the migration.
+    Error,
 }
 
 /// States of operation for an instance.
@@ -120,6 +135,9 @@ impl State {
             State::Migrate(role, phase) => match target {
                 Some(State::Run) => State::Run,
                 Some(State::Halt) | Some(State::Destroy) => State::Halt,
+                Some(State::Migrate(role, MigratePhase::Error)) => {
+                    State::Migrate(role, MigratePhase::Error)
+                }
                 _ => State::Migrate(*role, *phase),
             },
             State::Halt => State::Destroy,
@@ -182,7 +200,7 @@ struct Inner {
     inv: Arc<Inventory>,
     transition_funcs: Vec<Box<TransitionFunc>>,
     migrate_ctx: Option<CtxId>,
-    pause_chan: Option<std::sync::mpsc::Receiver<()>>,
+    migrate_err: Option<MigrateError>,
 }
 
 /// A single virtual machine.
@@ -214,7 +232,7 @@ impl Instance {
                 inv: Arc::new(Inventory::new()),
                 transition_funcs: Vec::new(),
                 migrate_ctx: None,
-                pause_chan: None,
+                migrate_err: None,
             }),
             cv: Condvar::new(),
             disp,
@@ -328,12 +346,14 @@ impl Instance {
         }
     }
 
+    /// Attempt to pause the instance.
     ///
+    /// This method will block until the state transition is completed,
+    /// we encounter an error or the instance is destroyed.
     pub fn migrate_pause(
         &self,
         migrate_ctx_id: CtxId,
-        pause_chan: std::sync::mpsc::Receiver<()>,
-    ) -> Result<(), TransitionError> {
+    ) -> Result<bool, TransitionError> {
         let mut inner = self.inner.lock().unwrap();
 
         // Make sure the Instance is in the appropriate state
@@ -358,12 +378,42 @@ impl Instance {
         // Stash the migrate context and pause channel so that
         // `drive_state` can access them
         inner.migrate_ctx = Some(migrate_ctx_id);
-        inner.pause_chan = Some(pause_chan);
 
+        // Kick off the state transition.
         self.set_target_state_locked(
             &mut inner,
             State::Migrate(MigrateRole::Source, MigratePhase::Pause),
-        )
+        )?;
+
+        // Now wait til we complete the transition, encounter an error
+        // or the instance is destroyed.
+        inner = self
+            .cv
+            .wait_while(inner, |state| match state.state_current {
+                State::Destroy
+                | State::Migrate(
+                    MigrateRole::Source,
+                    MigratePhase::Pause | MigratePhase::Error,
+                ) => false,
+                _ => true,
+            })
+            .unwrap();
+
+        match inner.state_current {
+            State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
+                Ok(true)
+            }
+            State::Migrate(_, MigratePhase::Error) | State::Destroy => {
+                Ok(false)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Returns the last encountered Migration error, if any.
+    pub fn migrate_error(&self) -> Option<MigrateError> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.migrate_err.take()
     }
 
     pub(crate) fn trigger_suspend(
@@ -465,7 +515,7 @@ impl Instance {
     ) {
         self.disp.with_ctx(|ctx| {
             // Allow any entity to act on the new state
-            inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
+            inner.inv.for_each_node(Order::Pre, |_id, rec| {
                 let ent = rec.entity();
 
                 // Entities using the `reset` shortcut will be notified of the
@@ -474,17 +524,6 @@ impl Instance {
                 // reinitialized.
                 if state == State::Reset && phase == TransitionPhase::Pre {
                     ent.reset(ctx);
-                }
-
-                // Inform each entity to stop servicing the guest and
-                // complete or cancel any outstanding requests.
-                if state
-                    == State::Migrate(MigrateRole::Source, MigratePhase::Pause)
-                    && phase == TransitionPhase::Pre
-                {
-                    if let Some(migrate) = ent.migrate() {
-                        migrate.pause(ctx);
-                    }
                 }
 
                 ent.state_transition(state, target, phase, ctx);
@@ -569,15 +608,77 @@ impl Instance {
                     inner.suspend_info = None;
                 }
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
-                    // Give an opportunity to migration requestor to take
-                    // action before quiescing the instance.
-                    // Drop the `inner` lock so that it may access instance
-                    // in the meanwhile.
-                    let pause_chan =
-                        inner.pause_chan.take().expect("migrate pause channel");
-                    drop(inner);
-                    pause_chan.recv().expect("migrate pause recv");
-                    inner = self.inner.lock().unwrap();
+                    // Ask each device to pause and collect the resulting
+                    // futures together
+                    let mut pause_futs = vec![];
+                    inner.inv.for_each_node(Order::Pre, |_id, rec| {
+                        let log = self
+                            .disp
+                            .logger()
+                            .new(slog::o!("device" => rec.name().to_owned()));
+                        let ent = rec.entity();
+                        if let Some(migrate) = ent.migrate() {
+                            self.disp.with_ctx(|ctx| {
+                                let ent = Arc::clone(&ent);
+                                let pause = migrate.pause(ctx);
+                                // Wrap the future in a timeout so that we aren't waiting
+                                // indefinitely for a device.
+                                let pause = async move {
+                                    // TODO: want to do better than a hardcoded timeout
+                                    let to = Duration::from_secs(2);
+                                    if let Err(_) = timeout(to, pause).await {
+                                        slog::error!(
+                                            log,
+                                            "Timed out pausing device"
+                                        );
+                                        return Err(ent);
+                                    }
+                                    slog::info!(log, "Paused device");
+                                    Ok(())
+                                };
+                                pause_futs.push(task::spawn(pause));
+                            });
+                        } else {
+                            slog::warn!(log, "No migrate handler");
+                        }
+                    });
+
+                    // Spawn a separate task to join and await all the devices
+                    // that will inform us when done via a channel
+                    let (pause_done_tx, pause_done_rx) = mpsc::channel();
+                    task::spawn(async move {
+                        let res = future::join_all(pause_futs).await;
+                        pause_done_tx.send(res);
+                    });
+
+                    // Now, just wait for the devices to finish pausing (or error)
+                    let res =
+                        pause_done_rx.recv().expect("migrate pause channel");
+
+                    // Collect any errors together
+                    let pause_failed = res
+                        .into_iter()
+                        // Hoist out any JoinError
+                        .collect::<Result<Vec<_>, _>>()
+                        .expect("device pause join task")
+                        .into_iter()
+                        .filter(Result::is_err)
+                        .map(Result::unwrap_err)
+                        .collect::<Vec<_>>();
+
+                    if !pause_failed.is_empty() {
+                        // Pausing some of the devices failed,
+                        // let's stash the error and indicate we've failed.
+                        assert!(inner.migrate_err.is_none());
+                        inner.migrate_err = Some(MigrateError::PauseDevices {
+                            failed: pause_failed,
+                        });
+
+                        inner.state_target = Some(State::Migrate(
+                            MigrateRole::Source,
+                            MigratePhase::Error,
+                        ));
+                    }
                 }
                 _ => {}
             }
@@ -639,7 +740,7 @@ impl Instance {
         state.inv.print()
     }
 
-    /// Return the [`Inventory`] describing the device tree of this Instance.s
+    /// Return the [`Inventory`] describing the device tree of this Instance.
     pub fn inv(&self) -> Arc<Inventory> {
         let state = self.inner.lock().unwrap();
         Arc::clone(&state.inv)

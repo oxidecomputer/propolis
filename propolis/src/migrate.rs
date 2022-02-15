@@ -10,12 +10,9 @@ pub trait Migrate: Send + Sync + 'static {
     /// guest and attempt to cancel or complete any pending operations.
     ///
     /// The device isn't necessarily expected to complete the pause
-    /// operation within this call but should instead return a future
-    /// indicating such via the `paused` method.
-    fn pause(&self, _ctx: &DispCtx) {}
-
-    /// Return a future indicating when the device has finished pausing.
-    fn paused(&self) -> BoxFuture<'static, ()> {
+    /// operation within this call but must instead return a future
+    /// indicating when the operation is complete.
+    fn pause(&self, _ctx: &DispCtx) -> BoxFuture<'static, ()> {
         Box::pin(future::ready(()))
     }
 }
