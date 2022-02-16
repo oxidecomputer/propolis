@@ -236,7 +236,7 @@ impl VmmHdl {
     pub fn mmap_seg(&self, segid: i32, size: usize) -> Result<Mapping> {
         let devoff = self.devmem_offset(segid)?;
 
-        Mapping::new(size, Prot::WRITE, &self.inner, devoff as i64)
+        Mapping::new(size, Prot::READ | Prot::WRITE, &self.inner, devoff as i64)
     }
 
     /// Maps a portion of the guest's virtual address space into propolis'
