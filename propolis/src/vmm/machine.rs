@@ -333,7 +333,7 @@ impl<'a> MemCtx<'a> {
     ) -> Option<SubMapping> {
         let (_prot, _guest_map, seg_map) =
             self.region_mappings(region.0, region.1)?;
-        Some(seg_map.constrain_access(Prot::WRITE))
+        Some(seg_map?.constrain_access(Prot::WRITE))
     }
     /// Like `readable_region`, but accesses the underlying memory segment
     /// directly, bypassing protection enforced to the guest and tracking of
@@ -344,7 +344,7 @@ impl<'a> MemCtx<'a> {
     ) -> Option<SubMapping> {
         let (_prot, _guest_map, seg_map) =
             self.region_mappings(region.0, region.1)?;
-        Some(seg_map.constrain_access(Prot::READ))
+        Some(seg_map?.constrain_access(Prot::READ))
     }
 
     /// Look up a region in the guest's address space and return its protection
@@ -354,7 +354,7 @@ impl<'a> MemCtx<'a> {
         &self,
         addr: GuestAddr,
         len: usize,
-    ) -> Option<(Prot, SubMapping, SubMapping)> {
+    ) -> Option<(Prot, SubMapping, Option<SubMapping>)> {
         let start = addr.0 as usize;
         let end = start + len;
         if let Ok((addr, rlen, ent)) = self.map.region_at(start) {
@@ -371,13 +371,13 @@ impl<'a> MemCtx<'a> {
                         .as_ref()
                         .subregion(req_offset, len)
                         .unwrap();
-                    let seg_map = ent
-                        .seg_map
-                        .as_ref()
-                        .unwrap()
-                        .as_ref()
-                        .subregion(req_offset, len)
-                        .unwrap();
+
+                    // See Builder::prep_mem_map for why direct segment mappings
+                    // might not be available.
+                    let seg_map = ent.seg_map.as_ref().map(|seg| {
+                        seg.as_ref().subregion(req_offset, len).unwrap()
+                    });
+
                     return Some((prot, guest_map, seg_map));
                 }
                 _ => {}
@@ -593,8 +593,13 @@ impl Builder {
                         len,
                         prot & (Prot::READ | Prot::WRITE),
                     )?;
-                    let seg_map = hdl.mmap_seg(segid, len)?;
-                    (Some(guest_map), Some(seg_map))
+
+                    // Until illumos #14511 is merged, sysmem segments cannot be
+                    // mapped directly. We translate such errors into a simple
+                    // lack of direct mapping to the rest of propolis.
+                    let seg_map = hdl.mmap_seg(segid, len).ok();
+
+                    (Some(guest_map), seg_map)
                 }
                 MapKind::Rom(segid, _) => {
                     // Only PROT_READ makes sense for normal ROM access
