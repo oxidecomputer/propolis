@@ -3,7 +3,7 @@
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::common::{GuestAddr, GuestRegion};
 use crate::mmio::MmioBus;
@@ -26,9 +26,12 @@ enum MapKind {
 struct MapEnt {
     kind: MapKind,
     name: String,
-    // A mapping of the guest address space within the current process.
+    /// Mapping of the guest address space within the current process, subject
+    /// to the same protection restrictions as the guest.
     guest_map: Option<Mapping>,
-    dev_map: Option<Mutex<Mapping>>,
+    /// Mapping of vm memory segment within current process, with full (read and
+    /// write) access to its contents.
+    seg_map: Option<Mapping>,
 }
 
 /// The aggregate representation of a virtual machine.
@@ -68,8 +71,8 @@ impl Machine {
                     format!("rom {} not found", name),
                 )
             })?;
-        assert!(ent.dev_map.is_some());
-        let mapping = ent.dev_map.as_ref().unwrap().lock().unwrap();
+        assert!(ent.seg_map.is_some());
+        let mapping = ent.seg_map.as_ref().unwrap();
         func(&*mapping)
     }
 
@@ -130,7 +133,12 @@ impl Machine {
                     &hdl.inner,
                     0,
                 )?),
-                dev_map: None,
+                seg_map: Some(Mapping::new(
+                    1024 * 1024,
+                    Prot::READ | Prot::WRITE,
+                    &hdl.inner,
+                    0,
+                )?),
             },
         )
         .map_err(|e| {
@@ -148,7 +156,12 @@ impl Machine {
                     &hdl.inner,
                     1024 * 1024,
                 )?),
-                dev_map: None,
+                seg_map: Some(Mapping::new(
+                    1024 * 1024,
+                    Prot::READ | Prot::WRITE,
+                    &hdl.inner,
+                    1024 * 1024,
+                )?),
             },
         )
         .map_err(|e| {
@@ -311,14 +324,37 @@ impl<'a> MemCtx<'a> {
         Some(mapping)
     }
 
-    // Looks up a region of memory in the guest's address space,
-    // returning a pointer to the containing region.
-    fn region_covered(
+    /// Like `writable_region`, but accesses the underlying memory segment
+    /// directly, bypassing protection enforced to the guest and tracking of
+    /// dirty pages in the guest-physical address space.
+    pub fn direct_writable_region(
+        &self,
+        region: &GuestRegion,
+    ) -> Option<SubMapping> {
+        let (_prot, _guest_map, seg_map) =
+            self.region_mappings(region.0, region.1)?;
+        Some(seg_map.constrain_access(Prot::WRITE))
+    }
+    /// Like `readable_region`, but accesses the underlying memory segment
+    /// directly, bypassing protection enforced to the guest and tracking of
+    /// accessed pages in the guest-physical address space.
+    pub fn direct_readable_region(
+        &self,
+        region: &GuestRegion,
+    ) -> Option<SubMapping> {
+        let (_prot, _guest_map, seg_map) =
+            self.region_mappings(region.0, region.1)?;
+        Some(seg_map.constrain_access(Prot::READ))
+    }
+
+    /// Look up a region in the guest's address space and return its protection
+    /// (as preceived by the guest) and mapping access, both through the nested
+    /// page tables, and directly to the underlying memory segment.
+    fn region_mappings(
         &self,
         addr: GuestAddr,
         len: usize,
-        need_prot: Prot,
-    ) -> Option<SubMapping> {
+    ) -> Option<(Prot, SubMapping, SubMapping)> {
         let start = addr.0 as usize;
         let end = start + len;
         if let Ok((addr, rlen, ent)) = self.map.region_at(start) {
@@ -328,17 +364,46 @@ impl<'a> MemCtx<'a> {
             let req_offset = start - addr;
             match ent.kind {
                 MapKind::SysMem(_, prot) | MapKind::Rom(_, prot) => {
-                    // TODO: This protection check may be redundant with
-                    // mapping, which has its own memory protection tracking.
-                    if prot.contains(need_prot) {
-                        let base = ent.guest_map.as_ref().unwrap().as_ref();
-                        return base.subregion(req_offset, len);
-                    }
+                    let guest_map = ent
+                        .guest_map
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .subregion(req_offset, len)
+                        .unwrap();
+                    let seg_map = ent
+                        .seg_map
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .subregion(req_offset, len)
+                        .unwrap();
+                    return Some((prot, guest_map, seg_map));
                 }
                 _ => {}
             }
         }
         None
+    }
+
+    /// Looks up a region of memory in the guest's address space, returning a
+    /// pointer to the containing region.
+    fn region_covered(
+        &self,
+        addr: GuestAddr,
+        len: usize,
+        req_prot: Prot,
+    ) -> Option<SubMapping> {
+        let (prot, guest_map, _seg_map) = self.region_mappings(addr, len)?;
+        // Although this protection check could be considered redundant with the
+        // permissions on the mapping itself, performing it here allows
+        // consumers to gracefully handle errors, rather than taking a fault
+        // when attempting to exceed the guest's apparent permissions.
+        if prot.contains(req_prot) {
+            Some(guest_map)
+        } else {
+            None
+        }
     }
 }
 
@@ -520,33 +585,34 @@ impl Builder {
 
         let mut map = ASpace::new(0, MAX_PHYSMEM);
         for (start, len, (ent, name)) in self.memmap.iter() {
-            let (guest_map, dev_map) = match *ent {
-                MapKind::SysMem(_, prot) => {
-                    let mapping = hdl.mmap_guest_mem(
+            let (guest_map, seg_map) = match *ent {
+                MapKind::SysMem(segid, prot) => {
+                    let guest_map = hdl.mmap_guest_mem(
                         &mut guard_space,
                         start,
                         len,
                         prot & (Prot::READ | Prot::WRITE),
                     )?;
-                    (Some(mapping), None)
+                    let seg_map = hdl.mmap_seg(segid, len)?;
+                    (Some(guest_map), Some(seg_map))
                 }
                 MapKind::Rom(segid, _) => {
                     // Only PROT_READ makes sense for normal ROM access
-                    let mapping = hdl.mmap_guest_mem(
+                    let guest_map = hdl.mmap_guest_mem(
                         &mut guard_space,
                         start,
                         len,
                         Prot::READ,
                     )?;
-                    let dev = hdl.mmap_seg(segid, len)?;
-                    (Some(mapping), Some(Mutex::new(dev)))
+                    let seg_map = hdl.mmap_seg(segid, len)?;
+                    (Some(guest_map), Some(seg_map))
                 }
                 MapKind::MmioReserve => (None, None),
             };
             map.register(
                 start,
                 len,
-                MapEnt { kind: *ent, name: name.clone(), guest_map, dev_map },
+                MapEnt { kind: *ent, name: name.clone(), guest_map, seg_map },
             )
             .unwrap();
         }

@@ -318,6 +318,12 @@ impl<'a> SubMapping<'a> {
         Some(sub)
     }
 
+    /// Constrain the access permissions of a SubMapping
+    pub fn constrain_access(mut self, prot_limit: Prot) -> Self {
+        self.prot = self.prot.intersection(prot_limit);
+        self
+    }
+
     /// Reads a `T` object from the mapping.
     pub fn read<T: Copy>(&self) -> Result<T> {
         if !self.prot.contains(Prot::READ) {
@@ -692,5 +698,35 @@ pub mod tests {
         // Overflow.
         assert!(mapping.as_ref().subregion(usize::MAX, 1).is_none());
         assert!(mapping.as_ref().subregion(1, usize::MAX).is_none());
+    }
+
+    #[test]
+    fn subregion_protection() {
+        let vmm = test_vmm(GUARD_LEN as u64);
+        let mapping =
+            Mapping::new(GUARD_LEN, Prot::READ | Prot::WRITE, &vmm, 0).unwrap();
+
+        let parent = mapping.as_ref().subregion(0, GUARD_LEN).unwrap();
+
+        // Main region has full access
+        let mut buf = [0u8];
+        assert!(parent.write_bytes(&buf).is_ok());
+        assert!(parent.read_bytes(&mut buf).is_ok());
+
+        // Restricted to reads
+        let sub_read = parent
+            .subregion(0, GUARD_LEN)
+            .unwrap()
+            .constrain_access(Prot::READ);
+        assert!(sub_read.write_bytes(&buf).is_err());
+        assert!(sub_read.read_bytes(&mut buf).is_ok());
+
+        // Restricted to writes
+        let sub_write = parent
+            .subregion(0, GUARD_LEN)
+            .unwrap()
+            .constrain_access(Prot::WRITE);
+        assert!(sub_write.write_bytes(&buf).is_ok());
+        assert!(sub_write.read_bytes(&mut buf).is_err());
     }
 }
