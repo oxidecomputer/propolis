@@ -328,7 +328,15 @@ impl Instance {
         }
     }
 
+    /// Ask the instance to pause in prepartion for a migration.
     ///
+    /// This will ask the instance to transition to the Migrate Pause
+    /// state. As part of that, we'll walk through the device inventory
+    /// asking each to stop servicing guest requests. The instance will
+    /// wait while the caller has the opportunity to monitor the progress
+    /// of each device. The instance expects the caller to inform when it
+    /// should complete the transition to the Migrate Pause state via the
+    /// passed in Receiver.
     pub fn migrate_pause(
         &self,
         migrate_ctx_id: CtxId,
