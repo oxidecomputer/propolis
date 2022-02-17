@@ -40,6 +40,11 @@ structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis", features = ["crucible"], default-features = false }
 propolis-client = { path = "../client" }
 uuid = "0.8"
+# temporary, until https://github.com/Thog/mkisofs-rs/pull/3 is merged
+mkisofs-rs = { git = "https://github.com/jmpesp/mkisofs-rs", branch = "volume_descriptor_and_optional_truncation" }
+tempfile = "3"
+serde_yaml = "0.8.23"
+base64 = "0.13"
 
 [dev-dependencies]
 hex = "0.4.3"

@@ -12,7 +12,7 @@ use futures::{future, SinkExt, StreamExt};
 use propolis_client::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceStateRequested, MigrationState,
+        InstanceProperties, InstanceStateRequested, MigrationState, CloudInit,
     },
     Client,
 };
@@ -66,6 +66,10 @@ enum Command {
         // file with a JSON array of DiskRequest structs
         #[structopt(long, parse(from_os_str))]
         crucible_disks: Option<PathBuf>,
+
+        // file with JSON cloud-init meta-data and user-data
+        #[structopt(long, parse(from_os_str))]
+        cloud_init: Option<PathBuf>,
     },
 
     /// Get the properties of a propolis instance
@@ -120,7 +124,7 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     }
 }
 
-fn parse_crucible_disks(path: &Path) -> anyhow::Result<Vec<DiskRequest>> {
+fn parse_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader).map_err(|e| e.into())
@@ -155,6 +159,7 @@ async fn new_instance(
     vcpus: u8,
     memory: u64,
     disks: Vec<DiskRequest>,
+    cloud_init: Option<CloudInit>,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
@@ -174,6 +179,7 @@ async fn new_instance(
         nics: vec![],
         disks,
         migrate: None,
+        cloud_init,
     };
 
     // Try to create the instance
@@ -316,6 +322,7 @@ async fn migrate_instance(
             src_addr,
             src_uuid,
         }),
+        cloud_init: None,
     };
 
     // Initiate the migration via the destination instance
@@ -362,11 +369,16 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(addr, log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, uuid, vcpus, memory, crucible_disks } => {
+        Command::New { name, uuid, vcpus, memory, crucible_disks, cloud_init } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
-                parse_crucible_disks(&crucible_disks)?
+                parse_json_file(&crucible_disks)?
             } else {
                 vec![]
+            };
+            let cloud_init = if let Some(cloud_init) = cloud_init {
+                Some(parse_json_file(&cloud_init)?)
+            } else {
+                None
             };
             new_instance(
                 &client,
@@ -375,6 +387,7 @@ async fn main() -> anyhow::Result<()> {
                 vcpus,
                 memory,
                 disks,
+                cloud_init,
             )
             .await?
         }

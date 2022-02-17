@@ -17,6 +17,9 @@ mod crucible;
 #[cfg(feature = "crucible")]
 pub use self::crucible::CrucibleBackend;
 
+mod in_memory;
+pub use in_memory::InMemoryBackend;
+
 pub type ByteOffset = usize;
 pub type ByteLen = usize;
 

@@ -37,6 +37,10 @@ use crate::initializer::{build_instance, MachineInitializer};
 use crate::migrate;
 use crate::serial::Serial;
 
+use std::io::{Read, Write};
+use std::fs::File;
+use tempfile::tempdir;
+
 // TODO(error) Do a pass of HTTP codes (error and ok)
 // TODO(idempotency) Idempotency mechanisms?
 
@@ -140,6 +144,7 @@ fn propolis_to_api_state(
 enum SlotType {
     NIC,
     Disk,
+    CloudInit,
 }
 
 // TODO: Slot ranges as constants, exposed to Omicron?
@@ -160,12 +165,118 @@ fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
         SlotType::Disk if slot.0 <= 7 => {
             Ok(pci::Bdf::new(0, slot.0 + 0x10, 0).unwrap())
         }
+        // Slot for CloudInit
+        SlotType::CloudInit if slot.0 == 0 => {
+            Ok(pci::Bdf::new(0, slot.0 + 0x18, 0).unwrap())
+        }
         _ => Err(anyhow::anyhow!(
             "PCI Slot {} has no translation to BDF for type {:?}",
             slot.0,
             ty
         )),
     }
+}
+
+fn create_in_memory_cloud_init_iso(
+    log: &Logger,
+    cloud_init: &api::CloudInit,
+) -> anyhow::Result<Vec<u8>> {
+    info!(log, "creating temp dir");
+
+    let temp_dir = tempdir()?;
+
+    info!(log, "creating meta data file");
+    let meta_data_path = temp_dir.path().clone().join("meta-data");
+    let mut meta_data_file = File::create(&meta_data_path)?;
+
+    writeln!(
+        meta_data_file,
+        "instance-id: {}",
+        cloud_init.meta_data.instance_id,
+    )?;
+    writeln!(
+        meta_data_file,
+        "local-hostname: {}",
+        cloud_init.meta_data.local_hostname,
+    )?;
+    if let Some(hostname) = &cloud_init.meta_data.hostname {
+        writeln!(meta_data_file, "hostname: {}", hostname)?;
+    }
+
+    drop(meta_data_file);
+
+    info!(log, "creating user data file");
+    let user_data_path = temp_dir.path().clone().join("user-data");
+    let user_data_file = File::create(&user_data_path)?;
+
+    if let Some(custom_user_data) = &cloud_init.custom_user_data {
+        info!(log, "cloud-init POST had custom user data");
+
+        let user_data = base64::decode(custom_user_data)?;
+        let user_data = std::str::from_utf8(&user_data)?;
+        write!(&user_data_file, "{}", user_data)?;
+    } else {
+        info!(log, "cloud-init POST had structured user data");
+
+        // serde_yaml starts serialization by writing out "---\n", but
+        // cloud-init's format doesn't expect this. write to a string, then
+        // remove that part.
+        //
+        // XXX this is flimsy - it relies on the header always looking like
+        // "---\n", which could change. a better thing would be to loop and
+        // check for - and \n.
+        writeln!(&user_data_file, "#cloud-config")?;
+        let mut serialized = serde_yaml::to_string(&cloud_init.user_data)?;
+        serialized = serialized.trim_start_matches("---\n").to_string();
+        write!(&user_data_file, "{}", serialized)?;
+    }
+
+    drop(user_data_file);
+
+    // Important: don't put output.iso in the same directory that you specify in
+    // input_files, otherwise you'll get recursion and create_iso will not
+    // return!
+    let output_temp_dir = tempdir()?;
+    let output_file = output_temp_dir.path().clone().join("output.iso");
+
+    info!(log, "creating iso opts");
+    let mut opt = mkisofs_rs::iso::option::Opt {
+        output: output_file.clone().into_os_string().into_string().unwrap(),
+        eltorito_opt: mkisofs_rs::iso::option::ElToritoOpt {
+            eltorito_boot: None,
+            no_emu_boot: true,
+            no_boot: true,
+            boot_info_table: false,
+            grub2_boot_info: false,
+        },
+        embedded_boot: None,
+        grub2_mbr: None,
+        boot_load_size: 4,
+        protective_msdos_label: false,
+        input_files: vec![
+            temp_dir.path().to_path_buf(),
+        ],
+        truncate_names: false,
+        volume_descriptor: "CIDATA".to_string(),
+    };
+
+    info!(log, "creating iso");
+    mkisofs_rs::iso::create_iso(&mut opt)?;
+
+    info!(log, "reading iso to RAM");
+    let mut iso = File::open(&output_file)?;
+
+    let metadata = std::fs::metadata(&output_file)?;
+    let sz: usize = metadata.len() as usize;
+
+    let mut bytes = vec![0; sz];
+    iso.read_exact(&mut bytes)?;
+
+    // expand to evenly divide by 512b blocks
+    bytes.resize((sz as f64 / 512_f64).ceil() as usize * 512, 0);
+
+    info!(log, "returning {} iso bytes", bytes.len());
+    Ok(bytes)
 }
 
 /*
@@ -185,8 +296,8 @@ async fn instance_ensure(
 
     let request = request.into_inner();
     let instance_id = path_params.into_inner().instance_id;
-    let (properties, nics, disks) =
-        (request.properties, request.nics, request.disks);
+    let (properties, nics, disks, cloud_init) =
+        (request.properties, request.nics, request.disks, request.cloud_init);
     if instance_id != properties.id {
         return Err(HttpError::for_internal_error(
             "UUID mismatch (path did not match struct)".to_string(),
@@ -313,6 +424,27 @@ async fn instance_ensure(
 
                 init.initialize_crucible(&chipset, disk, bdf)?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
+            }
+
+            if let Some(cloud_init) = &cloud_init {
+                info!(rqctx.log, "Creating cloud-init ISO");
+                let bytes = create_in_memory_cloud_init_iso(&rqctx.log, cloud_init)
+                    .map_err(|e| Error::new(
+                        ErrorKind::InvalidData,
+                        e.to_string()
+                    ))?;
+
+                // XXX if we can't create the ISO, should we boot anyway?
+
+                info!(rqctx.log, "Creating cloud-init disk");
+                let bdf = slot_to_bdf(api::Slot(0), SlotType::CloudInit)
+                    .map_err(|e| Error::new(
+                        ErrorKind::InvalidData,
+                        e.to_string()
+                    ))?;
+
+                init.initialize_in_memory_virtio_from_bytes(&chipset, &bytes, bdf, true)?;
+                info!(rqctx.log, "cloud-init disk created");
             }
 
             // Attach devices which are hard-coded in the config.

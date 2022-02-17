@@ -30,6 +30,45 @@ pub struct InstanceEnsureRequest {
     pub disks: Vec<DiskRequest>,
 
     pub migrate: Option<InstanceMigrateInitiateRequest>,
+
+    pub cloud_init: Option<CloudInit>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct CloudInit {
+    pub meta_data: Metadata,
+    pub user_data: Userdata,
+
+    // Base64 encoded custom user data
+    pub custom_user_data: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct Metadata {
+    pub instance_id: String,
+    pub local_hostname: String,
+
+    // note: this requires networking, name resolution to work!
+    pub hostname: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct Userdata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<String>>,
+
+    pub users: Vec<UserdataUser>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct UserdataUser {
+    pub name: String,
+    pub groups: Option<Vec<String>>,
+    pub ssh_authorized_keys: Vec<String>,
+    pub sudo: String,
+    pub lock_passwd: bool,
+    pub passwd: String,
+    pub shell: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
