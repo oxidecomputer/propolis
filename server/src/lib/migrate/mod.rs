@@ -102,9 +102,6 @@ pub enum MigrateError {
 
     #[error("encountered invalid instance state")]
     InvalidInstanceState,
-
-    #[error("failed to pause devices")]
-    PauseDevices,
 }
 
 impl From<hyper::Error> for MigrateError {
@@ -140,8 +137,9 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
             | MigrateError::InstanceNotInitialized
-            | MigrateError::InvalidInstanceState
-            | MigrateError::PauseDevices => HttpError::for_internal_error(msg),
+            | MigrateError::InvalidInstanceState => {
+                HttpError::for_internal_error(msg)
+            }
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
             | MigrateError::Protocol

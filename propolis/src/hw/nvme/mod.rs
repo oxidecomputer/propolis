@@ -893,7 +893,7 @@ impl Migrate for PciNvme {
         Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
     }
 
-    fn pause(&self, _ctx: &DispCtx) -> BoxFuture<'static, ()> {
+    fn pause(&self, _ctx: &DispCtx) {
         let mut ctrl = self.state.lock().unwrap();
 
         // Stop responding to any requests
@@ -921,6 +921,14 @@ impl Migrate for PciNvme {
             // there's a permit available.
             notify.notify_one();
         }
+    }
+
+    fn paused(&self) -> BoxFuture<'static, ()> {
+        let ctrl = self.state.lock().unwrap();
+        assert!(ctrl.paused);
+
+        let reqs_notifier = ctrl.reqs_notifier.lock().unwrap();
+        let notify = Arc::clone(reqs_notifier.as_ref().unwrap());
 
         Box::pin(async move { notify.notified().await })
     }

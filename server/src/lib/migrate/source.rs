@@ -1,10 +1,13 @@
-use futures::{SinkExt, StreamExt};
+use futures::{future, SinkExt, StreamExt};
+use propolis::inventory::Order;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::{task, time};
 
 use hyper::upgrade::Upgraded;
 use propolis::dispatch::AsyncCtx;
 use propolis::instance::{Instance, ReqState};
-use slog::{error, info};
+use slog::{error, info, warn};
 use tokio_util::codec::Framed;
 
 use crate::migrate::codec;
@@ -80,26 +83,55 @@ impl SourceProtocol {
         // Ask the instance to begin transitioning to the paused state
         // This will inform each device to pause.
         info!(self.log, "Pausing devices");
+        let (pause_tx, pause_rx) = std::sync::mpsc::channel();
+        self.instance
+            .migrate_pause(self.async_context.context_id(), pause_rx)?;
 
-        let instance = Arc::clone(&self.instance);
-        let ctx_id = self.async_context.context_id();
+        // Grab a reference to all the devices that are a part of this Instance
+        let mut devices = vec![];
+        let inv = self.instance.inv();
+        inv.for_each_node(Order::Pre, |_, rec| {
+            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
+        });
 
-        let paused = tokio::task::spawn_blocking(move || {
-            instance.migrate_pause(ctx_id).map(|paused| {
-                if paused {
+        // Ask each device for a future indicating they've finishing pausing
+        let mut migrate_ready_futs = vec![];
+        for (name, device) in &devices {
+            if let Some(migrate_hdl) = device.migrate() {
+                let log = self.log.new(slog::o!("device" => name.clone()));
+                let pause_fut = migrate_hdl.paused();
+                migrate_ready_futs.push(task::spawn(async move {
+                    if let Err(_) =
+                        time::timeout(Duration::from_secs(2), pause_fut).await
+                    {
+                        error!(log, "Timed out pausing device");
+                        return Err(());
+                    }
+                    info!(log, "Paused device");
                     Ok(())
-                } else {
-                    Err(instance.migrate_error())
-                }
-            })
-        })
-        .await
-        .map_err(|_| MigrateError::PauseDevices)??;
-
-        if let Err(err) = paused {
-            error!(self.log, "failed to pause devices: {:?}", err);
-            return Err(MigrateError::PauseDevices);
+                }));
+            } else {
+                warn!(self.log, "No migrate handle for {}", name);
+                continue;
+            }
         }
+
+        // Now we wait for all the devices to have paused
+        future::join_all(migrate_ready_futs)
+            .await
+            // Hoist out the JoinError's
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            // TODO: Better error
+            .map_err(|_| MigrateError::InvalidInstanceState)?
+            // Hoist out the pause task errors if any
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            // TODO: Better error
+            .map_err(|_| MigrateError::Protocol)?;
+
+        // Inform the instance state machine we're done pausing
+        pause_tx.send(()).unwrap();
 
         Ok(())
     }
