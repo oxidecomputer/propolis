@@ -37,8 +37,8 @@ use crate::initializer::{build_instance, MachineInitializer};
 use crate::migrate;
 use crate::serial::Serial;
 
-use std::io::{Read, Write};
 use std::fs::File;
+use std::io::{Read, Write};
 use tempfile::tempdir;
 
 // TODO(error) Do a pass of HTTP codes (error and ok)
@@ -186,7 +186,7 @@ fn create_in_memory_cloud_init_iso(
     let temp_dir = tempdir()?;
 
     info!(log, "creating meta data file");
-    let meta_data_path = temp_dir.path().clone().join("meta-data");
+    let meta_data_path = temp_dir.path().to_path_buf().join("meta-data");
     let mut meta_data_file = File::create(&meta_data_path)?;
 
     writeln!(
@@ -206,7 +206,7 @@ fn create_in_memory_cloud_init_iso(
     drop(meta_data_file);
 
     info!(log, "creating user data file");
-    let user_data_path = temp_dir.path().clone().join("user-data");
+    let user_data_path = temp_dir.path().to_path_buf().join("user-data");
     let user_data_file = File::create(&user_data_path)?;
 
     if let Some(custom_user_data) = &cloud_init.custom_user_data {
@@ -237,7 +237,7 @@ fn create_in_memory_cloud_init_iso(
     // input_files, otherwise you'll get recursion and create_iso will not
     // return!
     let output_temp_dir = tempdir()?;
-    let output_file = output_temp_dir.path().clone().join("output.iso");
+    let output_file = output_temp_dir.path().to_path_buf().join("output.iso");
 
     info!(log, "creating iso opts");
     let mut opt = mkisofs_rs::iso::option::Opt {
@@ -253,9 +253,7 @@ fn create_in_memory_cloud_init_iso(
         grub2_mbr: None,
         boot_load_size: 4,
         protective_msdos_label: false,
-        input_files: vec![
-            temp_dir.path().to_path_buf(),
-        ],
+        input_files: vec![temp_dir.path().to_path_buf()],
         truncate_names: false,
         volume_descriptor: "CIDATA".to_string(),
     };
@@ -428,22 +426,23 @@ async fn instance_ensure(
 
             if let Some(cloud_init) = &cloud_init {
                 info!(rqctx.log, "Creating cloud-init ISO");
-                let bytes = create_in_memory_cloud_init_iso(&rqctx.log, cloud_init)
-                    .map_err(|e| Error::new(
-                        ErrorKind::InvalidData,
-                        e.to_string()
-                    ))?;
+                let bytes =
+                    create_in_memory_cloud_init_iso(&rqctx.log, cloud_init)
+                        .map_err(|e| {
+                            Error::new(ErrorKind::InvalidData, e.to_string())
+                        })?;
 
                 // XXX if we can't create the ISO, should we boot anyway?
 
                 info!(rqctx.log, "Creating cloud-init disk");
                 let bdf = slot_to_bdf(api::Slot(0), SlotType::CloudInit)
-                    .map_err(|e| Error::new(
-                        ErrorKind::InvalidData,
-                        e.to_string()
-                    ))?;
+                    .map_err(|e| {
+                        Error::new(ErrorKind::InvalidData, e.to_string())
+                    })?;
 
-                init.initialize_in_memory_virtio_from_bytes(&chipset, &bytes, bdf, true)?;
+                init.initialize_in_memory_virtio_from_bytes(
+                    &chipset, &bytes, bdf, true,
+                )?;
                 info!(rqctx.log, "cloud-init disk created");
             }
 

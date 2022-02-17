@@ -1,8 +1,8 @@
+use core::ops::Range;
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
-use core::ops::Range;
 
 use super::DeviceInfo;
 use crate::block;
@@ -24,10 +24,7 @@ pub struct InMemoryBackend {
 }
 
 impl InMemoryBackend {
-    pub fn create(
-        bytes: Vec<u8>,
-        is_ro: bool,
-    ) -> Result<Arc<Self>> {
+    pub fn create(bytes: Vec<u8>, is_ro: bool) -> Result<Arc<Self>> {
         let len = bytes.len();
 
         let this = Self {
@@ -80,7 +77,10 @@ struct Driver {
 }
 
 impl Driver {
-    fn new(bytes: Arc<Mutex<Vec<u8>>>, dev: Arc<dyn block::Device>) -> Arc<Self> {
+    fn new(
+        bytes: Arc<Mutex<Vec<u8>>>,
+        dev: Arc<dyn block::Device>,
+    ) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
         Arc::new(Self {
             bytes,
@@ -188,10 +188,8 @@ fn process_read_request(
     mappings: &Vec<SubMapping>,
 ) -> Result<()> {
     let bytes = bytes.lock().unwrap();
-    let data = &bytes[Range {
-        start: offset as usize,
-        end: offset as usize + len,
-    }];
+    let data =
+        &bytes[Range { start: offset as usize, end: offset as usize + len }];
 
     let mut nwritten = 0;
     for mapping in mappings {
@@ -199,7 +197,8 @@ fn process_read_request(
         let inner_nwritten = mapping.write_bytes(slice)?;
 
         if inner_nwritten != mapping.len() {
-            return Err(std::io::Error::new(ErrorKind::Other,
+            return Err(std::io::Error::new(
+                ErrorKind::Other,
                 format!(
                     "mapping.write_bytes failed! {} vs {}",
                     inner_nwritten,
@@ -229,7 +228,8 @@ fn process_write_request(
             mapping.read_bytes(&mut vec[nread..(nread + mapping.len())])?;
 
         if inner_nread != mapping.len() {
-            return Err(std::io::Error::new(ErrorKind::Other,
+            return Err(std::io::Error::new(
+                ErrorKind::Other,
                 format!(
                     "mapping.read_bytes failed! {} vs {}",
                     inner_nread,

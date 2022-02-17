@@ -11,8 +11,9 @@ use anyhow::{anyhow, Context};
 use futures::{future, SinkExt, StreamExt};
 use propolis_client::{
     api::{
-        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceStateRequested, MigrationState, CloudInit,
+        CloudInit, DiskRequest, InstanceEnsureRequest,
+        InstanceMigrateInitiateRequest, InstanceProperties,
+        InstanceStateRequested, MigrationState,
     },
     Client,
 };
@@ -124,7 +125,9 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     }
 }
 
-fn parse_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
+fn parse_json_file<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> anyhow::Result<T> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader).map_err(|e| e.into())
@@ -369,7 +372,14 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(addr, log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, uuid, vcpus, memory, crucible_disks, cloud_init } => {
+        Command::New {
+            name,
+            uuid,
+            vcpus,
+            memory,
+            crucible_disks,
+            cloud_init,
+        } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
             } else {
