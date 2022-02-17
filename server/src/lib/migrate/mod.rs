@@ -69,39 +69,56 @@ pub struct MigrateTask {
 /// Errors which may occur during the course of a migration
 #[derive(Error, Debug, Deserialize, PartialEq, Serialize)]
 pub enum MigrateError {
+    /// An error as a result of some HTTP operation (i.e. trying to establish
+    /// the websocket connection between the source and destination)
     #[error("HTTP error: {0}")]
     Http(String),
 
+    /// Failed to initiate the migration protocol
     #[error("couldn't establish migration connection to source instance")]
     Initiate,
 
+    /// The source and destination instances are not compatible
     #[error("the source ({0}) and destination ({1}) instances are incompatible for migration")]
     Incompatible(String, String),
 
+    /// Incomplete WebSocket upgrade request
     #[error("expected connection upgrade")]
     UpgradeExpected,
 
+    /// Attempted to migrate an uninitialized instance
     #[error("instance is not initialized")]
     InstanceNotInitialized,
 
+    /// The given UUID does not match the existing instance/migration UUID
     #[error("unexpected Uuid")]
     UuidMismatch,
 
+    /// A different migration already in progress
     #[error("a migration from the current instance is already in progress")]
     MigrationAlreadyInProgress,
 
+    /// Migration state was requested with no migration in process
     #[error("no migration is currently in progress")]
     NoMigrationInProgress,
 
-    #[error("protocol error")]
-    // TODO: just for testing rn
-    Protocol,
+    /// Encountered an error as part of encoding/decoding migration messages
+    #[error("codec error: {0}")]
+    Codec(String),
 
-    #[error("encoding error")]
-    Encoding,
-
+    /// The instance is in an invalid state for the current operation
     #[error("encountered invalid instance state")]
     InvalidInstanceState,
+
+    /// Received a message out of order
+    #[error("received unexpected migration message")]
+    UnexpectedMessage,
+}
+
+impl MigrateError {
+    fn incompatible(src: &str, dst: &str) -> MigrateError {
+        MigrateError::Incompatible(src.to_string(), dst.to_string())
+    }
 }
 
 impl From<hyper::Error> for MigrateError {
@@ -123,9 +140,9 @@ impl From<TransitionError> for MigrateError {
     }
 }
 
-impl MigrateError {
-    fn incompatible(src: &str, dst: &str) -> MigrateError {
-        MigrateError::Incompatible(src.to_string(), dst.to_string())
+impl From<codec::ProtocolError> for MigrateError {
+    fn from(err: codec::ProtocolError) -> Self {
+        MigrateError::Codec(err.to_string())
     }
 }
 
@@ -137,13 +154,13 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
             | MigrateError::InstanceNotInitialized
-            | MigrateError::InvalidInstanceState => {
+            | MigrateError::InvalidInstanceState
+            | MigrateError::Codec(_)
+            | MigrateError::UnexpectedMessage => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
-            | MigrateError::Protocol
-            | MigrateError::Encoding
             | MigrateError::UuidMismatch
             | MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)

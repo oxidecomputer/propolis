@@ -14,20 +14,21 @@ use crate::migrate::codec;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::{MigrateContext, MigrateError, MigrationState};
 
-type Result<T> = anyhow::Result<T, MigrateError>;
-
 pub async fn migrate(
     migrate_context: Arc<MigrateContext>,
     instance: Arc<Instance>,
     async_context: AsyncCtx,
     conn: Upgraded,
     log: slog::Logger,
-) -> Result<()> {
+) -> Result<(), MigrateError> {
     let mut proto = SourceProtocol {
         migrate_context,
         instance,
         async_context,
-        conn: Framed::new(conn, codec::LiveMigrationFramer::new()),
+        conn: Framed::new(
+            conn,
+            codec::LiveMigrationFramer::new(log.new(slog::o!())),
+        ),
         log,
     };
     proto.start();
@@ -55,16 +56,16 @@ impl SourceProtocol {
         info!(self.log, "Entering Source Migration Task");
     }
 
-    async fn sync(&mut self) -> Result<()> {
+    async fn sync(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::Sync).await;
         let preamble = Preamble::new(self.instance.as_ref());
         let s = ron::ser::to_string(&preamble)
-            .map_err(|_| MigrateError::Encoding)?;
+            .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;
         self.read_ok().await
     }
 
-    async fn ram_push(&mut self) -> Result<()> {
+    async fn ram_push(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::RamPush).await;
         let m = self.read_msg().await?;
         info!(self.log, "ram_push: got query {:?}", m);
@@ -77,7 +78,7 @@ impl SourceProtocol {
         Ok(())
     }
 
-    async fn pause(&mut self) -> Result<()> {
+    async fn pause(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::Pause).await;
 
         // Ask the instance to begin transitioning to the paused state
@@ -121,14 +122,14 @@ impl SourceProtocol {
             .await
             // Hoist out the JoinError's
             .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, _>>()
             // TODO: Better error
             .map_err(|_| MigrateError::InvalidInstanceState)?
             // Hoist out the pause task errors if any
             .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, _>>()
             // TODO: Better error
-            .map_err(|_| MigrateError::Protocol)?;
+            .unwrap();
 
         // Inform the instance state machine we're done pausing
         pause_tx.send(()).unwrap();
@@ -136,19 +137,19 @@ impl SourceProtocol {
         Ok(())
     }
 
-    async fn device_state(&mut self) -> Result<()> {
+    async fn device_state(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::Device).await;
         self.read_ok().await?;
         self.send_msg(codec::Message::Okay).await
     }
 
-    async fn arch_state(&mut self) -> Result<()> {
+    async fn arch_state(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::Arch).await;
         self.read_ok().await?;
         self.send_msg(codec::Message::Okay).await
     }
 
-    async fn ram_pull(&mut self) -> Result<()> {
+    async fn ram_pull(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::RamPush).await;
         let m = self.read_msg().await?;
         info!(self.log, "ram_pull: got query {:?}", m);
@@ -160,31 +161,34 @@ impl SourceProtocol {
         Ok(())
     }
 
-    async fn finish(&mut self) -> Result<()> {
+    async fn finish(&mut self) -> Result<(), MigrateError> {
         self.migrate_context.set_state(MigrationState::Finish).await;
         self.read_ok().await?;
         let _ = self.send_msg(codec::Message::Okay).await; // A failure here is ok.
         Ok(())
     }
 
-    fn end(&mut self) -> Result<()> {
+    fn end(&mut self) -> Result<(), MigrateError> {
         self.instance.set_target_state(ReqState::Halt)?;
         info!(self.log, "Source Migration Successful");
         Ok(())
     }
 
-    async fn read_msg(&mut self) -> Result<codec::Message> {
-        self.conn.next().await.unwrap().map_err(|_| MigrateError::Protocol)
+    async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
+        Ok(self.conn.next().await.unwrap()?)
     }
 
-    async fn read_ok(&mut self) -> Result<()> {
+    async fn read_ok(&mut self) -> Result<(), MigrateError> {
         match self.read_msg().await? {
             codec::Message::Okay => Ok(()),
-            _ => Err(MigrateError::Protocol),
+            _ => todo!(),
         }
     }
 
-    async fn send_msg(&mut self, m: codec::Message) -> Result<()> {
-        self.conn.send(m).await.map_err(|_| MigrateError::Protocol)
+    async fn send_msg(
+        &mut self,
+        m: codec::Message,
+    ) -> Result<(), MigrateError> {
+        Ok(self.conn.send(m).await?)
     }
 }
