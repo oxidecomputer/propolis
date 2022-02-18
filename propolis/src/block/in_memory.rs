@@ -1,4 +1,3 @@
-use core::ops::Range;
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
@@ -188,8 +187,7 @@ fn process_read_request(
     mappings: &Vec<SubMapping>,
 ) -> Result<()> {
     let bytes = bytes.lock().unwrap();
-    let data =
-        &bytes[Range { start: offset as usize, end: offset as usize + len }];
+    let data = &bytes[(offset as usize)..(offset as usize + len)];
 
     let mut nwritten = 0;
     for mapping in mappings {
@@ -242,9 +240,7 @@ fn process_write_request(
     }
 
     let mut bytes = bytes.lock().unwrap();
-    for i in 0..len {
-        bytes[offset as usize + i] = vec[i];
-    }
+    bytes[(offset as usize)..(offset as usize + len)].copy_from_slice(&vec);
 
     Ok(())
 }
