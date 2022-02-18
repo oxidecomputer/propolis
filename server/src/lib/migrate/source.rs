@@ -1,5 +1,5 @@
 use futures::{future, SinkExt, StreamExt};
-use propolis::inventory::Order;
+use propolis::inventory::{Entity, Order};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +10,7 @@ use propolis::instance::ReqState;
 use slog::{error, info, warn};
 use tokio_util::codec::Framed;
 
-use crate::migrate::codec;
+use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::preamble::Preamble;
 use crate::migrate::{MigrateContext, MigrateError, MigrationState};
 
@@ -18,11 +18,7 @@ pub async fn migrate(
     mctx: Arc<MigrateContext>,
     conn: Upgraded,
 ) -> Result<(), MigrateError> {
-    let codec_log = mctx.log.new(slog::o!());
-    let mut proto = SourceProtocol {
-        mctx,
-        conn: Framed::new(conn, codec::LiveMigrationFramer::new(codec_log)),
-    };
+    let mut proto = SourceProtocol::new(mctx, conn);
     proto.start();
     proto.sync().await?;
     proto.ram_push().await?;
@@ -35,11 +31,32 @@ pub async fn migrate(
 }
 
 struct SourceProtocol {
+    /// The migration context which also contains the Instance handle.
     mctx: Arc<MigrateContext>,
-    conn: Framed<Upgraded, codec::LiveMigrationFramer>,
+
+    /// Transport to the destination Instance.
+    conn: Framed<Upgraded, LiveMigrationFramer>,
+
+    /// List of devices attached to device
+    devices: Vec<(String, Arc<dyn Entity>)>,
 }
 
 impl SourceProtocol {
+    fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
+        // Grab a reference to all the devices that are a part of this Instance
+        let mut devices = vec![];
+        mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
+            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
+        });
+
+        let codec_log = mctx.log.new(slog::o!());
+        Self {
+            mctx,
+            conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
+            devices,
+        }
+    }
+
     fn log(&self) -> &slog::Logger {
         &self.mctx.log
     }
@@ -81,25 +98,19 @@ impl SourceProtocol {
             .instance
             .migrate_pause(self.mctx.async_ctx.context_id(), pause_rx)?;
 
-        // Grab a reference to all the devices that are a part of this Instance
-        let mut devices = vec![];
-        let inv = self.mctx.instance.inv();
-        inv.for_each_node(Order::Pre, |_, rec| {
-            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
-        });
-
         // Ask each device for a future indicating they've finishing pausing
         let mut migrate_ready_futs = vec![];
-        for (name, device) in &devices {
+        for (name, device) in &self.devices {
             if let Some(migrate_hdl) = device.migrate() {
                 let log = self.log().new(slog::o!("device" => name.clone()));
+                let device = Arc::clone(device);
                 let pause_fut = migrate_hdl.paused();
                 migrate_ready_futs.push(task::spawn(async move {
                     if let Err(_) =
                         time::timeout(Duration::from_secs(2), pause_fut).await
                     {
                         error!(log, "Timed out pausing device");
-                        return Err(());
+                        return Err(device);
                     }
                     info!(log, "Paused device");
                     Ok(())
@@ -111,18 +122,35 @@ impl SourceProtocol {
         }
 
         // Now we wait for all the devices to have paused
-        future::join_all(migrate_ready_futs)
+        let pause = future::join_all(migrate_ready_futs)
             .await
             // Hoist out the JoinError's
             .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            // TODO: Better error
-            .map_err(|_| MigrateError::InvalidInstanceState)?
-            // Hoist out the pause task errors if any
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            // TODO: Better error
-            .unwrap();
+            .collect::<Result<Vec<_>, _>>();
+        let timed_out = match pause {
+            Ok(future_res) => {
+                // Grab just the ones that failed
+                future_res
+                    .into_iter()
+                    .filter(Result::is_err)
+                    .map(Result::unwrap_err)
+                    .collect::<Vec<_>>()
+            }
+            Err(err) => {
+                error!(
+                    self.log(),
+                    "joining paused devices future failed: {err}"
+                );
+                return Err(MigrateError::SourcePause);
+            }
+        };
+
+        // Bail out if any devices timed out
+        // TODO: rollback already paused devices
+        if !timed_out.is_empty() {
+            error!(self.log(), "Failed to pause all devices: {timed_out:?}");
+            return Err(MigrateError::SourcePause);
+        }
 
         // Inform the instance state machine we're done pausing
         pause_tx.send(()).unwrap();

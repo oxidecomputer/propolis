@@ -143,6 +143,10 @@ pub enum MigrateError {
     /// Received a message out of order
     #[error("received unexpected migration message")]
     UnexpectedMessage,
+
+    /// Failed to pause the source instance's devices or tasks
+    #[error("failed to pause source instance")]
+    SourcePause,
 }
 
 impl MigrateError {
@@ -186,9 +190,8 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::InstanceNotInitialized
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
-            | MigrateError::UnexpectedMessage => {
-                HttpError::for_internal_error(msg)
-            }
+            | MigrateError::UnexpectedMessage
+            | MigrateError::SourcePause => HttpError::for_internal_error(msg),
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
             | MigrateError::UuidMismatch
