@@ -508,7 +508,7 @@ impl Instance {
         });
     }
 
-    fn drive_state(&self, _log: slog::Logger) {
+    fn drive_state(&self, log: slog::Logger) {
         let mut next_state: Option<State> = None;
         let mut inner = self.inner.lock().unwrap();
 
@@ -534,7 +534,7 @@ impl Instance {
 
             let prev_state = inner.state_current;
             inner.state_current = state;
-            slog::info!(_log, "Instance transition";
+            slog::info!(log, "Instance transition";
                 "state" => ?state,
                 "state_prev" => ?prev_state,
                 "state_target" => ?&inner.state_target
@@ -584,7 +584,10 @@ impl Instance {
                     let pause_chan =
                         inner.pause_chan.take().expect("migrate pause channel");
                     drop(inner);
-                    pause_chan.recv().expect("migrate pause recv");
+                    if let Err(_) = pause_chan.recv() {
+                        // The other end is gone without waking us first
+                        slog::warn!(log, "migrate pause chan dropped early");
+                    }
                     inner = self.inner.lock().unwrap();
                 }
                 _ => {}
