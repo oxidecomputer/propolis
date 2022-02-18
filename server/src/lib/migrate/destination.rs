@@ -1,4 +1,5 @@
 use futures::{SinkExt, StreamExt};
+use std::io;
 use std::sync::Arc;
 
 use hyper::upgrade::Upgraded;
@@ -110,7 +111,9 @@ impl DestinationProtocol {
     }
 
     async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
-        Ok(self.conn.next().await.unwrap()?)
+        Ok(self.conn.next().await.ok_or_else(|| {
+            codec::ProtocolError::Io(io::Error::from(io::ErrorKind::BrokenPipe))
+        })??)
     }
 
     async fn read_ok(&mut self) -> Result<(), MigrateError> {

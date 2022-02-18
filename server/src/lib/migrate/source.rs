@@ -1,5 +1,6 @@
 use futures::{future, SinkExt, StreamExt};
 use propolis::inventory::Order;
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
@@ -167,13 +168,18 @@ impl SourceProtocol {
     }
 
     async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
-        Ok(self.conn.next().await.unwrap()?)
+        Ok(self.conn.next().await.ok_or_else(|| {
+            codec::ProtocolError::Io(io::Error::from(io::ErrorKind::BrokenPipe))
+        })??)
     }
 
     async fn read_ok(&mut self) -> Result<(), MigrateError> {
         match self.read_msg().await? {
             codec::Message::Okay => Ok(()),
-            _ => todo!(),
+            msg => {
+                error!(self.log(), "expected `Okay` but received: {msg:?}");
+                Err(MigrateError::UnexpectedMessage)
+            }
         }
     }
 
