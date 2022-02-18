@@ -333,7 +333,7 @@ fn process_write_request(
 fn process_flush_request(
     guest: Arc<crucible::Guest>,
 ) -> std::result::Result<(), CrucibleError> {
-    let mut waiter = guest.flush()?;
+    let mut waiter = guest.flush(None)?;
     waiter.block_wait()?;
 
     Ok(())
