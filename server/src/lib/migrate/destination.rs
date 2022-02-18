@@ -47,7 +47,7 @@ impl DestinationProtocol {
         self.migrate_context.set_state(MigrationState::Sync).await;
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
-                ron::de::from_str(&s).map_err(codec::ProtocolError::from)?
+                Ok(ron::de::from_str(&s).map_err(codec::ProtocolError::from)?)
             }
             msg => {
                 error!(
