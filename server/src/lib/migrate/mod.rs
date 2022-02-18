@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
-use propolis::instance::{MigratePhase, MigrateRole, State, TransitionError};
+use propolis::{
+    dispatch::AsyncCtx,
+    instance::{Instance, MigratePhase, MigrateRole, State, TransitionError},
+};
 use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
@@ -43,12 +46,39 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
     }
 }
 
+/// Context created as part of a migration.
 pub struct MigrateContext {
+    /// The external ID used to identify a migration across both the source and destination.
     migration_id: Uuid,
+
+    /// The current state of the migration process on this Instance.
     state: RwLock<MigrationState>,
+
+    /// A handle to the underlying propolis [`Instance`].
+    instance: Arc<Instance>,
+
+    /// Async descriptor context for the migrate task to access machine state in async context.
+    async_ctx: AsyncCtx,
+
+    /// Logger for migration created from initial migration request.
+    log: slog::Logger,
 }
 
 impl MigrateContext {
+    fn new(
+        migration_id: Uuid,
+        instance: Arc<Instance>,
+        log: slog::Logger,
+    ) -> MigrateContext {
+        MigrateContext {
+            migration_id,
+            state: RwLock::new(MigrationState::Sync),
+            async_ctx: instance.disp.async_ctx(),
+            instance,
+            log,
+        }
+    }
+
     async fn get_state(&self) -> MigrationState {
         let state = self.state.read().await;
         *state
@@ -239,21 +269,17 @@ pub async fn source_start(
         return Err(MigrateError::incompatible(src_protocol, dst_protocol));
     }
 
+    // Grab the future for plucking out the upgraded socket
     let upgrade = hyper::upgrade::on(request);
-    let instance = context.instance.clone();
-
-    let migrate_context = Arc::new(MigrateContext {
-        migration_id,
-        state: RwLock::new(MigrationState::Sync),
-    });
-
-    // The migration task needs an async descriptor context.
-    let async_ctx = instance.disp.async_ctx();
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let migrate_context = Arc::new(MigrateContext::new(
+        migration_id,
+        context.instance.clone(),
+        log.clone(),
+    ));
     let mctx = migrate_context.clone();
-
     let task = tokio::spawn(async move {
         // We have to await on the HTTP upgrade future in a new
         // task because it won't complete until the response is
@@ -267,10 +293,7 @@ pub async fn source_start(
         };
 
         // Good to go, ready to migrate to the dest via `conn`
-        // TODO: wrap in a tokio codec::Framed or such
-        if let Err(e) =
-            source::migrate(mctx, instance, async_ctx, conn, log.clone()).await
-        {
+        if let Err(e) = source::migrate(mctx, conn).await {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }
@@ -379,29 +402,16 @@ pub async fn dest_initiate(
     // Now co-opt the socket for the migration protocol
     let conn = hyper::upgrade::on(res).await?;
 
-    let migrate_context = Arc::new(MigrateContext {
-        migration_id,
-        state: RwLock::new(MigrationState::Sync),
-    });
-
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let migrate_context = Arc::new(MigrateContext::new(
+        migration_id,
+        context.instance.clone(),
+        log.clone(),
+    ));
     let mctx = migrate_context.clone();
-    let instance = context.instance.clone();
-
-    // The migration task needs an async descriptor context.
-    let async_context = instance.disp.async_ctx();
-
     let task = tokio::spawn(async move {
-        if let Err(e) = destination::migrate(
-            mctx,
-            instance,
-            async_context,
-            conn,
-            log.clone(),
-        )
-        .await
-        {
+        if let Err(e) = destination::migrate(mctx, conn).await {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }
