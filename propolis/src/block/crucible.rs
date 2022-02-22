@@ -273,19 +273,9 @@ fn process_read_request(
 
     let mut nwritten = 0;
     for mapping in mappings {
-        let slice = &data.as_vec()[nwritten..(nwritten + mapping.len())];
-        let inner_nwritten = mapping.write_bytes(slice)?;
-
-        if inner_nwritten != mapping.len() {
-            crucible::crucible_bail!(
-                IoError,
-                "mapping.write_bytes failed! {} vs {}",
-                inner_nwritten,
-                mapping.len()
-            );
-        }
-
-        nwritten += mapping.len();
+        nwritten += mapping.write_bytes(
+            &data.as_vec()[nwritten..(nwritten + mapping.len())],
+        )?;
     }
 
     Ok(())
@@ -302,19 +292,8 @@ fn process_write_request(
 
     let mut nread = 0;
     for mapping in mappings {
-        let inner_nread =
+        nread +=
             mapping.read_bytes(&mut vec[nread..(nread + mapping.len())])?;
-
-        if inner_nread != mapping.len() {
-            crucible::crucible_bail!(
-                IoError,
-                "mapping.read_bytes failed! {} vs {}",
-                inner_nread,
-                mapping.len(),
-            );
-        }
-
-        nread += mapping.len();
     }
 
     let offset = guest.byte_offset_to_block(offset)?;
