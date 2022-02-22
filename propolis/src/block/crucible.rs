@@ -125,7 +125,7 @@ impl block::Backend for CrucibleBackend {
         assert!(driverg.is_none());
 
         // spawn synchronous driver
-        let driver = SyncDriver::new(dev, self.guest.clone());
+        let driver = SyncDriver::new(dev, self.guest.clone(), self.read_only);
         driver.spawn(NonZeroUsize::new(8).unwrap(), disp);
         *driverg = Some(driver);
     }
@@ -143,6 +143,7 @@ struct SyncDriver {
     idle_threads: Semaphore,
     dev: Arc<dyn block::Device>,
     guest: Arc<crucible::Guest>,
+    read_only: bool,
     waiter: block::AsyncWaiter,
 }
 
@@ -150,6 +151,7 @@ impl SyncDriver {
     fn new(
         dev: Arc<dyn block::Device>,
         guest: Arc<crucible::Guest>,
+        read_only: bool,
     ) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
         Arc::new(Self {
@@ -158,6 +160,7 @@ impl SyncDriver {
             idle_threads: Semaphore::new(0),
             dev,
             guest,
+            read_only,
             waiter,
         })
     }
@@ -175,7 +178,12 @@ impl SyncDriver {
                 idled = false;
                 let logger = sctx.log().clone();
                 let ctx = sctx.dispctx();
-                match process_request(self.guest.clone(), &req, &ctx) {
+                match process_request(
+                    self.guest.clone(),
+                    &req,
+                    &ctx,
+                    self.read_only,
+                ) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
                     Err(e) => {
                         slog::error!(
@@ -322,6 +330,7 @@ fn process_request(
     guest: Arc<crucible::Guest>,
     req: &block::Request,
     ctx: &DispCtx,
+    read_only: bool,
 ) -> Result<()> {
     let mem = ctx.mctx.memctx();
     match req.oper() {
@@ -334,6 +343,13 @@ fn process_request(
                 .map_err(map_crucible_error_to_io)?;
         }
         block::Operation::Write(off) => {
+            if read_only {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "backend is read-only",
+                ));
+            }
+
             let maps = req.mappings(&mem).ok_or_else(|| {
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;

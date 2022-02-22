@@ -80,7 +80,7 @@ impl block::Backend for InMemoryBackend {
         let mut driverg = self.driver.lock().unwrap();
         assert!(driverg.is_none());
 
-        let driver = Driver::new(self.bytes.clone(), dev);
+        let driver = Driver::new(self.bytes.clone(), dev, self.is_ro);
         driver.spawn(self.worker_count, disp);
         *driverg = Some(driver);
     }
@@ -94,6 +94,7 @@ impl Entity for InMemoryBackend {
 
 struct Driver {
     bytes: Arc<Mutex<Vec<u8>>>,
+    is_ro: bool,
     cv: Condvar,
     queue: Mutex<VecDeque<block::Request>>,
     idle_threads: Semaphore,
@@ -105,10 +106,12 @@ impl Driver {
     fn new(
         bytes: Arc<Mutex<Vec<u8>>>,
         dev: Arc<dyn block::Device>,
+        is_ro: bool,
     ) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
         Arc::new(Self {
             bytes,
+            is_ro,
             cv: Condvar::new(),
             queue: Mutex::new(VecDeque::new()),
             idle_threads: Semaphore::new(0),
@@ -129,7 +132,7 @@ impl Driver {
                 drop(guard);
                 idled = false;
                 let ctx = sctx.dispctx();
-                match process_request(&self.bytes, &req, &ctx) {
+                match process_request(&self.bytes, &req, &ctx, self.is_ro) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
                     Err(_) => req.complete(block::Result::Failure, &ctx),
                 }
@@ -279,6 +282,7 @@ fn process_request(
     bytes: &Arc<Mutex<Vec<u8>>>,
     req: &block::Request,
     ctx: &DispCtx,
+    is_ro: bool,
 ) -> Result<()> {
     let mem = ctx.mctx.memctx();
     match req.oper() {
@@ -290,6 +294,13 @@ fn process_request(
             process_read_request(bytes, off as u64, req.len(), &maps)?;
         }
         block::Operation::Write(off) => {
+            if is_ro {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "backend is read-only",
+                ));
+            }
+
             let maps = req.mappings(&mem).ok_or_else(|| {
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
