@@ -213,7 +213,23 @@ fn process_read_request(
     mappings: &Vec<SubMapping>,
 ) -> Result<()> {
     let bytes = bytes.lock().unwrap();
-    let data = &bytes[(offset as usize)..(offset as usize + len)];
+
+    let start = offset as usize;
+    let end = offset as usize + len;
+
+    if start >= bytes.len() || end >= bytes.len() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "invalid offset {} and len {} when bytes len is {}",
+                offset,
+                len,
+                bytes.len(),
+            ),
+        ));
+    }
+
+    let data = &bytes[start..end];
 
     let mut nwritten = 0;
     for mapping in mappings {
@@ -244,6 +260,23 @@ fn process_write_request(
     len: usize,
     mappings: &Vec<SubMapping>,
 ) -> Result<()> {
+    let mut bytes = bytes.lock().unwrap();
+
+    let start = offset as usize;
+    let end = offset as usize + len;
+
+    if start >= bytes.len() || end >= bytes.len() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "invalid offset {} and len {} when bytes len is {}",
+                offset,
+                len,
+                bytes.len(),
+            ),
+        ));
+    }
+
     let mut vec: Vec<u8> = vec![0; len];
 
     let mut nread = 0;
@@ -265,13 +298,8 @@ fn process_write_request(
         nread += mapping.len();
     }
 
-    let mut bytes = bytes.lock().unwrap();
-    bytes[(offset as usize)..(offset as usize + len)].copy_from_slice(&vec);
+    bytes[start..end].copy_from_slice(&vec);
 
-    Ok(())
-}
-
-fn process_flush_request() -> Result<()> {
     Ok(())
 }
 
@@ -297,7 +325,7 @@ fn process_request(
             process_write_request(bytes, off as u64, req.len(), &maps)?;
         }
         block::Operation::Flush(_off, _len) => {
-            process_flush_request()?;
+            // nothing to do
         }
     }
 
