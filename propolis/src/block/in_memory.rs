@@ -217,7 +217,7 @@ fn process_read_request(
     let start = offset as usize;
     let end = offset as usize + len;
 
-    if start >= bytes.len() || end >= bytes.len() {
+    if start >= bytes.len() || end > bytes.len() {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
             format!(
@@ -252,7 +252,7 @@ fn process_write_request(
     let start = offset as usize;
     let end = offset as usize + len;
 
-    if start >= bytes.len() || end >= bytes.len() {
+    if start >= bytes.len() || end > bytes.len() {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
             format!(
