@@ -160,7 +160,7 @@ impl Driver {
 
             let _ = disp
                 .spawn_sync(
-                    format!("file bdev {}", i),
+                    format!("mem bdev {}", i),
                     Box::new(move |mut sctx| {
                         tself.blocking_loop(&mut sctx);
                     }),
