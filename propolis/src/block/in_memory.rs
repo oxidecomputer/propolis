@@ -23,7 +23,23 @@ pub struct InMemoryBackend {
 }
 
 impl InMemoryBackend {
-    pub fn create(bytes: Vec<u8>, is_ro: bool, block_size: usize) -> Result<Arc<Self>> {
+    pub fn create(
+        bytes: Vec<u8>,
+        is_ro: bool,
+        block_size: usize,
+    ) -> Result<Arc<Self>> {
+        match block_size {
+            512 | 4096 => {
+                // ok
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    format!("unsupported block size {}!", block_size,),
+                ));
+            }
+        }
+
         let len = bytes.len();
 
         if (len % block_size) != 0 {
@@ -31,8 +47,7 @@ impl InMemoryBackend {
                 ErrorKind::Other,
                 format!(
                     "in-memory bytes length {} not multiple of block size {}!",
-                    len,
-                    block_size,
+                    len, block_size,
                 ),
             ));
         }
