@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Result};
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::DeviceInfo;
@@ -15,7 +14,6 @@ pub struct InMemoryBackend {
     bytes: Arc<Mutex<Vec<u8>>>,
 
     driver: Mutex<Option<Arc<Driver>>>,
-    worker_count: NonZeroUsize,
 
     is_ro: bool,
     block_size: usize,
@@ -56,7 +54,6 @@ impl InMemoryBackend {
             bytes: Arc::new(Mutex::new(bytes)),
 
             driver: Mutex::new(None),
-            worker_count: NonZeroUsize::new(1).unwrap(),
 
             is_ro,
             block_size,
@@ -81,7 +78,7 @@ impl block::Backend for InMemoryBackend {
         assert!(driverg.is_none());
 
         let driver = Driver::new(self.bytes.clone(), dev, self.is_ro);
-        driver.spawn(self.worker_count, disp);
+        driver.spawn(disp);
         *driverg = Some(driver);
     }
 }
@@ -169,40 +166,36 @@ impl Driver {
         }
     }
 
-    fn spawn(self: &Arc<Self>, worker_count: NonZeroUsize, disp: &Dispatcher) {
-        for i in 0..worker_count.get() {
-            let tself = Arc::clone(self);
+    fn spawn(self: &Arc<Self>, disp: &Dispatcher) {
+        let tself = Arc::clone(self);
 
-            // Configure a waker to help threads to reach their yield points
-            // Doing this once (from thread 0) is adequate to wake them all.
-            let wake = if i == 0 {
-                let tnotify = Arc::downgrade(self);
-                Some(Box::new(move |_ctx: &DispCtx| {
-                    if let Some(this) = tnotify.upgrade() {
-                        let _guard = this.queue.lock().unwrap();
-                        this.cv.notify_all();
-                    }
-                }) as Box<WakeFn>)
-            } else {
-                None
-            };
+        // Configure a waker to help threads to reach their yield points
+        let wake = {
+            let tnotify = Arc::downgrade(self);
+            Some(Box::new(move |_ctx: &DispCtx| {
+                if let Some(this) = tnotify.upgrade() {
+                    let _guard = this.queue.lock().unwrap();
+                    this.cv.notify_all();
+                }
+            }) as Box<WakeFn>)
+        };
 
-            let _ = disp
-                .spawn_sync(
-                    format!("mem bdev {}", i),
-                    Box::new(move |mut sctx| {
-                        tself.blocking_loop(&mut sctx);
-                    }),
-                    wake,
-                )
-                .unwrap();
-        }
+        let _ = disp
+            .spawn_sync(
+                "mem bdev".to_string(),
+                Box::new(move |mut sctx| {
+                    tself.blocking_loop(&mut sctx);
+                }),
+                wake,
+            )
+            .unwrap();
 
         let sched_self = Arc::clone(self);
         let actx = disp.async_ctx();
         let sched_task = tokio::spawn(async move {
             sched_self.do_scheduling(&actx).await;
         });
+
         // TODO: do we need to manipulate the task later?
         disp.track(sched_task);
     }
