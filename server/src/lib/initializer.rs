@@ -312,6 +312,7 @@ impl<'a> MachineInitializer<'a> {
         let be = propolis::block::InMemoryBackend::create(
             bytes.to_vec(),
             read_only,
+            512,
         )?;
 
         info!(self.log, "Creating ChildRegister");

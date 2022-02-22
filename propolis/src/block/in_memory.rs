@@ -23,8 +23,19 @@ pub struct InMemoryBackend {
 }
 
 impl InMemoryBackend {
-    pub fn create(bytes: Vec<u8>, is_ro: bool) -> Result<Arc<Self>> {
+    pub fn create(bytes: Vec<u8>, is_ro: bool, block_size: usize) -> Result<Arc<Self>> {
         let len = bytes.len();
+
+        if (len % block_size) != 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::Other,
+                format!(
+                    "in-memory bytes length {} not multiple of block size {}!",
+                    len,
+                    block_size,
+                ),
+            ));
+        }
 
         let this = Self {
             bytes: Arc::new(Mutex::new(bytes)),
@@ -33,8 +44,8 @@ impl InMemoryBackend {
             worker_count: NonZeroUsize::new(1).unwrap(),
 
             is_ro,
-            block_size: 512,
-            sectors: len / 512,
+            block_size,
+            sectors: len / block_size,
         };
 
         Ok(Arc::new(this))
