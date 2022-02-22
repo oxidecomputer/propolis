@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     register_probes().unwrap();
 
     // Command line arguments.
-    let args = Args::from_args_safe()?;
+    let args = Args::from_args();
 
     match args {
         Args::OpenApi => run_openapi()
