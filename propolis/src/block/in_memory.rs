@@ -264,15 +264,13 @@ fn process_write_request(
         ));
     }
 
-    let mut vec: Vec<u8> = vec![0; len];
+    let data = &mut bytes[start..end];
 
     let mut nread = 0;
     for mapping in mappings {
         nread +=
-            mapping.read_bytes(&mut vec[nread..(nread + mapping.len())])?;
+            mapping.read_bytes(&mut data[nread..(nread + mapping.len())])?;
     }
-
-    bytes[start..end].copy_from_slice(&vec);
 
     Ok(())
 }
