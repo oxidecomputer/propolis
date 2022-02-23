@@ -274,6 +274,7 @@ impl<'a> MachineInitializer<'a> {
             disk.read_only,
             disk.key.clone(),
             Some(disk.gen),
+            disk.admin,
         )?;
 
         info!(self.log, "Creating ChildRegister");

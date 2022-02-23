@@ -37,8 +37,9 @@ impl CrucibleBackend {
         read_only: bool,
         key: Option<String>,
         gen: Option<u64>,
+        admin: Option<SocketAddr>,
     ) -> Result<Arc<Self>> {
-        CrucibleBackend::_create(disp, targets, read_only, key, gen)
+        CrucibleBackend::_create(disp, targets, read_only, key, gen, admin)
             .map_err(map_crucible_error_to_io)
     }
 
@@ -48,12 +49,14 @@ impl CrucibleBackend {
         read_only: bool,
         key: Option<String>,
         gen: Option<u64>,
+        admin: Option<SocketAddr>,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
         // spawn Crucible tasks
         let opts = crucible::CrucibleOpts {
             target: targets,
             lossy: false,
             key,
+            admin,
             ..Default::default()
         };
         let guest = Arc::new(crucible::Guest::new());
