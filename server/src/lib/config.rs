@@ -210,7 +210,7 @@ impl BlockDevice {
                     .flatten();
 
                 let be = propolis::block::CrucibleBackend::create(
-                    disp, targets, read_only, key, gen,
+                    disp, targets, read_only, key, gen, None,
                 )?;
 
                 // TODO: use volume ID or something for instance name

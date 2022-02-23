@@ -233,6 +233,7 @@ pub struct DiskRequest {
     pub key: Option<String>,
     pub gen: u64,
     pub device: String,
+    pub admin: Option<SocketAddr>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
