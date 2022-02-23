@@ -11,9 +11,8 @@ use anyhow::{anyhow, Context};
 use futures::{future, SinkExt, StreamExt};
 use propolis_client::{
     api::{
-        CloudInit, DiskRequest, InstanceEnsureRequest,
-        InstanceMigrateInitiateRequest, InstanceProperties,
-        InstanceStateRequested, MigrationState,
+        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
+        InstanceProperties, InstanceStateRequested, MigrationState,
     },
     Client,
 };
@@ -68,7 +67,7 @@ enum Command {
         #[structopt(long, parse(from_os_str))]
         crucible_disks: Option<PathBuf>,
 
-        // file with JSON cloud-init meta-data and user-data
+        // cloud_init ISO file
         #[structopt(long, parse(from_os_str))]
         cloud_init: Option<PathBuf>,
     },
@@ -162,7 +161,7 @@ async fn new_instance(
     vcpus: u8,
     memory: u64,
     disks: Vec<DiskRequest>,
-    cloud_init: Option<CloudInit>,
+    cloud_init_bytes: Option<String>,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
@@ -182,7 +181,7 @@ async fn new_instance(
         nics: vec![],
         disks,
         migrate: None,
-        cloud_init,
+        cloud_init_bytes,
     };
 
     // Try to create the instance
@@ -325,7 +324,7 @@ async fn migrate_instance(
             src_addr,
             src_uuid,
         }),
-        cloud_init: None,
+        cloud_init_bytes: None,
     };
 
     // Initiate the migration via the destination instance
@@ -385,8 +384,8 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 vec![]
             };
-            let cloud_init = if let Some(cloud_init) = cloud_init {
-                Some(parse_json_file(&cloud_init)?)
+            let cloud_init_bytes = if let Some(cloud_init) = cloud_init {
+                Some(base64::encode(std::fs::read(&cloud_init)?))
             } else {
                 None
             };
@@ -397,7 +396,7 @@ async fn main() -> anyhow::Result<()> {
                 vcpus,
                 memory,
                 disks,
-                cloud_init,
+                cloud_init_bytes,
             )
             .await?
         }
