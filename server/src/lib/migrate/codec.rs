@@ -22,8 +22,34 @@
 use super::MigrateError;
 use bytes::{Buf, BufMut, BytesMut};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use slog::error;
 use std::convert::TryFrom;
+use thiserror::Error;
 use tokio_util::codec;
+
+/// Migration protocol errors.
+#[derive(Debug, Error)]
+pub enum ProtocolError {
+    /// We received an unexpected message type
+    #[error("couldn't decode message type ({0})")]
+    InvalidMessageType(u8),
+
+    /// The message received on the wire wasn't the expected length
+    #[error("unexpected message length")]
+    UnexpectedMessageLen,
+
+    /// Encountered an I/O error on the transport
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Failed to serialize or deserialize a message
+    #[error("serialization error: {0}")]
+    Ron(#[from] ron::Error),
+
+    /// Received non-UTF8 string
+    #[error("non-UTF8 string: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+}
 
 /// Message represents the different frame types for messages
 /// exchanged in the live migration protocol.  Most structured
@@ -87,16 +113,18 @@ impl From<&Message> for MessageType {
     }
 }
 
-/// The LiveMigratonEncoder ZST represents the right to encode
-/// and decode messages into and from frames.
-#[derive(Default)]
-pub(crate) struct LiveMigrationFramer {}
+/// `LiveMigrationEncoder` implements the `Encoder` & `Decoder`
+/// traits for transforming a stream of bytes to/from migration
+/// protocol messages.
+pub(crate) struct LiveMigrationFramer {
+    log: slog::Logger,
+}
 
 impl LiveMigrationFramer {
     /// Creates a new LiveMigrationFramer, which represents the
     /// right to encode and decode messages.
-    pub fn new() -> LiveMigrationFramer {
-        LiveMigrationFramer::default()
+    pub fn new(log: slog::Logger) -> LiveMigrationFramer {
+        LiveMigrationFramer { log }
     }
     /// Writes the header at the start of the frame.  Also reserves enough space
     /// in the destination buffer for the complete message.
@@ -127,9 +155,10 @@ impl LiveMigrationFramer {
         &mut self,
         len: usize,
         src: &mut BytesMut,
-    ) -> Result<(usize, u64, u64), anyhow::Error> {
+    ) -> Result<(usize, u64, u64), ProtocolError> {
         if len < 16 {
-            anyhow::bail!("short message reading start end");
+            error!(self.log, "short message reading start end: {len}");
+            return Err(ProtocolError::UnexpectedMessageLen);
         }
         let start = src.get_u64_le();
         let end = src.get_u64_le();
@@ -142,9 +171,11 @@ impl LiveMigrationFramer {
         &mut self,
         len: usize,
         src: &mut BytesMut,
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        if src.remaining() < len {
-            anyhow::bail!("short message reading bitmap");
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let remaining = src.remaining();
+        if remaining < len {
+            error!(self.log, "short message reading bitmap (remaining: {remaining} len: {len}");
+            return Err(ProtocolError::UnexpectedMessageLen);
         }
         let v = src[..len].to_vec();
         src.advance(len);
@@ -153,7 +184,7 @@ impl LiveMigrationFramer {
 }
 
 impl codec::Encoder<Message> for LiveMigrationFramer {
-    type Error = anyhow::Error;
+    type Error = ProtocolError;
 
     // Encodes each message according to its type.
     fn encode(
@@ -218,7 +249,7 @@ impl codec::Encoder<Message> for LiveMigrationFramer {
 
 impl codec::Decoder for LiveMigrationFramer {
     type Item = Message;
-    type Error = anyhow::Error;
+    type Error = ProtocolError;
 
     // Decodes each message according to the header length and type
     // indicated by the tag byte.
@@ -236,10 +267,12 @@ impl codec::Decoder for LiveMigrationFramer {
         }
         // Extract the frame header.  If the tag byte is invalid,
         // don't bother looking at the frame size.
-        let tag = MessageType::try_from(src[4])?;
+        let tag = MessageType::try_from(src[4])
+            .map_err(|_| ProtocolError::InvalidMessageType(src[4]))?;
         let len = u32::from_le_bytes([src[0], src[1], src[2], src[3]]) as usize;
         if len < 5 {
-            anyhow::bail!("bad length");
+            error!(self.log, "decode: length too short for header {len}");
+            return Err(ProtocolError::UnexpectedMessageLen);
         }
         // The frame header looks valid; ensure we have read the entire
         // message.
@@ -252,18 +285,10 @@ impl codec::Decoder for LiveMigrationFramer {
         // received message.
         src.advance(5);
         let len = len - 5;
-        if tag == MessageType::Okay {
-            assert_eq!(len, 0);
-            return Ok(Some(Message::Okay));
-        }
         let m = match tag {
             MessageType::Okay => {
-                // We already handled Okay above, but we
-                // add a throw-away case for it here instead
-                // of a wildcard for complete enum coverage.
-                // Should we add a case later, the type system
-                // will ensure we've covered it here.
-                anyhow::bail!("impossible okay")
+                assert_eq!(len, 0);
+                Message::Okay
             }
             MessageType::Error => {
                 let e = ron::de::from_str(std::str::from_utf8(&src[..len])?)?;
@@ -282,7 +307,11 @@ impl codec::Decoder for LiveMigrationFramer {
             }
             MessageType::Page => {
                 if len != 4096 {
-                    anyhow::bail!("bad message size");
+                    error!(
+                        self.log,
+                        "decode: invalid length for `Page` message (len)"
+                    );
+                    return Err(ProtocolError::UnexpectedMessageLen);
                 }
                 let p = src[..len].to_vec();
                 src.advance(len);
@@ -321,13 +350,19 @@ impl codec::Decoder for LiveMigrationFramer {
 }
 
 #[cfg(test)]
+fn test_framer() -> LiveMigrationFramer {
+    let log = slog::Logger::root(slog::Discard, slog::o!());
+    LiveMigrationFramer::new(log)
+}
+
+#[cfg(test)]
 mod live_migration_encoder_tests {
     use super::*;
 
     #[test]
     fn put_header() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.put_header(MessageType::Okay, 0, &mut bytes);
         assert_eq!(&bytes[..], &[5, 0, 0, 0, 0]);
     }
@@ -335,7 +370,7 @@ mod live_migration_encoder_tests {
     #[test]
     fn put_header_nonzero_tag() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.put_header(MessageType::Error, 0, &mut bytes);
         assert_eq!(&bytes[..], &[5, 0, 0, 0, 1]);
     }
@@ -343,7 +378,7 @@ mod live_migration_encoder_tests {
     #[test]
     fn put_start_end() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.put_start_end(1, 2, &mut bytes);
         assert_eq!(
             &bytes[..],
@@ -354,7 +389,7 @@ mod live_migration_encoder_tests {
     #[test]
     fn put_empty_bitmap() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         let v = Vec::new();
         encoder.put_bitmap(&v, &mut bytes);
         assert!(&bytes[..].is_empty());
@@ -363,7 +398,7 @@ mod live_migration_encoder_tests {
     #[test]
     fn put_bitmap() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         let v = vec![0b1100_0000];
         encoder.put_bitmap(&v, &mut bytes);
         assert_eq!(&bytes[..], &[0b1100_0000]);
@@ -378,7 +413,7 @@ mod encoder_tests {
     #[test]
     fn encode_okay() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         let okay = Message::Okay;
         encoder.encode(okay, &mut bytes).ok();
         assert_eq!(&bytes[..], &[5, 0, 0, 0, MessageType::Okay as u8]);
@@ -388,7 +423,7 @@ mod encoder_tests {
     fn encode_error() {
         let mut bytes = BytesMut::new();
         let error = MigrateError::Initiate;
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::Error(error), &mut bytes).ok();
         assert_eq!(&bytes[..5], &[13, 0, 0, 0, MessageType::Error as u8]);
         assert_eq!(&bytes[5..], br#"Initiate"#);
@@ -398,7 +433,7 @@ mod encoder_tests {
     fn encode_serialized() {
         let mut bytes = BytesMut::new();
         let obj = String::from("this is an object");
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::Serialized(obj), &mut bytes).ok();
         assert_eq!(
             &bytes[..5],
@@ -411,7 +446,7 @@ mod encoder_tests {
     fn encode_empty_blob() {
         let mut bytes = BytesMut::new();
         let empty = Vec::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::Blob(empty), &mut bytes).ok();
         assert_eq!(&bytes[..], &[5, 0, 0, 0, MessageType::Blob as u8]);
     }
@@ -420,7 +455,7 @@ mod encoder_tests {
     fn encode_blob() {
         let mut bytes = BytesMut::new();
         let empty = vec![1, 2, 3, 4];
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::Blob(empty), &mut bytes).ok();
         assert_eq!(
             &bytes[..],
@@ -432,7 +467,7 @@ mod encoder_tests {
     fn encode_page() {
         let mut bytes = BytesMut::new();
         let page = [0u8; 4096];
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::Page(page.to_vec()), &mut bytes).ok();
         assert_eq!(
             &bytes[..5],
@@ -444,7 +479,7 @@ mod encoder_tests {
     #[test]
     fn encode_mem_query() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::MemQuery(1, 2), &mut bytes).ok();
         assert_eq!(&bytes[..5], &[21, 0, 0, 0, MessageType::MemQuery as u8]);
         assert_eq!(&bytes[5..5 + 8], &[1, 0, 0, 0, 0, 0, 0, 0]);
@@ -454,7 +489,7 @@ mod encoder_tests {
     #[test]
     fn encode_mem_offer() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder
             .encode(Message::MemOffer(0, 0x8000, vec![0b1010_0101]), &mut bytes)
             .ok();
@@ -470,7 +505,7 @@ mod encoder_tests {
     #[test]
     fn encode_mem_end() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::MemEnd(0, 8 * 4096), &mut bytes).ok();
         assert_eq!(&bytes[..5], [21, 0, 0, 0, MessageType::MemEnd as u8]);
         assert_eq!(&bytes[5..5 + 8], &[0, 0, 0, 0, 0, 0, 0, 0]);
@@ -483,7 +518,7 @@ mod encoder_tests {
     #[test]
     fn encode_mem_fetch() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder
             .encode(Message::MemFetch(0, 0x4000, vec![0b0000_0101]), &mut bytes)
             .ok();
@@ -496,7 +531,7 @@ mod encoder_tests {
     #[test]
     fn encode_mem_xfer() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder
             .encode(Message::MemXfer(0, 0x8000, vec![0b1010_0101]), &mut bytes)
             .ok();
@@ -509,7 +544,7 @@ mod encoder_tests {
     #[test]
     fn encode_mem_done() {
         let mut bytes = BytesMut::new();
-        let mut encoder = LiveMigrationFramer {};
+        let mut encoder = test_framer();
         encoder.encode(Message::MemDone, &mut bytes).ok();
         assert_eq!(&bytes[..], [5, 0, 0, 0, MessageType::MemDone as u8]);
     }
@@ -523,7 +558,7 @@ mod live_migration_decoder_tests {
     fn get_start_end() {
         let mut bytes = BytesMut::new();
         bytes.put_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let (_, start, end) =
             decoder.get_start_end(bytes.remaining(), &mut bytes).unwrap();
         assert_eq!(start, 1);
@@ -533,7 +568,7 @@ mod live_migration_decoder_tests {
     #[test]
     fn get_bitmap_empty() {
         let mut bytes = BytesMut::new();
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let bitmap = decoder.get_bitmap(0, &mut bytes).unwrap();
         assert_eq!(bitmap.len(), 0);
     }
@@ -542,7 +577,7 @@ mod live_migration_decoder_tests {
     fn get_bitmap_exact() {
         let mut bytes = BytesMut::with_capacity(1);
         bytes.put_u8(0b1111_0000);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let bitmap = decoder.get_bitmap(1, &mut bytes).unwrap();
         assert_eq!(bitmap.len(), 1);
         assert_eq!(bitmap[0], 0b1111_0000);
@@ -559,7 +594,7 @@ mod decoder_tests {
     fn decode_bad_tag_fails() {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[5, 0, 0, 0, 222]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         assert!(decoder.decode(&mut bytes).is_err());
     }
 
@@ -567,7 +602,7 @@ mod decoder_tests {
     fn decode_short() {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[5, 0, 0]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         assert_matches!(decoder.decode(&mut bytes), Ok(None));
         bytes.put_slice(&[0, 0]);
         assert_matches!(decoder.decode(&mut bytes), Ok(Some(Message::Okay)));
@@ -577,7 +612,7 @@ mod decoder_tests {
     fn decode_bad_length_fails() {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[3, 0, 0, 0, 0]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         assert!(decoder.decode(&mut bytes).is_err());
     }
 
@@ -586,7 +621,7 @@ mod decoder_tests {
         let mut bytes = BytesMut::with_capacity(16);
         bytes.put_slice(&[16, 0, 0, 0, MessageType::Error as u8]);
         bytes.put_slice(&br#"Http("foo")"#[..]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
         assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
@@ -599,7 +634,7 @@ mod decoder_tests {
         bytes.put_slice(&br#"Http("foo")"#[..]);
         bytes.put_slice(&[16, 0, 0, 0, MessageType::Error as u8]);
         bytes.put_slice(&br#"Http("bar")"#[..]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
         assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
@@ -613,7 +648,7 @@ mod decoder_tests {
         let mut bytes = BytesMut::with_capacity(9);
         bytes.put_slice(&[9, 0, 0, 0, MessageType::Blob as u8]);
         bytes.put_slice(&b"asdf"[..]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::Blob(b))) if b == b"asdf".to_vec());
     }
@@ -624,7 +659,7 @@ mod decoder_tests {
         bytes.put_slice(&[5, 0x10, 0, 0, MessageType::Page as u8]);
         let page = [0u8; 4096];
         bytes.put_slice(&page[..]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::Page(p)))
             if p.iter().all(|&b| b == 0));
@@ -636,7 +671,7 @@ mod decoder_tests {
         bytes.put_slice(&[5 + 8 + 8, 0, 0, 0, MessageType::MemQuery as u8]);
         bytes.put_slice(&[1, 0, 0, 0, 0, 0, 0, 0]);
         bytes.put_slice(&[2, 0, 0, 0, 0, 0, 0, 0]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::MemQuery(start, end)))
             if start == 1 && end == 2);
@@ -649,7 +684,7 @@ mod decoder_tests {
         bytes.put_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
         bytes.put_slice(&[0, 0x80, 0, 0, 0, 0, 0, 0]);
         bytes.put_u8(0b0000_1111);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::MemOffer(start, end, v)))
             if start == 0 && end == 0x8000 && v == vec![0b0000_1111]);
@@ -663,7 +698,7 @@ mod decoder_tests {
         bytes.put_slice(&[0, 0x80, 0, 0, 0, 0, 0, 0]);
         bytes.put_u8(0b0000_1111);
         bytes.put_u8(0b0000_1010);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::MemOffer(start, end, v)))
             if start == 0 &&
@@ -677,7 +712,7 @@ mod decoder_tests {
         bytes.put_slice(&[5 + 8 + 8, 0, 0, 0, MessageType::MemEnd as u8]);
         bytes.put_slice(&[0, 0x40, 0, 0, 0, 0, 0, 0]);
         bytes.put_slice(&[0, 0x40 + 0x80, 0, 0, 0, 0, 0, 0]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::MemEnd(start, end)))
             if start == 0x4000 && end == 0xC000);
@@ -690,7 +725,7 @@ mod decoder_tests {
         bytes.put_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
         bytes.put_slice(&[0, 0x80, 0, 0, 0, 0, 0, 0]);
         bytes.put_u8(0b0000_1111);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::MemFetch(start, end, v)))
             if start == 0 && end == 0x8000 && v == vec![0b0000_1111]);
@@ -703,7 +738,7 @@ mod decoder_tests {
         bytes.put_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
         bytes.put_slice(&[0, 0x80, 0, 0, 0, 0, 0, 0]);
         bytes.put_u8(0b0000_1111);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         assert_matches!(decoded, Ok(Some(Message::MemXfer(start, end, v)))
             if start == 0 && end == 0x8000 && v == vec![0b0000_1111]);
@@ -713,7 +748,7 @@ mod decoder_tests {
     fn decode_mem_done() {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[5, 0, 0, 0, MessageType::MemDone as u8]);
-        let mut decoder = LiveMigrationFramer {};
+        let mut decoder = test_framer();
         assert_matches!(decoder.decode(&mut bytes), Ok(Some(Message::MemDone)));
     }
 }

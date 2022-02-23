@@ -22,6 +22,16 @@ pub enum MigrateRole {
     Destination,
 }
 
+/// Phases an Instance may transition through during a migration.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MigratePhase {
+    /// The initial migration phase an Instance enters.
+    Start,
+
+    /// Wind down the instance and give devices a chance to complete in-flight requests.
+    Pause,
+}
+
 /// States of operation for an instance.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
@@ -36,7 +46,7 @@ pub enum State {
     /// later be booted or maintained.
     Quiesce,
     /// The instance is being migrated.
-    Migrate(MigrateRole),
+    Migrate(MigrateRole, MigratePhase),
     /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
@@ -75,14 +85,16 @@ impl State {
             },
             State::Boot => match target {
                 None | Some(State::Run) => State::Run,
-                Some(State::Migrate(MigrateRole::Destination)) => {
-                    State::Migrate(MigrateRole::Destination)
+                Some(State::Migrate(MigrateRole::Destination, phase)) => {
+                    State::Migrate(MigrateRole::Destination, phase)
                 }
                 _ => State::Quiesce,
             },
             State::Run => match target {
                 None | Some(State::Run) => State::Run,
-                Some(State::Migrate(role)) => State::Migrate(role),
+                Some(State::Migrate(role, phase)) => {
+                    State::Migrate(role, phase)
+                }
                 Some(_) => State::Quiesce,
             },
             State::Quiesce => match target {
@@ -90,13 +102,25 @@ impl State {
                 Some(State::Reset) => State::Reset,
                 // Machine must go through reset before it can be booted
                 Some(State::Boot) => State::Reset,
-                Some(State::Migrate(role)) => State::Migrate(role),
+                Some(State::Migrate(role, phase)) => {
+                    State::Migrate(role, phase)
+                }
                 _ => State::Quiesce,
             },
-            State::Migrate(role) => match target {
+            State::Migrate(MigrateRole::Source, MigratePhase::Start) => {
+                match target {
+                    Some(State::Migrate(MigrateRole::Source, phase)) => {
+                        State::Migrate(MigrateRole::Source, phase)
+                    }
+                    _ => {
+                        State::Migrate(MigrateRole::Source, MigratePhase::Start)
+                    }
+                }
+            }
+            State::Migrate(role, phase) => match target {
                 Some(State::Run) => State::Run,
                 Some(State::Halt) | Some(State::Destroy) => State::Halt,
-                _ => State::Migrate(*role),
+                _ => State::Migrate(*role, *phase),
             },
             State::Halt => State::Destroy,
             State::Reset => State::Boot,
@@ -126,6 +150,7 @@ pub enum ReqState {
     Run,
     Reset,
     Halt,
+    StartMigrate,
 }
 
 /// Errors that may be returned when an instance is requested to transition
@@ -154,9 +179,10 @@ struct Inner {
     suspend_info: Option<(SuspendKind, SuspendSource)>,
     drive_thread: Option<JoinHandle<()>>,
     machine: Option<Arc<Machine>>,
-    inv: Inventory,
+    inv: Arc<Inventory>,
     transition_funcs: Vec<Box<TransitionFunc>>,
     migrate_ctx: Option<CtxId>,
+    pause_chan: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 /// A single virtual machine.
@@ -185,9 +211,10 @@ impl Instance {
                 suspend_info: None,
                 drive_thread: None,
                 machine: Some(machine),
-                inv: Inventory::new(),
+                inv: Arc::new(Inventory::new()),
                 transition_funcs: Vec::new(),
                 migrate_ctx: None,
+                pause_chan: None,
             }),
             cv: Condvar::new(),
             disp,
@@ -294,20 +321,57 @@ impl Instance {
                 SuspendKind::Halt,
                 SuspendSource::External,
             ),
+            ReqState::StartMigrate => self.set_target_state_locked(
+                &mut inner,
+                State::Migrate(MigrateRole::Source, MigratePhase::Start),
+            ),
         }
     }
 
-    pub fn begin_migrate(
+    /// Ask the instance to pause in prepartion for a migration.
+    ///
+    /// This will ask the instance to transition to the Migrate Pause
+    /// state. As part of that, we'll walk through the device inventory
+    /// asking each to stop servicing guest requests. The instance will
+    /// wait while the caller has the opportunity to monitor the progress
+    /// of each device. The instance expects the caller to inform when it
+    /// should complete the transition to the Migrate Pause state via the
+    /// passed in Receiver.
+    pub fn migrate_pause(
         &self,
-        role: MigrateRole,
         migrate_ctx_id: CtxId,
+        pause_chan: std::sync::mpsc::Receiver<()>,
     ) -> Result<(), TransitionError> {
         let mut inner = self.inner.lock().unwrap();
+
+        // Make sure the Instance is in the appropriate state
+        if !matches!(
+            inner.state_current,
+            State::Migrate(MigrateRole::Source, MigratePhase::Start)
+        ) {
+            return Err(TransitionError::InvalidTarget {
+                current: inner.state_current,
+                target: State::Migrate(
+                    MigrateRole::Source,
+                    MigratePhase::Pause,
+                ),
+            });
+        }
+
+        // And that another migration wasn't already requested
         if let Some(_) = inner.migrate_ctx {
             return Err(TransitionError::MigrationAlreadyInProgress);
         }
+
+        // Stash the migrate context and pause channel so that
+        // `drive_state` can access them
         inner.migrate_ctx = Some(migrate_ctx_id);
-        self.set_target_state_locked(&mut inner, State::Migrate(role))
+        inner.pause_chan = Some(pause_chan);
+
+        self.set_target_state_locked(
+            &mut inner,
+            State::Migrate(MigrateRole::Source, MigratePhase::Pause),
+        )
     }
 
     pub(crate) fn trigger_suspend(
@@ -420,6 +484,17 @@ impl Instance {
                     ent.reset(ctx);
                 }
 
+                // Inform each entity to stop servicing the guest and
+                // complete or cancel any outstanding requests.
+                if state
+                    == State::Migrate(MigrateRole::Source, MigratePhase::Pause)
+                    && phase == TransitionPhase::Pre
+                {
+                    if let Some(migrate) = ent.migrate() {
+                        migrate.pause(ctx);
+                    }
+                }
+
                 ent.state_transition(state, target, phase, ctx);
             });
 
@@ -433,7 +508,7 @@ impl Instance {
         });
     }
 
-    fn drive_state(&self, _log: slog::Logger) {
+    fn drive_state(&self, log: slog::Logger) {
         let mut next_state: Option<State> = None;
         let mut inner = self.inner.lock().unwrap();
 
@@ -459,7 +534,7 @@ impl Instance {
 
             let prev_state = inner.state_current;
             inner.state_current = state;
-            slog::info!(_log, "Instance transition";
+            slog::info!(log, "Instance transition";
                 "state" => ?state,
                 "state_prev" => ?prev_state,
                 "state_target" => ?&inner.state_target
@@ -501,14 +576,18 @@ impl Instance {
                     // suspend become stale.
                     inner.suspend_info = None;
                 }
-                State::Migrate(_) => {
-                    let migrate_ctx = inner.migrate_ctx.unwrap();
-                    // Worker thread quiesce cannot be done with `inner` lock
-                    // held without risking a deadlock.
+                State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
+                    // Give an opportunity to migration requestor to take
+                    // action before quiescing the instance.
+                    // Drop the `inner` lock so that it may access instance
+                    // in the meanwhile.
+                    let pause_chan =
+                        inner.pause_chan.take().expect("migrate pause channel");
                     drop(inner);
-                    self.disp.quiesce();
-                    // We explicitly allow the migrate task to run
-                    self.disp.release_one(migrate_ctx);
+                    if let Err(_) = pause_chan.recv() {
+                        // The other end is gone without waking us first
+                        slog::warn!(log, "migrate pause chan dropped early");
+                    }
                     inner = self.inner.lock().unwrap();
                 }
                 _ => {}
@@ -536,6 +615,16 @@ impl Instance {
                     }
                 }
                 State::Destroy => {}
+                State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
+                    let migrate_ctx = inner.migrate_ctx.unwrap();
+                    // Worker thread quiesce cannot be done with `inner` lock
+                    // held without risking a deadlock.
+                    drop(inner);
+                    self.disp.quiesce();
+                    // We explicitly allow the migrate task to run
+                    self.disp.release_one(migrate_ctx);
+                    inner = self.inner.lock().unwrap();
+                }
                 _ => {}
             }
 
@@ -559,6 +648,12 @@ impl Instance {
     pub fn print(&self) {
         let state = self.inner.lock().unwrap();
         state.inv.print()
+    }
+
+    /// Return the [`Inventory`] describing the device tree of this Instance.s
+    pub fn inv(&self) -> Arc<Inventory> {
+        let state = self.inner.lock().unwrap();
+        Arc::clone(&state.inv)
     }
 }
 

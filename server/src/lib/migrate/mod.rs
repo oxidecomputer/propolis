@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
-use propolis::instance::{MigrateRole, TransitionError};
+use propolis::{
+    dispatch::AsyncCtx,
+    instance::{Instance, MigratePhase, MigrateRole, State, TransitionError},
+};
 use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
@@ -43,12 +46,39 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
     }
 }
 
+/// Context created as part of a migration.
 pub struct MigrateContext {
+    /// The external ID used to identify a migration across both the source and destination.
     migration_id: Uuid,
+
+    /// The current state of the migration process on this Instance.
     state: RwLock<MigrationState>,
+
+    /// A handle to the underlying propolis [`Instance`].
+    instance: Arc<Instance>,
+
+    /// Async descriptor context for the migrate task to access machine state in async context.
+    async_ctx: AsyncCtx,
+
+    /// Logger for migration created from initial migration request.
+    log: slog::Logger,
 }
 
 impl MigrateContext {
+    fn new(
+        migration_id: Uuid,
+        instance: Arc<Instance>,
+        log: slog::Logger,
+    ) -> MigrateContext {
+        MigrateContext {
+            migration_id,
+            state: RwLock::new(MigrationState::Sync),
+            async_ctx: instance.disp.async_ctx(),
+            instance,
+            log,
+        }
+    }
+
     async fn get_state(&self) -> MigrationState {
         let state = self.state.read().await;
         *state
@@ -69,39 +99,60 @@ pub struct MigrateTask {
 /// Errors which may occur during the course of a migration
 #[derive(Error, Debug, Deserialize, PartialEq, Serialize)]
 pub enum MigrateError {
+    /// An error as a result of some HTTP operation (i.e. trying to establish
+    /// the websocket connection between the source and destination)
     #[error("HTTP error: {0}")]
     Http(String),
 
+    /// Failed to initiate the migration protocol
     #[error("couldn't establish migration connection to source instance")]
     Initiate,
 
+    /// The source and destination instances are not compatible
     #[error("the source ({0}) and destination ({1}) instances are incompatible for migration")]
     Incompatible(String, String),
 
+    /// Incomplete WebSocket upgrade request
     #[error("expected connection upgrade")]
     UpgradeExpected,
 
+    /// Attempted to migrate an uninitialized instance
     #[error("instance is not initialized")]
     InstanceNotInitialized,
 
+    /// The given UUID does not match the existing instance/migration UUID
     #[error("unexpected Uuid")]
     UuidMismatch,
 
+    /// A different migration already in progress
     #[error("a migration from the current instance is already in progress")]
     MigrationAlreadyInProgress,
 
+    /// Migration state was requested with no migration in process
     #[error("no migration is currently in progress")]
     NoMigrationInProgress,
 
-    #[error("protocol error")]
-    // TODO: just for testing rn
-    Protocol,
+    /// Encountered an error as part of encoding/decoding migration messages
+    #[error("codec error: {0}")]
+    Codec(String),
 
-    #[error("encoding error")]
-    Encoding,
-
+    /// The instance is in an invalid state for the current operation
     #[error("encountered invalid instance state")]
     InvalidInstanceState,
+
+    /// Received a message out of order
+    #[error("received unexpected migration message")]
+    UnexpectedMessage,
+
+    /// Failed to pause the source instance's devices or tasks
+    #[error("failed to pause source instance")]
+    SourcePause,
+}
+
+impl MigrateError {
+    fn incompatible(src: &str, dst: &str) -> MigrateError {
+        MigrateError::Incompatible(src.to_string(), dst.to_string())
+    }
 }
 
 impl From<hyper::Error> for MigrateError {
@@ -123,9 +174,9 @@ impl From<TransitionError> for MigrateError {
     }
 }
 
-impl MigrateError {
-    fn incompatible(src: &str, dst: &str) -> MigrateError {
-        MigrateError::Incompatible(src.to_string(), dst.to_string())
+impl From<codec::ProtocolError> for MigrateError {
+    fn from(err: codec::ProtocolError) -> Self {
+        MigrateError::Codec(err.to_string())
     }
 }
 
@@ -137,13 +188,12 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
             | MigrateError::InstanceNotInitialized
-            | MigrateError::InvalidInstanceState => {
-                HttpError::for_internal_error(msg)
-            }
+            | MigrateError::InvalidInstanceState
+            | MigrateError::Codec(_)
+            | MigrateError::UnexpectedMessage
+            | MigrateError::SourcePause => HttpError::for_internal_error(msg),
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
-            | MigrateError::Protocol
-            | MigrateError::Encoding
             | MigrateError::UuidMismatch
             | MigrateError::UpgradeExpected => {
                 HttpError::for_bad_request(None, msg)
@@ -174,6 +224,14 @@ pub async fn source_start(
 
     if instance_id != context.properties.id {
         return Err(MigrateError::UuidMismatch);
+    }
+
+    // Bail if the instance hasn't been preset to Migrate Start state.
+    if !matches!(
+        context.instance.current_state(),
+        State::Migrate(MigrateRole::Source, MigratePhase::Start)
+    ) {
+        return Err(MigrateError::InvalidInstanceState);
     }
 
     // Bail if there's already one in progress
@@ -214,26 +272,17 @@ pub async fn source_start(
         return Err(MigrateError::incompatible(src_protocol, dst_protocol));
     }
 
+    // Grab the future for plucking out the upgraded socket
     let upgrade = hyper::upgrade::on(request);
-    let instance = context.instance.clone();
-
-    let migrate_context = Arc::new(MigrateContext {
-        migration_id,
-        state: RwLock::new(MigrationState::Sync),
-    });
-
-    // The migration task needs an async descriptor context.
-    let async_ctx = instance.disp.async_ctx();
-    let migrate_ctx_id = async_ctx.context_id();
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let migrate_context = Arc::new(MigrateContext::new(
+        migration_id,
+        context.instance.clone(),
+        log.clone(),
+    ));
     let mctx = migrate_context.clone();
-
-    // Request instance to enter 'migrating' state
-    // and allow our migrate task access to the DispCtx & Machine
-    instance.begin_migrate(MigrateRole::Source, migrate_ctx_id)?;
-
     let task = tokio::spawn(async move {
         // We have to await on the HTTP upgrade future in a new
         // task because it won't complete until the response is
@@ -247,10 +296,7 @@ pub async fn source_start(
         };
 
         // Good to go, ready to migrate to the dest via `conn`
-        // TODO: wrap in a tokio codec::Framed or such
-        if let Err(e) =
-            source::migrate(mctx, instance, async_ctx, conn, log.clone()).await
-        {
+        if let Err(e) = source::migrate(mctx, conn).await {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }
@@ -359,34 +405,16 @@ pub async fn dest_initiate(
     // Now co-opt the socket for the migration protocol
     let conn = hyper::upgrade::on(res).await?;
 
-    let migrate_context = Arc::new(MigrateContext {
-        migration_id,
-        state: RwLock::new(MigrationState::Sync),
-    });
-
     // We've successfully negotiated a migration protocol w/ the source.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    let migrate_context = Arc::new(MigrateContext::new(
+        migration_id,
+        context.instance.clone(),
+        log.clone(),
+    ));
     let mctx = migrate_context.clone();
-    let instance = context.instance.clone();
-
-    // The migration task needs an async descriptor context.
-    let async_context = instance.disp.async_ctx();
-    let migrate_ctx_id = async_context.context_id();
-
-    // Request instance to enter 'migrating' state
-    // and allow our migrate task access to the DispCtx & Machine
-    instance.begin_migrate(MigrateRole::Destination, migrate_ctx_id)?;
-
     let task = tokio::spawn(async move {
-        if let Err(e) = destination::migrate(
-            mctx,
-            instance,
-            async_context,
-            conn,
-            log.clone(),
-        )
-        .await
-        {
+        if let Err(e) = destination::migrate(mctx, conn).await {
             error!(log, "Migrate Task Failed: {}", e);
             return;
         }

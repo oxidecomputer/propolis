@@ -474,8 +474,15 @@ pub trait Entity: Send + Sync + 'static {
     fn child_register(&self) -> Option<Vec<ChildRegister>> {
         None
     }
+
     fn migrate(&self) -> Option<&dyn Migrate> {
         None
+    }
+}
+
+impl std::fmt::Debug for dyn Entity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Entity ({})", self.type_name())
     }
 }
 

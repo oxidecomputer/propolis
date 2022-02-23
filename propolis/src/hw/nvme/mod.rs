@@ -1,5 +1,6 @@
 use std::convert::TryInto;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::DispCtx;
@@ -9,6 +10,7 @@ use crate::util::regmap::RegMap;
 use crate::{block, common::*};
 
 use erased_serde::Serialize;
+use futures::future::BoxFuture;
 use lazy_static::lazy_static;
 use thiserror::Error;
 
@@ -20,6 +22,7 @@ mod requests;
 
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
+use tokio::sync::Notify;
 
 /// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
@@ -149,6 +152,15 @@ struct NvmeCtrl {
 
     /// Underlying Block Device info
     binfo: block::DeviceInfo,
+
+    /// Count of how many outstanding I/O requests there currently are.
+    reqs_outstanding: Arc<AtomicU64>,
+
+    /// Notifier to indicate all outstanding requests have been completed.
+    reqs_notifier: Arc<Mutex<Option<Arc<Notify>>>>,
+
+    /// Whether or not we should service guest commands
+    paused: bool,
 }
 
 impl NvmeCtrl {
@@ -529,6 +541,9 @@ impl PciNvme {
             ctrl_ident,
             ns_ident,
             binfo,
+            paused: false,
+            reqs_outstanding: Arc::new(AtomicU64::new(0)),
+            reqs_notifier: Arc::new(Mutex::new(None)),
         };
 
         let pci_state = builder
@@ -742,7 +757,7 @@ impl PciNvme {
                     // up some slots, kick the SQs (excl. admin) here just in case.
                     // TODO: worth kicking only the SQs specifically associated
                     //       with this CQ?
-                    if cq.kick() {
+                    if !state.paused && cq.kick() {
                         self.notifier.notify(self, ctx);
                     }
                 } else {
@@ -752,7 +767,9 @@ impl PciNvme {
                     sq.notify_tail(val)?;
 
                     // Poke block device to service new requests
-                    self.notifier.notify(self, ctx);
+                    if !state.paused {
+                        self.notifier.notify(self, ctx);
+                    }
                 }
             }
         }
@@ -767,6 +784,10 @@ impl PciNvme {
         sq: Arc<SubQueue>,
         ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
+        if state.paused {
+            return Ok(());
+        }
+
         // Grab the Admin CQ too
         let cq = state.get_admin_cq();
 
@@ -870,6 +891,46 @@ impl Entity for PciNvme {
 impl Migrate for PciNvme {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
+    }
+
+    fn pause(&self, _ctx: &DispCtx) {
+        let mut ctrl = self.state.lock().unwrap();
+
+        // Stop responding to any requests
+        assert!(!ctrl.paused);
+        ctrl.paused = true;
+
+        // Create a new notifier and stash it in the shared reference
+        // given to all I/O requests. We only create the Notify object
+        // once we've received a request to stop servicing the guest.
+        // We do this so that hitting 0 outstanding requests during the
+        // normal course of operation doesn't store a permit in the Notify
+        // and cause our later `notified()` future to complete too early.
+        let mut reqs_notifier = ctrl.reqs_notifier.lock().unwrap();
+        assert!(reqs_notifier.is_none());
+        let notify = Arc::new(Notify::new());
+        *reqs_notifier = Some(Arc::clone(&notify));
+
+        if ctrl.reqs_outstanding.load(Ordering::Acquire) == 0 {
+            // Since we hold the `state` lock, no new request can be submitted
+            // (`PciNvme::next_req`) until it's released. But we also just
+            // updated `paused = true` and so we can be sure there won't be
+            // any new reqests once we release the lock. But it may be the
+            // case that we hit 0 outstanding requests right before we created
+            // the notifier above. To handle that case, we just make sure
+            // there's a permit available.
+            notify.notify_one();
+        }
+    }
+
+    fn paused(&self) -> BoxFuture<'static, ()> {
+        let ctrl = self.state.lock().unwrap();
+        assert!(ctrl.paused);
+
+        let reqs_notifier = ctrl.reqs_notifier.lock().unwrap();
+        let notify = Arc::clone(reqs_notifier.as_ref().unwrap());
+
+        Box::pin(async move { notify.notified().await })
     }
 }
 
