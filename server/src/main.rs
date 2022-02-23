@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
                 bind_address: propolis_addr,
-                request_body_max_bytes: 1024*1024, // 1M for ISO bytes
+                request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 ..Default::default()
             };
             let config_logging = ConfigLogging::StderrTerminal {
