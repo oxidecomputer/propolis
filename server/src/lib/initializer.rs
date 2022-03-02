@@ -304,16 +304,13 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_in_memory_virtio_from_bytes(
         &self,
         chipset: &RegisteredChipset,
-        bytes: &[u8],
+        bytes: Vec<u8>,
         bdf: pci::Bdf,
         read_only: bool,
     ) -> Result<(), Error> {
         info!(self.log, "Creating in-memory disk from bytes");
-        let be = propolis::block::InMemoryBackend::create(
-            bytes.to_vec(),
-            read_only,
-            512,
-        )?;
+        let be =
+            propolis::block::InMemoryBackend::create(bytes, read_only, 512)?;
 
         info!(self.log, "Creating ChildRegister");
         let creg = ChildRegister::new(&be, None);

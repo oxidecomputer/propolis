@@ -336,7 +336,7 @@ async fn instance_ensure(
                 })?;
 
                 init.initialize_in_memory_virtio_from_bytes(
-                    &chipset, &bytes, bdf, true,
+                    &chipset, bytes, bdf, true,
                 )?;
 
                 info!(rqctx.log, "cloud-init disk created");
