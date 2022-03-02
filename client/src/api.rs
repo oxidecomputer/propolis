@@ -30,6 +30,9 @@ pub struct InstanceEnsureRequest {
     pub disks: Vec<DiskRequest>,
 
     pub migrate: Option<InstanceMigrateInitiateRequest>,
+
+    // base64 encoded cloud-init ISO
+    pub cloud_init_bytes: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

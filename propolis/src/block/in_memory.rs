@@ -1,70 +1,70 @@
 use std::collections::VecDeque;
-use std::fs::{metadata, File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
-use std::num::NonZeroUsize;
-use std::os::unix::io::AsRawFd;
-use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::DeviceInfo;
 use crate::block;
 use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
 use crate::inventory::Entity;
-use crate::vmm::MappingExt;
+use crate::vmm::SubMapping;
 
 use tokio::sync::Semaphore;
 
-// XXX: completely arb for now
-const MAX_WORKERS: usize = 32;
-
-/// Standard [`BlockDev`] implementation.
-pub struct FileBackend {
-    fp: Arc<File>,
+pub struct InMemoryBackend {
+    bytes: Arc<Mutex<Vec<u8>>>,
 
     driver: Mutex<Option<Arc<Driver>>>,
-    worker_count: NonZeroUsize,
 
     is_ro: bool,
     block_size: usize,
     sectors: usize,
 }
 
-impl FileBackend {
-    /// Creates a new block device from a device at `path`.
+impl InMemoryBackend {
     pub fn create(
-        path: impl AsRef<Path>,
-        readonly: bool,
-        worker_count: NonZeroUsize,
+        bytes: Vec<u8>,
+        is_ro: bool,
+        block_size: usize,
     ) -> Result<Arc<Self>> {
-        if worker_count.get() > MAX_WORKERS {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "too many workers",
+        match block_size {
+            512 | 4096 => {
+                // ok
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    format!("unsupported block size {}!", block_size,),
+                ));
+            }
+        }
+
+        let len = bytes.len();
+
+        if (len % block_size) != 0 {
+            return Err(std::io::Error::new(
+                ErrorKind::Other,
+                format!(
+                    "in-memory bytes length {} not multiple of block size {}!",
+                    len, block_size,
+                ),
             ));
         }
-        let p: &Path = path.as_ref();
-
-        let meta = metadata(p)?;
-        let is_ro = readonly || meta.permissions().readonly();
-
-        let fp = OpenOptions::new().read(true).write(!is_ro).open(p)?;
-        let len = fp.metadata().unwrap().len() as usize;
 
         let this = Self {
-            fp: Arc::new(fp),
+            bytes: Arc::new(Mutex::new(bytes)),
 
             driver: Mutex::new(None),
-            worker_count,
 
             is_ro,
-            block_size: 512,
-            sectors: len / 512,
+            block_size,
+            sectors: len / block_size,
         };
 
         Ok(Arc::new(this))
     }
 }
-impl block::Backend for FileBackend {
+
+impl block::Backend for InMemoryBackend {
     fn info(&self) -> DeviceInfo {
         DeviceInfo {
             block_size: self.block_size as u32,
@@ -77,19 +77,20 @@ impl block::Backend for FileBackend {
         let mut driverg = self.driver.lock().unwrap();
         assert!(driverg.is_none());
 
-        let driver = Driver::new(self.fp.clone(), dev, self.is_ro);
-        driver.spawn(self.worker_count, disp);
+        let driver = Driver::new(self.bytes.clone(), dev, self.is_ro);
+        driver.spawn(disp);
         *driverg = Some(driver);
     }
 }
-impl Entity for FileBackend {
+
+impl Entity for InMemoryBackend {
     fn type_name(&self) -> &'static str {
-        "block-file"
+        "in-memory"
     }
 }
 
 struct Driver {
-    fp: Arc<File>,
+    bytes: Arc<Mutex<Vec<u8>>>,
     is_ro: bool,
     cv: Condvar,
     queue: Mutex<VecDeque<block::Request>>,
@@ -100,13 +101,13 @@ struct Driver {
 
 impl Driver {
     fn new(
-        fp: Arc<File>,
+        bytes: Arc<Mutex<Vec<u8>>>,
         dev: Arc<dyn block::Device>,
         is_ro: bool,
     ) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
         Arc::new(Self {
-            fp,
+            bytes,
             is_ro,
             cv: Condvar::new(),
             queue: Mutex::new(VecDeque::new()),
@@ -128,7 +129,7 @@ impl Driver {
                 drop(guard);
                 idled = false;
                 let ctx = sctx.dispctx();
-                match process_request(&self.fp, &req, &ctx, self.is_ro) {
+                match process_request(&self.bytes, &req, &ctx, self.is_ro) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
                     Err(_) => req.complete(block::Result::Failure, &ctx),
                 }
@@ -165,47 +166,113 @@ impl Driver {
         }
     }
 
-    fn spawn(self: &Arc<Self>, worker_count: NonZeroUsize, disp: &Dispatcher) {
-        for i in 0..worker_count.get() {
-            let tself = Arc::clone(self);
+    fn spawn(self: &Arc<Self>, disp: &Dispatcher) {
+        let tself = Arc::clone(self);
 
-            // Configure a waker to help threads to reach their yield points
-            // Doing this once (from thread 0) is adequate to wake them all.
-            let wake = if i == 0 {
-                let tnotify = Arc::downgrade(self);
-                Some(Box::new(move |_ctx: &DispCtx| {
-                    if let Some(this) = tnotify.upgrade() {
-                        let _guard = this.queue.lock().unwrap();
-                        this.cv.notify_all();
-                    }
-                }) as Box<WakeFn>)
-            } else {
-                None
-            };
+        // Configure a waker to help threads to reach their yield points
+        let wake = {
+            let tnotify = Arc::downgrade(self);
+            Some(Box::new(move |_ctx: &DispCtx| {
+                if let Some(this) = tnotify.upgrade() {
+                    let _guard = this.queue.lock().unwrap();
+                    this.cv.notify_all();
+                }
+            }) as Box<WakeFn>)
+        };
 
-            let _ = disp
-                .spawn_sync(
-                    format!("file bdev {}", i),
-                    Box::new(move |mut sctx| {
-                        tself.blocking_loop(&mut sctx);
-                    }),
-                    wake,
-                )
-                .unwrap();
-        }
+        let _ = disp
+            .spawn_sync(
+                "mem bdev".to_string(),
+                Box::new(move |mut sctx| {
+                    tself.blocking_loop(&mut sctx);
+                }),
+                wake,
+            )
+            .unwrap();
 
         let sched_self = Arc::clone(self);
         let actx = disp.async_ctx();
         let sched_task = tokio::spawn(async move {
             sched_self.do_scheduling(&actx).await;
         });
+
         // TODO: do we need to manipulate the task later?
         disp.track(sched_task);
     }
 }
 
+/// Read from bytes into guest memory
+fn process_read_request(
+    bytes: &Arc<Mutex<Vec<u8>>>,
+    offset: u64,
+    len: usize,
+    mappings: &Vec<SubMapping>,
+) -> Result<()> {
+    let bytes = bytes.lock().unwrap();
+
+    let start = offset as usize;
+    let end = offset as usize + len;
+
+    if start >= bytes.len() || end > bytes.len() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "invalid offset {} and len {} when bytes len is {}",
+                offset,
+                len,
+                bytes.len(),
+            ),
+        ));
+    }
+
+    let data = &bytes[start..end];
+
+    let mut nwritten = 0;
+    for mapping in mappings {
+        nwritten +=
+            mapping.write_bytes(&data[nwritten..(nwritten + mapping.len())])?;
+    }
+
+    Ok(())
+}
+
+/// Write from guest memory into bytes
+fn process_write_request(
+    bytes: &Arc<Mutex<Vec<u8>>>,
+    offset: u64,
+    len: usize,
+    mappings: &Vec<SubMapping>,
+) -> Result<()> {
+    let mut bytes = bytes.lock().unwrap();
+
+    let start = offset as usize;
+    let end = offset as usize + len;
+
+    if start >= bytes.len() || end > bytes.len() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "invalid offset {} and len {} when bytes len is {}",
+                offset,
+                len,
+                bytes.len(),
+            ),
+        ));
+    }
+
+    let data = &mut bytes[start..end];
+
+    let mut nread = 0;
+    for mapping in mappings {
+        nread +=
+            mapping.read_bytes(&mut data[nread..(nread + mapping.len())])?;
+    }
+
+    Ok(())
+}
+
 fn process_request(
-    fp: &File,
+    bytes: &Arc<Mutex<Vec<u8>>>,
     req: &block::Request,
     ctx: &DispCtx,
     is_ro: bool,
@@ -217,10 +284,7 @@ fn process_request(
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
 
-            let nbytes = maps.preadv(fp.as_raw_fd(), off as i64)?;
-            if nbytes != req.len() {
-                return Err(Error::new(ErrorKind::Other, "bad read length"));
-            }
+            process_read_request(bytes, off as u64, req.len(), &maps)?;
         }
         block::Operation::Write(off) => {
             if is_ro {
@@ -234,14 +298,12 @@ fn process_request(
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
 
-            let nbytes = maps.pwritev(fp.as_raw_fd(), off as i64)?;
-            if nbytes != req.len() {
-                return Err(Error::new(ErrorKind::Other, "bad write length"));
-            }
+            process_write_request(bytes, off as u64, req.len(), &maps)?;
         }
         block::Operation::Flush(_off, _len) => {
-            fp.sync_data()?;
+            // nothing to do
         }
     }
+
     Ok(())
 }

@@ -128,7 +128,7 @@ impl block::Backend for CrucibleBackend {
         assert!(driverg.is_none());
 
         // spawn synchronous driver
-        let driver = SyncDriver::new(dev, self.guest.clone());
+        let driver = SyncDriver::new(dev, self.guest.clone(), self.read_only);
         driver.spawn(NonZeroUsize::new(8).unwrap(), disp);
         *driverg = Some(driver);
     }
@@ -146,6 +146,7 @@ struct SyncDriver {
     idle_threads: Semaphore,
     dev: Arc<dyn block::Device>,
     guest: Arc<crucible::Guest>,
+    read_only: bool,
     waiter: block::AsyncWaiter,
 }
 
@@ -153,6 +154,7 @@ impl SyncDriver {
     fn new(
         dev: Arc<dyn block::Device>,
         guest: Arc<crucible::Guest>,
+        read_only: bool,
     ) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
         Arc::new(Self {
@@ -161,6 +163,7 @@ impl SyncDriver {
             idle_threads: Semaphore::new(0),
             dev,
             guest,
+            read_only,
             waiter,
         })
     }
@@ -178,7 +181,12 @@ impl SyncDriver {
                 idled = false;
                 let logger = sctx.log().clone();
                 let ctx = sctx.dispctx();
-                match process_request(self.guest.clone(), &req, &ctx) {
+                match process_request(
+                    self.guest.clone(),
+                    &req,
+                    &ctx,
+                    self.read_only,
+                ) {
                     Ok(_) => req.complete(block::Result::Success, &ctx),
                     Err(e) => {
                         slog::error!(
@@ -276,19 +284,9 @@ fn process_read_request(
 
     let mut nwritten = 0;
     for mapping in mappings {
-        let slice = &data.as_vec()[nwritten..(nwritten + mapping.len())];
-        let inner_nwritten = mapping.write_bytes(slice)?;
-
-        if inner_nwritten != mapping.len() {
-            crucible::crucible_bail!(
-                IoError,
-                "mapping.write_bytes failed! {} vs {}",
-                inner_nwritten,
-                mapping.len()
-            );
-        }
-
-        nwritten += mapping.len();
+        nwritten += mapping.write_bytes(
+            &data.as_vec()[nwritten..(nwritten + mapping.len())],
+        )?;
     }
 
     Ok(())
@@ -305,19 +303,8 @@ fn process_write_request(
 
     let mut nread = 0;
     for mapping in mappings {
-        let inner_nread =
+        nread +=
             mapping.read_bytes(&mut vec[nread..(nread + mapping.len())])?;
-
-        if inner_nread != mapping.len() {
-            crucible::crucible_bail!(
-                IoError,
-                "mapping.read_bytes failed! {} vs {}",
-                inner_nread,
-                mapping.len(),
-            );
-        }
-
-        nread += mapping.len();
     }
 
     let offset = guest.byte_offset_to_block(offset)?;
@@ -346,6 +333,7 @@ fn process_request(
     guest: Arc<crucible::Guest>,
     req: &block::Request,
     ctx: &DispCtx,
+    read_only: bool,
 ) -> Result<()> {
     let mem = ctx.mctx.memctx();
     match req.oper() {
@@ -358,6 +346,13 @@ fn process_request(
                 .map_err(map_crucible_error_to_io)?;
         }
         block::Operation::Write(off) => {
+            if read_only {
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "backend is read-only",
+                ));
+            }
+
             let maps = req.mappings(&mem).ok_or_else(|| {
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;

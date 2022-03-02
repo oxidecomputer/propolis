@@ -141,6 +141,7 @@ fn propolis_to_api_state(
 enum SlotType {
     NIC,
     Disk,
+    CloudInit,
 }
 
 // TODO: Slot ranges as constants, exposed to Omicron?
@@ -160,6 +161,10 @@ fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
         // Slots for Disks: 0x10 -> 0x17
         SlotType::Disk if slot.0 <= 7 => {
             Ok(pci::Bdf::new(0, slot.0 + 0x10, 0).unwrap())
+        }
+        // Slot for CloudInit
+        SlotType::CloudInit if slot.0 == 0 => {
+            Ok(pci::Bdf::new(0, slot.0 + 0x18, 0).unwrap())
         }
         _ => Err(anyhow::anyhow!(
             "PCI Slot {} has no translation to BDF for type {:?}",
@@ -186,8 +191,12 @@ async fn instance_ensure(
 
     let request = request.into_inner();
     let instance_id = path_params.into_inner().instance_id;
-    let (properties, nics, disks) =
-        (request.properties, request.nics, request.disks);
+    let (properties, nics, disks, cloud_init_bytes) = (
+        request.properties,
+        request.nics,
+        request.disks,
+        request.cloud_init_bytes,
+    );
     if instance_id != properties.id {
         return Err(HttpError::for_internal_error(
             "UUID mismatch (path did not match struct)".to_string(),
@@ -314,6 +323,24 @@ async fn instance_ensure(
 
                 init.initialize_crucible(&chipset, disk, bdf)?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
+            }
+
+            if let Some(cloud_init_bytes) = &cloud_init_bytes {
+                info!(rqctx.log, "Creating cloud-init disk");
+                let bdf = slot_to_bdf(api::Slot(0), SlotType::CloudInit)
+                    .map_err(|e| {
+                        Error::new(ErrorKind::InvalidData, e.to_string())
+                    })?;
+
+                let bytes = base64::decode(&cloud_init_bytes).map_err(|e| {
+                    Error::new(ErrorKind::InvalidInput, e.to_string())
+                })?;
+
+                init.initialize_in_memory_virtio_from_bytes(
+                    &chipset, bytes, bdf, true,
+                )?;
+
+                info!(rqctx.log, "cloud-init disk created");
             }
 
             // Attach devices which are hard-coded in the config.

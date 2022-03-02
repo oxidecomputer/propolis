@@ -66,6 +66,10 @@ enum Command {
         // file with a JSON array of DiskRequest structs
         #[structopt(long, parse(from_os_str))]
         crucible_disks: Option<PathBuf>,
+
+        // cloud_init ISO file
+        #[structopt(long, parse(from_os_str))]
+        cloud_init: Option<PathBuf>,
     },
 
     /// Get the properties of a propolis instance
@@ -120,7 +124,9 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     }
 }
 
-fn parse_crucible_disks(path: &Path) -> anyhow::Result<Vec<DiskRequest>> {
+fn parse_json_file<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> anyhow::Result<T> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader).map_err(|e| e.into())
@@ -155,6 +161,7 @@ async fn new_instance(
     vcpus: u8,
     memory: u64,
     disks: Vec<DiskRequest>,
+    cloud_init_bytes: Option<String>,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
@@ -174,6 +181,7 @@ async fn new_instance(
         nics: vec![],
         disks,
         migrate: None,
+        cloud_init_bytes,
     };
 
     // Try to create the instance
@@ -316,6 +324,7 @@ async fn migrate_instance(
             src_addr,
             src_uuid,
         }),
+        cloud_init_bytes: None,
     };
 
     // Get the source instance ready
@@ -370,11 +379,23 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(addr, log.new(o!()));
 
     match opt.cmd {
-        Command::New { name, uuid, vcpus, memory, crucible_disks } => {
+        Command::New {
+            name,
+            uuid,
+            vcpus,
+            memory,
+            crucible_disks,
+            cloud_init,
+        } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
-                parse_crucible_disks(&crucible_disks)?
+                parse_json_file(&crucible_disks)?
             } else {
                 vec![]
+            };
+            let cloud_init_bytes = if let Some(cloud_init) = cloud_init {
+                Some(base64::encode(std::fs::read(&cloud_init)?))
+            } else {
+                None
             };
             new_instance(
                 &client,
@@ -383,6 +404,7 @@ async fn main() -> anyhow::Result<()> {
                 vcpus,
                 memory,
                 disks,
+                cloud_init_bytes,
             )
             .await?
         }
