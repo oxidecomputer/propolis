@@ -4,6 +4,7 @@ use erased_serde::Serialize;
 use futures::future::{self, BoxFuture};
 
 pub trait Migrate: Send + Sync + 'static {
+    /// Return a serialization of the current device state.
     fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize>;
 
     /// Called to indicate the device should stop servicing the

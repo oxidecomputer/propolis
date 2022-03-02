@@ -7,20 +7,18 @@ use std::io;
 use std::sync::Arc;
 use tokio_util::codec::Framed;
 
-use crate::migrate::codec;
+use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
-use crate::migrate::{MigrateContext, MigrateError, MigrationState, PageIter};
+use crate::migrate::{
+    Device, MigrateContext, MigrateError, MigrationState, PageIter,
+};
 
 pub async fn migrate(
     mctx: Arc<MigrateContext>,
     conn: Upgraded,
 ) -> Result<(), MigrateError> {
-    let codec_log = mctx.log.new(slog::o!());
-    let mut proto = DestinationProtocol {
-        mctx,
-        conn: Framed::new(conn, codec::LiveMigrationFramer::new(codec_log)),
-    };
+    let mut proto = DestinationProtocol::new(mctx, conn);
     proto.start();
     proto.sync().await?;
     proto.ram_push().await?;
@@ -33,11 +31,22 @@ pub async fn migrate(
 }
 
 struct DestinationProtocol {
+    /// The migration context which also contains the `Instance` handle.
     mctx: Arc<MigrateContext>,
-    conn: Framed<Upgraded, codec::LiveMigrationFramer>,
+
+    /// Transport to the source Instance.
+    conn: Framed<Upgraded, LiveMigrationFramer>,
 }
 
 impl DestinationProtocol {
+    fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
+        let codec_log = mctx.log.new(slog::o!());
+        Self {
+            mctx,
+            conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
+        }
+    }
+
     fn log(&self) -> &slog::Logger {
         &self.mctx.log
     }
@@ -166,8 +175,22 @@ impl DestinationProtocol {
 
     async fn device_state(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Device).await;
-        self.send_msg(codec::Message::Okay).await?;
-        self.read_ok().await
+
+        let devices: Vec<Device> = match self.read_msg().await? {
+            codec::Message::Serialized(encoded) => {
+                ron::de::from_reader(encoded.as_bytes())
+                    .map_err(codec::ProtocolError::from)?
+            }
+            msg => {
+                error!(self.log(), "device_state: unexpected message: {msg:?}");
+                return Err(MigrateError::UnexpectedMessage);
+            }
+        };
+        self.read_ok().await?;
+
+        info!(self.log(), "Devices: {devices:#?}");
+
+        self.send_msg(codec::Message::Okay).await
     }
 
     async fn arch_state(&mut self) -> Result<(), MigrateError> {
@@ -180,7 +203,7 @@ impl DestinationProtocol {
         self.mctx.set_state(MigrationState::RamPull).await;
         self.send_msg(codec::Message::MemQuery(0, !0)).await?;
         let m = self.read_msg().await?;
-        info!(self.log(), "ram_push: got end {:?}", m);
+        info!(self.log(), "ram_pull: got end {:?}", m);
         self.send_msg(codec::Message::MemDone).await
     }
 

@@ -2,8 +2,10 @@ use futures::{future, SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::ReqState;
-use propolis::inventory::{Entity, Order};
+use propolis::inventory::{EntityID, Order};
 use slog::{error, info, warn};
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -14,7 +16,9 @@ use tokio_util::codec::Framed;
 use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
-use crate::migrate::{MigrateContext, MigrateError, MigrationState, PageIter};
+use crate::migrate::{
+    Device, MigrateContext, MigrateError, MigrationState, PageIter,
+};
 
 pub async fn migrate(
     mctx: Arc<MigrateContext>,
@@ -39,25 +43,14 @@ struct SourceProtocol {
 
     /// Transport to the destination Instance.
     conn: Framed<Upgraded, LiveMigrationFramer>,
-
-    /// List of devices attached to device
-    devices: Vec<(String, Arc<dyn Entity>)>,
 }
 
 impl SourceProtocol {
     fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
-        // Grab a reference to all the devices that are a part of this Instance
-        let mut devices = vec![];
-        let _ = mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
-            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())));
-            Ok::<_, ()>(())
-        });
-
         let codec_log = mctx.log.new(slog::o!());
         Self {
             mctx,
             conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
-            devices,
         }
     }
 
@@ -159,6 +152,14 @@ impl SourceProtocol {
     async fn pause(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Pause).await;
 
+        // Grab a reference to all the devices that are a part of this Instance
+        let mut devices = vec![];
+        let _ =
+            self.mctx.instance.inv().for_each_node(Order::Post, |_, rec| {
+                devices.push((rec.name().to_owned(), Arc::clone(rec.entity())));
+                Ok::<_, ()>(())
+            });
+
         // Ask the instance to begin transitioning to the paused state
         // This will inform each device to pause.
         info!(self.log(), "Pausing devices");
@@ -169,7 +170,7 @@ impl SourceProtocol {
 
         // Ask each device for a future indicating they've finishing pausing
         let mut migrate_ready_futs = vec![];
-        for (name, device) in &self.devices {
+        for (name, device) in &devices {
             if let Some(migrate_hdl) = device.migrate() {
                 let log = self.log().new(slog::o!("device" => name.clone()));
                 let device = Arc::clone(device);
@@ -185,7 +186,7 @@ impl SourceProtocol {
                     Ok(())
                 }));
             } else {
-                warn!(self.log(), "No migrate handle for {}", name);
+                warn!(self.log(), "No migrate handle for {name}");
                 continue;
             }
         }
@@ -229,8 +230,67 @@ impl SourceProtocol {
 
     async fn device_state(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Device).await;
-        self.read_ok().await?;
-        self.send_msg(codec::Message::Okay).await
+
+        let dispctx = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+
+        // Grab a reference to all the devices that are a part of this Instance (in pre-order)
+        let mut devices = vec![];
+        let _ =
+            self.mctx.instance.inv().for_each_node(Order::Pre, |id, rec| {
+                devices.push((id, rec.parent(), Arc::clone(rec.entity())));
+                Ok::<_, ()>(())
+            });
+
+        let mut parents: HashMap<EntityID, usize> = HashMap::new();
+        let mut device_states = vec![];
+
+        // Collect together the serialized state for all the devices and capture
+        // the parent/child relationships
+        for (id, parent, entity) in devices {
+            let payload = if let Some(migrate) = entity.migrate() {
+                migrate.export(&dispctx)
+            } else {
+                warn!(
+                    self.log(),
+                    "No migrate handle for {}",
+                    entity.type_name()
+                );
+                Box::new(())
+            };
+            let parent = if let Some(parent) = parent {
+                // We're iterating using the `Pre` order meaning we always
+                // visit parents before children. Means we should never
+                // fail to lookup the parent here. Unwrap here to fail fast in case
+                // of inconsistency.
+                Some(*parents.get(&parent).unwrap())
+            } else {
+                None
+            };
+            device_states.push(Device {
+                type_name: Cow::Borrowed(entity.type_name()),
+                parent,
+                payload: ron::ser::to_string(&payload)
+                    .map_err(codec::ProtocolError::from)?,
+            });
+            parents.insert(id, device_states.len() - 1);
+        }
+        drop(dispctx);
+
+        info!(self.log(), "Device States: {device_states:#?}");
+
+        self.send_msg(codec::Message::Serialized(
+            ron::ser::to_string(&device_states)
+                .map_err(codec::ProtocolError::from)?,
+        ))
+        .await?;
+
+        self.send_msg(codec::Message::Okay).await?;
+        self.read_ok().await
     }
 
     async fn arch_state(&mut self) -> Result<(), MigrateError> {

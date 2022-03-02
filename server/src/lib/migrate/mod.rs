@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use bit_field::BitField;
 use dropshot::{HttpError, RequestContext};
@@ -207,6 +207,23 @@ impl Into<HttpError> for MigrateError {
             }
         }
     }
+}
+
+/// Serialized device state sent during migration.
+#[derive(Debug, Deserialize, Serialize)]
+struct Device {
+    /// The literal identifying what kind of `Entity` this device is.
+    type_name: Cow<'static, str>,
+
+    /// The index at which to find this device's parent (if one exists).
+    /// This only makes sense in the context of a complete list of
+    /// devices as sent over the wire during migration. See
+    /// `SourceProtocol::device_state` for how this gets constructed.
+    parent: Option<usize>,
+
+    /// The (Ron) serialized device state.
+    /// See `Migrate::export`.
+    payload: String,
 }
 
 /// Begin the migration process (source-side).
