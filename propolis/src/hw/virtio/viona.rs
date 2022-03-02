@@ -456,8 +456,10 @@ impl VionaPoller {
             if readable.is_err() {
                 return;
             }
+            let mut readable = readable.unwrap();
             match self.event_present() {
                 Ok(false) => {
+                    readable.clear_ready();
                     continue;
                 }
                 Ok(true) => {}
