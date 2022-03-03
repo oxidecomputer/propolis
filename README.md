@@ -2,8 +2,9 @@
 
 Propolis is a rust-based userspace for illumos bhyve.
 
-
 ## Building
+
+### Prerequisites
 
 Given the current tight coupling of the `bhyve-api` component to the ioctl
 interface presented by the bhyve kernel component, running on recent illumos
@@ -12,6 +13,14 @@ bits is required.
 At a minimum, the build must include the fix for
 [14024](https://www.illumos.org/issues/14024). (Present since commit
 [52fac30](https://github.com/illumos/illumos-gate/commit/52fac30e3e977464254b44b1dfb4717fb8d2fbde))
+
+To build, run:
+
+```bash
+$ cargo build
+```
+
+## propolis crate
 
 The main propolis crate is structured as a library providing the building
 blocks to create bhyve backed VM instances. It also provides a number of
@@ -28,6 +37,13 @@ binary you can run:
 
 ```
 # propolis-server run <config_file> <ip:port>
+```
+
+Note that the server must run as root. One way to ensure propolis-server has
+sufficient privileges is by using `pfexec(1)`, as such:
+
+```
+# pfexec propolis-server run <config_file> <ip:port>
 ```
 
 ### Example Server Configuration
@@ -60,6 +76,9 @@ API with any of the usual suspects (e.g. cURL, wget). Alternatively, there's a
 `propolis-cli` binary to make things a bit easier:
 
 ### Running
+
+The following CLI commands will create a VM, start the VM, and then attach to
+its serial console:
 
 ```
 # propolis-cli -s <propolis ip> -p <propolis port> new <VM name>
@@ -102,7 +121,7 @@ pci-path = "0.5.0"
 ```
 
 Propolis will not destroy the VM instance on exit.  If one exists with the
-specified name on start-up, it will be destroyed and and created fresh.
+specified name on start-up, it will be destroyed and created fresh.
 
 Propolis will create a unix domain socket, available at "./ttya",
 which acts as a serial port. One such tool for accessing this serial port is
@@ -121,7 +140,8 @@ are some options to get up-and-running quickly:
 
 Using a bootrom from Linux works here - you can either build
 your own [OVMF](https://wiki.ubuntu.com/UEFI/OVMF), or you
-can use a pre-built.
+can use a pre-built, which you can get [here](https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE.fd)
+ or by running:
 
 ```bash
 $ sudo apt-get install ovmf && dpkg -L ovmf | grep OVMF_CODE.fd
@@ -132,15 +152,16 @@ $ sudo apt-get install ovmf && dpkg -L ovmf | grep OVMF_CODE.fd
 Although there are many options for ISOs, an easy option that
 should work is the [Alpine Linux distribution](https://alpinelinux.org/downloads/).
 
-These distributions are lightweight, and they have varients
+These distributions are lightweight, and they have variants
 custom-built for virtual machines.
 
-The "extendend" variant contains more useful tools, but will
-require a modification of the kernel arguments when booting
-to see the console on the serial port. From Grub, this can be
-accomplished by pressing "e" (to edit), adding "console=ttyS0"
-to the line starting with "/boot/vmlinuz-lts", and pressing
-"Control + x" to boot with these parameters.
+A straightforward option to start with is the "virtual" `x86_64` image.
+
+The "extended" variant contains more useful tools, but will require a
+modification of the kernel arguments when booting to see the console on the
+serial port.  From Grub, this can be accomplished by pressing "e" (to edit),
+adding "console=ttyS0" to the line starting with "/boot/vmlinuz-lts", and
+pressing "Control + x" to boot with these parameters.
 
 #### VNIC
 
@@ -163,6 +184,18 @@ if ! dladm show-vnic $NIC_NAME 2> /dev/null; then
   dladm create-vnic -t -l $NIC_LINK -m $NIC_MAC $NIC_NAME
 fi
 ```
+
+#### Running a VM
+
+After you've got the bootrom, an ISO, a VNIC, and a configuration file that
+points to them, you're ready to create and run your VM. To do so, make sure
+you've done the following:
+- [build propolis](#Building)
+- run the [propolis-server](#propolis-server)
+- create your VM, run it, and hop on the serial console using [propolis-cli](#propolis-cli)
+- login to the VM as root (no password)
+- optionally, run `setup-alpine` to configure the VM (including setting a root
+  password)
 
 ## License
 
