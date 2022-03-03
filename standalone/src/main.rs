@@ -323,7 +323,7 @@ fn main() {
             }
             State::Quiesce => {
                 println!("Device state at quiesce:");
-                inv.for_each_node(
+                inv.for_each_node::<(), _>(
                     propolis::inventory::Order::Post,
                     |_id, record| {
                         let ent = record.entity();
@@ -334,10 +334,12 @@ fn main() {
                                 data,
                             };
                             serde_json::to_writer(std::io::stdout(), &output)
-                                .unwrap();
+                                .map_err(|_| ())?;
                         }
+                        Ok(())
                     },
-                );
+                )
+                .unwrap();
             }
             _ => {}
         }

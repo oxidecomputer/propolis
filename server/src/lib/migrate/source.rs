@@ -48,8 +48,9 @@ impl SourceProtocol {
     fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
         // Grab a reference to all the devices that are a part of this Instance
         let mut devices = vec![];
-        mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
-            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
+        let _ = mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
+            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())));
+            Ok::<_, ()>(())
         });
 
         let codec_log = mctx.log.new(slog::o!());

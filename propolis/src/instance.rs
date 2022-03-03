@@ -496,6 +496,8 @@ impl Instance {
                 }
 
                 ent.state_transition(state, target, phase, ctx);
+
+                Ok::<_, ()>(())
             });
 
             // Transition-func consumers only expect post-state-change

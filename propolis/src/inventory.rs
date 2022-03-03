@@ -147,14 +147,19 @@ impl Inventory {
     /// Executes `func` for every record within the inventory.
     ///
     /// NOTE: `func` must not invoke any other methods on `&self`.
-    pub fn for_each_node<F>(&self, order: Order, mut func: F)
+    pub fn for_each_node<E, F>(
+        &self,
+        order: Order,
+        mut func: F,
+    ) -> Result<(), E>
     where
-        F: FnMut(EntityID, &Record),
+        F: FnMut(EntityID, &Record) -> Result<(), E>,
     {
         let inv = self.inner.lock().unwrap();
         for (eid, record) in inv.iter(order) {
-            func(eid, record);
+            func(eid, record)?;
         }
+        Ok(())
     }
 
     pub fn print(&self) {
