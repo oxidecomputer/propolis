@@ -116,6 +116,7 @@ mod illumos_integration_tests {
             disks: vec![],
             nics: vec![],
             migrate: None,
+            cloud_init_bytes: None,
         }
     }
 
