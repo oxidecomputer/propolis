@@ -14,6 +14,9 @@ pub enum RegistrationError {
     #[error("Cannot re-register object")]
     AlreadyRegistered,
 
+    #[error("Cannot register object with duplicate instance name")]
+    InstanceNameNotUnique,
+
     #[error("Cannot find parent with ID: {0:?}")]
     MissingParent(EntityID),
 
@@ -31,6 +34,10 @@ impl From<RegistrationError> for IoError {
             AlreadyRegistered => {
                 IoError::new(ErrorKind::AlreadyExists, "already registered")
             }
+            InstanceNameNotUnique => IoError::new(
+                ErrorKind::AlreadyExists,
+                "duplicate entity instance",
+            ),
             MissingParent(_) => {
                 IoError::new(ErrorKind::NotFound, "missing parent")
             }
@@ -118,6 +125,12 @@ impl Inventory {
         inv.get_concrete(id)
     }
 
+    /// Lookup an entity by its instance name.
+    pub fn get_by_name(&self, instance_name: &str) -> Option<Arc<dyn Entity>> {
+        let inv = self.inner.lock().unwrap();
+        inv.get_by_name(instance_name).map(|rec| Arc::clone(rec.entity()))
+    }
+
     /// Removes an entity from the inventory.
     ///
     /// No-op if the entity does not exist.
@@ -176,6 +189,8 @@ struct InventoryInner {
     roots: BTreeSet<EntityID>,
     // Mapping of entity address to inventory-assigned ID.
     reverse: HashMap<usize, EntityID>,
+    // Mapping of an entity's instance name to the inventory-assigned ID.
+    reverse_name: HashMap<String, EntityID>,
     next_id: u64,
 }
 
@@ -231,21 +246,31 @@ impl InventoryInner {
             hash_map::Entry::Vacant(hme) => hme.insert(id),
         };
 
+        let name = instance_name
+            .map(|inst| format!("{}-{}", ent.type_name(), inst))
+            .unwrap_or_else(|| ent.type_name().to_string());
+
+        match self.reverse_name.entry(name.clone()) {
+            hash_map::Entry::Occupied(_) => {
+                // undo entry in reverse table before bailing
+                self.reverse.remove(&obj_id).unwrap();
+                return Err(RegistrationError::InstanceNameNotUnique);
+            }
+            hash_map::Entry::Vacant(hme) => hme.insert(id),
+        };
+
         if let Some(pid) = &parent_id {
             if let Some(parent) = self.entities.get_mut(pid) {
                 parent.children.insert(id);
             } else {
-                // undo entry in reverse table before bailing
+                // undo entry in reverse tables before bailing
                 self.reverse.remove(&obj_id).unwrap();
+                self.reverse_name.remove(&name).unwrap();
                 return Err(RegistrationError::MissingParent(*pid));
             }
         } else {
             self.roots.insert(id);
         }
-
-        let name = instance_name
-            .map(|inst| format!("{}-{}", ent.type_name(), inst))
-            .unwrap_or_else(|| ent.type_name().to_string());
 
         let rec = Record::new(ent, any, name, parent_id);
         self.entities.insert(id, rec);
@@ -262,8 +287,13 @@ impl InventoryInner {
 
     /// Access an entity's record by ID.
     pub fn get(&self, id: EntityID) -> Option<&Record> {
-        let record = self.entities.get(&id)?;
-        Some(record)
+        self.entities.get(&id)
+    }
+
+    /// Access an entity's record by its instance name.
+    pub fn get_by_name(&self, instance_name: &str) -> Option<&Record> {
+        let id = self.reverse_name.get(instance_name)?;
+        self.entities.get(id)
     }
 
     /// Removes an entity (and all its children) from the inventory.
@@ -289,6 +319,7 @@ impl InventoryInner {
         let record = self.entities.remove(&id).unwrap();
         let entptr = record.ent.object_id();
         self.reverse.remove(&entptr);
+        self.reverse_name.remove(record.name());
 
         // If this entity exists in the parent, remove it.
         //

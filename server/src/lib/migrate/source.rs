@@ -2,10 +2,8 @@ use futures::{future, SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::ReqState;
-use propolis::inventory::{EntityID, Order};
+use propolis::inventory::Order;
 use slog::{error, info, warn};
-use std::borrow::Cow;
-use std::collections::HashMap;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -238,47 +236,23 @@ impl SourceProtocol {
             .await
             .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
 
-        // Grab a reference to all the devices that are a part of this Instance (in pre-order)
-        let mut devices = vec![];
-        let _ =
-            self.mctx.instance.inv().for_each_node(Order::Pre, |id, rec| {
-                devices.push((id, rec.parent(), Arc::clone(rec.entity())));
-                Ok::<_, ()>(())
-            });
-
-        let mut parents: HashMap<EntityID, usize> = HashMap::new();
+        // Collect together the serialized state for all the devices
         let mut device_states = vec![];
-
-        // Collect together the serialized state for all the devices and capture
-        // the parent/child relationships
-        for (id, parent, entity) in devices {
+        self.mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
+            let entity = rec.entity();
             let payload = if let Some(migrate) = entity.migrate() {
                 migrate.export(&dispctx)
             } else {
-                warn!(
-                    self.log(),
-                    "No migrate handle for {}",
-                    entity.type_name()
-                );
+                warn!(self.log(), "No migrate handle for {}", rec.name());
                 Box::new(())
             };
-            let parent = if let Some(parent) = parent {
-                // We're iterating using the `Pre` order meaning we always
-                // visit parents before children. Means we should never
-                // fail to lookup the parent here. Unwrap here to fail fast in case
-                // of inconsistency.
-                Some(*parents.get(&parent).unwrap())
-            } else {
-                None
-            };
             device_states.push(Device {
-                type_name: Cow::Borrowed(entity.type_name()),
-                parent,
+                instance_name: rec.name().to_owned(),
                 payload: ron::ser::to_string(&payload)
                     .map_err(codec::ProtocolError::from)?,
             });
-            parents.insert(id, device_states.len() - 1);
-        }
+            Ok::<_, MigrateError>(())
+        })?;
         drop(dispctx);
 
         info!(self.log(), "Device States: {device_states:#?}");
