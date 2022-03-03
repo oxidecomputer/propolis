@@ -6,6 +6,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -230,13 +231,13 @@ type DiskFlags = u32;
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DiskRequest {
     pub name: String,
-    pub address: Vec<SocketAddr>,
     pub slot: Slot,
     pub read_only: bool,
-    pub key: Option<String>,
-    pub gen: u64,
     pub device: String,
-    pub admin: Option<SocketAddr>,
+
+    // Crucible related opts
+    pub gen: u64,
+    pub volume_construction_request: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

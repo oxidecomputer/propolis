@@ -265,16 +265,12 @@ impl<'a> MachineInitializer<'a> {
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
     ) -> Result<(), Error> {
-        let addresses = disk.address.clone();
-
-        info!(self.log, "Creating Crucible disk from {:#?}", addresses);
+        info!(self.log, "Creating Crucible disk from {:#?}", disk);
         let be = propolis::block::CrucibleBackend::create(
             self.disp,
-            addresses,
+            disk.gen,
+            disk.volume_construction_request.clone(),
             disk.read_only,
-            disk.key.clone(),
-            Some(disk.gen),
-            disk.admin,
         )?;
 
         info!(self.log, "Creating ChildRegister");

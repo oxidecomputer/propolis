@@ -1,8 +1,7 @@
 //! Implement a virtual block device backed by Crucible
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Error, ErrorKind, Result};
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -12,7 +11,7 @@ use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
 use crate::inventory::Entity;
 use crate::vmm::SubMapping;
 
-use crucible::{BlockIO, CrucibleError};
+use crucible::{crucible_bail, BlockIO, Buffer, CrucibleError, Volume};
 
 use tokio::sync::Semaphore;
 
@@ -22,7 +21,7 @@ fn map_crucible_error_to_io(x: CrucibleError) -> std::io::Error {
 }
 
 pub struct CrucibleBackend {
-    guest: Arc<crucible::Guest>,
+    block_io: Arc<dyn BlockIO + Send + Sync>,
     block_size: u64,
     sectors: u64,
     read_only: bool,
@@ -33,80 +32,53 @@ pub struct CrucibleBackend {
 impl CrucibleBackend {
     pub fn create(
         disp: &Dispatcher,
-        targets: Vec<SocketAddr>,
+        gen: u64,
+        request: BTreeMap<String, serde_json::Value>,
         read_only: bool,
-        key: Option<String>,
-        gen: Option<u64>,
-        admin: Option<SocketAddr>,
     ) -> Result<Arc<Self>> {
-        CrucibleBackend::_create(disp, targets, read_only, key, gen, admin)
+        CrucibleBackend::_create(disp, gen, request, read_only)
             .map_err(map_crucible_error_to_io)
     }
 
     fn _create(
         disp: &Dispatcher,
-        targets: Vec<SocketAddr>,
+        gen: u64,
+        request: BTreeMap<String, serde_json::Value>,
         read_only: bool,
-        key: Option<String>,
-        gen: Option<u64>,
-        admin: Option<SocketAddr>,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
-        // spawn Crucible tasks
-        let opts = crucible::CrucibleOpts {
-            target: targets,
-            lossy: false,
-            key,
-            admin,
-            ..Default::default()
-        };
-        let guest = Arc::new(crucible::Guest::new());
+        slog::info!(
+            disp.logger(),
+            "constructing volume from request {:?}",
+            request,
+        );
 
-        let guest_copy = guest.clone();
-        tokio::spawn(async move {
-            // XXX result eaten here!
-            let _ = crucible::up_main(opts, guest_copy).await;
-        });
+        // Propolis server's DiskRequest doesn't need to know about the concrete
+        // volume construction request type, but Volume::construct does!
+        let request = serde_json::to_string(&request)
+            .map_err(|e| CrucibleError::GenericError(e.to_string()))?;
+
+        // XXX Crucible uses std::sync::mpsc::Receiver, not
+        // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
+        // Remove that when Crucible changes over to the tokio mpsc.
+        let volume = Arc::new(tokio::task::block_in_place(|| {
+            Volume::construct(serde_json::from_str(&request.as_str())?)
+        })?);
+
+        volume.activate(gen)?;
 
         let mut be = Self {
-            guest: guest.clone(),
+            block_io: volume.clone(),
             block_size: 0,
             sectors: 0,
             read_only,
             driver: Mutex::new(None),
         };
 
-        // XXX Crucible uses std::sync::mpsc::Receiver, not
-        // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
-        // Remove that when Crucible changes over to the tokio mpsc.
-
-        // After up_main has returned successfully, wait for active negotiation
-        let uuid = tokio::task::block_in_place(|| guest.query_upstairs_uuid())?;
-
-        slog::info!(disp.logger(), "Calling activate for {:?}", uuid);
-        tokio::task::block_in_place(|| guest.activate(gen.unwrap_or(0)))?;
-
-        let mut active = false;
-        for _ in 0..10 {
-            if tokio::task::block_in_place(|| guest.query_is_active())? {
-                slog::info!(disp.logger(), "{:?} is active", uuid);
-                active = true;
-                break;
-            }
-
-            tokio::task::block_in_place(|| {
-                std::thread::sleep(std::time::Duration::from_secs(2))
-            });
-        }
-        if !active {
-            return Err(crucible::CrucibleError::UpstairsInactive);
-        }
-
         // After active negotiation, set sizes
         be.block_size =
-            tokio::task::block_in_place(|| guest.query_block_size())?;
+            tokio::task::block_in_place(|| volume.get_block_size())?;
 
-        let total_size =
-            tokio::task::block_in_place(|| guest.query_total_size())?;
+        let total_size = tokio::task::block_in_place(|| volume.total_size())?;
 
         be.sectors = total_size / be.block_size;
 
@@ -128,7 +100,8 @@ impl block::Backend for CrucibleBackend {
         assert!(driverg.is_none());
 
         // spawn synchronous driver
-        let driver = SyncDriver::new(dev, self.guest.clone(), self.read_only);
+        let driver =
+            SyncDriver::new(dev, self.block_io.clone(), self.read_only);
         driver.spawn(NonZeroUsize::new(8).unwrap(), disp);
         *driverg = Some(driver);
     }
@@ -145,7 +118,7 @@ struct SyncDriver {
     queue: Mutex<VecDeque<block::Request>>,
     idle_threads: Semaphore,
     dev: Arc<dyn block::Device>,
-    guest: Arc<crucible::Guest>,
+    block_io: Arc<dyn BlockIO + Send + Sync>,
     read_only: bool,
     waiter: block::AsyncWaiter,
 }
@@ -153,7 +126,7 @@ struct SyncDriver {
 impl SyncDriver {
     fn new(
         dev: Arc<dyn block::Device>,
-        guest: Arc<crucible::Guest>,
+        block_io: Arc<dyn BlockIO + Send + Sync>,
         read_only: bool,
     ) -> Arc<Self> {
         let waiter = block::AsyncWaiter::new(dev.as_ref());
@@ -162,7 +135,7 @@ impl SyncDriver {
             queue: Mutex::new(VecDeque::new()),
             idle_threads: Semaphore::new(0),
             dev,
-            guest,
+            block_io,
             read_only,
             waiter,
         })
@@ -182,7 +155,7 @@ impl SyncDriver {
                 let logger = sctx.log().clone();
                 let ctx = sctx.dispctx();
                 match process_request(
-                    self.guest.clone(),
+                    self.block_io.clone(),
                     &req,
                     &ctx,
                     self.read_only,
@@ -271,15 +244,15 @@ impl SyncDriver {
 
 /// Perform one large read from crucible, and write from data into mappings
 fn process_read_request(
-    guest: Arc<crucible::Guest>,
+    block_io: Arc<dyn BlockIO + Send + Sync>,
     offset: u64,
     len: usize,
     mappings: &Vec<SubMapping>,
 ) -> std::result::Result<(), CrucibleError> {
-    let data = crucible::Buffer::new(len);
-    let offset = guest.byte_offset_to_block(offset)?;
+    let data = Buffer::new(len);
+    let offset = block_io.byte_offset_to_block(offset)?;
 
-    let mut waiter = guest.read(offset, data.clone())?;
+    let mut waiter = block_io.read(offset, data.clone())?;
     waiter.block_wait()?;
 
     let mut nwritten = 0;
@@ -289,12 +262,16 @@ fn process_read_request(
         )?;
     }
 
+    if nwritten as usize != len {
+        crucible_bail!(IoError, "nwritten != len! {} vs {}", nwritten, len);
+    }
+
     Ok(())
 }
 
 /// Read from all the mappings into vec, and perform one large write to crucible
 fn process_write_request(
-    guest: Arc<crucible::Guest>,
+    block_io: Arc<dyn BlockIO + Send + Sync>,
     offset: u64,
     len: usize,
     mappings: &Vec<SubMapping>,
@@ -307,13 +284,13 @@ fn process_write_request(
             mapping.read_bytes(&mut vec[nread..(nread + mapping.len())])?;
     }
 
-    let offset = guest.byte_offset_to_block(offset)?;
+    let offset = block_io.byte_offset_to_block(offset)?;
 
-    let mut waiter = guest.write(offset, crucible::Bytes::from(vec))?;
+    let mut waiter = block_io.write(offset, crucible::Bytes::from(vec))?;
     waiter.block_wait()?;
 
     if nread as usize != len {
-        crucible::crucible_bail!(IoError, "nread != len! {} vs {}", nread, len,);
+        crucible_bail!(IoError, "nread != len! {} vs {}", nread, len);
     }
 
     Ok(())
@@ -321,16 +298,16 @@ fn process_write_request(
 
 /// Send flush to crucible
 fn process_flush_request(
-    guest: Arc<crucible::Guest>,
+    block_io: Arc<dyn BlockIO + Send + Sync>,
 ) -> std::result::Result<(), CrucibleError> {
-    let mut waiter = guest.flush(None)?;
+    let mut waiter = block_io.flush(None)?;
     waiter.block_wait()?;
 
     Ok(())
 }
 
 fn process_request(
-    guest: Arc<crucible::Guest>,
+    block_io: Arc<dyn BlockIO + Send + Sync>,
     req: &block::Request,
     ctx: &DispCtx,
     read_only: bool,
@@ -342,7 +319,7 @@ fn process_request(
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
 
-            process_read_request(guest, off as u64, req.len(), &maps)
+            process_read_request(block_io, off as u64, req.len(), &maps)
                 .map_err(map_crucible_error_to_io)?;
         }
         block::Operation::Write(off) => {
@@ -357,11 +334,12 @@ fn process_request(
                 Error::new(ErrorKind::Other, "bad guest region")
             })?;
 
-            process_write_request(guest, off as u64, req.len(), &maps)
+            process_write_request(block_io, off as u64, req.len(), &maps)
                 .map_err(map_crucible_error_to_io)?;
         }
         block::Operation::Flush(_off, _len) => {
-            process_flush_request(guest).map_err(map_crucible_error_to_io)?;
+            process_flush_request(block_io)
+                .map_err(map_crucible_error_to_io)?;
         }
     }
 
