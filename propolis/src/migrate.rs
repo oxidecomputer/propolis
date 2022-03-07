@@ -5,7 +5,9 @@ use futures::future::{self, BoxFuture};
 use thiserror::Error;
 
 /// Errors encountered while trying to export/import device state.
-#[derive(Error, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
+#[derive(
+    Clone, Debug, Error, serde::Deserialize, PartialEq, serde::Serialize,
+)]
 pub enum MigrateStateError {
     /// The device doesn't support live migration.
     #[error("device not migratable")]
@@ -16,8 +18,8 @@ pub enum MigrateStateError {
     ImportDeserialization(String),
 
     /// The device doesn't implement [`Migrate::import`].
-    #[error("device state importation unimplemented")]
-    ImportUnimplmented,
+    #[error("device state importation unimplemented for `{0}`")]
+    ImportUnimplmented(String),
 }
 
 impl From<erased_serde::Error> for MigrateStateError {
@@ -33,10 +35,11 @@ pub trait Migrate: Send + Sync + 'static {
     /// Update the current device state by using the given deserializer.
     fn import(
         &self,
+        dev: &str,
         _deserializer: &dyn Deserializer,
         _ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        Err(MigrateStateError::ImportUnimplmented)
+        Err(MigrateStateError::ImportUnimplmented(dev.to_string()))
     }
 
     /// Called to indicate the device should stop servicing the

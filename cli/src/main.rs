@@ -359,13 +359,24 @@ async fn migrate_instance(
                 println!("{}({}) migration state={:?}", role, id, state);
                 if state == MigrationState::Finish {
                     return Ok::<_, anyhow::Error>(());
+                } else if state == MigrationState::Error {
+                    return Err(anyhow::anyhow!(
+                        "{role} instance ran into error during migration"
+                    ));
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         })
     });
 
-    future::join_all(handles).await;
+    future::join_all(handles)
+        .await
+        // Hoist out any JoinErrors
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        // Then any errors from polling the source/destination
+        .into_iter()
+        .collect::<anyhow::Result<_>>()?;
 
     Ok(())
 }

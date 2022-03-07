@@ -11,15 +11,25 @@ use crate::inventory::{self, Inventory};
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
 
+use serde::{Deserialize, Serialize};
 use slog::{self, Drain};
 use thiserror::Error;
 use tokio::runtime::Handle;
 
 /// The role of an instance during a migration.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MigrateRole {
     Source,
     Destination,
+}
+
+impl std::fmt::Display for MigrateRole {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrateRole::Source => write!(fmt, "source"),
+            MigrateRole::Destination => write!(fmt, "destination"),
+        }
+    }
 }
 
 /// Phases an Instance may transition through during a migration.

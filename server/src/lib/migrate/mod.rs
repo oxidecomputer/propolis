@@ -100,7 +100,7 @@ pub struct MigrateTask {
 }
 
 /// Errors which may occur during the course of a migration
-#[derive(Error, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Error, Deserialize, PartialEq, Serialize)]
 pub enum MigrateError {
     /// An error as a result of some HTTP operation (i.e. trying to establish
     /// the websocket connection between the source and destination)
@@ -162,6 +162,10 @@ pub enum MigrateError {
     /// The destination instance doesn't recognize the received device
     #[error("received device state for unknown device ({0})")]
     UnknownDevice(String),
+
+    /// The other end of the migration ran into an error
+    #[error("{0} migration instance encountered error: {1}")]
+    RemoteError(MigrateRole, String),
 }
 
 impl MigrateError {
@@ -208,7 +212,8 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::UnexpectedMessage
             | MigrateError::SourcePause
             | MigrateError::Protocol
-            | MigrateError::DeviceState(_) => {
+            | MigrateError::DeviceState(_)
+            | MigrateError::RemoteError(_, _) => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
