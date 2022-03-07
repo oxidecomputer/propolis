@@ -151,12 +151,32 @@ impl Migrate for RamFb {
             stride: state.stride,
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), crate::migrate::MigrateStateError> {
+        let deserialized: migrate::RamFbV1 =
+            erased_serde::deserialize(deserializer)?;
+
+        let mut state = self.config.lock().unwrap();
+        state.addr = deserialized.addr;
+        state.fourcc = deserialized.fourcc;
+        state.flags = deserialized.flags;
+        state.width = deserialized.width;
+        state.height = deserialized.height;
+        state.stride = deserialized.stride;
+
+        Ok(())
+    }
 }
 
 pub mod migrate {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct RamFbV1 {
         pub addr: u64,
         pub fourcc: u32,
