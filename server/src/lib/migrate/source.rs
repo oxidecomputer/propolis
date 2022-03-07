@@ -105,7 +105,7 @@ impl SourceProtocol {
                 codec::Message::MemFetch(start, end, bits) => {
                     if !memx::validate_bitmap(start, end, &bits) {
                         error!(self.log(), "invalid bitmap");
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     // XXX: We should do stricter validation on the fetch
                     // request here.  For instance, we shouldn't "push" MMIO
@@ -114,7 +114,7 @@ impl SourceProtocol {
                     // should probably disallow it at the protocol level.
                     self.xfer_ram(start, end, &bits).await?;
                 }
-                _ => return Err(MigrateError::Protocol),
+                _ => return Err(MigrateError::UnexpectedMessage),
             };
         }
         info!(self.log(), "ram_push: done sending ram");
@@ -352,7 +352,7 @@ impl SourceProtocol {
         match self.read_msg().await? {
             codec::Message::MemQuery(start, end) => {
                 if start % 4096 != 0 || (end % 4096 != 0 && end != !0) {
-                    return Err(MigrateError::Protocol);
+                    return Err(MigrateError::Phase);
                 }
                 Ok(start..end)
             }

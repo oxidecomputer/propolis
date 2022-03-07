@@ -118,7 +118,7 @@ impl DestinationProtocol {
                             self.log(),
                             "ram_push: MemXfer received bad bitmap"
                         );
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     // XXX: We should do stricter validation on the fetch
                     // request here.  For instance, we shouldn't "push" MMIO
@@ -127,7 +127,7 @@ impl DestinationProtocol {
                     // should probably disallow it at the protocol level.
                     self.xfer_ram(start, end, &bits).await?;
                 }
-                _ => return Err(MigrateError::Protocol),
+                _ => return Err(MigrateError::UnexpectedMessage),
             };
         }
         self.send_msg(codec::Message::MemDone).await?;
@@ -149,7 +149,7 @@ impl DestinationProtocol {
                 codec::Message::MemEnd(start, end) => {
                     if start != 0 || end != !0 {
                         error!(self.log(), "ram_push: received bad MemEnd");
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     break;
                 }
@@ -159,7 +159,7 @@ impl DestinationProtocol {
                             self.log(),
                             "ram_push: MemOffer received bad bitmap"
                         );
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     if end > highest {
                         highest = end;
@@ -170,7 +170,7 @@ impl DestinationProtocol {
                     }
                     dirty.extend_from_raw_slice(&bits);
                 }
-                _ => return Err(MigrateError::Protocol),
+                _ => return Err(MigrateError::UnexpectedMessage),
             }
         }
         Ok((dirty, highest))

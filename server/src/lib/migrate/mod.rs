@@ -151,9 +151,9 @@ pub enum MigrateError {
     #[error("failed to pause source instance")]
     SourcePause,
 
-    /// Phase error, improper or corrupted message in protocol.
-    #[error("phase, improper or corrupted message in protocol")]
-    Protocol,
+    /// Phase error
+    #[error("received out-of-phase message")]
+    Phase,
 
     /// Failed to export/import device state for migration
     #[error("failed to migrate device state: {0}")]
@@ -211,7 +211,7 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::Codec(_)
             | MigrateError::UnexpectedMessage
             | MigrateError::SourcePause
-            | MigrateError::Protocol
+            | MigrateError::Phase
             | MigrateError::DeviceState(_)
             | MigrateError::RemoteError(_, _) => {
                 HttpError::for_internal_error(msg)
