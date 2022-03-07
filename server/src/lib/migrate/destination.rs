@@ -2,7 +2,8 @@ use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
-use slog::{error, info};
+use propolis::migrate::MigrateStateError;
+use slog::{error, info, warn};
 use std::io;
 use std::sync::Arc;
 use tokio_util::codec::Framed;
@@ -188,7 +189,40 @@ impl DestinationProtocol {
         };
         self.read_ok().await?;
 
+        let dispctx = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+
         info!(self.log(), "Devices: {devices:#?}");
+
+        let inv = self.mctx.instance.inv();
+        for device in devices {
+            let dev_ent =
+                inv.get_by_name(&device.instance_name).ok_or_else(|| {
+                    MigrateError::UnknownDevice(device.instance_name.clone())
+                })?;
+
+            if let Some(migrate) = dev_ent.migrate() {
+                let mut deserializer =
+                    ron::Deserializer::from_str(&device.payload)
+                        .map_err(codec::ProtocolError::from)?;
+                let deserializer =
+                    &<dyn erased_serde::Deserializer>::erase(&mut deserializer);
+                migrate.import(deserializer, &dispctx)?;
+            } else {
+                warn!(
+                    self.log(),
+                    "No migrate handle for {}", device.instance_name
+                );
+                return Err(MigrateError::DeviceState(
+                    MigrateStateError::NonMigratable,
+                ));
+            }
+        }
+        drop(dispctx);
 
         self.send_msg(codec::Message::Okay).await
     }

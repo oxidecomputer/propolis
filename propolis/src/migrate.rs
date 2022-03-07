@@ -33,7 +33,7 @@ pub trait Migrate: Send + Sync + 'static {
     /// Update the current device state by using the given deserializer.
     fn import(
         &self,
-        _deserializer: Box<dyn Deserializer>,
+        _deserializer: &dyn Deserializer,
         _ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
         Err(MigrateStateError::ImportUnimplmented)

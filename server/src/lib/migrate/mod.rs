@@ -158,6 +158,10 @@ pub enum MigrateError {
     /// Failed to export/import device state for migration
     #[error("failed to migrate device state: {0}")]
     DeviceState(#[from] MigrateStateError),
+
+    /// The destination instance doesn't recognize the received device
+    #[error("received device state for unknown device ({0})")]
+    UnknownDevice(String),
 }
 
 impl MigrateError {
@@ -210,7 +214,8 @@ impl Into<HttpError> for MigrateError {
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
             | MigrateError::UuidMismatch
-            | MigrateError::UpgradeExpected => {
+            | MigrateError::UpgradeExpected
+            | MigrateError::UnknownDevice(_) => {
                 HttpError::for_bad_request(None, msg)
             }
         }
