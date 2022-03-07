@@ -225,8 +225,9 @@ impl DestinationProtocol {
                 let mut deserializer =
                     ron::Deserializer::from_str(&device.payload)
                         .map_err(codec::ProtocolError::from)?;
-                let deserializer =
-                    &<dyn erased_serde::Deserializer>::erase(&mut deserializer);
+                let deserializer = &mut <dyn erased_serde::Deserializer>::erase(
+                    &mut deserializer,
+                );
                 migrate.import(dev_ent.type_name(), deserializer, &dispctx)?;
             } else {
                 warn!(

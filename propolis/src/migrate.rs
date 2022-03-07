@@ -36,7 +36,7 @@ pub trait Migrate: Send + Sync + 'static {
     fn import(
         &self,
         dev: &str,
-        _deserializer: &dyn Deserializer,
+        _deserializer: &mut dyn Deserializer,
         _ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
         Err(MigrateStateError::ImportUnimplmented(dev.to_string()))
