@@ -10,8 +10,10 @@ use super::DeviceInfo;
 use crate::block;
 use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
 use crate::inventory::Entity;
+use crate::migrate::Migrate;
 use crate::vmm::MappingExt;
 
+use erased_serde::Serialize;
 use tokio::sync::Semaphore;
 
 // XXX: completely arb for now
@@ -86,6 +88,23 @@ impl Entity for FileBackend {
     fn type_name(&self) -> &'static str {
         "block-file"
     }
+
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+
+impl Migrate for FileBackend {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+        Box::new(migrate::FileBackendV1 {})
+    }
+}
+
+pub mod migrate {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct FileBackendV1 {}
 }
 
 struct Driver {

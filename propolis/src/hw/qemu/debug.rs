@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::chardev::{BlockingSource, BlockingSourceConsumer, ConsumerCell};
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::migrate::Migrate;
 use crate::pio::{PioBus, PioFn};
+
+use erased_serde::Serialize;
 
 const QEMU_DEBUG_IOPORT: u16 = 0x0402;
 const QEMU_DEBUG_IDENT: u8 = 0xe9;
@@ -46,4 +49,21 @@ impl Entity for QemuDebugPort {
     fn type_name(&self) -> &'static str {
         "qemu-lpc-debug"
     }
+
+    fn migrate(&self) -> Option<&dyn Migrate> {
+        Some(self)
+    }
+}
+
+impl Migrate for QemuDebugPort {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+        Box::new(migrate::QemuDebugPortV1 {})
+    }
+}
+
+pub mod migrate {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct QemuDebugPortV1 {}
 }

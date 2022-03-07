@@ -3,6 +3,7 @@ use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::ReqState;
 use propolis::inventory::Order;
+use propolis::migrate::MigrateStateError;
 use slog::{error, info, warn};
 use std::io;
 use std::ops::Range;
@@ -244,14 +245,16 @@ impl SourceProtocol {
                 migrate.export(&dispctx)
             } else {
                 warn!(self.log(), "No migrate handle for {}", rec.name());
-                Box::new(())
+                return Err(MigrateError::DeviceState(
+                    MigrateStateError::NonMigratable,
+                ));
             };
             device_states.push(Device {
                 instance_name: rec.name().to_owned(),
                 payload: ron::ser::to_string(&payload)
                     .map_err(codec::ProtocolError::from)?,
             });
-            Ok::<_, MigrateError>(())
+            Ok(())
         })?;
         drop(dispctx);
 

@@ -6,6 +6,7 @@ use hyper::{header, Body, Method, Response, StatusCode};
 use propolis::{
     dispatch::AsyncCtx,
     instance::{Instance, MigratePhase, MigrateRole, State, TransitionError},
+    migrate::MigrateStateError,
 };
 use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
@@ -153,6 +154,10 @@ pub enum MigrateError {
     /// Phase error, improper or corrupted message in protocol.
     #[error("phase, improper or corrupted message in protocol")]
     Protocol,
+
+    /// Failed to export/import device state for migration
+    #[error("failed to migrate device state: {0}")]
+    DeviceState(#[from] MigrateStateError),
 }
 
 impl MigrateError {
@@ -197,8 +202,11 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
             | MigrateError::UnexpectedMessage
+            | MigrateError::SourcePause
             | MigrateError::Protocol
-            | MigrateError::SourcePause => HttpError::for_internal_error(msg),
+            | MigrateError::DeviceState(_) => {
+                HttpError::for_internal_error(msg)
+            }
             MigrateError::MigrationAlreadyInProgress
             | MigrateError::NoMigrationInProgress
             | MigrateError::UuidMismatch
