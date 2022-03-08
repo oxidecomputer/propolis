@@ -1,6 +1,6 @@
 //! Implement a virtual block device backed by Crucible
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
@@ -33,7 +33,7 @@ impl CrucibleBackend {
     pub fn create(
         disp: &Dispatcher,
         gen: u64,
-        request: BTreeMap<String, serde_json::Value>,
+        request: HashMap<String, serde_json::Value>,
         read_only: bool,
     ) -> Result<Arc<Self>> {
         CrucibleBackend::_create(disp, gen, request, read_only)
@@ -43,7 +43,7 @@ impl CrucibleBackend {
     fn _create(
         disp: &Dispatcher,
         gen: u64,
-        request: BTreeMap<String, serde_json::Value>,
+        request: HashMap<String, serde_json::Value>,
         read_only: bool,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
         slog::info!(
