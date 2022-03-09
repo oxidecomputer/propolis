@@ -10,7 +10,7 @@ use crate::common::*;
 use crate::dispatch::{AsyncCtx, DispCtx};
 use crate::hw::pci;
 use crate::instance;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
 use crate::util::self_arc::*;
 use crate::util::sys;
@@ -252,8 +252,8 @@ impl Entity for PciVirtioViona {
     fn reset(&self, ctx: &DispCtx) {
         self.virtio_state.reset(self, ctx);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for PciVirtioViona {

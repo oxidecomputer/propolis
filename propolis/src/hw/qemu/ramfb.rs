@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::qemu::fwcfg::{self, FwCfgBuilder, Item};
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
 
 use erased_serde::Serialize;
@@ -135,8 +135,8 @@ impl Entity for RamFb {
     fn type_name(&self) -> &'static str {
         "qemu-ramfb"
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for RamFb {

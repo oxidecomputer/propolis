@@ -3,8 +3,8 @@ use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::{MigrateRole, ReqState};
 use propolis::inventory::Order;
-use propolis::migrate::MigrateStateError;
-use slog::{error, info, warn};
+use propolis::migrate::{MigrateStateError, Migrator};
+use slog::{error, info};
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -189,7 +189,9 @@ impl SourceProtocol {
             let device = Arc::clone(device);
             let pause_fut = device.paused();
             migrate_ready_futs.push(task::spawn(async move {
-                if let Err(_) = time::timeout(Duration::from_secs(2), pause_fut).await {
+                if let Err(_) =
+                    time::timeout(Duration::from_secs(2), pause_fut).await
+                {
                     error!(log, "Timed out pausing device");
                     return Err(device);
                 }
@@ -249,19 +251,22 @@ impl SourceProtocol {
         let mut device_states = vec![];
         self.mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
             let entity = rec.entity();
-            let payload = if let Some(migrate) = entity.migrate() {
-                migrate.export(&dispctx)
-            } else {
-                warn!(self.log(), "No migrate handle for {}", rec.name());
-                return Err(MigrateError::DeviceState(
-                    MigrateStateError::NonMigratable,
-                ));
-            };
-            device_states.push(Device {
-                instance_name: rec.name().to_owned(),
-                payload: ron::ser::to_string(&payload)
-                    .map_err(codec::ProtocolError::from)?,
-            });
+            match entity.migrate() {
+                Migrator::NonMigratable => {
+                    error!(self.log(), "Can't migrate instance with non-migratable device ({})", rec.name());
+                    return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable));
+                },
+                // No device state needs to be trasmitted for 'Simple' devices
+                Migrator::Simple => {},
+                Migrator::Custom(migrate) => {
+                    let payload = migrate.export(&dispctx);
+                    device_states.push(Device {
+                        instance_name: rec.name().to_owned(),
+                        payload: ron::ser::to_string(&payload)
+                            .map_err(codec::ProtocolError::from)?,
+                    });
+                },
+            }
             Ok(())
         })?;
         drop(dispctx);

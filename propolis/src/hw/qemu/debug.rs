@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::chardev::{BlockingSource, BlockingSourceConsumer, ConsumerCell};
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -50,8 +50,8 @@ impl Entity for QemuDebugPort {
         "qemu-lpc-debug"
     }
 
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 

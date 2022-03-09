@@ -10,7 +10,7 @@ use crate::hw::pci::{self, Bdf, BusNum, INTxPinID, PioCfgDecoder};
 use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::inventory;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::pio::{PioBus, PioFn};
 use crate::util::regmap::RegMap;
 use crate::vmm::{Machine, VmmHdl};
@@ -168,8 +168,8 @@ impl Entity for I440Fx {
             inventory::ChildRegister::new(&self.pm_timer, None),
         ])
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 
@@ -303,8 +303,8 @@ impl Entity for Piix4HostBridge {
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for Piix4HostBridge {
@@ -431,8 +431,8 @@ impl Entity for Piix3Lpc {
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for Piix3Lpc {
@@ -786,8 +786,8 @@ impl Entity for Piix3PM {
     fn reset(&self, _ctx: &DispCtx) {
         self.pci_state.reset(self);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
     fn state_transition(
         &self,

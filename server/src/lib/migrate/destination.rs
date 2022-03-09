@@ -3,7 +3,7 @@ use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::MigrateRole;
-use propolis::migrate::MigrateStateError;
+use propolis::migrate::{MigrateStateError, Migrator};
 use slog::{error, info, warn};
 use std::io;
 use std::sync::Arc;
@@ -221,22 +221,35 @@ impl DestinationProtocol {
                     MigrateError::UnknownDevice(device.instance_name.clone())
                 })?;
 
-            if let Some(migrate) = dev_ent.migrate() {
-                let mut deserializer =
-                    ron::Deserializer::from_str(&device.payload)
-                        .map_err(codec::ProtocolError::from)?;
-                let deserializer = &mut <dyn erased_serde::Deserializer>::erase(
-                    &mut deserializer,
-                );
-                migrate.import(dev_ent.type_name(), deserializer, &dispctx)?;
-            } else {
-                warn!(
-                    self.log(),
-                    "No migrate handle for {}", device.instance_name
-                );
-                return Err(MigrateError::DeviceState(
-                    MigrateStateError::NonMigratable,
-                ));
+            match dev_ent.migrate() {
+                Migrator::NonMigratable => {
+                    error!(self.log(), "Can't migrate instance with non-migratable device ({})", device.instance_name);
+                    return Err(MigrateError::DeviceState(
+                        MigrateStateError::NonMigratable,
+                    ));
+                }
+                Migrator::Simple => {
+                    // The source shouldn't be sending devices with empty payloads
+                    warn!(
+                        self.log(),
+                        "received unexpected device state for device {}",
+                        device.instance_name
+                    );
+                }
+                Migrator::Custom(migrate) => {
+                    let mut deserializer =
+                        ron::Deserializer::from_str(&device.payload)
+                            .map_err(codec::ProtocolError::from)?;
+                    let deserializer =
+                        &mut <dyn erased_serde::Deserializer>::erase(
+                            &mut deserializer,
+                        );
+                    migrate.import(
+                        dev_ent.type_name(),
+                        deserializer,
+                        &dispctx,
+                    )?;
+                }
             }
         }
         drop(dispctx);

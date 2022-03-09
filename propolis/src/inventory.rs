@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::dispatch::DispCtx;
 use crate::instance::{State, TransitionPhase};
-use crate::migrate::Migrate;
+use crate::migrate::Migrator;
 
 /// Errors returned while registering or deregistering from [`Inventory`].
 #[derive(Error, Debug, PartialEq)]
@@ -525,8 +525,17 @@ pub trait Entity: Send + Sync + 'static {
         Box::pin(future::ready(()))
     }
 
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        None
+    /// Return the Migrator object that will be used to export/import
+    /// this device's state.
+    ///
+    /// By default, we return a simple impl that assumes the device
+    /// has no state that needs to be exported/imported but still wants
+    /// to opt into being migratable. For more complex cases, a device
+    /// may implement the `Migrate` trait along with its export/import
+    /// methods. A device which shouldn't be migrated should instead
+    /// override this method and explicity return `Migrator::NonMigratable`.
+    fn migrate<'a>(&'a self) -> Migrator<'a> {
+        Migrator::Simple
     }
 }
 

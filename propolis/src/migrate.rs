@@ -27,6 +27,18 @@ impl From<erased_serde::Error> for MigrateStateError {
     }
 }
 
+/// Type representing the migration support (if any) for a given device.
+pub enum Migrator<'a> {
+    /// The device is not migratable
+    NonMigratable,
+
+    /// No device specific logic is needed
+    Simple,
+
+    /// Device specific logic used to export/import device state
+    Custom(&'a dyn Migrate),
+}
+
 pub trait Migrate: Send + Sync + 'static {
     /// Return a serialization of the current device state.
     fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize>;

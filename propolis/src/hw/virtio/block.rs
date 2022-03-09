@@ -5,7 +5,7 @@ use crate::block;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
 
 use super::bits::*;
@@ -185,8 +185,8 @@ impl Entity for PciVirtioBlock {
     fn reset(&self, ctx: &DispCtx) {
         self.virtio_state.reset(self, ctx);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for PciVirtioBlock {

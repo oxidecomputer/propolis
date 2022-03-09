@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
 use crate::{block, common::*};
 
@@ -926,8 +926,8 @@ impl Entity for PciNvme {
         Box::pin(async move { notify.notified().await })
     }
 
-    fn migrate(&self) -> Option<&dyn crate::migrate::Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for PciNvme {

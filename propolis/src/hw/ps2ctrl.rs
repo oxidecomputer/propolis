@@ -8,7 +8,7 @@ use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::instance;
 use crate::intr_pins::LegacyPin;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -305,8 +305,8 @@ impl Entity for PS2Ctrl {
     fn reset(&self, _ctx: &DispCtx) {
         PS2Ctrl::reset(self);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for PS2Ctrl {
