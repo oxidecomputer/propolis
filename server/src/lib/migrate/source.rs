@@ -185,24 +185,17 @@ impl SourceProtocol {
         // Ask each device for a future indicating they've finishing pausing
         let mut migrate_ready_futs = vec![];
         for (name, device) in &devices {
-            if let Some(migrate_hdl) = device.migrate() {
-                let log = self.log().new(slog::o!("device" => name.clone()));
-                let device = Arc::clone(device);
-                let pause_fut = migrate_hdl.paused();
-                migrate_ready_futs.push(task::spawn(async move {
-                    if let Err(_) =
-                        time::timeout(Duration::from_secs(2), pause_fut).await
-                    {
-                        error!(log, "Timed out pausing device");
-                        return Err(device);
-                    }
-                    info!(log, "Paused device");
-                    Ok(())
-                }));
-            } else {
-                warn!(self.log(), "No migrate handle for {name}");
-                continue;
-            }
+            let log = self.log().new(slog::o!("device" => name.clone()));
+            let device = Arc::clone(device);
+            let pause_fut = device.paused();
+            migrate_ready_futs.push(task::spawn(async move {
+                if let Err(_) = time::timeout(Duration::from_secs(2), pause_fut).await {
+                    error!(log, "Timed out pausing device");
+                    return Err(device);
+                }
+                info!(log, "Paused device");
+                Ok(())
+            }));
         }
 
         // Now we wait for all the devices to have paused

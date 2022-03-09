@@ -500,9 +500,7 @@ impl Instance {
                     == State::Migrate(MigrateRole::Source, MigratePhase::Pause)
                     && phase == TransitionPhase::Pre
                 {
-                    if let Some(migrate) = ent.migrate() {
-                        migrate.pause(ctx);
-                    }
+                    ent.pause(ctx);
                 }
 
                 ent.state_transition(state, target, phase, ctx);

@@ -879,18 +879,11 @@ impl Entity for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
     }
+
     fn reset(&self, _ctx: &DispCtx) {
         let mut ctrl = self.state.lock().unwrap();
         ctrl.reset();
         self.pci_state.reset(self);
-    }
-    fn migrate(&self) -> Option<&dyn crate::migrate::Migrate> {
-        Some(self)
-    }
-}
-impl Migrate for PciNvme {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
     }
 
     fn pause(&self, _ctx: &DispCtx) {
@@ -931,6 +924,15 @@ impl Migrate for PciNvme {
         let notify = Arc::clone(reqs_notifier.as_ref().unwrap());
 
         Box::pin(async move { notify.notified().await })
+    }
+
+    fn migrate(&self) -> Option<&dyn crate::migrate::Migrate> {
+        Some(self)
+    }
+}
+impl Migrate for PciNvme {
+    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+        Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
     }
 }
 
