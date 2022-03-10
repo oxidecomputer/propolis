@@ -1,3 +1,4 @@
+use futures::future::{self, BoxFuture};
 use std::any::Any;
 use std::collections::{btree_set, hash_map, BTreeMap, BTreeSet, HashMap};
 use std::io::{Error as IoError, ErrorKind};
@@ -6,13 +7,16 @@ use thiserror::Error;
 
 use crate::dispatch::DispCtx;
 use crate::instance::{State, TransitionPhase};
-use crate::migrate::Migrate;
+use crate::migrate::Migrator;
 
 /// Errors returned while registering or deregistering from [`Inventory`].
 #[derive(Error, Debug, PartialEq)]
 pub enum RegistrationError {
     #[error("Cannot re-register object")]
     AlreadyRegistered,
+
+    #[error("Cannot register object with duplicate instance name")]
+    InstanceNameNotUnique,
 
     #[error("Cannot find parent with ID: {0:?}")]
     MissingParent(EntityID),
@@ -31,6 +35,10 @@ impl From<RegistrationError> for IoError {
             AlreadyRegistered => {
                 IoError::new(ErrorKind::AlreadyExists, "already registered")
             }
+            InstanceNameNotUnique => IoError::new(
+                ErrorKind::AlreadyExists,
+                "duplicate entity instance",
+            ),
             MissingParent(_) => {
                 IoError::new(ErrorKind::NotFound, "missing parent")
             }
@@ -118,6 +126,12 @@ impl Inventory {
         inv.get_concrete(id)
     }
 
+    /// Lookup an entity by its instance name.
+    pub fn get_by_name(&self, instance_name: &str) -> Option<Arc<dyn Entity>> {
+        let inv = self.inner.lock().unwrap();
+        inv.get_by_name(instance_name).map(|rec| Arc::clone(rec.entity()))
+    }
+
     /// Removes an entity from the inventory.
     ///
     /// No-op if the entity does not exist.
@@ -147,14 +161,19 @@ impl Inventory {
     /// Executes `func` for every record within the inventory.
     ///
     /// NOTE: `func` must not invoke any other methods on `&self`.
-    pub fn for_each_node<F>(&self, order: Order, mut func: F)
+    pub fn for_each_node<E, F>(
+        &self,
+        order: Order,
+        mut func: F,
+    ) -> Result<(), E>
     where
-        F: FnMut(EntityID, &Record),
+        F: FnMut(EntityID, &Record) -> Result<(), E>,
     {
         let inv = self.inner.lock().unwrap();
         for (eid, record) in inv.iter(order) {
-            func(eid, record);
+            func(eid, record)?;
         }
+        Ok(())
     }
 
     pub fn print(&self) {
@@ -171,6 +190,8 @@ struct InventoryInner {
     roots: BTreeSet<EntityID>,
     // Mapping of entity address to inventory-assigned ID.
     reverse: HashMap<usize, EntityID>,
+    // Mapping of an entity's instance name to the inventory-assigned ID.
+    reverse_name: HashMap<String, EntityID>,
     next_id: u64,
 }
 
@@ -226,21 +247,31 @@ impl InventoryInner {
             hash_map::Entry::Vacant(hme) => hme.insert(id),
         };
 
+        let name = instance_name
+            .map(|inst| format!("{}-{}", ent.type_name(), inst))
+            .unwrap_or_else(|| ent.type_name().to_string());
+
+        match self.reverse_name.entry(name.clone()) {
+            hash_map::Entry::Occupied(_) => {
+                // undo entry in reverse table before bailing
+                self.reverse.remove(&obj_id).unwrap();
+                return Err(RegistrationError::InstanceNameNotUnique);
+            }
+            hash_map::Entry::Vacant(hme) => hme.insert(id),
+        };
+
         if let Some(pid) = &parent_id {
             if let Some(parent) = self.entities.get_mut(pid) {
                 parent.children.insert(id);
             } else {
-                // undo entry in reverse table before bailing
+                // undo entry in reverse tables before bailing
                 self.reverse.remove(&obj_id).unwrap();
+                self.reverse_name.remove(&name).unwrap();
                 return Err(RegistrationError::MissingParent(*pid));
             }
         } else {
             self.roots.insert(id);
         }
-
-        let name = instance_name
-            .map(|inst| format!("{}-{}", ent.type_name(), inst))
-            .unwrap_or_else(|| ent.type_name().to_string());
 
         let rec = Record::new(ent, any, name, parent_id);
         self.entities.insert(id, rec);
@@ -257,8 +288,13 @@ impl InventoryInner {
 
     /// Access an entity's record by ID.
     pub fn get(&self, id: EntityID) -> Option<&Record> {
-        let record = self.entities.get(&id)?;
-        Some(record)
+        self.entities.get(&id)
+    }
+
+    /// Access an entity's record by its instance name.
+    pub fn get_by_name(&self, instance_name: &str) -> Option<&Record> {
+        let id = self.reverse_name.get(instance_name)?;
+        self.entities.get(id)
     }
 
     /// Removes an entity (and all its children) from the inventory.
@@ -284,6 +320,7 @@ impl InventoryInner {
         let record = self.entities.remove(&id).unwrap();
         let entptr = record.ent.object_id();
         self.reverse.remove(&entptr);
+        self.reverse_name.remove(record.name());
 
         // If this entity exists in the parent, remove it.
         //
@@ -475,8 +512,30 @@ pub trait Entity: Send + Sync + 'static {
         None
     }
 
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        None
+    /// Called to indicate the device should stop servicing the guest
+    /// and attempt to cancel or complete any pending operations.
+    ///
+    /// The device isn't necessarily expected to complete the pause
+    /// operation within the scope of this call but should return a
+    /// future indicating such via the [`Entity::paused`] method.
+    fn pause(&self, _ctx: &DispCtx) {}
+
+    /// Return a future indicating when the device has finished pausing.
+    fn paused(&self) -> BoxFuture<'static, ()> {
+        Box::pin(future::ready(()))
+    }
+
+    /// Return the Migrator object that will be used to export/import
+    /// this device's state.
+    ///
+    /// By default, we return a simple impl that assumes the device
+    /// has no state that needs to be exported/imported but still wants
+    /// to opt into being migratable. For more complex cases, a device
+    /// may implement the `Migrate` trait along with its export/import
+    /// methods. A device which shouldn't be migrated should instead
+    /// override this method and explicity return `Migrator::NonMigratable`.
+    fn migrate<'a>(&'a self) -> Migrator<'a> {
+        Migrator::Simple
     }
 }
 

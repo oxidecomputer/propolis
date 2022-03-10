@@ -2,44 +2,70 @@ use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
-use slog::{error, info};
+use propolis::instance::MigrateRole;
+use propolis::migrate::{MigrateStateError, Migrator};
+use slog::{error, info, warn};
 use std::io;
 use std::sync::Arc;
 use tokio_util::codec::Framed;
 
-use crate::migrate::codec;
+use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
-use crate::migrate::{MigrateContext, MigrateError, MigrationState, PageIter};
+use crate::migrate::{
+    Device, MigrateContext, MigrateError, MigrationState, PageIter,
+};
 
 pub async fn migrate(
     mctx: Arc<MigrateContext>,
     conn: Upgraded,
 ) -> Result<(), MigrateError> {
-    let codec_log = mctx.log.new(slog::o!());
-    let mut proto = DestinationProtocol {
-        mctx,
-        conn: Framed::new(conn, codec::LiveMigrationFramer::new(codec_log)),
-    };
-    proto.start();
-    proto.sync().await?;
-    proto.ram_push().await?;
-    proto.device_state().await?;
-    proto.arch_state().await?;
-    proto.ram_pull().await?;
-    proto.finish().await?;
-    proto.end();
+    let mut proto = DestinationProtocol::new(mctx, conn);
+
+    if let Err(err) = proto.run().await {
+        proto.mctx.set_state(MigrationState::Error).await;
+        // We encountered an error, try to inform the remote before bailing
+        // Note, we don't use `?` here as this is a best effort and we don't
+        // want an error encountered during this send to shadow the run error
+        // from the caller.
+        let _ = proto.conn.send(codec::Message::Error(err.clone())).await;
+        return Err(err);
+    }
+
     Ok(())
 }
 
 struct DestinationProtocol {
+    /// The migration context which also contains the `Instance` handle.
     mctx: Arc<MigrateContext>,
-    conn: Framed<Upgraded, codec::LiveMigrationFramer>,
+
+    /// Transport to the source Instance.
+    conn: Framed<Upgraded, LiveMigrationFramer>,
 }
 
 impl DestinationProtocol {
+    fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
+        let codec_log = mctx.log.new(slog::o!());
+        Self {
+            mctx,
+            conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
+        }
+    }
+
     fn log(&self) -> &slog::Logger {
         &self.mctx.log
+    }
+
+    async fn run(&mut self) -> Result<(), MigrateError> {
+        self.start();
+        self.sync().await?;
+        self.ram_push().await?;
+        self.device_state().await?;
+        self.arch_state().await?;
+        self.ram_pull().await?;
+        self.finish().await?;
+        self.end();
+        Ok(())
     }
 
     fn start(&mut self) {
@@ -92,7 +118,7 @@ impl DestinationProtocol {
                             self.log(),
                             "ram_push: MemXfer received bad bitmap"
                         );
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     // XXX: We should do stricter validation on the fetch
                     // request here.  For instance, we shouldn't "push" MMIO
@@ -101,7 +127,7 @@ impl DestinationProtocol {
                     // should probably disallow it at the protocol level.
                     self.xfer_ram(start, end, &bits).await?;
                 }
-                _ => return Err(MigrateError::Protocol),
+                _ => return Err(MigrateError::UnexpectedMessage),
             };
         }
         self.send_msg(codec::Message::MemDone).await?;
@@ -123,7 +149,7 @@ impl DestinationProtocol {
                 codec::Message::MemEnd(start, end) => {
                     if start != 0 || end != !0 {
                         error!(self.log(), "ram_push: received bad MemEnd");
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     break;
                 }
@@ -133,7 +159,7 @@ impl DestinationProtocol {
                             self.log(),
                             "ram_push: MemOffer received bad bitmap"
                         );
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     if end > highest {
                         highest = end;
@@ -144,7 +170,7 @@ impl DestinationProtocol {
                     }
                     dirty.extend_from_raw_slice(&bits);
                 }
-                _ => return Err(MigrateError::Protocol),
+                _ => return Err(MigrateError::UnexpectedMessage),
             }
         }
         Ok((dirty, highest))
@@ -166,8 +192,69 @@ impl DestinationProtocol {
 
     async fn device_state(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Device).await;
-        self.send_msg(codec::Message::Okay).await?;
-        self.read_ok().await
+
+        let devices: Vec<Device> = match self.read_msg().await? {
+            codec::Message::Serialized(encoded) => {
+                ron::de::from_reader(encoded.as_bytes())
+                    .map_err(codec::ProtocolError::from)?
+            }
+            msg => {
+                error!(self.log(), "device_state: unexpected message: {msg:?}");
+                return Err(MigrateError::UnexpectedMessage);
+            }
+        };
+        self.read_ok().await?;
+
+        let dispctx = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+
+        info!(self.log(), "Devices: {devices:#?}");
+
+        let inv = self.mctx.instance.inv();
+        for device in devices {
+            let dev_ent =
+                inv.get_by_name(&device.instance_name).ok_or_else(|| {
+                    MigrateError::UnknownDevice(device.instance_name.clone())
+                })?;
+
+            match dev_ent.migrate() {
+                Migrator::NonMigratable => {
+                    error!(self.log(), "Can't migrate instance with non-migratable device ({})", device.instance_name);
+                    return Err(MigrateError::DeviceState(
+                        MigrateStateError::NonMigratable,
+                    ));
+                }
+                Migrator::Simple => {
+                    // The source shouldn't be sending devices with empty payloads
+                    warn!(
+                        self.log(),
+                        "received unexpected device state for device {}",
+                        device.instance_name
+                    );
+                }
+                Migrator::Custom(migrate) => {
+                    let mut deserializer =
+                        ron::Deserializer::from_str(&device.payload)
+                            .map_err(codec::ProtocolError::from)?;
+                    let deserializer =
+                        &mut <dyn erased_serde::Deserializer>::erase(
+                            &mut deserializer,
+                        );
+                    migrate.import(
+                        dev_ent.type_name(),
+                        deserializer,
+                        &dispctx,
+                    )?;
+                }
+            }
+        }
+        drop(dispctx);
+
+        self.send_msg(codec::Message::Okay).await
     }
 
     async fn arch_state(&mut self) -> Result<(), MigrateError> {
@@ -180,7 +267,7 @@ impl DestinationProtocol {
         self.mctx.set_state(MigrationState::RamPull).await;
         self.send_msg(codec::Message::MemQuery(0, !0)).await?;
         let m = self.read_msg().await?;
-        info!(self.log(), "ram_push: got end {:?}", m);
+        info!(self.log(), "ram_pull: got end {:?}", m);
         self.send_msg(codec::Message::MemDone).await
     }
 
@@ -196,9 +283,25 @@ impl DestinationProtocol {
     }
 
     async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
-        Ok(self.conn.next().await.ok_or_else(|| {
-            codec::ProtocolError::Io(io::Error::from(io::ErrorKind::BrokenPipe))
-        })??)
+        self.conn
+            .next()
+            .await
+            .ok_or_else(|| {
+                codec::ProtocolError::Io(io::Error::from(
+                    io::ErrorKind::BrokenPipe,
+                ))
+            })?
+            // If this is an error message, lift that out
+            .map(|msg| match msg {
+                codec::Message::Error(err) => {
+                    error!(self.log(), "remote error: {err}");
+                    Err(MigrateError::RemoteError(
+                        MigrateRole::Source,
+                        err.to_string(),
+                    ))
+                }
+                msg => Ok(msg),
+            })?
     }
 
     async fn read_ok(&mut self) -> Result<(), MigrateError> {

@@ -89,6 +89,7 @@ pub enum MigrationState {
     Resume,
     RamPull,
     Finish,
+    Error,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

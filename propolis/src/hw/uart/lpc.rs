@@ -5,7 +5,7 @@ use crate::chardev::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IntrPin, LegacyPin};
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -141,8 +141,8 @@ impl Entity for LpcUart {
     fn reset(&self, _ctx: &DispCtx) {
         LpcUart::reset(self);
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for LpcUart {

@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
@@ -74,8 +74,8 @@ impl Entity for BhyveRtc {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-rtc"
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for BhyveRtc {

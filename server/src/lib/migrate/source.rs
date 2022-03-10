@@ -1,9 +1,10 @@
 use futures::{future, SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
-use propolis::instance::ReqState;
-use propolis::inventory::{Entity, Order};
-use slog::{error, info, warn};
+use propolis::instance::{MigrateRole, ReqState};
+use propolis::inventory::Order;
+use propolis::migrate::{MigrateStateError, Migrator};
+use slog::{error, info};
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -14,22 +15,26 @@ use tokio_util::codec::Framed;
 use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
-use crate::migrate::{MigrateContext, MigrateError, MigrationState, PageIter};
+use crate::migrate::{
+    Device, MigrateContext, MigrateError, MigrationState, PageIter,
+};
 
 pub async fn migrate(
     mctx: Arc<MigrateContext>,
     conn: Upgraded,
 ) -> Result<(), MigrateError> {
     let mut proto = SourceProtocol::new(mctx, conn);
-    proto.start();
-    proto.sync().await?;
-    proto.ram_push().await?;
-    proto.pause().await?;
-    proto.device_state().await?;
-    proto.arch_state().await?;
-    proto.ram_pull().await?;
-    proto.finish().await?;
-    proto.end()?;
+
+    if let Err(err) = proto.run().await {
+        proto.mctx.set_state(MigrationState::Error).await;
+        // We encountered an error, try to inform the remote before bailing
+        // Note, we don't use `?` here as this is a best effort and we don't
+        // want an error encountered during this send to shadow the run error
+        // from the caller.
+        let _ = proto.conn.send(codec::Message::Error(err.clone())).await;
+        return Err(err);
+    }
+
     Ok(())
 }
 
@@ -39,29 +44,32 @@ struct SourceProtocol {
 
     /// Transport to the destination Instance.
     conn: Framed<Upgraded, LiveMigrationFramer>,
-
-    /// List of devices attached to device
-    devices: Vec<(String, Arc<dyn Entity>)>,
 }
 
 impl SourceProtocol {
     fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
-        // Grab a reference to all the devices that are a part of this Instance
-        let mut devices = vec![];
-        mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
-            devices.push((rec.name().to_owned(), Arc::clone(rec.entity())))
-        });
-
         let codec_log = mctx.log.new(slog::o!());
         Self {
             mctx,
             conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
-            devices,
         }
     }
 
     fn log(&self) -> &slog::Logger {
         &self.mctx.log
+    }
+
+    async fn run(&mut self) -> Result<(), MigrateError> {
+        self.start();
+        self.sync().await?;
+        self.ram_push().await?;
+        self.pause().await?;
+        self.device_state().await?;
+        self.arch_state().await?;
+        self.ram_pull().await?;
+        self.finish().await?;
+        self.end()?;
+        Ok(())
     }
 
     fn start(&mut self) {
@@ -97,7 +105,7 @@ impl SourceProtocol {
                 codec::Message::MemFetch(start, end, bits) => {
                     if !memx::validate_bitmap(start, end, &bits) {
                         error!(self.log(), "invalid bitmap");
-                        return Err(MigrateError::Protocol);
+                        return Err(MigrateError::Phase);
                     }
                     // XXX: We should do stricter validation on the fetch
                     // request here.  For instance, we shouldn't "push" MMIO
@@ -106,7 +114,7 @@ impl SourceProtocol {
                     // should probably disallow it at the protocol level.
                     self.xfer_ram(start, end, &bits).await?;
                 }
-                _ => return Err(MigrateError::Protocol),
+                _ => return Err(MigrateError::UnexpectedMessage),
             };
         }
         info!(self.log(), "ram_push: done sending ram");
@@ -158,6 +166,14 @@ impl SourceProtocol {
     async fn pause(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Pause).await;
 
+        // Grab a reference to all the devices that are a part of this Instance
+        let mut devices = vec![];
+        let _ =
+            self.mctx.instance.inv().for_each_node(Order::Post, |_, rec| {
+                devices.push((rec.name().to_owned(), Arc::clone(rec.entity())));
+                Ok::<_, ()>(())
+            });
+
         // Ask the instance to begin transitioning to the paused state
         // This will inform each device to pause.
         info!(self.log(), "Pausing devices");
@@ -168,25 +184,20 @@ impl SourceProtocol {
 
         // Ask each device for a future indicating they've finishing pausing
         let mut migrate_ready_futs = vec![];
-        for (name, device) in &self.devices {
-            if let Some(migrate_hdl) = device.migrate() {
-                let log = self.log().new(slog::o!("device" => name.clone()));
-                let device = Arc::clone(device);
-                let pause_fut = migrate_hdl.paused();
-                migrate_ready_futs.push(task::spawn(async move {
-                    if let Err(_) =
-                        time::timeout(Duration::from_secs(2), pause_fut).await
-                    {
-                        error!(log, "Timed out pausing device");
-                        return Err(device);
-                    }
-                    info!(log, "Paused device");
-                    Ok(())
-                }));
-            } else {
-                warn!(self.log(), "No migrate handle for {}", name);
-                continue;
-            }
+        for (name, device) in &devices {
+            let log = self.log().new(slog::o!("device" => name.clone()));
+            let device = Arc::clone(device);
+            let pause_fut = device.paused();
+            migrate_ready_futs.push(task::spawn(async move {
+                if let Err(_) =
+                    time::timeout(Duration::from_secs(2), pause_fut).await
+                {
+                    error!(log, "Timed out pausing device");
+                    return Err(device);
+                }
+                info!(log, "Paused device");
+                Ok(())
+            }));
         }
 
         // Now we wait for all the devices to have paused
@@ -228,8 +239,48 @@ impl SourceProtocol {
 
     async fn device_state(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Device).await;
-        self.read_ok().await?;
-        self.send_msg(codec::Message::Okay).await
+
+        let dispctx = self
+            .mctx
+            .async_ctx
+            .dispctx()
+            .await
+            .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+
+        // Collect together the serialized state for all the devices
+        let mut device_states = vec![];
+        self.mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
+            let entity = rec.entity();
+            match entity.migrate() {
+                Migrator::NonMigratable => {
+                    error!(self.log(), "Can't migrate instance with non-migratable device ({})", rec.name());
+                    return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable));
+                },
+                // No device state needs to be trasmitted for 'Simple' devices
+                Migrator::Simple => {},
+                Migrator::Custom(migrate) => {
+                    let payload = migrate.export(&dispctx);
+                    device_states.push(Device {
+                        instance_name: rec.name().to_owned(),
+                        payload: ron::ser::to_string(&payload)
+                            .map_err(codec::ProtocolError::from)?,
+                    });
+                },
+            }
+            Ok(())
+        })?;
+        drop(dispctx);
+
+        info!(self.log(), "Device States: {device_states:#?}");
+
+        self.send_msg(codec::Message::Serialized(
+            ron::ser::to_string(&device_states)
+                .map_err(codec::ProtocolError::from)?,
+        ))
+        .await?;
+
+        self.send_msg(codec::Message::Okay).await?;
+        self.read_ok().await
     }
 
     async fn arch_state(&mut self) -> Result<(), MigrateError> {
@@ -264,9 +315,25 @@ impl SourceProtocol {
     }
 
     async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
-        Ok(self.conn.next().await.ok_or_else(|| {
-            codec::ProtocolError::Io(io::Error::from(io::ErrorKind::BrokenPipe))
-        })??)
+        self.conn
+            .next()
+            .await
+            .ok_or_else(|| {
+                codec::ProtocolError::Io(io::Error::from(
+                    io::ErrorKind::BrokenPipe,
+                ))
+            })?
+            // If this is an error message, lift that out
+            .map(|msg| match msg {
+                codec::Message::Error(err) => {
+                    error!(self.log(), "remote error: {err}");
+                    Err(MigrateError::RemoteError(
+                        MigrateRole::Destination,
+                        err.to_string(),
+                    ))
+                }
+                msg => Ok(msg),
+            })?
     }
 
     async fn read_ok(&mut self) -> Result<(), MigrateError> {
@@ -283,7 +350,7 @@ impl SourceProtocol {
         match self.read_msg().await? {
             codec::Message::MemQuery(start, end) => {
                 if start % 4096 != 0 || (end % 4096 != 0 && end != !0) {
-                    return Err(MigrateError::Protocol);
+                    return Err(MigrateError::Phase);
                 }
                 Ok(start..end)
             }

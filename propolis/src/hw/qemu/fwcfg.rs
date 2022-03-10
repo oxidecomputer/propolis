@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::migrate::Migrate;
+use crate::migrate::{Migrate, Migrator};
 use crate::pio::{PioBus, PioFn};
 use bits::*;
 
@@ -655,8 +655,8 @@ impl Entity for FwCfg {
     fn type_name(&self) -> &'static str {
         "qemu-fwcfg"
     }
-    fn migrate(&self) -> Option<&dyn Migrate> {
-        Some(self)
+    fn migrate(&self) -> Migrator {
+        Migrator::Custom(self)
     }
 }
 impl Migrate for FwCfg {

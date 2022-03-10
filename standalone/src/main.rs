@@ -23,6 +23,7 @@ use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, ReqState, State};
+use propolis::migrate::Migrator;
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
 
@@ -323,21 +324,23 @@ fn main() {
             }
             State::Quiesce => {
                 println!("Device state at quiesce:");
-                inv.for_each_node(
+                inv.for_each_node::<(), _>(
                     propolis::inventory::Order::Post,
                     |_id, record| {
                         let ent = record.entity();
-                        if let Some(mig_ent) = ent.migrate() {
+                        if let Migrator::Custom(mig_ent) = ent.migrate() {
                             let data = mig_ent.export(ctx);
                             let output = DevExport {
                                 id: record.name().to_string(),
                                 data,
                             };
                             serde_json::to_writer(std::io::stdout(), &output)
-                                .unwrap();
+                                .map_err(|_| ())?;
                         }
+                        Ok(())
                     },
-                );
+                )
+                .unwrap();
             }
             _ => {}
         }
