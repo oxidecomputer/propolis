@@ -6,7 +6,6 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -237,7 +236,7 @@ pub struct DiskRequest {
 
     // Crucible related opts
     pub gen: u64,
-    pub volume_construction_request: HashMap<String, serde_json::Value>,
+    pub volume_construction_request: crucible::VolumeConstructionRequest,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

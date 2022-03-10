@@ -1,6 +1,6 @@
 //! Implement a virtual block device backed by Crucible
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
@@ -11,7 +11,10 @@ use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
 use crate::inventory::Entity;
 use crate::vmm::SubMapping;
 
-use crucible::{crucible_bail, BlockIO, Buffer, CrucibleError, Volume};
+use crucible::{
+    crucible_bail, BlockIO, Buffer, CrucibleError, Volume,
+    VolumeConstructionRequest,
+};
 
 use tokio::sync::Semaphore;
 
@@ -33,7 +36,7 @@ impl CrucibleBackend {
     pub fn create(
         disp: &Dispatcher,
         gen: u64,
-        request: HashMap<String, serde_json::Value>,
+        request: VolumeConstructionRequest,
         read_only: bool,
     ) -> Result<Arc<Self>> {
         CrucibleBackend::_create(disp, gen, request, read_only)
@@ -43,7 +46,7 @@ impl CrucibleBackend {
     fn _create(
         disp: &Dispatcher,
         gen: u64,
-        request: HashMap<String, serde_json::Value>,
+        request: VolumeConstructionRequest,
         read_only: bool,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
         slog::info!(
@@ -52,16 +55,11 @@ impl CrucibleBackend {
             request,
         );
 
-        // Propolis server's DiskRequest doesn't need to know about the concrete
-        // volume construction request type, but Volume::construct does!
-        let request = serde_json::to_string(&request)
-            .map_err(|e| CrucibleError::GenericError(e.to_string()))?;
-
         // XXX Crucible uses std::sync::mpsc::Receiver, not
         // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
         // Remove that when Crucible changes over to the tokio mpsc.
         let volume = Arc::new(tokio::task::block_in_place(|| {
-            Volume::construct(serde_json::from_str(&request.as_str())?)
+            Volume::construct(request)
         })?);
 
         volume.activate(gen)?;
