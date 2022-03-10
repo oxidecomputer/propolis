@@ -1,7 +1,6 @@
 //! Describes a server config which may be parsed from a TOML file.
 
 use std::collections::{btree_map, BTreeMap};
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -111,7 +110,7 @@ pub struct BlockDevice {
 impl BlockDevice {
     pub fn create_block_backend(
         &self,
-        disp: &Dispatcher,
+        _disp: &Dispatcher,
     ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError>
     {
         match &self.bdtype as &str {
@@ -144,79 +143,6 @@ impl BlockDevice {
                 let child = inventory::ChildRegister::new(&be, None);
 
                 Ok((be, child))
-            }
-            "crucible" => {
-                let targets: Vec<SocketAddr> = self
-                    .options
-                    .get("targets")
-                    .ok_or_else(|| {
-                        ParseError::KeyNotFound(
-                            "targets".to_string(),
-                            "options".to_string(),
-                        )
-                    })?
-                    .as_array()
-                    .ok_or_else(|| {
-                        ParseError::AsError(
-                            "targets".to_string(),
-                            "as_array".to_string(),
-                        )
-                    })?
-                    .to_vec()
-                    .iter()
-                    .map(|x| {
-                        x.as_str()
-                            .ok_or_else(|| {
-                                ParseError::AsError(
-                                    "x".to_string(),
-                                    "as_str".to_string(),
-                                )
-                            })?
-                            .parse()
-                            .map_err(|e| {
-                                ParseError::AsError(
-                                    "x".to_string(),
-                                    format!("parse(): {:?}", e),
-                                )
-                            })
-                    })
-                    .collect::<Result<Vec<SocketAddr>, ParseError>>()?;
-
-                let read_only: bool = || -> Option<bool> {
-                    self.options.get("readonly")?.as_str()?.parse().ok()
-                }()
-                .unwrap_or(false);
-
-                let key: Option<String> = self
-                    .options
-                    .get("key")
-                    .map(|x| -> Result<String, ParseError> {
-                        Ok(x.as_str()
-                            .ok_or_else(|| {
-                                ParseError::AsError(
-                                    "x".to_string(),
-                                    "as_str".to_string(),
-                                )
-                            })?
-                            .to_string())
-                    })
-                    .map_or(Ok(None), |r| r.map(Some))?;
-                let gen: Option<u64> = self
-                    .options
-                    .get("gen")
-                    .map(|x| x.as_str())
-                    .flatten()
-                    .map(|x| u64::from_str(x).ok())
-                    .flatten();
-
-                let be = propolis::block::CrucibleBackend::create(
-                    disp, targets, read_only, key, gen, None,
-                )?;
-
-                // TODO: use volume ID or something for instance name
-                let creg = inventory::ChildRegister::new(&be, None);
-
-                Ok((be, creg))
             }
             _ => {
                 panic!("unrecognized block dev type {}!", self.bdtype);

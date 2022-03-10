@@ -1,5 +1,4 @@
 use std::collections::{btree_map, BTreeMap};
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -82,7 +81,7 @@ pub struct BlockDevice {
 impl BlockDevice {
     pub fn block_dev(
         &self,
-        disp: &Dispatcher,
+        _disp: &Dispatcher,
     ) -> (Arc<dyn block::Backend>, ChildRegister) {
         match &self.bdtype as &str {
             "file" => {
@@ -100,48 +99,6 @@ impl BlockDevice {
                 )
                 .unwrap();
 
-                let creg = ChildRegister::new(&be, None);
-                (be, creg)
-            }
-            "crucible" => {
-                let mut targets: Vec<SocketAddr> = Vec::new();
-
-                for target in self
-                    .options
-                    .get("targets")
-                    .unwrap()
-                    .as_array()
-                    .unwrap()
-                    .to_vec()
-                {
-                    let addr =
-                        target.as_str().unwrap().to_string().parse().unwrap();
-                    targets.push(addr);
-                }
-
-                let read_only: bool = || -> Option<bool> {
-                    self.options.get("readonly")?.as_str()?.parse().ok()
-                }()
-                .unwrap_or(false);
-
-                let key: Option<String> = self
-                    .options
-                    .get("key")
-                    .map(|x| x.as_str().unwrap().to_string());
-                let gen: Option<u64> = self
-                    .options
-                    .get("gen")
-                    .map(|x| x.as_str())
-                    .flatten()
-                    .map(|x| u64::from_str(x).ok())
-                    .flatten();
-
-                let be = propolis::block::CrucibleBackend::create(
-                    disp, targets, read_only, key, gen, None,
-                )
-                .unwrap();
-
-                // TODO: use volume ID or something for instance name
                 let creg = ChildRegister::new(&be, None);
                 (be, creg)
             }
