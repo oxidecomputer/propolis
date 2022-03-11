@@ -5,14 +5,12 @@ use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
-use futures::future::Fuse;
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
-use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{oneshot, watch, Mutex};
@@ -669,29 +667,9 @@ async fn instance_serial_task(
     actx: &AsyncCtx,
 ) -> Result<(), SerialTaskError> {
     let mut output = [0u8; 1024];
-    let mut cur_output: Option<Range<usize>> = None;
-    let mut cur_input: Option<(Vec<u8>, usize)> = None;
 
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
     loop {
-        let (uart_read, ws_send) = match &cur_output {
-            None => (
-                serial.read_source(&mut output, actx).fuse(),
-                Fuse::terminated(),
-            ),
-            Some(r) => (
-                Fuse::terminated(),
-                ws_sink.send(Message::binary(&output[r.clone()])).fuse(),
-            ),
-        };
-        let (ws_recv, uart_write) = match &cur_input {
-            None => (ws_stream.next().fuse(), Fuse::terminated()),
-            Some((data, consumed)) => (
-                Fuse::terminated(),
-                serial.write_sink(&data[*consumed..], actx).fuse(),
-            ),
-        };
-
         tokio::select! {
             // Poll in the order written
             biased;
@@ -709,39 +687,39 @@ async fn instance_serial_task(
                 break;
             }
 
-            // Write bytes into the UART from the WS
-            written = uart_write => {
-                match written {
+            // Read bytes from the UART to be transmitted out the WS
+            nread = serial.read_source(&mut output, actx) => {
+                match nread {
                     Some(0) | None => break,
                     Some(n) => {
-                        let (data, consumed) = cur_input.as_mut().unwrap();
-                        *consumed += n;
-                        if *consumed == data.len() {
-                            cur_input = None;
-                        }
+                        let data = &output[0..n];
+                        ws_sink.send(Message::binary(data)).await?;
                     }
                 }
             }
 
-            // Transmit bytes from the UART through the WS
-            write_success = ws_send => {
-                write_success?;
-                cur_output = None;
-            }
-
-            // Read bytes from the UART to be transmitted out the WS
-            nread = uart_read => {
-                match nread {
-                    Some(0) | None => break,
-                    Some(n) => { cur_output = Some(0..n) }
-                }
-            }
-
             // Receive bytes from the WS to be injected into the UART
-            msg = ws_recv => {
+            msg = ws_stream.next() => {
                 match msg {
                     Some(Ok(Message::Binary(input))) => {
-                        cur_input = Some((input, 0));
+                        let total = input.len();
+                        let mut i = 0;
+
+                        while i < total {
+                            let nwritten: Option<usize> =
+                                serial.write_sink(&input[i..total], actx).await;
+
+                            match nwritten {
+                                None => {
+                                    // XXX write_sink should always return Some,
+                                    // according to the code.
+                                    panic!("write_sink should always return Some!");
+                                }
+                                Some(n) => {
+                                    i += n;
+                                }
+                            }
+                        }
                     }
                     Some(Ok(Message::Close(..))) | None => break,
                     _ => continue,
