@@ -1,0 +1,9 @@
+[package.propolis-server]
+rust.binary_names = ["propolis-server"]
+rust.release = true
+service_name = "propolis-server"
+zone = true
+blobs = [ "alpine.iso", "OVMF_CODE.fd" ]
+[[package.propolis-server.paths]]
+from = "smf/propolis-server"
+to = "/var/svc/manifest/site/propolis-server"

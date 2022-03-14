@@ -1,9 +1,18 @@
 [workspace]
 
 members = [
-  "propolis",
   "cli",
   "client",
+  "package",
+  "propolis",
+  "server",
+  "standalone",
+]
+
+default-members = [
+  "cli",
+  "client",
+  "propolis",
   "server",
   "standalone",
 ]
