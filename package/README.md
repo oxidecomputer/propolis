@@ -11,5 +11,5 @@ To create the Zone image:
 
 ```rust
 $ cargo build --release
-$ cargo run --bin propolis-package
+$ cargo run -p propolis-package
 ```

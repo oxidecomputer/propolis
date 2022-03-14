@@ -9,6 +9,14 @@ members = [
   "standalone",
 ]
 
+default-members = [
+  "cli",
+  "client",
+  "propolis",
+  "server",
+  "standalone",
+]
+
 [profile.dev]
 panic = "abort"
 [profile.release]
