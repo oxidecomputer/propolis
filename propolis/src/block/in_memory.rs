@@ -1,21 +1,19 @@
-use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Result};
-use std::sync::{Arc, Condvar, Mutex};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 use super::DeviceInfo;
 use crate::block;
-use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
+use crate::dispatch::{DispCtx, Dispatcher};
 use crate::inventory::Entity;
 use crate::vmm::SubMapping;
-
-use tokio::sync::Semaphore;
 
 pub struct InMemoryBackend {
     bytes: Arc<Mutex<Vec<u8>>>,
 
-    driver: Mutex<Option<Arc<Driver>>>,
+    driver: Mutex<Option<Arc<block::Driver>>>,
 
-    is_ro: bool,
+    read_only: bool,
     block_size: usize,
     sectors: usize,
 }
@@ -23,7 +21,7 @@ pub struct InMemoryBackend {
 impl InMemoryBackend {
     pub fn create(
         bytes: Vec<u8>,
-        is_ro: bool,
+        read_only: bool,
         block_size: usize,
     ) -> Result<Arc<Self>> {
         match block_size {
@@ -55,7 +53,7 @@ impl InMemoryBackend {
 
             driver: Mutex::new(None),
 
-            is_ro,
+            read_only,
             block_size,
             sectors: len / block_size,
         };
@@ -69,17 +67,31 @@ impl block::Backend for InMemoryBackend {
         DeviceInfo {
             block_size: self.block_size as u32,
             total_size: self.sectors as u64,
-            writable: !self.is_ro,
+            writable: !self.read_only,
         }
     }
 
-    fn attach(&self, dev: Arc<dyn block::Device>, disp: &Dispatcher) {
+    fn attach(
+        &self,
+        dev: Arc<dyn block::Device>,
+        disp: &Dispatcher,
+    ) -> Result<()> {
         let mut driverg = self.driver.lock().unwrap();
         assert!(driverg.is_none());
 
-        let driver = Driver::new(self.bytes.clone(), dev, self.is_ro);
-        driver.spawn(disp);
+        let bytes = Arc::clone(&self.bytes);
+        let read_only = self.read_only;
+        let req_handler =
+            Box::new(move |req: &block::Request, ctx: &DispCtx| {
+                process_request(&bytes, req, ctx, read_only)
+            });
+
+        // Spawn driver to service block dev requests
+        let driver = Arc::new(block::Driver::new(dev, req_handler));
+        driver.spawn("mem", NonZeroUsize::new(1).unwrap(), disp)?;
         *driverg = Some(driver);
+
+        Ok(())
     }
 }
 
@@ -89,121 +101,9 @@ impl Entity for InMemoryBackend {
     }
 }
 
-struct Driver {
-    bytes: Arc<Mutex<Vec<u8>>>,
-    is_ro: bool,
-    cv: Condvar,
-    queue: Mutex<VecDeque<block::Request>>,
-    idle_threads: Semaphore,
-    dev: Arc<dyn block::Device>,
-    waiter: block::AsyncWaiter,
-}
-
-impl Driver {
-    fn new(
-        bytes: Arc<Mutex<Vec<u8>>>,
-        dev: Arc<dyn block::Device>,
-        is_ro: bool,
-    ) -> Arc<Self> {
-        let waiter = block::AsyncWaiter::new(dev.as_ref());
-        Arc::new(Self {
-            bytes,
-            is_ro,
-            cv: Condvar::new(),
-            queue: Mutex::new(VecDeque::new()),
-            idle_threads: Semaphore::new(0),
-            dev,
-            waiter,
-        })
-    }
-
-    fn blocking_loop(&self, sctx: &mut SyncCtx) {
-        let mut idled = false;
-        loop {
-            if sctx.check_yield() {
-                break;
-            }
-
-            let mut guard = self.queue.lock().unwrap();
-            if let Some(req) = guard.pop_front() {
-                drop(guard);
-                idled = false;
-                let ctx = sctx.dispctx();
-                match process_request(&self.bytes, &req, &ctx, self.is_ro) {
-                    Ok(_) => req.complete(block::Result::Success, &ctx),
-                    Err(_) => req.complete(block::Result::Failure, &ctx),
-                }
-            } else {
-                // wait until more requests are available
-                if !idled {
-                    self.idle_threads.add_permits(1);
-                    idled = true;
-                }
-                let _guard = self
-                    .cv
-                    .wait_while(guard, |g| {
-                        // While `sctx.check_yield()` is tempting here, it will
-                        // block if this thread goes into a quiesce state,
-                        // excluding all others from the queue lock.
-                        g.is_empty() && !sctx.pending_reqs()
-                    })
-                    .unwrap();
-            }
-        }
-    }
-
-    async fn do_scheduling(&self, actx: &AsyncCtx) {
-        loop {
-            let avail = self.idle_threads.acquire().await.unwrap();
-            avail.forget();
-
-            if let Some(req) = self.waiter.next(self.dev.as_ref(), actx).await {
-                let mut queue = self.queue.lock().unwrap();
-                queue.push_back(req);
-                drop(queue);
-                self.cv.notify_one();
-            }
-        }
-    }
-
-    fn spawn(self: &Arc<Self>, disp: &Dispatcher) {
-        let tself = Arc::clone(self);
-
-        // Configure a waker to help threads to reach their yield points
-        let wake = {
-            let tnotify = Arc::downgrade(self);
-            Some(Box::new(move |_ctx: &DispCtx| {
-                if let Some(this) = tnotify.upgrade() {
-                    let _guard = this.queue.lock().unwrap();
-                    this.cv.notify_all();
-                }
-            }) as Box<WakeFn>)
-        };
-
-        let _ = disp
-            .spawn_sync(
-                "mem bdev".to_string(),
-                Box::new(move |mut sctx| {
-                    tself.blocking_loop(&mut sctx);
-                }),
-                wake,
-            )
-            .unwrap();
-
-        let sched_self = Arc::clone(self);
-        let actx = disp.async_ctx();
-        let sched_task = tokio::spawn(async move {
-            sched_self.do_scheduling(&actx).await;
-        });
-
-        // TODO: do we need to manipulate the task later?
-        disp.track(sched_task);
-    }
-}
-
 /// Read from bytes into guest memory
 fn process_read_request(
-    bytes: &Arc<Mutex<Vec<u8>>>,
+    bytes: &Mutex<Vec<u8>>,
     offset: u64,
     len: usize,
     mappings: &Vec<SubMapping>,
@@ -238,7 +138,7 @@ fn process_read_request(
 
 /// Write from guest memory into bytes
 fn process_write_request(
-    bytes: &Arc<Mutex<Vec<u8>>>,
+    bytes: &Mutex<Vec<u8>>,
     offset: u64,
     len: usize,
     mappings: &Vec<SubMapping>,
@@ -272,10 +172,10 @@ fn process_write_request(
 }
 
 fn process_request(
-    bytes: &Arc<Mutex<Vec<u8>>>,
+    bytes: &Mutex<Vec<u8>>,
     req: &block::Request,
     ctx: &DispCtx,
-    is_ro: bool,
+    read_only: bool,
 ) -> Result<()> {
     let mem = ctx.mctx.memctx();
     match req.oper() {
@@ -287,7 +187,7 @@ fn process_request(
             process_read_request(bytes, off as u64, req.len(), &maps)?;
         }
         block::Operation::Write(off) => {
-            if is_ro {
+            if read_only {
                 return Err(Error::new(
                     ErrorKind::PermissionDenied,
                     "backend is read-only",
