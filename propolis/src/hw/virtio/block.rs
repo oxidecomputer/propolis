@@ -14,6 +14,7 @@ use super::queue::{Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 
 use erased_serde::Serialize;
+use futures::future::BoxFuture;
 use lazy_static::lazy_static;
 
 /// Sizing for virtio-block is specified in 512B sectors
@@ -184,6 +185,13 @@ impl Entity for PciVirtioBlock {
     }
     fn reset(&self, ctx: &DispCtx) {
         self.virtio_state.reset(self, ctx);
+    }
+    fn pause(&self, _ctx: &DispCtx) {
+        self.notifier.pause();
+    }
+    fn paused(&self) -> BoxFuture<'static, ()> {
+        let block_paused = self.notifier.paused();
+        Box::pin(async move { block_paused.await })
     }
     fn migrate(&self) -> Migrator {
         Migrator::Custom(self)
