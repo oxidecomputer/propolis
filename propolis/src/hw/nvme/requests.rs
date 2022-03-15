@@ -1,10 +1,3 @@
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
-};
-
-use tokio::sync::Notify;
-
 use crate::{
     block::{self, Operation, Request},
     dispatch::DispCtx,
@@ -42,11 +35,8 @@ impl PciNvme {
     fn next_req(&self, ctx: &DispCtx) -> Option<Request> {
         let state = self.state.lock().unwrap();
 
-        if state.paused {
-            // Don't queue up any I/O requests as we're not
-            // servicing commands from the guest right now
-            return None;
-        }
+        // We shouldn't be called while paused
+        assert!(!state.paused, "I/O requested while device paused");
 
         // Go through all the queues (skip admin as we just want I/O queues)
         // looking for a request to service
@@ -106,10 +96,6 @@ fn read_op(
 ) -> Request {
     probes::nvme_read_enqueue!(|| (cid, cmd.slba, cmd.nlb));
 
-    state.reqs_outstanding.fetch_add(1, Ordering::Relaxed);
-    let outstanding = Arc::clone(&state.reqs_outstanding);
-    let notifier = Arc::clone(&state.reqs_notifier);
-
     let off = state.nlb_to_size(cmd.slba as usize);
     let size = state.nlb_to_size(cmd.nlb as usize);
     let bufs = cmd.data(size as u64, ctx.mctx.memctx()).collect();
@@ -118,15 +104,7 @@ fn read_op(
         off,
         bufs,
         Box::new(move |op, res, ctx| {
-            complete_block_req(
-                cid,
-                op,
-                res,
-                cqe_permit,
-                ctx,
-                outstanding,
-                notifier,
-            )
+            complete_block_req(cid, op, res, cqe_permit, ctx)
         }),
     )
 }
@@ -140,10 +118,6 @@ fn write_op(
 ) -> Request {
     probes::nvme_write_enqueue!(|| (cid, cmd.slba, cmd.nlb));
 
-    state.reqs_outstanding.fetch_add(1, Ordering::Relaxed);
-    let outstanding = Arc::clone(&state.reqs_outstanding);
-    let notifier = Arc::clone(&state.reqs_notifier);
-
     let off = state.nlb_to_size(cmd.slba as usize);
     let size = state.nlb_to_size(cmd.nlb as usize);
     let bufs = cmd.data(size as u64, ctx.mctx.memctx()).collect();
@@ -151,41 +125,21 @@ fn write_op(
         off,
         bufs,
         Box::new(move |op, res, ctx| {
-            complete_block_req(
-                cid,
-                op,
-                res,
-                cqe_permit,
-                ctx,
-                outstanding,
-                notifier,
-            )
+            complete_block_req(cid, op, res, cqe_permit, ctx)
         }),
     )
 }
 
 fn flush_op(
-    state: &NvmeCtrl,
+    _state: &NvmeCtrl,
     cid: u16,
     cqe_permit: CompQueueEntryPermit,
 ) -> Request {
-    state.reqs_outstanding.fetch_add(1, Ordering::Relaxed);
-    let outstanding = Arc::clone(&state.reqs_outstanding);
-    let notifier = Arc::clone(&state.reqs_notifier);
-
     Request::new_flush(
         0,
         0, // TODO: is 0 enough or do we pass total size?
         Box::new(move |op, res, ctx| {
-            complete_block_req(
-                cid,
-                op,
-                res,
-                cqe_permit,
-                ctx,
-                outstanding,
-                notifier,
-            )
+            complete_block_req(cid, op, res, cqe_permit, ctx)
         }),
     )
 }
@@ -199,8 +153,6 @@ fn complete_block_req(
     res: block::Result,
     cqe_permit: CompQueueEntryPermit,
     ctx: &DispCtx,
-    reqs_outstanding: Arc<AtomicU64>,
-    reqs_notifier: Arc<Mutex<Option<Arc<Notify>>>>,
 ) {
     let comp = match res {
         block::Result::Success => Completion::success(),
@@ -224,11 +176,4 @@ fn complete_block_req(
     }
 
     cqe_permit.push_completion(cid, comp, ctx);
-
-    if reqs_outstanding.fetch_sub(1, Ordering::Release) == 1 {
-        std::sync::atomic::fence(Ordering::Acquire);
-        if let Some(notifier) = &*reqs_notifier.lock().unwrap() {
-            notifier.notify_one();
-        }
-    }
 }

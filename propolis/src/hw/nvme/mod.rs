@@ -1,6 +1,5 @@
 use std::convert::TryInto;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::DispCtx;
@@ -22,7 +21,6 @@ mod requests;
 
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
-use tokio::sync::Notify;
 
 /// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
@@ -152,12 +150,6 @@ struct NvmeCtrl {
 
     /// Underlying Block Device info
     binfo: block::DeviceInfo,
-
-    /// Count of how many outstanding I/O requests there currently are.
-    reqs_outstanding: Arc<AtomicU64>,
-
-    /// Notifier to indicate all outstanding requests have been completed.
-    reqs_notifier: Arc<Mutex<Option<Arc<Notify>>>>,
 
     /// Whether or not we should service guest commands
     paused: bool,
@@ -542,8 +534,6 @@ impl PciNvme {
             ns_ident,
             binfo,
             paused: false,
-            reqs_outstanding: Arc::new(AtomicU64::new(0)),
-            reqs_notifier: Arc::new(Mutex::new(None)),
         };
 
         let pci_state = builder
@@ -893,37 +883,15 @@ impl Entity for PciNvme {
         assert!(!ctrl.paused);
         ctrl.paused = true;
 
-        // Create a new notifier and stash it in the shared reference
-        // given to all I/O requests. We only create the Notify object
-        // once we've received a request to stop servicing the guest.
-        // We do this so that hitting 0 outstanding requests during the
-        // normal course of operation doesn't store a permit in the Notify
-        // and cause our later `notified()` future to complete too early.
-        let mut reqs_notifier = ctrl.reqs_notifier.lock().unwrap();
-        assert!(reqs_notifier.is_none());
-        let notify = Arc::new(Notify::new());
-        *reqs_notifier = Some(Arc::clone(&notify));
-
-        if ctrl.reqs_outstanding.load(Ordering::Acquire) == 0 {
-            // Since we hold the `state` lock, no new request can be submitted
-            // (`PciNvme::next_req`) until it's released. But we also just
-            // updated `paused = true` and so we can be sure there won't be
-            // any new reqests once we release the lock. But it may be the
-            // case that we hit 0 outstanding requests right before we created
-            // the notifier above. To handle that case, we just make sure
-            // there's a permit available.
-            notify.notify_one();
-        }
+        self.notifier.pause();
     }
 
     fn paused(&self) -> BoxFuture<'static, ()> {
         let ctrl = self.state.lock().unwrap();
         assert!(ctrl.paused);
 
-        let reqs_notifier = ctrl.reqs_notifier.lock().unwrap();
-        let notify = Arc::clone(reqs_notifier.as_ref().unwrap());
-
-        Box::pin(async move { notify.notified().await })
+        let block_paused = self.notifier.paused();
+        Box::pin(async move { block_paused.await })
     }
 
     fn migrate(&self) -> Migrator {
