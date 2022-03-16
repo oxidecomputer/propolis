@@ -58,22 +58,13 @@ pub struct Request {
     /// Block device specific completion function for this I/O request
     donef: Option<Box<CompleteFn>>,
 
-    /// A shared count of outstanding I/O requests for the block backend handling this request
+    /// Book-keeping for tracking outstanding requests from the block device
     ///
-    /// The `Request::new_*` methods explicitly initialize these but it is the backend
-    /// Notifier that will actually replace it with the correct reference.
-    /// See [`Request::attach_outstanding_notifier`].
-    outstanding_reqs: Arc<AtomicU64>,
-
-    /// A shared notifier to indicate to the block backend handling this request once
-    /// all outstanding requests have been completed (i.e. `outstanding_reqs` hits 0).
-    /// This is optional because we don't always want to be notified when we hit 0
-    /// outstanding requests but only if the device has been paused.
-    ///
-    /// The `Request::new_*` methods explicitly initialize these but it is the backend
-    /// Notifier that will actually replace it with the correct reference.
-    /// See [`Request::attach_outstanding_notifier`].
-    outstanding_notifier: Arc<Mutex<Option<Arc<Notify>>>>,
+    /// The `Request::new_*` methods, called by the block device, explicitly initialize
+    /// this to `None`. Upon getting the request from the block device and before we
+    /// submit it to the backend, we update this to point to the correct shared reference.
+    /// See [`Request::track_outstanding`].
+    outstanding: Option<Arc<OutstandingReqs>>,
 }
 impl Request {
     pub fn new_read(
@@ -82,13 +73,7 @@ impl Request {
         donef: Box<CompleteFn>,
     ) -> Self {
         let op = Operation::Read(off);
-        Self {
-            op,
-            regions,
-            donef: Some(donef),
-            outstanding_reqs: Arc::new(AtomicU64::new(0)),
-            outstanding_notifier: Arc::new(Mutex::new(None)),
-        }
+        Self { op, regions, donef: Some(donef), outstanding: None }
     }
 
     pub fn new_write(
@@ -97,24 +82,12 @@ impl Request {
         donef: Box<CompleteFn>,
     ) -> Self {
         let op = Operation::Write(off);
-        Self {
-            op,
-            regions,
-            donef: Some(donef),
-            outstanding_reqs: Arc::new(AtomicU64::new(0)),
-            outstanding_notifier: Arc::new(Mutex::new(None)),
-        }
+        Self { op, regions, donef: Some(donef), outstanding: None }
     }
 
     pub fn new_flush(off: usize, len: usize, donef: Box<CompleteFn>) -> Self {
         let op = Operation::Flush(off, len);
-        Self {
-            op,
-            regions: Vec::new(),
-            donef: Some(donef),
-            outstanding_reqs: Arc::new(AtomicU64::new(0)),
-            outstanding_notifier: Arc::new(Mutex::new(None)),
-        }
+        Self { op, regions: Vec::new(), donef: Some(donef), outstanding: None }
     }
 
     /// Type of operation being issued.
@@ -154,27 +127,17 @@ impl Request {
         let func = self.donef.take().unwrap();
         func(self.op, res, ctx);
 
-        if self.outstanding_reqs.fetch_sub(1, Ordering::Release) == 1 {
-            std::sync::atomic::fence(Ordering::Acquire);
-            if let Some(notifier) = &*self.outstanding_notifier.lock().unwrap()
-            {
-                notifier.notify_one();
-            }
-        }
+        // Update the outstanding I/O count
+        self.outstanding
+            .take()
+            .expect("misssing OutstandingReqs ref")
+            .decrement();
     }
 
-    /// Update the `outstanding_*` references with the actual values.
-    ///
-    /// To avoid some `Option` shuffling, we initialize `outstanding_reqs`/`outstanding_notifier`
-    /// but set them to the correct values here once the `Request` has been submitted to
-    /// the backend.
-    fn attach_outstanding_notifier(
-        &mut self,
-        outstanding_reqs: Arc<AtomicU64>,
-        outstanding_notifier: Arc<Mutex<Option<Arc<Notify>>>>,
-    ) {
-        self.outstanding_reqs = outstanding_reqs;
-        self.outstanding_notifier = outstanding_notifier;
+    /// Update this request to plug into the outstanding I/O requests for a block device & backend.
+    fn track_outstanding(&mut self, outstanding: Arc<OutstandingReqs>) {
+        let old = std::mem::replace(&mut self.outstanding, Some(outstanding));
+        assert!(old.is_none(), "request already tracked");
     }
 }
 impl Drop for Request {
@@ -215,6 +178,77 @@ pub trait Backend: Send + Sync + 'static {
 
 pub type NotifierFn = dyn Fn(&dyn Device, &DispCtx) + Send + Sync + 'static;
 
+/// Helper type for keeping track of outstanding I/O requests received
+/// from the block device and given to the block backend.
+struct OutstandingReqs {
+    /// Count of how many outstanding I/O requests there currently are
+    count: AtomicU64,
+
+    /// Notifier to indicate all outstanding requests have been completed
+    notifier: Mutex<Option<Arc<Notify>>>,
+}
+
+impl OutstandingReqs {
+    fn new() -> Self {
+        OutstandingReqs { count: AtomicU64::new(0), notifier: Mutex::default() }
+    }
+
+    /// Increment the outstanding I/O count and update the `Request` so that it can
+    /// decrement the count once it has been completed.
+    fn increment_and_track(self: &Arc<Self>, req: &mut Request) {
+        // Update outstanding count and update `Request` to track it
+        self.count.fetch_add(1, Ordering::Relaxed);
+        req.track_outstanding(Arc::clone(self));
+    }
+
+    /// Decrement the outstanding I/O count.
+    ///
+    /// If a notifier was since attached and we hit 0 outstanding requests as part
+    /// of decrementing, then we also make sure to trigger the notifier indicating
+    /// all currently outstanding requests have been completed.
+    fn decrement(&self) {
+        if self.count.fetch_sub(1, Ordering::Release) == 1 {
+            std::sync::atomic::fence(Ordering::Acquire);
+            if let Some(notifier) = &*self.notifier.lock().unwrap() {
+                notifier.notify_one();
+            }
+        }
+    }
+
+    /// Create a new `Notify` object available to the next [`OutstandingReqs::decrement`] call.
+    ///
+    /// We create this explicitly not in `new` so that hitting 0 outstanding requests
+    /// during the normal course of operation doesn't store a permit in the Notify and
+    /// cause our later `notified()` future to complete too early.
+    fn create_notifier(&self) {
+        let mut notifier = self.notifier.lock().unwrap();
+        assert!(
+            notifier.is_none(),
+            "outstanding requests notifier already exists"
+        );
+
+        let notify = Arc::new(Notify::new());
+        *notifier = Some(Arc::clone(&notify));
+
+        if self.count.load(Ordering::Acquire) == 0 {
+            // If we hit 0 outstanding requests right before we created the notifier
+            // above, then we need to make sure there's a permit available.
+            notify.notify_one();
+        }
+    }
+
+    /// Returns a future indicating when all outstanding requests have been completed.
+    fn all_completed(&self) -> Option<BoxFuture<'static, ()>> {
+        match &*self.notifier.lock().unwrap() {
+            Some(notify) => {
+                let notify = Arc::clone(notify);
+                Some(Box::pin(async move { notify.notified().await }))
+            }
+            None => None,
+        }
+    }
+}
+
 /// Notifier help by every block device used to indicate
 /// to the corresponding block backends about I/O requests.
 pub struct Notifier {
@@ -230,11 +264,8 @@ pub struct Notifier {
     /// Whether or not we should service I/O requests
     paused: AtomicBool,
 
-    /// Count of how many outstanding I/O requests there currently are
-    outstanding_reqs: Arc<AtomicU64>,
-
-    /// Notifier to indicate all outstanding requests have been completed
-    outstanding_notifier: Arc<Mutex<Option<Arc<Notify>>>>,
+    /// Book-keeping for tracking outstanding requests from the block device
+    outstanding: Arc<OutstandingReqs>,
 }
 
 impl Notifier {
@@ -243,8 +274,7 @@ impl Notifier {
             armed: AtomicBool::new(false),
             notifier: Mutex::new(None),
             paused: AtomicBool::new(false),
-            outstanding_reqs: Arc::new(AtomicU64::new(0)),
-            outstanding_notifier: Arc::new(Mutex::new(None)),
+            outstanding: Arc::new(OutstandingReqs::new()),
         }
     }
     pub fn next_arming(
@@ -258,11 +288,7 @@ impl Notifier {
         self.armed.store(false, Ordering::Release);
         if let Some(mut req) = nextf() {
             // Update outstanding count and update `Request` to track it
-            self.outstanding_reqs.fetch_add(1, Ordering::Relaxed);
-            req.attach_outstanding_notifier(
-                Arc::clone(&self.outstanding_reqs),
-                Arc::clone(&self.outstanding_notifier),
-            );
+            self.outstanding.increment_and_track(&mut req);
 
             // Since a Request was successfully retrieved, no need to rearm the
             // notification trigger, just return the Request to the backend
@@ -274,11 +300,7 @@ impl Notifier {
         self.armed.store(true, Ordering::Release);
         if let Some(mut req) = nextf() {
             // Update outstanding count and update `Request` to track it
-            self.outstanding_reqs.fetch_add(1, Ordering::Relaxed);
-            req.attach_outstanding_notifier(
-                Arc::clone(&self.outstanding_reqs),
-                Arc::clone(&self.outstanding_notifier),
-            );
+            self.outstanding.increment_and_track(&mut req);
 
             self.armed.store(false, Ordering::Release);
             Some(req)
@@ -311,33 +333,18 @@ impl Notifier {
         // Should not be attempting to pause while already paused
         assert!(!paused);
 
-        // Create a new `Notify` object and stash it in the shared reference
-        // given to outstanding I/O requests. We only create the `Notify`
-        // object once we've received a request to stop servicing the guest.
-        // We do this so that hitting 0 outstanding requests during the normal
-        // course of operation doesn't store a permit in the Notify and cause
-        // our later `notified()` future to complete too early.
-        let mut notifier = self.outstanding_notifier.lock().unwrap();
-        assert!(notifier.is_none());
-        let notify = Arc::new(Notify::new());
-        *notifier = Some(Arc::clone(&notify));
-
-        if self.outstanding_reqs.load(Ordering::Acquire) == 0 {
-            // If we hit 0 outstanding requests right before we created
-            // the notifier above, then we need to make sure there's a permit
-            // available.
-            notify.notify_one();
-        }
+        // Hook up the notifier so that we know when we hit 0 outstanding
+        // requeusts from this point on
+        self.outstanding.create_notifier();
     }
 
     /// Returns a future indicating when all outstanding requests have been completed.
     pub fn paused(&self) -> BoxFuture<'static, ()> {
         assert!(self.paused.load(Ordering::Relaxed));
 
-        let notifier = self.outstanding_notifier.lock().unwrap();
-        let notify = Arc::clone(notifier.as_ref().unwrap());
-
-        Box::pin(async move { notify.notified().await })
+        self.outstanding
+            .all_completed()
+            .expect("missing outstanding requests notifier")
     }
 }
 
