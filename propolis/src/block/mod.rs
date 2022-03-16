@@ -306,7 +306,10 @@ impl Notifier {
     /// when the pause operation is complete.
     pub fn pause(&self) {
         // Stop responding to any requests
-        assert!(!self.paused.swap(true, Ordering::Release));
+        let paused = self.paused.swap(true, Ordering::Release);
+
+        // Should not be attempting to pause while already paused
+        assert!(!paused);
 
         // Create a new `Notify` object and stash it in the shared reference
         // given to outstanding I/O requests. We only create the `Notify`
