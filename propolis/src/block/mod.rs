@@ -55,7 +55,7 @@ pub struct Request {
     /// A list of regions of guest memory to read/write into as part of the I/O request
     regions: Vec<GuestRegion>,
 
-    /// Block devuce specific completion function for this I/O request
+    /// Block device specific completion function for this I/O request
     donef: Option<Box<CompleteFn>>,
 
     /// A shared count of outstanding I/O requests for the block backend handling this request
@@ -308,7 +308,7 @@ impl Notifier {
         // Stop responding to any requests
         assert!(!self.paused.swap(true, Ordering::Release));
 
-        // Create a new `Notify` object and stash it in the shard reference
+        // Create a new `Notify` object and stash it in the shared reference
         // given to outstanding I/O requests. We only create the `Notify`
         // object once we've received a request to stop servicing the guest.
         // We do this so that hitting 0 outstanding requests during the normal
