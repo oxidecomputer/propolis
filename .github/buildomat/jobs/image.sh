@@ -27,7 +27,7 @@ cargo --version
 rustc --version
 
 banner build
-ptime -m cargo build --release --verbose
+ptime -m cargo build --release --verbose -p propolis-server
 
 banner image
 ptime -m cargo run -p propolis-package
