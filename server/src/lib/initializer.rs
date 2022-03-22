@@ -221,7 +221,7 @@ impl<'a> MachineInitializer<'a> {
         let id = self.inv.register_instance(&vioblk, bdf.to_string())?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
-        backend.attach(vioblk.clone(), self.disp);
+        backend.attach(vioblk.clone(), self.disp)?;
         chipset.device().pci_attach(bdf, vioblk);
 
         Ok(())
@@ -240,7 +240,7 @@ impl<'a> MachineInitializer<'a> {
         let id = self.inv.register_instance(&nvme, bdf.to_string())?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
-        backend.attach(nvme.clone(), self.disp);
+        backend.attach(nvme.clone(), self.disp)?;
         chipset.device().pci_attach(bdf, nvme);
 
         Ok(())

@@ -224,8 +224,10 @@ fn main() {
                     let id = inv.register_instance(&vioblk, bdf.to_string())?;
                     let _be_id = inv.register_child(creg, id)?;
 
-                    backend
-                        .attach(vioblk.clone() as Arc<dyn block::Device>, disp);
+                    backend.attach(
+                        vioblk.clone() as Arc<dyn block::Device>,
+                        disp,
+                    )?;
 
                     chipset.pci_attach(bdf, vioblk);
                 }
@@ -258,7 +260,7 @@ fn main() {
                     let id = inv.register_instance(&nvme, bdf.to_string())?;
                     let _be_id = inv.register_child(creg, id)?;
 
-                    backend.attach(nvme.clone(), disp);
+                    backend.attach(nvme.clone(), disp)?;
 
                     chipset.pci_attach(bdf, nvme);
                 }
