@@ -262,21 +262,21 @@ async fn serial(
         // next_raw must live outside loop, because Ctrl-A should work across
         // multiple inbuf reads.
         let mut next_raw = false;
+        let mut inbuf = [0u8; 1024];
 
         loop {
-            let mut inbuf = vec![0u8; 1024];
             let n = match stdin.read(&mut inbuf).await {
                 Err(_) | Ok(0) => break,
                 Ok(n) => n,
             };
-            inbuf.truncate(n);
 
             // Put bytes from inbuf to outbuf, but don't send Ctrl-A unless
             // next_raw is true.
-            let mut outbuf = vec![];
+            let mut outbuf = Vec::with_capacity(n);
 
             let mut exit = false;
-            for c in inbuf {
+            for i in 0..n {
+                let c = inbuf[i];
                 match c {
                     // Ctrl-A means send next one raw
                     b'\x01' => {
