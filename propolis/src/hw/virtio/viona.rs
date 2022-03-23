@@ -12,7 +12,6 @@ use crate::hw::pci;
 use crate::instance;
 use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
-use crate::util::self_arc::*;
 use crate::util::sys;
 use crate::vmm::VmmHdl;
 
@@ -50,7 +49,7 @@ pub struct PciVirtioViona {
     hdl: VionaHdl,
     inner: Mutex<Inner>,
 
-    sa_cell: SelfArcCell<Self>,
+    me: Weak<PciVirtioViona>,
 }
 impl PciVirtioViona {
     pub fn new(
@@ -66,10 +65,10 @@ impl PciVirtioViona {
         let queue_count = NonZeroU16::new(2).unwrap();
         // interrupts for TX, RX, and device config
         let msix_count = Some(3);
+        let dev_features = hdl.get_avail_features()?;
 
         let queues =
             VirtQueues::new(NonZeroU16::new(queue_size).unwrap(), queue_count);
-
         let (virtio_state, pci_state) = PciVirtioState::create(
             queues,
             msix_count,
@@ -78,25 +77,22 @@ impl PciVirtioViona {
             VIRTIO_NET_CFG_SIZE,
         );
 
-        let mut this = PciVirtioViona {
-            virtio_state,
-            pci_state,
+        Ok(Arc::new_cyclic(|me| {
+            let mut this = PciVirtioViona {
+                virtio_state,
+                pci_state,
 
-            dev_features: hdl.get_avail_features()?,
-            mac_addr: [0; ETHERADDRL],
-            mtu: info.mtu,
-            hdl,
-            inner: Mutex::new(Inner::new()),
+                dev_features,
+                mac_addr: [0; ETHERADDRL],
+                mtu: info.mtu,
+                hdl,
+                inner: Mutex::new(Inner::new()),
 
-            sa_cell: SelfArcCell::new(),
-        };
-        this.mac_addr.copy_from_slice(&info.mac_addr);
-        drop(dlhdl);
-
-        let mut this = Arc::new(this);
-        SelfArc::self_arc_init(&mut this);
-
-        Ok(this)
+                me: me.clone(),
+            };
+            this.mac_addr.copy_from_slice(&info.mac_addr);
+            this
+        }))
     }
 
     fn process_interrupts(&self, ctx: &DispCtx) {
@@ -239,9 +235,12 @@ impl Entity for PciVirtioViona {
             }
             (instance::State::Boot, TransitionPhase::Post) => {
                 // Get interrupt notification for the rings setup
-                let (poller, task) =
-                    VionaPoller::spawn(self.hdl.fd(), self.self_weak(), ctx)
-                        .unwrap();
+                let (poller, task) = VionaPoller::spawn(
+                    self.hdl.fd(),
+                    Weak::clone(&self.me),
+                    ctx,
+                )
+                .unwrap();
                 let mut inner = self.inner.lock().unwrap();
                 assert!(inner.poller.is_none());
                 inner.poller = Some((poller, task));
@@ -269,11 +268,6 @@ impl PciVirtio for PciVirtioViona {
     }
     fn pci_state(&self) -> &pci::DeviceState {
         &self.pci_state
-    }
-}
-impl SelfArc for PciVirtioViona {
-    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
-        &self.sa_cell
     }
 }
 

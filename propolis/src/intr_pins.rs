@@ -2,7 +2,6 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::util::self_arc::*;
 use crate::vmm::VmmHdl;
 
 const PIN_COUNT: u8 = 16;
@@ -30,7 +29,6 @@ pub enum PinOp {
 }
 
 pub struct LegacyPIC {
-    sa_cell: SelfArcCell<Self>,
     inner: Mutex<Inner>,
     hdl: Arc<VmmHdl>,
 }
@@ -68,22 +66,19 @@ impl Entry {
 impl LegacyPIC {
     /// Creates a new virtual PIC.
     pub fn new(hdl: Arc<VmmHdl>) -> Arc<Self> {
-        let mut this = Arc::new(Self {
-            sa_cell: Default::default(),
+        Arc::new(Self {
             inner: Mutex::new(Inner {
                 pins: [Entry::default(); PIN_COUNT as usize],
             }),
             hdl,
-        });
-        SelfArc::self_arc_init(&mut this);
-        this
+        })
     }
 
-    pub fn pin_handle(&self, irq: u8) -> Option<LegacyPin> {
+    pub fn pin_handle(self: &Arc<Self>, irq: u8) -> Option<LegacyPin> {
         if irq >= PIN_COUNT && irq == 2 {
             return None;
         }
-        Some(LegacyPin::new(irq, self.self_weak()))
+        Some(LegacyPin::new(irq, Arc::downgrade(self)))
     }
 
     fn do_irq(&self, op: PinOp, irq: u8) {
@@ -103,11 +98,6 @@ impl LegacyPIC {
                 }
             }
         }
-    }
-}
-impl SelfArc for LegacyPIC {
-    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
-        &self.sa_cell
     }
 }
 

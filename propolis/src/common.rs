@@ -1,7 +1,6 @@
 use std::ops::{Add, BitAnd};
 use std::ops::{Bound::*, RangeBounds};
 use std::slice::SliceIndex;
-use std::sync::{Arc, Mutex, Weak};
 
 use crate::vmm::SubMapping;
 
@@ -363,31 +362,4 @@ pub fn round_up_p2(val: usize, to: usize) -> usize {
     assert!(to != 0);
 
     val.checked_add(to - 1).unwrap() & !(to - 1)
-}
-
-#[derive(Default)]
-pub struct ParentRef<T> {
-    inner: Mutex<Option<Weak<T>>>,
-}
-impl<T> ParentRef<T> {
-    pub fn new() -> Self {
-        Self { inner: Mutex::new(None) }
-    }
-    pub fn set(&self, parent: &Arc<T>) {
-        let mut inner = self.inner.lock().unwrap();
-        assert!(inner.is_none());
-        *inner = Some(Arc::downgrade(parent));
-    }
-    pub fn get(&self) -> Arc<T> {
-        let inner = self.inner.lock().unwrap();
-        let res = Weak::upgrade(inner.as_ref().unwrap()).unwrap();
-
-        res
-    }
-    pub fn get_weak(&self) -> Weak<T> {
-        let inner = self.inner.lock().unwrap();
-        let res = Weak::clone(inner.as_ref().unwrap());
-
-        res
-    }
 }
