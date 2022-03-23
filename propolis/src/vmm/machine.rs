@@ -188,8 +188,8 @@ pub struct MachineCtx {
 }
 
 impl MachineCtx {
-    pub fn new(vm: &Arc<Machine>) -> Self {
-        Self { vm: Arc::clone(vm) }
+    pub(crate) fn new(vm: Arc<Machine>) -> Self {
+        Self { vm }
     }
 
     pub fn pio(&self) -> &PioBus {

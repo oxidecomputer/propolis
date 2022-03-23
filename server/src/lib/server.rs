@@ -849,7 +849,7 @@ async fn instance_serial(
     let upgrade_fut = upgrade::on(request);
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-    let actx = context.instance.disp.async_ctx();
+    let actx = context.instance.async_ctx();
     let task = tokio::spawn(async move {
         let upgraded = match upgrade_fut.await {
             Ok(u) => u,

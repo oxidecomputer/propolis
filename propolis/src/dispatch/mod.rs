@@ -4,9 +4,7 @@ use std::boxed::Box;
 use std::io::Result;
 use std::sync::{Arc, Weak};
 
-use crate::common::ParentRef;
-use crate::instance;
-use crate::util::self_arc::*;
+use crate::instance::{self, Instance};
 use crate::vmm::{Machine, MachineCtx};
 
 use slog;
@@ -22,45 +20,26 @@ pub use sync_tasks::*;
 pub struct Dispatcher {
     async_disp: AsyncDispatch,
     sync_disp: SyncDispatch,
-    machine: Arc<Machine>,
-    parent: ParentRef<instance::Instance>,
-    logger: slog::Logger,
-    sa_cell: SelfArcCell<Self>,
+    inst: Weak<Instance>,
+    // Getting access to the `Machine` via the `Instance` can be a problem
+    // during `Instance::initialize` where locks may exclude us.  Keep an
+    // independent reference to address that issue.
+    machine: Weak<Machine>,
 }
 
 impl Dispatcher {
     /// Creates a new dispatcher.
-    ///
-    /// # Arguments
-    /// - `vm`: The machine for which the dispatcher will handle requests.
-    /// - `vcpu_fn`: A function, which will be invoked by the dispatcher,
-    /// to run the CPU. This function is responsible for yielding control
-    /// back to the dispatcher when requested.
     pub(crate) fn new(
-        vm: &Arc<Machine>,
+        inst: Weak<Instance>,
+        machine: Weak<Machine>,
         rt_handle: Option<Handle>,
-        logger: slog::Logger,
     ) -> Arc<Self> {
-        let mut this = Arc::new(Self {
+        Arc::new(Self {
             async_disp: AsyncDispatch::new(rt_handle),
             sync_disp: SyncDispatch::new(),
-            machine: Arc::clone(vm),
-            parent: ParentRef::new(),
-            logger,
-            sa_cell: SelfArcCell::new(),
-        });
-        SelfArc::self_arc_init(&mut this);
-        this
-    }
-
-    pub fn logger(&self) -> &slog::Logger {
-        &self.logger
-    }
-
-    /// Perform final setup tasks on the dispatcher, including spawning of
-    /// threads for running the instance vCPUs.
-    pub(crate) fn finalize(&self, inst: &Arc<instance::Instance>) {
-        self.parent.set(inst);
+            inst,
+            machine,
+        })
     }
 
     /// Spawns a new dedicated worker thread named `name` which invokes
@@ -74,14 +53,20 @@ impl Dispatcher {
         func: Box<SyncFn>,
         wake: Option<Box<WakeFn>>,
     ) -> Result<()> {
-        self.sync_disp.spawn(self, name, func, wake)
+        self.sync_disp.spawn(
+            SharedCtx::from_disp(self),
+            self.handle().unwrap(),
+            name,
+            func,
+            wake,
+        )
     }
 
     pub(crate) fn with_ctx(&self, func: impl FnOnce(&DispCtx)) {
-        let mut sctx = SyncCtx::standalone(SharedCtx::child(
-            self,
-            slog::o!("dispatcher_action" => "ad-hoc"),
-        ));
+        let mut sctx = SyncCtx::standalone(
+            SharedCtx::from_disp(self)
+                .log_child(slog::o!("dispatcher_action" => "ad-hoc")),
+        );
         let ctx = sctx.dispctx();
         func(&ctx);
     }
@@ -92,7 +77,7 @@ impl Dispatcher {
     /// `actx.dispctx()`.  Tasks will be held outside these yield points until
     /// released or canceled.
     pub(crate) fn quiesce(&self) {
-        self.sync_disp.quiesce(self);
+        self.sync_disp.quiesce(SharedCtx::from_disp(self));
         self.async_disp.quiesce_contexts();
     }
 
@@ -111,14 +96,14 @@ impl Dispatcher {
     /// (sync threads and async tasks).  New work cannot be started in the
     /// dispatcher after this point.
     pub(crate) fn shutdown(&self) {
-        self.sync_disp.shutdown(self);
+        self.sync_disp.shutdown(SharedCtx::from_disp(self));
         self.async_disp.shutdown();
     }
 
     /// Get an `AsyncCtx`, useful for async tasks which require access to
     /// instance resources.
     pub fn async_ctx(&self) -> AsyncCtx {
-        self.async_disp.context(self)
+        self.async_disp.context(SharedCtx::from_disp(self))
     }
 
     ///  Get access to the underlying tokio runtime handle
@@ -131,45 +116,32 @@ impl Dispatcher {
         self.async_disp.track(hdl);
     }
 }
-impl SelfArc for Dispatcher {
-    fn self_arc_cell(&self) -> &SelfArcCell<Self> {
-        &self.sa_cell
-    }
-}
 
 struct SharedCtx {
     mctx: MachineCtx,
-    disp: Weak<Dispatcher>,
-    inst: Weak<instance::Instance>,
+    inst: Weak<Instance>,
     log: slog::Logger,
 }
 impl SharedCtx {
-    fn create(disp: &Dispatcher) -> Self {
-        Self {
-            mctx: MachineCtx::new(&disp.machine),
-            disp: disp.self_weak(),
-            inst: disp.parent.get_weak(),
-            log: disp.logger.clone(),
-        }
+    fn from_disp(disp: &Dispatcher) -> Self {
+        let inst = disp.inst.upgrade().unwrap();
+        let log = inst.logger().clone();
+        let mctx = MachineCtx::new(disp.machine.upgrade().unwrap());
+        Self { mctx, inst: Arc::downgrade(&inst), log }
     }
-    fn child<T: slog::SendSyncRefUnwindSafeKV + 'static>(
-        disp: &Dispatcher,
+    fn log_child<T: slog::SendSyncRefUnwindSafeKV + 'static>(
+        mut self,
         param: slog::OwnedKV<T>,
     ) -> Self {
-        Self {
-            mctx: MachineCtx::new(&disp.machine),
-            disp: disp.self_weak(),
-            inst: disp.parent.get_weak(),
-            log: disp.logger.new(param),
-        }
+        self.log = self.log.new(param);
+        self
     }
 }
 
 pub struct DispCtx<'a> {
     pub log: &'a slog::Logger,
     pub mctx: &'a MachineCtx,
-    disp: &'a Weak<Dispatcher>,
-    inst: &'a Weak<instance::Instance>,
+    inst: &'a Weak<Instance>,
     _async_permit: Option<AsyncCtxPermit<'a>>,
 }
 
@@ -184,26 +156,10 @@ impl<'a> DispCtx<'a> {
         let _ = inst.trigger_suspend(kind, source);
     }
 
-    /// Spawn a sync worker task under the instance dispatcher
-    pub fn spawn_sync(
-        &self,
-        name: String,
-        func: Box<SyncFn>,
-        wake: Option<Box<WakeFn>>,
-    ) -> Result<()> {
-        let disp = Weak::upgrade(&self.disp).unwrap();
-        disp.spawn_sync(name, func, wake)
-    }
-
     /// Acquire an `AsyncCtx`, useful for accessing instance state from
     /// emulation running in an async runtime
     pub fn async_ctx(&self) -> AsyncCtx {
-        let disp = Weak::upgrade(&self.disp).unwrap();
-        disp.async_ctx()
-    }
-
-    pub fn handle(&self) -> Option<Handle> {
-        let disp = Weak::upgrade(&self.disp).unwrap();
-        disp.handle()
+        let inst = Weak::upgrade(self.inst).unwrap();
+        inst.async_ctx()
     }
 }

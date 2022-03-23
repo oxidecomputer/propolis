@@ -582,7 +582,7 @@ mod tests {
         let inst = Instance::new_test(Some(Handle::current()))?;
         let _ = inst.set_target_state(ReqState::Run).unwrap();
 
-        let ctx = inst.disp.async_ctx();
+        let ctx = inst.async_ctx();
         task(ctx).await;
 
         Ok(())

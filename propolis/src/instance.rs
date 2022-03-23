@@ -3,7 +3,7 @@
 #![allow(unused)]
 
 use std::io;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 
 use crate::dispatch::*;
@@ -199,7 +199,10 @@ struct Inner {
 pub struct Instance {
     inner: Mutex<Inner>,
     cv: Condvar,
-    pub disp: Arc<Dispatcher>,
+    // Some tests still reach in to access the dispatcher
+    pub(crate) disp: Arc<Dispatcher>,
+    logger: slog::Logger,
+    me: Weak<Instance>,
 }
 impl Instance {
     /// Creates a new virtual machine, absorbing `machine` generated from
@@ -213,21 +216,25 @@ impl Instance {
             .unwrap_or_else(|| slog::Logger::root(slog::Discard, slog::o!()));
         let driver_log = logger.new(slog::o!("task" => "instance-driver"));
 
-        let disp = Dispatcher::new(&machine, rt_handle, logger);
-        let this = Arc::new(Self {
-            inner: Mutex::new(Inner {
-                state_current: State::Initialize,
-                state_target: None,
-                suspend_info: None,
-                drive_thread: None,
-                machine: Some(machine),
-                inv: Arc::new(Inventory::new()),
-                transition_funcs: Vec::new(),
-                migrate_ctx: None,
-                pause_chan: None,
-            }),
-            cv: Condvar::new(),
-            disp,
+        let this = Arc::new_cyclic(|me| {
+            let mweak = Arc::downgrade(&machine);
+            Self {
+                inner: Mutex::new(Inner {
+                    state_current: State::Initialize,
+                    state_target: None,
+                    suspend_info: None,
+                    drive_thread: None,
+                    machine: Some(machine),
+                    inv: Arc::new(Inventory::new()),
+                    transition_funcs: Vec::new(),
+                    migrate_ctx: None,
+                    pause_chan: None,
+                }),
+                cv: Condvar::new(),
+                disp: Dispatcher::new(me.clone(), mweak, rt_handle),
+                logger,
+                me: me.clone(),
+            }
         });
 
         let driver_hdl = Arc::clone(&this);
@@ -235,7 +242,6 @@ impl Instance {
             .name("instance-driver".to_string())
             .spawn(move || driver_hdl.drive_state(driver_log))?;
 
-        this.disp.finalize(&this);
         let mut state = this.inner.lock().unwrap();
         state.drive_thread = Some(driver);
         drop(state);
@@ -267,6 +273,16 @@ impl Instance {
         })
     }
 
+    /// Acquire an `AsyncCtx`, useful for accessing instance state from
+    /// emulation running in an async runtime
+    pub fn async_ctx(&self) -> AsyncCtx {
+        self.disp.async_ctx()
+    }
+
+    pub fn logger(&self) -> &slog::Logger {
+        &self.logger
+    }
+
     /// Invokes `func`, which may operate on the instance's internal state
     /// to prepare an instance before it boots.
     ///
@@ -285,7 +301,7 @@ impl Instance {
         let state = self.inner.lock().unwrap();
         assert_eq!(state.state_current, State::Initialize);
         let machine = state.machine.as_ref().unwrap();
-        let mctx = MachineCtx::new(machine);
+        let mctx = MachineCtx::new(machine.clone());
         let rt_guard = self.disp.handle().unwrap().enter();
         func(machine, &mctx, &self.disp, &state.inv)
     }

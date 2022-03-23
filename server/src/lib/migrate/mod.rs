@@ -76,7 +76,7 @@ impl MigrateContext {
         MigrateContext {
             migration_id,
             state: RwLock::new(MigrationState::Sync),
-            async_ctx: instance.disp.async_ctx(),
+            async_ctx: instance.async_ctx(),
             instance,
             log,
         }
