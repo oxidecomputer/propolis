@@ -31,27 +31,19 @@ pub struct CrucibleBackend {
 
 impl CrucibleBackend {
     pub fn create(
-        disp: &Dispatcher,
         gen: u64,
         request: VolumeConstructionRequest,
         read_only: bool,
     ) -> Result<Arc<Self>> {
-        CrucibleBackend::_create(disp, gen, request, read_only)
+        CrucibleBackend::_create(gen, request, read_only)
             .map_err(map_crucible_error_to_io)
     }
 
     fn _create(
-        disp: &Dispatcher,
         gen: u64,
         request: VolumeConstructionRequest,
         read_only: bool,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
-        slog::info!(
-            disp.logger(),
-            "constructing volume from request {:?}",
-            request,
-        );
-
         // XXX Crucible uses std::sync::mpsc::Receiver, not
         // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
         // Remove that when Crucible changes over to the tokio mpsc.

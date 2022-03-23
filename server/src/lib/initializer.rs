@@ -267,7 +267,6 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         info!(self.log, "Creating Crucible disk from {:#?}", disk);
         let be = propolis::block::CrucibleBackend::create(
-            self.disp,
             disk.gen,
             disk.volume_construction_request.clone(),
             disk.read_only,

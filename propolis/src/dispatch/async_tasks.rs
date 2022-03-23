@@ -1,5 +1,4 @@
 use std::collections::hash_map::HashMap;
-use std::io::Result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -7,7 +6,7 @@ use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
-use super::{DispCtx, Dispatcher, SharedCtx, SyncFn, WakeFn};
+use super::{DispCtx, SharedCtx};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CtxId(usize);
@@ -104,10 +103,10 @@ impl AsyncDispatch {
     }
 
     /// Create a new `AsyncCtx` for an async task to access the instance state.
-    pub(super) fn context(&self, disp: &Dispatcher) -> AsyncCtx {
+    pub(super) fn context(&self, shared: SharedCtx) -> AsyncCtx {
         let ctrl = self.inner.get_ctrl();
         AsyncCtx::new(
-            SharedCtx::child(disp, slog::o!("async_task" => ctrl.id.0)),
+            shared.log_child(slog::o!("async_task" => ctrl.id.0)),
             ctrl,
         )
     }
@@ -241,7 +240,6 @@ impl AsyncCtx {
         Some(DispCtx {
             log: &self.shared.log,
             mctx: &self.shared.mctx,
-            disp: &self.shared.disp,
             inst: &self.shared.inst,
             _async_permit: Some(permit),
         })
@@ -311,30 +309,13 @@ impl AsyncCtx {
     pub async fn quiesce_requested(&self) {
         let _permit = self.ctrl.quiesce_notify.acquire().await.unwrap();
     }
-
-    /// Spawn a sync worker task under the instance dispatcher
-    pub fn spawn_sync(
-        &self,
-        name: String,
-        func: Box<SyncFn>,
-        wake: Option<Box<WakeFn>>,
-    ) -> Result<()> {
-        let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.spawn_sync(name, func, wake)
-    }
-
-    ///  Get access to the underlying tokio runtime handle
-    pub fn handle(&self) -> Option<Handle> {
-        let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.handle()
-    }
 }
 impl Clone for AsyncCtx {
     /// Acquire a new `AsyncCtx`, useful for accessing instance state from
     /// emulation running in an async runtime
     fn clone(&self) -> Self {
-        let disp = Weak::upgrade(&self.shared.disp).unwrap();
-        disp.async_ctx()
+        let inst = Weak::upgrade(&self.shared.inst).unwrap();
+        inst.async_ctx()
     }
 }
 impl Drop for AsyncCtx {
