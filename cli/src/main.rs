@@ -249,29 +249,82 @@ async fn serial(
     let _raw_guard = RawTermiosGuard::stdio_guard()
         .with_context(|| anyhow!("failed to set raw mode"))?;
 
-    let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
-    let mut next_raw = false;
+
+    // https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html#method.read_exact
+    // is not cancel safe! Meaning reads from tokio::io::stdin are not cancel
+    // safe. Spawn a separate task to read and put bytes onto this channel.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+    tokio::spawn(async move {
+        let mut stdin = tokio::io::stdin();
+
+        // next_raw must live outside loop, because Ctrl-A should work across
+        // multiple inbuf reads.
+        let mut next_raw = false;
+        let mut inbuf = [0u8; 1024];
+
+        loop {
+            let n = match stdin.read(&mut inbuf).await {
+                Err(_) | Ok(0) => break,
+                Ok(n) => n,
+            };
+
+            // Put bytes from inbuf to outbuf, but don't send Ctrl-A unless
+            // next_raw is true.
+            let mut outbuf = Vec::with_capacity(n);
+
+            let mut exit = false;
+            for i in 0..n {
+                let c = inbuf[i];
+                match c {
+                    // Ctrl-A means send next one raw
+                    b'\x01' => {
+                        if next_raw {
+                            // Ctrl-A Ctrl-A should be sent as Ctrl-A
+                            outbuf.push(c);
+                            next_raw = false;
+                        } else {
+                            next_raw = true;
+                        }
+                    }
+                    b'\x03' => {
+                        if !next_raw {
+                            // Exit on non-raw Ctrl-C
+                            exit = true;
+                            break;
+                        } else {
+                            // Otherwise send Ctrl-C
+                            outbuf.push(c);
+                            next_raw = false;
+                        }
+                    }
+                    _ => {
+                        outbuf.push(c);
+                        next_raw = false;
+                    }
+                }
+            }
+
+            // Send what we have, even if there's a Ctrl-C at the end.
+            tx.send(outbuf).await.unwrap();
+
+            if exit {
+                break;
+            }
+        }
+    });
 
     loop {
         tokio::select! {
-            c = stdin.read_u8() => {
-                match c? {
-                    // Ctrl-A means send next one raw
-                    b'\x01' if !next_raw => {
-                        next_raw = true;
+            c = rx.recv() => {
+                match c {
+                    None => {
+                        // channel is closed
+                        break;
                     }
-                    c => {
-                        // Exit on non-raw Ctrl-C
-                        if c == b'\x03' && !next_raw {
-                            break;
-                        }
-
-                        ws.send(Message::binary(vec![c])).await?;
-
-                        if next_raw {
-                            next_raw = false;
-                        }
+                    Some(c) => {
+                        ws.send(Message::Binary(c)).await?;
                     },
                 }
             }

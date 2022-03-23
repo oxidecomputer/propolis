@@ -445,9 +445,9 @@ impl BlockingSourceBuffer {
     }
 }
 
-/// Copy available data from a Vec.  Any remaining data will be copied to the
-/// front of the Vec, truncating the vacated space without altering its allocated
-/// capacity.
+/// Copy available data from a Vec. Any remaining data will be copied to the
+/// front of the Vec, truncating the vacated space without altering its
+/// allocated capacity.
 fn copy_and_consume(src: &mut Vec<u8>, dest: &mut [u8]) -> usize {
     if src.is_empty() || dest.is_empty() {
         0
@@ -461,6 +461,93 @@ fn copy_and_consume(src: &mut Vec<u8>, dest: &mut [u8]) -> usize {
         src.truncate(old_len - copy_len);
         copy_len
     }
+}
+
+#[test]
+fn test_copy_and_consume_1() {
+    // Test copy_and_consume behaviour:
+    // - source is copied to dest, and number of u8 copied is returned
+    // - source is truncated without altering capacity
+
+    let mut buf = vec![
+        108, 111, 99, 97, 108, 104, 111, 115, 116, 58, 126, 35, 32, 27, 91, 54,
+        110,
+    ];
+    let mut output = [0u8; 8];
+
+    // before anything, assert len and capacity
+    assert_eq!(buf.len(), 17);
+    assert_eq!(buf.capacity(), 17);
+
+    let n = copy_and_consume(&mut buf, &mut output[..]);
+
+    // assert copy_and_consume fills output
+    assert_eq!(n, 8);
+
+    // assert capacity has not changed
+    assert_eq!(buf.capacity(), 17);
+
+    // assert copy_and_consume modify their arguments.
+    assert_eq!(output[..n], vec![108, 111, 99, 97, 108, 104, 111, 115]);
+    assert_eq!(buf, vec![116, 58, 126, 35, 32, 27, 91, 54, 110]);
+
+    let n = copy_and_consume(&mut buf, &mut output[..]);
+
+    // assert copy_and_consume fills output
+    assert_eq!(n, 8);
+
+    // assert capacity has not changed
+    assert_eq!(buf.capacity(), 17);
+
+    // assert further argument modification
+    assert_eq!(output[..n], vec![116, 58, 126, 35, 32, 27, 91, 54]);
+    assert_eq!(buf, vec![110]);
+
+    let n = copy_and_consume(&mut buf, &mut output[..]);
+
+    // assert copy_and_consume cannot fill output this time
+    assert_eq!(n, 1);
+
+    // assert capacity has not changed
+    assert_eq!(buf.capacity(), 17);
+
+    // assert further argument modification
+    assert_eq!(output[..n], vec![110]);
+    assert!(buf.is_empty());
+
+    // assert that when copy_and_consume's source is empty, it does nothing
+    let n = copy_and_consume(&mut buf, &mut output[..]);
+    assert_eq!(n, 0);
+
+    // assert that the output of copy_and_consume is consistent with it doing
+    // nothing
+    assert_eq!(buf.capacity(), 17);
+    assert!(output[..n].is_empty());
+    assert!(buf.is_empty());
+
+    // assert that when it does nothing, output isn't changed
+    assert_eq!(output[0..1], vec![110]);
+}
+
+#[test]
+fn test_copy_and_consume_one_u8() {
+    // Test that copy_and_consume works when source is one u8.
+    let mut buf = vec![108];
+    let mut output = [0u8; 8];
+
+    assert_eq!(buf.len(), 1);
+    assert_eq!(buf.capacity(), 1);
+
+    let n = copy_and_consume(&mut buf, &mut output[..]);
+
+    // only one u8 to read from source
+    assert_eq!(n, 1);
+
+    // assert that one u8 is read, that the source is now empty, and that
+    // capacity is unchanged.
+    assert_eq!(output[..n], vec![108]);
+    assert!(buf.is_empty());
+    assert_eq!(buf.capacity(), 1);
 }
 
 #[cfg(test)]
