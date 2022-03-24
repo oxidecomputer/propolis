@@ -29,11 +29,6 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     /// Creates a new dispatcher.
-    ///
-    /// # Arguments
-    /// - `vcpu_fn`: A function, which will be invoked by the dispatcher,
-    /// to run the CPU. This function is responsible for yielding control
-    /// back to the dispatcher when requested.
     pub(crate) fn new(
         inst: Weak<Instance>,
         machine: Weak<Machine>,
