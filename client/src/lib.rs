@@ -159,4 +159,9 @@ impl Client {
         );
         self.get(path, Some(body)).await
     }
+
+    /// Returns the WebSocket URI to an instance's serial console stream.
+    pub fn instance_serial_console_ws_uri(&self) -> String {
+        format!("ws://{}/instance/serial", self.address)
+    }
 }
