@@ -140,7 +140,8 @@ impl BlockDevice {
                 let be = propolis::block::FileBackend::create(
                     path, readonly, nworkers,
                 )?;
-                let child = inventory::ChildRegister::new(&be, None);
+                let child =
+                    inventory::ChildRegister::new(&be, Some(path.to_string()));
 
                 Ok((be, child))
             }
