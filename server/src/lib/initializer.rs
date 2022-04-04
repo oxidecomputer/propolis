@@ -273,7 +273,7 @@ impl<'a> MachineInitializer<'a> {
         )?;
 
         info!(self.log, "Creating ChildRegister");
-        let creg = ChildRegister::new(&be, None);
+        let creg = ChildRegister::new(&be, Some(be.get_uuid()?.to_string()));
 
         match disk.device.as_ref() {
             "virtio" => {
@@ -300,6 +300,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_in_memory_virtio_from_bytes(
         &self,
         chipset: &RegisteredChipset,
+        name: impl Into<String>,
         bytes: Vec<u8>,
         bdf: pci::Bdf,
         read_only: bool,
@@ -309,7 +310,7 @@ impl<'a> MachineInitializer<'a> {
             propolis::block::InMemoryBackend::create(bytes, read_only, 512)?;
 
         info!(self.log, "Creating ChildRegister");
-        let creg = ChildRegister::new(&be, None);
+        let creg = ChildRegister::new(&be, Some(name.into()));
 
         info!(self.log, "Calling initialize_virtio_block");
         self.initialize_virtio_block(chipset, bdf, be, creg)

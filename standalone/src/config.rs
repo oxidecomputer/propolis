@@ -99,7 +99,7 @@ impl BlockDevice {
                 )
                 .unwrap();
 
-                let creg = ChildRegister::new(&be, None);
+                let creg = ChildRegister::new(&be, Some(path.to_string()));
                 (be, creg)
             }
             _ => {

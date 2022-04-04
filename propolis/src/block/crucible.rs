@@ -71,6 +71,11 @@ impl CrucibleBackend {
 
         Ok(Arc::new(be))
     }
+
+    /// Retrieve the UUID identifying this Crucible backend.
+    pub fn get_uuid(&self) -> Result<uuid::Uuid> {
+        self.block_io.get_uuid().map_err(map_crucible_error_to_io)
+    }
 }
 
 impl block::Backend for CrucibleBackend {
