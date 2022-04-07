@@ -79,15 +79,14 @@ pub(crate) fn make_mem_xfer(
 mod memx_test {
     use super::*;
     use crate::migrate::codec;
-    use std::assert_matches::assert_matches;
 
     #[test]
     fn make_mem_offer_simple() {
         let bitmap = &[0b1010_1001u8];
         let msg = make_mem_offer(0, 8 * 4096, bitmap);
         let expected = vec![0b1010_1001u8];
-        assert_matches!(msg, codec::Message::MemOffer(0, s, v)
-            if s == 8 * 4096 && v == expected);
+        assert!(matches!(msg, codec::Message::MemOffer(0, s, v)
+            if s == 8 * 4096 && v == expected));
     }
 
     #[test]
@@ -95,8 +94,8 @@ mod memx_test {
         let bitmap = &[0b0011_1111u8];
         let msg = make_mem_xfer(0, 6 * 4096, bitmap);
         let expected = vec![0b0011_1111u8];
-        assert_matches!(msg, codec::Message::MemXfer(0, s, v)
-            if s == 6 * 4096 && v == expected);
+        assert!(matches!(msg, codec::Message::MemXfer(0, s, v)
+            if s == 6 * 4096 && v == expected));
     }
 
     #[test]

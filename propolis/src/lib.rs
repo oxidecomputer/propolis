@@ -6,8 +6,6 @@
     all(feature = "dtrace-probes", target_os = "macos"),
     feature(asm_sym)
 )]
-// Pull in `assert_matches` for tests
-#![cfg_attr(test, feature(assert_matches))]
 
 pub extern crate bhyve_api;
 pub extern crate usdt;

@@ -1,4 +1,3 @@
-#![feature(assert_matches)]
 #![allow(clippy::style)]
 
 pub mod config;

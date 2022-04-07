@@ -587,7 +587,6 @@ mod live_migration_decoder_tests {
 #[cfg(test)]
 mod decoder_tests {
     use super::*;
-    use std::assert_matches::assert_matches;
     use tokio_util::codec::Decoder;
 
     #[test]
@@ -603,9 +602,9 @@ mod decoder_tests {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[5, 0, 0]);
         let mut decoder = test_framer();
-        assert_matches!(decoder.decode(&mut bytes), Ok(None));
+        assert!(matches!(decoder.decode(&mut bytes), Ok(None)));
         bytes.put_slice(&[0, 0]);
-        assert_matches!(decoder.decode(&mut bytes), Ok(Some(Message::Okay)));
+        assert!(matches!(decoder.decode(&mut bytes), Ok(Some(Message::Okay))));
     }
 
     #[test]
@@ -624,7 +623,7 @@ mod decoder_tests {
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
-        assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
+        assert!(matches!(decoded, Ok(Some(Message::Error(e))) if e == expected));
     }
 
     #[test]
@@ -637,10 +636,10 @@ mod decoder_tests {
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
-        assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
+        assert!(matches!(decoded, Ok(Some(Message::Error(e))) if e == expected));
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("bar".into());
-        assert_matches!(decoded, Ok(Some(Message::Error(e))) if e == expected);
+        assert!(matches!(decoded, Ok(Some(Message::Error(e))) if e == expected));
     }
 
     #[test]
@@ -650,7 +649,7 @@ mod decoder_tests {
         bytes.put_slice(&b"asdf"[..]);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::Blob(b))) if b == b"asdf".to_vec());
+        assert!(matches!(decoded, Ok(Some(Message::Blob(b))) if b == b"asdf".to_vec()));
     }
 
     #[test]
@@ -661,8 +660,8 @@ mod decoder_tests {
         bytes.put_slice(&page[..]);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::Page(p)))
-            if p.iter().all(|&b| b == 0));
+        assert!(matches!(decoded, Ok(Some(Message::Page(p)))
+            if p.iter().all(|&b| b == 0)));
     }
 
     #[test]
@@ -673,8 +672,8 @@ mod decoder_tests {
         bytes.put_slice(&[2, 0, 0, 0, 0, 0, 0, 0]);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::MemQuery(start, end)))
-            if start == 1 && end == 2);
+        assert!(matches!(decoded, Ok(Some(Message::MemQuery(start, end)))
+            if start == 1 && end == 2));
     }
 
     #[test]
@@ -686,8 +685,8 @@ mod decoder_tests {
         bytes.put_u8(0b0000_1111);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::MemOffer(start, end, v)))
-            if start == 0 && end == 0x8000 && v == vec![0b0000_1111]);
+        assert!(matches!(decoded, Ok(Some(Message::MemOffer(start, end, v)))
+            if start == 0 && end == 0x8000 && v == vec![0b0000_1111]));
     }
 
     #[test]
@@ -700,10 +699,10 @@ mod decoder_tests {
         bytes.put_u8(0b0000_1010);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::MemOffer(start, end, v)))
+        assert!(matches!(decoded, Ok(Some(Message::MemOffer(start, end, v)))
             if start == 0 &&
                 end == 0x8000 &&
-                v == vec![0b0000_1111, 0b0000_1010]);
+                v == vec![0b0000_1111, 0b0000_1010]));
     }
 
     #[test]
@@ -714,8 +713,8 @@ mod decoder_tests {
         bytes.put_slice(&[0, 0x40 + 0x80, 0, 0, 0, 0, 0, 0]);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::MemEnd(start, end)))
-            if start == 0x4000 && end == 0xC000);
+        assert!(matches!(decoded, Ok(Some(Message::MemEnd(start, end)))
+            if start == 0x4000 && end == 0xC000));
     }
 
     #[test]
@@ -727,8 +726,8 @@ mod decoder_tests {
         bytes.put_u8(0b0000_1111);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::MemFetch(start, end, v)))
-            if start == 0 && end == 0x8000 && v == vec![0b0000_1111]);
+        assert!(matches!(decoded, Ok(Some(Message::MemFetch(start, end, v)))
+            if start == 0 && end == 0x8000 && v == vec![0b0000_1111]));
     }
 
     #[test]
@@ -740,8 +739,8 @@ mod decoder_tests {
         bytes.put_u8(0b0000_1111);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert_matches!(decoded, Ok(Some(Message::MemXfer(start, end, v)))
-            if start == 0 && end == 0x8000 && v == vec![0b0000_1111]);
+        assert!(matches!(decoded, Ok(Some(Message::MemXfer(start, end, v)))
+            if start == 0 && end == 0x8000 && v == vec![0b0000_1111]));
     }
 
     #[test]
@@ -749,6 +748,6 @@ mod decoder_tests {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[5, 0, 0, 0, MessageType::MemDone as u8]);
         let mut decoder = test_framer();
-        assert_matches!(decoder.decode(&mut bytes), Ok(Some(Message::MemDone)));
+        assert!(matches!(decoder.decode(&mut bytes), Ok(Some(Message::MemDone))));
     }
 }

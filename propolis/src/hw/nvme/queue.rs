@@ -668,7 +668,6 @@ mod tests {
     use super::*;
 
     use crate::{common::GuestAddr, instance::Instance};
-    use std::assert_matches::assert_matches;
     use std::io::Error;
     use std::thread::{sleep, spawn};
     use std::time::Duration;
@@ -690,7 +689,7 @@ mod tests {
                 ctx,
                 hdl.clone(),
             );
-            assert_matches!(cq, Ok(_));
+            assert!(matches!(cq, Ok(_)));
             let cq = CompQueue::new(
                 ADMIN_QUEUE_ID,
                 0,
@@ -699,14 +698,14 @@ mod tests {
                 ctx,
                 hdl.clone(),
             );
-            assert_matches!(cq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
             // I/O queues must be less than 64K
             let cq = CompQueue::new(1, 0, 1024, write_base, ctx, hdl.clone());
-            assert_matches!(cq, Ok(_));
+            assert!(matches!(cq, Ok(_)));
             let cq =
                 CompQueue::new(1, 0, 65 * 1024, write_base, ctx, hdl.clone());
-            assert_matches!(cq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
             // Neither must be less than 2
             let cq = CompQueue::new(
@@ -717,9 +716,9 @@ mod tests {
                 ctx,
                 hdl.clone(),
             );
-            assert_matches!(cq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
             let cq = CompQueue::new(1, 0, 1, write_base, ctx, hdl.clone());
-            assert_matches!(cq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
             // Completion Queue's must be mapped to writable memory
             let cq = CompQueue::new(
@@ -730,9 +729,9 @@ mod tests {
                 ctx,
                 hdl.clone(),
             );
-            assert_matches!(cq, Err(QueueCreateErr::InvalidBaseAddr));
+            assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
             let cq = CompQueue::new(1, 0, 2, read_base, ctx, hdl.clone());
-            assert_matches!(cq, Err(QueueCreateErr::InvalidBaseAddr));
+            assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
         });
 
         Ok(())
@@ -771,7 +770,7 @@ mod tests {
                 read_base,
                 ctx,
             );
-            assert_matches!(sq, Ok(_));
+            assert!(matches!(sq, Ok(_)));
             let sq = SubQueue::new(
                 ADMIN_QUEUE_ID,
                 admin_cq.clone(),
@@ -779,13 +778,13 @@ mod tests {
                 read_base,
                 ctx,
             );
-            assert_matches!(sq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
             // I/O queues must be less than 64K
             let sq = SubQueue::new(1, io_cq.clone(), 1024, read_base, ctx);
-            assert_matches!(sq, Ok(_));
+            assert!(matches!(sq, Ok(_)));
             let sq = SubQueue::new(1, io_cq.clone(), 65 * 1024, read_base, ctx);
-            assert_matches!(sq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
             // Neither must be less than 2
             let sq = SubQueue::new(
@@ -795,9 +794,9 @@ mod tests {
                 read_base,
                 ctx,
             );
-            assert_matches!(sq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
             let sq = SubQueue::new(1, admin_cq.clone(), 1, read_base, ctx);
-            assert_matches!(sq, Err(QueueCreateErr::InvalidSize));
+            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
             // Completion Queue's must be mapped to readable memory
             let sq = SubQueue::new(
@@ -807,9 +806,9 @@ mod tests {
                 write_base,
                 ctx,
             );
-            assert_matches!(sq, Err(QueueCreateErr::InvalidBaseAddr));
+            assert!(matches!(sq, Err(QueueCreateErr::InvalidBaseAddr)));
             let sq = SubQueue::new(1, admin_cq.clone(), 2, write_base, ctx);
-            assert_matches!(sq, Err(QueueCreateErr::InvalidBaseAddr));
+            assert!(matches!(sq, Err(QueueCreateErr::InvalidBaseAddr)));
         });
 
         Ok(())
@@ -836,21 +835,21 @@ mod tests {
             for _ in 0..sq.state.size - 1 {
                 sq_tail = sq.state.wrap_add(sq_tail, 1);
                 // These should all succeed
-                assert_matches!(sq.notify_tail(sq_tail), Ok(_));
+                assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
             }
 
             // But anything more should fail
             sq_tail = sq.state.wrap_add(sq_tail, 1);
-            assert_matches!(
+            assert!(matches!(
                 sq.notify_tail(sq_tail),
                 Err(QueueUpdateError::TooManyEntries)
-            );
+            ));
 
             // Also anything that falls outside the boundaries (i.e. we didn't wrap properly)
-            assert_matches!(
+            assert!(matches!(
                 sq.notify_tail(sq.state.size as u16),
                 Err(QueueUpdateError::InvalidEntry)
-            );
+            ));
 
             // Now pop those SQ items and complete them in the CQ
             while let Some((_, permit)) = sq.pop(ctx) {
@@ -862,21 +861,21 @@ mod tests {
             for _ in 0..sq.state.size - 1 {
                 cq_head = cq.state.wrap_add(cq_head, 1);
                 // These should all succeed
-                assert_matches!(cq.notify_head(cq_head), Ok(_));
+                assert!(matches!(cq.notify_head(cq_head), Ok(_)));
             }
 
             // There's nothing else to pop so this should fail
             cq_head = cq.state.wrap_add(cq_head, 1);
-            assert_matches!(
+            assert!(matches!(
                 cq.notify_head(cq_head),
                 Err(QueueUpdateError::TooManyEntries)
-            );
+            ));
 
             // Also anything that falls outside the boundaries (i.e. we didn't wrap properly)
-            assert_matches!(
+            assert!(matches!(
                 cq.notify_head(cq.state.size as u16),
                 Err(QueueUpdateError::InvalidEntry)
-            );
+            ));
         });
 
         Ok(())
@@ -903,29 +902,29 @@ mod tests {
             let mut sq_tail = 0;
             for _ in 0..sq.state.size - 1 {
                 sq_tail = sq.state.wrap_add(sq_tail, 1);
-                assert_matches!(sq.notify_tail(sq_tail), Ok(_));
+                assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
             }
 
             // We should be able to pop based on how much space is in the CQ
             for _ in 0..cq.state.size - 1 {
                 let pop = sq.pop(ctx);
-                assert_matches!(pop, Some(_));
+                assert!(matches!(pop, Some(_)));
 
                 // Complete these in the CQ (but note guest won't have acknowledged them yet)
                 pop.unwrap().1.push_completion_test(ctx);
             }
 
             // But we can't pop anymore due to no more CQ space to reserve
-            assert_matches!(sq.pop(ctx), None);
+            assert!(matches!(sq.pop(ctx), None));
 
             // The guest consuming things off the CQ should let free us
-            assert_matches!(cq.notify_head(1), Ok(_));
+            assert!(matches!(cq.notify_head(1), Ok(_)));
 
             // Kick should've been set in the failed pop
             assert!(cq.kick());
 
             // We should have one more space now and should be able to pop 1 more
-            assert_matches!(sq.pop(ctx), Some(_));
+            assert!(matches!(sq.pop(ctx), Some(_)));
         });
 
         Ok(())
@@ -977,10 +976,10 @@ mod tests {
                     match doorbell_rx.recv() {
                         Ok(Doorbell::Cq(n)) => {
                             cq_head = doorbell_cq.state.wrap_add(cq_head, n);
-                            assert_matches!(
+                            assert!(matches!(
                                 doorbell_cq.notify_head(cq_head),
                                 Ok(_)
-                            );
+                            ));
                             if doorbell_cq.kick() {
                                 assert!(workers_tx.send(()).is_ok());
                             }
@@ -989,10 +988,10 @@ mod tests {
                             sq_tail = doorbell_sq.state.wrap_add(sq_tail, n);
                             // The "doorbell" was rung and so let's have the SQ
                             // update its internal state before poking the workers
-                            assert_matches!(
+                            assert!(matches!(
                                 doorbell_sq.notify_tail(sq_tail),
                                 Ok(_)
-                            );
+                            ));
                             assert!(workers_tx.send(()).is_ok());
                         }
                         Err(_) => break,
