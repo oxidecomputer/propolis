@@ -20,6 +20,10 @@ To build, run:
 $ cargo build
 ```
 
+### Minimum Supported Rust Version (MSRV)
+
+- Rust 1.62.0
+
 ## propolis crate
 
 The main propolis crate is structured as a library providing the building

@@ -623,7 +623,9 @@ mod decoder_tests {
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
-        assert!(matches!(decoded, Ok(Some(Message::Error(e))) if e == expected));
+        assert!(
+            matches!(decoded, Ok(Some(Message::Error(e))) if e == expected)
+        );
     }
 
     #[test]
@@ -636,10 +638,14 @@ mod decoder_tests {
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("foo".into());
-        assert!(matches!(decoded, Ok(Some(Message::Error(e))) if e == expected));
+        assert!(
+            matches!(decoded, Ok(Some(Message::Error(e))) if e == expected)
+        );
         let decoded = decoder.decode(&mut bytes);
         let expected = MigrateError::Http("bar".into());
-        assert!(matches!(decoded, Ok(Some(Message::Error(e))) if e == expected));
+        assert!(
+            matches!(decoded, Ok(Some(Message::Error(e))) if e == expected)
+        );
     }
 
     #[test]
@@ -649,7 +655,9 @@ mod decoder_tests {
         bytes.put_slice(&b"asdf"[..]);
         let mut decoder = test_framer();
         let decoded = decoder.decode(&mut bytes);
-        assert!(matches!(decoded, Ok(Some(Message::Blob(b))) if b == b"asdf".to_vec()));
+        assert!(
+            matches!(decoded, Ok(Some(Message::Blob(b))) if b == b"asdf".to_vec())
+        );
     }
 
     #[test]
@@ -748,6 +756,9 @@ mod decoder_tests {
         let mut bytes = BytesMut::with_capacity(5);
         bytes.put_slice(&[5, 0, 0, 0, MessageType::MemDone as u8]);
         let mut decoder = test_framer();
-        assert!(matches!(decoder.decode(&mut bytes), Ok(Some(Message::MemDone))));
+        assert!(matches!(
+            decoder.decode(&mut bytes),
+            Ok(Some(Message::MemDone))
+        ));
     }
 }

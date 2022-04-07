@@ -3,7 +3,7 @@
 #: name = "image"
 #: variety = "basic"
 #: target = "helios"
-#: rust_toolchain = "nightly"
+#: rust_toolchain = "stable"
 #: output_rules = [
 #:   "/out/*",
 #: ]
