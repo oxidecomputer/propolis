@@ -9,6 +9,8 @@ use futures::future::Fuse;
 use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
+use propolis::hw::qemu::ramfb::RamFb;
+use rfb::server::VncServer;
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
@@ -34,8 +36,9 @@ use propolis_client::api;
 
 use crate::config::Config;
 use crate::initializer::{build_instance, MachineInitializer};
-use crate::migrate;
 use crate::serial::Serial;
+use crate::vnc::PropolisVncServer;
+use crate::{migrate, vnc};
 
 // TODO(error) Do a pass of HTTP codes (error and ok)
 // TODO(idempotency) Idempotency mechanisms?
@@ -91,16 +94,22 @@ pub struct Context {
     pub(crate) migrate_task: Mutex<Option<migrate::MigrateTask>>,
     config: Config,
     log: Logger,
+    pub(crate) vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
 }
 
 impl Context {
     /// Creates a new server context object.
-    pub fn new(config: Config, log: Logger) -> Self {
+    pub fn new(
+        config: Config,
+        vnc_server: VncServer<PropolisVncServer>,
+        log: Logger,
+    ) -> Self {
         Context {
             context: Mutex::new(None),
             migrate_task: Mutex::new(None),
             config,
             log,
+            vnc_server: Arc::new(Mutex::new(vnc_server)),
         }
     }
 }
@@ -203,7 +212,7 @@ async fn instance_ensure(
         ));
     }
 
-    // Handle requsts to an instance that has already been initialized.
+    // Handle requests to an instance that has already been initialized.
     let mut context = server_context.context.lock().await;
     if let Some(ctx) = &*context {
         if ctx.properties.id != properties.id {
@@ -267,6 +276,8 @@ async fn instance_ensure(
     }));
 
     let mut com1 = None;
+    let mut ramfb: Option<Arc<RamFb>> = None;
+    let mut rt_handle = None;
 
     // Initialize (some) of the instance's hardware.
     //
@@ -467,7 +478,9 @@ async fn instance_ensure(
                 }
             }
 
-            init.initialize_fwcfg(properties.vcpus)?;
+            let ramfb_id = init.initialize_fwcfg(properties.vcpus)?;
+            ramfb = inv.get_concrete(ramfb_id);
+            rt_handle = disp.handle();
             init.initialize_cpus()?;
             Ok(())
         })
@@ -477,6 +490,25 @@ async fn instance_ensure(
                 err
             ))
         })?;
+
+    // Initialize framebuffer data for the VNC server.
+    let vnc_hdl = Arc::clone(&server_context.vnc_server);
+    let (addr, width, height) = ramfb.as_ref().unwrap().get_framebuffer_info();
+    let fb = vnc::RamFb::new(addr, width, height);
+    let actx = instance.async_ctx();
+    let vnc_server = vnc_hdl.lock().await;
+    vnc_server.server.set_async_ctx(actx).await;
+    vnc_server.server.initialize_framebuffer(fb).await;
+
+    let rt = rt_handle.unwrap().clone();
+    let hdl = Arc::clone(&vnc_hdl);
+    ramfb.unwrap().set_notifier(Box::new(move |config, is_valid| {
+        let h = Arc::clone(&hdl);
+        rt.block_on(async move {
+            let vnc = h.lock().await;
+            vnc.server.update(config, is_valid).await;
+        });
+    }));
 
     // Save the newly created instance in the server's context.
     *context = Some(InstanceContext {
@@ -521,6 +553,7 @@ async fn instance_ensure(
 
         None
     };
+
     instance.print();
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))

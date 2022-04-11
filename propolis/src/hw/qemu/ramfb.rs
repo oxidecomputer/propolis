@@ -71,10 +71,18 @@ impl Config {
 
         Some(())
     }
+
+    pub fn get_framebuffer_info(&self) -> (u64, u32, u32) {
+        (self.addr, self.width, self.height)
+    }
 }
+
+type NotifyFn = Box<dyn Fn(&Config, bool) + Send + Sync + 'static>;
+
 #[derive(Default)]
 pub struct RamFb {
     config: Mutex<Config>,
+    notify: Mutex<Option<NotifyFn>>,
 }
 impl RamFb {
     pub fn create() -> Arc<Self> {
@@ -84,6 +92,13 @@ impl RamFb {
         builder
             .add_named("etc/ramfb", Arc::clone(self) as Arc<dyn Item>)
             .unwrap();
+    }
+    pub fn get_framebuffer_info(&self) -> (u64, u32, u32) {
+        self.config.lock().unwrap().get_framebuffer_info()
+    }
+    pub fn set_notifier(&self, n: NotifyFn) {
+        let mut locked = self.notify.lock().unwrap();
+        *locked = Some(n);
     }
 }
 impl Item for RamFb {
@@ -123,7 +138,13 @@ impl Item for RamFb {
             }
             match (valid_before, valid_after) {
                 (true, _) | (false, true) => {
-                    //TODO: notify about update
+                    let notify = self.notify.lock().unwrap();
+                    if let Some(func) = notify.as_ref() {
+                        slog::info!(ctx.log, "notifying");
+                        func(&config, valid_after);
+                    } else {
+                        slog::info!(ctx.log, "no notify fn set");
+                    }
                 }
                 _ => {}
             }

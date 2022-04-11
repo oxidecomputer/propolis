@@ -9,12 +9,17 @@ use anyhow::anyhow;
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
 };
+use futures::join;
 use propolis::usdt::register_probes;
-use slog::info;
-use std::net::SocketAddr;
+use rfb::rfb::{ProtoVersion, SecurityType, SecurityTypes};
+use rfb::server::VncServer;
+use rfb::server::{VncServerConfig, VncServerData};
+use slog::{info, o, Logger};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use structopt::StructOpt;
 
+use propolis_server::vnc::PropolisVncServer;
 use propolis_server::{config, server};
 
 #[derive(Debug, StructOpt)]
@@ -45,6 +50,32 @@ pub fn run_openapi() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn setup_vnc(log: &Logger) -> VncServer<PropolisVncServer> {
+    // XXX: Do we want to specify this information in the config file?
+    let initial_width = 1024;
+    let initial_height = 768;
+
+    let config = VncServerConfig {
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 5900),
+        version: ProtoVersion::Rfb38,
+        // vncviewer won't work without offering VncAuth, even though it doesn't ask to use
+        // it.
+        sec_types: SecurityTypes(vec![
+            SecurityType::None,
+            SecurityType::VncAuthentication,
+        ]),
+        name: "propolis-vnc".to_string(),
+    };
+    let data = VncServerData { width: initial_width, height: initial_height };
+    let pvnc = PropolisVncServer::new(
+        initial_width,
+        initial_height,
+        log.new(o!("component" => "vnc-server")),
+    );
+
+    VncServer::new(pvnc, config, data)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
@@ -72,7 +103,12 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            let context = server::Context::new(config, log.new(slog::o!()));
+            let vnc_server = setup_vnc(&log);
+            let vnc_server_hdl = vnc_server.clone();
+
+            let context =
+                server::Context::new(config, vnc_server, log.new(slog::o!()));
+
             info!(log, "Starting server...");
             let server = HttpServerStarter::new(
                 &config_dropshot,
@@ -82,8 +118,9 @@ async fn main() -> anyhow::Result<()> {
             )
             .map_err(|error| anyhow!("Failed to start server: {}", error))?
             .start();
-            server
-                .await
+
+            let (server_res, _) = join!(server, vnc_server_hdl.start());
+            server_res
                 .map_err(|e| anyhow!("Server exited with an error: {}", e))
         }
     }

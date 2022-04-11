@@ -18,11 +18,11 @@ doc = false
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1.53"
 bit_field = "0.10.1"
 bitvec = "1.0"
 bytes = "1.1"
 const_format = "0.2"
-# dropshot = "0.6"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 erased-serde = "0.3"
 futures = "0.3"
@@ -42,6 +42,7 @@ slog = "2.7"
 structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis", features = ["crucible"], default-features = false }
 propolis-client = { path = "../client" }
+rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "7c16e55" }
 uuid = "0.8"
 base64 = "0.13"
 
