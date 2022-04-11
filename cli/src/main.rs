@@ -230,6 +230,118 @@ async fn put_instance(
     Ok(())
 }
 
+async fn stdin_to_websockets_task(
+    mut stdinrx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    wstx: tokio::sync::mpsc::Sender<Vec<u8>>,
+) {
+    // next_raw must live outside loop, because Ctrl-A should work across
+    // multiple inbuf reads.
+    let mut next_raw = false;
+
+    loop {
+        let inbuf = if let Some(inbuf) = stdinrx.recv().await {
+            inbuf
+        } else {
+            continue;
+        };
+
+        // Put bytes from inbuf to outbuf, but don't send Ctrl-A unless
+        // next_raw is true.
+        let mut outbuf = Vec::with_capacity(inbuf.len());
+
+        let mut exit = false;
+        for c in inbuf {
+            match c {
+                // Ctrl-A means send next one raw
+                b'\x01' => {
+                    if next_raw {
+                        // Ctrl-A Ctrl-A should be sent as Ctrl-A
+                        outbuf.push(c);
+                        next_raw = false;
+                    } else {
+                        next_raw = true;
+                    }
+                }
+                b'\x03' => {
+                    if !next_raw {
+                        // Exit on non-raw Ctrl-C
+                        exit = true;
+                        break;
+                    } else {
+                        // Otherwise send Ctrl-C
+                        outbuf.push(c);
+                        next_raw = false;
+                    }
+                }
+                _ => {
+                    outbuf.push(c);
+                    next_raw = false;
+                }
+            }
+        }
+
+        // Send what we have, even if there's a Ctrl-C at the end.
+        if !outbuf.is_empty() {
+            wstx.send(outbuf).await.unwrap();
+        }
+
+        if exit {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_stdin_to_websockets_task() {
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    let (stdintx, stdinrx) = tokio::sync::mpsc::channel(16);
+    let (wstx, mut wsrx) = tokio::sync::mpsc::channel(16);
+
+    tokio::spawn(async move { stdin_to_websockets_task(stdinrx, wstx).await });
+
+    // send characters, receive characters
+    stdintx
+        .send("test post please ignore".chars().map(|c| c as u8).collect())
+        .await
+        .unwrap();
+    let actual = wsrx.recv().await.unwrap();
+    assert_eq!(String::from_utf8(actual).unwrap(), "test post please ignore");
+
+    // don't send ctrl-a
+    stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
+    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
+
+    // the "t" here is sent "raw" because of last ctrl-a but that doesn't change anything
+    stdintx.send("test".chars().map(|c| c as u8).collect()).await.unwrap();
+    let actual = wsrx.recv().await.unwrap();
+    assert_eq!(String::from_utf8(actual).unwrap(), "test");
+
+    // ctrl-a ctrl-c = only ctrl-c sent
+    stdintx.send("\x01\x03".chars().map(|c| c as u8).collect()).await.unwrap();
+    let actual = wsrx.recv().await.unwrap();
+    assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
+
+    // same as above, across two messages
+    stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
+    stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
+    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
+    let actual = wsrx.recv().await.unwrap();
+    assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
+
+    // ctrl-a ctrl-a = only ctrl-a sent
+    stdintx.send("\x01\x01".chars().map(|c| c as u8).collect()).await.unwrap();
+    let actual = wsrx.recv().await.unwrap();
+    assert_eq!(String::from_utf8(actual).unwrap(), "\x01");
+
+    // ctrl-c on its own means exit
+    stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
+    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
+
+    // channel is closed
+    assert!(wsrx.recv().await.is_none());
+}
+
 async fn serial(
     client: &Client,
     addr: SocketAddr,
@@ -254,14 +366,11 @@ async fn serial(
     // https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html#method.read_exact
     // is not cancel safe! Meaning reads from tokio::io::stdin are not cancel
     // safe. Spawn a separate task to read and put bytes onto this channel.
-    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let (stdintx, stdinrx) = tokio::sync::mpsc::channel(16);
+    let (wstx, mut wsrx) = tokio::sync::mpsc::channel(16);
 
     tokio::spawn(async move {
         let mut stdin = tokio::io::stdin();
-
-        // next_raw must live outside loop, because Ctrl-A should work across
-        // multiple inbuf reads.
-        let mut next_raw = false;
         let mut inbuf = [0u8; 1024];
 
         loop {
@@ -270,54 +379,15 @@ async fn serial(
                 Ok(n) => n,
             };
 
-            // Put bytes from inbuf to outbuf, but don't send Ctrl-A unless
-            // next_raw is true.
-            let mut outbuf = Vec::with_capacity(n);
-
-            let mut exit = false;
-            for i in 0..n {
-                let c = inbuf[i];
-                match c {
-                    // Ctrl-A means send next one raw
-                    b'\x01' => {
-                        if next_raw {
-                            // Ctrl-A Ctrl-A should be sent as Ctrl-A
-                            outbuf.push(c);
-                            next_raw = false;
-                        } else {
-                            next_raw = true;
-                        }
-                    }
-                    b'\x03' => {
-                        if !next_raw {
-                            // Exit on non-raw Ctrl-C
-                            exit = true;
-                            break;
-                        } else {
-                            // Otherwise send Ctrl-C
-                            outbuf.push(c);
-                            next_raw = false;
-                        }
-                    }
-                    _ => {
-                        outbuf.push(c);
-                        next_raw = false;
-                    }
-                }
-            }
-
-            // Send what we have, even if there's a Ctrl-C at the end.
-            tx.send(outbuf).await.unwrap();
-
-            if exit {
-                break;
-            }
+            stdintx.send(inbuf[0..n].to_vec()).await.unwrap();
         }
     });
 
+    tokio::spawn(async move { stdin_to_websockets_task(stdinrx, wstx).await });
+
     loop {
         tokio::select! {
-            c = rx.recv() => {
+            c = wsrx.recv() => {
                 match c {
                     None => {
                         // channel is closed
