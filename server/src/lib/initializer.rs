@@ -316,7 +316,7 @@ impl<'a> MachineInitializer<'a> {
         self.initialize_virtio_block(chipset, bdf, be, creg)
     }
 
-    pub fn initialize_fwcfg(&self, cpus: u8) -> Result<(), Error> {
+    pub fn initialize_fwcfg(&self, cpus: u8) -> Result<EntityID, Error> {
         let mut fwcfg = fwcfg::FwCfgBuilder::new();
         fwcfg
             .add_legacy(
@@ -333,8 +333,8 @@ impl<'a> MachineInitializer<'a> {
         fwcfg_dev.attach(pio);
 
         self.inv.register(&fwcfg_dev)?;
-        self.inv.register(&ramfb)?;
-        Ok(())
+        let ramfb_id = self.inv.register(&ramfb)?;
+        Ok(ramfb_id)
     }
 
     pub fn initialize_cpus(&self) -> Result<(), Error> {
