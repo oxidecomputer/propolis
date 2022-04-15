@@ -6,6 +6,7 @@ use propolis_client::{Client, Error as ClientError};
 use propolis_server::{
     config::{BlockDevice, Config, Device},
     server,
+    vnc::setup_vnc,
 };
 use slog::{o, Logger};
 use std::collections::BTreeMap;
@@ -59,8 +60,9 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
     let mut devices = BTreeMap::new();
     devices.insert("block0".to_string(), dev);
 
+    let vnc_server = setup_vnc(&log);
     let config = Config::new(artifacts.bootrom.path(), devices, block_devices);
-    let context = server::Context::new(config, log.new(slog::o!()));
+    let context = server::Context::new(config, vnc_server, log.new(slog::o!()));
 
     let config_dropshot = ConfigDropshot {
         bind_address: "127.0.0.1:0".parse().unwrap(),

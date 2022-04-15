@@ -3,9 +3,12 @@ use propolis::common::GuestAddr;
 use propolis::dispatch::AsyncCtx;
 use propolis::hw::qemu::ramfb::Config;
 use rfb::encodings::RawEncoding;
-use rfb::rfb::{FramebufferUpdate, Rectangle};
-use rfb::server::Server;
-use slog::{debug, error, Logger};
+use rfb::rfb::{
+    FramebufferUpdate, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
+};
+use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
+use slog::{debug, error, o, Logger};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -122,4 +125,31 @@ impl Server for PropolisVncServer {
 
         fb
     }
+}
+
+// Default VNC server configuration.
+// XXX: Do we want to specify this information in the config file?
+pub fn setup_vnc(log: &Logger) -> VncServer<PropolisVncServer> {
+    let initial_width = 1024;
+    let initial_height = 768;
+
+    let config = VncServerConfig {
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 5900),
+        version: ProtoVersion::Rfb38,
+        // vncviewer won't work without offering VncAuth, even though it doesn't ask to use
+        // it.
+        sec_types: SecurityTypes(vec![
+            SecurityType::None,
+            SecurityType::VncAuthentication,
+        ]),
+        name: "propolis-vnc".to_string(),
+    };
+    let data = VncServerData { width: initial_width, height: initial_height };
+    let pvnc = PropolisVncServer::new(
+        initial_width,
+        initial_height,
+        log.new(o!("component" => "vnc-server")),
+    );
+
+    VncServer::new(pvnc, config, data)
 }
