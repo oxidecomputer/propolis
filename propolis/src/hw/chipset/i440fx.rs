@@ -11,6 +11,7 @@ use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::inventory;
 use crate::migrate::{Migrate, Migrator};
+use crate::mmio::MmioFn;
 use crate::pio::{PioBus, PioFn};
 use crate::util::regmap::RegMap;
 use crate::vmm::{Machine, VmmHdl};
@@ -92,6 +93,15 @@ impl I440Fx {
             piofn,
         )
         .unwrap();
+
+        // TODO make this way less of a hack
+        let mmio = &machine.bus_mmio;
+        let ecam_func =
+            Arc::new(move |addr: usize, _rwo: RWOp, ctx: &DispCtx| {
+                slog::info!(ctx.log, "i'm in ur pci mmio space";
+                            "addr" => format!("{:x}", addr));
+            }) as Arc<MmioFn>;
+        mmio.register(0xe000_0000_usize, 0x1000_0000_usize, ecam_func).unwrap();
 
         this
     }
