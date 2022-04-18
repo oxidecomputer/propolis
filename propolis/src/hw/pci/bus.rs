@@ -121,6 +121,13 @@ struct Inner {
 }
 impl Inner {
     fn new(pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
+        let ecam_func =
+            Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
+                slog::info!(ctx.log, "i'm in ur pci mmio space";
+                            "addr" => format!("0x{:x}", addr + rwo.offset()),
+                            "size" => format!("0x{:x}", rwo.len()));
+            }) as Arc<MmioFn>;
+        mmio.register(0xe000_0000, 0x1000_0000, ecam_func).unwrap();
         Self {
             slots: Default::default(),
             bar_state: BTreeMap::new(),
