@@ -121,19 +121,17 @@ struct Inner {
 }
 impl Inner {
     fn new(pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
-        let ecam_func =
-            Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                slog::info!(ctx.log, "i'm in ur pci mmio space";
-                            "addr" => format!("0x{:x}", addr + rwo.offset()),
-                            "size" => format!("0x{:x}", rwo.len()));
-            }) as Arc<MmioFn>;
-        mmio.register(0xe000_0000, 0x1000_0000, ecam_func).unwrap();
-        Self {
+        let this = Self {
             slots: Default::default(),
             bar_state: BTreeMap::new(),
             bus_pio: Arc::downgrade(pio),
             bus_mmio: Arc::downgrade(mmio),
-        }
+        };
+
+        #[cfg(feature = "testonly-pci-enhanced-configuration")]
+        this.enable_mmio_configuration();
+
+        this
     }
     fn device_at(&self, bdf: Bdf) -> Option<Arc<dyn Endpoint>> {
         let res = self.slots[bdf.dev.get() as usize].funcs
@@ -209,6 +207,20 @@ impl Inner {
                     }
                 }
             }
+        }
+    }
+
+    #[cfg(feature = "testonly-pci-enhanced-configuration")]
+    fn enable_mmio_configuration(&self) {
+        if let Some(mmio) = self.bus_mmio.upgrade() {
+            let ecam_func = Arc::new(
+                move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
+                    slog::info!(ctx.log, "i'm in ur pci mmio space";
+                                "addr" => format!("0x{:x}", addr + rwo.offset()),
+                                "size" => format!("0x{:x}", rwo.len()));
+                },
+            ) as Arc<MmioFn>;
+            mmio.register(0xe000_0000, 0x1000_0000, ecam_func).unwrap();
         }
     }
 }
