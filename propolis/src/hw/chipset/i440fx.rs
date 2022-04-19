@@ -100,7 +100,12 @@ impl I440Fx {
             Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
                 mmio_dev.pci_bus.extended_config_rw(addr, rwo, ctx);
             }) as Arc<MmioFn>;
-        mmio.register(0xe000_0000, 0x1000_0000, mmio_ecam_fn).unwrap();
+        mmio.register(
+            pci::bits::ADDR_ECAM_REGION_BASE,
+            pci::bits::LEN_ECAM_REGION,
+            mmio_ecam_fn,
+        )
+        .unwrap();
 
         this
     }
