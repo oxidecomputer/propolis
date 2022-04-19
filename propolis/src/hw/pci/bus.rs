@@ -214,24 +214,46 @@ impl Inner {
     fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
         use crate::{
             common::{ReadOp, WriteOp},
-            hw::pci::bits::{MASK_BUS, MASK_DEV, MASK_FUNC},
+            hw::pci::bits::{LEN_CFG, MASK_BUS, MASK_DEV, MASK_FUNC},
         };
 
         // TODO move this into bits.rs
         const ECAM_BASE_ADDRESS: usize = 0xe000_0000;
-
-        // TODO check for accesses spanning a 4-byte boundary
-        // TODO check for bus numbers other than 0; this probably needs a
-        //      broader issue, actually
+        let ecam_offset = (addr - ECAM_BASE_ADDRESS) + rwo.offset();
 
         // Each function gets 4 KiB of extended configuration space,
         // with the bus, device, and function numbers encoded in
-        // bits [27:20], [19:15], and [14:12] respectively.
-        let ecam_offset = (addr - ECAM_BASE_ADDRESS) + rwo.offset();
+        // bits [27:20], [19:15], and [14:12] respectively, and the offset in
+        // the bottom 12 bits.
         let bus = (ecam_offset >> 20) as u8 & MASK_BUS;
         let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
         let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
         let cfg_offset = ecam_offset & 0xfff;
+        let cfg_last = cfg_offset.checked_add(rwo.len()).unwrap();
+
+        // Reject the access if
+        // - it is for a bus other than bus 0 (TODO: hoist this logic into
+        //   something that understands bus numbers; this *is* a PCI bus)
+        // - it would access byte(s) outside of the 256-byte legacy PCI
+        //   configuration space (this causes a panic for legacy PCI devices;
+        //   TODO: this restriction will have to be removed for PCIe)
+        // - it spans a 4-byte boundary (Revision 5.0 of the PCIe spec provides
+        //   that root complexes need not implement such accesses; see section
+        //   7.2.2).
+        if (bus != 0)
+            || (cfg_last > LEN_CFG)
+            || ((addr & !3_usize) != (cfg_last & !3_usize))
+        {
+            slog::info!(ctx.log, "ECAM: bad legacy configuration access";
+                        "addr" => format!("{:x}", ecam_offset),
+                        "len" => rwo.len(),
+                        "bus" => bus,
+                        "cfg_offset" => cfg_offset);
+            if let RWOp::Read(ro) = rwo {
+                ro.fill(0xff);
+            }
+            return;
+        }
 
         // Since the bus/device/function numbers were generated
         // using appropriately-sized bit masks, they should always
