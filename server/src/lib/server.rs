@@ -3,7 +3,7 @@
 use anyhow::Result;
 use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
-    HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
+    HttpResponseUpdatedNoContent, RequestContext, TypedBody,
 };
 use futures::future::Fuse;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -25,7 +25,6 @@ use tokio_tungstenite::tungstenite::{
     self, handshake, protocol::Role, Message,
 };
 use tokio_tungstenite::WebSocketStream;
-use uuid::Uuid;
 
 use propolis::bhyve_api;
 use propolis::dispatch::AsyncCtx;
@@ -189,28 +188,21 @@ fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
 
 #[endpoint {
     method = PUT,
-    path = "/instances/{instance_id}",
+    path = "/instances",
 }]
 async fn instance_ensure(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
 
     let request = request.into_inner();
-    let instance_id = path_params.into_inner().instance_id;
     let (properties, nics, disks, cloud_init_bytes) = (
         request.properties,
         request.nics,
         request.disks,
         request.cloud_init_bytes,
     );
-    if instance_id != properties.id {
-        return Err(HttpError::for_internal_error(
-            "UUID mismatch (path did not match struct)".to_string(),
-        ));
-    }
 
     // Handle requests to an instance that has already been initialized.
     let mut context = server_context.context.lock().await;
@@ -524,7 +516,7 @@ async fn instance_ensure(
     let migrate = if let Some(migrate_request) = request.migrate {
         // This is a migrate request and so we should try to establish a
         // connection with the source instance.
-        let res = migrate::dest_initiate(rqctx, instance_id, migrate_request)
+        let res = migrate::dest_initiate(rqctx, migrate_request)
             .await
             .map_err(<_ as Into<HttpError>>::into)?;
         Some(res)
@@ -561,37 +553,10 @@ async fn instance_ensure(
 
 #[endpoint {
     method = GET,
-    path = "/instances/{instance_id}/uuid",
-    unpublished = true,
-}]
-async fn instance_get_uuid(
-    rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstanceNameParams>,
-) -> Result<HttpResponseOk<Uuid>, HttpError> {
-    let context = rqctx.context().context.lock().await;
-
-    let context = context.as_ref().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
-    })?;
-
-    if path_params.into_inner().instance_id != context.properties.name {
-        return Err(HttpError::for_internal_error(
-            "Instance name mismatch (path did not match struct)".to_string(),
-        ));
-    }
-
-    Ok(HttpResponseOk(context.properties.id))
-}
-
-#[endpoint {
-    method = GET,
-    path = "/instances/{instance_id}",
+    path = "/instances",
 }]
 async fn instance_get(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
     let context = rqctx.context().context.lock().await;
 
@@ -601,11 +566,6 @@ async fn instance_get(
         )
     })?;
 
-    if path_params.into_inner().instance_id != context.properties.id {
-        return Err(HttpError::for_internal_error(
-            "UUID mismatch (path did not match struct)".to_string(),
-        ));
-    }
     let instance_info = api::Instance {
         properties: context.properties.clone(),
         state: propolis_to_api_state(context.instance.current_state()),
@@ -627,11 +587,10 @@ async fn instance_get(
 
 #[endpoint {
     method = GET,
-    path = "/instances/{instance_id}/state-monitor",
+    path = "/instances/state-monitor",
 }]
 async fn instance_state_monitor(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceStateMonitorRequest>,
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
     let (mut state_watcher, gen) = {
@@ -641,12 +600,6 @@ async fn instance_state_monitor(
                 "Server not initialized (no instance)".to_string(),
             )
         })?;
-        let path_params = path_params.into_inner();
-        if path_params.instance_id != context.properties.id {
-            return Err(HttpError::for_internal_error(
-                "UUID mismatch (path did not match struct)".to_string(),
-            ));
-        }
 
         let gen = request.into_inner().gen;
         let state_watcher = context.state_watcher.clone();
@@ -669,11 +622,10 @@ async fn instance_state_monitor(
 
 #[endpoint {
     method = PUT,
-    path = "/instances/{instance_id}/state",
+    path = "/instances/state",
 }]
 async fn instance_state_put(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceStateRequested>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let context = rqctx.context().context.lock().await;
@@ -683,12 +635,6 @@ async fn instance_state_put(
             "Server not initialized (no instance)".to_string(),
         )
     })?;
-
-    if path_params.into_inner().instance_id != context.properties.id {
-        return Err(HttpError::for_internal_error(
-            "UUID mismatch (path did not match struct)".to_string(),
-        ));
-    }
 
     let state = api_to_propolis_state(request.into_inner());
     context.instance.set_target_state(state).map_err(|err| {
@@ -791,11 +737,10 @@ async fn instance_serial_task(
 
 #[endpoint {
     method = GET,
-    path = "/instances/{instance_id}/serial",
+    path = "/instances/serial",
 }]
 async fn instance_serial(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
 ) -> Result<Response<Body>, HttpError> {
     let mut context = rqctx.context().context.lock().await;
 
@@ -804,11 +749,6 @@ async fn instance_serial(
             "Server not initialized (no instance)".to_string(),
         )
     })?;
-    if path_params.into_inner().instance_id != context.properties.id {
-        return Err(HttpError::for_internal_error(
-            "UUID mismatch (path did not match struct)".to_string(),
-        ));
-    }
     if context.serial_task.as_ref().map_or(false, |s| s.is_attached()) {
         return Err(HttpError::for_unavail(
             None,
@@ -923,11 +863,10 @@ async fn instance_serial(
 
 #[endpoint {
     method = PUT,
-    path = "/instances/{instance_id}/serial/detach",
+    path = "/instances/serial/detach",
 }]
 async fn instance_serial_detach(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let mut context = rqctx.context().context.lock().await;
 
@@ -936,11 +875,6 @@ async fn instance_serial_detach(
             "Server not initialized (no instance)".to_string(),
         )
     })?;
-    if path_params.into_inner().instance_id != context.properties.id {
-        return Err(HttpError::for_internal_error(
-            "UUID mismatch (path did not match struct)".to_string(),
-        ));
-    }
 
     let serial_task =
         context.serial_task.take().filter(|s| s.is_attached()).ok_or_else(
@@ -972,28 +906,23 @@ async fn instance_serial_detach(
 // clients.
 #[endpoint {
     method = PUT,
-    path = "/instances/{instance_id}/migrate/start",
+    path = "/instances/migrate/start",
     unpublished = true,
 }]
 async fn instance_migrate_start(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceMigrateStartRequest>,
 ) -> Result<Response<Body>, HttpError> {
-    let instance_id = path_params.into_inner().instance_id;
     let migration_id = request.into_inner().migration_id;
-    migrate::source_start(rqctx, instance_id, migration_id)
-        .await
-        .map_err(Into::into)
+    migrate::source_start(rqctx, migration_id).await.map_err(Into::into)
 }
 
 #[endpoint {
     method = GET,
-    path = "/instances/{instance_id}/migrate/status"
+    path = "/instances/migrate/status"
 }]
 async fn instance_migrate_status(
     rqctx: Arc<RequestContext<Context>>,
-    _path_params: Path<api::InstancePathParams>,
     request: TypedBody<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
     let migration_id = request.into_inner().migration_id;
@@ -1007,7 +936,6 @@ async fn instance_migrate_status(
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
-    api.register(instance_get_uuid).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
