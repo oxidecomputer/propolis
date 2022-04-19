@@ -260,10 +260,6 @@ impl Inner {
         // using appropriately-sized bit masks, they should always
         // produce a valid BDF.
         let bdf = Bdf::new(bus, dev, func).unwrap();
-        slog::info!(ctx.log, "i'm in ur pci mmio space";
-                    "addr" => format!("0x{:x}", addr + rwo.offset()),
-                    "size" => format!("0x{:x}", rwo.len()),
-                    "bdf" => bdf.to_string());
 
         // Return all set bits for reads from absent devices (section 6 of the
         // PCI local bus spec rev 3.0).
