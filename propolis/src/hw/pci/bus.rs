@@ -216,7 +216,7 @@ impl Inner {
             common::{ReadOp, WriteOp},
             hw::pci::bits::{
                 ADDR_ECAM_REGION_BASE, LEN_CFG, MASK_BUS, MASK_DEV,
-                MASK_ECAM_CFG_OFFSET, MASK_ECAM_DWORD_BOUNDARY, MASK_FUNC,
+                MASK_ECAM_CFG_OFFSET, MASK_ECAM_DWORD, MASK_FUNC,
             },
         };
 
@@ -244,8 +244,7 @@ impl Inner {
         //   7.2.2).
         if (bus != 0)
             || (cfg_last > LEN_CFG)
-            || ((addr & MASK_ECAM_DWORD_BOUNDARY)
-                != (cfg_last & MASK_ECAM_DWORD_BOUNDARY))
+            || ((addr & MASK_ECAM_DWORD) != (cfg_last & MASK_ECAM_DWORD))
         {
             slog::info!(ctx.log, "ECAM: bad legacy configuration access";
                         "addr" => format!("{:x}", ecam_offset),

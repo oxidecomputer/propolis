@@ -68,4 +68,4 @@ pub const LEN_PCI_CONFIG_DATA: u16 = 4;
 pub const ADDR_ECAM_REGION_BASE: usize = 0xe000_0000;
 pub const LEN_ECAM_REGION: usize = 0x1000_0000;
 pub const MASK_ECAM_CFG_OFFSET: usize = 0xfff;
-pub const MASK_ECAM_DWORD_BOUNDARY: usize = !3;
+pub const MASK_ECAM_DWORD: usize = !3;
