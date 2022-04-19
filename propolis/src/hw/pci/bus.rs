@@ -225,21 +225,11 @@ impl Inner {
                     let bus = (ecam_offset >> 20) as u8 & MASK_BUS;
                     let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
                     let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
-                    let bdf = Bdf::new(bus, dev, func);
 
-                    // This shouldn't happen absent a code bug in the parsing
-                    // logic, but don't unceremoniously zap the guest if it
-                    // does.
-                    if bdf.is_none() {
-                        slog::error!(ctx.log, "Failed to parse PCIe extended 
-                                     configuration space access into BDF";
-                                     "ecam_offset" => format!("0x{:x}", ecam_offset),
-                                     "bus" => bus,
-                                     "dev" => dev,
-                                     "func" => func);
-                        return;
-                    }
-                    let bdf = bdf.unwrap();
+                    // Since the bus/device/function numbers were generated
+                    // using appropriately-sized bit masks, they should always
+                    // produce a valid BDF.
+                    let bdf = Bdf::new(bus, dev, func).unwrap();
                     slog::info!(ctx.log, "i'm in ur pci mmio space";
                                 "addr" => format!("0x{:x}", addr + rwo.offset()),
                                 "size" => format!("0x{:x}", rwo.len()),
