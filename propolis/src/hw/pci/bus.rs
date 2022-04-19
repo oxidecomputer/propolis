@@ -212,15 +212,41 @@ impl Inner {
 
     #[cfg(feature = "testonly-pci-enhanced-configuration")]
     fn enable_mmio_configuration(&self) {
+        use crate::hw::pci::bits::{MASK_BUS, MASK_DEV, MASK_FUNC};
+
         if let Some(mmio) = self.bus_mmio.upgrade() {
+            const ECAM_BASE_ADDRESS: usize = 0xe000_0000;
             let ecam_func = Arc::new(
                 move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
+                    // Each function gets 4 KiB of extended configuration space,
+                    // with the bus, device, and function numbers encoded in
+                    // bits [27:20], [19:15], and [14:12] respectively.
+                    let ecam_offset = (addr - ECAM_BASE_ADDRESS) + rwo.offset();
+                    let bus = (ecam_offset >> 20) as u8 & MASK_BUS;
+                    let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
+                    let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
+                    let bdf = Bdf::new(bus, dev, func);
+
+                    // This shouldn't happen absent a code bug in the parsing
+                    // logic, but don't unceremoniously zap the guest if it
+                    // does.
+                    if bdf.is_none() {
+                        slog::error!(ctx.log, "Failed to parse PCIe extended 
+                                     configuration space access into BDF";
+                                     "ecam_offset" => format!("0x{:x}", ecam_offset),
+                                     "bus" => bus,
+                                     "dev" => dev,
+                                     "func" => func);
+                        return;
+                    }
+                    let bdf = bdf.unwrap();
                     slog::info!(ctx.log, "i'm in ur pci mmio space";
                                 "addr" => format!("0x{:x}", addr + rwo.offset()),
-                                "size" => format!("0x{:x}", rwo.len()));
+                                "size" => format!("0x{:x}", rwo.len()),
+                                "bdf" => bdf.to_string());
                 },
             ) as Arc<MmioFn>;
-            mmio.register(0xe000_0000, 0x1000_0000, ecam_func).unwrap();
+            mmio.register(ECAM_BASE_ADDRESS, 0x1000_0000, ecam_func).unwrap();
         }
     }
 }
