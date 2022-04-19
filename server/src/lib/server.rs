@@ -553,7 +553,7 @@ async fn instance_ensure(
 
 #[endpoint {
     method = GET,
-    path = "/instances",
+    path = "/instance",
 }]
 async fn instance_get(
     rqctx: Arc<RequestContext<Context>>,
@@ -587,7 +587,7 @@ async fn instance_get(
 
 #[endpoint {
     method = GET,
-    path = "/instances/state-monitor",
+    path = "/instance/state-monitor",
 }]
 async fn instance_state_monitor(
     rqctx: Arc<RequestContext<Context>>,
@@ -622,7 +622,7 @@ async fn instance_state_monitor(
 
 #[endpoint {
     method = PUT,
-    path = "/instances/state",
+    path = "/instance/state",
 }]
 async fn instance_state_put(
     rqctx: Arc<RequestContext<Context>>,
@@ -737,7 +737,7 @@ async fn instance_serial_task(
 
 #[endpoint {
     method = GET,
-    path = "/instances/serial",
+    path = "/instance/serial",
 }]
 async fn instance_serial(
     rqctx: Arc<RequestContext<Context>>,
@@ -863,7 +863,7 @@ async fn instance_serial(
 
 #[endpoint {
     method = PUT,
-    path = "/instances/serial/detach",
+    path = "/instance/serial/detach",
 }]
 async fn instance_serial_detach(
     rqctx: Arc<RequestContext<Context>>,
@@ -906,7 +906,7 @@ async fn instance_serial_detach(
 // clients.
 #[endpoint {
     method = PUT,
-    path = "/instances/migrate/start",
+    path = "/instance/migrate/start",
     unpublished = true,
 }]
 async fn instance_migrate_start(
@@ -919,7 +919,7 @@ async fn instance_migrate_start(
 
 #[endpoint {
     method = GET,
-    path = "/instances/migrate/status"
+    path = "/instance/migrate/status"
 }]
 async fn instance_migrate_status(
     rqctx: Arc<RequestContext<Context>>,

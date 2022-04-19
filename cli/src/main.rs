@@ -317,7 +317,7 @@ async fn test_stdin_to_websockets_task() {
 }
 
 async fn serial(addr: SocketAddr) -> anyhow::Result<()> {
-    let path = format!("ws://{}/instances/serial", addr);
+    let path = format!("ws://{}/instance/serial", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(path)
         .await
         .with_context(|| anyhow!("failed to create serial websocket stream"))?;

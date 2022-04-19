@@ -109,7 +109,7 @@ impl Client {
         &self,
         request: &api::InstanceEnsureRequest,
     ) -> Result<api::InstanceEnsureResponse, Error> {
-        let path = format!("http://{}/instances", self.address,);
+        let path = format!("http://{}/instance", self.address,);
         let body = Body::from(serde_json::to_string(&request).unwrap());
         self.put(path, Some(body)).await
     }
@@ -118,7 +118,7 @@ impl Client {
     pub async fn instance_get(
         &self,
     ) -> Result<api::InstanceGetResponse, Error> {
-        let path = format!("http://{}/instances", self.address);
+        let path = format!("http://{}/instance", self.address);
         self.get(path, None).await
     }
 
@@ -127,7 +127,7 @@ impl Client {
         &self,
         gen: u64,
     ) -> Result<api::InstanceStateMonitorResponse, Error> {
-        let path = format!("http://{}/instances/state-monitor", self.address);
+        let path = format!("http://{}/instance/state-monitor", self.address);
         let body = Body::from(
             serde_json::to_string(&api::InstanceStateMonitorRequest { gen })
                 .unwrap(),
@@ -140,7 +140,7 @@ impl Client {
         &self,
         state: api::InstanceStateRequested,
     ) -> Result<(), Error> {
-        let path = format!("http://{}/instances/state", self.address);
+        let path = format!("http://{}/instance/state", self.address);
         let body = Body::from(serde_json::to_string(&state).unwrap());
         self.put_no_response(path, Some(body)).await
     }
@@ -150,7 +150,7 @@ impl Client {
         &self,
         migration_id: Uuid,
     ) -> Result<api::InstanceMigrateStatusResponse, Error> {
-        let path = format!("http://{}/instances/migrate/status", self.address);
+        let path = format!("http://{}/instance/migrate/status", self.address);
         let body = Body::from(
             serde_json::to_string(&api::InstanceMigrateStatusRequest {
                 migration_id,
