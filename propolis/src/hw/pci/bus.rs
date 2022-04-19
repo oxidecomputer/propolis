@@ -45,6 +45,11 @@ impl Bus {
         let inner = self.inner.lock().unwrap();
         inner.device_at(bdf)
     }
+
+    pub fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
+        let inner = self.inner.lock().unwrap();
+        inner.extended_config_rw(addr, rwo, ctx);
+    }
 }
 
 pub struct Attachment {
@@ -121,17 +126,12 @@ struct Inner {
 }
 impl Inner {
     fn new(pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
-        let this = Self {
+        Self {
             slots: Default::default(),
             bar_state: BTreeMap::new(),
             bus_pio: Arc::downgrade(pio),
             bus_mmio: Arc::downgrade(mmio),
-        };
-
-        #[cfg(feature = "testonly-pci-enhanced-configuration")]
-        this.enable_mmio_configuration();
-
-        this
+        }
     }
     fn device_at(&self, bdf: Bdf) -> Option<Arc<dyn Endpoint>> {
         let res = self.slots[bdf.dev.get() as usize].funcs
@@ -211,33 +211,70 @@ impl Inner {
     }
 
     #[cfg(feature = "testonly-pci-enhanced-configuration")]
-    fn enable_mmio_configuration(&self) {
-        use crate::hw::pci::bits::{MASK_BUS, MASK_DEV, MASK_FUNC};
+    fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
+        use crate::{
+            common::{ReadOp, WriteOp},
+            hw::pci::bits::{MASK_BUS, MASK_DEV, MASK_FUNC},
+        };
 
-        if let Some(mmio) = self.bus_mmio.upgrade() {
-            const ECAM_BASE_ADDRESS: usize = 0xe000_0000;
-            let ecam_func = Arc::new(
-                move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                    // Each function gets 4 KiB of extended configuration space,
-                    // with the bus, device, and function numbers encoded in
-                    // bits [27:20], [19:15], and [14:12] respectively.
-                    let ecam_offset = (addr - ECAM_BASE_ADDRESS) + rwo.offset();
-                    let bus = (ecam_offset >> 20) as u8 & MASK_BUS;
-                    let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
-                    let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
+        // TODO move this into bits.rs
+        const ECAM_BASE_ADDRESS: usize = 0xe000_0000;
 
-                    // Since the bus/device/function numbers were generated
-                    // using appropriately-sized bit masks, they should always
-                    // produce a valid BDF.
-                    let bdf = Bdf::new(bus, dev, func).unwrap();
-                    slog::info!(ctx.log, "i'm in ur pci mmio space";
-                                "addr" => format!("0x{:x}", addr + rwo.offset()),
-                                "size" => format!("0x{:x}", rwo.len()),
-                                "bdf" => bdf.to_string());
-                },
-            ) as Arc<MmioFn>;
-            mmio.register(ECAM_BASE_ADDRESS, 0x1000_0000, ecam_func).unwrap();
+        // TODO check for accesses spanning a 4-byte boundary
+        // TODO check for bus numbers other than 0; this probably needs a
+        //      broader issue, actually
+
+        // Each function gets 4 KiB of extended configuration space,
+        // with the bus, device, and function numbers encoded in
+        // bits [27:20], [19:15], and [14:12] respectively.
+        let ecam_offset = (addr - ECAM_BASE_ADDRESS) + rwo.offset();
+        let bus = (ecam_offset >> 20) as u8 & MASK_BUS;
+        let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
+        let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
+        let cfg_offset = ecam_offset & 0xfff;
+
+        // Since the bus/device/function numbers were generated
+        // using appropriately-sized bit masks, they should always
+        // produce a valid BDF.
+        let bdf = Bdf::new(bus, dev, func).unwrap();
+        slog::info!(ctx.log, "i'm in ur pci mmio space";
+                    "addr" => format!("0x{:x}", addr + rwo.offset()),
+                    "size" => format!("0x{:x}", rwo.len()),
+                    "bdf" => bdf.to_string());
+
+        // Return all set bits for reads of absent devices (section 6 of the
+        // PCI local bus spec rev 3.0).
+        let dev = self.device_at(bdf);
+        if dev.is_none() {
+            slog::info!(ctx.log, "ECAM access: device not found, ignoring");
+            if let RWOp::Read(ro) = rwo {
+                ro.fill(0xff);
+            }
+            return;
         }
+
+        // The device is present, so let it handle the read or write.
+        let dev = dev.unwrap();
+        match rwo {
+            RWOp::Read(ro) => {
+                slog::info!(ctx.log, "Dispatching ECAM-based read");
+                let mut cro = ReadOp::new_child(cfg_offset, ro, ..);
+                dev.cfg_rw(RWOp::Read(&mut cro), ctx);
+            }
+            RWOp::Write(wo) => {
+                slog::info!(ctx.log, "Dispatching ECAM-based write");
+                let mut cro = WriteOp::new_child(cfg_offset, wo, ..);
+                dev.cfg_rw(RWOp::Write(&mut cro), ctx);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "testonly-pci-enhanced-configuration"))]
+    fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
+        match rwo {
+            RWOp::Read(ro) => ro.fill(0xff),
+            RWOp::Write(wo) => {}
+        };
     }
 }
 
