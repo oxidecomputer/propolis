@@ -188,7 +188,7 @@ fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
 
 #[endpoint {
     method = PUT,
-    path = "/instances",
+    path = "/instance",
 }]
 async fn instance_ensure(
     rqctx: Arc<RequestContext<Context>>,
