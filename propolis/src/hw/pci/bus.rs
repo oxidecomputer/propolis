@@ -220,7 +220,6 @@ impl Inner {
             },
         };
 
-        // TODO move this into bits.rs
         let ecam_offset = (addr - ADDR_ECAM_REGION_BASE) + rwo.offset();
 
         // Each function gets 4 KiB of extended configuration space,
