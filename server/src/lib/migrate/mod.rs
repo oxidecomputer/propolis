@@ -244,7 +244,6 @@ struct Device {
 /// connection and begin the migration in a separate task.
 pub async fn source_start(
     rqctx: Arc<RequestContext<Context>>,
-    instance_id: Uuid,
     migration_id: Uuid,
 ) -> Result<Response<Body>, MigrateError> {
     // Create a new log context for the migration
@@ -257,10 +256,6 @@ pub async fn source_start(
     let mut context = rqctx.context().context.lock().await;
     let context =
         context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
-
-    if instance_id != context.properties.id {
-        return Err(MigrateError::UuidMismatch);
-    }
 
     // Bail if the instance hasn't been preset to Migrate Start state.
     if !matches!(
@@ -359,7 +354,6 @@ pub async fn source_start(
 /// process (destination-side).
 pub async fn dest_initiate(
     rqctx: Arc<RequestContext<Context>>,
-    instance_id: Uuid,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -376,10 +370,6 @@ pub async fn dest_initiate(
     let context =
         context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
 
-    if instance_id != context.properties.id {
-        return Err(MigrateError::UuidMismatch);
-    }
-
     let mut migrate_task = rqctx.context().migrate_task.lock().await;
 
     // This should be a fresh propolis-server
@@ -388,7 +378,7 @@ pub async fn dest_initiate(
     // TODO: https
     // TODO: We need to make sure the src_addr is a valid target
     let src_migrate_url = format!(
-        "http://{}/instances/{}/migrate/start",
+        "http://{}/instance/{}/migrate/start",
         migrate_info.src_addr, migrate_info.src_uuid
     );
     info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);

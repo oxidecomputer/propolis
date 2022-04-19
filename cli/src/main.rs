@@ -73,32 +73,20 @@ enum Command {
     },
 
     /// Get the properties of a propolis instance
-    Get {
-        /// Instance name
-        name: String,
-    },
+    Get,
 
     /// Transition the instance to a new state
     State {
-        /// Instance name
-        name: String,
-
         /// The requested state
         #[structopt(parse(try_from_str = parse_state))]
         state: InstanceStateRequested,
     },
 
     /// Drop to a Serial console connected to the instance
-    Serial {
-        /// Instance name
-        name: String,
-    },
+    Serial,
 
     /// Migrate instance to new propolis-server
     Migrate {
-        /// Instance name
-        name: String,
-
         /// Destination propolis-server address
         #[structopt(parse(try_from_str = resolve_host))]
         dst_server: IpAddr,
@@ -193,16 +181,9 @@ async fn new_instance(
     Ok(())
 }
 
-async fn get_instance(client: &Client, name: String) -> anyhow::Result<()> {
-    // Grab the Instance UUID
-    let id = client
-        .instance_get_uuid(&name)
-        .await
-        .with_context(|| anyhow!("failed to get instance UUID"))?;
-
-    // Get the rest of the Instance properties
+async fn get_instance(client: &Client) -> anyhow::Result<()> {
     let res = client
-        .instance_get(id)
+        .instance_get()
         .await
         .with_context(|| anyhow!("failed to get instance properties"))?;
 
@@ -213,17 +194,10 @@ async fn get_instance(client: &Client, name: String) -> anyhow::Result<()> {
 
 async fn put_instance(
     client: &Client,
-    name: String,
     state: InstanceStateRequested,
 ) -> anyhow::Result<()> {
-    // Grab the Instance UUID
-    let id = client
-        .instance_get_uuid(&name)
-        .await
-        .with_context(|| anyhow!("failed to get instance UUID"))?;
-
     client
-        .instance_state_put(id, state)
+        .instance_state_put(state)
         .await
         .with_context(|| anyhow!("failed to set instance state"))?;
 
@@ -342,18 +316,8 @@ async fn test_stdin_to_websockets_task() {
     assert!(wsrx.recv().await.is_none());
 }
 
-async fn serial(
-    client: &Client,
-    addr: SocketAddr,
-    name: String,
-) -> anyhow::Result<()> {
-    // Grab the Instance UUID
-    let id = client
-        .instance_get_uuid(&name)
-        .await
-        .with_context(|| anyhow!("failed to get instance UUID"))?;
-
-    let path = format!("ws://{}/instances/{}/serial", addr, id);
+async fn serial(addr: SocketAddr) -> anyhow::Result<()> {
+    let path = format!("ws://{}/instance/serial", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(path)
         .await
         .with_context(|| anyhow!("failed to create serial websocket stream"))?;
@@ -417,21 +381,15 @@ async fn serial(
 async fn migrate_instance(
     src_client: Client,
     dst_client: Client,
-    src_name: String,
     src_addr: SocketAddr,
     dst_uuid: Uuid,
 ) -> anyhow::Result<()> {
-    // Grab the src instance UUID
-    let src_uuid = src_client
-        .instance_get_uuid(&src_name)
-        .await
-        .with_context(|| anyhow!("failed to get src instance UUID"))?;
-
     // Grab the instance details
     let src_instance = src_client
-        .instance_get(src_uuid)
+        .instance_get()
         .await
         .with_context(|| anyhow!("failed to get src instance properties"))?;
+    let src_uuid = src_instance.instance.properties.id;
 
     let request = InstanceEnsureRequest {
         properties: InstanceProperties {
@@ -452,11 +410,11 @@ async fn migrate_instance(
 
     // Get the source instance ready
     src_client
-        .instance_state_put(src_uuid, InstanceStateRequested::MigrateStart)
+        .instance_state_put(InstanceStateRequested::MigrateStart)
         .await
         .with_context(|| {
-            anyhow!("failed to place src instance in migrate start state")
-        })?;
+        anyhow!("failed to place src instance in migrate start state")
+    })?;
 
     // Initiate the migration via the destination instance
     let migration_id = dst_client
@@ -475,10 +433,8 @@ async fn migrate_instance(
     .map(|(role, client, id)| {
         tokio::spawn(async move {
             loop {
-                let state = client
-                    .instance_migrate_status(id, migration_id)
-                    .await?
-                    .state;
+                let state =
+                    client.instance_migrate_status(migration_id).await?.state;
                 println!("{}({}) migration state={:?}", role, id, state);
                 if state == MigrationState::Finish {
                     return Ok::<_, anyhow::Error>(());
@@ -542,16 +498,14 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Command::Get { name } => get_instance(&client, name).await?,
-        Command::State { name, state } => {
-            put_instance(&client, name, state).await?
-        }
-        Command::Serial { name } => serial(&client, addr, name).await?,
-        Command::Migrate { name, dst_server, dst_port, dst_uuid } => {
+        Command::Get => get_instance(&client).await?,
+        Command::State { state } => put_instance(&client, state).await?,
+        Command::Serial => serial(addr).await?,
+        Command::Migrate { dst_server, dst_port, dst_uuid } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
             let dst_client = Client::new(dst_addr, log.clone());
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
-            migrate_instance(client, dst_client, name, addr, dst_uuid).await?
+            migrate_instance(client, dst_client, addr, dst_uuid).await?
         }
     }
 

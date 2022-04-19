@@ -109,10 +109,7 @@ impl Client {
         &self,
         request: &api::InstanceEnsureRequest,
     ) -> Result<api::InstanceEnsureResponse, Error> {
-        let path = format!(
-            "http://{}/instances/{}",
-            self.address, request.properties.id
-        );
+        let path = format!("http://{}/instance", self.address,);
         let body = Body::from(serde_json::to_string(&request).unwrap());
         self.put(path, Some(body)).await
     }
@@ -120,26 +117,17 @@ impl Client {
     /// Returns information about an instance, by UUID.
     pub async fn instance_get(
         &self,
-        id: Uuid,
     ) -> Result<api::InstanceGetResponse, Error> {
-        let path = format!("http://{}/instances/{}", self.address, id);
-        self.get(path, None).await
-    }
-
-    /// Gets instance UUID, by name.
-    pub async fn instance_get_uuid(&self, name: &str) -> Result<Uuid, Error> {
-        let path = format!("http://{}/instances/{}/uuid", self.address, name);
+        let path = format!("http://{}/instance", self.address);
         self.get(path, None).await
     }
 
     /// Long-poll for state changes.
     pub async fn instance_state_monitor(
         &self,
-        id: Uuid,
         gen: u64,
     ) -> Result<api::InstanceStateMonitorResponse, Error> {
-        let path =
-            format!("http://{}/instances/{}/state-monitor", self.address, id);
+        let path = format!("http://{}/instance/state-monitor", self.address);
         let body = Body::from(
             serde_json::to_string(&api::InstanceStateMonitorRequest { gen })
                 .unwrap(),
@@ -150,10 +138,9 @@ impl Client {
     /// Puts an instance into a new state.
     pub async fn instance_state_put(
         &self,
-        id: Uuid,
         state: api::InstanceStateRequested,
     ) -> Result<(), Error> {
-        let path = format!("http://{}/instances/{}/state", self.address, id);
+        let path = format!("http://{}/instance/state", self.address);
         let body = Body::from(serde_json::to_string(&state).unwrap());
         self.put_no_response(path, Some(body)).await
     }
@@ -161,11 +148,9 @@ impl Client {
     /// Get the status of an ongoing migration
     pub async fn instance_migrate_status(
         &self,
-        id: Uuid,
         migration_id: Uuid,
     ) -> Result<api::InstanceMigrateStatusResponse, Error> {
-        let path =
-            format!("http://{}/instances/{}/migrate/status", self.address, id);
+        let path = format!("http://{}/instance/migrate/status", self.address);
         let body = Body::from(
             serde_json::to_string(&api::InstanceMigrateStatusRequest {
                 migration_id,
