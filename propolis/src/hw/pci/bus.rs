@@ -220,6 +220,7 @@ impl Inner {
             },
         };
 
+        assert_ne!(rwo.len(), 0);
         let ecam_offset = (addr - ADDR_ECAM_REGION_BASE) + rwo.offset();
 
         // Each function gets 4 KiB of extended configuration space,
@@ -230,7 +231,7 @@ impl Inner {
         let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
         let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
         let cfg_offset = ecam_offset & MASK_ECAM_CFG_OFFSET;
-        let cfg_last = cfg_offset.checked_add(rwo.len()).unwrap();
+        let cfg_last = cfg_offset.checked_add(rwo.len() - 1).unwrap();
 
         // Reject the access if
         // - it is for a bus other than bus 0 (TODO: hoist this logic into
@@ -243,13 +244,14 @@ impl Inner {
         //   7.2.2).
         if (bus != 0)
             || (cfg_last > LEN_CFG)
-            || ((addr & MASK_ECAM_DWORD) != (cfg_last & MASK_ECAM_DWORD))
+            || ((cfg_offset & MASK_ECAM_DWORD) != (cfg_last & MASK_ECAM_DWORD))
         {
-            slog::info!(ctx.log, "ECAM: bad legacy configuration access";
+            slog::info!(ctx.log, "ECAM: bad legacy configuration access!!";
                         "addr" => format!("{:x}", ecam_offset),
                         "len" => rwo.len(),
                         "bus" => bus,
-                        "cfg_offset" => cfg_offset);
+                        "cfg_offset" => cfg_offset,
+                        "cfg_last" => cfg_last);
             if let RWOp::Read(ro) = rwo {
                 ro.fill(0xff);
             }
