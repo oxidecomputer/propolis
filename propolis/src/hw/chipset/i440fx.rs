@@ -105,6 +105,7 @@ impl I440Fx {
                 if cfg!(not(feature = "testonly-pci-enhanced-configuration")) {
                     return;
                 }
+
                 let bus = pci::decode_extended_cfg_addr(addr).0.bus.get();
                 if bus == 0 {
                     mmio_dev.pci_bus.extended_config_rw(addr, rwo, ctx);
