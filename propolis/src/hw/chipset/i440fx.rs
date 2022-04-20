@@ -94,10 +94,17 @@ impl I440Fx {
         )
         .unwrap();
 
+        // Although ECAM access to PCI config space is feature-guarded, register
+        // with the MMIO bus unconditionally to help catch cases where another
+        // entity wants to use this region of the address space (since this will
+        // conflict with ECAM if the feature is enabled).
         let mmio = &machine.bus_mmio;
         let mmio_dev = Arc::clone(&this);
         let mmio_ecam_fn =
             Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
+                if cfg!(not(feature = "testonly-pci-enhanced-configuration")) {
+                    return;
+                }
                 let bus = pci::decode_extended_cfg_addr(addr).0.bus.get();
                 if bus == 0 {
                     mmio_dev.pci_bus.extended_config_rw(addr, rwo, ctx);
