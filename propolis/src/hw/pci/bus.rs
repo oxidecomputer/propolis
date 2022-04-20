@@ -214,23 +214,26 @@ impl Inner {
     fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
         use crate::{
             common::{ReadOp, WriteOp},
-            hw::pci::bits::{LEN_CFG, MASK_ECAM_DWORD},
+            hw::pci::bits::{LEN_CFG, MASK_ECAM_ACCESS_ALIGN},
         };
 
         assert_ne!(rwo.len(), 0);
         let (bdf, cfg_offset) = super::decode_extended_cfg_addr(addr);
-        let cfg_last = cfg_offset.checked_add(rwo.len() - 1).unwrap();
 
-        // Reject the access if
-        // - it would access byte(s) outside of the 256-byte legacy PCI
-        //   configuration space (this causes a panic for legacy PCI devices;
-        //   TODO: this restriction will have to be removed for PCIe)
-        // - it spans a 4-byte boundary (Revision 5.0 of the PCIe spec provides
-        //   that root complexes need not implement such accesses; see section
-        //   7.2.2).
-        //
-        if (cfg_last > LEN_CFG)
-            || ((cfg_offset & MASK_ECAM_DWORD) != (cfg_last & MASK_ECAM_DWORD))
+        // Compute the last byte that will be accessed to check for accesses
+        // that span multiple doublewords.
+        let cfg_last = cfg_offset.checked_add(rwo.len() - 1);
+
+        // Reject if the access if:
+        // - wraparound occurred while finding the last accessed byte,
+        // - the access touches bytes past the end of the 256-byte PCI config
+        //   space (this causes a panic for legacy PCI devices), or
+        // - the access illegally spans multiple words (see the definition of
+        //   MASK_ECAM_ACCESS_ALIGN).
+        if cfg_last.is_none()
+            || (cfg_last.unwrap() > LEN_CFG)
+            || ((cfg_offset & MASK_ECAM_ACCESS_ALIGN)
+                != (cfg_last.unwrap() & MASK_ECAM_ACCESS_ALIGN))
         {
             slog::info!(ctx.log, "ECAM: malformed access"; 
                         "relative_addr" => format!("{:x}", cfg_offset),
@@ -243,8 +246,8 @@ impl Inner {
             return;
         }
 
-        // Return all set bits for reads from absent devices (section 6 of the
-        // PCI local bus spec rev 3.0).
+        // Return all set bits for reads from absent devices (PCI local bus spec
+        // rev 3.0 SS6).
         let dev = self.device_at(bdf);
         if dev.is_none() {
             slog::info!(ctx.log, "ECAM access: device not found, ignoring");
