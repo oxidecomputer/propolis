@@ -246,8 +246,8 @@ impl Inner {
             || (cfg_last > LEN_CFG)
             || ((cfg_offset & MASK_ECAM_DWORD) != (cfg_last & MASK_ECAM_DWORD))
         {
-            slog::info!(ctx.log, "ECAM: bad legacy configuration access!!";
-                        "addr" => format!("{:x}", ecam_offset),
+            slog::info!(ctx.log, "ECAM: malformed access"; 
+                        "relative_addr" => format!("{:x}", ecam_offset),
                         "len" => rwo.len(),
                         "bus" => bus,
                         "cfg_offset" => cfg_offset,
