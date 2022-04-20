@@ -214,42 +214,27 @@ impl Inner {
     fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
         use crate::{
             common::{ReadOp, WriteOp},
-            hw::pci::bits::{
-                ADDR_ECAM_REGION_BASE, LEN_CFG, MASK_BUS, MASK_DEV,
-                MASK_ECAM_CFG_OFFSET, MASK_ECAM_DWORD, MASK_FUNC,
-            },
+            hw::pci::bits::{LEN_CFG, MASK_ECAM_DWORD},
         };
 
         assert_ne!(rwo.len(), 0);
-        let ecam_offset = (addr - ADDR_ECAM_REGION_BASE) + rwo.offset();
-
-        // Each function gets 4 KiB of extended configuration space,
-        // with the bus, device, and function numbers encoded in
-        // bits [27:20], [19:15], and [14:12] respectively, and the offset in
-        // the bottom 12 bits.
-        let bus = (ecam_offset >> 20) as u8 & MASK_BUS;
-        let dev = (ecam_offset >> 15) as u8 & MASK_DEV;
-        let func = (ecam_offset >> 12) as u8 & MASK_FUNC;
-        let cfg_offset = ecam_offset & MASK_ECAM_CFG_OFFSET;
+        let (bdf, cfg_offset) = super::decode_extended_cfg_addr(addr);
         let cfg_last = cfg_offset.checked_add(rwo.len() - 1).unwrap();
 
         // Reject the access if
-        // - it is for a bus other than bus 0 (TODO: hoist this logic into
-        //   something that understands bus numbers; this *is* a PCI bus)
         // - it would access byte(s) outside of the 256-byte legacy PCI
         //   configuration space (this causes a panic for legacy PCI devices;
         //   TODO: this restriction will have to be removed for PCIe)
         // - it spans a 4-byte boundary (Revision 5.0 of the PCIe spec provides
         //   that root complexes need not implement such accesses; see section
         //   7.2.2).
-        if (bus != 0)
-            || (cfg_last > LEN_CFG)
+        //
+        if (cfg_last > LEN_CFG)
             || ((cfg_offset & MASK_ECAM_DWORD) != (cfg_last & MASK_ECAM_DWORD))
         {
             slog::info!(ctx.log, "ECAM: malformed access"; 
-                        "relative_addr" => format!("{:x}", ecam_offset),
+                        "relative_addr" => format!("{:x}", cfg_offset),
                         "len" => rwo.len(),
-                        "bus" => bus,
                         "cfg_offset" => cfg_offset,
                         "cfg_last" => cfg_last);
             if let RWOp::Read(ro) = rwo {
@@ -257,11 +242,6 @@ impl Inner {
             }
             return;
         }
-
-        // Since the bus/device/function numbers were generated
-        // using appropriately-sized bit masks, they should always
-        // produce a valid BDF.
-        let bdf = Bdf::new(bus, dev, func).unwrap();
 
         // Return all set bits for reads from absent devices (section 6 of the
         // PCI local bus spec rev 3.0).

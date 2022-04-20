@@ -98,7 +98,15 @@ impl I440Fx {
         let mmio_dev = Arc::clone(&this);
         let mmio_ecam_fn =
             Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                mmio_dev.pci_bus.extended_config_rw(addr, rwo, ctx);
+                let bus = pci::decode_extended_cfg_addr(addr).0.bus.get();
+                if bus == 0 {
+                    mmio_dev.pci_bus.extended_config_rw(addr, rwo, ctx);
+                } else {
+                    slog::info!(ctx.log, "ECAM access to nonzero bus {}", bus);
+                    if let RWOp::Read(ro) = rwo {
+                        ro.fill(0xff);
+                    }
+                }
             }) as Arc<MmioFn>;
         mmio.register(
             pci::bits::ADDR_ECAM_REGION_BASE,

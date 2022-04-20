@@ -239,6 +239,23 @@ impl PioCfgDecoder {
     }
 }
 
+/// Decodes an address used to access PCIe configuration space into a [`Bdf`]
+/// and an offset into the relevant function's configuration area.
+///
+/// N.B. This routine interprets the input address as though it falls in an
+///      ECAM region that is aligned on a 256 MiB boundary (such that the lower
+///      28 bits of the address specify a BDF and offset).
+pub fn decode_extended_cfg_addr(addr: usize) -> (Bdf, usize) {
+    // ECAM provides 4 KiB of configuration data per function. Bits 27:20 of
+    // the access address supply the bus number, 19:15 supply the device, and
+    // 14:12 supply the function.
+    let bus = (addr >> 20) as u8 & bits::MASK_BUS;
+    let dev = (addr >> 15) as u8 & bits::MASK_DEV;
+    let func = (addr >> 12) as u8 & bits::MASK_FUNC;
+    let offset = addr & bits::MASK_ECAM_CFG_OFFSET;
+    (Bdf::new(bus, dev, func).unwrap(), offset)
+}
+
 pub mod migrate {
     pub use super::device::migrate::*;
 }
