@@ -38,6 +38,6 @@ slog-async = "2.7"
 rand = "0.8"
 
 [features]
-default = ["dtrace-probes", "testonly-pci-enhanced-configuration"]
+default = ["dtrace-probes"]
 dtrace-probes = ["usdt/asm"]
 testonly-pci-enhanced-configuration = []
