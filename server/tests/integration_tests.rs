@@ -10,7 +10,6 @@ use propolis_server::{
 };
 use slog::{o, Logger};
 use std::collections::BTreeMap;
-use uuid::Uuid;
 
 mod artifacts;
 
@@ -81,7 +80,7 @@ async fn test_uninitialized_server() {
     let client =
         Client::new(server.local_addr(), log.new(o!("component" => "client")));
     assert!(matches!(
-        client.instance_get(Uuid::nil()).await,
+        client.instance_get().await,
         Err(ClientError::Status(500))
     ));
 
@@ -95,19 +94,16 @@ mod illumos_integration_tests {
     use propolis_client::api::{InstanceState, InstanceStateRequested};
     use propolis_client::{Client, Error as ClientError};
     use slog::o;
-    use std::str::FromStr;
     use uuid::Uuid;
 
     // Create a new instance.
     //
     // NOTE: Many of these values are placeholders, and can be replaced
     // when we have "real" integration of UUID-based images / bootroms.
-    fn create_ensure_request(
-        id: Uuid,
-    ) -> propolis_client::api::InstanceEnsureRequest {
+    fn create_ensure_request() -> propolis_client::api::InstanceEnsureRequest {
         propolis_client::api::InstanceEnsureRequest {
             properties: propolis_client::api::InstanceProperties {
-                id,
+                id: Uuid::new_v4(),
                 name: "test-instance".to_string(),
                 description: "it's a test instance".to_string(),
                 image_id: Uuid::new_v4(),
@@ -126,13 +122,11 @@ mod illumos_integration_tests {
     // requested target.
     async fn wait_until_state(
         client: &Client,
-        id: Uuid,
         state: InstanceState,
     ) -> Result<()> {
         let mut gen = 0;
         loop {
-            let monitor_response =
-                client.instance_state_monitor(id, gen).await?;
+            let monitor_response = client.instance_state_monitor(gen).await?;
             if monitor_response.gen < gen {
                 bail!(
                     "Gen should be increasing: (requested {}, saw {})",
@@ -160,39 +154,31 @@ mod illumos_integration_tests {
             log.new(o!("component" => "client")),
         );
 
-        let id =
-            Uuid::from_str("0000002a-000c-0005-0c03-0938362b0809").unwrap();
-        let ensure_request = create_ensure_request(id);
+        let ensure_request = create_ensure_request();
         client.instance_ensure(&ensure_request).await.unwrap();
 
         // Validate preliminary information about the newly created instance.
-        let instance = client.instance_get(id).await.unwrap().instance;
+        let instance = client.instance_get().await.unwrap().instance;
         assert_eq!(instance.properties, ensure_request.properties);
         assert_eq!(instance.state, InstanceState::Creating);
         assert!(instance.disks.is_empty());
         assert!(instance.nics.is_empty());
 
         // Set the state to running.
-        client
-            .instance_state_put(id, InstanceStateRequested::Run)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Run).await.unwrap();
 
         // Wait for monitor to report that the transitions have
         // occurred (Creating -> Starting -> Running).
-        wait_until_state(&client, id, InstanceState::Running).await.unwrap();
+        wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Validate an accurate reporting of the state through
         // the "instance_get" interface too.
-        let instance = client.instance_get(id).await.unwrap().instance;
+        let instance = client.instance_get().await.unwrap().instance;
         assert_eq!(instance.state, InstanceState::Running);
 
         // Set the state to "Stop". Observe that the instance is destroyed.
-        client
-            .instance_state_put(id, InstanceStateRequested::Stop)
-            .await
-            .unwrap();
-        wait_until_state(&client, id, InstanceState::Destroyed).await.unwrap();
+        client.instance_state_put(InstanceStateRequested::Stop).await.unwrap();
+        wait_until_state(&client, InstanceState::Destroyed).await.unwrap();
         server.close().await.unwrap();
     }
 
@@ -205,24 +191,16 @@ mod illumos_integration_tests {
             log.new(o!("component" => "client")),
         );
 
-        let id =
-            Uuid::from_str("0000002a-000c-0005-0c03-0938362b080a").unwrap();
-        let ensure_request = create_ensure_request(id);
+        let ensure_request = create_ensure_request();
         client.instance_ensure(&ensure_request).await.unwrap();
 
         // Set the state to "Run". Observe "Running".
-        client
-            .instance_state_put(id, InstanceStateRequested::Run)
-            .await
-            .unwrap();
-        wait_until_state(&client, id, InstanceState::Running).await.unwrap();
+        client.instance_state_put(InstanceStateRequested::Run).await.unwrap();
+        wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Set the state to "Stop". Observe that the instance is destroyed.
-        client
-            .instance_state_put(id, InstanceStateRequested::Stop)
-            .await
-            .unwrap();
-        wait_until_state(&client, id, InstanceState::Destroyed).await.unwrap();
+        client.instance_state_put(InstanceStateRequested::Stop).await.unwrap();
+        wait_until_state(&client, InstanceState::Destroyed).await.unwrap();
 
         // After the instance has been stopped, the state cannot be modified
         // further.
@@ -231,21 +209,21 @@ mod illumos_integration_tests {
         // 500, but it's important that the server throws an expected error here.
         assert!(matches!(
             client
-                .instance_state_put(id, InstanceStateRequested::Run)
+                .instance_state_put(InstanceStateRequested::Run)
                 .await
                 .unwrap_err(),
             ClientError::Status(500),
         ));
         assert!(matches!(
             client
-                .instance_state_put(id, InstanceStateRequested::Stop)
+                .instance_state_put(InstanceStateRequested::Stop)
                 .await
                 .unwrap_err(),
             ClientError::Status(500),
         ));
         assert!(matches!(
             client
-                .instance_state_put(id, InstanceStateRequested::Reboot)
+                .instance_state_put(InstanceStateRequested::Reboot)
                 .await
                 .unwrap_err(),
             ClientError::Status(500),
@@ -263,31 +241,23 @@ mod illumos_integration_tests {
             log.new(o!("component" => "client")),
         );
 
-        let id =
-            Uuid::from_str("0000002a-000c-0005-0c03-0938362b080b").unwrap();
-        let ensure_request = create_ensure_request(id);
+        let ensure_request = create_ensure_request();
         client.instance_ensure(&ensure_request).await.unwrap();
 
         // Set the state to "Run". Observe "Running".
-        client
-            .instance_state_put(id, InstanceStateRequested::Run)
-            .await
-            .unwrap();
-        wait_until_state(&client, id, InstanceState::Running).await.unwrap();
+        client.instance_state_put(InstanceStateRequested::Run).await.unwrap();
+        wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Reboot the instance. Observe that it becomes running once again.
         client
-            .instance_state_put(id, InstanceStateRequested::Reboot)
+            .instance_state_put(InstanceStateRequested::Reboot)
             .await
             .unwrap();
-        wait_until_state(&client, id, InstanceState::Running).await.unwrap();
+        wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Set the state to "Stop". Observe that the instance is destroyed.
-        client
-            .instance_state_put(id, InstanceStateRequested::Stop)
-            .await
-            .unwrap();
-        wait_until_state(&client, id, InstanceState::Destroyed).await.unwrap();
+        client.instance_state_put(InstanceStateRequested::Stop).await.unwrap();
+        wait_until_state(&client, InstanceState::Destroyed).await.unwrap();
         server.close().await.unwrap();
     }
 }
