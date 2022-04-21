@@ -76,8 +76,11 @@ pub const LEN_ECAM_REGION: usize = 0x1000_0000;
 /// offset in bytes at which to access the target BDF's configuration region.
 pub const MASK_ECAM_CFG_OFFSET: usize = 0xfff;
 
+/// The word granularity for ECAM MMIO accesses. PCIe root complexes are not
+/// required to handle accesses that span multiple words of this size (PCIe
+/// base spec rev 5.0 SS7.2.2).
+pub const LEN_ECAM_ACCESS_GRANULARITY: usize = 4;
+
 /// Bitwise AND'ing an ECAM MMIO access address with this mask aligns it to
-/// the next lower ECAM word boundary. PCIe root complexes are not required
-/// to handle accesses that span multiple words (PCIe base spec rev 5.0
-/// SS7.2.2).
-pub const MASK_ECAM_ACCESS_ALIGN: usize = !3;
+/// the next lower ECAM word boundary.
+pub const MASK_ECAM_ACCESS_ALIGN: usize = !(LEN_ECAM_ACCESS_GRANULARITY - 1);
