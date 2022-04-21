@@ -226,11 +226,9 @@ impl Inner {
         let cfg_last = cfg_offset + rwo.len() - 1;
 
         // Reject if the access if:
-        // - wraparound occurred while finding the last accessed byte,
         // - the access touches bytes past the end of the 256-byte PCI config
         //   space (this causes a panic for legacy PCI devices), or
-        // - the access illegally spans multiple words (see the definition of
-        //   MASK_ECAM_ACCESS_ALIGN).
+        // - the access illegally spans multiple words.
         if (cfg_last > LEN_CFG)
             || ((cfg_offset & MASK_ECAM_ACCESS_ALIGN)
                 != (cfg_last & MASK_ECAM_ACCESS_ALIGN))
