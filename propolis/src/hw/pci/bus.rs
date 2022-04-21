@@ -210,14 +210,14 @@ impl Inner {
         }
     }
 
-    fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
+    fn extended_config_rw(&self, _addr: usize, rwo: RWOp, ctx: &DispCtx) {
         use crate::{
             common::{ReadOp, WriteOp},
             hw::pci::bits::{LEN_CFG, MASK_ECAM_ACCESS_ALIGN},
         };
 
         assert_ne!(rwo.len(), 0);
-        let (bdf, cfg_offset) = super::decode_extended_cfg_addr(addr);
+        let (bdf, cfg_offset) = super::decode_extended_cfg_offset(rwo.offset());
 
         // Compute the last byte that will be accessed to check for accesses
         // that span multiple doublewords.
@@ -273,7 +273,13 @@ impl Inner {
 
 #[cfg(test)]
 mod test {
-    use crate::{common::ReadOp, instance::Instance};
+    use std::convert::TryInto;
+
+    use crate::{
+        common::ReadOp,
+        hw::pci::bits::{ADDR_ECAM_REGION_BASE, LEN_CFG},
+        instance::Instance,
+    };
 
     use super::*;
 
@@ -281,9 +287,17 @@ mod test {
         (Arc::new(PioBus::new()), Arc::new(MmioBus::new(u32::MAX as usize)))
     }
 
-    #[derive(Default)]
     struct TestDev {
         inner: Mutex<Option<Attachment>>,
+        cfg_data: Mutex<[u8; LEN_CFG]>,
+    }
+    impl Default for TestDev {
+        fn default() -> Self {
+            Self {
+                inner: Default::default(),
+                cfg_data: Mutex::new([0u8; LEN_CFG]),
+            }
+        }
     }
     impl Endpoint for TestDev {
         fn attach(&self, attachment: Attachment) {
@@ -293,13 +307,13 @@ mod test {
         fn cfg_rw(&self, op: RWOp, _ctx: &DispCtx) {
             match op {
                 RWOp::Read(ro) => {
-                    let mut data = Vec::new();
-                    let mut byte: u8 = ro.offset() as u8;
-                    data.resize_with(ro.len(), || {
-                        byte += 1;
-                        byte - 1
-                    });
-                    ro.write_bytes(data.as_slice());
+                    let cfg_data = self.cfg_data.lock().unwrap();
+                    ro.write_bytes(
+                        &cfg_data[std::ops::Range {
+                            start: ro.offset(),
+                            end: ro.offset() + ro.len(),
+                        }],
+                    );
                 }
                 _ => {}
             }
@@ -386,6 +400,7 @@ mod test {
 
     struct TestEnv {
         bus: Bus,
+        devs: Vec<Arc<TestDev>>,
         instance: Arc<Instance>,
     }
 
@@ -394,14 +409,20 @@ mod test {
             let (pio, mmio) = prep();
             Self {
                 bus: Bus::new(BusNum::new(0).unwrap(), &pio, &mmio),
+                devs: vec![],
                 instance: Instance::new_test(None).unwrap(),
             }
         }
 
-        fn with_devices(bdfs: Vec<Bdf>) -> Self {
-            let this = Self::new();
+        fn with_devices(bdfs: &Vec<Bdf>) -> Self {
+            let mut this = Self::new();
             for bdf in bdfs {
-                this.bus.attach(bdf, Arc::new(TestDev::default()), None);
+                this.devs.push(Arc::new(TestDev::default()));
+                this.bus.attach(
+                    *bdf,
+                    Arc::clone(this.devs.last().unwrap()) as Arc<dyn Endpoint>,
+                    None,
+                );
             }
             this
         }
@@ -409,27 +430,64 @@ mod test {
 
     #[test]
     fn ecam_successful_read() {
-        let env = TestEnv::with_devices(vec![Bdf::new(0, 0, 0).unwrap()]);
+        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
+        let mut data: Vec<u8> = Vec::with_capacity(LEN_CFG);
+        for val in 0..LEN_CFG {
+            data.push(val as u8);
+        }
+        *env.devs[0].cfg_data.lock().unwrap() =
+            data.as_slice().try_into().unwrap();
 
         let mut buf = [0xffu8; 4];
-
-        // TODO reason about the difference between the read offset and the
-        // access address when taking an MMIO exit. If we read at offset X
-        // from the start of the ECAM region, do we get addr = X and offset = 0,
-        // or addr = ECAM_BASE and offset = X? I think it's the former but need
-        // to check (the extended config read routine certainly thinks it's the
-        // former!).
         let mut read_op = ReadOp::from_buf(0, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(0, RWOp::Read(&mut read_op), ctx);
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            );
         });
         assert_eq!(buf, [0, 1, 2, 3]);
 
         let mut buf = [0xffu8; 4];
-        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        let mut read_op = ReadOp::from_buf(8, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(0xe000_0008, RWOp::Read(&mut read_op), ctx);
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            );
         });
         assert_eq!(buf, [8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn ecam_targets_devices() {
+        let bdfs = vec![Bdf::new(0, 0, 0).unwrap(), Bdf::new(0, 1, 0).unwrap()];
+        let env = TestEnv::with_devices(&bdfs);
+        *env.devs[0].cfg_data.lock().unwrap() = [0xa0u8; LEN_CFG];
+        *env.devs[1].cfg_data.lock().unwrap() = [0xb1u8; LEN_CFG];
+
+        let mut buf = [0u8; 4];
+        let mut read_op = ReadOp::from_buf(0x8000, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            );
+        });
+        assert_eq!(buf, [0xb1u8; 4]);
+
+        buf = [0u8; 4];
+        read_op = ReadOp::from_buf(0, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            );
+        });
+        assert_eq!(buf, [0xa0u8; 4]);
     }
 }

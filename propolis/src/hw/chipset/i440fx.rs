@@ -113,7 +113,8 @@ impl I440Fx {
                     return;
                 }
 
-                let bus = pci::decode_extended_cfg_addr(addr).0.bus.get();
+                let bus =
+                    pci::decode_extended_cfg_offset(rwo.offset()).0.bus.get();
                 if bus == 0 {
                     mmio_dev.pci_bus.extended_cfg_rw(addr, rwo, ctx);
                 } else {

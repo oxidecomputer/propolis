@@ -239,21 +239,22 @@ impl PioCfgDecoder {
     }
 }
 
-/// Decodes an address used to access PCIe configuration space into a [`Bdf`]
-/// and an offset into the relevant function's configuration area.
+/// Decodes an offset into PCIe extended configuration space into a
+/// bus/device/function and an offset into that function's configuration space.
 ///
-/// N.B. This routine interprets the input address as though it falls in an
-///      ECAM region that is aligned on a 256 MiB boundary (such that the lower
-///      28 bits of the address specify a BDF and offset).
-pub fn decode_extended_cfg_addr(addr: usize) -> (Bdf, usize) {
+/// This routine assumes that ECAM regions are 256 MiB in size: bits 27:20 of
+/// the offset specify a bus, 19:15 specify a device, 14:12 specify a function,
+/// and 11:0 specify the offset into the specified BDF's configuration space.
+/// The higher-order bits of the offset are ignored.
+pub fn decode_extended_cfg_offset(ecam_offset: usize) -> (Bdf, usize) {
     // ECAM provides 4 KiB of configuration data per function. Bits 27:20 of
     // the access address supply the bus number, 19:15 supply the device, and
     // 14:12 supply the function.
-    let bus = (addr >> 20) as u8 & bits::MASK_BUS;
-    let dev = (addr >> 15) as u8 & bits::MASK_DEV;
-    let func = (addr >> 12) as u8 & bits::MASK_FUNC;
-    let offset = addr & bits::MASK_ECAM_CFG_OFFSET;
-    (Bdf::new(bus, dev, func).unwrap(), offset)
+    let bus = (ecam_offset >> 20) as u8 & bits::MASK_BUS;
+    let dev = (ecam_offset >> 15) as u8 & bits::MASK_DEV;
+    let func = (ecam_offset >> 12) as u8 & bits::MASK_FUNC;
+    let cfg_offset = ecam_offset & bits::MASK_ECAM_CFG_OFFSET;
+    (Bdf::new(bus, dev, func).unwrap(), cfg_offset)
 }
 
 pub mod migrate {
