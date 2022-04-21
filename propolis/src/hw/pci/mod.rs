@@ -247,9 +247,6 @@ impl PioCfgDecoder {
 /// and 11:0 specify the offset into the specified BDF's configuration space.
 /// The higher-order bits of the offset are ignored.
 pub fn decode_extended_cfg_offset(ecam_offset: usize) -> (Bdf, usize) {
-    // ECAM provides 4 KiB of configuration data per function. Bits 27:20 of
-    // the access address supply the bus number, 19:15 supply the device, and
-    // 14:12 supply the function.
     let bus = (ecam_offset >> 20) as u8 & bits::MASK_BUS;
     let dev = (ecam_offset >> 15) as u8 & bits::MASK_DEV;
     let func = (ecam_offset >> 12) as u8 & bits::MASK_FUNC;
