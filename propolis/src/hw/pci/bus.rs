@@ -220,8 +220,10 @@ impl Inner {
         let (bdf, cfg_offset) = super::decode_extended_cfg_offset(rwo.offset());
 
         // Compute the last byte that will be accessed to check for accesses
-        // that span multiple doublewords.
-        let cfg_last = cfg_offset.checked_add(rwo.len() - 1);
+        // that span multiple doublewords. (This won't overflow because the
+        // starting offset can't exceed 4 KiB, the size of a single function's
+        // configuration space.)
+        let cfg_last = cfg_offset + rwo.len() - 1;
 
         // Reject if the access if:
         // - wraparound occurred while finding the last accessed byte,
@@ -229,16 +231,13 @@ impl Inner {
         //   space (this causes a panic for legacy PCI devices), or
         // - the access illegally spans multiple words (see the definition of
         //   MASK_ECAM_ACCESS_ALIGN).
-        if cfg_last.is_none()
-            || (cfg_last.unwrap() > LEN_CFG)
+        if (cfg_last > LEN_CFG)
             || ((cfg_offset & MASK_ECAM_ACCESS_ALIGN)
-                != (cfg_last.unwrap() & MASK_ECAM_ACCESS_ALIGN))
+                != (cfg_last & MASK_ECAM_ACCESS_ALIGN))
         {
             slog::info!(ctx.log, "ECAM: malformed access"; 
-                        "relative_addr" => format!("{:x}", cfg_offset),
-                        "len" => rwo.len(),
                         "cfg_offset" => cfg_offset,
-                        "cfg_last" => cfg_last);
+                        "len" => rwo.len());
             if let RWOp::Read(ro) = rwo {
                 ro.fill(0xff);
             }
@@ -428,8 +427,10 @@ mod test {
         }
     }
 
+    // Verify that reads directed to different portions of a device's config
+    // space return values from the target portion.
     #[test]
-    fn ecam_successful_read() {
+    fn ecam_read_at_offset() {
         let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
         let mut data: Vec<u8> = Vec::with_capacity(LEN_CFG);
         for val in 0..LEN_CFG {
@@ -461,15 +462,34 @@ mod test {
         assert_eq!(buf, [8, 9, 10, 11]);
     }
 
+    // Verify that reads of different devices/functions on the same bus are
+    // routed to the correct device.
     #[test]
-    fn ecam_targets_devices() {
-        let bdfs = vec![Bdf::new(0, 0, 0).unwrap(), Bdf::new(0, 1, 0).unwrap()];
+    fn ecam_targets_devices_within_bus() {
+        let bdfs = vec![
+            Bdf::new(0, 0, 0).unwrap(),
+            Bdf::new(0, 1, 0).unwrap(),
+            Bdf::new(0, 1, 1).unwrap(),
+        ];
+
         let env = TestEnv::with_devices(&bdfs);
         *env.devs[0].cfg_data.lock().unwrap() = [0xa0u8; LEN_CFG];
         *env.devs[1].cfg_data.lock().unwrap() = [0xb1u8; LEN_CFG];
+        *env.devs[2].cfg_data.lock().unwrap() = [0xc2u8; LEN_CFG];
 
         let mut buf = [0u8; 4];
-        let mut read_op = ReadOp::from_buf(0x8000, &mut buf);
+        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            );
+        });
+        assert_eq!(buf, [0xa0u8; 4]);
+
+        buf = [0u8; 4];
+        read_op = ReadOp::from_buf(0x8000, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
                 ADDR_ECAM_REGION_BASE,
@@ -480,7 +500,7 @@ mod test {
         assert_eq!(buf, [0xb1u8; 4]);
 
         buf = [0u8; 4];
-        read_op = ReadOp::from_buf(0, &mut buf);
+        read_op = ReadOp::from_buf(0x9000, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
                 ADDR_ECAM_REGION_BASE,
@@ -488,6 +508,57 @@ mod test {
                 ctx,
             );
         });
-        assert_eq!(buf, [0xa0u8; 4]);
+        assert_eq!(buf, [0xc2u8; 4]);
+    }
+
+    // Verify that reads that span multiple doublewords return -1 without
+    // panicking.
+    #[test]
+    fn ecam_cross_alignment_boundary() {
+        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
+        let mut buf = [0u8; 4];
+        let mut read_op = ReadOp::from_buf(1, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            )
+        });
+        assert_eq!(buf, [0xffu8; 4]);
+    }
+
+    // Verify that unaligned accesses that don't span multiple doublewords
+    // return the expected portion of the config space.
+    #[test]
+    fn ecam_unaligned_within_word() {
+        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
+        let mut buf = [0xffu8; 2];
+        let mut read_op = ReadOp::from_buf(1, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            )
+        });
+        assert_eq!(buf, [0u8; 2]);
+    }
+
+    // Verify that reads that target an absent device/function return -1 without
+    // panicking.
+    #[test]
+    fn ecam_absent_device() {
+        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
+        let mut buf = [0u8; 4];
+        let mut read_op = ReadOp::from_buf(0xf000, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(
+                ADDR_ECAM_REGION_BASE,
+                RWOp::Read(&mut read_op),
+                ctx,
+            )
+        });
+        assert_eq!(buf, [0xffu8; 4]);
     }
 }
