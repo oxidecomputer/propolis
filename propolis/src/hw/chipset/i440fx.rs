@@ -94,15 +94,22 @@ impl I440Fx {
         )
         .unwrap();
 
-        // Although ECAM access to PCI config space is feature-guarded, register
-        // with the MMIO bus unconditionally to help catch cases where another
-        // entity wants to use this region of the address space (since this will
-        // conflict with ECAM if the feature is enabled).
+        // Unconditionally register a callback for MMIO access to PCIe enhanced
+        // configuration space, but only process the access if the relevant
+        // feature flag is enabled. Registering unconditionally ensures that
+        // conflicting attempts to service MMIO to the ECAM region will fail
+        // (instead of succeeding silently and then failing later when the
+        // feature is turned on).
         let mmio = &machine.bus_mmio;
         let mmio_dev = Arc::clone(&this);
         let mmio_ecam_fn =
             Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
                 if cfg!(not(feature = "testonly-pci-enhanced-configuration")) {
+                    slog::info!(
+                        ctx.log,
+                        "Access to PCIe ECAM region disabled by feature flag";
+                        "addr" => format!("0x{:x}", addr)
+                    );
                     return;
                 }
 
