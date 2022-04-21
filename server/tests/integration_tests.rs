@@ -127,8 +127,7 @@ mod illumos_integration_tests {
     ) -> Result<()> {
         let mut gen = 0;
         loop {
-            let monitor_response =
-                client.instance_state_monitor(gen).await?;
+            let monitor_response = client.instance_state_monitor(gen).await?;
             if monitor_response.gen < gen {
                 bail!(
                     "Gen should be increasing: (requested {}, saw {})",
@@ -167,10 +166,7 @@ mod illumos_integration_tests {
         assert!(instance.nics.is_empty());
 
         // Set the state to running.
-        client
-            .instance_state_put(InstanceStateRequested::Run)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Run).await.unwrap();
 
         // Wait for monitor to report that the transitions have
         // occurred (Creating -> Starting -> Running).
@@ -182,10 +178,7 @@ mod illumos_integration_tests {
         assert_eq!(instance.state, InstanceState::Running);
 
         // Set the state to "Stop". Observe that the instance is destroyed.
-        client
-            .instance_state_put(InstanceStateRequested::Stop)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Stop).await.unwrap();
         wait_until_state(&client, InstanceState::Destroyed).await.unwrap();
         server.close().await.unwrap();
     }
@@ -203,17 +196,11 @@ mod illumos_integration_tests {
         client.instance_ensure(&ensure_request).await.unwrap();
 
         // Set the state to "Run". Observe "Running".
-        client
-            .instance_state_put(InstanceStateRequested::Run)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Run).await.unwrap();
         wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Set the state to "Stop". Observe that the instance is destroyed.
-        client
-            .instance_state_put(InstanceStateRequested::Stop)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Stop).await.unwrap();
         wait_until_state(&client, InstanceState::Destroyed).await.unwrap();
 
         // After the instance has been stopped, the state cannot be modified
@@ -259,10 +246,7 @@ mod illumos_integration_tests {
         client.instance_ensure(&ensure_request).await.unwrap();
 
         // Set the state to "Run". Observe "Running".
-        client
-            .instance_state_put(InstanceStateRequested::Run)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Run).await.unwrap();
         wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Reboot the instance. Observe that it becomes running once again.
@@ -273,10 +257,7 @@ mod illumos_integration_tests {
         wait_until_state(&client, InstanceState::Running).await.unwrap();
 
         // Set the state to "Stop". Observe that the instance is destroyed.
-        client
-            .instance_state_put(InstanceStateRequested::Stop)
-            .await
-            .unwrap();
+        client.instance_state_put(InstanceStateRequested::Stop).await.unwrap();
         wait_until_state(&client, InstanceState::Destroyed).await.unwrap();
         server.close().await.unwrap();
     }
