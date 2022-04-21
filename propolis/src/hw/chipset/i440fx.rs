@@ -108,7 +108,7 @@ impl I440Fx {
 
                 let bus = pci::decode_extended_cfg_addr(addr).0.bus.get();
                 if bus == 0 {
-                    mmio_dev.pci_bus.extended_config_rw(addr, rwo, ctx);
+                    mmio_dev.pci_bus.extended_cfg_rw(addr, rwo, ctx);
                 } else {
                     slog::info!(ctx.log, "ECAM access to nonzero bus {}", bus);
                     if let RWOp::Read(ro) = rwo {

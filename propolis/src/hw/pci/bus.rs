@@ -46,7 +46,7 @@ impl Bus {
         inner.device_at(bdf)
     }
 
-    pub fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
+    pub fn extended_cfg_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
         let inner = self.inner.lock().unwrap();
         inner.extended_config_rw(addr, rwo, ctx);
     }
@@ -210,7 +210,6 @@ impl Inner {
         }
     }
 
-    #[cfg(feature = "testonly-pci-enhanced-configuration")]
     fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
         use crate::{
             common::{ReadOp, WriteOp},
@@ -270,18 +269,12 @@ impl Inner {
             }
         }
     }
-
-    #[cfg(not(feature = "testonly-pci-enhanced-configuration"))]
-    fn extended_config_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
-        match rwo {
-            RWOp::Read(ro) => ro.fill(0xff),
-            RWOp::Write(wo) => {}
-        };
-    }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::{common::ReadOp, instance::Instance};
+
     use super::*;
 
     fn prep() -> (Arc<PioBus>, Arc<MmioBus>) {
@@ -297,7 +290,20 @@ mod test {
             let mut attach = self.inner.lock().unwrap();
             attach.replace(attachment);
         }
-        fn cfg_rw(&self, _op: RWOp, _ctx: &DispCtx) {}
+        fn cfg_rw(&self, op: RWOp, _ctx: &DispCtx) {
+            match op {
+                RWOp::Read(ro) => {
+                    let mut data = Vec::new();
+                    let mut byte: u8 = ro.offset() as u8;
+                    data.resize_with(ro.len(), || {
+                        byte += 1;
+                        byte - 1
+                    });
+                    ro.write_bytes(data.as_slice());
+                }
+                _ => {}
+            }
+        }
         fn bar_rw(&self, _bar: BarN, _rwo: RWOp, _ctx: &DispCtx) {}
     }
     impl TestDev {
@@ -376,5 +382,54 @@ mod test {
         assert_eq!(first.check_multifunc(), Some(true));
         assert_eq!(same_slot.check_multifunc(), Some(true));
         assert_eq!(other_slot.check_multifunc(), Some(false));
+    }
+
+    struct TestEnv {
+        bus: Bus,
+        instance: Arc<Instance>,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let (pio, mmio) = prep();
+            Self {
+                bus: Bus::new(BusNum::new(0).unwrap(), &pio, &mmio),
+                instance: Instance::new_test(None).unwrap(),
+            }
+        }
+
+        fn with_devices(bdfs: Vec<Bdf>) -> Self {
+            let this = Self::new();
+            for bdf in bdfs {
+                this.bus.attach(bdf, Arc::new(TestDev::default()), None);
+            }
+            this
+        }
+    }
+
+    #[test]
+    fn ecam_successful_read() {
+        let env = TestEnv::with_devices(vec![Bdf::new(0, 0, 0).unwrap()]);
+
+        let mut buf = [0xffu8; 4];
+
+        // TODO reason about the difference between the read offset and the
+        // access address when taking an MMIO exit. If we read at offset X
+        // from the start of the ECAM region, do we get addr = X and offset = 0,
+        // or addr = ECAM_BASE and offset = X? I think it's the former but need
+        // to check (the extended config read routine certainly thinks it's the
+        // former!).
+        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(0, RWOp::Read(&mut read_op), ctx);
+        });
+        assert_eq!(buf, [0, 1, 2, 3]);
+
+        let mut buf = [0xffu8; 4];
+        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            env.bus.extended_cfg_rw(0xe000_0008, RWOp::Read(&mut read_op), ctx);
+        });
+        assert_eq!(buf, [8, 9, 10, 11]);
     }
 }
