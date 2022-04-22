@@ -284,7 +284,7 @@ impl PcieCfgDecoder {
     }
 
     /// Decodes an offset into a PCIe ECAM region into a bus/device/function and
-    /// an offset into that function's configuration size.
+    /// an offset into that function's configuration space.
     fn decode_enhanced_cfg_offset(&self, region_offset: usize) -> (Bdf, usize) {
         let bus = (region_offset >> 20) as u8 & self.bus_mask;
         let dev = (region_offset >> 15) as u8 & bits::MASK_DEV;
