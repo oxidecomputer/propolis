@@ -6,7 +6,9 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::ibmpc;
-use crate::hw::pci::{self, Bdf, BusNum, INTxPinID, PioCfgDecoder};
+use crate::hw::pci::{
+    self, Bdf, BusNum, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
+};
 use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::inventory;
@@ -37,6 +39,7 @@ pub struct CreateOptions {
 pub struct I440Fx {
     pci_bus: pci::Bus,
     pci_cfg: PioCfgDecoder,
+    pcie_cfg: PcieCfgDecoder,
     irq_config: Arc<IrqConfig>,
 
     dev_hb: Arc<Piix4HostBridge>,
@@ -57,6 +60,9 @@ impl I440Fx {
                 &machine.bus_mmio,
             ),
             pci_cfg: PioCfgDecoder::new(),
+            pcie_cfg: PcieCfgDecoder::new(
+                pci::bits::PCIE_MAX_BUSES_PER_ECAM_REGION,
+            ),
             irq_config: irq_config.clone(),
 
             dev_hb: Piix4HostBridge::create(),
@@ -106,23 +112,8 @@ impl I440Fx {
             let mmio = &machine.bus_mmio;
             let mmio_dev = Arc::clone(&this);
             let mmio_ecam_fn =
-                Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                    let bus = pci::decode_extended_cfg_offset(rwo.offset())
-                        .0
-                        .bus
-                        .get();
-                    if bus == 0 {
-                        mmio_dev.pci_bus.extended_cfg_rw(addr, rwo, ctx);
-                    } else {
-                        slog::info!(
-                            ctx.log,
-                            "ECAM access to nonzero bus {}",
-                            bus
-                        );
-                        if let RWOp::Read(ro) = rwo {
-                            ro.fill(0xff);
-                        }
-                    }
+                Arc::new(move |_addr: usize, rwo: RWOp, ctx: &DispCtx| {
+                    mmio_dev.pcie_ecam_rw(rwo, ctx);
                 }) as Arc<MmioFn>;
             mmio.register(
                 ADDR_PCIE_ECAM_REGION,
@@ -148,36 +139,42 @@ impl I440Fx {
         (intx_pin, self.irq_config.intr_pin(pin_route as usize))
     }
 
+    fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp, ctx: &DispCtx) -> Option<()> {
+        if bdf.bus.get() != 0 {
+            return None;
+        }
+        if let Some(dev) = self.pci_bus.device_at(*bdf) {
+            // This is pretty noisy during boot
+            // let opname = match rwo {
+            //     RWOp::Read(_) => "cfgread",
+            //     RWOp::Write(_) => "cfgwrite",
+            // };
+            // slog::trace!(ctx.log, "PCI {}", opname;
+            //     "bdf" => %bdf, "offset" => rwo.offset());
+
+            dev.cfg_rw(rwo, ctx);
+            Some(())
+        } else {
+            None
+        }
+    }
+
     fn pio_rw(&self, port: u16, rwo: RWOp, ctx: &DispCtx) {
         match port {
             pci::bits::PORT_PCI_CONFIG_ADDR => {
                 self.pci_cfg.service_addr(rwo);
             }
-            pci::bits::PORT_PCI_CONFIG_DATA => {
-                self.pci_cfg.service_data(rwo, |bdf, rwo| {
-                    if bdf.bus.get() != 0 {
-                        return None;
-                    }
-                    if let Some(dev) = self.pci_bus.device_at(*bdf) {
-                        // This is pretty noisy during boot
-                        // let opname = match rwo {
-                        //     RWOp::Read(_) => "cfgread",
-                        //     RWOp::Write(_) => "cfgwrite",
-                        // };
-                        // slog::trace!(ctx.log, "PCI {}", opname;
-                        //     "bdf" => %bdf, "offset" => rwo.offset());
-
-                        dev.cfg_rw(rwo, ctx);
-                        Some(())
-                    } else {
-                        None
-                    }
-                });
-            }
+            pci::bits::PORT_PCI_CONFIG_DATA => self
+                .pci_cfg
+                .service_data(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo, ctx)),
             _ => {
                 panic!();
             }
         }
+    }
+
+    fn pcie_ecam_rw(&self, rwo: RWOp, ctx: &DispCtx) {
+        self.pcie_cfg.service(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo, ctx));
     }
 }
 impl Chipset for I440Fx {

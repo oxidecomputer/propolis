@@ -65,6 +65,14 @@ pub const LEN_PCI_CONFIG_ADDR: u16 = 4;
 pub const PORT_PCI_CONFIG_DATA: u16 = 0xcfc;
 pub const LEN_PCI_CONFIG_DATA: u16 = 4;
 
+/// The minimum number of buses a single ECAM region can address. The PCIe spec
+/// requires that at least one bit of the ECAM address space be used to specify
+/// a bus number (see PCIe base spec rev 5.0 table 7-1).
+pub const PCIE_MIN_BUSES_PER_ECAM_REGION: u16 = 2;
+
+/// The maximum number of buses a single ECAM region can address.
+pub const PCIE_MAX_BUSES_PER_ECAM_REGION: u16 = 256;
+
 /// Bitwise AND'ing an ECAM MMIO access address with this mask produces an
 /// offset in bytes at which to access the target BDF's configuration region.
 pub const MASK_ECAM_CFG_OFFSET: usize = 0xfff;

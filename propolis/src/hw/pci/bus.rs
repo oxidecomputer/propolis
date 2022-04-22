@@ -4,9 +4,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::bar::BarDefine;
 use super::{BarN, Bdf, BusNum, Endpoint, LintrCfg};
-use crate::common::{RWOp, ReadOp, WriteOp};
+use crate::common::RWOp;
 use crate::dispatch::DispCtx;
-use crate::hw::pci::bits::LEN_CFG;
 use crate::mmio::{MmioBus, MmioFn};
 use crate::pio::{PioBus, PioFn};
 
@@ -45,11 +44,6 @@ impl Bus {
 
         let inner = self.inner.lock().unwrap();
         inner.device_at(bdf)
-    }
-
-    pub fn extended_cfg_rw(&self, addr: usize, rwo: RWOp, ctx: &DispCtx) {
-        let inner = self.inner.lock().unwrap();
-        inner.extended_config_rw(addr, rwo, ctx);
     }
 }
 
@@ -210,102 +204,26 @@ impl Inner {
             }
         }
     }
-
-    fn extended_config_rw(&self, _addr: usize, rwo: RWOp, ctx: &DispCtx) {
-        assert_ne!(rwo.len(), 0);
-        let (bdf, cfg_offset) = super::decode_extended_cfg_offset(rwo.offset());
-
-        // Compute the last byte that will be accessed to check for accesses
-        // that span multiple doublewords. (This won't overflow because the
-        // starting offset can't exceed 4 KiB, the size of a single function's
-        // configuration space.)
-        let cfg_last = cfg_offset + rwo.len() - 1;
-
-        // Avoid panic from routing out-of-legacy-config-space accesses to PCI
-        // devices.
-        if cfg_last > LEN_CFG {
-            slog::info!(ctx.log, "ECAM: accessed region outside legacy PCI cfg";
-                        "cfg_offset" => cfg_offset,
-                        "len" => rwo.len());
-            if let RWOp::Read(ro) = rwo {
-                ro.fill(0xff);
-            }
-            return;
-        }
-
-        // Return all set bits for reads from absent devices (PCI local bus spec
-        // rev 3.0 SS6).
-        let dev = self.device_at(bdf);
-        if dev.is_none() {
-            slog::info!(ctx.log, "ECAM access: device not found, ignoring");
-            if let RWOp::Read(ro) = rwo {
-                ro.fill(0xff);
-            }
-            return;
-        }
-
-        // The device is present, so let it handle the read or write.
-        let dev = dev.unwrap();
-        match rwo {
-            RWOp::Read(ro) => {
-                let mut cro = ReadOp::new_child(cfg_offset, ro, ..);
-                dev.cfg_rw(RWOp::Read(&mut cro), ctx);
-            }
-            RWOp::Write(wo) => {
-                let mut cro = WriteOp::new_child(cfg_offset, wo, ..);
-                dev.cfg_rw(RWOp::Write(&mut cro), ctx);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod test {
-    use std::convert::TryInto;
-
-    use crate::common::ReadOp;
-    use crate::hw::pci::bits::LEN_CFG;
-    use crate::instance::Instance;
-
     use super::*;
-
-    const TEST_ECAM_REGION_BASE: usize = 0x1000_0000;
 
     fn prep() -> (Arc<PioBus>, Arc<MmioBus>) {
         (Arc::new(PioBus::new()), Arc::new(MmioBus::new(u32::MAX as usize)))
     }
 
+    #[derive(Default)]
     struct TestDev {
         inner: Mutex<Option<Attachment>>,
-        cfg_data: Mutex<[u8; LEN_CFG]>,
-    }
-    impl Default for TestDev {
-        fn default() -> Self {
-            Self {
-                inner: Default::default(),
-                cfg_data: Mutex::new([0u8; LEN_CFG]),
-            }
-        }
     }
     impl Endpoint for TestDev {
         fn attach(&self, attachment: Attachment) {
             let mut attach = self.inner.lock().unwrap();
             attach.replace(attachment);
         }
-        fn cfg_rw(&self, op: RWOp, _ctx: &DispCtx) {
-            match op {
-                RWOp::Read(ro) => {
-                    let cfg_data = self.cfg_data.lock().unwrap();
-                    ro.write_bytes(
-                        &cfg_data[std::ops::Range {
-                            start: ro.offset(),
-                            end: ro.offset() + ro.len(),
-                        }],
-                    );
-                }
-                _ => {}
-            }
-        }
+        fn cfg_rw(&self, _op: RWOp, _ctx: &DispCtx) {}
         fn bar_rw(&self, _bar: BarN, _rwo: RWOp, _ctx: &DispCtx) {}
     }
     impl TestDev {
@@ -384,153 +302,5 @@ mod test {
         assert_eq!(first.check_multifunc(), Some(true));
         assert_eq!(same_slot.check_multifunc(), Some(true));
         assert_eq!(other_slot.check_multifunc(), Some(false));
-    }
-
-    struct TestEnv {
-        bus: Bus,
-        devs: Vec<Arc<TestDev>>,
-        instance: Arc<Instance>,
-    }
-
-    impl TestEnv {
-        fn new() -> Self {
-            let (pio, mmio) = prep();
-            Self {
-                bus: Bus::new(BusNum::new(0).unwrap(), &pio, &mmio),
-                devs: vec![],
-                instance: Instance::new_test(None).unwrap(),
-            }
-        }
-
-        fn with_devices(bdfs: &Vec<Bdf>) -> Self {
-            let mut this = Self::new();
-            for bdf in bdfs {
-                this.devs.push(Arc::new(TestDev::default()));
-                this.bus.attach(
-                    *bdf,
-                    Arc::clone(this.devs.last().unwrap()) as Arc<dyn Endpoint>,
-                    None,
-                );
-            }
-            this
-        }
-    }
-
-    // Verify that reads directed to different portions of a device's config
-    // space return values from the target portion.
-    #[test]
-    fn ecam_read_at_offset() {
-        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
-        let mut data: Vec<u8> = Vec::with_capacity(LEN_CFG);
-        for val in 0..LEN_CFG {
-            data.push(val as u8);
-        }
-        *env.devs[0].cfg_data.lock().unwrap() =
-            data.as_slice().try_into().unwrap();
-
-        let mut buf = [0xffu8; 4];
-        let mut read_op = ReadOp::from_buf(0, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            );
-        });
-        assert_eq!(buf, [0, 1, 2, 3]);
-
-        let mut buf = [0xffu8; 4];
-        let mut read_op = ReadOp::from_buf(8, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            );
-        });
-        assert_eq!(buf, [8, 9, 10, 11]);
-    }
-
-    // Verify that reads of different devices/functions on the same bus are
-    // routed to the correct device.
-    #[test]
-    fn ecam_targets_devices_within_bus() {
-        let bdfs = vec![
-            Bdf::new(0, 0, 0).unwrap(),
-            Bdf::new(0, 1, 0).unwrap(),
-            Bdf::new(0, 1, 1).unwrap(),
-        ];
-
-        let env = TestEnv::with_devices(&bdfs);
-        *env.devs[0].cfg_data.lock().unwrap() = [0xa0u8; LEN_CFG];
-        *env.devs[1].cfg_data.lock().unwrap() = [0xb1u8; LEN_CFG];
-        *env.devs[2].cfg_data.lock().unwrap() = [0xc2u8; LEN_CFG];
-
-        let mut buf = [0u8; 4];
-        let mut read_op = ReadOp::from_buf(0, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            );
-        });
-        assert_eq!(buf, [0xa0u8; 4]);
-
-        buf = [0u8; 4];
-        read_op = ReadOp::from_buf(0x8000, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            );
-        });
-        assert_eq!(buf, [0xb1u8; 4]);
-
-        buf = [0u8; 4];
-        read_op = ReadOp::from_buf(0x9000, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            );
-        });
-        assert_eq!(buf, [0xc2u8; 4]);
-    }
-
-    // Verify that unaligned accesses that don't span multiple doublewords
-    // return the expected portion of the config space.
-    #[test]
-    fn ecam_unaligned_within_word() {
-        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
-        let mut buf = [0xffu8; 2];
-        let mut read_op = ReadOp::from_buf(1, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            )
-        });
-        assert_eq!(buf, [0u8; 2]);
-    }
-
-    // Verify that reads that target an absent device/function return -1 without
-    // panicking.
-    #[test]
-    fn ecam_absent_device() {
-        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
-        let mut buf = [0u8; 4];
-        let mut read_op = ReadOp::from_buf(0xf000, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            )
-        });
-        assert_eq!(buf, [0xffu8; 4]);
     }
 }

@@ -239,21 +239,158 @@ impl PioCfgDecoder {
     }
 }
 
-/// Decodes an offset into PCIe extended configuration space into a
-/// bus/device/function and an offset into that function's configuration space.
-///
-/// This routine assumes that ECAM regions are 256 MiB in size: bits 27:20 of
-/// the offset specify a bus, 19:15 specify a device, 14:12 specify a function,
-/// and 11:0 specify the offset into the specified BDF's configuration space.
-/// The higher-order bits of the offset are ignored.
-pub fn decode_extended_cfg_offset(ecam_offset: usize) -> (Bdf, usize) {
-    let bus = (ecam_offset >> 20) as u8 & bits::MASK_BUS;
-    let dev = (ecam_offset >> 15) as u8 & bits::MASK_DEV;
-    let func = (ecam_offset >> 12) as u8 & bits::MASK_FUNC;
-    let cfg_offset = ecam_offset & bits::MASK_ECAM_CFG_OFFSET;
-    (Bdf::new(bus, dev, func).unwrap(), cfg_offset)
+pub struct PcieCfgDecoder {
+    bus_mask: u8,
+}
+
+impl PcieCfgDecoder {
+    pub fn new(bus_count: u16) -> Self {
+        assert_eq!(bus_count & (bus_count - 1), 0);
+        assert!(bus_count >= bits::PCIE_MIN_BUSES_PER_ECAM_REGION);
+        assert!(bus_count <= bits::PCIE_MAX_BUSES_PER_ECAM_REGION);
+
+        Self { bus_mask: (bus_count - 1) as u8 }
+    }
+
+    pub fn service<F>(&self, rwop: RWOp, mut cb: F)
+    where
+        F: FnMut(&Bdf, RWOp) -> Option<()>,
+    {
+        assert_ne!(rwop.len(), 0);
+        let (bdf, cfg_off) = self.decode_enhanced_cfg_offset(rwop.offset());
+
+        // Ensure the access is addressed to a single device.
+        let (end_bdf, _) =
+            self.decode_enhanced_cfg_offset(rwop.offset() + rwop.len() - 1);
+        if bdf != end_bdf {
+            if let RWOp::Read(ro) = rwop {
+                ro.fill(0xff);
+            }
+            return;
+        }
+        match rwop {
+            RWOp::Read(ro) => {
+                let mut cro = ReadOp::new_child(cfg_off, ro, ..);
+                let hit = cb(&bdf, RWOp::Read(&mut cro));
+                if hit.is_none() {
+                    cro.fill(0xff);
+                }
+            }
+            RWOp::Write(wo) => {
+                let mut cwo = WriteOp::new_child(cfg_off, wo, ..);
+                let _ = cb(&bdf, RWOp::Write(&mut cwo));
+            }
+        }
+    }
+
+    /// Decodes an offset into a PCIe ECAM region into a bus/device/function and
+    /// an offset into that function's configuration size.
+    fn decode_enhanced_cfg_offset(&self, region_offset: usize) -> (Bdf, usize) {
+        let bus = (region_offset >> 20) as u8 & self.bus_mask;
+        let dev = (region_offset >> 15) as u8 & bits::MASK_DEV;
+        let func = (region_offset >> 12) as u8 & bits::MASK_FUNC;
+        let cfg_offset = region_offset & bits::MASK_ECAM_CFG_OFFSET;
+        (Bdf::new(bus, dev, func).unwrap(), cfg_offset)
+    }
 }
 
 pub mod migrate {
     pub use super::device::migrate::*;
+}
+
+#[cfg(test)]
+mod test {
+    use crate::common::{RWOp, ReadOp, WriteOp};
+
+    use super::{bits, Bdf, PcieCfgDecoder};
+
+    #[test]
+    fn pcie_decoder() {
+        let pcie = PcieCfgDecoder::new(bits::PCIE_MAX_BUSES_PER_ECAM_REGION);
+        let mut buf = [0u8; 4];
+        let mut ro = ReadOp::from_buf(0, &mut buf);
+        pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {
+            assert_eq!(*bdf, Bdf::new(0, 0, 0).unwrap());
+            assert!(matches!(rwo, RWOp::Read(_)));
+            assert_eq!(rwo.offset(), 0);
+            assert_eq!(rwo.len(), 4);
+            Some(())
+        });
+
+        let buf = [0u8; 16];
+        let mut wo = WriteOp::from_buf(0x400, &buf);
+        pcie.service(RWOp::Write(&mut wo), |bdf, rwo| {
+            assert_eq!(*bdf, Bdf::new(0, 0, 0).unwrap());
+            assert!(matches!(rwo, RWOp::Write(_)));
+            assert_eq!(rwo.offset(), 0x400);
+            assert_eq!(rwo.len(), 16);
+            Some(())
+        })
+    }
+
+    #[test]
+    fn pcie_decoder_multiple_bdfs() {
+        let pcie = PcieCfgDecoder::new(bits::PCIE_MAX_BUSES_PER_ECAM_REGION);
+        let mut buf = [0u8; 4];
+        let mut ro = ReadOp::from_buf(1_usize << 12, &mut buf);
+        pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {
+            assert_eq!(*bdf, Bdf::new(0, 0, 1).unwrap());
+            assert_eq!(rwo.offset(), 0);
+            Some(())
+        });
+
+        let mut ro =
+            ReadOp::from_buf(4_usize << 15 | 3_usize << 12 | 0x123, &mut buf);
+        pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {
+            assert_eq!(*bdf, Bdf::new(0, 4, 3).unwrap());
+            assert_eq!(rwo.offset(), 0x123);
+            Some(())
+        });
+
+        let mut ro = ReadOp::from_buf(
+            133_usize << 20 | 7_usize << 15 | 1_usize << 12 | 0x337,
+            &mut buf,
+        );
+        pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {
+            assert_eq!(*bdf, Bdf::new(133, 7, 1).unwrap());
+            assert_eq!(rwo.offset(), 0x337);
+            Some(())
+        });
+    }
+
+    #[test]
+    fn pcie_decoder_min_buses() {
+        let pcie = PcieCfgDecoder::new(4);
+        let mut buf = [0u8; 4];
+        for seg_group in 0..4 {
+            for bus in 0..4 {
+                let mut ro =
+                    ReadOp::from_buf((seg_group * 4 + bus) << 20, &mut buf);
+                pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {
+                    assert_eq!(
+                        *bdf,
+                        Bdf::new(bus as u8, 0, 0).unwrap(),
+                        "group {}, bus {}",
+                        seg_group,
+                        bus
+                    );
+                    assert_eq!(rwo.offset(), 0);
+                    Some(())
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn pcie_decoder_access_spans_multiple_devs() {
+        let pcie = PcieCfgDecoder::new(bits::PCIE_MAX_BUSES_PER_ECAM_REGION);
+        let mut buf = [0u8; 8];
+        let mut ro = ReadOp::from_buf(0xffc, &mut buf);
+
+        // This access spans multiple functions, so the decoder can't
+        // meaningfully address a single BDF and should therefore not
+        // invoke the closure.
+        pcie.service(RWOp::Read(&mut ro), |_bdf, _rwo| panic!());
+        assert_eq!(buf, [0xffu8; 8]);
+    }
 }
