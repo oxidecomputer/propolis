@@ -159,7 +159,10 @@ fn main() {
         inv.register(&rtc)?;
 
         let hdl = machine.get_hdl();
-        let chipset = hw::chipset::i440fx::I440Fx::create(machine);
+        let chipset = hw::chipset::i440fx::I440Fx::create(
+            machine,
+            &hw::chipset::i440fx::CreateOptions::default(),
+        );
         inv.register(&chipset)?;
 
         // UARTs

@@ -29,6 +29,11 @@ const PM_FUNC: u8 = 3;
 const ADDR_PCIE_ECAM_REGION: usize = 0xe000_0000;
 const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
 
+#[derive(Default, Debug)]
+pub struct CreateOptions {
+    pub enable_pcie: bool,
+}
+
 pub struct I440Fx {
     pci_bus: pci::Bus,
     pci_cfg: PioCfgDecoder,
@@ -41,7 +46,7 @@ pub struct I440Fx {
     pm_timer: Arc<BhyvePmTimer>,
 }
 impl I440Fx {
-    pub fn create(machine: &Machine) -> Arc<Self> {
+    pub fn create(machine: &Machine, options: &CreateOptions) -> Arc<Self> {
         let hdl = machine.hdl.clone();
         let irq_config = IrqConfig::create(hdl);
 
@@ -97,38 +102,35 @@ impl I440Fx {
         )
         .unwrap();
 
-        // Unconditionally register a callback for MMIO access to PCIe enhanced
-        // configuration space, but only process the access if the relevant
-        // feature flag is enabled. Registering unconditionally ensures that
-        // conflicting attempts to service MMIO to the ECAM region will fail
-        // (instead of succeeding silently and then failing later when the
-        // feature is turned on).
-        let mmio = &machine.bus_mmio;
-        let mmio_dev = Arc::clone(&this);
-        let mmio_ecam_fn =
-            Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                if cfg!(not(feature = "testonly-pci-enhanced-configuration")) {
-                    slog::info!(
-                        ctx.log,
-                        "Access to PCIe ECAM region disabled by feature flag";
-                        "addr" => format!("0x{:x}", addr)
-                    );
-                    return;
-                }
-
-                let bus =
-                    pci::decode_extended_cfg_offset(rwo.offset()).0.bus.get();
-                if bus == 0 {
-                    mmio_dev.pci_bus.extended_cfg_rw(addr, rwo, ctx);
-                } else {
-                    slog::info!(ctx.log, "ECAM access to nonzero bus {}", bus);
-                    if let RWOp::Read(ro) = rwo {
-                        ro.fill(0xff);
+        if options.enable_pcie {
+            let mmio = &machine.bus_mmio;
+            let mmio_dev = Arc::clone(&this);
+            let mmio_ecam_fn =
+                Arc::new(move |addr: usize, rwo: RWOp, ctx: &DispCtx| {
+                    let bus = pci::decode_extended_cfg_offset(rwo.offset())
+                        .0
+                        .bus
+                        .get();
+                    if bus == 0 {
+                        mmio_dev.pci_bus.extended_cfg_rw(addr, rwo, ctx);
+                    } else {
+                        slog::info!(
+                            ctx.log,
+                            "ECAM access to nonzero bus {}",
+                            bus
+                        );
+                        if let RWOp::Read(ro) = rwo {
+                            ro.fill(0xff);
+                        }
                     }
-                }
-            }) as Arc<MmioFn>;
-        mmio.register(ADDR_PCIE_ECAM_REGION, LEN_PCI_ECAM_REGION, mmio_ecam_fn)
+                }) as Arc<MmioFn>;
+            mmio.register(
+                ADDR_PCIE_ECAM_REGION,
+                LEN_PCI_ECAM_REGION,
+                mmio_ecam_fn,
+            )
             .unwrap();
+        }
 
         this
     }
