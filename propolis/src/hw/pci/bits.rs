@@ -4,6 +4,7 @@
 
 pub const LEN_CFG: usize = 0x100;
 pub const LEN_CFG_STD: usize = 0x40;
+pub const LEN_CFG_ECAM: usize = 0x1000;
 
 bitflags! {
     pub struct RegCmd: u16 {
