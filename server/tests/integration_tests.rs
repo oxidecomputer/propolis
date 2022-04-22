@@ -4,7 +4,7 @@ use dropshot::{
 };
 use propolis_client::{Client, Error as ClientError};
 use propolis_server::{
-    config::{BlockDevice, Config, Device},
+    config::{BlockDevice, Chipset, Config, Device},
     server,
     vnc::setup_vnc,
 };
@@ -61,7 +61,12 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
     devices.insert("block0".to_string(), dev);
 
     let vnc_server = setup_vnc(&log);
-    let config = Config::new(artifacts.bootrom.path(), devices, block_devices);
+    let config = Config::new(
+        artifacts.bootrom.path(),
+        Chipset::default(),
+        devices,
+        block_devices,
+    );
     let context = server::Context::new(config, vnc_server, log.new(slog::o!()));
 
     let config_dropshot = ConfigDropshot {

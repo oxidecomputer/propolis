@@ -54,15 +54,11 @@ impl Config {
     /// mechanism for initialization.
     pub fn new<P: Into<PathBuf>>(
         bootrom: P,
+        chipset: Chipset,
         devices: BTreeMap<String, Device>,
         block_devs: BTreeMap<String, BlockDevice>,
     ) -> Config {
-        Config {
-            bootrom: bootrom.into(),
-            chipset: Chipset::default(),
-            devices,
-            block_devs,
-        }
+        Config { bootrom: bootrom.into(), chipset, devices, block_devs }
     }
 
     pub fn get_bootrom(&self) -> &Path {
