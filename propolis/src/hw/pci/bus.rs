@@ -272,13 +272,13 @@ impl Inner {
 mod test {
     use std::convert::TryInto;
 
-    use crate::{
-        common::ReadOp,
-        hw::pci::bits::{ADDR_ECAM_REGION_BASE, LEN_CFG},
-        instance::Instance,
-    };
+    use crate::common::ReadOp;
+    use crate::hw::pci::bits::LEN_CFG;
+    use crate::instance::Instance;
 
     use super::*;
+
+    const TEST_ECAM_REGION_BASE: usize = 0x1000_0000;
 
     fn prep() -> (Arc<PioBus>, Arc<MmioBus>) {
         (Arc::new(PioBus::new()), Arc::new(MmioBus::new(u32::MAX as usize)))
@@ -441,7 +441,7 @@ mod test {
         let mut read_op = ReadOp::from_buf(0, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             );
@@ -452,7 +452,7 @@ mod test {
         let mut read_op = ReadOp::from_buf(8, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             );
@@ -479,7 +479,7 @@ mod test {
         let mut read_op = ReadOp::from_buf(0, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             );
@@ -490,7 +490,7 @@ mod test {
         read_op = ReadOp::from_buf(0x8000, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             );
@@ -501,7 +501,7 @@ mod test {
         read_op = ReadOp::from_buf(0x9000, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             );
@@ -518,7 +518,7 @@ mod test {
         let mut read_op = ReadOp::from_buf(1, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             )
@@ -535,7 +535,7 @@ mod test {
         let mut read_op = ReadOp::from_buf(1, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             )
@@ -552,7 +552,7 @@ mod test {
         let mut read_op = ReadOp::from_buf(0xf000, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             env.bus.extended_cfg_rw(
-                ADDR_ECAM_REGION_BASE,
+                TEST_ECAM_REGION_BASE,
                 RWOp::Read(&mut read_op),
                 ctx,
             )

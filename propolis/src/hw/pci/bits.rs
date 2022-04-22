@@ -65,13 +65,6 @@ pub const LEN_PCI_CONFIG_ADDR: u16 = 4;
 pub const PORT_PCI_CONFIG_DATA: u16 = 0xcfc;
 pub const LEN_PCI_CONFIG_DATA: u16 = 4;
 
-/// The assumed base address for the PCIe extended configuration access
-/// mechanism (ECAM)'s MMIO region.
-pub const ADDR_ECAM_REGION_BASE: usize = 0xe000_0000;
-
-/// The size of the ECAM MMIO region in bytes.
-pub const LEN_ECAM_REGION: usize = 0x1000_0000;
-
 /// Bitwise AND'ing an ECAM MMIO access address with this mask produces an
 /// offset in bytes at which to access the target BDF's configuration region.
 pub const MASK_ECAM_CFG_OFFSET: usize = 0xfff;

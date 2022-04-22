@@ -26,6 +26,9 @@ const LPC_FUNC: u8 = 0;
 const PM_DEV: u8 = 1;
 const PM_FUNC: u8 = 3;
 
+const ADDR_PCIE_ECAM_REGION: usize = 0xe000_0000;
+const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
+
 pub struct I440Fx {
     pci_bus: pci::Bus,
     pci_cfg: PioCfgDecoder,
@@ -124,12 +127,8 @@ impl I440Fx {
                     }
                 }
             }) as Arc<MmioFn>;
-        mmio.register(
-            pci::bits::ADDR_ECAM_REGION_BASE,
-            pci::bits::LEN_ECAM_REGION,
-            mmio_ecam_fn,
-        )
-        .unwrap();
+        mmio.register(ADDR_PCIE_ECAM_REGION, LEN_PCI_ECAM_REGION, mmio_ecam_fn)
+            .unwrap();
 
         this
     }
