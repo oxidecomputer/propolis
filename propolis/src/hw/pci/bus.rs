@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::bar::BarDefine;
 use super::{BarN, Bdf, BusNum, Endpoint, LintrCfg};
-use crate::common::RWOp;
+use crate::common::{RWOp, ReadOp, WriteOp};
 use crate::dispatch::DispCtx;
+use crate::hw::pci::bits::LEN_CFG;
 use crate::mmio::{MmioBus, MmioFn};
 use crate::pio::{PioBus, PioFn};
 
@@ -211,11 +212,6 @@ impl Inner {
     }
 
     fn extended_config_rw(&self, _addr: usize, rwo: RWOp, ctx: &DispCtx) {
-        use crate::{
-            common::{ReadOp, WriteOp},
-            hw::pci::bits::{LEN_CFG, MASK_ECAM_ACCESS_ALIGN},
-        };
-
         assert_ne!(rwo.len(), 0);
         let (bdf, cfg_offset) = super::decode_extended_cfg_offset(rwo.offset());
 
@@ -225,15 +221,10 @@ impl Inner {
         // configuration space.)
         let cfg_last = cfg_offset + rwo.len() - 1;
 
-        // Reject if the access if:
-        // - the access touches bytes past the end of the 256-byte PCI config
-        //   space (this causes a panic for legacy PCI devices), or
-        // - the access illegally spans multiple words.
-        if (cfg_last > LEN_CFG)
-            || ((cfg_offset & MASK_ECAM_ACCESS_ALIGN)
-                != (cfg_last & MASK_ECAM_ACCESS_ALIGN))
-        {
-            slog::info!(ctx.log, "ECAM: malformed access"; 
+        // Avoid panic from routing out-of-legacy-config-space accesses to PCI
+        // devices.
+        if cfg_last > LEN_CFG {
+            slog::info!(ctx.log, "ECAM: accessed region outside legacy PCI cfg";
                         "cfg_offset" => cfg_offset,
                         "len" => rwo.len());
             if let RWOp::Read(ro) = rwo {
@@ -507,23 +498,6 @@ mod test {
             );
         });
         assert_eq!(buf, [0xc2u8; 4]);
-    }
-
-    // Verify that reads that span multiple doublewords return -1 without
-    // panicking.
-    #[test]
-    fn ecam_cross_alignment_boundary() {
-        let env = TestEnv::with_devices(&vec![Bdf::new(0, 0, 0).unwrap()]);
-        let mut buf = [0u8; 4];
-        let mut read_op = ReadOp::from_buf(1, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            env.bus.extended_cfg_rw(
-                TEST_ECAM_REGION_BASE,
-                RWOp::Read(&mut read_op),
-                ctx,
-            )
-        });
-        assert_eq!(buf, [0xffu8; 4]);
     }
 
     // Verify that unaligned accesses that don't span multiple doublewords
