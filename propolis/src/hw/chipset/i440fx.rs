@@ -31,7 +31,7 @@ const PM_FUNC: u8 = 3;
 const ADDR_PCIE_ECAM_REGION: usize = 0xe000_0000;
 const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct CreateOptions {
     pub enable_pcie: bool,
 }
@@ -49,7 +49,7 @@ pub struct I440Fx {
     pm_timer: Arc<BhyvePmTimer>,
 }
 impl I440Fx {
-    pub fn create(machine: &Machine, options: &CreateOptions) -> Arc<Self> {
+    pub fn create(machine: &Machine, options: CreateOptions) -> Arc<Self> {
         let hdl = machine.hdl.clone();
         let irq_config = IrqConfig::create(hdl);
 

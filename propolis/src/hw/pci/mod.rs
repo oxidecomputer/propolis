@@ -244,14 +244,23 @@ pub struct PcieCfgDecoder {
 }
 
 impl PcieCfgDecoder {
+    /// Creates a PCIe config space access decoder that can address the supplied
+    /// number of buses.
+    ///
+    /// The supplied bus count must be a power of 2 between
+    /// [`bits::PCIE_MIN_BUSES_PER_ECAM_REGION`] and
+    /// [`bits::PCIE_MAX_BUSES_PER_ECAM_REGION`] inclusive.
     pub fn new(bus_count: u16) -> Self {
-        assert_eq!(bus_count & (bus_count - 1), 0);
+        assert!(bus_count.is_power_of_two());
         assert!(bus_count >= bits::PCIE_MIN_BUSES_PER_ECAM_REGION);
         assert!(bus_count <= bits::PCIE_MAX_BUSES_PER_ECAM_REGION);
 
         Self { bus_mask: (bus_count - 1) as u8 }
     }
 
+    /// Decodes a request to access PCIe configuration space and dispatches the
+    /// resulting BDF and device-relative configuration space offset to a
+    /// caller-supplied completion function.
     pub fn service<F>(&self, rwop: RWOp, mut cb: F)
     where
         F: FnMut(&Bdf, RWOp) -> Option<()>,

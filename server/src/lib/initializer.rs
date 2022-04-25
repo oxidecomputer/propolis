@@ -174,10 +174,8 @@ impl<'a> MachineInitializer<'a> {
                 })
             },
         )?;
-        let chipset = I440Fx::create(
-            self.machine,
-            &i440fx::CreateOptions { enable_pcie },
-        );
+        let chipset =
+            I440Fx::create(self.machine, i440fx::CreateOptions { enable_pcie });
         let id = self.inv.register(&chipset)?;
         Ok(RegisteredChipset(chipset, id))
     }
