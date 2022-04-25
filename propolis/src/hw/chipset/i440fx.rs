@@ -6,7 +6,11 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::ibmpc;
-use crate::hw::ids::pci::{VENDOR_INTEL, PIIX4_HB_DEV_ID, PIIX3_ISA_DEV_ID, PIIX4_PM_DEV_ID};
+use crate::hw::ids::pci::{
+    PIIX3_ISA_DEV_ID, PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID,
+    PIIX4_HB_SUB_DEV_ID, PIIX4_PM_DEV_ID, PIIX4_PM_SUB_DEV_ID, VENDOR_INTEL,
+    VENDOR_OXIDE,
+};
 use crate::hw::pci::{
     self, Bdf, BusNum, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
 };
@@ -321,6 +325,8 @@ impl Piix4HostBridge {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX4_HB_DEV_ID,
+            sub_vendor_id: VENDOR_OXIDE,
+            sub_device_id: PIIX4_HB_SUB_DEV_ID,
             class: 0x06,
             ..Default::default()
         })
@@ -363,6 +369,8 @@ impl Piix3Lpc {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX3_ISA_DEV_ID,
+            sub_vendor_id: VENDOR_OXIDE,
+            sub_device_id: PIIX3_ISA_SUB_DEV_ID,
             class: 0x06,
             subclass: 0x01,
             ..Default::default()
@@ -661,6 +669,8 @@ impl Piix3PM {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX4_PM_DEV_ID,
+            sub_vendor_id: VENDOR_OXIDE,
+            sub_device_id: PIIX4_PM_SUB_DEV_ID,
             class: 0x06,
             subclass: 0x80,
             ..Default::default()
