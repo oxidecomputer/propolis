@@ -36,6 +36,9 @@ pub enum ParseError {
 pub struct Config {
     bootrom: PathBuf,
 
+    #[serde(default)]
+    chipset: Chipset,
+
     #[serde(default, rename = "dev")]
     devices: BTreeMap<String, Device>,
 
@@ -51,14 +54,19 @@ impl Config {
     /// mechanism for initialization.
     pub fn new<P: Into<PathBuf>>(
         bootrom: P,
+        chipset: Chipset,
         devices: BTreeMap<String, Device>,
         block_devs: BTreeMap<String, BlockDevice>,
     ) -> Config {
-        Config { bootrom: bootrom.into(), devices, block_devs }
+        Config { bootrom: bootrom.into(), chipset, devices, block_devs }
     }
 
     pub fn get_bootrom(&self) -> &Path {
         &self.bootrom
+    }
+
+    pub fn get_chipset(&self) -> &Chipset {
+        &self.chipset
     }
 
     pub fn devs(&self) -> IterDevs {
@@ -75,6 +83,23 @@ impl Config {
             ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
         })?;
         entry.create_block_backend(disp)
+    }
+}
+
+/// The instance's chipset.
+#[derive(Default, Serialize, Deserialize, Debug)]
+pub struct Chipset {
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+impl Chipset {
+    pub fn get_string<S: AsRef<str>>(&self, key: S) -> Option<&str> {
+        self.options.get(key.as_ref())?.as_str()
+    }
+
+    pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {
+        self.get_string(key)?.parse().ok()
     }
 }
 

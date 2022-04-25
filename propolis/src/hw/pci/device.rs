@@ -993,7 +993,7 @@ pub struct Builder {
 
 impl Builder {
     pub fn new(ident: Ident) -> Self {
-        let mut cfgmap = RegMap::new(LEN_CFG);
+        let mut cfgmap = RegMap::new(LEN_CFG_ECAM);
         cfgmap.define_with_flags(0, LEN_CFG_STD, CfgReg::Std, Flags::PASSTHRU);
         Self {
             ident,

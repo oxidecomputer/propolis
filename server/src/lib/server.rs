@@ -287,7 +287,9 @@ async fn instance_ensure(
             );
             init.initialize_rom(server_context.config.get_bootrom())?;
             init.initialize_kernel_devs(lowmem, highmem)?;
-            let chipset = init.initialize_chipset()?;
+
+            let chipset =
+                init.initialize_chipset(server_context.config.get_chipset())?;
             com1 = Some(Arc::new(init.initialize_uart(&chipset)?));
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port()?;

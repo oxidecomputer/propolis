@@ -8,7 +8,9 @@ use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::PAGE_SIZE;
 use propolis::dispatch::Dispatcher;
-use propolis::hw::chipset::{i440fx::I440Fx, Chipset};
+use propolis::hw::chipset::i440fx;
+use propolis::hw::chipset::i440fx::I440Fx;
+use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2ctrl::PS2Ctrl;
@@ -20,6 +22,7 @@ use propolis::inventory::{ChildRegister, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
 use slog::info;
 
+use crate::config;
 use crate::serial::Serial;
 
 use anyhow::Result;
@@ -156,8 +159,23 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_chipset(&self) -> Result<RegisteredChipset, Error> {
-        let chipset = I440Fx::create(self.machine);
+    pub fn initialize_chipset(
+        &self,
+        config: &config::Chipset,
+    ) -> Result<RegisteredChipset, Error> {
+        let enable_pcie = config.options.get("enable-pcie").map_or_else(
+            || Ok(false),
+            |v| {
+                v.as_bool().ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        format!("invalid value {} for enable-pcie", v),
+                    )
+                })
+            },
+        )?;
+        let chipset =
+            I440Fx::create(self.machine, i440fx::CreateOptions { enable_pcie });
         let id = self.inv.register(&chipset)?;
         Ok(RegisteredChipset(chipset, id))
     }
