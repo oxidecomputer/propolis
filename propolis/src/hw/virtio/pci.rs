@@ -8,13 +8,12 @@ use super::queue::VirtQueues;
 use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::hw::ids::pci::VENDOR_VIRTIO;
 use crate::hw::pci;
 use crate::intr_pins::IntrPin;
 use crate::util::regmap::RegMap;
 
 use lazy_static::lazy_static;
-
-const VIRTIO_VENDOR: u16 = 0x1af4;
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
@@ -186,9 +185,9 @@ impl PciVirtioState {
         cfg_sz: usize,
     ) -> (Self, pci::DeviceState) {
         let mut builder = pci::Builder::new(pci::Ident {
-            vendor_id: VIRTIO_VENDOR,
+            vendor_id: VENDOR_VIRTIO,
             device_id: dev_id,
-            sub_vendor_id: VIRTIO_VENDOR,
+            sub_vendor_id: VENDOR_VIRTIO,
             sub_device_id: dev_id - 0xfff,
             class: dev_class,
             ..Default::default()

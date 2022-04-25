@@ -6,6 +6,7 @@ use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::ibmpc;
+use crate::hw::ids::pci::VENDOR_INTEL;
 use crate::hw::pci::{
     self, Bdf, BusNum, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
 };
@@ -318,7 +319,7 @@ struct Piix4HostBridge {
 impl Piix4HostBridge {
     pub fn create() -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
-            vendor_id: 0x8086,
+            vendor_id: VENDOR_INTEL,
             device_id: 0x1237,
             class: 0x06,
             ..Default::default()
@@ -360,7 +361,7 @@ pub struct Piix3Lpc {
 impl Piix3Lpc {
     fn create(irq_config: Arc<IrqConfig>) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
-            vendor_id: 0x8086,
+            vendor_id: VENDOR_INTEL,
             device_id: 0x7000,
             class: 0x06,
             subclass: 0x01,
@@ -658,7 +659,7 @@ pub struct Piix3PM {
 impl Piix3PM {
     pub fn create() -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
-            vendor_id: 0x8086,
+            vendor_id: VENDOR_INTEL,
             device_id: 0x7113,
             class: 0x06,
             subclass: 0x80,

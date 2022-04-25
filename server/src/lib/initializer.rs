@@ -12,6 +12,7 @@ use propolis::hw::chipset::i440fx;
 use propolis::hw::chipset::i440fx::I440Fx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
+use propolis::hw::ids::pci::VENDOR_OXIDE;
 use propolis::hw::pci;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
@@ -254,7 +255,7 @@ impl<'a> MachineInitializer<'a> {
         be_register: ChildRegister,
     ) -> Result<(), Error> {
         let be_info = backend.info();
-        let nvme = nvme::PciNvme::create(0x1de, 0x1000, name, be_info);
+        let nvme = nvme::PciNvme::create(VENDOR_OXIDE, 0x1000, name, be_info);
         let id = self.inv.register_instance(&nvme, bdf.to_string())?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 

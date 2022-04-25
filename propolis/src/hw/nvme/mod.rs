@@ -3,6 +3,7 @@ use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::DispCtx;
+use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
 use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
@@ -455,7 +456,7 @@ impl PciNvme {
             vid: vendor,
             ssvid: vendor,
             sn,
-            ieee: [0xA8, 0x40, 0x25], // Oxide OUI
+            ieee: OXIDE_OUI,
             // We use standard Completion/Submission Queue Entry structures with no extra
             // data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
