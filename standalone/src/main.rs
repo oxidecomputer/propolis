@@ -20,7 +20,6 @@ use std::time::SystemTime;
 use propolis::chardev::{BlockingSource, Sink, Source};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
-use propolis::hw::ids::pci::VENDOR_OXIDE;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, ReqState, State};
@@ -252,12 +251,8 @@ fn main() {
                     let bdf = bdf.unwrap();
 
                     let info = backend.info();
-                    let nvme = hw::nvme::PciNvme::create(
-                        VENDOR_OXIDE,
-                        0x1000,
-                        block_dev.to_string(),
-                        info,
-                    );
+                    let nvme =
+                        hw::nvme::PciNvme::create(block_dev.to_string(), info);
 
                     let id = inv.register_instance(&nvme, bdf.to_string())?;
                     let _be_id = inv.register_child(creg, id)?;
