@@ -8,7 +8,7 @@ use super::queue::VirtQueues;
 use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::hw::ids::pci::VENDOR_VIRTIO;
+use crate::hw::ids::pci::{VENDOR_OXIDE, VENDOR_VIRTIO};
 use crate::hw::pci;
 use crate::intr_pins::IntrPin;
 use crate::util::regmap::RegMap;
@@ -187,8 +187,8 @@ impl PciVirtioState {
         let mut builder = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_VIRTIO,
             device_id: dev_id,
-            sub_vendor_id: VENDOR_VIRTIO,
-            sub_device_id: dev_id - 0xfff,
+            sub_vendor_id: VENDOR_OXIDE,
+            sub_device_id: super::bits::virtio_sub_dev_id(dev_id),
             class: dev_class,
             ..Default::default()
         })
