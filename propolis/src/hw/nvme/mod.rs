@@ -537,9 +537,8 @@ impl PciNvme {
         };
 
         let pci_state = builder
-            // XXX: add room for doorbells
-            .add_bar_mmio64(pci::BarN::BAR0, CONTROLLER_REG_SZ as u64)
             // BAR0/1 are used for the main config and doorbell registers
+            .add_bar_mmio64(pci::BarN::BAR0, CONTROLLER_REG_SZ as u64)
             // BAR2 is for the optional index/data registers
             // Place MSIX in BAR4 for now
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
@@ -976,7 +975,14 @@ enum CtrlrReg {
 }
 
 /// Size of the Controller Register space
-const CONTROLLER_REG_SZ: usize = 0x2000;
+///
+/// We specify a size of 0x4000 even though we're not using anywhere near that much
+/// space because the NVMe spec requires that bits 13:04 of MLBAR be R/O and 0 on reset.
+/// We do that by basically returning a size of 0x4000 which makes us ignore any writes
+/// to the bottom 14 bits as needed. See `pci::Bars::reg_write`.
+///
+/// See NVMe 1.0e Section 2.1.10 Offset 10h: MLBAR (BAR0) - Memory Register Base Address, lower 32 bits
+const CONTROLLER_REG_SZ: usize = 0x4000;
 
 lazy_static! {
     static ref CONTROLLER_REGS: (RegMap<CtrlrReg>, usize) = {
@@ -1002,10 +1008,10 @@ lazy_static! {
             (CtrlrReg::Reserved, 0),
         ];
 
-        // Pad out to the next power of two
+        // Update the last `Reserved` slot to pad out the rest of the controller register space
         let regs_sz = layout.iter().map(|(_, sz)| sz).sum::<usize>();
-        assert!(regs_sz.next_power_of_two() <= CONTROLLER_REG_SZ);
-        layout.last_mut().unwrap().1 = regs_sz.next_power_of_two() - regs_sz;
+        assert!(regs_sz <= CONTROLLER_REG_SZ);
+        layout.last_mut().unwrap().1 = CONTROLLER_REG_SZ - regs_sz;
 
         // Find the offset of IOQueueDoorBells
         let db_offset = layout
