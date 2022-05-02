@@ -537,9 +537,8 @@ impl PciNvme {
         };
 
         let pci_state = builder
-            // XXX: add room for doorbells
-            .add_bar_mmio64(pci::BarN::BAR0, CONTROLLER_REG_SZ as u64)
             // BAR0/1 are used for the main config and doorbell registers
+            .add_bar_mmio64(pci::BarN::BAR0, CONTROLLER_REG_SZ as u64)
             // BAR2 is for the optional index/data registers
             // Place MSIX in BAR4 for now
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
