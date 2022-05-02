@@ -1008,9 +1008,9 @@ lazy_static! {
             (CtrlrReg::Reserved, 0),
         ];
 
-        // Pad out to the next power of two
+        // Update the last `Reserved` slot to pad out the rest of the controller register space
         let regs_sz = layout.iter().map(|(_, sz)| sz).sum::<usize>();
-        assert!(regs_sz.next_power_of_two() <= CONTROLLER_REG_SZ);
+        assert!(regs_sz <= CONTROLLER_REG_SZ);
         layout.last_mut().unwrap().1 = CONTROLLER_REG_SZ - regs_sz;
 
         // Find the offset of IOQueueDoorBells
