@@ -29,12 +29,12 @@ bitflags! {
     /// Bitflags representing memory protections.
     pub struct Prot: u8 {
         const NONE = 0;
-        const READ = bhyve_api::PROT_READ as u8;
-        const WRITE = bhyve_api::PROT_WRITE as u8;
-        const EXEC = bhyve_api::PROT_EXEC as u8;
-        const ALL = (bhyve_api::PROT_READ
-                    | bhyve_api::PROT_WRITE
-                    | bhyve_api::PROT_EXEC) as u8;
+        const READ = libc::PROT_READ as u8;
+        const WRITE = libc::PROT_WRITE as u8;
+        const EXEC = libc::PROT_EXEC as u8;
+        const ALL = (libc::PROT_READ
+                    | libc::PROT_WRITE
+                    | libc::PROT_EXEC) as u8;
     }
 }
 

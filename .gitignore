@@ -1,5 +1,6 @@
 /target
 /*/target
+/*/*/target
 **/Cargo.lock
 debug.out
 core

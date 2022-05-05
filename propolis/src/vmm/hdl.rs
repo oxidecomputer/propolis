@@ -178,12 +178,12 @@ impl VmmHdl {
         let mut seg = bhyve_api::vm_memseg {
             segid,
             len: size,
-            name: [0u8; bhyve_api::SEG_NAME_LEN],
+            name: [0u8; bhyve_api::VM_MAX_SEG_NAMELEN],
         };
         if let Some(name) = segname {
             let name_raw = name.as_bytes();
 
-            assert!(name_raw.len() < bhyve_api::SEG_NAME_LEN);
+            assert!(name_raw.len() < bhyve_api::VM_MAX_SEG_NAMELEN);
             (&mut seg.name[..]).write_all(name_raw)?;
         }
         self.ioctl(bhyve_api::VM_ALLOC_MEMSEG, &mut seg)
@@ -270,7 +270,7 @@ impl VmmHdl {
         start_gpa: u64,
         bitmap: &mut [u8],
     ) -> Result<()> {
-        let mut tracker = bhyve_api::vm_dirty_tracker {
+        let mut tracker = bhyve_api::vmm_dirty_tracker {
             vdt_start_gpa: start_gpa,
             vdt_len: bitmap.len() * 8 * PAGE_SIZE,
             vdt_pfns: bitmap.as_mut_ptr() as *mut c_void,
@@ -385,10 +385,9 @@ impl VmmHdl {
     }
 
     pub fn reinit(&self, force_suspend: bool) -> Result<()> {
-        let mut data =
-            bhyve_api::vm_reinit { flags: bhyve_api::VmReinitFlags::empty() };
+        let mut data = bhyve_api::vm_reinit { flags: 0 };
         if force_suspend {
-            data.flags.insert(bhyve_api::VmReinitFlags::FORCE_SUSPEND);
+            data.flags |= bhyve_api::VM_REINIT_F_FORCE_SUSPEND;
         }
         self.ioctl(bhyve_api::VM_REINIT, &mut data)
     }

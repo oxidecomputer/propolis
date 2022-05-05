@@ -1,6 +1,5 @@
 use std::os::raw::{c_int, c_uint, c_void};
 
-use bitflags::bitflags;
 use libc::size_t;
 
 // 3:0 - segment type
@@ -150,11 +149,6 @@ pub struct vm_paging {
     pub fault_type: c_int,
 }
 
-pub const PROT_READ: u8 = 0x1;
-pub const PROT_WRITE: u8 = 0x2;
-pub const PROT_EXEC: u8 = 0x4;
-pub const PROT_ALL: u8 = PROT_READ | PROT_WRITE | PROT_EXEC;
-
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_memmap {
@@ -170,15 +164,12 @@ pub const VM_MEMMAP_F_WIRED: c_int = 0x01;
 #[allow(unused)]
 pub const VM_MEMMAP_F_IOMMU: c_int = 0x02;
 
-const SPECNAMELEN: usize = 255; // max length of devicename
-pub const SEG_NAME_LEN: usize = SPECNAMELEN + 1;
-
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_memseg {
     pub segid: c_int,
     pub len: size_t,
-    pub name: [u8; SEG_NAME_LEN],
+    pub name: [u8; VM_MAX_SEG_NAMELEN],
 }
 
 #[repr(C)]
@@ -281,24 +272,18 @@ pub struct vm_suspend {
 }
 
 // bit definitions for `vm_reinit.flags`
-bitflags! {
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct VmReinitFlags: u64 {
-        const FORCE_SUSPEND = (1 << 0);
-    }
-}
+pub const VM_REINIT_F_FORCE_SUSPEND: u64 = 1 << 0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct vm_reinit {
-    pub flags: VmReinitFlags,
+    pub flags: u64,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct vm_vcpu_reset {
-    pub cpuid: c_int,
+    pub vcpuid: c_int,
     // kind values defined in vcpu_reset_kind
     pub kind: u32,
 }
@@ -307,13 +292,13 @@ pub struct vm_vcpu_reset {
 pub const VRS_HALT: u32 = 0;
 pub const VRS_INIT: u32 = 1 << 0;
 pub const VRS_RUN: u32 = 1 << 1;
-pub const VRS_PEND_SIPI: u32 = 1 << 14;
-pub const VRS_PEND_INIT: u32 = 1 << 15;
+pub const VRS_PEND_INIT: u32 = 1 << 14;
+pub const VRS_PEND_SIPI: u32 = 1 << 15;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct vm_run_state {
-    pub cpuid: c_int,
+    pub vcpuid: c_int,
     pub state: u32,
     pub sipi_vector: u8,
     pub _pad: [u8; 3],
@@ -321,7 +306,7 @@ pub struct vm_run_state {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct vm_dirty_tracker {
+pub struct vmm_dirty_tracker {
     pub vdt_start_gpa: u64,
     pub vdt_len: size_t,
     pub vdt_pfns: *mut c_void,

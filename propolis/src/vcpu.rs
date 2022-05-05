@@ -80,7 +80,7 @@ impl VcpuHdl {
     /// pending interrupts).
     pub fn reboot_state(&mut self) -> Result<()> {
         let mut vvr = bhyve_api::vm_vcpu_reset {
-            cpuid: self.id,
+            vcpuid: self.id,
             kind: bhyve_api::vcpu_reset_kind::VRK_RESET as u32,
         };
 
@@ -101,7 +101,7 @@ impl VcpuHdl {
     /// Set the state of a virtual CPU.
     pub fn set_run_state(&mut self, state: u32) -> Result<()> {
         let mut state = bhyve_api::vm_run_state {
-            cpuid: self.id,
+            vcpuid: self.id,
             state,
             sipi_vector: 0,
             ..Default::default()

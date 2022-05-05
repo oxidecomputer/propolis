@@ -17,6 +17,10 @@ default-members = [
   "standalone",
 ]
 
+exclude = [
+  "bhyve-api/header-check"
+]
+
 [profile.dev]
 panic = "abort"
 [profile.release]
