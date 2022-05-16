@@ -35,6 +35,17 @@ pub trait Device: Send + Sync + 'static {
             }
         }
     }
+    fn std_cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx)
+    where
+        Self: std::marker::Sized,
+    {
+        STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
+            RWOp::Read(ro) => self.device_state().cfg_std_read(id, ro, ctx),
+            RWOp::Write(wo) => {
+                self.device_state().cfg_std_write(self, id, wo, ctx)
+            }
+        });
+    }
     fn attach(&self) {}
     #[allow(unused_variables)]
     fn interrupt_mode_change(&self, mode: IntrMode) {}
@@ -53,13 +64,8 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
     }
     fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
         let ds = self.device_state();
-        ds.cfg_space.process(&mut rwo, |id, mut rwo| match id {
-            CfgReg::Std => {
-                STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
-                    RWOp::Read(ro) => ds.cfg_std_read(id, ro, ctx),
-                    RWOp::Write(wo) => ds.cfg_std_write(self, id, wo, ctx),
-                });
-            }
+        ds.cfg_space.process(&mut rwo, |id, rwo| match id {
+            CfgReg::Std => self.std_cfg_rw(rwo, ctx),
             CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo, ctx),
             CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
                 ds.cfg_cap_rw(self, id, rwo, ctx)
@@ -91,7 +97,7 @@ enum CfgReg {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum StdCfgReg {
+pub(super) enum StdCfgReg {
     VendorId,
     DeviceId,
     Command,
@@ -255,7 +261,12 @@ impl DeviceState {
         state
     }
 
-    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, _ctx: &DispCtx) {
+    pub(super) fn cfg_std_read(
+        &self,
+        id: &StdCfgReg,
+        ro: &mut ReadOp,
+        _ctx: &DispCtx,
+    ) {
         assert!(ro.offset() == 0 || *id == StdCfgReg::Reserved);
 
         match id {
@@ -335,7 +346,7 @@ impl DeviceState {
             }
         }
     }
-    fn cfg_std_write(
+    pub(super) fn cfg_std_write(
         &self,
         dev: &dyn Device,
         id: &StdCfgReg,
@@ -548,7 +559,7 @@ impl DeviceState {
             }
         }
     }
-    fn attach(&self, attachment: bus::Attachment) {
+    pub(super) fn attach(&self, attachment: bus::Attachment) {
         let mut state = self.state.lock().unwrap();
         let _old = state.attach.replace(attachment);
         assert!(_old.is_none());

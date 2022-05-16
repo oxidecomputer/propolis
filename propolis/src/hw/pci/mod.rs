@@ -13,6 +13,7 @@ use num_enum::TryFromPrimitive;
 
 pub mod bar;
 pub mod bits;
+pub mod bridge;
 pub mod bus;
 mod device;
 
