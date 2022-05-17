@@ -1,7 +1,7 @@
 //! Finds routes to specific buses in a PCI topology.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use super::{Bus, BusNum};
 
@@ -11,7 +11,8 @@ pub struct Router {
 }
 
 impl Router {
-    /// Gets the bus currently assigned with the supplied bus number.
+    /// Gets the bus currently assigned with the supplied bus number, or None if
+    /// no bus is receiving traffic at this number.
     ///
     /// Note: The supplied bus number's routing may change before this function
     /// returns.
@@ -35,21 +36,20 @@ impl Router {
 
 #[derive(Default)]
 struct Inner {
-    map: BTreeMap<BusNum, Arc<Bus>>,
+    // This reference is weak to avoid a router -> bus -> bridge -> router
+    // circular reference chain. This can occur if a PCI bridge is attached
+    // to a bus that is itself the downstream bus of another PCI bridge.
+    map: BTreeMap<BusNum, Weak<Bus>>,
 }
 
 impl Inner {
     fn get(&self, n: BusNum) -> Option<Arc<Bus>> {
-        if let Some(bus) = self.map.get(&n) {
-            Some(bus.clone())
-        } else {
-            None
-        }
+        self.map.get(&n).and_then(|bus| bus.upgrade())
     }
 
     fn set(&mut self, n: BusNum, bus: Option<Arc<Bus>>) {
         if let Some(bus) = bus {
-            let old = self.map.insert(n, bus);
+            let old = self.map.insert(n, Arc::downgrade(&bus));
             assert!(
                 old.is_none(),
                 "Bus already present when routing to {}",
