@@ -44,6 +44,9 @@ pub struct Config {
 
     #[serde(default, rename = "block_dev")]
     block_devs: BTreeMap<String, BlockDevice>,
+
+    #[serde(default, rename = "pci_bridge")]
+    pci_bridges: Vec<PciBridge>,
 }
 
 impl Config {
@@ -57,8 +60,15 @@ impl Config {
         chipset: Chipset,
         devices: BTreeMap<String, Device>,
         block_devs: BTreeMap<String, BlockDevice>,
+        pci_bridges: Vec<PciBridge>,
     ) -> Config {
-        Config { bootrom: bootrom.into(), chipset, devices, block_devs }
+        Config {
+            bootrom: bootrom.into(),
+            chipset,
+            devices,
+            block_devs,
+            pci_bridges,
+        }
     }
 
     pub fn get_bootrom(&self) -> &Path {
@@ -67,6 +77,10 @@ impl Config {
 
     pub fn get_chipset(&self) -> &Chipset {
         &self.chipset
+    }
+
+    pub fn get_pci_bridges(&self) -> &Vec<PciBridge> {
+        &self.pci_bridges
     }
 
     pub fn devs(&self) -> IterDevs {
@@ -101,6 +115,23 @@ impl Chipset {
     pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {
         self.get_string(key)?.parse().ok()
     }
+}
+
+/// A PCI-PCI bridge.
+#[derive(Default, Serialize, Deserialize, Debug)]
+pub struct PciBridge {
+    /// The bus/device/function of this bridge as a device in the PCI topology.
+    #[serde(rename = "pci-path")]
+    pub pci_path: String,
+
+    /// The logical bus number to assign to this bridge's downstream bus.
+    ///
+    /// Note: This bus number is only used at configuration time to attach
+    /// devices downstream of this bridge. The bridge's secondary bus number
+    /// (used by the guest to address traffic to devices on this bus) is
+    /// set by the guest at runtime.
+    #[serde(rename = "downstream-bus")]
+    pub downstream_bus: u8,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally

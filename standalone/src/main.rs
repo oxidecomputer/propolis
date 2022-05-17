@@ -230,7 +230,7 @@ fn main() {
                         disp,
                     )?;
 
-                    chipset.pci_attach(bdf, vioblk);
+                    chipset.pci_attach(chipset.pci_root_bus(), bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
@@ -241,7 +241,7 @@ fn main() {
                         vnic_name, 0x100, &hdl,
                     )?;
                     inv.register_instance(&viona, bdf.to_string())?;
-                    chipset.pci_attach(bdf, viona);
+                    chipset.pci_attach(chipset.pci_root_bus(), bdf, viona);
                 }
                 "pci-nvme" => {
                     let block_dev =
@@ -259,7 +259,7 @@ fn main() {
 
                     backend.attach(nvme.clone(), disp)?;
 
-                    chipset.pci_attach(bdf, nvme);
+                    chipset.pci_attach(chipset.pci_root_bus(), bdf, nvme);
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver"; "name" => name);

@@ -16,6 +16,7 @@ pub mod bits;
 pub mod bridge;
 pub mod bus;
 mod device;
+pub mod router;
 
 pub use bus::Bus;
 pub use device::*;

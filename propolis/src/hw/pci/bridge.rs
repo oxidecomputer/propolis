@@ -3,9 +3,12 @@
 use std::sync::{Arc, Mutex};
 
 use super::bits::{HEADER_TYPE_BRIDGE, LEN_CFG_STD};
-use super::{BarN, Builder, BusNum, Device, DeviceState, StdCfgReg};
+use super::router::Router;
+use super::{BarN, Builder, Bus, BusNum, Device, DeviceState, StdCfgReg};
 use crate::common::{RWOp, ReadOp, WriteOp};
 use crate::dispatch::DispCtx;
+use crate::inventory::Entity;
+use crate::migrate::Migrator;
 use crate::util::regmap::RegMap;
 
 use lazy_static::lazy_static;
@@ -98,7 +101,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
-    pub fn new() -> Arc<Self> {
+    pub fn new(bus: Arc<Bus>, router: Arc<Router>) -> Arc<Self> {
         let builder = Builder::new(super::Ident {
             vendor_id: 0x1de,
             prog_if: BRIDGE_PROG_IF,
@@ -108,7 +111,7 @@ impl Bridge {
         });
         Arc::new(Self {
             pci_state: builder.finish(),
-            inner: Mutex::new(Inner::new()),
+            inner: Mutex::new(Inner::new(bus, router)),
         })
     }
 }
@@ -137,7 +140,22 @@ impl Device for Bridge {
     }
 }
 
+impl Entity for Bridge {
+    fn type_name(&self) -> &'static str {
+        "pci-bridge"
+    }
+    fn reset(&self, _ctx: &DispCtx) {
+        self.inner.lock().unwrap().reset();
+    }
+    fn migrate(&self) -> Migrator {
+        // XXX Should be migratable in theory.
+        Migrator::NonMigratable
+    }
+}
+
 struct Inner {
+    bus: Arc<Bus>,
+    router: Arc<Router>,
     primary_bus: BusNum,
     secondary_bus: BusNum,
     subordinate_bus: BusNum,
@@ -146,8 +164,10 @@ struct Inner {
 }
 
 impl Inner {
-    fn new() -> Self {
+    fn new(bus: Arc<Bus>, router: Arc<Router>) -> Self {
         Self {
+            bus,
+            router,
             primary_bus: BusNum::new(0).unwrap(),
             secondary_bus: BusNum::new(0).unwrap(),
             subordinate_bus: BusNum::new(0).unwrap(),
@@ -191,8 +211,7 @@ impl Inner {
                 self.primary_bus = BusNum::new(wo.read_u8()).unwrap();
             }
             CfgReg::SecondaryBus => {
-                // XXX change routing
-                self.secondary_bus = BusNum::new(wo.read_u8()).unwrap();
+                self.set_secondary_bus(BusNum::new(wo.read_u8()).unwrap());
             }
             CfgReg::SubordinateBus => {
                 self.subordinate_bus = BusNum::new(wo.read_u8()).unwrap();
@@ -206,29 +225,68 @@ impl Inner {
             _ => {}
         }
     }
+
+    fn set_secondary_bus(&mut self, n: BusNum) {
+        if self.secondary_bus.get() != 0 {
+            self.router.set(self.secondary_bus, None);
+        }
+        self.secondary_bus = n;
+        if n.get() != 0 {
+            self.router.set(self.secondary_bus, Some(self.bus.clone()));
+        }
+    }
+
+    fn reset(&mut self) {
+        self.primary_bus = BusNum::new(0).unwrap();
+        self.set_secondary_bus(BusNum::new(0).unwrap());
+        self.subordinate_bus = BusNum::new(0).unwrap();
+        self.memory_base = 0;
+        self.memory_limit = 0;
+    }
 }
 
 #[cfg(test)]
 mod test {
     use crate::hw::pci::Endpoint;
     use crate::instance::Instance;
+    use crate::mmio::MmioBus;
+    use crate::pio::PioBus;
 
     use super::*;
 
+    const OFFSET_PRIMARY_BUS: usize = 0x18;
+    const OFFSET_SECONDARY_BUS: usize = 0x19;
+    const OFFSET_SUBORDINATE_BUS: usize = 0x20;
+
     struct Env {
         instance: Arc<Instance>,
+        router: Arc<Router>,
+        pio: Arc<PioBus>,
+        mmio: Arc<MmioBus>,
     }
 
     impl Env {
         fn new() -> Self {
-            Self { instance: Instance::new_test(None).unwrap() }
+            Self {
+                instance: Instance::new_test(None).unwrap(),
+                router: Arc::new(Router::default()),
+                pio: Arc::new(PioBus::new()),
+                mmio: Arc::new(MmioBus::new(u32::MAX as usize)),
+            }
+        }
+
+        fn make_bus(&self, n: BusNum) -> Arc<Bus> {
+            Arc::new(Bus::new(n, &self.pio, &self.mmio))
         }
     }
 
     #[test]
     fn bridge_header_type() {
         let env = Env::new();
-        let bridge = Bridge::new();
+        let bridge = Bridge::new(
+            env.make_bus(BusNum::new(0).unwrap()),
+            env.router.clone(),
+        );
         let mut buf = [0xffu8; 1];
         let mut ro = ReadOp::from_buf(0xe, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -240,8 +298,15 @@ mod test {
     #[test]
     fn bridge_bus_registers() {
         let env = Env::new();
-        let bridge = Bridge::new();
-        let vals: Vec<u8> = vec![24, 25, 26];
+        let bridge = Bridge::new(
+            env.make_bus(BusNum::new(0).unwrap()),
+            env.router.clone(),
+        );
+        let vals: Vec<u8> = vec![
+            OFFSET_PRIMARY_BUS as u8,
+            OFFSET_SECONDARY_BUS as u8,
+            OFFSET_SUBORDINATE_BUS as u8,
+        ];
         for val in &vals {
             let mut buf = [*val; 1];
             let mut wo = WriteOp::from_buf(*val as usize, &mut buf);
@@ -257,5 +322,67 @@ mod test {
             });
             assert_eq!(buf[0], *val);
         }
+    }
+
+    #[test]
+    fn bridge_routing() {
+        let env = Env::new();
+        let bus = env.make_bus(BusNum::new(1).unwrap());
+        let bridge = Bridge::new(bus.clone(), env.router.clone());
+
+        let mut buf = [42u8; 1];
+        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
+        });
+        assert!(Arc::ptr_eq(
+            &bus,
+            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+        ));
+
+        buf[0] = 0;
+        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
+        });
+        assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
+
+        let bus2 = env.make_bus(BusNum::new(2).unwrap());
+        let bridge2 = Bridge::new(bus2.clone(), env.router.clone());
+        buf[0] = 42;
+        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge2.as_ref(), RWOp::Write(&mut wo), ctx);
+        });
+        assert!(Arc::ptr_eq(
+            &bus2,
+            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+        ));
+
+        buf[0] = 1;
+        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
+        });
+        assert!(Arc::ptr_eq(
+            &bus,
+            &env.router.get(BusNum::new(1).unwrap()).unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &bus2,
+            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+        ));
+        assert!(!Arc::ptr_eq(
+            &env.router.get(BusNum::new(1).unwrap()).unwrap(),
+            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+        ));
+
+        buf[0] = 0;
+        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge2.as_ref(), RWOp::Write(&mut wo), ctx);
+        });
+        assert!(env.router.get(BusNum::new(0).unwrap()).is_none());
+        assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
     }
 }

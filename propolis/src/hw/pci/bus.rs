@@ -40,8 +40,10 @@ impl Bus {
     }
 
     pub fn device_at(&self, bdf: Bdf) -> Option<Arc<dyn Endpoint>> {
-        assert_eq!(bdf.bus, self.n);
-
+        // If this is the downstream bus of a PCI bridge, the BDF that was used
+        // to reach it may have a different bus number than the number that was
+        // used when the bus was initialized, so it's not safe to assert that
+        // the bus's and BDF's numbers match.
         let inner = self.inner.lock().unwrap();
         inner.device_at(bdf)
     }
@@ -247,16 +249,6 @@ mod test {
                 );
             }
         }
-    }
-
-    #[test]
-    #[should_panic]
-    fn bad_bus_lookup() {
-        let (pio, mmio) = prep();
-        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
-
-        let bdf = Bdf::new(1, 0, 0).unwrap();
-        let _ = bus.device_at(bdf);
     }
 
     #[test]

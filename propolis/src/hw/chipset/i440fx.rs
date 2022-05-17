@@ -43,6 +43,7 @@ pub struct CreateOptions {
 
 pub struct I440Fx {
     pci_bus: pci::Bus,
+    pci_router: Arc<pci::router::Router>,
     pci_cfg: PioCfgDecoder,
     pcie_cfg: PcieCfgDecoder,
     irq_config: Arc<IrqConfig>,
@@ -64,6 +65,7 @@ impl I440Fx {
                 &machine.bus_pio,
                 &machine.bus_mmio,
             ),
+            pci_router: Default::default(),
             pci_cfg: PioCfgDecoder::new(),
             pcie_cfg: PcieCfgDecoder::new(
                 pci::bits::PCIE_MAX_BUSES_PER_ECAM_REGION,
@@ -78,14 +80,17 @@ impl I440Fx {
         });
 
         this.pci_attach(
+            &this.pci_bus,
             Bdf::new(0, HB_DEV, HB_FUNC).unwrap(),
             this.dev_hb.clone(),
         );
         this.pci_attach(
+            &this.pci_bus,
             Bdf::new(0, LPC_DEV, LPC_FUNC).unwrap(),
             this.dev_lpc.clone(),
         );
         this.pci_attach(
+            &this.pci_bus,
             Bdf::new(0, PM_DEV, PM_FUNC).unwrap(),
             this.dev_pm.clone(),
         );
@@ -145,10 +150,13 @@ impl I440Fx {
     }
 
     fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp, ctx: &DispCtx) -> Option<()> {
-        if bdf.bus.get() != 0 {
-            return None;
-        }
-        if let Some(dev) = self.pci_bus.device_at(*bdf) {
+        let device = match bdf.bus.get() {
+            0 => self.pci_bus.device_at(*bdf),
+            _ => {
+                self.pci_router.get(bdf.bus).and_then(|bus| bus.device_at(*bdf))
+            }
+        };
+        if let Some(dev) = device {
             // This is pretty noisy during boot
             // let opname = match rwo {
             //     RWOp::Read(_) => "cfgread",
@@ -183,10 +191,19 @@ impl I440Fx {
     }
 }
 impl Chipset for I440Fx {
-    fn pci_attach(&self, bdf: Bdf, dev: Arc<dyn pci::Endpoint>) {
-        assert!(bdf.bus.get() == 0);
-
-        self.pci_bus.attach(bdf, dev, Some(self.route_lintr(&bdf)));
+    fn pci_root_bus(&self) -> &pci::Bus {
+        &self.pci_bus
+    }
+    fn pci_router(&self) -> &Arc<pci::router::Router> {
+        &self.pci_router
+    }
+    fn pci_attach(
+        &self,
+        bus: &pci::Bus,
+        bdf: Bdf,
+        dev: Arc<dyn pci::Endpoint>,
+    ) {
+        bus.attach(bdf, dev, Some(self.route_lintr(&bdf)));
     }
     fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
         self.irq_config.pic.pin_handle(irq)
