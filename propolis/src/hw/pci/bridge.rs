@@ -95,12 +95,20 @@ lazy_static! {
     };
 }
 
+/// A PCI-PCI bridge.
 pub struct Bridge {
+    // The common PCI state has its own synchronization. Accesses to it are
+    // currently mutually exclusive with accesses to the bridge state (i.e. no
+    // single config transaction is expected to access both common state and
+    // bridge state).
     pci_state: DeviceState,
     inner: Mutex<Inner>,
 }
 
 impl Bridge {
+    /// Construct a new PCI bridge with the supplied downstream bus. Updating
+    /// the bridge's secondary bus number will update the supplied router such
+    /// that it maps the new bus number to the bridge's downstream bus.
     pub fn new(bus: Arc<Bus>, router: Arc<Router>) -> Arc<Self> {
         let builder = Builder::new(super::Ident {
             vendor_id: 0x1de,
@@ -145,10 +153,13 @@ impl Entity for Bridge {
         "pci-bridge"
     }
     fn reset(&self, _ctx: &DispCtx) {
+        self.device_state().reset(self);
         self.inner.lock().unwrap().reset();
     }
     fn migrate(&self) -> Migrator {
-        // XXX Should be migratable in theory.
+        // TODO Should be migratable in theory: copy all the register state,
+        // then enumerate bridges on the target and reconstruct the routing
+        // table from their bus registers' values.
         Migrator::NonMigratable
     }
 }
@@ -222,11 +233,17 @@ impl Inner {
             CfgReg::MemoryLimit => {
                 self.memory_limit = wo.read_u16();
             }
-            _ => {}
+            _ => {
+                // Other bridge features like error reporting are disabled.
+                // Their registers are read-only.
+            }
         }
     }
 
     fn set_secondary_bus(&mut self, n: BusNum) {
+        // Bus 0 is reserved for the root PCI bus. Use it as a sentinel value
+        // here: if the secondary bus is 0, don't create a routing entry for
+        // this bus.
         if self.secondary_bus.get() != 0 {
             self.router.set(self.secondary_bus, None);
         }
@@ -302,6 +319,10 @@ mod test {
             env.make_bus(BusNum::new(0).unwrap()),
             env.router.clone(),
         );
+
+        // Write the offsets of the primary, secondary, and subordinate bus
+        // registers to those registers, then verify that they can be read
+        // back.
         let vals: Vec<u8> = vec![
             OFFSET_PRIMARY_BUS as u8,
             OFFSET_SECONDARY_BUS as u8,
@@ -330,6 +351,8 @@ mod test {
         let bus = env.make_bus(BusNum::new(1).unwrap());
         let bridge = Bridge::new(bus.clone(), env.router.clone());
 
+        // Write 42 to the test bridge's secondary bus register and verify that
+        // this bus number routes to the downstream bus.
         let mut buf = [42u8; 1];
         let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -340,6 +363,8 @@ mod test {
             &env.router.get(BusNum::new(42).unwrap()).unwrap()
         ));
 
+        // Clear the test bridge's secondary bus register and verify the routing
+        // is removed.
         buf[0] = 0;
         let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -347,6 +372,7 @@ mod test {
         });
         assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
 
+        // Route bus number 42 to a new bus.
         let bus2 = env.make_bus(BusNum::new(2).unwrap());
         let bridge2 = Bridge::new(bus2.clone(), env.router.clone());
         buf[0] = 42;
@@ -359,6 +385,8 @@ mod test {
             &env.router.get(BusNum::new(42).unwrap()).unwrap()
         ));
 
+        // Route bus number 1 to the original bridge's downstream bus. Verify
+        // that the routings are correct and distinct from one another.
         buf[0] = 1;
         let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -377,12 +405,28 @@ mod test {
             &env.router.get(BusNum::new(42).unwrap()).unwrap()
         ));
 
+        // Clear the second bridge's routing and verify that the first bridge's
+        // routing is left alone.
         buf[0] = 0;
         let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge2.as_ref(), RWOp::Write(&mut wo), ctx);
         });
         assert!(env.router.get(BusNum::new(0).unwrap()).is_none());
+        assert!(Arc::ptr_eq(
+            &bus,
+            &env.router.get(BusNum::new(1).unwrap()).unwrap()
+        ));
+        assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
+
+        // Clear the first bridge's routing and verify that its entry is also
+        // safely removed.
+        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
+        });
+        assert!(env.router.get(BusNum::new(0).unwrap()).is_none());
+        assert!(env.router.get(BusNum::new(1).unwrap()).is_none());
         assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
     }
 }
