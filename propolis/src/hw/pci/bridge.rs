@@ -99,7 +99,10 @@ impl Bridge {
     /// that it maps the new bus number to the bridge's downstream bus.
     pub fn new(bus: Arc<Bus>, router: Arc<Router>) -> Arc<Self> {
         let builder = Builder::new(super::Ident {
-            vendor_id: 0x1de,
+            vendor_id: BRIDGE_VENDOR_ID,
+            device_id: BRIDGE_DEVICE_ID,
+            sub_vendor_id: BRIDGE_VENDOR_ID,
+            sub_device_id: BRIDGE_DEVICE_ID,
             prog_if: BRIDGE_PROG_IF,
             subclass: BRIDGE_PROG_SUBCLASS,
             class: BRIDGE_PROG_CLASS,
