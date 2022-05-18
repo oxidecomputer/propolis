@@ -1,3 +1,4 @@
+use std::num::NonZeroU8;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -152,8 +153,9 @@ impl I440Fx {
     fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp, ctx: &DispCtx) -> Option<()> {
         let device = match bdf.bus.get() {
             0 => self.pci_bus.device_at(*bdf),
-            _ => {
-                self.pci_router.get(bdf.bus).and_then(|bus| bus.device_at(*bdf))
+            n => {
+                let bus = NonZeroU8::new(n).unwrap();
+                self.pci_router.get(bus).and_then(|bus| bus.device_at(*bdf))
             }
         };
         if let Some(dev) = device {

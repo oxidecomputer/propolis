@@ -1,5 +1,6 @@
 //! Support for PCI bridges.
 
+use std::num::NonZeroU8;
 use std::sync::{Arc, Mutex};
 
 use super::bits::{HEADER_TYPE_BRIDGE, LEN_CFG_STD};
@@ -241,15 +242,12 @@ impl Inner {
     }
 
     fn set_secondary_bus(&mut self, n: BusNum) {
-        // Bus 0 is reserved for the root PCI bus. Use it as a sentinel value
-        // here: if the secondary bus is 0, don't create a routing entry for
-        // this bus.
-        if self.secondary_bus.get() != 0 {
-            self.router.set(self.secondary_bus, None);
+        if let Some(bus) = NonZeroU8::new(self.secondary_bus.get()) {
+            self.router.set(bus, None)
         }
         self.secondary_bus = n;
-        if n.get() != 0 {
-            self.router.set(self.secondary_bus, Some(self.bus.clone()));
+        if let Some(bus) = NonZeroU8::new(self.secondary_bus.get()) {
+            self.router.set(bus, Some(self.bus.clone()));
         }
     }
 
@@ -360,7 +358,7 @@ mod test {
         });
         assert!(Arc::ptr_eq(
             &bus,
-            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
         ));
 
         // Clear the test bridge's secondary bus register and verify the routing
@@ -370,7 +368,7 @@ mod test {
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
         });
-        assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
+        assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
 
         // Route bus number 42 to a new bus.
         let bus2 = env.make_bus(BusNum::new(2).unwrap());
@@ -382,7 +380,7 @@ mod test {
         });
         assert!(Arc::ptr_eq(
             &bus2,
-            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
         ));
 
         // Route bus number 1 to the original bridge's downstream bus. Verify
@@ -394,15 +392,15 @@ mod test {
         });
         assert!(Arc::ptr_eq(
             &bus,
-            &env.router.get(BusNum::new(1).unwrap()).unwrap()
+            &env.router.get(NonZeroU8::new(1).unwrap()).unwrap()
         ));
         assert!(Arc::ptr_eq(
             &bus2,
-            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
         ));
         assert!(!Arc::ptr_eq(
-            &env.router.get(BusNum::new(1).unwrap()).unwrap(),
-            &env.router.get(BusNum::new(42).unwrap()).unwrap()
+            &env.router.get(NonZeroU8::new(1).unwrap()).unwrap(),
+            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
         ));
 
         // Clear the second bridge's routing and verify that the first bridge's
@@ -412,12 +410,11 @@ mod test {
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge2.as_ref(), RWOp::Write(&mut wo), ctx);
         });
-        assert!(env.router.get(BusNum::new(0).unwrap()).is_none());
         assert!(Arc::ptr_eq(
             &bus,
-            &env.router.get(BusNum::new(1).unwrap()).unwrap()
+            &env.router.get(NonZeroU8::new(1).unwrap()).unwrap()
         ));
-        assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
+        assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
 
         // Clear the first bridge's routing and verify that its entry is also
         // safely removed.
@@ -425,8 +422,7 @@ mod test {
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
         });
-        assert!(env.router.get(BusNum::new(0).unwrap()).is_none());
-        assert!(env.router.get(BusNum::new(1).unwrap()).is_none());
-        assert!(env.router.get(BusNum::new(42).unwrap()).is_none());
+        assert!(env.router.get(NonZeroU8::new(1).unwrap()).is_none());
+        assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
     }
 }
