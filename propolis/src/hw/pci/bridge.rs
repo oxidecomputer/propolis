@@ -3,7 +3,7 @@
 use std::num::NonZeroU8;
 use std::sync::{Arc, Mutex};
 
-use super::bits::{HEADER_TYPE_BRIDGE, LEN_CFG_STD};
+use super::bits::*;
 use super::router::Router;
 use super::{BarN, Builder, Bus, BusNum, Device, DeviceState, StdCfgReg};
 use crate::common::{RWOp, ReadOp, WriteOp};
@@ -13,19 +13,6 @@ use crate::migrate::Migrator;
 use crate::util::regmap::RegMap;
 
 use lazy_static::lazy_static;
-
-// Class code identifiers required by SS3.2.4.6 of the PCI bridge spec rev 1.2.
-const BRIDGE_PROG_CLASS: u8 = 0x06;
-const BRIDGE_PROG_SUBCLASS: u8 = 0x04;
-const BRIDGE_PROG_IF: u8 = 0x00;
-
-// Clear all reserved bits and decline to emulate error reporting bits in the
-// bridge secondary status register (SS3.2.5.7).
-const BRIDGE_SECONDARY_STATUS: u16 = 0x0000;
-
-// Mask for the reserved bottom bits of the memory base and memory limit
-// registers (SS3.2.5.8).
-const BRIDGE_MEMORY_REG_MASK: u16 = 0xfff0;
 
 // Bridge configuration space header registers.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
