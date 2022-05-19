@@ -13,7 +13,7 @@ use crate::hw::ids::pci::{
     VENDOR_OXIDE,
 };
 use crate::hw::pci::{
-    self, Bdf, BusNum, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
+    self, Bdf, BusLocation, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
 };
 use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
@@ -61,11 +61,7 @@ impl I440Fx {
         let irq_config = IrqConfig::create(hdl);
 
         let this = Arc::new(Self {
-            pci_bus: pci::Bus::new(
-                BusNum::new(0).unwrap(),
-                &machine.bus_pio,
-                &machine.bus_mmio,
-            ),
+            pci_bus: pci::Bus::new(&machine.bus_pio, &machine.bus_mmio),
             pci_router: Default::default(),
             pci_cfg: PioCfgDecoder::new(),
             pcie_cfg: PcieCfgDecoder::new(
@@ -82,17 +78,17 @@ impl I440Fx {
 
         this.pci_attach(
             &this.pci_bus,
-            Bdf::new(0, HB_DEV, HB_FUNC).unwrap(),
+            BusLocation::new(HB_DEV, HB_FUNC).unwrap(),
             this.dev_hb.clone(),
         );
         this.pci_attach(
             &this.pci_bus,
-            Bdf::new(0, LPC_DEV, LPC_FUNC).unwrap(),
+            BusLocation::new(LPC_DEV, LPC_FUNC).unwrap(),
             this.dev_lpc.clone(),
         );
         this.pci_attach(
             &this.pci_bus,
-            Bdf::new(0, PM_DEV, PM_FUNC).unwrap(),
+            BusLocation::new(PM_DEV, PM_FUNC).unwrap(),
             this.dev_pm.clone(),
         );
 
@@ -137,8 +133,11 @@ impl I440Fx {
         this
     }
 
-    fn route_lintr(&self, bdf: &Bdf) -> (INTxPinID, Arc<dyn IntrPin>) {
-        let intx_pin = match (bdf.func.get() + 1) % 4 {
+    fn route_lintr(
+        &self,
+        location: &BusLocation,
+    ) -> (INTxPinID, Arc<dyn IntrPin>) {
+        let intx_pin = match (location.func.get() + 1) % 4 {
             0 => INTxPinID::IntA,
             1 => INTxPinID::IntB,
             2 => INTxPinID::IntC,
@@ -146,16 +145,18 @@ impl I440Fx {
             _ => panic!(),
         };
         // D->A->B->C starting at 0:0.0
-        let pin_route = (bdf.dev.get() + intx_pin as u8 + 2) % 4;
+        let pin_route = (location.dev.get() + intx_pin as u8 + 2) % 4;
         (intx_pin, self.irq_config.intr_pin(pin_route as usize))
     }
 
     fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp, ctx: &DispCtx) -> Option<()> {
         let device = match bdf.bus.get() {
-            0 => self.pci_bus.device_at(*bdf),
+            0 => self.pci_bus.device_at(bdf.location),
             n => {
                 let bus = NonZeroU8::new(n).unwrap();
-                self.pci_router.get(bus).and_then(|bus| bus.device_at(*bdf))
+                self.pci_router
+                    .get(bus)
+                    .and_then(|bus| bus.device_at(bdf.location))
             }
         };
         if let Some(dev) = device {
@@ -202,10 +203,10 @@ impl Chipset for I440Fx {
     fn pci_attach(
         &self,
         bus: &pci::Bus,
-        bdf: Bdf,
+        location: BusLocation,
         dev: Arc<dyn pci::Endpoint>,
     ) {
-        bus.attach(bdf, dev, Some(self.route_lintr(&bdf)));
+        bus.attach(location, dev, Some(self.route_lintr(&location)));
     }
     fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
         self.irq_config.pic.pin_handle(irq)

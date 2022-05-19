@@ -141,7 +141,7 @@ impl<'a> PciHelper<'a> {
                 format!("Can't register device at {}: no bus", bdf),
             )
         })?;
-        self.chipset.device().pci_attach(bus, bdf, dev);
+        self.chipset.device().pci_attach(bus, bdf.location, dev);
         Ok(())
     }
 }
@@ -237,7 +237,6 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<Arc<pci::bridge::Bridge>, Error> {
         let bus_num = pci::BusNum::new(config.downstream_bus).unwrap();
         let bus = Arc::new(pci::Bus::new(
-            bus_num,
             &self.machine.bus_pio,
             &self.machine.bus_mmio,
         ));

@@ -3,55 +3,51 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::bar::BarDefine;
-use super::{BarN, Bdf, BusNum, Endpoint, LintrCfg};
+use super::{BarN, BusLocation, Endpoint, LintrCfg};
 use crate::common::RWOp;
 use crate::dispatch::DispCtx;
 use crate::mmio::{MmioBus, MmioFn};
 use crate::pio::{PioBus, PioFn};
 
 pub struct Bus {
-    n: BusNum,
     inner: Arc<Mutex<Inner>>,
 }
 
 impl Bus {
-    pub fn new(n: BusNum, pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
-        Self { n, inner: Arc::new(Mutex::new(Inner::new(pio, mmio))) }
+    pub fn new(pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
+        Self { inner: Arc::new(Mutex::new(Inner::new(pio, mmio))) }
     }
 
     pub fn attach(
         &self,
-        bdf: Bdf,
+        location: BusLocation,
         dev: Arc<dyn Endpoint>,
         lintr_cfg: Option<LintrCfg>,
     ) {
-        assert_eq!(bdf.bus, self.n);
-
         let mut inner = self.inner.lock().unwrap();
-        let slot_state = inner.attach(bdf, dev.clone());
+        let slot_state = inner.attach(location, dev.clone());
 
         let attached = Attachment {
             inner: Arc::downgrade(&self.inner),
-            bdf,
+            location,
             lintr_cfg,
             slot_state,
         };
         dev.attach(attached);
     }
 
-    pub fn device_at(&self, bdf: Bdf) -> Option<Arc<dyn Endpoint>> {
-        // If this is the downstream bus of a PCI bridge, the BDF that was used
-        // to reach it may have a different bus number than the number that was
-        // used when the bus was initialized, so it's not safe to assert that
-        // the bus's and BDF's numbers match.
+    pub fn device_at(
+        &self,
+        location: BusLocation,
+    ) -> Option<Arc<dyn Endpoint>> {
         let inner = self.inner.lock().unwrap();
-        inner.device_at(bdf)
+        inner.device_at(location)
     }
 }
 
 pub struct Attachment {
     inner: Weak<Mutex<Inner>>,
-    bdf: Bdf,
+    location: BusLocation,
     lintr_cfg: Option<LintrCfg>,
     slot_state: Arc<SlotState>,
 }
@@ -59,20 +55,20 @@ impl Attachment {
     pub fn bar_register(&self, n: BarN, def: BarDefine, addr: u64) {
         if let Some(inner) = self.inner.upgrade() {
             let mut guard = inner.lock().unwrap();
-            guard.bar_register(self.bdf, n, def, addr);
+            guard.bar_register(self.location, n, def, addr);
         }
     }
     pub fn bar_unregister(&self, n: BarN) {
         if let Some(inner) = self.inner.upgrade() {
             let mut guard = inner.lock().unwrap();
-            guard.bar_unregister(self.bdf, n);
+            guard.bar_unregister(self.location, n);
         }
     }
     pub fn lintr_cfg(&self) -> Option<&LintrCfg> {
         self.lintr_cfg.as_ref()
     }
-    pub fn bdf(&self) -> Bdf {
-        self.bdf
+    pub fn location(&self) -> BusLocation {
+        self.location
     }
     pub fn is_multifunc(&self) -> bool {
         self.slot_state.is_multifunc.load(Ordering::Acquire)
@@ -93,8 +89,12 @@ struct Slot {
     state: Arc<SlotState>,
 }
 impl Slot {
-    fn attach(&mut self, bdf: Bdf, dev: Arc<dyn Endpoint>) -> Arc<SlotState> {
-        let _old = self.funcs[bdf.func.get() as usize].replace(dev);
+    fn attach(
+        &mut self,
+        location: BusLocation,
+        dev: Arc<dyn Endpoint>,
+    ) -> Arc<SlotState> {
+        let _old = self.funcs[location.func.get() as usize].replace(dev);
 
         // XXX be strict for now
         assert!(matches!(_old, None));
@@ -117,7 +117,7 @@ struct BarState {
 
 struct Inner {
     slots: [Slot; SLOTS_PER_BUS],
-    bar_state: BTreeMap<(Bdf, BarN), BarState>,
+    bar_state: BTreeMap<(BusLocation, BarN), BarState>,
     bus_pio: Weak<PioBus>,
     bus_mmio: Weak<MmioBus>,
 }
@@ -130,18 +130,28 @@ impl Inner {
             bus_mmio: Arc::downgrade(mmio),
         }
     }
-    fn device_at(&self, bdf: Bdf) -> Option<Arc<dyn Endpoint>> {
-        let res = self.slots[bdf.dev.get() as usize].funcs
-            [bdf.func.get() as usize]
+    fn device_at(&self, location: BusLocation) -> Option<Arc<dyn Endpoint>> {
+        let res = self.slots[location.dev.get() as usize].funcs
+            [location.func.get() as usize]
             .as_ref()
             .map(Arc::clone);
         res
     }
-    fn attach(&mut self, bdf: Bdf, dev: Arc<dyn Endpoint>) -> Arc<SlotState> {
-        self.slots[bdf.dev.get() as usize].attach(bdf, dev)
+    fn attach(
+        &mut self,
+        location: BusLocation,
+        dev: Arc<dyn Endpoint>,
+    ) -> Arc<SlotState> {
+        self.slots[location.dev.get() as usize].attach(location, dev)
     }
-    fn bar_register(&mut self, bdf: Bdf, n: BarN, def: BarDefine, value: u64) {
-        let dev = self.device_at(bdf).unwrap();
+    fn bar_register(
+        &mut self,
+        location: BusLocation,
+        n: BarN,
+        def: BarDefine,
+        value: u64,
+    ) {
+        let dev = self.device_at(location).unwrap();
 
         let live = match def {
             BarDefine::Pio(sz) => {
@@ -181,12 +191,12 @@ impl Inner {
             }
         };
         let _old =
-            self.bar_state.insert((bdf, n), BarState { def, value, live });
+            self.bar_state.insert((location, n), BarState { def, value, live });
         // XXX be strict for now
         assert!(_old.is_none());
     }
-    fn bar_unregister(&mut self, bdf: Bdf, n: BarN) {
-        if let Some(state) = self.bar_state.remove(&(bdf, n)) {
+    fn bar_unregister(&mut self, location: BusLocation, n: BarN) {
+        if let Some(state) = self.bar_state.remove(&(location, n)) {
             if !state.live {
                 // when BAR was registered, it conflicted with something else on
                 // the bus, so no further action is necessary
@@ -237,49 +247,38 @@ mod test {
     #[test]
     fn empty() {
         let (pio, mmio) = prep();
-        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
+        let bus = Bus::new(&pio, &mmio);
 
         for slot in 0..31 {
             for func in 0..7 {
-                let bdf = Bdf::new(0, slot, func).unwrap();
+                let location = BusLocation::new(slot, func).unwrap();
                 assert!(
-                    matches!(bus.device_at(bdf), None),
-                    "no device at {:?}",
-                    bdf
+                    matches!(bus.device_at(location), None),
+                    "no device at 0.{:?}",
+                    location
                 );
             }
         }
     }
 
     #[test]
-    #[should_panic]
-    fn bad_bus_insert() {
-        let (pio, mmio) = prep();
-        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
-
-        let dev = Arc::new(TestDev::default());
-        let bdf = Bdf::new(1, 0, 0).unwrap();
-        bus.attach(bdf, dev as Arc<dyn Endpoint>, None);
-    }
-
-    #[test]
     fn set_multifunc() {
         let (pio, mmio) = prep();
-        let bus = Bus::new(BusNum::new(0).unwrap(), &pio, &mmio);
+        let bus = Bus::new(&pio, &mmio);
 
         let first = Arc::new(TestDev::default());
         let other_slot = Arc::new(TestDev::default());
         let same_slot = Arc::new(TestDev::default());
 
         bus.attach(
-            Bdf::new(0, 0, 0).unwrap(),
+            BusLocation::new(0, 0).unwrap(),
             Arc::clone(&first) as Arc<dyn Endpoint>,
             None,
         );
         assert_eq!(first.check_multifunc(), Some(false));
 
         bus.attach(
-            Bdf::new(0, 1, 0).unwrap(),
+            BusLocation::new(1, 0).unwrap(),
             Arc::clone(&other_slot) as Arc<dyn Endpoint>,
             None,
         );
@@ -287,7 +286,7 @@ mod test {
         assert_eq!(other_slot.check_multifunc(), Some(false));
 
         bus.attach(
-            Bdf::new(0, 0, 1).unwrap(),
+            BusLocation::new(0, 1).unwrap(),
             Arc::clone(&same_slot) as Arc<dyn Endpoint>,
             None,
         );

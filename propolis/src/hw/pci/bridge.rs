@@ -408,18 +408,15 @@ mod test {
             }
         }
 
-        fn make_bus(&self, n: BusNum) -> Arc<Bus> {
-            Arc::new(Bus::new(n, &self.pio, &self.mmio))
+        fn make_bus(&self) -> Arc<Bus> {
+            Arc::new(Bus::new(&self.pio, &self.mmio))
         }
     }
 
     #[test]
     fn bridge_header_type() {
         let env = Env::new();
-        let bridge = Bridge::new(
-            env.make_bus(BusNum::new(0).unwrap()),
-            env.router.clone(),
-        );
+        let bridge = Bridge::new(env.make_bus(), env.router.clone());
         let mut buf = [0xffu8; 1];
         let mut ro = ReadOp::from_buf(0xe, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -431,10 +428,7 @@ mod test {
     #[test]
     fn bridge_bus_registers() {
         let env = Env::new();
-        let bridge = Bridge::new(
-            env.make_bus(BusNum::new(0).unwrap()),
-            env.router.clone(),
-        );
+        let bridge = Bridge::new(env.make_bus(), env.router.clone());
 
         // Write the offsets of the primary, secondary, and subordinate bus
         // registers to those registers, then verify that they can be read
@@ -464,7 +458,7 @@ mod test {
     #[test]
     fn bridge_routing() {
         let env = Env::new();
-        let bus = env.make_bus(BusNum::new(1).unwrap());
+        let bus = env.make_bus();
         let bridge = Bridge::new(bus.clone(), env.router.clone());
 
         // Write 42 to the test bridge's secondary bus register and verify that
@@ -489,7 +483,7 @@ mod test {
         assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
 
         // Route bus number 42 to a new bus.
-        let bus2 = env.make_bus(BusNum::new(2).unwrap());
+        let bus2 = env.make_bus();
         let bridge2 = Bridge::new(bus2.clone(), env.router.clone());
         buf[0] = 42;
         let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
