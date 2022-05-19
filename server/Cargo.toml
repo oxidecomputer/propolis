@@ -43,7 +43,7 @@ structopt = { version = "0.3", default-features = false }
 propolis = { path = "../propolis", features = ["crucible"], default-features = false }
 propolis-client = { path = "../client" }
 rfb = { git = "https://github.com/oxidecomputer/rfb", branch = "main" }
-uuid = "0.8"
+uuid = "1.0.0"
 base64 = "0.13"
 
 [dev-dependencies]
