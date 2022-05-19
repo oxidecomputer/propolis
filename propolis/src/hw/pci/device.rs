@@ -2,6 +2,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use super::bar::{BarDefine, Bars};
 use super::bits::*;
+use super::cfgspace::{CfgBuilder, CfgReg};
 use super::{bus, BarN, Endpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -35,17 +36,6 @@ pub trait Device: Send + Sync + 'static {
             }
         }
     }
-    fn std_cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx)
-    where
-        Self: std::marker::Sized,
-    {
-        STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
-            RWOp::Read(ro) => self.device_state().cfg_std_read(id, ro, ctx),
-            RWOp::Write(wo) => {
-                self.device_state().cfg_std_write(self, id, wo, ctx)
-            }
-        });
-    }
     fn attach(&self) {}
     #[allow(unused_variables)]
     fn interrupt_mode_change(&self, mode: IntrMode) {}
@@ -64,8 +54,13 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
     }
     fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
         let ds = self.device_state();
-        ds.cfg_space.process(&mut rwo, |id, rwo| match id {
-            CfgReg::Std => self.std_cfg_rw(rwo, ctx),
+        ds.cfg_space.process(&mut rwo, |id, mut rwo| match id {
+            CfgReg::Std => {
+                STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
+                    RWOp::Read(ro) => ds.cfg_std_read(id, ro, ctx),
+                    RWOp::Write(wo) => ds.cfg_std_write(self, id, wo, ctx),
+                });
+            }
             CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo, ctx),
             CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
                 ds.cfg_cap_rw(self, id, rwo, ctx)
@@ -86,14 +81,6 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
         }
         Device::bar_rw(self, bar, rwo, ctx);
     }
-}
-
-enum CfgReg {
-    Std,
-    Custom(u8),
-    CapId(u8),
-    CapNext(u8),
-    CapBody(u8),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -197,9 +184,15 @@ impl State {
     }
 }
 
-struct Cap {
+pub(super) struct Cap {
     id: u8,
     offset: u8,
+}
+
+impl Cap {
+    pub(super) fn new(id: u8, offset: u8) -> Self {
+        Self { id, offset }
+    }
 }
 
 pub struct DeviceState {
@@ -261,12 +254,7 @@ impl DeviceState {
         state
     }
 
-    pub(super) fn cfg_std_read(
-        &self,
-        id: &StdCfgReg,
-        ro: &mut ReadOp,
-        _ctx: &DispCtx,
-    ) {
+    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, _ctx: &DispCtx) {
         assert!(ro.offset() == 0 || *id == StdCfgReg::Reserved);
 
         match id {
@@ -346,7 +334,7 @@ impl DeviceState {
             }
         }
     }
-    pub(super) fn cfg_std_write(
+    fn cfg_std_write(
         &self,
         dev: &dyn Device,
         id: &StdCfgReg,
@@ -559,7 +547,7 @@ impl DeviceState {
             }
         }
     }
-    pub(super) fn attach(&self, attachment: bus::Attachment) {
+    fn attach(&self, attachment: bus::Attachment) {
         let mut state = self.state.lock().unwrap();
         let _old = state.attach.replace(attachment);
         assert!(_old.is_none());
@@ -996,10 +984,7 @@ pub struct Builder {
     lintr_req: bool,
     msix_cfg: Option<Arc<MsixCfg>>,
     bars: [Option<BarDefine>; 6],
-    cfgmap: RegMap<CfgReg>,
-
-    cap_next_alloc: usize,
-    caps: Vec<Cap>,
+    cfg_builder: CfgBuilder,
 }
 
 impl Builder {
@@ -1011,11 +996,7 @@ impl Builder {
             lintr_req: false,
             msix_cfg: None,
             bars: [None; 6],
-            cfgmap,
-
-            caps: Vec::new(),
-            // capabilities can start immediately after std cfg area
-            cap_next_alloc: LEN_CFG_STD,
+            cfg_builder: CfgBuilder::new(),
         }
     }
 
@@ -1082,32 +1063,12 @@ impl Builder {
     /// Add a region of the PCI config space for the device which has custom
     /// handling.
     pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
-        self.cfgmap.define_with_flags(
-            offset as usize,
-            len as usize,
-            CfgReg::Custom(offset),
-            Flags::PASSTHRU,
-        );
+        self.cfg_builder.add_custom(offset, len);
         self
     }
 
     fn add_cap_raw(&mut self, id: u8, len: u8) {
-        // XXX: does not pay heed to any custom cfg sections which are added via
-        // the `add_custom_cfg` interface.
-        let end = self.cap_next_alloc + 2 + len as usize;
-        // XXX: on the caller to size properly for alignment requirements
-        assert!(end % 4 == 0);
-        assert!(end <= u8::MAX as usize);
-        let idx = self.caps.len() as u8;
-        self.caps.push(Cap { id, offset: self.cap_next_alloc as u8 });
-        self.cfgmap.define(self.cap_next_alloc, 1, CfgReg::CapId(idx));
-        self.cfgmap.define(self.cap_next_alloc + 1, 1, CfgReg::CapNext(idx));
-        self.cfgmap.define(
-            self.cap_next_alloc + 2,
-            len as usize,
-            CfgReg::CapBody(idx),
-        );
-        self.cap_next_alloc = end;
+        self.cfg_builder.add_capability(id, len);
     }
 
     /// Add MSI-X interrupt functionality.
@@ -1131,12 +1092,13 @@ impl Builder {
     }
 
     pub fn finish(self) -> DeviceState {
+        let (cfgmap, caps) = self.cfg_builder.finish();
         DeviceState::new(
             self.ident,
             self.lintr_req,
-            self.cfgmap,
+            cfgmap,
             self.msix_cfg,
-            self.caps,
+            caps,
             Bars::new(&self.bars),
         )
     }

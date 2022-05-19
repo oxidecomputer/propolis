@@ -15,6 +15,7 @@ pub mod bar;
 pub mod bits;
 pub mod bridge;
 pub mod bus;
+mod cfgspace;
 mod device;
 pub mod router;
 
