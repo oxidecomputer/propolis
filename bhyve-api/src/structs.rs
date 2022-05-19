@@ -17,7 +17,7 @@ pub const SEG_ACCESS_G: u32 = 1 << 15;
 pub const SEG_ACCESS_UNUSABLE: u32 = 1 << 16;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct seg_desc {
     pub base: u64,
     pub limit: u32,
@@ -306,10 +306,75 @@ pub struct vm_run_state {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct vm_fpu_state {
+    pub vcpuid: c_int,
+    pub buf: *mut c_void,
+    pub len: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_fpu_desc_entry {
+    pub vfde_feature: u64,
+    pub vfde_size: u32,
+    pub vfde_off: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_fpu_desc {
+    pub vfd_entry_data: *mut vm_fpu_desc_entry,
+    pub vfd_req_size: u64,
+    pub vfd_num_entries: u32,
+}
+impl Default for vm_fpu_desc {
+    fn default() -> Self {
+        Self {
+            vfd_entry_data: std::ptr::null_mut(),
+            vfd_req_size: 0,
+            vfd_num_entries: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct vmm_dirty_tracker {
     pub vdt_start_gpa: u64,
     pub vdt_len: size_t,
     pub vdt_pfns: *mut c_void,
+}
+
+// Definitions for vm_data_xfer.vdx_flags
+pub const VDX_FLAG_READ_COPYIN: u32 = 1 << 0;
+pub const VDX_FLAG_WRITE_COPYOUT: u32 = 1 << 1;
+
+// Current max size for vdx_data
+pub const VM_DATA_XFER_LIMIT: u32 = 8192;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_data_xfer {
+    pub vdx_vcpuid: c_int,
+    pub vdx_class: u16,
+    pub vdx_version: u16,
+    pub vdx_flags: u32,
+    pub vdx_len: u32,
+    pub vdx_result_len: u32,
+    pub vdx_data: *mut c_void,
+}
+impl Default for vm_data_xfer {
+    fn default() -> Self {
+        vm_data_xfer {
+            vdx_vcpuid: -1,
+            vdx_class: 0,
+            vdx_version: 0,
+            vdx_flags: 0,
+            vdx_len: 0,
+            vdx_result_len: 0,
+            vdx_data: std::ptr::null_mut(),
+        }
+    }
 }
 
 pub const VM_MAX_NAMELEN: usize = 128;

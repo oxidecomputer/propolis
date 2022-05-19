@@ -9,6 +9,7 @@ const VMM_CPU_IOC_BASE: i32 = ((b'v' as i32) << 16) | ((b'p' as i32) << 8);
 pub const VMM_CREATE_VM: i32 = VMMCTL_IOC_BASE | 0x01;
 pub const VMM_DESTROY_VM: i32 = VMMCTL_IOC_BASE | 0x02;
 pub const VMM_VM_SUPPORTED: i32 = VMMCTL_IOC_BASE | 0x03;
+pub const VMM_INTERFACE_VERSION: i32 = VMMCTL_IOC_BASE | 0x04;
 
 // Operations performed in the context of a given vCPU
 pub const VM_RUN: i32 = VMM_CPU_IOC_BASE | 0x01;
@@ -35,6 +36,8 @@ pub const VM_GET_KERNEMU_DEV: i32 = VMM_CPU_IOC_BASE | 0x15;
 pub const VM_RESET_CPU: i32 = VMM_CPU_IOC_BASE | 0x16;
 pub const VM_GET_RUN_STATE: i32 = VMM_CPU_IOC_BASE | 0x17;
 pub const VM_SET_RUN_STATE: i32 = VMM_CPU_IOC_BASE | 0x18;
+pub const VM_GET_FPU: i32 = VMM_CPU_IOC_BASE | 0x19;
+pub const VM_SET_FPU: i32 = VMM_CPU_IOC_BASE | 0x1a;
 
 // Operations requiring write-locking the VM
 pub const VM_REINIT: i32 = VMM_LOCK_IOC_BASE | 0x01;
@@ -87,5 +90,8 @@ pub const VM_GET_CPUS: i32 = VMM_IOC_BASE | 0x1c;
 pub const VM_SUSPEND_CPU: i32 = VMM_IOC_BASE | 0x1d;
 pub const VM_RESUME_CPU: i32 = VMM_IOC_BASE | 0x1e;
 pub const VM_TRACK_DIRTY_PAGES: i32 = VMM_IOC_BASE | 0x20;
+pub const VM_DESC_FPU_AREA: i32 = VMM_IOC_BASE | 0x21;
+pub const VM_DATA_READ: i32 = VMM_IOC_BASE | 0x22;
+pub const VM_DATA_WRITE: i32 = VMM_IOC_BASE | 0x23;
 
 pub const VM_DEVMEM_GETOFFSET: i32 = VMM_IOC_BASE | 0xff;

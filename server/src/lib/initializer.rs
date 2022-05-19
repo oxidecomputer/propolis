@@ -146,15 +146,9 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         let hdl = self.mctx.hdl();
 
-        let (pic, pit, hpet, ioapic, rtc) = propolis::hw::bhyve::defaults();
+        let rtc = &self.machine.kernel_devs.rtc;
         rtc.memsize_to_nvram(lowmem, highmem, hdl)?;
         rtc.set_time(SystemTime::now(), hdl)?;
-
-        self.inv.register(&pic)?;
-        self.inv.register(&pit)?;
-        self.inv.register(&hpet)?;
-        self.inv.register(&ioapic)?;
-        self.inv.register(&rtc)?;
 
         Ok(())
     }
@@ -370,7 +364,7 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_cpus(&self) -> Result<(), Error> {
-        for mut vcpu in self.mctx.vcpus() {
+        for vcpu in self.mctx.vcpus() {
             vcpu.set_default_capabs().unwrap();
         }
         Ok(())

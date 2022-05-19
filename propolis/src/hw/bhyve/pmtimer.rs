@@ -22,18 +22,32 @@ impl Entity for BhyvePmTimer {
     }
 }
 impl Migrate for BhyvePmTimer {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
-        // TODO: impl export
-        Box::new(migrate::BhyvePmTimerV1::default())
+    fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize> {
+        let hdl = ctx.mctx.hdl();
+        Box::new(migrate::BhyvePmTimerV1::read(hdl))
     }
 }
 
 pub mod migrate {
+    use crate::vmm;
+
     use serde::Serialize;
 
     #[derive(Serialize, Default)]
     pub struct BhyvePmTimerV1 {
         pub start_time: u64,
-        pub start_val: u32,
+    }
+    impl BhyvePmTimerV1 {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
+            let vdi: bhyve_api::vdi_pm_timer_v1 =
+                vmm::data::read(hdl, -1, bhyve_api::VDC_PM_TIMER, 1).unwrap();
+
+            Self {
+                // vdi_pm_timer_v1 also carries the ioport to which the pmtimer
+                // is attached, but migration of that state is handled by the
+                // chipset PM device.
+                start_time: vdi.vpt_time_base,
+            }
+        }
     }
 }

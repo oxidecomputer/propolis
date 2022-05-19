@@ -12,12 +12,6 @@ use erased_serde::Serialize;
 const MEM_CHUNK: usize = 64 * 1024;
 const MEM_BASE: usize = 16 * 1024 * 1024;
 
-const NVRAM_OFF: u8 = 0xe;
-const NVRAM_HIGH_OFF: u8 = 0x33;
-
-const NVRAM_LEN: usize = 36;
-const NVRAM_HIGH_LEN: usize = 77;
-
 const MEM_OFF_LOW: u8 = 0x34;
 const MEM_OFF_HIGH: u8 = 0x5b;
 
@@ -81,33 +75,36 @@ impl Entity for BhyveRtc {
 impl Migrate for BhyveRtc {
     fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize> {
         let hdl = ctx.mctx.hdl();
-        let mut data = migrate::BhyveRtcV1::default();
-
-        for (i, val) in data.nvram.iter_mut().enumerate() {
-            *val = hdl.rtc_read(NVRAM_OFF + i as u8).unwrap();
-        }
-        for (i, val) in data.nvram_high.iter_mut().enumerate() {
-            *val = hdl.rtc_read(NVRAM_HIGH_OFF + i as u8).unwrap();
-        }
-        // TODO: export rest of RTC data
-        Box::new(data)
+        Box::new(migrate::BhyveRtcV1::read(hdl))
     }
 }
 
 pub mod migrate {
-    use super::{NVRAM_HIGH_LEN, NVRAM_LEN};
+    use crate::vmm;
+
     use serde::Serialize;
 
     #[derive(Serialize)]
     pub struct BhyveRtcV1 {
         #[serde(with = "serde_arrays")]
-        pub nvram: [u8; NVRAM_LEN],
-        #[serde(with = "serde_arrays")]
-        pub nvram_high: [u8; NVRAM_HIGH_LEN],
+        pub cmos: [u8; 128],
+        pub time_sec: u64,
+        pub time_nsec: u64,
+        pub time_base: u64,
+        pub addr: u8,
     }
-    impl Default for BhyveRtcV1 {
-        fn default() -> Self {
-            Self { nvram: [0; NVRAM_LEN], nvram_high: [0; NVRAM_HIGH_LEN] }
+
+    impl BhyveRtcV1 {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
+            let vdi: bhyve_api::vdi_rtc_v1 =
+                vmm::data::read(hdl, -1, bhyve_api::VDC_RTC, 1).unwrap();
+            Self {
+                cmos: vdi.vr_content,
+                time_sec: vdi.vr_rtc_sec,
+                time_nsec: vdi.vr_rtc_nsec,
+                time_base: vdi.vr_time_base,
+                addr: vdi.vr_addr,
+            }
         }
     }
 }

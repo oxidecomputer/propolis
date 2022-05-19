@@ -436,10 +436,23 @@ mod test {
         })
     }
 
+    fn inventory_count(inv: &Inventory) -> usize {
+        let mut count = 0;
+        inv.for_each_node(
+            crate::inventory::Order::Pre,
+            |_, _| -> Result<(), ()> {
+                count += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        count
+    }
+
     #[test]
     fn registered_bridges() {
         let env = Env::new();
-        assert!(env.inventory.is_empty());
+        let before = inventory_count(&env.inventory);
         let mut builder = env.make_builder();
         assert!(builder
             .add_bridge(BridgeDescription::new(
@@ -450,6 +463,7 @@ mod test {
         assert!(builder
             .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
             .is_ok());
-        assert!(!env.inventory.is_empty());
+        let after = inventory_count(&env.inventory);
+        assert!(after > before);
     }
 }

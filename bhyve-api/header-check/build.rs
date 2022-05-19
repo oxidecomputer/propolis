@@ -33,6 +33,7 @@ fn main() {
     cfg.header("sys/types.h");
     cfg.header("sys/vmm.h");
     cfg.header("sys/vmm_dev.h");
+    cfg.header("sys/vmm_data.h");
 
     cfg.skip_const(move |name| match name {
         _n if _n.starts_with("SEG_") => true,
@@ -40,6 +41,10 @@ fn main() {
         // defined for crate consumer convenience
         "VMM_PATH_PREFIX" => true,
         "VMM_CTL_PATH" => true,
+
+        // This was recently hidden from userspace.
+        // We expose our own copy for now for us as a constraint.
+        "VM_MAXCPU" => true,
 
         _ => false,
     });
