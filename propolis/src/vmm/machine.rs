@@ -7,10 +7,11 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::common::{GuestAddr, GuestRegion};
+use crate::hw;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
-use crate::vcpu::VcpuHdl;
+use crate::vcpu::Vcpu;
 use crate::vmm::{create_vm, GuardSpace, Mapping, Prot, SubMapping, VmmHdl};
 
 // XXX: Arbitrary limits for now
@@ -35,6 +36,34 @@ struct MapEnt {
     seg_map: Option<Mapping>,
 }
 
+/// Devices emulated (at least in part) by the kernel portion of the VMM, and
+/// not explicitly handled by other parts of the userspace emulation.
+pub struct KernelVmmDevs {
+    pub atpic: Arc<hw::bhyve::BhyveAtPic>,
+    pub atpit: Arc<hw::bhyve::BhyveAtPit>,
+    pub hpet: Arc<hw::bhyve::BhyveHpet>,
+    pub ioapic: Arc<hw::bhyve::BhyveIoApic>,
+    pub rtc: Arc<hw::bhyve::BhyveRtc>,
+}
+impl KernelVmmDevs {
+    fn new() -> Self {
+        Self {
+            atpic: hw::bhyve::BhyveAtPic::create(),
+            atpit: hw::bhyve::BhyveAtPit::create(),
+            hpet: hw::bhyve::BhyveHpet::create(),
+            ioapic: hw::bhyve::BhyveIoApic::create(),
+            rtc: hw::bhyve::BhyveRtc::create(),
+        }
+    }
+    pub fn register(&self, inv: &crate::inventory::Inventory) {
+        inv.register(&self.atpic).unwrap();
+        inv.register(&self.atpit).unwrap();
+        inv.register(&self.hpet).unwrap();
+        inv.register(&self.ioapic).unwrap();
+        inv.register(&self.rtc).unwrap();
+    }
+}
+
 /// The aggregate representation of a virtual machine.
 ///
 /// This includes:
@@ -44,11 +73,13 @@ struct MapEnt {
 pub struct Machine {
     pub hdl: Arc<VmmHdl>,
     max_cpu: u8,
+    pub vcpus: Vec<Arc<Vcpu>>,
 
     _guard_space: GuardSpace,
     map_physmem: ASpace<MapEnt>,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    pub kernel_devs: KernelVmmDevs,
 }
 
 impl Machine {
@@ -92,12 +123,6 @@ impl Machine {
     /// Get a handle to the underlying VMM.
     pub fn get_hdl(&self) -> Arc<VmmHdl> {
         Arc::clone(&self.hdl)
-    }
-
-    /// Get a handle to the underlying VCPU.
-    pub fn vcpu(&self, id: usize) -> VcpuHdl {
-        assert!(id <= self.max_cpu as usize);
-        VcpuHdl::new(self.get_hdl(), id as i32)
     }
 }
 impl Drop for Machine {
@@ -169,14 +194,18 @@ impl Machine {
             std::io::Error::new(std::io::ErrorKind::Other, format!("{:?}", e))
         })?;
 
+        let arc_hdl = Arc::new(hdl);
+        let vcpus = vec![Vcpu::new(arc_hdl.clone(), 0)];
         Ok(Arc::new(Machine {
-            hdl: Arc::new(hdl),
+            hdl: arc_hdl,
             max_cpu: 1,
+            vcpus,
 
             _guard_space: guard_space,
             map_physmem: map,
             bus_mmio: Arc::new(MmioBus::new(MAX_PHYSMEM)),
             bus_pio: Arc::new(PioBus::new()),
+            kernel_devs: KernelVmmDevs::new(),
         }))
     }
 }
@@ -204,8 +233,8 @@ impl MachineCtx {
         &self.vm.hdl
     }
 
-    pub fn vcpu(&self, id: usize) -> VcpuHdl {
-        self.vm.vcpu(id)
+    pub fn vcpu(&self, id: usize) -> &Vcpu {
+        self.vm.vcpus.get(id).unwrap().as_ref()
     }
 
     pub fn memctx(&self) -> MemCtx<'_> {
@@ -223,14 +252,13 @@ pub struct Vcpus<'a> {
     mctx: &'a MachineCtx,
     id: usize,
 }
-impl Iterator for Vcpus<'_> {
-    type Item = VcpuHdl;
+impl<'a> Iterator for Vcpus<'a> {
+    type Item = &'a Vcpu;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.id < self.mctx.max_cpus() {
-            let vcpu = self.mctx.vcpu(self.id);
+        if let Some(vcpu) = self.mctx.vm.vcpus.get(self.id) {
             self.id += 1;
-            Some(vcpu)
+            Some(vcpu.as_ref())
         } else {
             None
         }
@@ -661,15 +689,20 @@ impl Builder {
         let (guard_space, map) = self.prep_mem_map(&hdl)?;
 
         let arc_hdl = Arc::new(hdl);
+        let vcpus = (0..(self.max_cpu as i32))
+            .map(|id| Vcpu::new(arc_hdl.clone(), id))
+            .collect();
 
         let machine = Machine {
             hdl: arc_hdl,
             max_cpu: self.max_cpu,
+            vcpus,
 
             _guard_space: guard_space,
             map_physmem: map,
             bus_mmio: Arc::new(MmioBus::new(MAX_PHYSMEM)),
             bus_pio: Arc::new(PioBus::new()),
+            kernel_devs: KernelVmmDevs::new(),
         };
         Ok(Arc::new(machine))
     }

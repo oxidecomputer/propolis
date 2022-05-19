@@ -22,19 +22,36 @@ impl Entity for BhyveIoApic {
     }
 }
 impl Migrate for BhyveIoApic {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
-        // TODO: impl export
-        Box::new(migrate::BhyveIoApicV1::default())
+    fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize> {
+        let hdl = ctx.mctx.hdl();
+        Box::new(migrate::BhyveIoApicV1::read(hdl))
     }
 }
 
 pub mod migrate {
+    use crate::vmm;
+
     use serde::Serialize;
 
-    #[derive(Serialize, Default)]
+    #[derive(Copy, Clone, Default, Serialize)]
     pub struct BhyveIoApicV1 {
+        pub id: u32,
         pub reg_sel: u32,
         pub registers: [u64; 32],
         pub levels: [u32; 32],
+    }
+
+    impl BhyveIoApicV1 {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
+            let vdi: bhyve_api::vdi_ioapic_v1 =
+                vmm::data::read(hdl, -1, bhyve_api::VDC_IOAPIC, 1).unwrap();
+
+            Self {
+                id: vdi.vi_id,
+                reg_sel: vdi.vi_reg_sel,
+                registers: vdi.vi_pin_reg,
+                levels: vdi.vi_pin_level,
+            }
+        }
     }
 }

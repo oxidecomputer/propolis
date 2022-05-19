@@ -38,9 +38,15 @@ const PAGE_OFFSET: u64 = 0xfff;
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
 fn parse_args() -> config::Config {
-    let args = pico_args::Arguments::from_env();
+    let mut args = pico_args::Arguments::from_env();
+
+    // Parse options first
+    let dump_state = args.opt_value_from_str("--dump-state").unwrap();
+
     if let Some(cpath) = args.free().ok().map(|mut f| f.pop()).flatten() {
-        config::parse(&cpath)
+        let mut cfg = config::parse(&cpath);
+        cfg.opts.dump_state = dump_state;
+        cfg
     } else {
         eprintln!("usage: propolis <CONFIG.toml>");
         std::process::exit(libc::EXIT_FAILURE);
@@ -148,15 +154,9 @@ fn main() {
             Ok(())
         })?;
 
-        let (pic, pit, hpet, ioapic, rtc) = propolis::hw::bhyve::defaults();
+        let rtc = &machine.kernel_devs.rtc;
         rtc.memsize_to_nvram(lowmem, highmem, mctx.hdl())?;
         rtc.set_time(SystemTime::now(), mctx.hdl())?;
-
-        inv.register(&pic)?;
-        inv.register(&pit)?;
-        inv.register(&hpet)?;
-        inv.register(&ioapic)?;
-        inv.register(&rtc)?;
 
         let hdl = machine.get_hdl();
         let pci_builder = propolis::hw::pci::topology::Builder::new();
@@ -289,7 +289,7 @@ fn main() {
         inv.register(&fwcfg_dev)?;
         inv.register(&ramfb)?;
 
-        for mut vcpu in mctx.vcpus() {
+        for vcpu in mctx.vcpus() {
             vcpu.set_default_capabs().unwrap();
         }
 
@@ -308,10 +308,11 @@ fn main() {
     slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
-    inst.on_transition(Box::new(|next_state, inv, ctx| {
+    let dump_state = config.opts.dump_state.clone();
+    inst.on_transition(Box::new(move |next_state, inv, ctx| {
         match next_state {
             State::Boot => {
-                for mut vcpu in ctx.mctx.vcpus() {
+                for vcpu in ctx.mctx.vcpus() {
                     vcpu.reboot_state().unwrap();
                     vcpu.activate().unwrap();
                     // Set BSP to start up
@@ -326,24 +327,10 @@ fn main() {
                 }
             }
             State::Quiesce => {
-                println!("Device state at quiesce:");
-                inv.for_each_node::<(), _>(
-                    propolis::inventory::Order::Post,
-                    |_id, record| {
-                        let ent = record.entity();
-                        if let Migrator::Custom(mig_ent) = ent.migrate() {
-                            let data = mig_ent.export(ctx);
-                            let output = DevExport {
-                                id: record.name().to_string(),
-                                data,
-                            };
-                            serde_json::to_writer(std::io::stdout(), &output)
-                                .map_err(|_| ())?;
-                        }
-                        Ok(())
-                    },
-                )
-                .unwrap();
+                if let Some(str_path) = dump_state.as_ref() {
+                    slog::info!(ctx.log, "Dumping device state at quiesce");
+                    do_dump_state(str_path, inv, ctx);
+                }
             }
             _ => {}
         }
@@ -352,6 +339,34 @@ fn main() {
 
     inst.wait_for_state(State::Destroy);
     drop(inst);
+}
+
+pub fn do_dump_state(
+    path: &str,
+    inv: &propolis::inventory::Inventory,
+    ctx: &propolis::dispatch::DispCtx,
+) {
+    let mut opts = File::options();
+    opts.write(true).create(true).truncate(true);
+
+    if let Ok(fp) = opts.open(path) {
+        inv.for_each_node::<(), _>(
+            propolis::inventory::Order::Post,
+            |_id, record| {
+                let ent = record.entity();
+                if let Migrator::Custom(mig_ent) = ent.migrate() {
+                    let data = mig_ent.export(ctx);
+                    let output =
+                        DevExport { id: record.name().to_string(), data };
+                    serde_json::to_writer(&fp, &output).map_err(|_| ())?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    } else {
+        slog::error!(ctx.log, "Could not open dump state file")
+    }
 }
 
 use serde::Serialize;

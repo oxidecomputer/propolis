@@ -529,7 +529,7 @@ async fn instance_ensure(
             match next_state {
                 propolis::instance::State::Boot => {
                     // Set vCPUs to their proper boot (INIT) state
-                    for mut vcpu in ctx.mctx.vcpus() {
+                    for vcpu in ctx.mctx.vcpus() {
                         vcpu.reboot_state().unwrap();
                         vcpu.activate().unwrap();
                         // Set BSP to start up
