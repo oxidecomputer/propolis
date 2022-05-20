@@ -16,4 +16,4 @@ slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_deb
 structopt = "0.3"
 thiserror = "1.0"
 uuid = { version = "1.0.0", features = [ "serde", "v4" ] }
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "57f0951793a74b31afd824bc3a0e5d89a41a540b" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "cd74a23ea42ce5e673923a00faf31b0a920191cc" }
