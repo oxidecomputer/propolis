@@ -219,6 +219,16 @@ fn main() {
 
                     let (backend, creg) = config.block_dev(block_dev, disp);
                     let bdf = bdf.unwrap();
+                    if bdf.bus.get() != 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Attached device {} to non-root bus {}",
+                                block_dev,
+                                bdf.bus.get()
+                            ),
+                        ));
+                    }
 
                     let info = backend.info();
                     let vioblk = hw::virtio::PciVirtioBlock::new(0x100, info);
@@ -240,11 +250,22 @@ fn main() {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
                     let bdf = bdf.unwrap();
+                    if bdf.bus.get() != 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Attached device {} to non-root bus {}",
+                                vnic_name,
+                                bdf.bus.get()
+                            ),
+                        ));
+                    }
 
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name, 0x100, &hdl,
                     )?;
                     inv.register_instance(&viona, bdf.to_string())?;
+
                     chipset.pci_attach(
                         chipset.pci_root_bus(),
                         bdf.location,
@@ -257,6 +278,16 @@ fn main() {
 
                     let (backend, creg) = config.block_dev(block_dev, disp);
                     let bdf = bdf.unwrap();
+                    if bdf.bus.get() != 0 {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Attached device {} to non-root bus {}",
+                                block_dev,
+                                bdf.bus.get()
+                            ),
+                        ));
+                    }
 
                     let info = backend.info();
                     let nvme =
