@@ -21,14 +21,14 @@ viona_api = { path = "../viona-api" }
 usdt = { version = "0.2.1", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "8ea317a9dfee65d7c018a1fda89fdec63a560ef3", optional = true }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "cd74a23ea42ce5e673923a00faf31b0a920191cc", optional = true }
 anyhow = "1"
 slog = "2.7"
 serde = { version = "1" }
 serde_arrays = "0.1"
 erased-serde = "0.3"
 serde_json = "1.0"
-uuid = "0.8"
+uuid = "1.0.0"
 
 [dev-dependencies]
 crossbeam-channel = "0.5"
