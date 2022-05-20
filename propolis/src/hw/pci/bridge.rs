@@ -219,6 +219,7 @@ impl Bridge {
                 | StdCfgReg::LatencyTimer
                 | StdCfgReg::Bist
                 | StdCfgReg::Reserved => {}
+
                 StdCfgReg::Command => {
                     let new = RegCmd::from_bits_truncate(wo.read_u16());
                     let mut guard = self.inner.lock().unwrap();
