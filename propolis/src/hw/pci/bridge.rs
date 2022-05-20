@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use super::bus::Attachment;
 use super::cfgspace::{CfgBuilder, CfgReg};
 use super::router::Router;
-use super::{bits::*, Endpoint};
+use super::{bits::*, Endpoint, Ident};
 use super::{BarN, Bus, BusNum, StdCfgReg};
 use crate::common::{RWOp, ReadOp, WriteOp};
 use crate::dispatch::DispCtx;
@@ -87,6 +87,8 @@ lazy_static! {
 
 /// A PCI-PCI bridge.
 pub struct Bridge {
+    ident: Ident,
+
     // The common PCI state has its own synchronization. Accesses to it are
     // currently mutually exclusive with accesses to the bridge state (i.e. no
     // single config transaction is expected to access both common state and
@@ -99,9 +101,24 @@ impl Bridge {
     /// Construct a new PCI bridge with the supplied downstream bus. Updating
     /// the bridge's secondary bus number will update the supplied router such
     /// that it maps the new bus number to the bridge's downstream bus.
-    pub fn new(bus: Arc<Bus>, router: Arc<Router>) -> Arc<Self> {
+    pub fn new(
+        bus: Arc<Bus>,
+        router: Arc<Router>,
+        vendor: u16,
+        device: u16,
+    ) -> Arc<Self> {
         let cfg_builder = CfgBuilder::new();
         Arc::new(Self {
+            ident: Ident {
+                vendor_id: vendor,
+                device_id: device,
+                sub_vendor_id: vendor,
+                sub_device_id: device,
+                class: BRIDGE_PROG_CLASS,
+                subclass: BRIDGE_PROG_SUBCLASS,
+                prog_if: BRIDGE_PROG_IF,
+                ..Default::default()
+            },
             cfg_map: cfg_builder.finish().0,
             inner: Mutex::new(Inner::new(bus, router)),
         })
@@ -121,13 +138,17 @@ impl Bridge {
     fn cfg_std_read(&self, id: &BridgeReg, ro: &mut ReadOp, _ctx: &DispCtx) {
         match id {
             BridgeReg::Common(id) => match id {
-                StdCfgReg::VendorId => ro.write_u16(BRIDGE_VENDOR_ID),
-                StdCfgReg::DeviceId => ro.write_u16(BRIDGE_DEVICE_ID),
-                StdCfgReg::Class => ro.write_u8(BRIDGE_PROG_CLASS),
-                StdCfgReg::Subclass => ro.write_u8(BRIDGE_PROG_SUBCLASS),
-                StdCfgReg::SubVendorId => ro.write_u16(BRIDGE_VENDOR_ID),
-                StdCfgReg::SubDeviceId => ro.write_u16(BRIDGE_DEVICE_ID),
-                StdCfgReg::ProgIf => ro.write_u8(BRIDGE_PROG_IF),
+                StdCfgReg::VendorId => ro.write_u16(self.ident.vendor_id),
+                StdCfgReg::DeviceId => ro.write_u16(self.ident.sub_vendor_id),
+                StdCfgReg::Class => ro.write_u8(self.ident.class),
+                StdCfgReg::Subclass => ro.write_u8(self.ident.subclass),
+                StdCfgReg::SubVendorId => {
+                    ro.write_u16(self.ident.sub_vendor_id)
+                }
+                StdCfgReg::SubDeviceId => {
+                    ro.write_u16(self.ident.sub_device_id)
+                }
+                StdCfgReg::ProgIf => ro.write_u8(self.ident.prog_if),
                 StdCfgReg::RevisionId => ro.write_u8(0),
                 StdCfgReg::HeaderType => ro.write_u8(HEADER_TYPE_BRIDGE),
                 StdCfgReg::Reserved => ro.fill(0),
@@ -310,9 +331,10 @@ impl Endpoint for Bridge {
     }
 
     fn bar_rw(&self, _bar: BarN, _rwo: RWOp, _ctx: &DispCtx) {
-        // The BARs in the PCI bridge are read-only, so nothing should ever
-        // try to dispatch an I/O to a region defined in a bridge's BAR.
-        panic!("unexpected BAR read/write in PCI bridge");
+        // Bridges don't consume any additional I/O or memory space that would
+        // be described in a BAR (and indeed their BARs are read-only), so this
+        // routine should never be reached.
+        panic!("unexpected BAR-defined region I/O in PCI bridge");
     }
 }
 
@@ -381,6 +403,7 @@ impl Inner {
 
 #[cfg(test)]
 mod test {
+    use crate::hw::pci::bits;
     use crate::hw::pci::Endpoint;
     use crate::instance::Instance;
     use crate::mmio::MmioBus;
@@ -409,6 +432,19 @@ mod test {
             }
         }
 
+        fn make_bridge_with_bus(&self, bus: Arc<Bus>) -> Arc<Bridge> {
+            Bridge::new(
+                bus,
+                self.router.clone(),
+                bits::BRIDGE_VENDOR_ID,
+                bits::BRIDGE_DEVICE_ID,
+            )
+        }
+
+        fn make_bridge(&self) -> Arc<Bridge> {
+            self.make_bridge_with_bus(self.make_bus())
+        }
+
         fn make_bus(&self) -> Arc<Bus> {
             Arc::new(Bus::new(&self.pio, &self.mmio))
         }
@@ -417,7 +453,7 @@ mod test {
     #[test]
     fn bridge_header_type() {
         let env = Env::new();
-        let bridge = Bridge::new(env.make_bus(), env.router.clone());
+        let bridge = env.make_bridge();
         let mut buf = [0xffu8; 1];
         let mut ro = ReadOp::from_buf(0xe, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -429,7 +465,7 @@ mod test {
     #[test]
     fn bridge_bus_registers() {
         let env = Env::new();
-        let bridge = Bridge::new(env.make_bus(), env.router.clone());
+        let bridge = env.make_bridge();
 
         // Write the offsets of the primary, secondary, and subordinate bus
         // registers to those registers, then verify that they can be read
@@ -460,7 +496,7 @@ mod test {
     fn bridge_routing() {
         let env = Env::new();
         let bus = env.make_bus();
-        let bridge = Bridge::new(bus.clone(), env.router.clone());
+        let bridge = env.make_bridge_with_bus(bus.clone());
 
         // Write 42 to the test bridge's secondary bus register and verify that
         // this bus number routes to the downstream bus.
@@ -485,7 +521,7 @@ mod test {
 
         // Route bus number 42 to a new bus.
         let bus2 = env.make_bus();
-        let bridge2 = Bridge::new(bus2.clone(), env.router.clone());
+        let bridge2 = env.make_bridge_with_bus(bus2.clone());
         buf[0] = 42;
         let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
         env.instance.disp.with_ctx(|ctx| {

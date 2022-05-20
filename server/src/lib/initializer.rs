@@ -244,6 +244,8 @@ impl<'a> MachineInitializer<'a> {
         let bridge = pci::bridge::Bridge::new(
             bus,
             chipset.device().pci_router().clone(),
+            pci::bits::BRIDGE_VENDOR_ID,
+            pci::bits::BRIDGE_DEVICE_ID,
         );
         self.inv.register_instance(&bridge, config.pci_path.to_string())?;
         Ok(bridge)
