@@ -102,10 +102,10 @@ impl Bridge {
     /// the bridge's secondary bus number will update the supplied router such
     /// that it maps the new bus number to the bridge's downstream bus.
     pub fn new(
-        bus: Arc<Bus>,
-        router: Arc<Router>,
         vendor: u16,
         device: u16,
+        bus: Arc<Bus>,
+        router: Arc<Router>,
     ) -> Arc<Self> {
         let cfg_builder = CfgBuilder::new();
         Arc::new(Self {
@@ -434,10 +434,10 @@ mod test {
 
         fn make_bridge_with_bus(&self, bus: Arc<Bus>) -> Arc<Bridge> {
             Bridge::new(
-                bus,
-                self.router.clone(),
                 bits::BRIDGE_VENDOR_ID,
                 bits::BRIDGE_DEVICE_ID,
+                bus,
+                self.router.clone(),
             )
         }
 
