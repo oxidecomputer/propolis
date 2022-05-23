@@ -97,55 +97,6 @@ impl RegisteredChipset {
     }
 }
 
-const PCI_HELPER_EMPTY_ENTRY: Option<Arc<pci::Bus>> = None;
-pub struct PciHelper<'a> {
-    buses: [Option<Arc<pci::Bus>>; 256],
-    chipset: &'a RegisteredChipset,
-}
-
-impl<'a> PciHelper<'a> {
-    pub fn new(chipset: &'a RegisteredChipset) -> Self {
-        Self { buses: [PCI_HELPER_EMPTY_ENTRY; 256], chipset }
-    }
-
-    pub fn add_bus(
-        &mut self,
-        n: pci::BusNum,
-        bus: Arc<pci::Bus>,
-    ) -> Result<(), Error> {
-        assert_ne!(n.get(), 0);
-        if self.buses[n.get() as usize].is_some() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("Bus {} already registered", n.get()),
-            ));
-        }
-        self.buses[n.get() as usize] = Some(bus);
-        Ok(())
-    }
-
-    pub fn attach_device(
-        &self,
-        bdf: pci::Bdf,
-        dev: Arc<dyn pci::Endpoint>,
-    ) -> Result<(), Error> {
-        let bus = match bdf.bus.get() {
-            0 => Some(self.chipset.device().pci_root_bus()),
-            _ => {
-                self.buses[bdf.bus.get() as usize].as_ref().map(|b| b.as_ref())
-            }
-        }
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidInput,
-                format!("Can't register device at {}: no bus", bdf),
-            )
-        })?;
-        self.chipset.device().pci_attach(bus, bdf.location, dev);
-        Ok(())
-    }
-}
-
 pub struct MachineInitializer<'a> {
     log: slog::Logger,
     machine: &'a Machine,
@@ -211,6 +162,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_chipset(
         &self,
         config: &config::Chipset,
+        pci_bridges: Vec<pci::topology::BridgeDescription>,
     ) -> Result<RegisteredChipset, Error> {
         let enable_pcie = config.options.get("enable-pcie").map_or_else(
             || Ok(false),
@@ -223,32 +175,13 @@ impl<'a> MachineInitializer<'a> {
                 })
             },
         )?;
-        let chipset =
-            I440Fx::create(self.machine, i440fx::CreateOptions { enable_pcie });
+
+        let chipset = I440Fx::create(
+            self.machine,
+            i440fx::CreateOptions { enable_pcie, pci_bridges },
+        );
         let id = self.inv.register(&chipset)?;
         Ok(RegisteredChipset(chipset, id))
-    }
-
-    pub fn initialize_pci_bridge(
-        &self,
-        chipset: &RegisteredChipset,
-        pci_helper: &mut PciHelper,
-        config: &config::PciBridge,
-    ) -> Result<Arc<pci::bridge::Bridge>, Error> {
-        let bus_num = pci::BusNum::new(config.downstream_bus).unwrap();
-        let bus = Arc::new(pci::Bus::new(
-            &self.machine.bus_pio,
-            &self.machine.bus_mmio,
-        ));
-        pci_helper.add_bus(bus_num, bus.clone())?;
-        let bridge = pci::bridge::Bridge::new(
-            pci::bits::BRIDGE_VENDOR_ID,
-            pci::bits::BRIDGE_DEVICE_ID,
-            bus,
-            chipset.device().pci_router().clone(),
-        );
-        self.inv.register_instance(&bridge, config.pci_path.to_string())?;
-        Ok(bridge)
     }
 
     pub fn initialize_uart(
@@ -300,7 +233,7 @@ impl<'a> MachineInitializer<'a> {
 
     pub fn initialize_virtio_block(
         &self,
-        pci_helper: &PciHelper,
+        chipset: &RegisteredChipset,
         bdf: pci::Bdf,
         backend: Arc<dyn block::Backend>,
         be_register: ChildRegister,
@@ -311,13 +244,13 @@ impl<'a> MachineInitializer<'a> {
         let _ = self.inv.register_child(be_register, id).unwrap();
 
         backend.attach(vioblk.clone(), self.disp)?;
-        pci_helper.attach_device(bdf, vioblk)?;
+        chipset.device().pci_attach(bdf, vioblk);
         Ok(())
     }
 
     pub fn initialize_nvme_block(
         &self,
-        pci_helper: &PciHelper,
+        chipset: &RegisteredChipset,
         bdf: pci::Bdf,
         name: String,
         backend: Arc<dyn block::Backend>,
@@ -329,26 +262,26 @@ impl<'a> MachineInitializer<'a> {
         let _ = self.inv.register_child(be_register, id).unwrap();
 
         backend.attach(nvme.clone(), self.disp)?;
-        pci_helper.attach_device(bdf, nvme)?;
+        chipset.device().pci_attach(bdf, nvme);
         Ok(())
     }
 
     pub fn initialize_vnic(
         &self,
-        pci_helper: &PciHelper,
+        chipset: &RegisteredChipset,
         vnic_name: &str,
         bdf: pci::Bdf,
     ) -> Result<(), Error> {
         let hdl = self.machine.get_hdl();
         let viona = virtio::PciVirtioViona::new(vnic_name, 0x100, &hdl)?;
         let _id = self.inv.register_instance(&viona, bdf.to_string())?;
-        pci_helper.attach_device(bdf, viona)?;
+        chipset.device().pci_attach(bdf, viona);
         Ok(())
     }
 
     pub fn initialize_crucible(
         &self,
-        pci_helper: &PciHelper,
+        chipset: &RegisteredChipset,
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
     ) -> Result<(), Error> {
@@ -365,12 +298,12 @@ impl<'a> MachineInitializer<'a> {
         match disk.device.as_ref() {
             "virtio" => {
                 info!(self.log, "Calling initialize_virtio_block");
-                self.initialize_virtio_block(pci_helper, bdf, be, creg)
+                self.initialize_virtio_block(chipset, bdf, be, creg)
             }
             "nvme" => {
                 info!(self.log, "Calling initialize_nvme_block");
                 self.initialize_nvme_block(
-                    pci_helper,
+                    chipset,
                     bdf,
                     disk.name.clone(),
                     be,
@@ -386,7 +319,7 @@ impl<'a> MachineInitializer<'a> {
 
     pub fn initialize_in_memory_virtio_from_bytes(
         &self,
-        pci_helper: &PciHelper,
+        chipset: &RegisteredChipset,
         name: impl Into<String>,
         bytes: Vec<u8>,
         bdf: pci::Bdf,
@@ -400,7 +333,7 @@ impl<'a> MachineInitializer<'a> {
         let creg = ChildRegister::new(&be, Some(name.into()));
 
         info!(self.log, "Calling initialize_virtio_block");
-        self.initialize_virtio_block(pci_helper, bdf, be, creg)
+        self.initialize_virtio_block(chipset, bdf, be, creg)
     }
 
     pub fn initialize_fwcfg(&self, cpus: u8) -> Result<EntityID, Error> {

@@ -6,11 +6,14 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use propolis::hw::pci::topology::BridgeDescription;
+use propolis::hw::pci::Bdf;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use propolis::block;
 use propolis::dispatch::Dispatcher;
+use propolis::hw::pci;
 use propolis::inventory;
 
 /// Errors which may be returned when parsing the server configuration.
@@ -79,8 +82,17 @@ impl Config {
         &self.chipset
     }
 
-    pub fn get_pci_bridges(&self) -> &Vec<PciBridge> {
-        &self.pci_bridges
+    pub fn get_pci_bridge_descriptions(
+        &self,
+    ) -> Vec<pci::topology::BridgeDescription> {
+        let mut descs = Vec::with_capacity(self.pci_bridges.len());
+        for bridge in &self.pci_bridges {
+            descs.push(BridgeDescription::new(
+                pci::topology::LogicalBusId(bridge.downstream_bus),
+                Bdf::from_str(bridge.pci_path.as_str()).unwrap(),
+            ));
+        }
+        descs
     }
 
     pub fn devs(&self) -> IterDevs {

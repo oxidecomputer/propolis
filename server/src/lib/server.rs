@@ -1,7 +1,5 @@
 //! HTTP server callback functions.
 
-use std::str::FromStr;
-
 use anyhow::Result;
 use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
@@ -36,7 +34,7 @@ use propolis::instance::Instance;
 use propolis_client::api;
 
 use crate::config::Config;
-use crate::initializer::{build_instance, MachineInitializer, PciHelper};
+use crate::initializer::{build_instance, MachineInitializer};
 use crate::serial::Serial;
 use crate::vnc::PropolisVncServer;
 use crate::{migrate, vnc};
@@ -77,11 +75,6 @@ impl SerialTask {
 struct StateChange {
     gen: u64,
     state: propolis::instance::State,
-}
-
-struct PciBridgeRegistration {
-    bridge: Arc<pci::bridge::Bridge>,
-    bdf: pci::Bdf,
 }
 
 // All context for a single propolis instance.
@@ -295,9 +288,10 @@ async fn instance_ensure(
             init.initialize_rom(server_context.config.get_bootrom())?;
             init.initialize_kernel_devs(lowmem, highmem)?;
 
-            let chipset =
-                init.initialize_chipset(server_context.config.get_chipset())?;
-            let mut pci_helper = PciHelper::new(&chipset);
+            let chipset = init.initialize_chipset(
+                server_context.config.get_chipset(),
+                server_context.config.get_pci_bridge_descriptions(),
+            )?;
             com1 = Some(Arc::new(init.initialize_uart(&chipset)?));
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port()?;
@@ -312,7 +306,7 @@ async fn instance_ensure(
                             format!("Cannot parse vnic PCI: {}", e),
                         )
                     })?;
-                init.initialize_vnic(&pci_helper, &nic.name, bdf)?;
+                init.initialize_vnic(&chipset, &nic.name, bdf)?;
             }
 
             for disk in &disks {
@@ -325,7 +319,7 @@ async fn instance_ensure(
                         )
                     })?;
 
-                init.initialize_crucible(&pci_helper, disk, bdf)?;
+                init.initialize_crucible(&chipset, disk, bdf)?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
             }
 
@@ -341,7 +335,7 @@ async fn instance_ensure(
                 })?;
 
                 init.initialize_in_memory_virtio_from_bytes(
-                    &pci_helper,
+                    &chipset,
                     "cloud-init",
                     bytes,
                     bdf,
@@ -349,25 +343,6 @@ async fn instance_ensure(
                 )?;
 
                 info!(rqctx.log, "cloud-init disk created");
-            }
-
-            // Attach hard-coded PCI bridges. Although a well-formed topology's
-            // bridges form a tree, the bridges can be specified in the config
-            // in any order. Create all the bridges first to ensure their buses
-            // are known to the helper, then actually attach them as PCI
-            // devices.
-            let mut bridges = vec![];
-            for config in server_context.config.get_pci_bridges() {
-                let bridge = init.initialize_pci_bridge(
-                    &chipset,
-                    &mut pci_helper,
-                    &config,
-                )?;
-                let bdf = pci::Bdf::from_str(config.pci_path.as_str())?;
-                bridges.push(PciBridgeRegistration { bridge, bdf });
-            }
-            for bridge in bridges {
-                pci_helper.attach_device(bridge.bdf, bridge.bridge)?;
             }
 
             // Attach devices which are hard-coded in the config.
@@ -421,10 +396,7 @@ async fn instance_ensure(
                             })?;
 
                         init.initialize_virtio_block(
-                            &pci_helper,
-                            bdf,
-                            backend,
-                            creg,
+                            &chipset, bdf, backend, creg,
                         )?;
                     }
                     "pci-nvme" => {
@@ -470,7 +442,7 @@ async fn instance_ensure(
                             })?;
 
                         init.initialize_nvme_block(
-                            &pci_helper,
+                            &chipset,
                             bdf,
                             block_dev_name.to_string(),
                             backend,
@@ -491,7 +463,7 @@ async fn instance_ensure(
                                     "Cannot parse vnic PCI",
                                 )
                             })?;
-                        init.initialize_vnic(&pci_helper, name, bdf)?;
+                        init.initialize_vnic(&chipset, name, bdf)?;
                     }
                     _ => {
                         return Err(Error::new(

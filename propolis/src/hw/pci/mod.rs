@@ -17,7 +17,7 @@ pub mod bridge;
 pub mod bus;
 mod cfgspace;
 mod device;
-pub mod router;
+pub mod topology;
 
 pub use bus::Bus;
 pub use device::*;

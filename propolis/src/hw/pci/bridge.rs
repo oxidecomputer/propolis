@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use super::bus::Attachment;
 use super::cfgspace::{CfgBuilder, CfgReg};
-use super::router::Router;
+use super::topology::{LogicalBusId, RoutedBusId, Topology};
 use super::{bits::*, Endpoint, Ident};
-use super::{BarN, Bus, BusNum, StdCfgReg};
+use super::{BarN, BusNum, StdCfgReg};
 use crate::common::{RWOp, ReadOp, WriteOp};
 use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
@@ -104,8 +104,8 @@ impl Bridge {
     pub fn new(
         vendor: u16,
         device: u16,
-        bus: Arc<Bus>,
-        router: Arc<Router>,
+        topology: Arc<Topology>,
+        downstream_bus_id: LogicalBusId,
     ) -> Arc<Self> {
         let cfg_builder = CfgBuilder::new();
         Arc::new(Self {
@@ -120,7 +120,7 @@ impl Bridge {
                 ..Default::default()
             },
             cfg_map: cfg_builder.finish().0,
-            inner: Mutex::new(Inner::new(bus, router)),
+            inner: Mutex::new(Inner::new(topology, downstream_bus_id)),
         })
     }
 
@@ -355,9 +355,8 @@ impl Entity for Bridge {
 
 struct Inner {
     attachment: Option<Attachment>,
-
-    bus: Arc<Bus>,
-    router: Arc<Router>,
+    topology: Arc<Topology>,
+    downstream_bus_id: LogicalBusId,
 
     reg_command: RegCmd,
     primary_bus: BusNum,
@@ -368,11 +367,11 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(bus: Arc<Bus>, router: Arc<Router>) -> Self {
+    fn new(topology: Arc<Topology>, downstream_bus_id: LogicalBusId) -> Self {
         Self {
             attachment: None,
-            bus,
-            router,
+            topology,
+            downstream_bus_id,
             reg_command: RegCmd::empty(),
             primary_bus: BusNum::new(0).unwrap(),
             secondary_bus: BusNum::new(0).unwrap(),
@@ -384,11 +383,14 @@ impl Inner {
 
     fn set_secondary_bus(&mut self, n: BusNum) {
         if let Some(bus) = NonZeroU8::new(self.secondary_bus.get()) {
-            self.router.set(bus, None)
+            self.topology.set_bus_route(RoutedBusId(bus.get()), None);
         }
         self.secondary_bus = n;
         if let Some(bus) = NonZeroU8::new(self.secondary_bus.get()) {
-            self.router.set(bus, Some(self.bus.clone()));
+            self.topology.set_bus_route(
+                RoutedBusId(bus.get()),
+                Some(self.downstream_bus_id),
+            );
         }
     }
 
@@ -404,49 +406,93 @@ impl Inner {
 #[cfg(test)]
 mod test {
     use crate::hw::pci::bits;
-    use crate::hw::pci::Endpoint;
+    use crate::hw::pci::topology::{BridgeDescription, Builder, LogicalBusId};
+    use crate::hw::pci::{Bdf, Endpoint};
     use crate::instance::Instance;
     use crate::mmio::MmioBus;
     use crate::pio::PioBus;
 
     use super::*;
 
-    const OFFSET_PRIMARY_BUS: usize = 0x18;
+    const OFFSET_HEADER_TYPE: usize = 0x0E;
     const OFFSET_SECONDARY_BUS: usize = 0x19;
-    const OFFSET_SUBORDINATE_BUS: usize = 0x20;
 
     struct Env {
         instance: Arc<Instance>,
-        router: Arc<Router>,
-        pio: Arc<PioBus>,
-        mmio: Arc<MmioBus>,
+        topology: Arc<Topology>,
     }
 
     impl Env {
         fn new() -> Self {
+            let pio = Arc::new(PioBus::new());
+            let mmio = Arc::new(MmioBus::new(u32::MAX as usize));
+            let topology_builder = Builder::new(&pio, &mmio);
             Self {
                 instance: Instance::new_test(None).unwrap(),
-                router: Arc::new(Router::default()),
-                pio: Arc::new(PioBus::new()),
-                mmio: Arc::new(MmioBus::new(u32::MAX as usize)),
+                topology: topology_builder.finish().unwrap(),
             }
         }
 
-        fn make_bridge_with_bus(&self, bus: Arc<Bus>) -> Arc<Bridge> {
-            Bridge::new(
-                bits::BRIDGE_VENDOR_ID,
-                bits::BRIDGE_DEVICE_ID,
-                bus,
-                self.router.clone(),
-            )
+        fn with_bridges(bridges: Vec<BridgeDescription>) -> Self {
+            let pio = Arc::new(PioBus::new());
+            let mmio = Arc::new(MmioBus::new(u32::MAX as usize));
+            let mut topology_builder = Builder::new(&pio, &mmio);
+            for bridge in bridges {
+                topology_builder.add_bridge(bridge).unwrap();
+            }
+
+            Self {
+                instance: Instance::new_test(None).unwrap(),
+                topology: topology_builder.finish().unwrap(),
+            }
         }
 
         fn make_bridge(&self) -> Arc<Bridge> {
-            self.make_bridge_with_bus(self.make_bus())
+            Bridge::new(
+                bits::BRIDGE_DEVICE_ID,
+                bits::BRIDGE_VENDOR_ID,
+                self.topology.clone(),
+                LogicalBusId(0xFF),
+            )
         }
 
-        fn make_bus(&self) -> Arc<Bus> {
-            Arc::new(Bus::new(&self.pio, &self.mmio))
+        fn read_header_byte(&self, target: Bdf, offset: usize) -> u8 {
+            let mut buf = [0u8; 1];
+            let mut ro = ReadOp::from_buf(offset, &mut buf);
+            self.instance.disp.with_ctx(|ctx| {
+                self.topology.pci_cfg_rw(
+                    RoutedBusId(target.bus.get()),
+                    target.location,
+                    RWOp::Read(&mut ro),
+                    ctx,
+                );
+            });
+            buf[0]
+        }
+
+        fn read_header_type(&self, target: Bdf) -> u8 {
+            self.read_header_byte(target, OFFSET_HEADER_TYPE)
+        }
+
+        fn read_secondary_bus(&self, target: Bdf) -> u8 {
+            self.read_header_byte(target, OFFSET_SECONDARY_BUS)
+        }
+
+        fn write_header_byte(&self, target: Bdf, offset: usize, val: u8) {
+            let mut buf = [val; 1];
+            let mut wo = WriteOp::from_buf(offset, &mut buf);
+            self.instance.disp.with_ctx(|ctx| {
+                self.topology.pci_cfg_rw(
+                    RoutedBusId(target.bus.get()),
+                    target.location,
+                    RWOp::Write(&mut wo),
+                    ctx,
+                );
+            });
+        }
+
+        fn write_secondary_bus(&self, target: Bdf, val: u8) {
+            self.write_header_byte(target, OFFSET_SECONDARY_BUS, val);
         }
     }
 
@@ -455,7 +501,7 @@ mod test {
         let env = Env::new();
         let bridge = env.make_bridge();
         let mut buf = [0xffu8; 1];
-        let mut ro = ReadOp::from_buf(0xe, &mut buf);
+        let mut ro = ReadOp::from_buf(OFFSET_HEADER_TYPE, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
         });
@@ -463,115 +509,53 @@ mod test {
     }
 
     #[test]
-    fn bridge_bus_registers() {
-        let env = Env::new();
-        let bridge = env.make_bridge();
-
-        // Write the offsets of the primary, secondary, and subordinate bus
-        // registers to those registers, then verify that they can be read
-        // back.
-        let vals: Vec<u8> = vec![
-            OFFSET_PRIMARY_BUS as u8,
-            OFFSET_SECONDARY_BUS as u8,
-            OFFSET_SUBORDINATE_BUS as u8,
-        ];
-        for val in &vals {
-            let mut buf = [*val; 1];
-            let mut wo = WriteOp::from_buf(*val as usize, &mut buf);
-            env.instance.disp.with_ctx(|ctx| {
-                Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
-            });
-        }
-        for val in &vals {
-            let mut buf = [0u8; 1];
-            let mut ro = ReadOp::from_buf(*val as usize, &mut buf);
-            env.instance.disp.with_ctx(|ctx| {
-                Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
-            });
-            assert_eq!(buf[0], *val);
-        }
-    }
-
-    #[test]
     fn bridge_routing() {
-        let env = Env::new();
-        let bus = env.make_bus();
-        let bridge = env.make_bridge_with_bus(bus.clone());
+        let env = Env::with_bridges(vec![
+            BridgeDescription::new(LogicalBusId(1), Bdf::new(0, 1, 0).unwrap()),
+            BridgeDescription::new(LogicalBusId(2), Bdf::new(0, 2, 0).unwrap()),
+            BridgeDescription::new(LogicalBusId(3), Bdf::new(1, 1, 0).unwrap()),
+            BridgeDescription::new(LogicalBusId(4), Bdf::new(2, 1, 0).unwrap()),
+        ]);
 
-        // Write 42 to the test bridge's secondary bus register and verify that
-        // this bus number routes to the downstream bus.
-        let mut buf = [42u8; 1];
-        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
-        });
-        assert!(Arc::ptr_eq(
-            &bus,
-            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
-        ));
+        // Set the first test bridge's downstream bus to 81, then verify that
+        // 81.1.0 is a valid bridge device.
+        env.write_secondary_bus(Bdf::new(0, 1, 0).unwrap(), 81);
+        assert_eq!(
+            env.read_header_type(Bdf::new(81, 1, 0).unwrap()),
+            HEADER_TYPE_BRIDGE
+        );
+
+        // Write bus 83 to the newly-connected downstream bridge's secondary
+        // bus number to distinguish it from the other, uninitialized bridge.
+        env.write_secondary_bus(Bdf::new(81, 1, 0).unwrap(), 83);
 
         // Clear the test bridge's secondary bus register and verify the routing
         // is removed.
-        buf[0] = 0;
-        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
-        });
-        assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
+        env.write_secondary_bus(Bdf::new(0, 1, 0).unwrap(), 0);
+        assert_eq!(env.read_secondary_bus(Bdf::new(81, 1, 0).unwrap()), 0);
 
-        // Route bus number 42 to a new bus.
-        let bus2 = env.make_bus();
-        let bridge2 = env.make_bridge_with_bus(bus2.clone());
-        buf[0] = 42;
-        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge2.as_ref(), RWOp::Write(&mut wo), ctx);
-        });
-        assert!(Arc::ptr_eq(
-            &bus2,
-            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
-        ));
+        // Set the second parent bridge's downstream bus to 81. The downstream
+        // bridge's secondary bus should not be set.
+        env.write_secondary_bus(Bdf::new(0, 2, 0).unwrap(), 81);
+        assert_eq!(
+            env.read_header_type(Bdf::new(81, 1, 0).unwrap()),
+            HEADER_TYPE_BRIDGE
+        );
+        assert_eq!(env.read_secondary_bus(Bdf::new(81, 1, 0).unwrap()), 0);
 
-        // Route bus number 1 to the original bridge's downstream bus. Verify
-        // that the routings are correct and distinct from one another.
-        buf[0] = 1;
-        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
-        });
-        assert!(Arc::ptr_eq(
-            &bus,
-            &env.router.get(NonZeroU8::new(1).unwrap()).unwrap()
-        ));
-        assert!(Arc::ptr_eq(
-            &bus2,
-            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
-        ));
-        assert!(!Arc::ptr_eq(
-            &env.router.get(NonZeroU8::new(1).unwrap()).unwrap(),
-            &env.router.get(NonZeroU8::new(42).unwrap()).unwrap()
-        ));
+        // Route the first parent bridge to downstream bus 82 and verify the
+        // child bridge with bus 83 is still there.
+        env.write_secondary_bus(Bdf::new(0, 1, 0).unwrap(), 82);
+        assert_eq!(env.read_secondary_bus(Bdf::new(82, 1, 0).unwrap()), 83);
 
         // Clear the second bridge's routing and verify that the first bridge's
         // routing is left alone.
-        buf[0] = 0;
-        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge2.as_ref(), RWOp::Write(&mut wo), ctx);
-        });
-        assert!(Arc::ptr_eq(
-            &bus,
-            &env.router.get(NonZeroU8::new(1).unwrap()).unwrap()
-        ));
-        assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
+        env.write_secondary_bus(Bdf::new(0, 2, 0).unwrap(), 0);
+        assert_eq!(env.read_secondary_bus(Bdf::new(82, 1, 0).unwrap()), 83);
 
         // Clear the first bridge's routing and verify that its entry is also
         // safely removed.
-        let mut wo = WriteOp::from_buf(OFFSET_SECONDARY_BUS, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Write(&mut wo), ctx);
-        });
-        assert!(env.router.get(NonZeroU8::new(1).unwrap()).is_none());
-        assert!(env.router.get(NonZeroU8::new(42).unwrap()).is_none());
+        env.write_secondary_bus(Bdf::new(0, 1, 0).unwrap(), 0);
+        assert_eq!(env.read_secondary_bus(Bdf::new(82, 1, 0).unwrap()), 0);
     }
 }
