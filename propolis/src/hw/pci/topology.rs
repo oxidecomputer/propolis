@@ -209,7 +209,7 @@ impl<'a> Builder<'a> {
         let mut inner = Inner::default();
 
         // Bus 0 is always present and always routes to itself.
-        buses.push(Bus::new(&self.pio_bus, &self.mmio_bus));
+        buses.push(Bus::new(self.pio_bus, self.mmio_bus));
         logical_buses.insert(LogicalBusId(0), BusIndex(0));
         inner.routed_buses.insert(RoutedBusId(0), BusIndex(0));
 
@@ -245,5 +245,128 @@ impl<'a> Builder<'a> {
         }
 
         Ok(topology)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{common::ReadOp, instance::Instance};
+
+    use super::*;
+
+    struct Env {
+        instance: Arc<Instance>,
+        pio_bus: Arc<PioBus>,
+        mmio_bus: Arc<MmioBus>,
+    }
+
+    impl Env {
+        fn new() -> Self {
+            Self {
+                instance: Instance::new_test(None).unwrap(),
+                pio_bus: Arc::new(PioBus::new()),
+                mmio_bus: Arc::new(MmioBus::new(u32::MAX as usize)),
+            }
+        }
+
+        fn make_builder(&self) -> Builder {
+            Builder::new(&self.pio_bus, &self.mmio_bus)
+        }
+    }
+
+    #[test]
+    fn build_without_bridges() {
+        let env = Env::new();
+        let builder = env.make_builder();
+        assert!(builder.finish().is_ok());
+    }
+
+    #[test]
+    fn build_with_bridges() {
+        let env = Env::new();
+        let mut builder = env.make_builder();
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(1),
+                Bdf::new(0, 1, 0).unwrap(),
+            ))
+            .is_ok());
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(4),
+                Bdf::new(0, 4, 0).unwrap(),
+            ))
+            .is_ok());
+        assert!(builder.finish().is_ok());
+    }
+
+    #[test]
+    fn builder_bus_zero_reserved() {
+        let env = Env::new();
+        let mut builder = env.make_builder();
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(0),
+                Bdf::new(0, 3, 0).unwrap()
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn builder_conflicts() {
+        let env = Env::new();
+        let mut builder = env.make_builder();
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(7),
+                Bdf::new(0, 7, 0).unwrap()
+            ))
+            .is_ok());
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(7),
+                Bdf::new(0, 4, 0).unwrap()
+            ))
+            .is_err());
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(4),
+                Bdf::new(0, 7, 0).unwrap()
+            ))
+            .is_err());
+    }
+
+    #[test]
+    fn cfg_read() {
+        let env = Env::new();
+        let mut builder = env.make_builder();
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(1),
+                Bdf::new(0, 1, 0).unwrap()
+            ))
+            .is_ok());
+
+        let topology = builder.finish().unwrap();
+        let mut buf = [0u8; 1];
+        let mut ro = ReadOp::from_buf(0, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            assert!(topology
+                .pci_cfg_rw(
+                    RoutedBusId(0),
+                    BusLocation::new(1, 0).unwrap(),
+                    RWOp::Read(&mut ro),
+                    ctx,
+                )
+                .is_some());
+            assert!(topology
+                .pci_cfg_rw(
+                    RoutedBusId(1),
+                    BusLocation::new(1, 0).unwrap(),
+                    RWOp::Read(&mut ro),
+                    ctx,
+                )
+                .is_none());
+        })
     }
 }
