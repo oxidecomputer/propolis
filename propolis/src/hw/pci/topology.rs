@@ -13,15 +13,21 @@ use super::{bits, Bdf, Bus, BusLocation, Endpoint, LintrCfg};
 
 use thiserror::Error;
 
+/// A logical identifier for a bus in the topology. A bus's logical identifer
+/// is stable irrespective of the way the topology's bridges are configured.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub struct LogicalBusId(pub u8);
 
+/// A "routing" identifier for a bus in the topology. The topology considers
+/// bridge configurations when deciding what bus will receive messages directed
+/// using this kind of ID.
 #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub struct RoutedBusId(pub u8);
 
 #[derive(Clone, Copy)]
 struct BusIndex(usize);
 
+/// Errors returned when manipulating PCI topology.
 #[derive(Debug, Error)]
 pub enum PciTopologyError {
     #[error("The logical bus with ID {0:?} was not found")]
@@ -34,6 +40,7 @@ pub enum PciTopologyError {
     DeviceAlreadyAttached(Bdf),
 }
 
+/// A PCI topology manager.
 pub struct Topology {
     buses: Vec<Bus>,
     logical_buses: BTreeMap<LogicalBusId, BusIndex>,
@@ -41,6 +48,11 @@ pub struct Topology {
 }
 
 impl Topology {
+    /// Attaches a device to a logical bus in this topology.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the logical bus is not present in the topology.
     pub fn pci_attach(
         &self,
         bus: LogicalBusId,
@@ -57,6 +69,7 @@ impl Topology {
         }
     }
 
+    /// Issues a configuration space I/O to a device at the supplied location.
     pub fn pci_cfg_rw(
         &self,
         bus: RoutedBusId,
@@ -85,6 +98,8 @@ impl Topology {
         }
     }
 
+    /// Configures the topology so that routed traffic to the supplied routed
+    /// bus ID will be directed to the bus with the supplied logical ID.
     pub(super) fn set_bus_route(
         &self,
         routed_id: RoutedBusId,
@@ -111,6 +126,7 @@ struct Inner {
     routed_buses: BTreeMap<RoutedBusId, BusIndex>,
 }
 
+/// An abstract description of a PCI bridge that should be added to a topology.
 #[derive(Debug, Clone, Copy)]
 pub struct BridgeDescription {
     downstream_bus_id: LogicalBusId,
@@ -118,11 +134,21 @@ pub struct BridgeDescription {
 }
 
 impl BridgeDescription {
+    /// Creates a new PCI bridge description.
+    ///
+    /// # Arguments
+    ///
+    /// - `downstream_bus_id`: The logical bus ID to associate with the bridge's
+    ///   downstream bus.
+    /// - `attachment_addr`: The bus/device/function at which to attach the
+    ///   bridge, where the bus is a logical bus number. A bridge may attach to
+    ///   the downstream bus of another bridge.
     pub fn new(downstream_bus_id: LogicalBusId, attachment_addr: Bdf) -> Self {
         Self { downstream_bus_id, attachment_addr }
     }
 }
 
+/// A builder used to construct a PCI topology incrementally.
 pub struct Builder<'a> {
     pio_bus: &'a Arc<PioBus>,
     mmio_bus: &'a Arc<MmioBus>,
@@ -133,6 +159,8 @@ pub struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    /// Creates a new topology builder. Buses created by this builder will
+    /// associate themselves with the supplied port I/O and MMIO buses.
     pub fn new(pio_bus: &'a Arc<PioBus>, mmio_bus: &'a Arc<MmioBus>) -> Self {
         let mut this = Self {
             pio_bus,
@@ -145,6 +173,12 @@ impl<'a> Builder<'a> {
         this
     }
 
+    /// Asks the builder to create a new PCI-PCI bridge.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a bridge was already registered with the same logical bus or
+    /// the same attachment address as the bridge being registered.
     pub fn add_bridge(
         &mut self,
         desc: BridgeDescription,
@@ -163,6 +197,12 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Constructs a completed topology with the requested buses and bridges.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a bridge had an invalid attachment address (i.e. one whose
+    /// logical bus number is invalid).
     pub fn finish(self) -> Result<Arc<Topology>, PciTopologyError> {
         let mut buses = Vec::new();
         let mut logical_buses = BTreeMap::new();
