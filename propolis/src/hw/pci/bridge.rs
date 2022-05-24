@@ -139,7 +139,7 @@ impl Bridge {
         match id {
             BridgeReg::Common(id) => match id {
                 StdCfgReg::VendorId => ro.write_u16(self.ident.vendor_id),
-                StdCfgReg::DeviceId => ro.write_u16(self.ident.sub_vendor_id),
+                StdCfgReg::DeviceId => ro.write_u16(self.ident.device_id),
                 StdCfgReg::Class => ro.write_u8(self.ident.class),
                 StdCfgReg::Subclass => ro.write_u8(self.ident.subclass),
                 StdCfgReg::SubVendorId => {
@@ -414,6 +414,8 @@ mod test {
 
     use super::*;
 
+    const OFFSET_VENDOR_ID: usize = 0x00;
+    const OFFSET_DEVICE_ID: usize = 0x02;
     const OFFSET_HEADER_TYPE: usize = 0x0E;
     const OFFSET_SECONDARY_BUS: usize = 0x19;
 
@@ -449,8 +451,8 @@ mod test {
 
         fn make_bridge(&self) -> Arc<Bridge> {
             Bridge::new(
-                bits::BRIDGE_DEVICE_ID,
                 bits::BRIDGE_VENDOR_ID,
+                bits::BRIDGE_DEVICE_ID,
                 self.topology.clone(),
                 LogicalBusId(0xFF),
             )
@@ -497,7 +499,7 @@ mod test {
     }
 
     #[test]
-    fn bridge_header_type() {
+    fn bridge_properties() {
         let env = Env::new();
         let bridge = env.make_bridge();
         let mut buf = [0xffu8; 1];
@@ -506,6 +508,20 @@ mod test {
             Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
         });
         assert_eq!(buf[0], HEADER_TYPE_BRIDGE);
+
+        let mut buf = [0xffu8; 2];
+        let mut ro = ReadOp::from_buf(OFFSET_VENDOR_ID, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
+        });
+        assert_eq!(u16::from_le_bytes(buf), bits::BRIDGE_VENDOR_ID);
+
+        let mut buf = [0xffu8; 2];
+        let mut ro = ReadOp::from_buf(OFFSET_DEVICE_ID, &mut buf);
+        env.instance.disp.with_ctx(|ctx| {
+            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
+        });
+        assert_eq!(u16::from_le_bytes(buf), bits::BRIDGE_DEVICE_ID);
     }
 
     #[test]
