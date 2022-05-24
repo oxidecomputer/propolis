@@ -11,7 +11,7 @@ use crate::hw::ids::pci::{
     PIIX4_HB_SUB_DEV_ID, PIIX4_PM_DEV_ID, PIIX4_PM_SUB_DEV_ID, VENDOR_INTEL,
     VENDOR_OXIDE,
 };
-use crate::hw::pci::topology::{BridgeDescription, LogicalBusId, RoutedBusId};
+use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
     self, Bdf, BusLocation, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
 };
@@ -40,7 +40,6 @@ const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
 #[derive(Default, Debug, Clone)]
 pub struct CreateOptions {
     pub enable_pcie: bool,
-    pub pci_bridges: Vec<BridgeDescription>,
 }
 
 pub struct I440Fx {
@@ -56,17 +55,16 @@ pub struct I440Fx {
     pm_timer: Arc<BhyvePmTimer>,
 }
 impl I440Fx {
-    pub fn create(machine: &Machine, options: CreateOptions) -> Arc<Self> {
+    pub fn create(
+        machine: &Machine,
+        pci_topology: Arc<pci::topology::Topology>,
+        options: CreateOptions,
+    ) -> Arc<Self> {
         let hdl = machine.hdl.clone();
         let irq_config = IrqConfig::create(hdl);
-        let mut topology_builder =
-            pci::topology::Builder::new(&machine.bus_pio, &machine.bus_mmio);
-        for bridge in options.pci_bridges {
-            topology_builder.add_bridge(bridge).unwrap();
-        }
 
         let this = Arc::new(Self {
-            pci_topology: topology_builder.finish().unwrap(),
+            pci_topology,
             pci_cfg: PioCfgDecoder::new(),
             pcie_cfg: PcieCfgDecoder::new(
                 pci::bits::PCIE_MAX_BUSES_PER_ECAM_REGION,

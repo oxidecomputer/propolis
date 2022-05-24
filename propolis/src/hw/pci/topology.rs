@@ -1,10 +1,12 @@
 //! A PCI topology containing one or more PCI buses.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Error as IoError, ErrorKind};
 use std::sync::{Arc, Mutex};
 
 use crate::common::RWOp;
 use crate::dispatch::DispCtx;
+use crate::inventory::{Inventory, RegistrationError};
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 
@@ -38,6 +40,30 @@ pub enum PciTopologyError {
 
     #[error("A PCI device was already attached at {0:?}")]
     DeviceAlreadyAttached(Bdf),
+
+    #[error("Failed to register a bridge with error {0:?}")]
+    BridgeRegistrationError(RegistrationError),
+}
+
+impl From<PciTopologyError> for IoError {
+    fn from(e: PciTopologyError) -> IoError {
+        use PciTopologyError::*;
+        match e {
+            LogicalBusNotFound(b) => IoError::new(
+                ErrorKind::NotFound,
+                format!("Logical bus {} not found", b.0),
+            ),
+            LogicalBusAlreadyExists(b) => IoError::new(
+                ErrorKind::AlreadyExists,
+                format!("Logical bus {} already exists", b.0),
+            ),
+            DeviceAlreadyAttached(bdf) => IoError::new(
+                ErrorKind::AlreadyExists,
+                format!("Device at {} already attached", bdf),
+            ),
+            BridgeRegistrationError(e) => IoError::from(e),
+        }
+    }
 }
 
 /// A PCI topology manager.
@@ -150,6 +176,7 @@ impl BridgeDescription {
 
 /// A builder used to construct a PCI topology incrementally.
 pub struct Builder<'a> {
+    inventory: &'a Inventory,
     pio_bus: &'a Arc<PioBus>,
     mmio_bus: &'a Arc<MmioBus>,
 
@@ -161,8 +188,13 @@ pub struct Builder<'a> {
 impl<'a> Builder<'a> {
     /// Creates a new topology builder. Buses created by this builder will
     /// associate themselves with the supplied port I/O and MMIO buses.
-    pub fn new(pio_bus: &'a Arc<PioBus>, mmio_bus: &'a Arc<MmioBus>) -> Self {
+    pub fn new(
+        inventory: &'a Inventory,
+        pio_bus: &'a Arc<PioBus>,
+        mmio_bus: &'a Arc<MmioBus>,
+    ) -> Self {
         let mut this = Self {
+            inventory,
             pio_bus,
             mmio_bus,
             bridges: Vec::new(),
@@ -234,14 +266,18 @@ impl<'a> Builder<'a> {
                 topology.clone(),
                 bridge.downstream_bus_id,
             );
-            topology
-                .pci_attach(
-                    LogicalBusId(bridge.attachment_addr.bus.get()),
-                    bridge.attachment_addr.location,
-                    new_bridge,
-                    None,
-                )
-                .unwrap();
+            if let Err(e) = self
+                .inventory
+                .register_instance(&new_bridge, bridge.attachment_addr)
+            {
+                return Err(PciTopologyError::BridgeRegistrationError(e));
+            }
+            topology.pci_attach(
+                LogicalBusId(bridge.attachment_addr.bus.get()),
+                bridge.attachment_addr.location,
+                new_bridge,
+                None,
+            )?;
         }
 
         Ok(topology)
@@ -256,21 +292,25 @@ mod test {
 
     struct Env {
         instance: Arc<Instance>,
+        inventory: Arc<Inventory>,
         pio_bus: Arc<PioBus>,
         mmio_bus: Arc<MmioBus>,
     }
 
     impl Env {
         fn new() -> Self {
+            let instance = Instance::new_test(None).unwrap();
+            let inventory = instance.inv();
             Self {
-                instance: Instance::new_test(None).unwrap(),
+                instance,
+                inventory,
                 pio_bus: Arc::new(PioBus::new()),
                 mmio_bus: Arc::new(MmioBus::new(u32::MAX as usize)),
             }
         }
 
         fn make_builder(&self) -> Builder {
-            Builder::new(&self.pio_bus, &self.mmio_bus)
+            Builder::new(&self.inventory, &self.pio_bus, &self.mmio_bus)
         }
     }
 
@@ -368,5 +408,20 @@ mod test {
                 )
                 .is_none());
         })
+    }
+
+    #[test]
+    fn registered_bridges() {
+        let env = Env::new();
+        assert!(env.inventory.is_empty());
+        let mut builder = env.make_builder();
+        assert!(builder
+            .add_bridge(BridgeDescription::new(
+                LogicalBusId(1),
+                Bdf::new(0, 1, 0).unwrap()
+            ))
+            .is_ok());
+        assert!(builder.finish().is_ok());
+        assert!(!env.inventory.is_empty());
     }
 }

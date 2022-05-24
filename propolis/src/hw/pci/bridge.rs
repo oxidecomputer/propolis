@@ -426,27 +426,25 @@ mod test {
 
     impl Env {
         fn new() -> Self {
+            let instance = Instance::new_test(None).unwrap();
+            let inventory = instance.inv();
             let pio = Arc::new(PioBus::new());
             let mmio = Arc::new(MmioBus::new(u32::MAX as usize));
-            let topology_builder = Builder::new(&pio, &mmio);
-            Self {
-                instance: Instance::new_test(None).unwrap(),
-                topology: topology_builder.finish().unwrap(),
-            }
+            let topology_builder = Builder::new(&inventory, &pio, &mmio);
+            Self { instance, topology: topology_builder.finish().unwrap() }
         }
 
         fn with_bridges(bridges: Vec<BridgeDescription>) -> Self {
+            let instance = Instance::new_test(None).unwrap();
+            let inventory = instance.inv();
             let pio = Arc::new(PioBus::new());
             let mmio = Arc::new(MmioBus::new(u32::MAX as usize));
-            let mut topology_builder = Builder::new(&pio, &mmio);
+            let mut topology_builder = Builder::new(&inventory, &pio, &mmio);
             for bridge in bridges {
                 topology_builder.add_bridge(bridge).unwrap();
             }
 
-            Self {
-                instance: Instance::new_test(None).unwrap(),
-                topology: topology_builder.finish().unwrap(),
-            }
+            Self { instance, topology: topology_builder.finish().unwrap() }
         }
 
         fn make_bridge(&self) -> Arc<Bridge> {

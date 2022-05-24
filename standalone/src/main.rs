@@ -159,8 +159,16 @@ fn main() {
         inv.register(&rtc)?;
 
         let hdl = machine.get_hdl();
-        let chipset =
-            hw::chipset::i440fx::I440Fx::create(machine, Default::default());
+        let pci_builder = propolis::hw::pci::topology::Builder::new(
+            inv,
+            &machine.bus_pio,
+            &machine.bus_mmio,
+        );
+        let chipset = hw::chipset::i440fx::I440Fx::create(
+            machine,
+            pci_builder.finish()?,
+            Default::default(),
+        );
         inv.register(&chipset)?;
 
         // UARTs

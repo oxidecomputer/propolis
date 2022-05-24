@@ -164,6 +164,15 @@ impl<'a> MachineInitializer<'a> {
         config: &config::Chipset,
         pci_bridges: Vec<pci::topology::BridgeDescription>,
     ) -> Result<RegisteredChipset, Error> {
+        let mut pci_builder = pci::topology::Builder::new(
+            &self.inv,
+            &self.machine.bus_pio,
+            &self.machine.bus_mmio,
+        );
+        for bridge in pci_bridges {
+            pci_builder.add_bridge(bridge)?;
+        }
+        let pci_topology = pci_builder.finish()?;
         let enable_pcie = config.options.get("enable-pcie").map_or_else(
             || Ok(false),
             |v| {
@@ -178,7 +187,8 @@ impl<'a> MachineInitializer<'a> {
 
         let chipset = I440Fx::create(
             self.machine,
-            i440fx::CreateOptions { enable_pcie, pci_bridges },
+            pci_topology,
+            i440fx::CreateOptions { enable_pcie },
         );
         let id = self.inv.register(&chipset)?;
         Ok(RegisteredChipset(chipset, id))
