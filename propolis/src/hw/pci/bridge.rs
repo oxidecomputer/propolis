@@ -405,7 +405,7 @@ impl Inner {
 
 #[cfg(test)]
 mod test {
-    use crate::hw::pci::bits;
+    use crate::hw::ids;
     use crate::hw::pci::topology::{BridgeDescription, Builder, LogicalBusId};
     use crate::hw::pci::{Bdf, Endpoint};
     use crate::instance::Instance;
@@ -449,8 +449,8 @@ mod test {
 
         fn make_bridge(&self) -> Arc<Bridge> {
             Bridge::new(
-                bits::BRIDGE_VENDOR_ID,
-                bits::BRIDGE_DEVICE_ID,
+                ids::pci::VENDOR_OXIDE,
+                ids::pci::PROPOLIS_BRIDGE_DEV_ID,
                 self.topology.clone(),
                 LogicalBusId(0xFF),
             )
@@ -512,14 +512,14 @@ mod test {
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
         });
-        assert_eq!(u16::from_le_bytes(buf), bits::BRIDGE_VENDOR_ID);
+        assert_eq!(u16::from_le_bytes(buf), ids::pci::VENDOR_OXIDE);
 
         let mut buf = [0xffu8; 2];
         let mut ro = ReadOp::from_buf(OFFSET_DEVICE_ID, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
             Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
         });
-        assert_eq!(u16::from_le_bytes(buf), bits::BRIDGE_DEVICE_ID);
+        assert_eq!(u16::from_le_bytes(buf), ids::pci::PROPOLIS_BRIDGE_DEV_ID);
     }
 
     #[test]

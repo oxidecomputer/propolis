@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::RWOp;
 use crate::dispatch::DispCtx;
+use crate::hw::ids;
 use crate::inventory::{Inventory, RegistrationError};
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 
 use super::bridge::Bridge;
-use super::{bits, Bdf, Bus, BusLocation, Endpoint, LintrCfg};
+use super::{Bdf, Bus, BusLocation, Endpoint, LintrCfg};
 
 use thiserror::Error;
 
@@ -268,8 +269,8 @@ impl<'a> Builder<'a> {
 
         for bridge in &self.bridges {
             let new_bridge = Bridge::new(
-                bits::BRIDGE_VENDOR_ID,
-                bits::BRIDGE_DEVICE_ID,
+                ids::pci::VENDOR_OXIDE,
+                ids::pci::PROPOLIS_BRIDGE_DEV_ID,
                 topology.clone(),
                 bridge.downstream_bus_id,
             );

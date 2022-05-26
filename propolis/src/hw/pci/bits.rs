@@ -78,10 +78,6 @@ pub const PCIE_MAX_BUSES_PER_ECAM_REGION: u16 = 256;
 /// offset in bytes at which to access the target BDF's configuration region.
 pub const MASK_ECAM_CFG_OFFSET: usize = 0xfff;
 
-/// The PCI identifiers to use for PCI-PCI bridges.
-pub const BRIDGE_VENDOR_ID: u16 = 0x1de;
-pub const BRIDGE_DEVICE_ID: u16 = 0x02;
-
 /// Class code identifiers required by SS3.2.4.6 of the PCI bridge spec rev 1.2.
 pub const BRIDGE_PROG_CLASS: u8 = 0x06;
 pub const BRIDGE_PROG_SUBCLASS: u8 = 0x04;
