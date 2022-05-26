@@ -73,6 +73,7 @@ impl PciVirtioViona {
             queues,
             msix_count,
             VIRTIO_DEV_NET,
+            VIRTIO_SUB_DEV_NET,
             pci::bits::CLASS_NETWORK,
             VIRTIO_NET_CFG_SIZE,
         );

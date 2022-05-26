@@ -41,6 +41,7 @@ impl PciVirtioBlock {
             queues,
             msix_count,
             VIRTIO_DEV_BLOCK,
+            VIRTIO_SUB_DEV_BLOCK,
             pci::bits::CLASS_STORAGE,
             VIRTIO_BLK_CFG_SIZE,
         );
