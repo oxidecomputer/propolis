@@ -3,6 +3,8 @@ use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::dispatch::DispCtx;
+use crate::hw::ids::pci::{PROPOLIS_NVME_DEV_ID, VENDOR_OXIDE};
+use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
 use crate::migrate::{Migrate, Migrator};
 use crate::util::regmap::RegMap;
@@ -422,16 +424,14 @@ pub struct PciNvme {
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
     pub fn create(
-        vendor: u16,
-        device: u16,
         serial_number: String,
         binfo: block::DeviceInfo,
     ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
-            vendor_id: vendor,
-            device_id: device,
-            sub_vendor_id: vendor,
-            sub_device_id: device,
+            vendor_id: VENDOR_OXIDE,
+            device_id: PROPOLIS_NVME_DEV_ID,
+            sub_vendor_id: VENDOR_OXIDE,
+            sub_device_id: PROPOLIS_NVME_DEV_ID,
             class: pci::bits::CLASS_STORAGE,
             subclass: pci::bits::SUBCLASS_NVM,
             prog_if: pci::bits::PROGIF_ENTERPRISE_NVME,
@@ -452,10 +452,10 @@ impl PciNvme {
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
-            vid: vendor,
-            ssvid: vendor,
+            vid: VENDOR_OXIDE,
+            ssvid: VENDOR_OXIDE,
             sn,
-            ieee: [0xA8, 0x40, 0x25], // Oxide OUI
+            ieee: OXIDE_OUI,
             // We use standard Completion/Submission Queue Entry structures with no extra
             // data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),

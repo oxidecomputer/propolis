@@ -1,6 +1,7 @@
 pub mod bhyve;
 pub mod chipset;
 pub mod ibmpc;
+pub mod ids;
 pub mod nvme;
 pub mod pci;
 pub mod ps2ctrl;

@@ -48,3 +48,12 @@ pub const VIRTQ_DESC_F_WRITE: u16 = 2;
 pub const VIRTQ_DESC_F_INDIRECT: u16 = 4;
 pub const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
 pub const VRING_USED_F_NO_NOTIFY: u16 = 1;
+
+/// Returns the corresponding propolis specific Subsystem Device ID for the given Virtio Device ID.
+pub(super) fn virtio_sub_dev_id(dev_id: u16) -> u16 {
+    match dev_id {
+        VIRTIO_DEV_NET => crate::hw::ids::pci::VIRTIO_NET_SUB_DEV_ID,
+        VIRTIO_DEV_BLOCK => crate::hw::ids::pci::VIRTIO_BLOCK_SUB_DEV_ID,
+        dev_id => panic!("unhandled virtio device id: {:#x}", dev_id),
+    }
+}

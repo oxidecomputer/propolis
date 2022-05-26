@@ -254,7 +254,7 @@ impl<'a> MachineInitializer<'a> {
         be_register: ChildRegister,
     ) -> Result<(), Error> {
         let be_info = backend.info();
-        let nvme = nvme::PciNvme::create(0x1de, 0x1000, name, be_info);
+        let nvme = nvme::PciNvme::create(name, be_info);
         let id = self.inv.register_instance(&nvme, bdf.to_string())?;
         let _ = self.inv.register_child(be_register, id).unwrap();
 
