@@ -37,7 +37,7 @@ const PM_FUNC: u8 = 3;
 const ADDR_PCIE_ECAM_REGION: usize = 0xe000_0000;
 const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct CreateOptions {
     pub enable_pcie: bool,
 }
@@ -141,7 +141,7 @@ impl I440Fx {
             1 => INTxPinID::IntB,
             2 => INTxPinID::IntC,
             3 => INTxPinID::IntD,
-            _ => panic!(),
+            _ => unreachable!(),
         };
         // D->A->B->C starting at 0:0.0
         let pin_route = (location.dev.get() + intx_pin as u8 + 2) % 4;

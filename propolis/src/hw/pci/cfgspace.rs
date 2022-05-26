@@ -17,6 +17,7 @@ pub(super) enum CfgReg {
     CapBody(u8),
 }
 
+/// A helper for building maps of PCI device configuration space.
 pub(super) struct CfgBuilder {
     cfgmap: RegMap<CfgReg>,
     caps: Vec<Cap>,
@@ -71,13 +72,31 @@ impl CfgBuilder {
     /// Adds a new capability region of the supplied length at the next
     /// available offset in configuration space.
     ///
+    /// The `len` argument supplies the length of the variable-size portion of
+    /// the capability (i.e., the length of the capability data exclusive of the
+    /// 1-byte capability ID and next capability pointer registers).
+    ///
+    /// Note: The builder allocates capability regions in sequence starting
+    /// immediately after the config space header. Allocating a custom region
+    /// does not advance the builder's "next capability" pointer. The caller is
+    /// responsible for arranging config space so that capabilities precede any
+    /// allocated custom regions; the builder will panic if it detects any
+    /// overlapping regions.
+    ///
     /// # Panics
     ///
-    /// Panics if the capability overlaps an existing region in the space under
-    /// construction.
+    /// Panics if:
+    ///
+    /// - The capability overlaps an existing region in the space under
+    ///   construction;
+    /// - The capability's total size (inclusive of the capability ID and
+    ///   capability pointer registers) is not a multiple of 4 bytes; or
+    /// - The capability's total size (again inclusive of the standard
+    ///   registers) is 256 bytes or larger.
     pub fn add_capability(&mut self, id: u8, len: u8) {
         self.check_overlap(self.cap_next_alloc, len as usize);
         let end = self.cap_next_alloc + 2 + len as usize;
+        // XXX: on the caller to size properly for alignment requirements
         assert!(end % 4 == 0);
         assert!(end <= u8::MAX as usize);
         let idx = self.caps.len() as u8;

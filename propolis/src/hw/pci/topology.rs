@@ -125,7 +125,8 @@ impl Topology {
     }
 
     /// Configures the topology so that routed traffic to the supplied routed
-    /// bus ID will be directed to the bus with the supplied logical ID.
+    /// bus ID will be directed to the supplied logical bus (if `logical_id` is
+    /// Some) or to no logical bus (if it is None).
     pub(super) fn set_bus_route(
         &self,
         routed_id: RoutedBusId,
@@ -135,7 +136,13 @@ impl Topology {
         // their own logical bus numbers, so absent a code bug the index
         // corresponding to this logical bus should always be in the map.
         if let Some(logical_id) = logical_id {
-            let bus_index = self.logical_buses.get(&logical_id).unwrap();
+            let bus_index =
+                self.logical_buses.get(&logical_id).unwrap_or_else(|| {
+                    panic!(
+                        "Failed to find logical bus {} while routing bus {}",
+                        logical_id.0, routed_id.0
+                    )
+                });
             let mut guard = self.inner.lock().unwrap();
             let _old = guard.routed_buses.insert(routed_id, *bus_index);
             assert!(_old.is_none());
