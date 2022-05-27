@@ -165,10 +165,13 @@ struct Inner {
 pub struct BridgeDescription {
     downstream_bus_id: LogicalBusId,
     attachment_addr: Bdf,
+    vendor_id: u16,
+    device_id: u16,
 }
 
 impl BridgeDescription {
-    /// Creates a new PCI bridge description.
+    /// Creates a new PCI bridge description using the Oxide PCI-PCI bridge
+    /// vendor and device IDs.
     ///
     /// # Arguments
     ///
@@ -178,33 +181,38 @@ impl BridgeDescription {
     ///   bridge, where the bus is a logical bus number. A bridge may attach to
     ///   the downstream bus of another bridge.
     pub fn new(downstream_bus_id: LogicalBusId, attachment_addr: Bdf) -> Self {
-        Self { downstream_bus_id, attachment_addr }
+        Self::with_pci_ids(
+            downstream_bus_id,
+            attachment_addr,
+            ids::pci::VENDOR_OXIDE,
+            ids::pci::PROPOLIS_BRIDGE_DEV_ID,
+        )
+    }
+
+    /// Creates a new PCI bridge description with an explicitly supplied vendor
+    /// and device ID. See the documentation for [`new`].
+    pub fn with_pci_ids(
+        downstream_bus_id: LogicalBusId,
+        attachment_addr: Bdf,
+        vendor_id: u16,
+        device_id: u16,
+    ) -> Self {
+        Self { downstream_bus_id, attachment_addr, vendor_id, device_id }
     }
 }
 
 /// A builder used to construct a PCI topology incrementally.
-pub struct Builder<'a> {
-    inventory: &'a Inventory,
-    pio_bus: &'a Arc<PioBus>,
-    mmio_bus: &'a Arc<MmioBus>,
-
+pub struct Builder {
     bridges: Vec<BridgeDescription>,
     downstream_buses: BTreeSet<LogicalBusId>,
     attachment_addrs: BTreeSet<Bdf>,
 }
 
-impl<'a> Builder<'a> {
+impl Builder {
     /// Creates a new topology builder. Buses created by this builder will
     /// associate themselves with the supplied port I/O and MMIO buses.
-    pub fn new(
-        inventory: &'a Inventory,
-        pio_bus: &'a Arc<PioBus>,
-        mmio_bus: &'a Arc<MmioBus>,
-    ) -> Self {
+    pub fn new() -> Self {
         let mut this = Self {
-            inventory,
-            pio_bus,
-            mmio_bus,
             bridges: Vec::new(),
             downstream_buses: BTreeSet::new(),
             attachment_addrs: BTreeSet::new(),
@@ -243,13 +251,18 @@ impl<'a> Builder<'a> {
     ///
     /// Fails if a bridge had an invalid attachment address (i.e. one whose
     /// logical bus number is invalid).
-    pub fn finish(self) -> Result<Arc<Topology>, PciTopologyError> {
+    pub fn finish(
+        self,
+        inventory: &Inventory,
+        pio_bus: &Arc<PioBus>,
+        mmio_bus: &Arc<MmioBus>,
+    ) -> Result<Arc<Topology>, PciTopologyError> {
         let mut buses = Vec::new();
         let mut logical_buses = BTreeMap::new();
         let mut inner = Inner::default();
 
         // Bus 0 is always present and always routes to itself.
-        buses.push(Bus::new(self.pio_bus, self.mmio_bus));
+        buses.push(Bus::new(pio_bus, mmio_bus));
         logical_buses.insert(LogicalBusId(0), BusIndex(0));
         inner.routed_buses.insert(RoutedBusId(0), BusIndex(0));
 
@@ -258,7 +271,7 @@ impl<'a> Builder<'a> {
                 LogicalBusId(bridge.downstream_bus_id.0),
                 BusIndex(buses.len()),
             );
-            buses.push(Bus::new(&self.pio_bus, &self.mmio_bus));
+            buses.push(Bus::new(&pio_bus, &mmio_bus));
         }
 
         let topology = Arc::new(Topology {
@@ -269,14 +282,13 @@ impl<'a> Builder<'a> {
 
         for bridge in &self.bridges {
             let new_bridge = Bridge::new(
-                ids::pci::VENDOR_OXIDE,
-                ids::pci::PROPOLIS_BRIDGE_DEV_ID,
+                bridge.vendor_id,
+                bridge.device_id,
                 topology.clone(),
                 bridge.downstream_bus_id,
             );
-            if let Err(e) = self
-                .inventory
-                .register_instance(&new_bridge, bridge.attachment_addr)
+            if let Err(e) =
+                inventory.register_instance(&new_bridge, bridge.attachment_addr)
             {
                 return Err(PciTopologyError::BridgeRegistrationError(e));
             }
@@ -318,7 +330,7 @@ mod test {
         }
 
         fn make_builder(&self) -> Builder {
-            Builder::new(&self.inventory, &self.pio_bus, &self.mmio_bus)
+            Builder::new()
         }
     }
 
@@ -326,7 +338,9 @@ mod test {
     fn build_without_bridges() {
         let env = Env::new();
         let builder = env.make_builder();
-        assert!(builder.finish().is_ok());
+        assert!(builder
+            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
+            .is_ok());
     }
 
     #[test]
@@ -345,7 +359,9 @@ mod test {
                 Bdf::new(0, 4, 0).unwrap(),
             ))
             .is_ok());
-        assert!(builder.finish().is_ok());
+        assert!(builder
+            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
+            .is_ok());
     }
 
     #[test]
@@ -395,7 +411,9 @@ mod test {
             ))
             .is_ok());
 
-        let topology = builder.finish().unwrap();
+        let topology = builder
+            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
+            .unwrap();
         let mut buf = [0u8; 1];
         let mut ro = ReadOp::from_buf(0, &mut buf);
         env.instance.disp.with_ctx(|ctx| {
@@ -429,7 +447,9 @@ mod test {
                 Bdf::new(0, 1, 0).unwrap()
             ))
             .is_ok());
-        assert!(builder.finish().is_ok());
+        assert!(builder
+            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
+            .is_ok());
         assert!(!env.inventory.is_empty());
     }
 }

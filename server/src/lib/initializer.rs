@@ -164,15 +164,15 @@ impl<'a> MachineInitializer<'a> {
         config: &config::Chipset,
         pci_bridges: Vec<pci::topology::BridgeDescription>,
     ) -> Result<RegisteredChipset, Error> {
-        let mut pci_builder = pci::topology::Builder::new(
-            &self.inv,
-            &self.machine.bus_pio,
-            &self.machine.bus_mmio,
-        );
+        let mut pci_builder = pci::topology::Builder::new();
         for bridge in pci_bridges {
             pci_builder.add_bridge(bridge)?;
         }
-        let pci_topology = pci_builder.finish()?;
+        let pci_topology = pci_builder.finish(
+            &self.inv,
+            &self.machine.bus_pio,
+            &self.machine.bus_mmio,
+        )?;
         let enable_pcie = config.options.get("enable-pcie").map_or_else(
             || Ok(false),
             |v| {
