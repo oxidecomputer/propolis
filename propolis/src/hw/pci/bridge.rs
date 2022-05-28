@@ -1,7 +1,7 @@
 //! Support for PCI bridges.
 
 use std::num::NonZeroU8;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use super::bus::Attachment;
 use super::cfgspace::{CfgBuilder, CfgReg};
@@ -104,7 +104,7 @@ impl Bridge {
     pub fn new(
         vendor: u16,
         device: u16,
-        topology: Arc<Topology>,
+        topology: &Arc<Topology>,
         downstream_bus_id: LogicalBusId,
     ) -> Arc<Self> {
         let cfg_builder = CfgBuilder::new();
@@ -355,7 +355,10 @@ impl Entity for Bridge {
 
 struct Inner {
     attachment: Option<Attachment>,
-    topology: Arc<Topology>,
+
+    // This reference must be weak to avoid a topology -> bus -> attached
+    // bridge -> topology reference cycle.
+    topology: Weak<Topology>,
     downstream_bus_id: LogicalBusId,
 
     reg_command: RegCmd,
@@ -367,10 +370,10 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(topology: Arc<Topology>, downstream_bus_id: LogicalBusId) -> Self {
+    fn new(topology: &Arc<Topology>, downstream_bus_id: LogicalBusId) -> Self {
         Self {
             attachment: None,
-            topology,
+            topology: Arc::downgrade(topology),
             downstream_bus_id,
             reg_command: RegCmd::empty(),
             primary_bus: BusNum::new(0).unwrap(),
@@ -382,15 +385,20 @@ impl Inner {
     }
 
     fn set_secondary_bus(&mut self, n: BusNum) {
+        let topology = self.topology.upgrade();
         if let Some(bus) = NonZeroU8::new(self.secondary_bus.get()) {
-            self.topology.set_bus_route(RoutedBusId(bus.get()), None);
+            if let Some(topology) = &topology {
+                topology.set_bus_route(RoutedBusId(bus.get()), None);
+            }
         }
         self.secondary_bus = n;
         if let Some(bus) = NonZeroU8::new(self.secondary_bus.get()) {
-            self.topology.set_bus_route(
-                RoutedBusId(bus.get()),
-                Some(self.downstream_bus_id),
-            );
+            if let Some(topology) = &topology {
+                topology.set_bus_route(
+                    RoutedBusId(bus.get()),
+                    Some(self.downstream_bus_id),
+                );
+            }
         }
     }
 
@@ -461,7 +469,7 @@ mod test {
             Bridge::new(
                 ids::pci::VENDOR_OXIDE,
                 ids::pci::PROPOLIS_BRIDGE_DEV_ID,
-                self.topology.clone(),
+                &self.topology,
                 LogicalBusId(0xFF),
             )
         }

@@ -284,7 +284,7 @@ impl Builder {
             let new_bridge = Bridge::new(
                 bridge.vendor_id,
                 bridge.device_id,
-                topology.clone(),
+                &topology,
                 bridge.downstream_bus_id,
             );
             if let Err(e) =
