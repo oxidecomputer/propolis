@@ -107,7 +107,7 @@ pub async fn setup() -> &'static TestArtifacts<'static> {
     const TEST_IMAGE: Artifact<'static> = Artifact {
         name: "alpine.iso",
         expected_digest:
-            "e1081276c21f5fceddc497f64624f2e23c88836bb829ff451aad7faad054b6c4",
+            "ba8007f74f9b54fbae3b2520da577831b4834778a498d732f091260c61aa7ca1",
     };
 
     const TEST_BOOTROM: Artifact<'static> = Artifact {
