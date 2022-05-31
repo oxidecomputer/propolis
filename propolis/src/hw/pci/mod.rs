@@ -13,8 +13,11 @@ use num_enum::TryFromPrimitive;
 
 pub mod bar;
 pub mod bits;
+pub mod bridge;
 pub mod bus;
+mod cfgspace;
 mod device;
+pub mod topology;
 
 pub use bus::Bus;
 pub use device::*;
@@ -58,14 +61,31 @@ impl FuncNum {
     }
 }
 
+/// A device/function located on a specific PCI bus.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
+pub struct BusLocation {
+    pub dev: DevNum,
+    pub func: FuncNum,
+}
+
+impl BusLocation {
+    pub const fn new(dev: u8, func: u8) -> Option<Self> {
+        let dnum = DevNum::new(dev);
+        let fnum = FuncNum::new(func);
+        match (dnum, fnum) {
+            (Some(d), Some(f)) => Some(Self { dev: d, func: f }),
+            _ => None,
+        }
+    }
+}
+
 /// Bus, Device, Function.
 ///
 /// Acts as an address for PCI and PCIe device functionality.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct Bdf {
     pub bus: BusNum,
-    pub dev: DevNum,
-    pub func: FuncNum,
+    pub location: BusLocation,
 }
 
 impl FromStr for Bdf {
@@ -110,19 +130,20 @@ impl Bdf {
         // Until the `?` operator is supported in `const fn`s, this more verbose
         // implementation is required.
         let bnum = BusNum::new(bus);
-        let dnum = DevNum::new(dev);
-        let fnum = FuncNum::new(func);
-        match (bnum, dnum, fnum) {
-            (Some(b), Some(d), Some(f)) => {
-                Some(Self { bus: b, dev: d, func: f })
-            }
+        let loc = BusLocation::new(dev, func);
+        match (bnum, loc) {
+            (Some(b), Some(l)) => Some(Self { bus: b, location: l }),
             _ => None,
         }
     }
 }
 impl Display for Bdf {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{}.{}.{}", self.bus.0, self.dev.0, self.func.0)
+        write!(
+            f,
+            "{}.{}.{}",
+            self.bus.0, self.location.dev.0, self.location.func.0
+        )
     }
 }
 

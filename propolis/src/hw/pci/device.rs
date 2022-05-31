@@ -2,6 +2,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use super::bar::{BarDefine, Bars};
 use super::bits::*;
+use super::cfgspace::{CfgBuilder, CfgReg};
 use super::{bus, BarN, Endpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
@@ -82,16 +83,8 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
     }
 }
 
-enum CfgReg {
-    Std,
-    Custom(u8),
-    CapId(u8),
-    CapNext(u8),
-    CapBody(u8),
-}
-
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum StdCfgReg {
+pub(super) enum StdCfgReg {
     VendorId,
     DeviceId,
     Command,
@@ -191,9 +184,15 @@ impl State {
     }
 }
 
-struct Cap {
+pub(super) struct Cap {
     id: u8,
     offset: u8,
+}
+
+impl Cap {
+    pub(super) fn new(id: u8, offset: u8) -> Self {
+        Self { id, offset }
+    }
 }
 
 pub struct DeviceState {
@@ -985,10 +984,7 @@ pub struct Builder {
     lintr_req: bool,
     msix_cfg: Option<Arc<MsixCfg>>,
     bars: [Option<BarDefine>; 6],
-    cfgmap: RegMap<CfgReg>,
-
-    cap_next_alloc: usize,
-    caps: Vec<Cap>,
+    cfg_builder: CfgBuilder,
 }
 
 impl Builder {
@@ -1000,11 +996,7 @@ impl Builder {
             lintr_req: false,
             msix_cfg: None,
             bars: [None; 6],
-            cfgmap,
-
-            caps: Vec::new(),
-            // capabilities can start immediately after std cfg area
-            cap_next_alloc: LEN_CFG_STD,
+            cfg_builder: CfgBuilder::new(),
         }
     }
 
@@ -1071,32 +1063,12 @@ impl Builder {
     /// Add a region of the PCI config space for the device which has custom
     /// handling.
     pub fn add_custom_cfg(mut self, offset: u8, len: u8) -> Self {
-        self.cfgmap.define_with_flags(
-            offset as usize,
-            len as usize,
-            CfgReg::Custom(offset),
-            Flags::PASSTHRU,
-        );
+        self.cfg_builder.add_custom(offset, len);
         self
     }
 
     fn add_cap_raw(&mut self, id: u8, len: u8) {
-        // XXX: does not pay heed to any custom cfg sections which are added via
-        // the `add_custom_cfg` interface.
-        let end = self.cap_next_alloc + 2 + len as usize;
-        // XXX: on the caller to size properly for alignment requirements
-        assert!(end % 4 == 0);
-        assert!(end <= u8::MAX as usize);
-        let idx = self.caps.len() as u8;
-        self.caps.push(Cap { id, offset: self.cap_next_alloc as u8 });
-        self.cfgmap.define(self.cap_next_alloc, 1, CfgReg::CapId(idx));
-        self.cfgmap.define(self.cap_next_alloc + 1, 1, CfgReg::CapNext(idx));
-        self.cfgmap.define(
-            self.cap_next_alloc + 2,
-            len as usize,
-            CfgReg::CapBody(idx),
-        );
-        self.cap_next_alloc = end;
+        self.cfg_builder.add_capability(id, len);
     }
 
     /// Add MSI-X interrupt functionality.
@@ -1120,12 +1092,13 @@ impl Builder {
     }
 
     pub fn finish(self) -> DeviceState {
+        let (cfgmap, caps) = self.cfg_builder.finish();
         DeviceState::new(
             self.ident,
             self.lintr_req,
-            self.cfgmap,
+            cfgmap,
             self.msix_cfg,
-            self.caps,
+            caps,
             Bars::new(&self.bars),
         )
     }

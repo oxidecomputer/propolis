@@ -162,7 +162,17 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_chipset(
         &self,
         config: &config::Chipset,
+        pci_bridges: Vec<pci::topology::BridgeDescription>,
     ) -> Result<RegisteredChipset, Error> {
+        let mut pci_builder = pci::topology::Builder::new();
+        for bridge in pci_bridges {
+            pci_builder.add_bridge(bridge)?;
+        }
+        let pci_topology = pci_builder.finish(
+            &self.inv,
+            &self.machine.bus_pio,
+            &self.machine.bus_mmio,
+        )?;
         let enable_pcie = config.options.get("enable-pcie").map_or_else(
             || Ok(false),
             |v| {
@@ -174,8 +184,12 @@ impl<'a> MachineInitializer<'a> {
                 })
             },
         )?;
-        let chipset =
-            I440Fx::create(self.machine, i440fx::CreateOptions { enable_pcie });
+
+        let chipset = I440Fx::create(
+            self.machine,
+            pci_topology,
+            i440fx::CreateOptions { enable_pcie },
+        );
         let id = self.inv.register(&chipset)?;
         Ok(RegisteredChipset(chipset, id))
     }
@@ -241,7 +255,6 @@ impl<'a> MachineInitializer<'a> {
 
         backend.attach(vioblk.clone(), self.disp)?;
         chipset.device().pci_attach(bdf, vioblk);
-
         Ok(())
     }
 
@@ -260,7 +273,6 @@ impl<'a> MachineInitializer<'a> {
 
         backend.attach(nvme.clone(), self.disp)?;
         chipset.device().pci_attach(bdf, nvme);
-
         Ok(())
     }
 

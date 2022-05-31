@@ -57,4 +57,7 @@ pub mod pci {
 
     /// PCI Device ID for the Propolis xHCI controller.
     pub const PROPOLIS_XHCI_DEV_ID: u16 = 0x1;
+
+    /// PCI Device ID for the Propolis PCI-PCI bridge.
+    pub const PROPOLIS_BRIDGE_DEV_ID: u16 = 0x2;
 }

@@ -77,3 +77,16 @@ pub const PCIE_MAX_BUSES_PER_ECAM_REGION: u16 = 256;
 /// Bitwise AND'ing an ECAM MMIO access address with this mask produces an
 /// offset in bytes at which to access the target BDF's configuration region.
 pub const MASK_ECAM_CFG_OFFSET: usize = 0xfff;
+
+/// Class code identifiers required by SS3.2.4.6 of the PCI bridge spec rev 1.2.
+pub const BRIDGE_PROG_CLASS: u8 = 0x06;
+pub const BRIDGE_PROG_SUBCLASS: u8 = 0x04;
+pub const BRIDGE_PROG_IF: u8 = 0x00;
+
+/// Clear all reserved bits and decline to emulate error reporting bits in the
+/// bridge secondary status register (SS3.2.5.7).
+pub const BRIDGE_SECONDARY_STATUS: u16 = 0x0000;
+
+/// Mask for the reserved bottom bits of the memory base and memory limit
+/// registers (SS3.2.5.8).
+pub const BRIDGE_MEMORY_REG_MASK: u16 = 0xfff0;

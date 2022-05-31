@@ -65,6 +65,7 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
         Chipset::default(),
         devices,
         block_devices,
+        vec![],
     );
     let context = server::Context::new(config, vnc_server, log.new(slog::o!()));
 
