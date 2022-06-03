@@ -161,7 +161,6 @@ pub struct Ident {
 struct State {
     reg_command: RegCmd,
     reg_intr_line: u8,
-    reg_intr_pin: u8,
 
     attach: Option<bus::Attachment>,
     bars: Bars,
@@ -173,7 +172,6 @@ impl State {
         Self {
             reg_command: RegCmd::empty(),
             reg_intr_line: 0xff,
-            reg_intr_pin: 0,
             attach: None,
             bars,
             update_in_progress: false,
@@ -197,7 +195,7 @@ impl Cap {
 
 pub struct DeviceState {
     ident: Ident,
-    lintr_req: bool,
+    lintr_support: bool,
     cfg_space: RegMap<CfgReg>,
     msix_cfg: Option<Arc<MsixCfg>>,
     caps: Vec<Cap>,
@@ -209,7 +207,7 @@ pub struct DeviceState {
 impl DeviceState {
     fn new(
         ident: Ident,
-        lintr_req: bool,
+        lintr_support: bool,
         cfg_space: RegMap<CfgReg>,
         msix_cfg: Option<Arc<MsixCfg>>,
         caps: Vec<Cap>,
@@ -217,7 +215,7 @@ impl DeviceState {
     ) -> Self {
         Self {
             ident,
-            lintr_req,
+            lintr_support,
             cfg_space,
             msix_cfg,
             caps,
@@ -273,7 +271,7 @@ impl DeviceState {
             }
             StdCfgReg::Status => {
                 let mut val = RegStatus::empty();
-                if self.lintr_req {
+                if self.lintr_support {
                     let state = self.state.lock().unwrap();
                     if let Some((_id, pin)) = state.attached().lintr_cfg() {
                         if pin.is_asserted() {
@@ -290,7 +288,19 @@ impl DeviceState {
                 ro.write_u8(self.state.lock().unwrap().reg_intr_line)
             }
             StdCfgReg::IntrPin => {
-                ro.write_u8(self.state.lock().unwrap().reg_intr_pin)
+                if self.lintr_support {
+                    let state = self.state.lock().unwrap();
+                    let pin_ident = state
+                        .attach
+                        .as_ref()
+                        .map(bus::Attachment::lintr_cfg)
+                        .flatten()
+                        .map(|(id, _pin)| *id as u8)
+                        .unwrap_or(0);
+                    ro.write_u8(pin_ident)
+                } else {
+                    ro.write_u8(0);
+                }
             }
             StdCfgReg::Bar(bar) => {
                 let state = self.state.lock().unwrap();
@@ -571,7 +581,6 @@ impl DeviceState {
         migrate::PciStateV1 {
             reg_command: state.reg_command.bits(),
             reg_intr_line: state.reg_intr_line,
-            reg_intr_pin: state.reg_intr_pin,
             bars: state.bars.export(),
             msix,
         }
@@ -981,7 +990,7 @@ impl Clone for MsixHdl {
 
 pub struct Builder {
     ident: Ident,
-    lintr_req: bool,
+    lintr_support: bool,
     msix_cfg: Option<Arc<MsixCfg>>,
     bars: [Option<BarDefine>; 6],
     cfg_builder: CfgBuilder,
@@ -993,7 +1002,7 @@ impl Builder {
         cfgmap.define_with_flags(0, LEN_CFG_STD, CfgReg::Std, Flags::PASSTHRU);
         Self {
             ident,
-            lintr_req: false,
+            lintr_support: false,
             msix_cfg: None,
             bars: [None; 6],
             cfg_builder: CfgBuilder::new(),
@@ -1056,7 +1065,7 @@ impl Builder {
 
     /// Add a legacy (pin-based) interrupt
     pub fn add_lintr(mut self) -> Self {
-        self.lintr_req = true;
+        self.lintr_support = true;
         self
     }
 
@@ -1095,7 +1104,7 @@ impl Builder {
         let (cfgmap, caps) = self.cfg_builder.finish();
         DeviceState::new(
             self.ident,
-            self.lintr_req,
+            self.lintr_support,
             cfgmap,
             self.msix_cfg,
             caps,
@@ -1129,7 +1138,6 @@ pub mod migrate {
     pub struct PciStateV1 {
         pub reg_command: u16,
         pub reg_intr_line: u8,
-        pub reg_intr_pin: u8,
         pub bars: bar::migrate::BarStateV1,
         pub msix: Option<MsixStateV1>,
     }

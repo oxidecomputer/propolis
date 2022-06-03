@@ -678,6 +678,8 @@ impl Piix3PM {
             ..Default::default()
         })
         .add_custom_cfg(PMCFG_OFFSET as u8, PMCFG_LEN as u8)
+        // ACPI device requires lintr for SCI
+        .add_lintr()
         .finish();
 
         Arc::new(Self { pci_state, regs: Mutex::new(PMRegs::default()) })
