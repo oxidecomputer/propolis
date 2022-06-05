@@ -1,5 +1,4 @@
 use std::fs::File as FsFile;
-use std::io::Result;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,7 +22,7 @@ pub struct BlockingFileOutput {
 const BUF_SIZE: usize = 256;
 
 impl BlockingFileOutput {
-    pub fn new(fp: FsFile) -> Result<Arc<Self>> {
+    pub fn new(fp: FsFile) -> Arc<Self> {
         let params = pollers::BlockingParams {
             poll_interval: Duration::from_millis(10),
             poll_miss_thresh: 5,
@@ -31,7 +30,7 @@ impl BlockingFileOutput {
         };
         let poller = pollers::BlockingSourceBuffer::new(params);
 
-        Ok(Arc::new(Self { poller, inner: Mutex::new(Inner { fp: Some(fp) }) }))
+        Arc::new(Self { poller, inner: Mutex::new(Inner { fp: Some(fp) }) })
     }
 
     pub fn attach(&self, source: Arc<dyn BlockingSource>, disp: &Dispatcher) {

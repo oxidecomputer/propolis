@@ -3,6 +3,7 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::Context;
 use serde_derive::Deserialize;
 
 use crate::hw::pci;
@@ -129,10 +130,11 @@ impl<'a> Iterator for IterDevs<'a> {
     }
 }
 
-pub fn parse(path: &str) -> Config {
-    let file_data = std::fs::read(path).unwrap();
-    let top = toml::from_slice::<Top>(&file_data).unwrap();
-    Config { inner: top }
+pub fn parse(path: &str) -> anyhow::Result<Config> {
+    let file_data =
+        std::fs::read(path).context("Failed to read given config.toml")?;
+    let top = toml::from_slice::<Top>(&file_data)?;
+    Ok(Config { inner: top })
 }
 
 pub fn parse_bdf(v: &str) -> Option<pci::Bdf> {

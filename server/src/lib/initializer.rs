@@ -231,7 +231,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
         let dbg = QemuDebugPort::create(self.mctx.pio());
         let debug_file = std::fs::File::create("debug.out")?;
-        let poller = chardev::BlockingFileOutput::new(debug_file)?;
+        let poller = chardev::BlockingFileOutput::new(debug_file);
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>, self.disp);
         self.inv.register(&dbg)?;
         Ok(())

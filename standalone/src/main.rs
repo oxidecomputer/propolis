@@ -4,18 +4,14 @@
     feature(asm_sym)
 )]
 
-extern crate pico_args;
-extern crate propolis;
-extern crate serde;
-extern crate serde_derive;
-extern crate toml;
-
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use anyhow::Context;
+use clap::Parser;
 use propolis::chardev::{BlockingSource, Sink, Source};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
@@ -34,18 +30,6 @@ mod config;
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
-
-fn parse_args() -> config::Config {
-    let args = pico_args::Arguments::from_env();
-
-    // Parse options first
-    if let Some(cpath) = args.free().ok().map(|mut f| f.pop()).flatten() {
-        config::parse(&cpath)
-    } else {
-        eprintln!("usage: propolis <CONFIG.toml>");
-        std::process::exit(libc::EXIT_FAILURE);
-    }
-}
 
 fn build_instance(
     name: &str,
@@ -110,12 +94,7 @@ fn build_log() -> slog::Logger {
     slog::Logger::root(drain, o!())
 }
 
-fn main() {
-    // Ensure proper setup of USDT probes
-    register_probes().unwrap();
-
-    let config = parse_args();
-
+fn run(config: config::Config) -> anyhow::Result<()> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
 
@@ -126,8 +105,8 @@ fn main() {
     let highmem = memsize.saturating_sub(3 * GB);
 
     let log = build_log();
-    let inst =
-        build_instance(vm_name, cpus, lowmem, highmem, log.clone()).unwrap();
+    let inst = build_instance(vm_name, cpus, lowmem, highmem, log.clone())
+        .context("Failed to create VM Instance")?;
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
@@ -197,8 +176,8 @@ fn main() {
         ps2_ctrl.attach(pio, chipset.as_ref());
         inv.register(&ps2_ctrl)?;
 
-        let debug_file = std::fs::File::create("debug.out").unwrap();
-        let debug_out = chardev::BlockingFileOutput::new(debug_file).unwrap();
+        let debug_file = std::fs::File::create("debug.out")?;
+        let debug_out = chardev::BlockingFileOutput::new(debug_file);
         let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
         debug_out
             .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
@@ -264,7 +243,10 @@ fn main() {
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver"; "name" => name);
-                    std::process::exit(libc::EXIT_FAILURE);
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "Unrecognized driver",
+                    ));
                 }
             }
         }
@@ -275,7 +257,7 @@ fn main() {
                 hw::qemu::fwcfg::LegacyId::SmpCpuCount,
                 hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
             )
-            .unwrap();
+            .map_err(|err| Error::new(ErrorKind::Other, err))?;
 
         let ramfb = hw::qemu::ramfb::RamFb::create();
         ramfb.attach(&mut fwcfg);
@@ -287,15 +269,15 @@ fn main() {
         inv.register(&ramfb)?;
 
         for vcpu in mctx.vcpus() {
-            vcpu.set_default_capabs().unwrap();
+            vcpu.set_default_capabs()?;
         }
 
         Ok(())
     })
-    .unwrap_or_else(|e| panic!("Failed to initialize instance: {}", e));
+    .context("Failed to initialize instance")?;
 
     inst.spawn_vcpu_workers(propolis::vcpu_run_loop)
-        .unwrap_or_else(|e| panic!("Failed spawn vCPU workers: {}", e));
+        .context("Failed spawn vCPU workers: {}")?;
 
     drop(romfp);
 
@@ -325,8 +307,28 @@ fn main() {
             _ => {}
         }
     }));
-    inst.set_target_state(ReqState::Run).unwrap();
+    inst.set_target_state(ReqState::Run).context("Failed to run VM")?;
 
     inst.wait_for_state(State::Destroy);
     drop(inst);
+
+    Ok(())
+}
+
+#[derive(clap::Parser)]
+/// Propolis command-line frontend for running a VM.
+struct Args {
+    /// Path to VM config file.
+    config: String,
+}
+
+fn main() -> anyhow::Result<()> {
+    // Ensure proper setup of USDT probes
+    register_probes().context("Failed to setup USDT probes")?;
+
+    let args = Args::parse();
+    let config = config::parse(&args.config)?;
+    run(config)?;
+
+    Ok(())
 }
