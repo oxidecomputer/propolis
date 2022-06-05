@@ -9,7 +9,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "3.2", features = ["derive", "env"] }
+clap = { version = "3.2", features = ["derive"] }
 libc = "0.2"
 toml = "0.5"
 serde = "1.0"

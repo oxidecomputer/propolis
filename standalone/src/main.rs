@@ -318,8 +318,17 @@ fn run(config: config::Config) -> anyhow::Result<()> {
 #[derive(clap::Parser)]
 /// Propolis command-line frontend for running a VM.
 struct Args {
-    /// Path to VM config file.
-    config: String,
+    /// Either the VM config file or a previously captured snapshot image.
+    #[clap(value_name = "CONFIG|SNAPSHOT", action)]
+    target: String,
+
+    /// Take a snapshot on Ctrl-C before exiting.
+    #[clap(short, long, action)]
+    snapshot: bool,
+
+    /// Restore previously captured snapshot.
+    #[clap(short, long, action)]
+    restore: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -327,8 +336,13 @@ fn main() -> anyhow::Result<()> {
     register_probes().context("Failed to setup USDT probes")?;
 
     let args = Args::parse();
-    let config = config::parse(&args.config)?;
-    run(config)?;
+
+    if args.restore {
+        todo!();
+    } else {
+        let config = config::parse(&args.target)?;
+        run(config)?;
+    }
 
     Ok(())
 }
