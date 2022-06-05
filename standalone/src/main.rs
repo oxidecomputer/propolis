@@ -87,15 +87,15 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
     }
 }
 
-fn build_log() -> slog::Logger {
+fn build_log() -> (slog::Logger, slog_async::AsyncGuard) {
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::CompactFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    slog::Logger::root(drain, o!())
+    let (drain, guard) = slog_async::Async::new(drain).build_with_guard();
+    (slog::Logger::root(drain.fuse(), o!()), guard)
 }
 
 fn setup_instance(
+    log: slog::Logger,
     config: config::Config,
     snapshot: bool,
 ) -> anyhow::Result<Arc<Instance>> {
@@ -108,7 +108,6 @@ fn setup_instance(
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
-    let log = build_log();
     let inst = build_instance(vm_name, cpus, lowmem, highmem, log.clone())
         .context("Failed to create VM Instance")?;
     slog::info!(log, "VM created"; "name" => vm_name);
@@ -370,30 +369,40 @@ fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
     register_probes().context("Failed to setup USDT probes")?;
 
+    let (log, _log_async_guard) = build_log();
+
     // Create the VM afresh or restore it from a snapshot
     let inst = if restore {
         todo!()
     } else {
         let config = config::parse(&target)?;
-        setup_instance(config, snapshot)?
+        setup_instance(log.clone(), config, snapshot)?
     };
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
-    let handler_inst = inst.clone();
+    let inst_weak = Arc::downgrade(&inst);
+    let signal_log = log.clone();
     ctrlc::set_handler(move || {
-        if snapshot {
-            todo!("trigger snapshot on ctrl-c")
+        if let Some(inst) = inst_weak.upgrade() {
+            if snapshot {
+                slog::error!(
+                    signal_log,
+                    "snapshot on ctrl-c not yet implemented"
+                );
+            }
+
+            slog::info!(signal_log, "Destroying instance...");
+            inst.set_target_state(ReqState::Halt).expect("failed to stop VM");
         }
-        handler_inst
-            .set_target_state(ReqState::Halt)
-            .expect("failed to stop VM");
     })
     .context("Failed to register Ctrl-C signal handler.")?;
 
     // Let the VM start and we're off to the races
+    slog::info!(log, "Starting instance...");
     inst.set_target_state(ReqState::Run).context("Failed to run VM")?;
 
     inst.wait_for_state(State::Destroy);
+    drop(inst);
 
     Ok(())
 }
