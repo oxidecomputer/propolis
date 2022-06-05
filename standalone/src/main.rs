@@ -7,6 +7,7 @@
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
+use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -94,7 +95,7 @@ fn build_log() -> slog::Logger {
     slog::Logger::root(drain, o!())
 }
 
-fn run(config: config::Config) -> anyhow::Result<()> {
+fn run(config: config::Config) -> anyhow::Result<Arc<Instance>> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
 
@@ -309,10 +310,7 @@ fn run(config: config::Config) -> anyhow::Result<()> {
     }));
     inst.set_target_state(ReqState::Run).context("Failed to run VM")?;
 
-    inst.wait_for_state(State::Destroy);
-    drop(inst);
-
-    Ok(())
+    Ok(inst)
 }
 
 #[derive(clap::Parser)]
@@ -337,11 +335,36 @@ fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    if args.restore {
-        todo!();
+    let inst = if args.restore {
+        todo!()
     } else {
         let config = config::parse(&args.target)?;
-        run(config)?;
+        run(config)?
+    };
+
+    let (exit_tx, exit_rx) = channel();
+
+    // Register a Ctrl-C handler to capture a snapshot
+    let ctrlc_chan = exit_tx.clone();
+    ctrlc::set_handler(move || {
+        ctrlc_chan.send(args.snapshot).expect("could not signal main thread on Ctrl-C")
+    })
+    .context("Failed to register Ctrl-C signal handler.")?;
+
+    // TODO(luqmana): add transition func on instance for quiesce to snapshot
+
+    std::thread::spawn(move || {
+        // Notify main thread once VM is destroyed (e.g. power-off in guest)
+        inst.wait_for_state(State::Destroy);
+        exit_tx.send(false).expect("could not signal normal exit");
+    });
+
+    let snapshot = exit_rx.recv()?;
+    if snapshot {
+        todo!()
+    } else {
+        // VM has shutdown or user hit Ctrl-C but didn't pass the snapshot flag
+        // either way, nothing else to do
     }
 
     Ok(())
