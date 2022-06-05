@@ -7,7 +7,6 @@
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
-use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -19,6 +18,7 @@ use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, ReqState, State};
+use propolis::migrate::Migrator;
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
 
@@ -95,7 +95,10 @@ fn build_log() -> slog::Logger {
     slog::Logger::root(drain, o!())
 }
 
-fn run(config: config::Config) -> anyhow::Result<Arc<Instance>> {
+fn setup_instance(
+    config: config::Config,
+    snapshot: bool,
+) -> anyhow::Result<Arc<Instance>> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
 
@@ -288,7 +291,7 @@ fn run(config: config::Config) -> anyhow::Result<Arc<Instance>> {
     slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
-    inst.on_transition(Box::new(move |next_state, _inv, ctx| {
+    inst.on_transition(Box::new(move |next_state, target_state, inv, ctx| {
         match next_state {
             State::Boot => {
                 for vcpu in ctx.mctx.vcpus() {
@@ -305,10 +308,42 @@ fn run(config: config::Config) -> anyhow::Result<Arc<Instance>> {
                     }
                 }
             }
+            State::Quiesce
+                if snapshot
+                    && !matches!(
+                        target_state,
+                        Some(State::Destroy | State::Halt)
+                    ) =>
+            {
+                // Take a snapshot if requested and we're not just transitioning
+                // through `Quiesce` on the way to a normal shutdown
+                println!("Device state at quiesce:");
+                inv.for_each_node::<(), _>(
+                    propolis::inventory::Order::Post,
+                    |_id, record| {
+                        let ent = record.entity();
+                        if let Migrator::Custom(mig_ent) = ent.migrate() {
+                            let data = mig_ent.export(ctx);
+                            #[derive(serde::Serialize)]
+                            struct DevExport {
+                                id: String,
+                                data: Box<dyn erased_serde::Serialize>,
+                            }
+                            let output = DevExport {
+                                id: record.name().to_string(),
+                                data,
+                            };
+                            serde_json::to_writer(std::io::stdout(), &output)
+                                .map_err(|_| ())?;
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            }
             _ => {}
         }
     }));
-    inst.set_target_state(ReqState::Run).context("Failed to run VM")?;
 
     Ok(inst)
 }
@@ -330,42 +365,35 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    let Args { target, snapshot, restore } = Args::parse();
+
     // Ensure proper setup of USDT probes
     register_probes().context("Failed to setup USDT probes")?;
 
-    let args = Args::parse();
-
-    let inst = if args.restore {
+    // Create the VM afresh or restore it from a snapshot
+    let inst = if restore {
         todo!()
     } else {
-        let config = config::parse(&args.target)?;
-        run(config)?
+        let config = config::parse(&target)?;
+        setup_instance(config, snapshot)?
     };
 
-    let (exit_tx, exit_rx) = channel();
-
-    // Register a Ctrl-C handler to capture a snapshot
-    let ctrlc_chan = exit_tx.clone();
+    // Register a Ctrl-C handler so we can snapshot before exiting if needed
+    let handler_inst = inst.clone();
     ctrlc::set_handler(move || {
-        ctrlc_chan.send(args.snapshot).expect("could not signal main thread on Ctrl-C")
+        if snapshot {
+            todo!("trigger snapshot on ctrl-c")
+        }
+        handler_inst
+            .set_target_state(ReqState::Halt)
+            .expect("failed to stop VM");
     })
     .context("Failed to register Ctrl-C signal handler.")?;
 
-    // TODO(luqmana): add transition func on instance for quiesce to snapshot
+    // Let the VM start and we're off to the races
+    inst.set_target_state(ReqState::Run).context("Failed to run VM")?;
 
-    std::thread::spawn(move || {
-        // Notify main thread once VM is destroyed (e.g. power-off in guest)
-        inst.wait_for_state(State::Destroy);
-        exit_tx.send(false).expect("could not signal normal exit");
-    });
-
-    let snapshot = exit_rx.recv()?;
-    if snapshot {
-        todo!()
-    } else {
-        // VM has shutdown or user hit Ctrl-C but didn't pass the snapshot flag
-        // either way, nothing else to do
-    }
+    inst.wait_for_state(State::Destroy);
 
     Ok(())
 }

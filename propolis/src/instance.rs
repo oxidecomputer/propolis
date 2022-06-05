@@ -182,7 +182,7 @@ pub enum TransitionError {
 }
 
 type TransitionFunc =
-    dyn Fn(State, &Inventory, &DispCtx) + Send + Sync + 'static;
+    dyn Fn(State, Option<State>, &Inventory, &DispCtx) + Send + Sync + 'static;
 
 struct Inner {
     state_current: State,
@@ -539,7 +539,7 @@ impl Instance {
             // notifications for now.
             if phase == TransitionPhase::Post {
                 for f in inner.transition_funcs.iter() {
-                    f(state, &inner.inv, ctx)
+                    f(state, target, &inner.inv, ctx)
                 }
             }
         });

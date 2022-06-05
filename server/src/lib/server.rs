@@ -272,7 +272,7 @@ async fn instance_ensure(
         state: propolis::instance::State::Initialize,
     });
 
-    instance.on_transition(Box::new(move |next_state, _inv, _ctx| {
+    instance.on_transition(Box::new(move |next_state, _, _inv, _ctx| {
         let last = (*tx.borrow()).clone();
         let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
     }));
@@ -547,7 +547,7 @@ async fn instance_ensure(
             .map_err(<_ as Into<HttpError>>::into)?;
         Some(res)
     } else {
-        instance.on_transition(Box::new(move |next_state, _inv, ctx| {
+        instance.on_transition(Box::new(move |next_state, _, _inv, ctx| {
             match next_state {
                 propolis::instance::State::Boot => {
                     // Set vCPUs to their proper boot (INIT) state
