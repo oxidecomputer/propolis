@@ -372,11 +372,12 @@ fn main() -> anyhow::Result<()> {
     let (log, _log_async_guard) = build_log();
 
     // Create the VM afresh or restore it from a snapshot
-    let inst = if restore {
-        todo!()
+    let (_config, inst) = if restore {
+        todo!("restore VM from snapshot")
     } else {
         let config = config::parse(&target)?;
-        setup_instance(log.clone(), config, snapshot)?
+        let inst = setup_instance(log.clone(), config.clone(), snapshot)?;
+        (config, inst)
     };
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
