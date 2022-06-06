@@ -488,9 +488,9 @@ impl Instance {
     pub fn wait_for_state(&self, target: State) {
         let mut state = self.inner.lock().unwrap();
         self.cv.wait_while(state, |state| {
-            // bail if we reach the target state _or Destroy
+            // bail if we reach the target state or Destroy
             state.state_current != target
-                || state.state_current != State::Destroy
+                && state.state_current != State::Destroy
         });
     }
 
