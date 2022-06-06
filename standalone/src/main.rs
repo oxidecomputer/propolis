@@ -18,7 +18,6 @@ use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, ReqState, State};
-use propolis::migrate::Migrator;
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
 
@@ -100,7 +99,6 @@ fn build_log() -> (slog::Logger, slog_async::AsyncGuard) {
 fn setup_instance(
     log: slog::Logger,
     config: config::Config,
-    snapshot: bool,
     rt_handle: Handle,
 ) -> anyhow::Result<Arc<Instance>> {
     let vm_name = config.get_name();
@@ -295,7 +293,7 @@ fn setup_instance(
     slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
-    inst.on_transition(Box::new(move |next_state, target_state, inv, ctx| {
+    inst.on_transition(Box::new(move |next_state, _target, _inv, ctx| {
         match next_state {
             State::Boot => {
                 for vcpu in ctx.mctx.vcpus() {
@@ -311,39 +309,6 @@ fn setup_instance(
                         .unwrap();
                     }
                 }
-            }
-            State::Quiesce
-                if snapshot
-                    && !matches!(
-                        target_state,
-                        Some(State::Destroy | State::Halt)
-                    ) =>
-            {
-                // Take a snapshot if requested and we're not just transitioning
-                // through `Quiesce` on the way to a normal shutdown
-                println!("Device state at quiesce:");
-                inv.for_each_node::<(), _>(
-                    propolis::inventory::Order::Post,
-                    |_id, record| {
-                        let ent = record.entity();
-                        if let Migrator::Custom(mig_ent) = ent.migrate() {
-                            let data = mig_ent.export(ctx);
-                            #[derive(serde::Serialize)]
-                            struct DevExport {
-                                id: String,
-                                data: Box<dyn erased_serde::Serialize>,
-                            }
-                            let output = DevExport {
-                                id: record.name().to_string(),
-                                data,
-                            };
-                            serde_json::to_writer(std::io::stdout(), &output)
-                                .map_err(|_| ())?;
-                        }
-                        Ok(())
-                    },
-                )
-                .unwrap();
             }
             _ => {}
         }
@@ -387,12 +352,8 @@ fn main() -> anyhow::Result<()> {
         todo!("restore VM from snapshot")
     } else {
         let config = config::parse(&target)?;
-        let inst = setup_instance(
-            log.clone(),
-            config.clone(),
-            snapshot,
-            rt_handle.clone(),
-        )?;
+        let inst =
+            setup_instance(log.clone(), config.clone(), rt_handle.clone())?;
         (config, inst)
     };
 
