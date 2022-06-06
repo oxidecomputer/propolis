@@ -27,6 +27,7 @@ use propolis::usdt::register_probes;
 use slog::{o, Drain};
 
 mod config;
+mod snapshot;
 
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
@@ -392,18 +393,29 @@ fn main() -> anyhow::Result<()> {
                         signal_log,
                         "already snapshotted; ignoring subsequent Ctrl-C"
                     );
+                } else {
+                    let snap_log = signal_log.new(o!("task" => "snapshot"));
+                    SNAPSHOT.call_once(move || {
+                        std::thread::spawn(move || {
+                            if let Err(err) =
+                                snapshot::save(snap_log.clone(), inst.clone())
+                                    .context(
+                                        "Failed to take save snapshot of VM",
+                                    )
+                            {
+                                slog::error!(snap_log, "{:?}", err);
+                                inst.set_target_state(ReqState::Halt).expect(
+                                    "failed to stop VM after snapshot error",
+                                );
+                            }
+                        });
+                    });
                 }
-
-                SNAPSHOT.call_once(|| {
-                    slog::error!(
-                        signal_log,
-                        "snapshot on Ctrl-C not yet implemented"
-                    );
-                });
+            } else {
+                slog::info!(signal_log, "Destroying instance...");
+                inst.set_target_state(ReqState::Halt)
+                    .expect("failed to stop VM");
             }
-
-            slog::info!(signal_log, "Destroying instance...");
-            inst.set_target_state(ReqState::Halt).expect("failed to stop VM");
         }
     })
     .context("Failed to register Ctrl-C signal handler.")?;
