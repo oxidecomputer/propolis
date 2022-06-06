@@ -7,7 +7,7 @@
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::SystemTime;
 
 use anyhow::Context;
@@ -383,12 +383,22 @@ fn main() -> anyhow::Result<()> {
     let inst_weak = Arc::downgrade(&inst);
     let signal_log = log.clone();
     ctrlc::set_handler(move || {
+        static SNAPSHOT: Once = Once::new();
         if let Some(inst) = inst_weak.upgrade() {
             if snapshot {
-                slog::error!(
-                    signal_log,
-                    "snapshot on ctrl-c not yet implemented"
-                );
+                if SNAPSHOT.is_completed() {
+                    slog::warn!(
+                        signal_log,
+                        "already snapshotted; ignoring subsequent Ctrl-C"
+                    );
+                }
+
+                SNAPSHOT.call_once(|| {
+                    slog::error!(
+                        signal_log,
+                        "snapshot on Ctrl-C not yet implemented"
+                    );
+                });
             }
 
             slog::info!(signal_log, "Destroying instance...");
