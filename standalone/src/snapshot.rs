@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use propolis::instance::{Instance, ReqState};
 
-pub fn save(log: slog::Logger, inst: Arc<Instance>) -> anyhow::Result<()> {
-
+pub async fn save(
+    log: slog::Logger,
+    inst: Arc<Instance>,
+) -> anyhow::Result<()> {
     // Clean up instance.
     inst.set_target_state(ReqState::Halt)?;
 

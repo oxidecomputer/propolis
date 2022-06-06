@@ -25,6 +25,7 @@ use propolis::*;
 use propolis::usdt::register_probes;
 
 use slog::{o, Drain};
+use tokio::runtime::Handle;
 
 mod config;
 mod snapshot;
@@ -39,6 +40,7 @@ fn build_instance(
     lowmem: usize,
     highmem: usize,
     log: slog::Logger,
+    rt_handle: Handle,
 ) -> Result<Arc<Instance>> {
     let mut builder = Builder::new(
         name,
@@ -67,7 +69,7 @@ fn build_instance(
             "highmem",
         )?;
     }
-    Instance::create(builder.finalize()?, None, Some(log))
+    Instance::create(builder.finalize()?, Some(rt_handle), Some(log))
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -99,6 +101,7 @@ fn setup_instance(
     log: slog::Logger,
     config: config::Config,
     snapshot: bool,
+    rt_handle: Handle,
 ) -> anyhow::Result<Arc<Instance>> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
@@ -109,8 +112,9 @@ fn setup_instance(
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
-    let inst = build_instance(vm_name, cpus, lowmem, highmem, log.clone())
-        .context("Failed to create VM Instance")?;
+    let inst =
+        build_instance(vm_name, cpus, lowmem, highmem, log.clone(), rt_handle)
+            .context("Failed to create VM Instance")?;
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
@@ -372,18 +376,30 @@ fn main() -> anyhow::Result<()> {
 
     let (log, _log_async_guard) = build_log();
 
+    // Create tokio runtime, we don't use the tokio::main macro
+    // since we'll block in main when we call `Instance::wait_for_state`
+    let rt =
+        tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt_handle = rt.handle();
+
     // Create the VM afresh or restore it from a snapshot
     let (_config, inst) = if restore {
         todo!("restore VM from snapshot")
     } else {
         let config = config::parse(&target)?;
-        let inst = setup_instance(log.clone(), config.clone(), snapshot)?;
+        let inst = setup_instance(
+            log.clone(),
+            config.clone(),
+            snapshot,
+            rt_handle.clone(),
+        )?;
         (config, inst)
     };
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
     let inst_weak = Arc::downgrade(&inst);
     let signal_log = log.clone();
+    let signal_rt_handle = rt_handle.clone();
     ctrlc::set_handler(move || {
         static SNAPSHOT: Once = Once::new();
         if let Some(inst) = inst_weak.upgrade() {
@@ -395,17 +411,17 @@ fn main() -> anyhow::Result<()> {
                     );
                 } else {
                     let snap_log = signal_log.new(o!("task" => "snapshot"));
+                    let snap_rt_handle = signal_rt_handle.clone();
                     SNAPSHOT.call_once(move || {
-                        std::thread::spawn(move || {
+                        snap_rt_handle.spawn(async move {
                             if let Err(err) =
                                 snapshot::save(snap_log.clone(), inst.clone())
-                                    .context(
-                                        "Failed to take save snapshot of VM",
-                                    )
+                                    .await
+                                    .context("Failed to save snapshot of VM")
                             {
                                 slog::error!(snap_log, "{:?}", err);
                                 inst.set_target_state(ReqState::Halt).expect(
-                                    "failed to stop VM after snapshot error",
+                                    "Failed to stop VM after snapshot error",
                                 );
                             }
                         });
