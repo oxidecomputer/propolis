@@ -225,7 +225,8 @@ pub async fn save(
         file.write_u64(0).await?;
     }
 
-    drop(file);
+    file.flush().await?;
+
     info!(log, "Snapshot saved to {}", snapshot);
 
     // Clean up instance.
