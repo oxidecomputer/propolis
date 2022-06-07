@@ -1,6 +1,7 @@
 //! Routines and types for saving and restoring a snapshot of a VM.
 
 use std::convert::TryInto;
+use std::io::{Seek, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -157,6 +158,53 @@ pub async fn save(
                 .ok_or(anyhow::anyhow!("Failed to get himem region"))
         })
         .transpose()?;
+
+    // TODO(luqmana) do this in a more structed way, it's a fun mess of toml+json+binary right now
+
+    // The snapshot format is a simple "tag-length-value" (TLV) encoding.
+    // The tag is a single byte, length is a fixed 8 bytes (in big-endian)
+    // which corresponds the length in bytes of the subsequent value.
+    // Possible tags are:
+    //  0   - VM Config
+    //  1   - VM Device State
+    //  2   - Low Mem
+    //  3   - High Mem
+    let mut file = std::fs::File::create(&snapshot)
+        .context("Failed to create snapshot file")?;
+
+    info!(log, "Writing VM config...");
+    let config_bytes = toml::to_string(&config)?.into_bytes();
+    file.write_all(&[0])?;
+    file.write_all(&config_bytes.len().to_be_bytes())?;
+    file.write_all(&config_bytes)?;
+
+    info!(log, "Writing device state...");
+    let state_bytes = serde_json::ser::to_vec(&device_states)?;
+    file.write_all(&[1])?;
+    file.write_all(&state_bytes.len().to_be_bytes())?;
+    file.write_all(&state_bytes)?;
+
+    info!(log, "Writing memory...");
+
+    // Low Mem
+    // Note `pwrite` doesn't update the current position, so we do it manually
+    file.write_all(&[2])?;
+    file.write_all(&lo.to_be_bytes())?;
+    let offset = file.stream_position()?.try_into()?;
+    lo_mapping.pwrite(&file, lo, offset)?;
+    file.seek(std::io::SeekFrom::Current(lo.try_into()?))?;
+
+    if let (Some(hi), Some(hi_mapping)) = (hi, hi_mapping) {
+        // High Mem
+        file.write_all(&[3])?;
+        file.write_all(&hi.to_be_bytes())?;
+        let offset = file.stream_position()?.try_into()?;
+        hi_mapping.pwrite(&file, hi, offset)?;
+        file.seek(std::io::SeekFrom::Current(hi.try_into()?))?;
+    }
+
+    drop(file);
+    info!(log, "Snapshot saved to {}", snapshot);
 
     // Clean up instance.
     inst.set_target_state(ReqState::Halt)?;
