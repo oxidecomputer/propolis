@@ -348,7 +348,7 @@ fn main() -> anyhow::Result<()> {
     let rt_handle = rt.handle();
 
     // Create the VM afresh or restore it from a snapshot
-    let (_config, inst) = if restore {
+    let (config, inst) = if restore {
         todo!("restore VM from snapshot")
     } else {
         let config = config::parse(&target)?;
@@ -370,12 +370,16 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     let snap_log = signal_log.new(o!("task" => "snapshot"));
                     let snap_rt_handle = signal_rt_handle.clone();
+                    let config = config.clone();
                     SNAPSHOT.call_once(move || {
                         snap_rt_handle.spawn(async move {
-                            if let Err(err) =
-                                snapshot::save(snap_log.clone(), inst.clone())
-                                    .await
-                                    .context("Failed to save snapshot of VM")
+                            if let Err(err) = snapshot::save(
+                                snap_log.clone(),
+                                inst.clone(),
+                                config,
+                            )
+                            .await
+                            .context("Failed to save snapshot of VM")
                             {
                                 slog::error!(snap_log, "{:?}", err);
                                 let _ = inst.set_target_state(ReqState::Halt);

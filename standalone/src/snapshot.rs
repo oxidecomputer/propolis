@@ -12,11 +12,19 @@ use propolis::{
 use slog::{error, info};
 use tokio::{task, time};
 
+use crate::config::Config;
+
 pub async fn save(
     log: slog::Logger,
     inst: Arc<Instance>,
+    config: Config,
 ) -> anyhow::Result<()> {
-    info!(log, "saving snapshot of VM");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    let snapshot = format!("{}-{}.bin", config.get_name(), now);
+
+    info!(log, "saving snapshot of VM to {}", snapshot);
 
     // Grab AsyncCtx so we can get to the Dispatcher
     let async_ctx = inst.async_ctx();
