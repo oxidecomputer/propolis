@@ -213,13 +213,16 @@ pub async fn save(
     lo_mapping.pwrite(file.get_ref(), lo, offset)?; // Blocks; not great
     file.seek(std::io::SeekFrom::Current(lo.try_into()?)).await?;
 
+    // High Mem
+    file.write_u8(SNAPSHOT_TAG_HIMEM).await?;
     if let (Some(hi), Some(hi_mapping)) = (hi, hi_mapping) {
-        // High Mem
-        file.write_u8(SNAPSHOT_TAG_HIMEM).await?;
         file.write_u64(hi.try_into()?).await?;
         let offset = file.stream_position().await?.try_into()?;
         hi_mapping.pwrite(file.get_ref(), hi, offset)?; // Blocks; not great
         file.seek(std::io::SeekFrom::Current(hi.try_into()?)).await?;
+    } else {
+        // Even if there's no high mem mapped, write out an empty len to the snapshot
+        file.write_u64(0).await?;
     }
 
     drop(file);
