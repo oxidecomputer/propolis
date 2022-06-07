@@ -130,7 +130,7 @@ impl State {
             }
             State::Migrate(role, phase) => match target {
                 Some(State::Run) => State::Run,
-                Some(State::Halt) | Some(State::Destroy) => State::Halt,
+                Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
                 _ => State::Migrate(*role, *phase),
             },
             State::Halt => State::Destroy,
@@ -621,11 +621,14 @@ impl Instance {
                     let pause_chan =
                         inner.pause_chan.take().expect("migrate pause channel");
                     drop(inner);
-                    if let Err(_) = pause_chan.recv() {
-                        // The other end is gone without waking us first
-                        slog::warn!(log, "migrate pause chan dropped early");
-                    }
+                    let pause = pause_chan.recv();
                     inner = self.inner.lock().unwrap();
+                    if let Err(_) = pause {
+                        // The other end is gone without waking us first, bail out
+                        slog::warn!(log, "migrate pause chan dropped early");
+                        inner.state_target = Some(State::Halt);
+                        continue;
+                    }
                 }
                 _ => {}
             }

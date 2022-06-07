@@ -381,9 +381,7 @@ fn main() -> anyhow::Result<()> {
                                     .context("Failed to save snapshot of VM")
                             {
                                 slog::error!(snap_log, "{:?}", err);
-                                inst.set_target_state(ReqState::Halt).expect(
-                                    "Failed to stop VM after snapshot error",
-                                );
+                                let _ = inst.set_target_state(ReqState::Halt);
                             }
                         });
                     });
