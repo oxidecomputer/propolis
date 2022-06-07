@@ -349,7 +349,7 @@ fn main() -> anyhow::Result<()> {
 
     // Create the VM afresh or restore it from a snapshot
     let (config, inst) = if restore {
-        todo!("restore VM from snapshot")
+        rt_handle.block_on(snapshot::restore(log.clone(), &target))?
     } else {
         let config = config::parse(&target)?;
         let inst =

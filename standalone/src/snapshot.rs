@@ -12,6 +12,7 @@
 //!     3   - High Mem
 
 use std::convert::TryInto;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -220,4 +221,13 @@ pub async fn save(
     inst.set_target_state(ReqState::Halt)?;
 
     Ok(())
+}
+
+/// Create an instance from a previously saved snapshot.
+pub async fn restore(
+    log: slog::Logger,
+    path: impl AsRef<Path>,
+) -> anyhow::Result<(Config, Arc<Instance>)> {
+    info!(log, "restoring snapshot of VM from {}", path.as_ref().display());
+    todo!()
 }
