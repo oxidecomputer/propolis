@@ -1,7 +1,17 @@
 //! Routines and types for saving and restoring a snapshot of a VM.
+//!
+//! TODO(luqmana) do this in a more structed way, it's a fun mess of toml+json+binary right now
+//!
+//! The snapshot format is a simple "tag-length-value" (TLV) encoding.
+//! The tag is a single byte, length is a fixed 8 bytes (in big-endian)
+//! which corresponds the length in bytes of the subsequent value.
+//! Possible tags are:
+//!     0   - VM Config
+//!     1   - VM Device State
+//!     2   - Low Mem
+//!     3   - High Mem
 
 use std::convert::TryInto;
-use std::io::{Seek, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,10 +24,12 @@ use propolis::{
     migrate::Migrator,
 };
 use slog::{error, info};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::{task, time};
 
 use crate::config::Config;
 
+/// Save a snapshot of the current state of the given instance to disk.
 pub async fn save(
     log: slog::Logger,
     inst: Arc<Instance>,
@@ -113,24 +125,27 @@ pub async fn save(
         .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
 
     info!(log, "Serializing VM device state");
-    let mut device_states = vec![];
-    inst.inv().for_each_node(Order::Pre, |_, rec| {
-        let entity = rec.entity();
-        match entity.migrate() {
-            Migrator::NonMigratable => {
-                anyhow::bail!(
+    let device_states = {
+        let mut device_states = vec![];
+        inst.inv().for_each_node(Order::Pre, |_, rec| {
+            let entity = rec.entity();
+            match entity.migrate() {
+                Migrator::NonMigratable => {
+                    anyhow::bail!(
                     "Can't snapshot instance with non-migratable device ({})",
                     rec.name()
                 );
+                }
+                Migrator::Simple => {}
+                Migrator::Custom(migrate) => {
+                    let payload = migrate.export(&dispctx);
+                    device_states.push((rec.name().to_owned(), payload));
+                }
             }
-            Migrator::Simple => {}
-            Migrator::Custom(migrate) => {
-                let payload = migrate.export(&dispctx);
-                device_states.push((rec.name().to_owned(), payload));
-            }
-        }
-        Ok(())
-    })?;
+            Ok(())
+        })?;
+        serde_json::ser::to_vec(&device_states)?
+    };
 
     // TODO(luqmana) clean this up. make mem_bounds do the lo/hi calc? or just use config values?
     const GB: usize = 1024 * 1024 * 1024;
@@ -144,6 +159,7 @@ pub async fn save(
     } else {
         (len, None)
     };
+    info!(log, "Low RAM: {}, High RAM: {:?}", lo, hi);
 
     let lo_mapping = memctx
         .direct_readable_region(&GuestRegion(GuestAddr(0), lo))
@@ -159,54 +175,48 @@ pub async fn save(
         })
         .transpose()?;
 
-    // TODO(luqmana) do this in a more structed way, it's a fun mess of toml+json+binary right now
-
-    // The snapshot format is a simple "tag-length-value" (TLV) encoding.
-    // The tag is a single byte, length is a fixed 8 bytes (in big-endian)
-    // which corresponds the length in bytes of the subsequent value.
-    // Possible tags are:
-    //  0   - VM Config
-    //  1   - VM Device State
-    //  2   - Low Mem
-    //  3   - High Mem
-    let mut file = std::fs::File::create(&snapshot)
+    // Write snapshot to disk
+    let file = tokio::fs::File::create(&snapshot)
+        .await
         .context("Failed to create snapshot file")?;
+    let mut file = tokio::io::BufWriter::new(file);
 
     info!(log, "Writing VM config...");
     let config_bytes = toml::to_string(&config)?.into_bytes();
-    file.write_all(&[0])?;
-    file.write_all(&config_bytes.len().to_be_bytes())?;
-    file.write_all(&config_bytes)?;
+    file.write_u8(0).await?;
+    file.write_u64(config_bytes.len().try_into()?).await?;
+    file.write_all(&config_bytes).await?;
 
     info!(log, "Writing device state...");
-    let state_bytes = serde_json::ser::to_vec(&device_states)?;
-    file.write_all(&[1])?;
-    file.write_all(&state_bytes.len().to_be_bytes())?;
-    file.write_all(&state_bytes)?;
+    file.write_u8(1).await?;
+    file.write_u64(device_states.len().try_into()?).await?;
+    file.write_all(&device_states).await?;
 
     info!(log, "Writing memory...");
 
     // Low Mem
     // Note `pwrite` doesn't update the current position, so we do it manually
-    file.write_all(&[2])?;
-    file.write_all(&lo.to_be_bytes())?;
-    let offset = file.stream_position()?.try_into()?;
-    lo_mapping.pwrite(&file, lo, offset)?;
-    file.seek(std::io::SeekFrom::Current(lo.try_into()?))?;
+    file.write_u8(2).await?;
+    file.write_u64(lo.try_into()?).await?;
+    let offset = file.stream_position().await?.try_into()?;
+    lo_mapping.pwrite(file.get_ref(), lo, offset)?; // Blocks; not great
+    file.seek(std::io::SeekFrom::Current(lo.try_into()?)).await?;
 
     if let (Some(hi), Some(hi_mapping)) = (hi, hi_mapping) {
         // High Mem
-        file.write_all(&[3])?;
-        file.write_all(&hi.to_be_bytes())?;
-        let offset = file.stream_position()?.try_into()?;
-        hi_mapping.pwrite(&file, hi, offset)?;
-        file.seek(std::io::SeekFrom::Current(hi.try_into()?))?;
+        file.write_u8(3).await?;
+        file.write_u64(hi.try_into()?).await?;
+        let offset = file.stream_position().await?.try_into()?;
+        hi_mapping.pwrite(file.get_ref(), hi, offset)?; // Blocks; not great
+        file.seek(std::io::SeekFrom::Current(hi.try_into()?)).await?;
     }
 
     drop(file);
     info!(log, "Snapshot saved to {}", snapshot);
 
     // Clean up instance.
+    drop(dispctx);
+    drop(async_ctx);
     inst.set_target_state(ReqState::Halt)?;
 
     Ok(())
