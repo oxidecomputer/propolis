@@ -7,6 +7,7 @@ use futures::future;
 use propolis::{
     instance::{Instance, MigratePhase, MigrateRole, ReqState, State},
     inventory::Order,
+    migrate::Migrator,
 };
 use slog::{error, info};
 use tokio::{task, time};
@@ -94,7 +95,34 @@ pub async fn save(
     // Inform the instance state machine we're done pausing
     pause_tx.send(()).unwrap();
 
-    // TODO(luqmana): extract device state and save to disk
+    let dispctx = async_ctx
+        .dispctx()
+        .await
+        .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
+
+    info!(log, "Serializing VM device state");
+    let mut device_states = vec![];
+    inst.inv().for_each_node(Order::Pre, |_, rec| {
+        let entity = rec.entity();
+        match entity.migrate() {
+            Migrator::NonMigratable => {
+                anyhow::bail!(
+                    "Can't snapshot instance with non-migratable device ({})",
+                    rec.name()
+                );
+            }
+            Migrator::Simple => {}
+            Migrator::Custom(migrate) => {
+                let payload = migrate.export(&dispctx);
+                device_states.push((rec.name().to_owned(), payload));
+            }
+        }
+        Ok(())
+    })?;
+    drop(dispctx);
+
+    // TODO(luqmana) write to file in structured way
+    serde_json::to_writer(std::io::stdout(), &device_states)?;
 
     // Clean up instance.
     inst.set_target_state(ReqState::Halt)?;
