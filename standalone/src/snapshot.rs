@@ -19,16 +19,26 @@ use std::time::Duration;
 use anyhow::Context;
 use futures::future;
 use propolis::{
+    chardev::UDSock,
     common::{GuestAddr, GuestRegion},
     instance::{Instance, MigratePhase, MigrateRole, ReqState, State},
     inventory::Order,
     migrate::Migrator,
 };
 use slog::{error, info};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    runtime::Handle,
+};
 use tokio::{task, time};
 
 use crate::config::Config;
+
+const SNAPSHOT_TAG_CONFIG: u8 = 0;
+const SNAPSHOT_TAG_DEVICE: u8 = 1;
+const SNAPSHOT_TAG_LOMEM: u8 = 2;
+const SNAPSHOT_TAG_HIMEM: u8 = 3;
 
 /// Save a snapshot of the current state of the given instance to disk.
 pub async fn save(
@@ -177,19 +187,19 @@ pub async fn save(
         .transpose()?;
 
     // Write snapshot to disk
-    let file = tokio::fs::File::create(&snapshot)
+    let file = File::create(&snapshot)
         .await
         .context("Failed to create snapshot file")?;
     let mut file = tokio::io::BufWriter::new(file);
 
     info!(log, "Writing VM config...");
     let config_bytes = toml::to_string(&config)?.into_bytes();
-    file.write_u8(0).await?;
+    file.write_u8(SNAPSHOT_TAG_CONFIG).await?;
     file.write_u64(config_bytes.len().try_into()?).await?;
     file.write_all(&config_bytes).await?;
 
     info!(log, "Writing device state...");
-    file.write_u8(1).await?;
+    file.write_u8(SNAPSHOT_TAG_DEVICE).await?;
     file.write_u64(device_states.len().try_into()?).await?;
     file.write_all(&device_states).await?;
 
@@ -197,7 +207,7 @@ pub async fn save(
 
     // Low Mem
     // Note `pwrite` doesn't update the current position, so we do it manually
-    file.write_u8(2).await?;
+    file.write_u8(SNAPSHOT_TAG_LOMEM).await?;
     file.write_u64(lo.try_into()?).await?;
     let offset = file.stream_position().await?.try_into()?;
     lo_mapping.pwrite(file.get_ref(), lo, offset)?; // Blocks; not great
@@ -205,7 +215,7 @@ pub async fn save(
 
     if let (Some(hi), Some(hi_mapping)) = (hi, hi_mapping) {
         // High Mem
-        file.write_u8(3).await?;
+        file.write_u8(SNAPSHOT_TAG_HIMEM).await?;
         file.write_u64(hi.try_into()?).await?;
         let offset = file.stream_position().await?.try_into()?;
         hi_mapping.pwrite(file.get_ref(), hi, offset)?; // Blocks; not great
@@ -227,7 +237,41 @@ pub async fn save(
 pub async fn restore(
     log: slog::Logger,
     path: impl AsRef<Path>,
-) -> anyhow::Result<(Config, Arc<Instance>)> {
+) -> anyhow::Result<(Config, Arc<Instance>, Arc<UDSock>)> {
     info!(log, "restoring snapshot of VM from {}", path.as_ref().display());
+
+    let file =
+        File::open(&path).await.context("Failed to open snapshot file")?;
+    let mut file = tokio::io::BufReader::new(file);
+
+    // First off we need the config
+    let config: Config = {
+        if file.read_u8().await? != SNAPSHOT_TAG_CONFIG {
+            anyhow::bail!("Expected VM config");
+        }
+        let config_len = file.read_u64().await?;
+        let mut config_buf = vec![0; config_len.try_into()?];
+        file.read_exact(&mut config_buf).await?;
+        toml::from_slice(&config_buf)?
+    };
+
+    // We have enough to create the instance so let's do that first
+    let (inst, com1_sock) =
+        super::setup_instance(log.clone(), config.clone(), Handle::current())
+            .context("Failed to create Instance with config in snapshot")?;
+
+    return Ok((config, inst, com1_sock));
+
+    // Next are the devices
+    let device_states = {
+        if file.read_u8().await? != SNAPSHOT_TAG_DEVICE {
+            anyhow::bail!("Expected device states");
+        }
+        let state_len = file.read_u64().await?;
+        let mut state_buf = vec![0; state_len.try_into()?];
+        file.read_exact(&mut state_buf).await?;
+        state_buf
+    };
+
     todo!()
 }

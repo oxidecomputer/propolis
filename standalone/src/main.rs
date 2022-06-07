@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use anyhow::Context;
 use clap::Parser;
-use propolis::chardev::{BlockingSource, Sink, Source};
+use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
@@ -96,11 +96,11 @@ fn build_log() -> (slog::Logger, slog_async::AsyncGuard) {
     (slog::Logger::root(drain.fuse(), o!()), guard)
 }
 
-fn setup_instance(
+pub fn setup_instance(
     log: slog::Logger,
     config: config::Config,
     rt_handle: Handle,
-) -> anyhow::Result<Arc<Instance>> {
+) -> anyhow::Result<(Arc<Instance>, Arc<UDSock>)> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
 
@@ -117,7 +117,7 @@ fn setup_instance(
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
         .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
-    let com1_sock = chardev::UDSock::bind(Path::new("./ttya"))
+    let com1_sock = UDSock::bind(Path::new("./ttya"))
         .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
 
     inst.initialize(|machine, mctx, disp, inv| {
@@ -289,10 +289,6 @@ fn setup_instance(
 
     inst.print();
 
-    // Wait until someone connects to ttya
-    slog::error!(log, "Waiting for a connection to ttya");
-    com1_sock.wait_for_connect();
-
     inst.on_transition(Box::new(move |next_state, _target, _inv, ctx| {
         match next_state {
             State::Boot => {
@@ -314,7 +310,7 @@ fn setup_instance(
         }
     }));
 
-    Ok(inst)
+    Ok((inst, com1_sock))
 }
 
 #[derive(clap::Parser)]
@@ -348,14 +344,18 @@ fn main() -> anyhow::Result<()> {
     let rt_handle = rt.handle();
 
     // Create the VM afresh or restore it from a snapshot
-    let (config, inst) = if restore {
+    let (config, inst, com1_sock) = if restore {
         rt_handle.block_on(snapshot::restore(log.clone(), &target))?
     } else {
         let config = config::parse(&target)?;
-        let inst =
+        let (inst, com1_sock) =
             setup_instance(log.clone(), config.clone(), rt_handle.clone())?;
-        (config, inst)
+        (config, inst, com1_sock)
     };
+
+    // Wait until someone connects to ttya
+    slog::error!(log, "Waiting for a connection to ttya");
+    com1_sock.wait_for_connect();
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
     let inst_weak = Arc::downgrade(&inst);
