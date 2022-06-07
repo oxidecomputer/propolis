@@ -366,10 +366,7 @@ fn main() -> anyhow::Result<()> {
         if let Some(inst) = inst_weak.upgrade() {
             if snapshot {
                 if SNAPSHOT.is_completed() {
-                    slog::warn!(
-                        signal_log,
-                        "already snapshotted; ignoring subsequent Ctrl-C"
-                    );
+                    slog::warn!(signal_log, "snapshot already in progress");
                 } else {
                     let snap_log = signal_log.new(o!("task" => "snapshot"));
                     let snap_rt_handle = signal_rt_handle.clone();
