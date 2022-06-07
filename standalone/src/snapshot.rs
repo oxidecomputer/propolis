@@ -1,10 +1,13 @@
 //! Routines and types for saving and restoring a snapshot of a VM.
 
-use std::{sync::Arc, time::Duration};
+use std::convert::TryInto;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use futures::future;
 use propolis::{
+    common::{GuestAddr, GuestRegion},
     instance::{Instance, MigratePhase, MigrateRole, ReqState, State},
     inventory::Order,
     migrate::Migrator,
@@ -127,10 +130,33 @@ pub async fn save(
         }
         Ok(())
     })?;
-    drop(dispctx);
 
-    // TODO(luqmana) write to file in structured way
-    serde_json::to_writer(std::io::stdout(), &device_states)?;
+    // TODO(luqmana) clean this up. make mem_bounds do the lo/hi calc? or just use config values?
+    const GB: usize = 1024 * 1024 * 1024;
+    let memctx = dispctx.mctx.memctx();
+    let mem_bounds = memctx
+        .mem_bounds()
+        .ok_or(anyhow::anyhow!("Failed to get VM RAM bounds"))?;
+    let len: usize = (mem_bounds.end.0 - mem_bounds.start.0 + 1).try_into()?;
+    let (lo, hi) = if len > 3 * GB {
+        (3 * GB, Some(len.saturating_sub(4 * GB)))
+    } else {
+        (len, None)
+    };
+
+    let lo_mapping = memctx
+        .direct_readable_region(&GuestRegion(GuestAddr(0), lo))
+        .ok_or(anyhow::anyhow!("Failed to get lowmem region"))?;
+    let hi_mapping = hi
+        .map(|hi| {
+            memctx
+                .direct_readable_region(&GuestRegion(
+                    GuestAddr(0x1_0000_0000),
+                    hi,
+                ))
+                .ok_or(anyhow::anyhow!("Failed to get himem region"))
+        })
+        .transpose()?;
 
     // Clean up instance.
     inst.set_target_state(ReqState::Halt)?;
