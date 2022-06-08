@@ -217,22 +217,24 @@ impl Bars {
 }
 
 pub mod migrate {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub enum BarKindV1 {
         Pio,
         Mmio,
         Mmio64,
     }
-    #[derive(Serialize)]
+
+    #[derive(Deserialize, Serialize)]
     pub struct BarEntryV1 {
         pub n: u8,
         pub kind: BarKindV1,
         pub size: u64,
         pub value: u64,
     }
-    #[derive(Serialize)]
+
+    #[derive(Deserialize, Serialize)]
     pub struct BarStateV1 {
         pub entries: Vec<BarEntryV1>,
     }

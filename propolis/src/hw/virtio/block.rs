@@ -5,7 +5,7 @@ use crate::block;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::util::regmap::RegMap;
 
 use super::bits::*;
@@ -204,6 +204,18 @@ impl Migrate for PciVirtioBlock {
             pci_virtio_state: self.virtio_state.export(&self.pci_state),
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::PciVirtioBlockV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 fn complete_blockreq(
@@ -285,9 +297,9 @@ lazy_static! {
 
 pub mod migrate {
     use crate::hw::virtio::pci::migrate::PciVirtioStateV1;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PciVirtioBlockV1 {
         pub pci_virtio_state: PciVirtioStateV1,
     }

@@ -1116,9 +1116,9 @@ impl Builder {
 pub mod migrate {
     use crate::hw::pci::bar;
 
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct MsixEntryV1 {
         pub addr: u64,
         pub data: u32,
@@ -1126,7 +1126,7 @@ pub mod migrate {
         pub is_vec_masked: bool,
     }
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct MsixStateV1 {
         pub count: u16,
         pub is_enabled: bool,
@@ -1134,7 +1134,7 @@ pub mod migrate {
         pub entries: Vec<MsixEntryV1>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PciStateV1 {
         pub reg_command: u16,
         pub reg_intr_line: u8,

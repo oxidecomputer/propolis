@@ -5,7 +5,7 @@ use crate::chardev::*;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::{IntrPin, LegacyPin};
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -150,13 +150,25 @@ impl Migrate for LpcUart {
         let state = self.state.lock().unwrap();
         Box::new(migrate::LpcUartV1 { uart_state: state.uart.export() })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::LpcUartV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 pub mod migrate {
     use crate::hw::uart::base::migrate::UartV1;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct LpcUartV1 {
         pub uart_state: UartV1,
     }

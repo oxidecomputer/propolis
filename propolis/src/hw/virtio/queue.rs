@@ -616,9 +616,9 @@ impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
 }
 
 pub mod migrate {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct VirtQueueV1 {
         pub id: u16,
         pub size: u16,

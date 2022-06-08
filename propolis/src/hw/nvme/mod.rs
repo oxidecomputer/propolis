@@ -6,7 +6,7 @@ use crate::dispatch::DispCtx;
 use crate::hw::ids::pci::{PROPOLIS_NVME_DEV_ID, VENDOR_OXIDE};
 use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::util::regmap::RegMap;
 use crate::{block, common::*};
 
@@ -901,13 +901,25 @@ impl Migrate for PciNvme {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::PciNvmeStateV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 pub mod migrate {
     use crate::hw::pci::migrate::PciStateV1;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PciNvmeStateV1 {
         pub pci: PciStateV1,
         // TODO: Add the rest of the controller state

@@ -648,9 +648,9 @@ lazy_static! {
 pub mod migrate {
     use crate::hw::pci::migrate::PciStateV1;
     use crate::hw::virtio::queue;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct VirtioStateV1 {
         pub status: u8,
         pub queue_sel: u16,
@@ -659,7 +659,7 @@ pub mod migrate {
         pub msix_queue_vec: Vec<u16>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PciVirtioStateV1 {
         pub pci: PciStateV1,
         pub state: VirtioStateV1,

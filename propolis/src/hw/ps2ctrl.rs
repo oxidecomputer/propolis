@@ -8,7 +8,7 @@ use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::instance;
 use crate::intr_pins::LegacyPin;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -338,6 +338,18 @@ impl Migrate for PS2Ctrl {
                 sample_rate: mouse.sample_rate,
             },
         })
+    }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::PS2CtrlV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
     }
 }
 
@@ -700,15 +712,15 @@ impl Default for PS2Mouse {
 
 pub mod migrate {
     use super::PS2C_RAM_LEN;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2CtrlV1 {
         pub ctrl: PS2CtrlStateV1,
         pub kbd: PS2KbdV1,
         pub mouse: PS2MouseV1,
     }
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2CtrlStateV1 {
         pub response: Option<u8>,
         pub cmd_prefix: Option<u8>,
@@ -716,7 +728,7 @@ pub mod migrate {
         pub ctrl_out_port: u8,
         pub ram: [u8; PS2C_RAM_LEN],
     }
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2KbdV1 {
         pub buf: Vec<u8>,
         pub current_cmd: Option<u8>,
@@ -725,7 +737,7 @@ pub mod migrate {
         pub typematic: u8,
         pub scan_code_set: u8,
     }
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2MouseV1 {
         pub buf: Vec<u8>,
         pub current_cmd: Option<u8>,

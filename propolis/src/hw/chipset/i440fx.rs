@@ -18,7 +18,7 @@ use crate::hw::pci::{
 use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
 use crate::inventory;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::mmio::MmioFn;
 use crate::pio::{PioBus, PioFn};
 use crate::util::regmap::RegMap;
@@ -198,6 +198,18 @@ impl Migrate for I440Fx {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::I440TopV1 { pci_cfg_addr: self.pci_cfg.addr() })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::I440TopV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 impl Entity for I440Fx {
     fn type_name(&self) -> &'static str {
@@ -358,6 +370,18 @@ impl Migrate for Piix4HostBridge {
             pci_state: self.pci_state.export(),
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::Piix4HostBridgeV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 pub struct Piix3Lpc {
@@ -490,6 +514,18 @@ impl Migrate for Piix3Lpc {
             pir_regs: *pir,
             post_code: self.post_code.load(Ordering::Acquire),
         })
+    }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::Piix3LpcV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
     }
 }
 
@@ -863,27 +899,42 @@ impl Migrate for Piix3PM {
             pm_ctrl: regs.pm_ctrl.bits(),
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::Piix3PmV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 mod migrate {
     use crate::hw::pci::migrate::PciStateV1;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct I440TopV1 {
         pub pci_cfg_addr: u32,
     }
-    #[derive(Serialize)]
+
+    #[derive(Deserialize, Serialize)]
     pub struct Piix4HostBridgeV1 {
         pub pci_state: PciStateV1,
     }
-    #[derive(Serialize)]
+
+    #[derive(Deserialize, Serialize)]
     pub struct Piix3LpcV1 {
         pub pci_state: PciStateV1,
         pub pir_regs: [u8; super::PIR_LEN],
         pub post_code: u8,
     }
-    #[derive(Serialize)]
+
+    #[derive(Deserialize, Serialize)]
     pub struct Piix3PmV1 {
         pub pci_state: PciStateV1,
         pub pm_base: u16,

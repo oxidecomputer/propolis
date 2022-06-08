@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 
 use erased_serde::Serialize;
 
@@ -26,14 +26,26 @@ impl Migrate for BhyveIoApic {
         let hdl = ctx.mctx.hdl();
         Box::new(migrate::BhyveIoApicV1::read(hdl))
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::BhyveIoApicV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 pub mod migrate {
     use crate::vmm;
 
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Copy, Clone, Default, Serialize)]
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct BhyveIoApicV1 {
         pub id: u32,
         pub reg_sel: u32,

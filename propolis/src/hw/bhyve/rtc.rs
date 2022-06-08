@@ -1,10 +1,10 @@
-use std::io::Result;
+use std::io;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
@@ -24,7 +24,7 @@ impl BhyveRtc {
     /// Synchronizes the time within the virtual machine
     /// represented by `hdl` with the current system clock,
     /// accurate to the second.
-    pub fn set_time(&self, time: SystemTime, hdl: &VmmHdl) -> Result<()> {
+    pub fn set_time(&self, time: SystemTime, hdl: &VmmHdl) -> io::Result<()> {
         hdl.rtc_settime(
             time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
         )
@@ -39,7 +39,7 @@ impl BhyveRtc {
         lowmem: usize,
         highmem: usize,
         hdl: &VmmHdl,
-    ) -> Result<()> {
+    ) -> io::Result<()> {
         assert!(lowmem >= MEM_BASE);
 
         // physical memory below 4GB (less 16MB base) in 64k chunks
@@ -77,14 +77,26 @@ impl Migrate for BhyveRtc {
         let hdl = ctx.mctx.hdl();
         Box::new(migrate::BhyveRtcV1::read(hdl))
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::BhyveRtcV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 pub mod migrate {
     use crate::vmm;
 
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct BhyveRtcV1 {
         #[serde(with = "serde_arrays")]
         pub cmos: [u8; 128],

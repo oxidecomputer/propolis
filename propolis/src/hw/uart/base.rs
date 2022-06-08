@@ -301,9 +301,9 @@ impl Fifo {
 }
 
 pub mod migrate {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct UartV1 {
         pub intr_enable: u8,
         pub intr_status: u8,
