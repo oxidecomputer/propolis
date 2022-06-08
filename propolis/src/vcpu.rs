@@ -7,7 +7,7 @@ use crate::dispatch::DispCtx;
 use crate::dispatch::SyncCtx;
 use crate::exits::{VmEntry, VmExit};
 use crate::inventory::Entity;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
@@ -182,6 +182,18 @@ impl Migrate for Vcpu {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::BhyveVcpuV1::read(self))
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> std::result::Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::BhyveVcpuV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 
 pub mod migrate {
@@ -191,9 +203,9 @@ pub mod migrate {
     use crate::vmm;
 
     use bhyve_api::vm_reg_name;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Clone, Default, Serialize)]
+    #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct BhyveVcpuV1 {
         gp_regs: GpRegsV1,
         ctrl_regs: CtrlRegsV1,
@@ -204,7 +216,7 @@ pub mod migrate {
         ms_regs: Vec<MsrEntryV1>,
         // exception/interrupt state
     }
-    #[derive(Copy, Clone, Default, Serialize)]
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct GpRegsV1 {
         pub rax: u64,
         pub rcx: u64,
@@ -226,7 +238,7 @@ pub mod migrate {
         pub rip: u64,
         pub rflags: u64,
     }
-    #[derive(Copy, Clone, Default, Serialize)]
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct CtrlRegsV1 {
         pub cr0: u64,
         pub cr2: u64,
@@ -240,7 +252,7 @@ pub mod migrate {
         pub dr7: u64,
     }
 
-    #[derive(Copy, Clone, Default, Serialize)]
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct SegRegsV1 {
         pub cs: SegDescV1,
         pub ds: SegDescV1,
@@ -254,20 +266,20 @@ pub mod migrate {
         pub tr: SegDescV1,
     }
 
-    #[derive(Copy, Clone, Default, Serialize)]
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct SegDescV1 {
         pub base: u64,
         pub limit: u32,
         pub access: u32,
         pub selector: u16,
     }
-    #[derive(Copy, Clone, Default, Serialize)]
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct MsrEntryV1 {
         pub ident: u32,
         pub value: u64,
     }
 
-    #[derive(Clone, Default, Serialize)]
+    #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct FpuStateV1 {
         pub blob: Vec<u8>,
     }
