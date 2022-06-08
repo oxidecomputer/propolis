@@ -25,7 +25,7 @@ use propolis::{
     inventory::Order,
     migrate::Migrator,
 };
-use slog::{error, info};
+use slog::{error, info, warn};
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -150,7 +150,10 @@ pub async fn save(
                 Migrator::Simple => {}
                 Migrator::Custom(migrate) => {
                     let payload = migrate.export(&dispctx);
-                    device_states.push((rec.name().to_owned(), payload));
+                    device_states.push((
+                        rec.name().to_owned(),
+                        serde_json::to_vec(&payload)?,
+                    ));
                 }
             }
             Ok(())
@@ -321,6 +324,46 @@ pub async fn restore(
         // Populate from snapshot
         if lo_mem != hi_mapping.pread(file.get_ref(), hi_mem, hi_offset)? {
             anyhow::bail!("Failed to populate high mem from snapshot");
+        }
+    }
+
+    // Finally, let's restore the device state
+    let inv = inst.inv();
+    let devices: Vec<(String, Vec<u8>)> =
+        serde_json::from_slice(&device_states)
+            .context("Failed to deserialize device state")?;
+    for (name, payload) in devices {
+        let dev_ent = inv.get_by_name(&name).ok_or_else(|| {
+            anyhow::anyhow!("unknown device in snapshot {}", name)
+        })?;
+
+        match dev_ent.migrate() {
+            Migrator::NonMigratable => anyhow::bail!(
+                "can't restore snapshot with non-migratable device ({})",
+                name
+            ),
+            Migrator::Simple => {
+                // There really shouldn't be a payload for this
+                warn!(
+                    log,
+                    "unexpected device state for device {} in snapshot", name
+                );
+            }
+            Migrator::Custom(migrate) => {
+                let mut deserializer =
+                    serde_json::Deserializer::from_slice(&payload);
+                let deserializer = &mut <dyn erased_serde::Deserializer>::erase(
+                    &mut deserializer,
+                );
+                migrate
+                    .import(dev_ent.type_name(), deserializer, &dispctx)
+                    .with_context(|| {
+                        anyhow::anyhow!(
+                            "Failed to restore device state for {}",
+                            name
+                        )
+                    })?;
+            }
         }
     }
 
