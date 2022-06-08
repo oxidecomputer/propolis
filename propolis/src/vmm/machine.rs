@@ -369,6 +369,30 @@ impl<'a> MemCtx<'a> {
         Some(mapping)
     }
 
+    /// Like `direct_writable_region`, but looks up the region by name.
+    pub fn direct_writable_region_by_name(
+        &self,
+        name: &str,
+    ) -> Result<SubMapping> {
+        let (_, len, ent) = self
+            .map
+            .iter()
+            .find(|(_, _, ent)| match ent.kind {
+                MapKind::SysMem(_, _) => ent.name == name,
+                _ => false,
+            })
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!("SysMem region {} not found", name),
+                )
+            })?;
+        assert!(ent.seg_map.is_some());
+        let mapping =
+            ent.seg_map.as_ref().unwrap().as_ref().subregion(0, len).unwrap();
+        Ok(mapping.constrain_access(Prot::WRITE))
+    }
+
     /// Like `writable_region`, but accesses the underlying memory segment
     /// directly, bypassing protection enforced to the guest and tracking of
     /// dirty pages in the guest-physical address space.
@@ -380,6 +404,7 @@ impl<'a> MemCtx<'a> {
             self.region_mappings(region.0, region.1)?;
         Some(seg_map?.constrain_access(Prot::WRITE))
     }
+
     /// Like `readable_region`, but accesses the underlying memory segment
     /// directly, bypassing protection enforced to the guest and tracking of
     /// accessed pages in the guest-physical address space.

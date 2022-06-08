@@ -264,8 +264,6 @@ pub async fn restore(
         super::setup_instance(log.clone(), config.clone(), Handle::current())
             .context("Failed to create Instance with config in snapshot")?;
 
-    return Ok((config, inst, com1_sock));
-
     // Next are the devices
     let device_states = {
         if file.read_u8().await? != SNAPSHOT_TAG_DEVICE {
@@ -277,5 +275,54 @@ pub async fn restore(
         state_buf
     };
 
-    todo!()
+    // Finally we have our RAM
+
+    // Get low mem length and offset
+    if file.read_u8().await? != SNAPSHOT_TAG_LOMEM {
+        anyhow::bail!("Expected low mem");
+    }
+    let lo_mem: usize = file.read_u64().await?.try_into()?;
+    let lo_offset = file.stream_position().await?.try_into()?;
+
+    // Seek past low mem blob and get high mem length and offset
+    file.seek(std::io::SeekFrom::Current(lo_mem.try_into()?)).await?;
+    if file.read_u8().await? != SNAPSHOT_TAG_HIMEM {
+        anyhow::bail!("Expected high mem");
+    }
+    let hi_mem: usize = file.read_u64().await?.try_into()?;
+    let hi_offset = file.stream_position().await?.try_into()?;
+
+    info!(log, "Low RAM: {}, High RAM: {}", lo_mem, hi_mem);
+
+    // We need to peer into the instance to populate the RAM mappings
+    let async_ctx = inst.async_ctx();
+    let dispctx = async_ctx
+        .dispctx()
+        .await
+        .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
+    let memctx = dispctx.mctx.memctx();
+
+    let lo_mapping = memctx.direct_writable_region_by_name("lowmem")?;
+    if lo_mem != lo_mapping.len() {
+        anyhow::bail!("Mismatch between expected low mem region and snapshot");
+    }
+    // Populate from snapshot
+    if lo_mem != lo_mapping.pread(file.get_ref(), lo_mem, lo_offset)? {
+        anyhow::bail!("Failed to populate low mem from snapshot");
+    }
+
+    if hi_mem != 0 {
+        let hi_mapping = memctx.direct_writable_region_by_name("highmem")?;
+        if hi_mem != hi_mapping.len() {
+            anyhow::bail!(
+                "Mismatch between expected high mem region and snapshot"
+            );
+        }
+        // Populate from snapshot
+        if lo_mem != hi_mapping.pread(file.get_ref(), hi_mem, hi_offset)? {
+            anyhow::bail!("Failed to populate high mem from snapshot");
+        }
+    }
+
+    Ok((config, inst, com1_sock))
 }
