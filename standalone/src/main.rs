@@ -100,6 +100,7 @@ pub fn setup_instance(
     log: slog::Logger,
     config: config::Config,
     rt_handle: Handle,
+    fresh_boot: bool,
 ) -> anyhow::Result<(Arc<Instance>, Arc<UDSock>)> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
@@ -293,16 +294,21 @@ pub fn setup_instance(
         match next_state {
             State::Boot => {
                 for vcpu in ctx.mctx.vcpus() {
-                    vcpu.reboot_state().unwrap();
+                    if fresh_boot {
+                        vcpu.reboot_state().unwrap();
+                    }
                     vcpu.activate().unwrap();
-                    // Set BSP to start up
-                    if vcpu.is_bsp() {
+                    if fresh_boot && vcpu.is_bsp() {
+                        // Set BSP to start up for a fresh boot
                         vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
                         vcpu.set_reg(
                             bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
                             0xfff0,
                         )
                         .unwrap();
+                    } else if !fresh_boot {
+                        // Let all the vCPUs run if we're restoring a snapshot
+                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
                     }
                 }
             }
@@ -348,8 +354,12 @@ fn main() -> anyhow::Result<()> {
         rt_handle.block_on(snapshot::restore(log.clone(), &target))?
     } else {
         let config = config::parse(&target)?;
-        let (inst, com1_sock) =
-            setup_instance(log.clone(), config.clone(), rt_handle.clone())?;
+        let (inst, com1_sock) = setup_instance(
+            log.clone(),
+            config.clone(),
+            rt_handle.clone(),
+            true,
+        )?;
         (config, inst, com1_sock)
     };
 

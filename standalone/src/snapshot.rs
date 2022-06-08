@@ -263,9 +263,13 @@ pub async fn restore(
     };
 
     // We have enough to create the instance so let's do that first
-    let (inst, com1_sock) =
-        super::setup_instance(log.clone(), config.clone(), Handle::current())
-            .context("Failed to create Instance with config in snapshot")?;
+    let (inst, com1_sock) = super::setup_instance(
+        log.clone(),
+        config.clone(),
+        Handle::current(),
+        false,
+    )
+    .context("Failed to create Instance with config in snapshot")?;
 
     // Next are the devices
     let device_states = {
