@@ -1,4 +1,7 @@
 use std::convert::TryFrom;
+use std::convert::TryInto;
+
+use crate::migrate::MigrateStateError;
 
 use super::bits;
 use super::BarN;
@@ -213,6 +216,38 @@ impl Bars {
             }
         }
         migrate::BarStateV1 { entries }
+    }
+
+    pub(super) fn import(
+        &mut self,
+        bars: migrate::BarStateV1,
+    ) -> Result<(), MigrateStateError> {
+        for (idx, entry) in bars.entries.iter().enumerate() {
+            let sz = entry.size;
+            self.entries[idx].kind = match entry.kind {
+                migrate::BarKindV1::Pio => {
+                    let sz = sz.try_into().map_err(|_| {
+                        MigrateStateError::ImportFailed(format!(
+                            "Pio Bar: invalid entry size ({})",
+                            sz
+                        ))
+                    })?;
+                    EntryKind::Pio(sz)
+                }
+                migrate::BarKindV1::Mmio => {
+                    let sz = sz.try_into().map_err(|_| {
+                        MigrateStateError::ImportFailed(format!(
+                            "Mmio Bar: invalid entry size ({})",
+                            sz
+                        ))
+                    })?;
+                    EntryKind::Mmio(sz)
+                }
+                migrate::BarKindV1::Mmio64 => EntryKind::Mmio64(sz),
+            };
+            self.entries[idx].value = entry.value;
+        }
+        Ok(())
     }
 }
 

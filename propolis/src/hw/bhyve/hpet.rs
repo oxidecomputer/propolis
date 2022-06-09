@@ -31,11 +31,11 @@ impl Migrate for BhyveHpet {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::BhyveHpetV1 =
+        let deserialized: migrate::BhyveHpetV1 =
             erased_serde::deserialize(deserializer)?;
+        deserialized.write(ctx.mctx.hdl())?;
         Ok(())
     }
 }
@@ -56,6 +56,13 @@ pub mod migrate {
             Self {
                 data: vmm::data::read(hdl, -1, bhyve_api::VDC_HPET, 1).unwrap(),
             }
+        }
+
+        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
+            // TODO: known failure writing hpet due to the way IRQ validation is currently written
+            let _ =
+                vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.data);
+            Ok(())
         }
     }
 }

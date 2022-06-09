@@ -7,6 +7,7 @@ use super::{bus, BarN, Endpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
+use crate::migrate::MigrateStateError;
 use crate::util::regmap::{Flags, RegMap};
 
 use lazy_static::lazy_static;
@@ -585,6 +586,40 @@ impl DeviceState {
             msix,
         }
     }
+
+    pub fn import(
+        &self,
+        state: migrate::PciStateV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut inner = self.state.lock().unwrap();
+        inner.reg_command =
+            RegCmd::from_bits(state.reg_command).ok_or_else(|| {
+                MigrateStateError::ImportFailed(format!(
+                    "PciState reg_command: failed to import saved value {:#x}",
+                    state.reg_command
+                ))
+            })?;
+        inner.reg_intr_line = state.reg_intr_line;
+        inner.bars.import(state.bars)?;
+
+        match (self.msix_cfg.as_ref(), state.msix) {
+            (Some(msix_cfg), Some(saved_cfg)) => msix_cfg.import(saved_cfg)?,
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(MigrateStateError::ImportFailed(
+                    "PciState: device has no MSI-X config".to_string(),
+                ))
+            }
+            (Some(_), None) => {
+                return Err(MigrateStateError::ImportFailed(
+                    "PciState: device has MSI-X config but none in payload"
+                        .to_string(),
+                ))
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -949,6 +984,39 @@ impl MsixCfg {
             is_func_masked: state.func_mask,
             entries,
         }
+    }
+
+    fn import(
+        &self,
+        state: migrate::MsixStateV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut inner = self.state.lock().unwrap();
+
+        if self.count != state.count {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "MsixCfg: count mismatch {} vs {}",
+                self.count, state.count
+            )));
+        }
+        if self.entries.len() != state.entries.len() {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "MsixCfg: entry count mismatch {} vs {}",
+                self.entries.len(),
+                state.entries.len()
+            )));
+        }
+        inner.enabled = state.is_enabled;
+        inner.func_mask = state.is_func_masked;
+        for (entry, saved) in self.entries.iter().zip(state.entries) {
+            let mut entry = entry.lock().unwrap();
+            entry.addr = saved.addr;
+            entry.data = saved.data;
+            entry.pending = saved.is_pending;
+            entry.mask_vec = saved.is_vec_masked;
+            // TODO: what about mask_func and enabled?
+        }
+
+        Ok(())
     }
 }
 

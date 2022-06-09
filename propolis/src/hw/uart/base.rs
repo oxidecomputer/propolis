@@ -267,6 +267,19 @@ impl Uart {
             thre_state: self.thre_intr,
         }
     }
+
+    pub(super) fn import(&mut self, state: &migrate::UartV1) {
+        self.reg_intr_enable = state.intr_enable;
+        self.reg_intr_status = state.intr_status;
+        self.reg_line_ctrl = state.line_ctrl;
+        self.reg_line_status = state.line_status;
+        self.reg_modem_ctrl = state.modem_ctrl;
+        self.reg_modem_status = state.modem_status;
+        self.reg_scratch = state.scratch;
+        self.reg_div_low = state.div_low;
+        self.reg_div_high = state.div_high;
+        self.thre_intr = state.thre_state;
+    }
 }
 
 struct Fifo {

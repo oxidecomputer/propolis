@@ -675,9 +675,15 @@ impl Migrate for FwCfg {
         deserializer: &mut dyn erased_serde::Deserializer,
         _ctx: &DispCtx,
     ) -> std::result::Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::FwCfgV1 =
+        let deserialized: migrate::FwCfgV1 =
             erased_serde::deserialize(deserializer)?;
+
+        let mut inner = self.state.lock().unwrap();
+        inner.addr_low = deserialized.dma_addr as u32;
+        inner.addr_high = (deserialized.dma_addr >> 32) as u32;
+        inner.selector = deserialized.selector;
+        inner.offset = deserialized.offset;
+
         Ok(())
     }
 }

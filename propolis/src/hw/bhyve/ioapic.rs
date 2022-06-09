@@ -31,11 +31,11 @@ impl Migrate for BhyveIoApic {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::BhyveIoApicV1 =
+        let deserialized: migrate::BhyveIoApicV1 =
             erased_serde::deserialize(deserializer)?;
+        deserialized.write(ctx.mctx.hdl())?;
         Ok(())
     }
 }
@@ -64,6 +64,17 @@ pub mod migrate {
                 registers: vdi.vi_pin_reg,
                 levels: vdi.vi_pin_level,
             }
+        }
+
+        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
+            let vdi = bhyve_api::vdi_ioapic_v1 {
+                vi_pin_reg: self.registers,
+                vi_pin_level: self.levels,
+                vi_id: self.id,
+                vi_reg_sel: self.reg_sel,
+            };
+            vmm::data::write(hdl, -1, bhyve_api::VDC_IOAPIC, 1, vdi)?;
+            Ok(())
         }
     }
 }

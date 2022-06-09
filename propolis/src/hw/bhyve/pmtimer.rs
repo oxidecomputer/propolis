@@ -31,11 +31,11 @@ impl Migrate for BhyvePmTimer {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::BhyvePmTimerV1 =
+        let deserialized: migrate::BhyvePmTimerV1 =
             erased_serde::deserialize(deserializer)?;
+        deserialized.write(ctx.mctx.hdl())?;
         Ok(())
     }
 }
@@ -60,6 +60,15 @@ pub mod migrate {
                 // chipset PM device.
                 start_time: vdi.vpt_time_base,
             }
+        }
+
+        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
+            let vdi = bhyve_api::vdi_pm_timer_v1 {
+                vpt_time_base: self.start_time,
+                vpt_ioport: 0, // TODO: is this right?
+            };
+            vmm::data::write(hdl, -1, bhyve_api::VDC_PM_TIMER, 1, vdi)?;
+            Ok(())
         }
     }
 }

@@ -82,11 +82,11 @@ impl Migrate for BhyveRtc {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::BhyveRtcV1 =
+        let deserialized: migrate::BhyveRtcV1 =
             erased_serde::deserialize(deserializer)?;
+        deserialized.write(ctx.mctx.hdl())?;
         Ok(())
     }
 }
@@ -117,6 +117,18 @@ pub mod migrate {
                 time_base: vdi.vr_time_base,
                 addr: vdi.vr_addr,
             }
+        }
+
+        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
+            let vdi = bhyve_api::vdi_rtc_v1 {
+                vr_content: self.cmos,
+                vr_addr: self.addr,
+                vr_time_base: self.time_base,
+                vr_rtc_sec: self.time_sec,
+                vr_rtc_nsec: self.time_nsec,
+            };
+            vmm::data::write(hdl, -1, bhyve_api::VDC_RTC, 1, vdi)?;
+            Ok(())
         }
     }
 }

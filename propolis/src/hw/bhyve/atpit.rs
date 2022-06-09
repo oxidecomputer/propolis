@@ -31,11 +31,11 @@ impl Migrate for BhyveAtPit {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::BhyveAtPitV1 =
+        let deserialized: migrate::BhyveAtPitV1 =
             erased_serde::deserialize(deserializer)?;
+        deserialized.write(ctx.mctx.hdl())?;
         Ok(())
     }
 }
@@ -57,6 +57,11 @@ pub mod migrate {
                 data: vmm::data::read(hdl, -1, bhyve_api::VDC_ATPIT, 1)
                     .unwrap(),
             }
+        }
+
+        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
+            vmm::data::write(hdl, -1, bhyve_api::VDC_ATPIT, 1, self.data)?;
+            Ok(())
         }
     }
 }

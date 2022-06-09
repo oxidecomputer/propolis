@@ -157,9 +157,10 @@ impl Migrate for LpcUart {
         deserializer: &mut dyn erased_serde::Deserializer,
         _ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::LpcUartV1 =
+        let deserialized: migrate::LpcUartV1 =
             erased_serde::deserialize(deserializer)?;
+        let mut state = self.state.lock().unwrap();
+        state.uart.import(&deserialized.uart_state);
         Ok(())
     }
 }
