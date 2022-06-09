@@ -734,7 +734,12 @@ impl Drop for Instance {
                 })
                 .unwrap();
         }
-        let _joined = state.drive_thread.take().unwrap().join();
+        let join_handle = state.drive_thread.take().unwrap();
+        // The last Instance handle may be held by the drive_thread itself
+        // which would mean a deadlock or error if we tried to join
+        if std::thread::current().id() != join_handle.thread().id() {
+            let _joined = join_handle.join();
+        }
     }
 }
 
