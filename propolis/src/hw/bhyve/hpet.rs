@@ -59,9 +59,7 @@ pub mod migrate {
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
-            // TODO: known failure writing hpet due to the way IRQ validation is currently written
-            let _ =
-                vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.data);
+            vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.data)?;
             Ok(())
         }
     }

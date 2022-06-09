@@ -142,8 +142,7 @@ pub fn write_many<T: Sized>(
         vdx_result_len: 0,
         vdx_data: data.as_mut_ptr() as *mut c_void,
     };
-    let _bytes_written = ioctl_xlate(hdl, bhyve_api::VM_DATA_WRITE, &mut xfer)?;
-    // TODO: uncomment. writing the MSRs trips this
-    // assert_eq!(bytes_written, write_len);
+    let bytes_written = ioctl_xlate(hdl, bhyve_api::VM_DATA_WRITE, &mut xfer)?;
+    assert_eq!(bytes_written, write_len);
     Ok(())
 }

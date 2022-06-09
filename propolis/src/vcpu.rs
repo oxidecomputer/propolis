@@ -546,15 +546,8 @@ pub mod migrate {
 
         pub(super) fn write(self, vcpu: &Vcpu) -> io::Result<()> {
             let hdl = &vcpu.hdl;
-            let (mut msrs, efer): (Vec<_>, _) = self
-                .ms_regs
-                .into_iter()
-                .map(From::from)
-                // TODO: writes to mtrrcap not allowed
-                .filter(|entry: &vdi_field_entry_v1| entry.vfe_ident != 0xFE)
-                // TODO: ENTRY_GUEST_LMA state is not maintained when updating EFER via the MSR,
-                //       so we extract it here and do it via the set_reg interface.
-                .partition(|entry| entry.vfe_ident != 0xC0000080);
+            let mut msrs: Vec<vdi_field_entry_v1> =
+                self.ms_regs.into_iter().map(From::from).collect();
             vmm::data::write_many(
                 hdl,
                 vcpu.cpuid(),
@@ -562,9 +555,6 @@ pub mod migrate {
                 1,
                 &mut msrs,
             )?;
-            if let [efer] = efer[..] {
-                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_EFER, efer.vfe_value)?;
-            }
             vmm::data::write(
                 hdl,
                 vcpu.cpuid(),
