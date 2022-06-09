@@ -127,8 +127,22 @@ pub async fn save(
         anyhow::bail!("Failed to pause all devices: {timed_out:?}");
     }
 
+    let state_change_fut = {
+        // Start waiting before we let the instance know we're
+        // done pausing so we don't miss the notification
+        let inst = inst.clone();
+        task::spawn_blocking(move || {
+            inst.wait_for_state(State::Migrate(
+                MigrateRole::Source,
+                MigratePhase::Paused,
+            ));
+        })
+    };
+
     // Inform the instance state machine we're done pausing
+    // and wait for it to pause on its end
     pause_tx.send(()).unwrap();
+    state_change_fut.await?;
 
     let dispctx = async_ctx
         .dispctx()

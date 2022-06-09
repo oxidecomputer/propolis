@@ -41,6 +41,9 @@ pub enum MigratePhase {
 
     /// Wind down the instance and give devices a chance to complete in-flight requests.
     Pause,
+
+    /// Devices and vCPUs have been paused
+    Paused,
 }
 
 /// States of operation for an instance.
@@ -131,6 +134,11 @@ impl State {
             State::Migrate(role, phase) => match target {
                 Some(State::Run) => State::Run,
                 Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
+                Some(State::Migrate(target_role, target_phase))
+                    if *role == target_role =>
+                {
+                    State::Migrate(target_role, target_phase)
+                }
                 _ => State::Migrate(*role, *phase),
             },
             State::Halt => State::Destroy,
@@ -448,7 +456,14 @@ impl Instance {
                 let _ =
                     hdl.suspend(bhyve_api::vm_suspend_how::VM_SUSPEND_RESET);
                 inner.suspend_info = Some((kind, source));
-                self.set_target_state_locked(inner, State::Reset)
+                let target = match source {
+                    SuspendSource::Migration => State::Migrate(
+                        MigrateRole::Source,
+                        MigratePhase::Paused,
+                    ),
+                    _ => State::Reset,
+                };
+                self.set_target_state_locked(inner, target)
             }
             SuspendKind::Halt => {
                 if matches!(inner.suspend_info, Some((SuspendKind::Halt, _))) {
@@ -656,6 +671,14 @@ impl Instance {
                 }
                 State::Destroy => {}
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
+                    // Pause vCPUs
+                    self.trigger_suspend_locked(
+                        &mut inner,
+                        SuspendKind::Reset,
+                        SuspendSource::Migration,
+                    )
+                    .unwrap();
+
                     let migrate_ctx = inner.migrate_ctx.unwrap();
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.
@@ -742,4 +765,6 @@ pub enum SuspendSource {
     Device(&'static str),
     /// External request (power/reset button)
     External,
+    /// Migrating vCPUs as part of a migration
+    Migration,
 }
