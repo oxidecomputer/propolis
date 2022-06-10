@@ -35,9 +35,12 @@ pub enum ParseError {
 /// Configuration for the Propolis server.
 // NOTE: This is expected to change over time; portions of the hard-coded
 // configuration will likely become more dynamic.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Config {
     bootrom: PathBuf,
+
+    #[serde(default, rename = "pci_bridge")]
+    pci_bridges: Vec<PciBridge>,
 
     #[serde(default)]
     chipset: Chipset,
@@ -47,9 +50,6 @@ pub struct Config {
 
     #[serde(default, rename = "block_dev")]
     block_devs: BTreeMap<String, BlockDevice>,
-
-    #[serde(default, rename = "pci_bridge")]
-    pci_bridges: Vec<PciBridge>,
 }
 
 impl Config {
@@ -67,10 +67,10 @@ impl Config {
     ) -> Config {
         Config {
             bootrom: bootrom.into(),
+            pci_bridges,
             chipset,
             devices,
             block_devs,
-            pci_bridges,
         }
     }
 
@@ -113,7 +113,7 @@ impl Config {
 }
 
 /// The instance's chipset.
-#[derive(Default, Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Chipset {
     #[serde(flatten, default)]
     pub options: BTreeMap<String, toml::Value>,
@@ -130,7 +130,7 @@ impl Chipset {
 }
 
 /// A PCI-PCI bridge.
-#[derive(Default, Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct PciBridge {
     /// The bus/device/function of this bridge as a device in the PCI topology.
     #[serde(rename = "pci-path")]
@@ -148,7 +148,7 @@ pub struct PciBridge {
 
 /// A hard-coded device, either enabled by default or accessible locally
 /// on a machine.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Device {
     pub driver: String,
 
@@ -166,7 +166,7 @@ impl Device {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct BlockDevice {
     #[serde(default, rename = "type")]
     pub bdtype: String,
@@ -239,4 +239,23 @@ pub fn parse<P: AsRef<Path>>(path: P) -> Result<Config, ParseError> {
     let contents = std::fs::read_to_string(path.as_ref())?;
     let cfg = toml::from_str::<Config>(&contents)?;
     Ok(cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_can_be_serialized_as_toml() {
+        let dummy_config = Config::new(
+            "/boot",
+            Chipset { options: BTreeMap::new() },
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let serialized = toml::ser::to_string(&dummy_config).unwrap();
+        let deserialized: Config = toml::de::from_str(&serialized).unwrap();
+        assert_eq!(dummy_config, deserialized);
+    }
 }
