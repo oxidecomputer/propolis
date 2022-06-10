@@ -606,6 +606,22 @@ impl Instance {
 
             // Implicit actions for a state change
             match state {
+                State::Boot => {
+                    // Set vCPUs to their proper boot (INIT) state
+                    for vcpu in &inner.machine.as_ref().unwrap().vcpus {
+                        vcpu.reboot_state().unwrap();
+                        vcpu.activate().unwrap();
+                        // Set BSP to start up
+                        if vcpu.is_bsp() {
+                            vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                            vcpu.set_reg(
+                                bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                                0xfff0,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
                 State::Quiesce => {
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.

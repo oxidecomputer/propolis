@@ -24,7 +24,6 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, handshake, Message};
 use tokio_tungstenite::WebSocketStream;
 
-use propolis::bhyve_api;
 use propolis::dispatch::AsyncCtx;
 use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
@@ -547,28 +546,6 @@ async fn instance_ensure(
             .map_err(<_ as Into<HttpError>>::into)?;
         Some(res)
     } else {
-        instance.on_transition(Box::new(move |next_state, _, _inv, ctx| {
-            match next_state {
-                propolis::instance::State::Boot => {
-                    // Set vCPUs to their proper boot (INIT) state
-                    for vcpu in ctx.mctx.vcpus() {
-                        vcpu.reboot_state().unwrap();
-                        vcpu.activate().unwrap();
-                        // Set BSP to start up
-                        if vcpu.is_bsp() {
-                            vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                            vcpu.set_reg(
-                                bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                                0xfff0,
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }));
-
         None
     };
 
