@@ -29,16 +29,8 @@ struct Main {
     memory: usize,
 }
 
-#[derive(Default)]
-pub struct Opts {
-    /// Should the device state of the instance be dumped (to a named file) when
-    /// the instance reaches the quiesce state.
-    pub dump_state: Option<String>,
-}
-
 pub struct Config {
     inner: Top,
-    pub opts: Opts,
 }
 impl Config {
     pub fn get_name(&self) -> &String {
@@ -140,7 +132,7 @@ impl<'a> Iterator for IterDevs<'a> {
 pub fn parse(path: &str) -> Config {
     let file_data = std::fs::read(path).unwrap();
     let top = toml::from_slice::<Top>(&file_data).unwrap();
-    Config { inner: top, opts: Opts::default() }
+    Config { inner: top }
 }
 
 pub fn parse_bdf(v: &str) -> Option<pci::Bdf> {
