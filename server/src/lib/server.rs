@@ -131,7 +131,7 @@ fn api_to_propolis_state(
         ApiState::Run => PropolisState::Run,
         ApiState::Stop => PropolisState::Halt,
         ApiState::Reboot => PropolisState::Reset,
-        ApiState::MigrateStart => PropolisState::StartMigrate,
+        ApiState::MigrateStart => PropolisState::MigrateStart,
     }
 }
 

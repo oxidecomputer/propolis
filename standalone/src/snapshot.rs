@@ -68,7 +68,7 @@ pub async fn save(
             ));
         })
     };
-    inst.set_target_state(ReqState::StartMigrate)?;
+    inst.set_target_state(ReqState::MigrateStart)?;
     state_change_fut.await?;
 
     // Grab reference to all the devices that are a part of this Instance
@@ -280,6 +280,21 @@ pub async fn restore(
     let (inst, com1_sock) =
         super::setup_instance(log.clone(), config.clone(), Handle::current())
             .context("Failed to create Instance with config in snapshot")?;
+
+    // Mimic state transitions propolis-server would go through for a live migration
+    // TODO(luqmana): refactor and share implementation with propolis-server
+    let state_change_fut = {
+        // Start waiting before we request the transition lest we miss it
+        let inst = inst.clone();
+        task::spawn_blocking(move || {
+            inst.wait_for_state(State::Migrate(
+                MigrateRole::Destination,
+                MigratePhase::Start,
+            ));
+        })
+    };
+    inst.set_target_state(ReqState::MigrateResume)?;
+    state_change_fut.await?;
 
     // Next are the devices
     let device_states = {

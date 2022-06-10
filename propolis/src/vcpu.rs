@@ -134,15 +134,27 @@ impl Vcpu {
     }
 
     /// Set the state of a virtual CPU.
-    pub fn set_run_state(&self, state: u32) -> Result<()> {
+    pub fn set_run_state(
+        &self,
+        state: u32,
+        sipi_vector: Option<u8>,
+    ) -> Result<()> {
         let mut state = bhyve_api::vm_run_state {
             vcpuid: self.id,
             state,
-            sipi_vector: 0,
+            sipi_vector: sipi_vector.unwrap_or(0),
             ..Default::default()
         };
         self.hdl.ioctl(bhyve_api::VM_SET_RUN_STATE, &mut state)?;
         Ok(())
+    }
+
+    /// Get the state of the virtual CPU.
+    pub fn get_run_state(&self) -> Result<bhyve_api::vm_run_state> {
+        let mut state =
+            bhyve_api::vm_run_state { vcpuid: self.id, ..Default::default() };
+        self.hdl.ioctl(bhyve_api::VM_GET_RUN_STATE, &mut state)?;
+        Ok(state)
     }
 
     /// Executes the guest by running the virtual CPU.
@@ -207,6 +219,7 @@ pub mod migrate {
 
     #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct BhyveVcpuV1 {
+        run_state: BhyveVcpuRunStateV1,
         gp_regs: GpRegsV1,
         ctrl_regs: CtrlRegsV1,
         seg_regs: SegRegsV1,
@@ -216,6 +229,13 @@ pub mod migrate {
         ms_regs: Vec<MsrEntryV1>,
         // exception/interrupt state
     }
+
+    #[derive(Clone, Default, Deserialize, Serialize)]
+    pub struct BhyveVcpuRunStateV1 {
+        state: u32,
+        sipi_vector: u8,
+    }
+
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
     pub struct GpRegsV1 {
         pub rax: u64,
@@ -282,6 +302,17 @@ pub mod migrate {
     #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct FpuStateV1 {
         pub blob: Vec<u8>,
+    }
+
+    impl BhyveVcpuRunStateV1 {
+        fn read(vcpu: &Vcpu) -> io::Result<Self> {
+            let state = vcpu.get_run_state()?;
+            Ok(Self { state: state.state, sipi_vector: state.sipi_vector })
+        }
+
+        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
+            vcpu.set_run_state(self.state, Some(self.sipi_vector))
+        }
     }
 
     // VM_REG_GUEST_EFER,
@@ -534,6 +565,7 @@ pub mod migrate {
                 vmm::data::read(hdl, vcpu.cpuid(), bhyve_api::VDC_LAPIC, 1)
                     .unwrap();
             let res = Self {
+                run_state: BhyveVcpuRunStateV1::read(vcpu).unwrap(),
                 gp_regs: GpRegsV1::read(vcpu).unwrap(),
                 ctrl_regs: CtrlRegsV1::read(vcpu).unwrap(),
                 seg_regs: SegRegsV1::read(vcpu).unwrap(),
@@ -562,6 +594,7 @@ pub mod migrate {
                 1,
                 self.lapic,
             )?;
+            self.run_state.write(vcpu)?;
             self.gp_regs.write(vcpu)?;
             self.ctrl_regs.write(vcpu)?;
             self.seg_regs.write(vcpu)?;

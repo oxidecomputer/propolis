@@ -95,6 +95,12 @@ impl State {
         let next = match self {
             State::Initialize => match target {
                 Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
+                Some(
+                    target @ State::Migrate(
+                        MigrateRole::Destination,
+                        MigratePhase::Start,
+                    ),
+                ) => target,
                 _ => State::Boot,
             },
             State::Boot => match target {
@@ -169,7 +175,8 @@ pub enum ReqState {
     Run,
     Reset,
     Halt,
-    StartMigrate,
+    MigrateStart,
+    MigrateResume,
 }
 
 /// Errors that may be returned when an instance is requested to transition
@@ -366,9 +373,13 @@ impl Instance {
                 SuspendKind::Halt,
                 SuspendSource::External,
             ),
-            ReqState::StartMigrate => self.set_target_state_locked(
+            ReqState::MigrateStart => self.set_target_state_locked(
                 &mut inner,
                 State::Migrate(MigrateRole::Source, MigratePhase::Start),
+            ),
+            ReqState::MigrateResume => self.set_target_state_locked(
+                &mut inner,
+                State::Migrate(MigrateRole::Destination, MigratePhase::Start),
             ),
         }
     }
@@ -613,13 +624,23 @@ impl Instance {
                         vcpu.activate().unwrap();
                         // Set BSP to start up
                         if vcpu.is_bsp() {
-                            vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
+                            vcpu.set_run_state(bhyve_api::VRS_RUN, None)
+                                .unwrap();
                             vcpu.set_reg(
                                 bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
                                 0xfff0,
                             )
                             .unwrap();
                         }
+                    }
+                }
+                State::Migrate(
+                    MigrateRole::Destination,
+                    MigratePhase::Start,
+                ) => {
+                    // Activate the vCPUs. We leave setting the vCPU state to the import logic
+                    for vcpu in &inner.machine.as_ref().unwrap().vcpus {
+                        vcpu.activate().unwrap();
                     }
                 }
                 State::Quiesce => {
@@ -643,6 +664,8 @@ impl Instance {
                     // Upon entry to the Run state, details about any previous
                     // suspend become stale.
                     inner.suspend_info = None;
+
+                    self.disp.release();
                 }
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
                     // Give an opportunity to migration requestor to take
@@ -679,10 +702,6 @@ impl Instance {
                     // through the Boot state.
                     if inner.state_target == Some(State::Reset) {
                         inner.state_target = None;
-                    }
-
-                    if matches!(inner.state_target, None | Some(State::Run)) {
-                        self.disp.release();
                     }
                 }
                 State::Destroy => {}
