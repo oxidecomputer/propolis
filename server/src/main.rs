@@ -6,6 +6,7 @@
 )]
 
 use anyhow::anyhow;
+use clap::Parser;
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
 };
@@ -14,25 +15,22 @@ use propolis::usdt::register_probes;
 use slog::info;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use structopt::StructOpt;
 
 use propolis_server::vnc::setup_vnc;
 use propolis_server::{config, server};
 
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "propolis-server",
-    about = "An HTTP server providing access to Propolis"
-)]
+#[derive(Debug, Parser)]
+#[clap(about, version)]
+/// An HTTP server providing access to Propolis
 enum Args {
     /// Generates the OpenAPI specification.
     OpenApi,
     /// Runs the Propolis server.
     Run {
-        #[structopt(parse(from_os_str))]
+        #[clap(parse(from_os_str))]
         cfg: PathBuf,
 
-        #[structopt(name = "PROPOLIS_IP:PORT", parse(try_from_str))]
+        #[clap(name = "PROPOLIS_IP:PORT", parse(try_from_str))]
         propolis_addr: SocketAddr,
     },
 }
@@ -53,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     register_probes().unwrap();
 
     // Command line arguments.
-    let args = Args::from_args();
+    let args = Args::parse();
 
     match args {
         Args::OpenApi => run_openapi()
