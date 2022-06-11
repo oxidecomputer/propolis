@@ -10,6 +10,7 @@ use propolis_server::{
 };
 use slog::{o, Logger};
 use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 mod artifacts;
 
@@ -59,7 +60,10 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
     let mut devices = BTreeMap::new();
     devices.insert("block0".to_string(), dev);
 
-    let vnc_server = setup_vnc(&log);
+    let vnc_server = setup_vnc(
+        &log,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 5900),
+    );
     let config = Config::new(
         artifacts.bootrom.path(),
         Chipset::default(),

@@ -8,7 +8,7 @@ use rfb::rfb::{
 };
 use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
 use slog::{debug, error, o, Logger};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -129,12 +129,15 @@ impl Server for PropolisVncServer {
 
 // Default VNC server configuration.
 // XXX: Do we want to specify this information in the config file?
-pub fn setup_vnc(log: &Logger) -> VncServer<PropolisVncServer> {
+pub fn setup_vnc(
+    log: &Logger,
+    addr: SocketAddr,
+) -> VncServer<PropolisVncServer> {
     let initial_width = 1024;
     let initial_height = 768;
 
     let config = VncServerConfig {
-        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 5900),
+        addr,
         version: ProtoVersion::Rfb38,
         // vncviewer won't work without offering VncAuth, even though it doesn't ask to use
         // it.

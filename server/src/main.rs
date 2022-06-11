@@ -32,6 +32,9 @@ enum Args {
 
         #[clap(name = "PROPOLIS_IP:PORT", parse(try_from_str))]
         propolis_addr: SocketAddr,
+
+        #[clap(name = "VNC_IP:PORT", parse(try_from_str))]
+        vnc_addr: SocketAddr,
     },
 }
 
@@ -56,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     match args {
         Args::OpenApi => run_openapi()
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
-        Args::Run { cfg, propolis_addr } => {
+        Args::Run { cfg, propolis_addr, vnc_addr } => {
             let config = config::parse(&cfg)?;
 
             // Dropshot configuration.
@@ -72,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            let vnc_server = setup_vnc(&log);
+            let vnc_server = setup_vnc(&log, vnc_addr);
             let vnc_server_hdl = vnc_server.clone();
 
             let context =
