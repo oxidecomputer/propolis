@@ -142,7 +142,8 @@ pub fn write_many<T: Sized>(
         vdx_result_len: 0,
         vdx_data: data.as_mut_ptr() as *mut c_void,
     };
-    let bytes_written = ioctl_xlate(hdl, bhyve_api::VM_DATA_WRITE, &mut xfer)?;
-    assert_eq!(bytes_written, write_len);
+    let _bytes_written = ioctl_xlate(hdl, bhyve_api::VM_DATA_WRITE, &mut xfer)?;
+    // TODO: restore once `vmm_data_write_vmm_arch` updates the count on return
+    // assert_eq!(bytes_written, write_len);
     Ok(())
 }

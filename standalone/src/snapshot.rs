@@ -7,9 +7,10 @@
 //! which corresponds the length in bytes of the subsequent value.
 //! Possible tags are:
 //!     0   - VM Config
-//!     1   - VM Device State
-//!     2   - Low Mem
-//!     3   - High Mem
+//!     1   - Global VM State
+//!     2   - VM Device State
+//!     3   - Low Mem
+//!     4   - High Mem
 
 use std::convert::TryInto;
 use std::path::Path;
@@ -36,9 +37,10 @@ use tokio::{task, time};
 use crate::config::Config;
 
 const SNAPSHOT_TAG_CONFIG: u8 = 0;
-const SNAPSHOT_TAG_DEVICE: u8 = 1;
-const SNAPSHOT_TAG_LOMEM: u8 = 2;
-const SNAPSHOT_TAG_HIMEM: u8 = 3;
+const SNAPSHOT_TAG_GLOBAL: u8 = 1;
+const SNAPSHOT_TAG_DEVICE: u8 = 2;
+const SNAPSHOT_TAG_LOMEM: u8 = 3;
+const SNAPSHOT_TAG_HIMEM: u8 = 4;
 
 /// Save a snapshot of the current state of the given instance to disk.
 pub async fn save(
@@ -149,6 +151,14 @@ pub async fn save(
         .await
         .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
 
+    info!(log, "Serializing global VM state");
+    let global_state = {
+        let hdl = dispctx.mctx.hdl();
+        let global_state =
+            hdl.export().context("Failed to export global VM state")?;
+        serde_json::to_vec(&global_state)?
+    };
+
     info!(log, "Serializing VM device state");
     let device_states = {
         let mut device_states = vec![];
@@ -172,7 +182,7 @@ pub async fn save(
             }
             Ok(())
         })?;
-        serde_json::ser::to_vec(&device_states)?
+        serde_json::to_vec(&device_states)?
     };
 
     // TODO(luqmana) clean this up. make mem_bounds do the lo/hi calc? or just use config values?
@@ -214,6 +224,11 @@ pub async fn save(
     file.write_u8(SNAPSHOT_TAG_CONFIG).await?;
     file.write_u64(config_bytes.len().try_into()?).await?;
     file.write_all(&config_bytes).await?;
+
+    info!(log, "Writing global state...");
+    file.write_u8(SNAPSHOT_TAG_GLOBAL).await?;
+    file.write_u64(global_state.len().try_into()?).await?;
+    file.write_all(&global_state).await?;
 
     info!(log, "Writing device state...");
     file.write_u8(SNAPSHOT_TAG_DEVICE).await?;
@@ -296,6 +311,34 @@ pub async fn restore(
     inst.set_target_state(ReqState::MigrateResume)?;
     state_change_fut.await?;
 
+    // Grab a DispCtx to populate the saved state
+    let async_ctx = inst.async_ctx();
+    let dispctx = async_ctx
+        .dispctx()
+        .await
+        .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
+
+    {
+        // Grab the global VM state
+        if file.read_u8().await? != SNAPSHOT_TAG_GLOBAL {
+            anyhow::bail!("Expected global VM state");
+        }
+        let state_len = file.read_u64().await?;
+        let mut global_state = vec![0; state_len.try_into()?];
+        file.read_exact(&mut global_state).await?;
+        let mut deserializer =
+            serde_json::Deserializer::from_slice(&global_state);
+        let deserializer =
+            &mut <dyn erased_serde::Deserializer>::erase(&mut deserializer);
+
+        // Restore it
+        dispctx
+            .mctx
+            .hdl()
+            .import(deserializer)
+            .context("Failed to import global VM state")?;
+    }
+
     // Next are the devices
     let device_states = {
         if file.read_u8().await? != SNAPSHOT_TAG_DEVICE {
@@ -326,12 +369,6 @@ pub async fn restore(
 
     info!(log, "Low RAM: {}, High RAM: {}", lo_mem, hi_mem);
 
-    // We need to peer into the instance to populate the RAM mappings
-    let async_ctx = inst.async_ctx();
-    let dispctx = async_ctx
-        .dispctx()
-        .await
-        .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
     let memctx = dispctx.mctx.memctx();
 
     let lo_mapping = memctx.direct_writable_region_by_name("lowmem")?;
