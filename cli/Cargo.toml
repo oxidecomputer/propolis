@@ -8,13 +8,13 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
+clap = { version = "3.1", features = ["derive"] }
 futures = "0.3"
 libc = "0.2"
 propolis-client = { path = "../client" }
 slog = "2.7"
 slog-async = "2.7"
 slog-term = "2.8"
-structopt = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.17"
 uuid = "1.0.0"

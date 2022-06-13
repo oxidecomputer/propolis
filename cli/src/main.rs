@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
+use clap::{Parser, Subcommand};
 use futures::{future, SinkExt, StreamExt};
 use propolis_client::{
     api::{
@@ -17,34 +18,31 @@ use propolis_client::{
     Client,
 };
 use slog::{o, Drain, Level, Logger};
-use structopt::StructOpt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "propolis-cli",
-    about = "A simple CLI tool to manipulate propolis-server"
-)]
+#[derive(Debug, Parser)]
+#[clap(about, version)]
+/// A simple CLI tool to manipulate propolis-server
 struct Opt {
     /// propolis-server address
-    #[structopt(short, long, parse(try_from_str = resolve_host))]
+    #[clap(short, long, parse(try_from_str = resolve_host))]
     server: IpAddr,
 
     /// propolis-server port
-    #[structopt(short, long, default_value = "12400")]
+    #[clap(short, long, default_value = "12400")]
     port: u16,
 
     /// Enable debugging
-    #[structopt(short, long)]
+    #[clap(short, long)]
     debug: bool,
 
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     cmd: Command,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Create a new propolis instance
     New {
@@ -52,23 +50,23 @@ enum Command {
         name: String,
 
         /// Instance uuid (if specified)
-        #[structopt(short = "u")]
+        #[clap(short = 'u')]
         uuid: Option<Uuid>,
 
         /// Number of vCPUs allocated to instance
-        #[structopt(short = "c", default_value = "4")]
+        #[clap(short = 'c', default_value = "4")]
         vcpus: u8,
 
         /// Memory allocated to instance (MiB)
-        #[structopt(short, default_value = "1024")]
+        #[clap(short, default_value = "1024")]
         memory: u64,
 
         // file with a JSON array of DiskRequest structs
-        #[structopt(long, parse(from_os_str))]
+        #[clap(long, parse(from_os_str))]
         crucible_disks: Option<PathBuf>,
 
         // cloud_init ISO file
-        #[structopt(long, parse(from_os_str))]
+        #[clap(long, parse(from_os_str))]
         cloud_init: Option<PathBuf>,
     },
 
@@ -78,7 +76,7 @@ enum Command {
     /// Transition the instance to a new state
     State {
         /// The requested state
-        #[structopt(parse(try_from_str = parse_state))]
+        #[clap(parse(try_from_str = parse_state))]
         state: InstanceStateRequested,
     },
 
@@ -88,15 +86,15 @@ enum Command {
     /// Migrate instance to new propolis-server
     Migrate {
         /// Destination propolis-server address
-        #[structopt(parse(try_from_str = resolve_host))]
+        #[clap(parse(try_from_str = resolve_host))]
         dst_server: IpAddr,
 
         /// Destination propolis-server port
-        #[structopt(short = "p", default_value = "12400")]
+        #[clap(short = 'p', default_value = "12400")]
         dst_port: u16,
 
         /// Uuid for the destination instance
-        #[structopt(short = "u")]
+        #[clap(short = 'u')]
         dst_uuid: Option<Uuid>,
     },
 }
@@ -462,7 +460,7 @@ async fn migrate_instance(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
     let log = create_logger(&opt);
 
     let addr = SocketAddr::new(opt.server, opt.port);
