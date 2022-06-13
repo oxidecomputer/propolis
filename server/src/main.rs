@@ -27,16 +27,16 @@ enum Args {
     OpenApi,
     /// Runs the Propolis server.
     Run {
-        #[clap(parse(from_os_str))]
+        #[clap(action)]
         cfg: PathBuf,
 
-        #[clap(name = "PROPOLIS_IP:PORT", parse(try_from_str))]
+        #[clap(name = "PROPOLIS_IP:PORT", action)]
         propolis_addr: SocketAddr,
 
         #[clap(
             name = "VNC_IP:PORT",
-            parse(try_from_str),
             default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 5900),
+            action
         )]
         vnc_addr: SocketAddr,
     },
