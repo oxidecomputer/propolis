@@ -201,7 +201,13 @@ impl BlockDevice {
                     })?;
 
                 let readonly: bool = || -> Option<bool> {
-                    self.options.get("readonly")?.as_str()?.parse().ok()
+                    match self.options.get("readonly") {
+                        Some(toml::Value::Boolean(read_only)) => {
+                            Some(*read_only)
+                        }
+                        Some(toml::Value::String(v)) => v.parse().ok(),
+                        _ => None,
+                    }
                 }()
                 .unwrap_or(false);
                 let nworkers = NonZeroUsize::new(8).unwrap();
