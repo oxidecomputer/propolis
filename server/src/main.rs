@@ -13,7 +13,7 @@ use dropshot::{
 use futures::join;
 use propolis::usdt::register_probes;
 use slog::info;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use propolis_server::vnc::setup_vnc;
@@ -33,7 +33,11 @@ enum Args {
         #[clap(name = "PROPOLIS_IP:PORT", parse(try_from_str))]
         propolis_addr: SocketAddr,
 
-        #[clap(name = "VNC_IP:PORT", parse(try_from_str))]
+        #[clap(
+            name = "VNC_IP:PORT",
+            parse(try_from_str),
+            default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 5900),
+        )]
         vnc_addr: SocketAddr,
     },
 }
