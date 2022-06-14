@@ -270,6 +270,7 @@ pub mod migrate {
         pub dr3: u64,
         pub dr6: u64,
         pub dr7: u64,
+        pub xcr0: u64,
     }
 
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
@@ -381,6 +382,7 @@ pub mod migrate {
                 dr3: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR3)?,
                 dr6: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR6)?,
                 dr7: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR7)?,
+                xcr0: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_XCR0)?,
             })
         }
 
@@ -395,6 +397,7 @@ pub mod migrate {
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR3, self.dr3)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR6, self.dr6)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR7, self.dr7)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_XCR0, self.xcr0)?;
             Ok(())
         }
     }
