@@ -211,9 +211,15 @@ impl Migrate for PciVirtioBlock {
         deserializer: &mut dyn erased_serde::Deserializer,
         _ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::PciVirtioBlockV1 =
+        let deserialized: migrate::PciVirtioBlockV1 =
             erased_serde::deserialize(deserializer)?;
+
+        // TODO: separate pci and virtio state into separate fields?
+        // Kinda cludgy to give the whole thing to virtio_state and have it return
+        // just the pci bits.
+        let pci_state =
+            self.virtio_state.import(deserialized.pci_virtio_state)?;
+        self.pci_state.import(pci_state)?;
         Ok(())
     }
 }

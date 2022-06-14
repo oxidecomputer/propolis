@@ -10,6 +10,7 @@ use super::probes;
 use super::VirtioIntr;
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
 #[repr(C)]
@@ -316,6 +317,40 @@ impl VirtQueue {
             used_valid: used.valid,
             used_idx: used.used_idx.0,
         }
+    }
+
+    pub fn import(
+        &self,
+        state: migrate::VirtQueueV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut ctrl = self.ctrl.lock().unwrap();
+        let mut avail = self.avail.lock().unwrap();
+        let mut used = self.used.lock().unwrap();
+
+        if self.id != state.id {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "VirtQueue: mismatched IDs {} vs {}",
+                self.id, state.id,
+            )));
+        }
+        if self.size != state.size {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "VirtQueue: mismatched size {} vs {}",
+                self.size, state.size,
+            )));
+        }
+
+        ctrl.gpa_desc.0 = state.descr_gpa;
+
+        avail.gpa_idx.0 = state.avail_gpa;
+        avail.valid = state.avail_valid;
+        avail.cur_avail_idx.0 = state.avail_cur_idx;
+
+        used.gpa_idx.0 = state.used_gpa;
+        used.valid = state.used_valid;
+        used.used_idx.0 = state.used_idx;
+
+        Ok(())
     }
 }
 

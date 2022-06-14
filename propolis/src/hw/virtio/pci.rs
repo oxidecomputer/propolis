@@ -11,6 +11,7 @@ use crate::dispatch::DispCtx;
 use crate::hw::ids::pci::VENDOR_VIRTIO;
 use crate::hw::pci;
 use crate::intr_pins::IntrPin;
+use crate::migrate::MigrateStateError;
 use crate::util::regmap::RegMap;
 
 use lazy_static::lazy_static;
@@ -75,6 +76,23 @@ impl VirtioState {
             msix_cfg_vec: self.msix_cfg_vec,
             msix_queue_vec: self.msix_queue_vec.clone(),
         }
+    }
+    pub fn import(
+        &mut self,
+        state: migrate::VirtioStateV1,
+    ) -> Result<(), MigrateStateError> {
+        self.status = Status::from_bits(state.status).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "virtio status: failed to import saved value {:#x}",
+                state.status
+            ))
+        })?;
+        self.queue_sel = state.queue_sel;
+        self.nego_feat = state.nego_feat;
+        self.msix_cfg_vec = state.msix_cfg_vec;
+        self.msix_queue_vec = state.msix_queue_vec;
+        // TODO: intr_mode*
+        Ok(())
     }
 }
 
@@ -497,6 +515,22 @@ impl PciVirtioState {
             queues,
             isr: isr_inner.value != 0,
         }
+    }
+    pub fn import(
+        &self,
+        state: migrate::PciVirtioStateV1,
+    ) -> Result<pci::migrate::PciStateV1, MigrateStateError> {
+        let mut inner = self.state.lock().unwrap();
+        inner.import(state.state)?;
+
+        let mut isr_inner = self.isr_state.inner.lock().unwrap();
+        isr_inner.value = state.isr as u8;
+
+        for (q, state) in self.queues[..].iter().zip(state.queues.into_iter()) {
+            q.import(state)?;
+        }
+
+        Ok(state.pci)
     }
 }
 
