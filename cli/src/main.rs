@@ -27,15 +27,15 @@ use uuid::Uuid;
 /// A simple CLI tool to manipulate propolis-server
 struct Opt {
     /// propolis-server address
-    #[clap(short, long, parse(try_from_str = resolve_host))]
+    #[clap(short, long, value_parser = resolve_host)]
     server: IpAddr,
 
     /// propolis-server port
-    #[clap(short, long, default_value = "12400")]
+    #[clap(short, long, default_value = "12400", action)]
     port: u16,
 
     /// Enable debugging
-    #[clap(short, long)]
+    #[clap(short, long, action)]
     debug: bool,
 
     #[clap(subcommand)]
@@ -47,26 +47,27 @@ enum Command {
     /// Create a new propolis instance
     New {
         /// Instance name
+        #[clap(action)]
         name: String,
 
         /// Instance uuid (if specified)
-        #[clap(short = 'u')]
+        #[clap(short = 'u', action)]
         uuid: Option<Uuid>,
 
         /// Number of vCPUs allocated to instance
-        #[clap(short = 'c', default_value = "4")]
+        #[clap(short = 'c', default_value = "4", action)]
         vcpus: u8,
 
         /// Memory allocated to instance (MiB)
-        #[clap(short, default_value = "1024")]
+        #[clap(short, default_value = "1024", action)]
         memory: u64,
 
         // file with a JSON array of DiskRequest structs
-        #[clap(long, parse(from_os_str))]
+        #[clap(long, action)]
         crucible_disks: Option<PathBuf>,
 
         // cloud_init ISO file
-        #[clap(long, parse(from_os_str))]
+        #[clap(long, action)]
         cloud_init: Option<PathBuf>,
     },
 
@@ -76,7 +77,7 @@ enum Command {
     /// Transition the instance to a new state
     State {
         /// The requested state
-        #[clap(parse(try_from_str = parse_state))]
+        #[clap(value_parser = parse_state)]
         state: InstanceStateRequested,
     },
 
@@ -86,15 +87,15 @@ enum Command {
     /// Migrate instance to new propolis-server
     Migrate {
         /// Destination propolis-server address
-        #[clap(parse(try_from_str = resolve_host))]
+        #[clap(value_parser = resolve_host)]
         dst_server: IpAddr,
 
         /// Destination propolis-server port
-        #[clap(short = 'p', default_value = "12400")]
+        #[clap(short = 'p', default_value = "12400", action)]
         dst_port: u16,
 
         /// Uuid for the destination instance
-        #[clap(short = 'u')]
+        #[clap(short = 'u', action)]
         dst_uuid: Option<Uuid>,
     },
 }
