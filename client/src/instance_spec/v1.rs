@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 /// A kind of virtual chipset.
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Chipset {
-    I440Fx,
+    /// An Intel 440FX-compatible chipset.
+    I440Fx { enable_pcie: bool },
 }
 
 /// A VM's mainboard.
@@ -38,15 +39,15 @@ pub enum StorageBackendKind {
     /// serialized [`crucible::VolumeConstructionRequest`] stored as a string
     /// (so that changes to the construction request don't change the format of
     /// this payload).
-    Crucible(u64, String),
+    Crucible { gen: u64, serialized_req: String },
 
     /// A device backed by a file on the host machine. The payload is a path to
     /// this file.
-    File(String),
+    File { path: String },
 
     /// A device backed by an in-memory buffer in the VMM process. The payload
     /// is the buffer's contents.
-    InMemory(Vec<u8>),
+    InMemory { bytes: Vec<u8> },
 }
 
 /// A storage backend.
@@ -157,5 +158,5 @@ pub struct InstanceSpec {
     pub network_devices: BTreeMap<String, NetworkDevice>,
     pub network_backends: BTreeMap<String, NetworkBackend>,
     pub serial_ports: BTreeMap<String, SerialPort>,
-    pub pci_pci_bridges: BTreeMap<String, SerialPort>,
+    pub pci_pci_bridges: BTreeMap<String, PciPciBridge>,
 }
