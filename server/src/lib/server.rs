@@ -3,7 +3,7 @@
 use anyhow::Result;
 use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
-    HttpResponseUpdatedNoContent, RequestContext, TypedBody,
+    HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
 use futures::future::Fuse;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -11,6 +11,8 @@ use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
 use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
@@ -936,6 +938,124 @@ async fn instance_migrate_status(
         .map(HttpResponseOk)
 }
 
+#[derive(Serialize, JsonSchema)]
+struct InstanceGetInventoryListResult {
+    entity_names: Vec<String>,
+}
+
+/// Return a list of inventory entity instance names
+#[endpoint {
+    method = GET,
+    path = "/instance/inventory",
+}]
+async fn instance_get_inventory_entity_list(
+    rqctx: Arc<RequestContext<Context>>,
+) -> Result<HttpResponseOk<InstanceGetInventoryListResult>, HttpError> {
+    let context = rqctx.context().context.lock().await;
+
+    let context = context.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+
+    Ok(HttpResponseOk(InstanceGetInventoryListResult {
+        entity_names: context.instance.inv().get_names(),
+    }))
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct InstanceGetInventoryPathParam {
+    name: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct InstanceGetInventoryResult {
+    type_name: String,
+}
+
+/// Get an inventory entity by instance name
+#[endpoint {
+    method = GET,
+    path = "/instance/inventory/{name}",
+}]
+async fn instance_get_inventory_entity(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<InstanceGetInventoryPathParam>,
+) -> Result<HttpResponseOk<InstanceGetInventoryResult>, HttpError> {
+    let context = rqctx.context().context.lock().await;
+    let path_params = path_params.into_inner();
+
+    let context = context.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+
+    let entity =
+        context.instance.inv().get_by_name(&path_params.name).ok_or_else(
+            || {
+                let s = format!("no entity for {}!", path_params.name);
+                HttpError::for_not_found(Some(s.clone()), s)
+            },
+        )?;
+
+    Ok(HttpResponseOk(InstanceGetInventoryResult {
+        type_name: entity.type_name().to_string(),
+    }))
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SnapshotRequestPathParams {
+    name: String,
+    snapshot_name: String,
+}
+
+/// Issue a snapshot request to a crucible backend inventory entity
+///
+/// Fails if the concrete type is not propolis::block::CrucibleBackend.
+#[endpoint {
+    method = POST,
+    path = "/instance/inventory/{name}/snapshot/{snapshot_name}",
+}]
+async fn instance_issue_crucible_snapshot_request(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<SnapshotRequestPathParams>,
+) -> Result<HttpResponseOk<()>, HttpError> {
+    let context = rqctx.context().context.lock().await;
+    let path_params = path_params.into_inner();
+
+    let context = context.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+
+    // Does the entity exist?
+    context.instance.inv().get_by_name(&path_params.name).ok_or_else(
+        || {
+            let s = format!("no entity for {}!", path_params.name);
+            HttpError::for_not_found(Some(s.clone()), s)
+        },
+    )?;
+
+    // Is it a crucible backend?
+    let crucible: Arc<propolis::block::CrucibleBackend> =
+        context.instance.inv().get_concrete_by_name(&path_params.name).ok_or_else(
+            || {
+                let s = format!("entity {} not crucible backend!", path_params.name);
+                HttpError::for_not_found(Some(s.clone()), s)
+            },
+        )?;
+
+    crucible.snapshot(path_params.snapshot_name)
+        .map_err(|e|
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+        )?;
+
+    Ok(HttpResponseOk(()))
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
@@ -947,5 +1067,9 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_serial_detach).unwrap();
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
+    api.register(instance_get_inventory_entity_list).unwrap();
+    api.register(instance_get_inventory_entity).unwrap();
+    api.register(instance_issue_crucible_snapshot_request).unwrap();
+
     api
 }
