@@ -192,7 +192,7 @@ impl NvmeCtrl {
         base: GuestAddr,
         size: u32,
         ctx: &DispCtx,
-    ) -> Result<(), NvmeError> {
+    ) -> Result<Arc<CompQueue>, NvmeError> {
         if (cqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidCompQueue(cqid));
         }
@@ -204,9 +204,9 @@ impl NvmeCtrl {
             .as_ref()
             .ok_or(NvmeError::MsixHdlUnavailable)?
             .clone();
-        let cq = CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?;
-        self.cqs[cqid as usize] = Some(Arc::new(cq));
-        Ok(())
+        let cq = Arc::new(CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?);
+        self.cqs[cqid as usize] = Some(cq.clone());
+        Ok(cq)
     }
 
     /// Creates and stores a new submission queue ([`SubQueue`]) for the controller.
@@ -220,7 +220,7 @@ impl NvmeCtrl {
         base: GuestAddr,
         size: u32,
         ctx: &DispCtx,
-    ) -> Result<(), NvmeError> {
+    ) -> Result<Arc<SubQueue>, NvmeError> {
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
         }
@@ -229,8 +229,8 @@ impl NvmeCtrl {
         }
         let cq = self.get_cq(cqid)?;
         let sq = SubQueue::new(sqid, cq, size, base, ctx)?;
-        self.sqs[sqid as usize] = Some(sq);
-        Ok(())
+        self.sqs[sqid as usize] = Some(sq.clone());
+        Ok(sq)
     }
 
     /// Removes the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
@@ -406,6 +406,60 @@ impl NvmeCtrl {
     /// Convert some number of logical blocks to bytes with the currently active LBA data size
     fn nlb_to_size(&self, b: usize) -> usize {
         b << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads
+    }
+
+    fn export(&self) -> migrate::NvmeCtrlV1 {
+        let cqs = self.cqs.iter().flatten().map(|cq| cq.export()).collect();
+        let sqs = self.sqs.iter().flatten().map(|sq| sq.export()).collect();
+        migrate::NvmeCtrlV1 {
+            cap: self.ctrl.cap.0,
+            cc: self.ctrl.cc.0,
+            csts: self.ctrl.csts.0,
+            aqa: self.ctrl.aqa.0,
+            acq_base: self.ctrl.admin_cq_base,
+            asq_base: self.ctrl.admin_sq_base,
+            cqs,
+            sqs,
+        }
+    }
+
+    fn import(
+        &mut self,
+        state: migrate::NvmeCtrlV1,
+        ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: bitstruct doesn't have a validation routine?
+        self.ctrl.cap.0 = state.cap;
+        self.ctrl.cc.0 = state.cc;
+        self.ctrl.csts.0 = state.csts;
+        self.ctrl.aqa.0 = state.aqa;
+
+        self.ctrl.admin_cq_base = state.acq_base;
+        self.ctrl.admin_sq_base = state.asq_base;
+
+        for cq in state.cqs {
+            self.create_cq(cq.id, cq.iv, GuestAddr(cq.base), cq.size, ctx)
+                .map_err(|e| {
+                    MigrateStateError::ImportFailed(format!(
+                        "NVMe: failed to create CQ: {}",
+                        e
+                    ))
+                })?
+                .import(cq)?;
+        }
+
+        for sq in state.sqs {
+            self.create_sq(sq.id, sq.cq_id, GuestAddr(sq.base), sq.size, ctx)
+                .map_err(|e| {
+                    MigrateStateError::ImportFailed(format!(
+                        "NVMe: failed to create SQ: {}",
+                        e
+                    ))
+                })?
+                .import(sq)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -868,7 +922,6 @@ impl Entity for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
     }
-
     fn reset(&self, _ctx: &DispCtx) {
         let mut ctrl = self.state.lock().unwrap();
         ctrl.reset();
@@ -899,18 +952,27 @@ impl Entity for PciNvme {
 }
 impl Migrate for PciNvme {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::PciNvmeStateV1 { pci: self.pci_state.export() })
+        let ctrl = self.state.lock().unwrap();
+        Box::new(migrate::PciNvmeStateV1 {
+            pci: self.pci_state.export(),
+            ctrl: ctrl.export(),
+        })
     }
 
     fn import(
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::PciNvmeStateV1 =
+        let deserialized: migrate::PciNvmeStateV1 =
             erased_serde::deserialize(deserializer)?;
+
+        self.pci_state.import(deserialized.pci)?;
+
+        let mut ctrl = self.state.lock().unwrap();
+        ctrl.import(deserialized.ctrl, ctx)?;
+
         Ok(())
     }
 }
@@ -919,10 +981,26 @@ pub mod migrate {
     use crate::hw::pci::migrate::PciStateV1;
     use serde::{Deserialize, Serialize};
 
+    use super::queue::migrate::{NvmeCompQueueV1, NvmeSubQueueV1};
+
     #[derive(Deserialize, Serialize)]
     pub struct PciNvmeStateV1 {
         pub pci: PciStateV1,
-        // TODO: Add the rest of the controller state
+        pub ctrl: NvmeCtrlV1,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    pub struct NvmeCtrlV1 {
+        pub cap: u64,
+        pub cc: u32,
+        pub csts: u32,
+        pub aqa: u32,
+
+        pub acq_base: u64,
+        pub asq_base: u64,
+
+        pub cqs: Vec<NvmeCompQueueV1>,
+        pub sqs: Vec<NvmeSubQueueV1>,
     }
 }
 
