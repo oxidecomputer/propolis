@@ -33,9 +33,11 @@ pub struct CrucibleBackend {
 impl CrucibleBackend {
     pub fn create(
         gen: u64,
-        request: VolumeConstructionRequest,
+        serialized_request: &str,
         read_only: bool,
     ) -> Result<Arc<Self>> {
+        let request: VolumeConstructionRequest =
+            serde_json::from_str(serialized_request)?;
         CrucibleBackend::_create(gen, request, read_only)
             .map_err(map_crucible_error_to_io)
     }

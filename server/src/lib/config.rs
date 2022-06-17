@@ -6,14 +6,11 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use propolis::hw::pci::topology::BridgeDescription;
-use propolis::hw::pci::Bdf;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use propolis::block;
 use propolis::dispatch::Dispatcher;
-use propolis::hw::pci;
 use propolis::inventory;
 
 /// Errors which may be returned when parsing the server configuration.
@@ -82,21 +79,16 @@ impl Config {
         &self.chipset
     }
 
-    pub fn get_pci_bridge_descriptions(
-        &self,
-    ) -> Vec<pci::topology::BridgeDescription> {
-        let mut descs = Vec::with_capacity(self.pci_bridges.len());
-        for bridge in &self.pci_bridges {
-            descs.push(BridgeDescription::new(
-                pci::topology::LogicalBusId(bridge.downstream_bus),
-                Bdf::from_str(bridge.pci_path.as_str()).unwrap(),
-            ));
-        }
-        descs
-    }
-
     pub fn devs(&self) -> IterDevs {
         IterDevs { inner: self.devices.iter() }
+    }
+
+    pub fn block_devices(&self) -> IterBlockDevs {
+        IterBlockDevs { inner: self.block_devs.iter() }
+    }
+
+    pub fn get_pci_bridges(&self) -> IterPciBridges {
+        IterPciBridges { inner: self.pci_bridges.iter() }
     }
 
     pub fn create_block_backend(
@@ -234,6 +226,30 @@ pub struct IterDevs<'a> {
 
 impl<'a> Iterator for IterDevs<'a> {
     type Item = (&'a String, &'a Device);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+pub struct IterBlockDevs<'a> {
+    inner: btree_map::Iter<'a, String, BlockDevice>,
+}
+
+impl<'a> Iterator for IterBlockDevs<'a> {
+    type Item = (&'a String, &'a BlockDevice);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+pub struct IterPciBridges<'a> {
+    inner: std::slice::Iter<'a, PciBridge>,
+}
+
+impl<'a> Iterator for IterPciBridges<'a> {
+    type Item = &'a PciBridge;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
