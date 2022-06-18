@@ -112,7 +112,7 @@ pub struct NetworkDevice {
 
 /// The number of the serial port, which determines what I/O ports the guest
 /// can use to access it.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
 pub enum SerialPortNumber {
     Com1,
     Com2,
