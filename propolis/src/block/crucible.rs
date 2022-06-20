@@ -83,15 +83,12 @@ impl CrucibleBackend {
         // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
         // Remove that when Crucible changes over to the tokio mpsc.
         let mut waiter = tokio::task::block_in_place(|| {
-            self.block_io.flush(Some(
-                SnapshotDetails {
-                    snapshot_name,
-                }))
-        }).map_err(map_crucible_error_to_io)?;
+            self.block_io.flush(Some(SnapshotDetails { snapshot_name }))
+        })
+        .map_err(map_crucible_error_to_io)?;
 
-        tokio::task::block_in_place(|| {
-            waiter.block_wait()
-        }).map_err(map_crucible_error_to_io)?;
+        tokio::task::block_in_place(|| waiter.block_wait())
+            .map_err(map_crucible_error_to_io)?;
 
         Ok(())
     }

@@ -1032,26 +1032,25 @@ async fn instance_issue_crucible_snapshot_request(
     })?;
 
     // Does the entity exist?
-    context.instance.inv().get_by_name(&path_params.name).ok_or_else(
-        || {
-            let s = format!("no entity for {}!", path_params.name);
-            HttpError::for_not_found(Some(s.clone()), s)
-        },
-    )?;
+    context.instance.inv().get_by_name(&path_params.name).ok_or_else(|| {
+        let s = format!("no entity for {}!", path_params.name);
+        HttpError::for_not_found(Some(s.clone()), s)
+    })?;
 
     // Is it a crucible backend?
-    let crucible: Arc<propolis::block::CrucibleBackend> =
-        context.instance.inv().get_concrete_by_name(&path_params.name).ok_or_else(
-            || {
-                let s = format!("entity {} not crucible backend!", path_params.name);
-                HttpError::for_not_found(Some(s.clone()), s)
-            },
-        )?;
+    let crucible: Arc<propolis::block::CrucibleBackend> = context
+        .instance
+        .inv()
+        .get_concrete_by_name(&path_params.name)
+        .ok_or_else(|| {
+            let s =
+                format!("entity {} not crucible backend!", path_params.name);
+            HttpError::for_not_found(Some(s.clone()), s)
+        })?;
 
-    crucible.snapshot(path_params.snapshot_name)
-        .map_err(|e|
-            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-        )?;
+    crucible.snapshot(path_params.snapshot_name).map_err(|e| {
+        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+    })?;
 
     Ok(HttpResponseOk(()))
 }

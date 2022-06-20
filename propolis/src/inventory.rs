@@ -129,7 +129,10 @@ impl Inventory {
     /// Access the concrete type of an entity by name.
     ///
     /// Returns the entity if it exists and has the requested concrete type.
-    pub fn get_concrete_by_name<T: Entity>(&self, instance_name: &str) -> Option<Arc<T>> {
+    pub fn get_concrete_by_name<T: Entity>(
+        &self,
+        instance_name: &str,
+    ) -> Option<Arc<T>> {
         let inv = self.inner.lock().unwrap();
         inv.get_concrete_by_name(instance_name)
     }
@@ -303,7 +306,10 @@ impl InventoryInner {
     /// Access the concrete type of an entity by name.
     ///
     /// Returns the entity if it exists and has the requested concrete type.
-    pub fn get_concrete_by_name<T: Entity>(&self, instance_name: &str) -> Option<Arc<T>> {
+    pub fn get_concrete_by_name<T: Entity>(
+        &self,
+        instance_name: &str,
+    ) -> Option<Arc<T>> {
         let id = self.reverse_name.get(instance_name)?;
         self.entities.get(&id)?.concrete()
     }

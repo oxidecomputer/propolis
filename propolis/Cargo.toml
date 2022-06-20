@@ -21,9 +21,7 @@ viona_api = { path = "../viona-api" }
 usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-#crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "8314eeddd228ec0d76cefa40c4a41d3e2611ac18", optional = true }
-#crucible = { path = "/home/jwm/src/oxidecomputer/crucible/upstairs", optional = true }
-crucible = { path = "../../crucible/upstairs", optional = true }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "6dac857b553203f8ab938b0acdbbed5bc1d1aa89", optional = true }
 anyhow = "1"
 slog = "2.7"
 serde = { version = "1" }
