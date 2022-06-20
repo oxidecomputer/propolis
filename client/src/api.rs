@@ -284,3 +284,8 @@ pub enum NetworkInterfaceAttachmentState {
     Detached,
     Faulted,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceGetInventoryResult {
+    pub type_name: String,
+}

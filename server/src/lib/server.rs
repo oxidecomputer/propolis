@@ -969,11 +969,6 @@ struct InstanceGetInventoryPathParam {
     name: String,
 }
 
-#[derive(Serialize, JsonSchema)]
-struct InstanceGetInventoryResult {
-    type_name: String,
-}
-
 /// Get an inventory entity by instance name
 #[endpoint {
     method = GET,
@@ -982,7 +977,7 @@ struct InstanceGetInventoryResult {
 async fn instance_get_inventory_entity(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<InstanceGetInventoryPathParam>,
-) -> Result<HttpResponseOk<InstanceGetInventoryResult>, HttpError> {
+) -> Result<HttpResponseOk<api::InstanceGetInventoryResult>, HttpError> {
     let context = rqctx.context().context.lock().await;
     let path_params = path_params.into_inner();
 
@@ -1000,7 +995,7 @@ async fn instance_get_inventory_entity(
             },
         )?;
 
-    Ok(HttpResponseOk(InstanceGetInventoryResult {
+    Ok(HttpResponseOk(api::InstanceGetInventoryResult {
         type_name: entity.type_name().to_string(),
     }))
 }
