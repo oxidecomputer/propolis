@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::config;
 
+/// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub enum SpecBuilderError {
     #[error("A device with name {0} already exists")]
@@ -42,6 +43,11 @@ pub enum SpecBuilderError {
     ConfigTomlError(String),
 }
 
+/// A type of PCI device. Device numbers on the PCI bus are partitioned by slot
+/// type. If a client asks to attach a device of type X to PCI slot Y, the
+/// server will assign the Yth device number in X's partition. The partitioning
+/// scheme is defined by the implementation of the `slot_to_pci_path` utility
+/// function.
 #[derive(Clone, Copy, Debug)]
 pub enum SlotType {
     NIC,
@@ -50,7 +56,7 @@ pub enum SlotType {
 }
 
 /// Translates a device type and PCI slot (as presented in an instance creation
-/// request) into a concrete PCI path.
+/// request) into a concrete PCI path. See the documentation for [`SlotType`].
 fn slot_to_pci_path(slot: api::Slot, ty: SlotType) -> Result<PciPath> {
     match ty {
         // Slots for NICS: 0x08 -> 0x0F
@@ -63,12 +69,15 @@ fn slot_to_pci_path(slot: api::Slot, ty: SlotType) -> Result<PciPath> {
     }
 }
 
+/// A helper for building instance specs out of component parts.
 pub struct SpecBuilder {
     spec: LatestInstanceSpec,
     pci_paths: BTreeSet<PciPath>,
 }
 
 impl SpecBuilder {
+    /// Creates a new spec builder from an instance's properties (supplied via
+    /// the instance APIs) and the config TOML supplied at server startup.
     pub fn new(
         properties: &InstanceProperties,
         config: &config::Config,
@@ -116,6 +125,8 @@ impl SpecBuilder {
         }
     }
 
+    /// Converts an HTTP API request to add a NIC to an instance into
+    /// device/backend entries in the spec under construction.
     pub fn add_nic_from_request(
         &mut self,
         nic: &NetworkInterfaceRequest,
@@ -156,6 +167,8 @@ impl SpecBuilder {
         Ok(())
     }
 
+    /// Converts an HTTP API request to add a disk to an instance into
+    /// device/backend entries in the spec under construction.
     pub fn add_disk_from_request(&mut self, disk: &DiskRequest) -> Result<()> {
         let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
         self.register_pci_device(pci_path)?;
@@ -216,6 +229,8 @@ impl SpecBuilder {
         Ok(())
     }
 
+    /// Converts an HTTP API request to add a cloud-init disk to an instance
+    /// into device/backend entries in the spec under construction.
     pub fn add_cloud_init_from_request(
         &mut self,
         cloud_init_bytes: &str,
@@ -453,6 +468,8 @@ impl SpecBuilder {
         Ok(())
     }
 
+    /// Adds to the spec under construction all the devices and backends
+    /// specified in the supplied configuration TOML.
     pub fn add_devices_from_config(
         &mut self,
         config: &config::Config,
@@ -492,6 +509,7 @@ impl SpecBuilder {
         Ok(())
     }
 
+    /// Adds to the spec under construction a serial port specification.
     pub fn add_serial_port(
         &mut self,
         port: SerialPortNumber,
