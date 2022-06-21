@@ -40,6 +40,14 @@
 //! `InstanceSpec::StorageDevice` instead of `InstanceSpec::StorageDeviceV1`,
 //! unless for some reason they explicitly need to refer to a specific spec
 //! version's data types).
+//!
+//! Specs may sometimes contain fields that Propolis passes through to other
+//! services (e.g. a backend may require a backend-specific configuration
+//! structure that's defined in the backend's API). To allow backends to have
+//! their own compatibility rules and avoid cases where a change to a "foreign"
+//! type inadvertently changes an immutable spec definition, instance specs
+//! store foreign objects in serialized form instead of including foreign types
+//! directly in spec objects.
 
 use serde::{Deserialize, Serialize};
 

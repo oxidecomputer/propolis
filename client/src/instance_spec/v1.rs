@@ -36,9 +36,7 @@ pub struct Board {
 #[derive(Deserialize, Serialize, Debug)]
 pub enum StorageBackendKind {
     /// A Crucible-backed device, containing a generation number and a
-    /// serialized [`crucible::VolumeConstructionRequest`] stored as a string
-    /// (so that changes to the construction request don't change the format of
-    /// this payload).
+    /// serialized [`crucible::VolumeConstructionRequest`].
     Crucible { gen: u64, serialized_req: String },
 
     /// A device backed by a file on the host machine. The payload is a path to
