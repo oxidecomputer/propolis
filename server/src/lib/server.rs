@@ -251,8 +251,8 @@ async fn instance_ensure(
     ] {
         spec_builder.add_serial_port(port, true).map_err(|e| {
             HttpError::for_internal_error(format!(
-                "failed to add serial port to spec: {}",
-                e
+                "failed to add serial port {:?} to spec: {}",
+                port, e
             ))
         })?;
     }
