@@ -5,14 +5,14 @@ use crate::instance_spec::common::PciPath;
 use serde::{Deserialize, Serialize};
 
 /// A kind of virtual chipset.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
 pub enum Chipset {
     /// An Intel 440FX-compatible chipset.
     I440Fx { enable_pcie: bool },
 }
 
 /// A VM's mainboard.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct Board {
     /// The number of virtual logical processors attached to this VM.
     pub cpus: u8,
@@ -33,7 +33,7 @@ pub struct Board {
 /// A kind of storage backend: a connection to on-sled resources or other
 /// services that provide the functions storage devices need to implement their
 /// contracts.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub enum StorageBackendKind {
     /// A Crucible-backed device, containing a generation number and a
     /// serialized [`crucible::VolumeConstructionRequest`].
@@ -49,7 +49,7 @@ pub enum StorageBackendKind {
 }
 
 /// A storage backend.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct StorageBackend {
     /// The kind of storage backend this is.
     pub kind: StorageBackendKind,
@@ -60,14 +60,14 @@ pub struct StorageBackend {
 
 /// A kind of storage device: the sort of virtual device interface the VMM
 /// exposes to guest software.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
 pub enum StorageDeviceKind {
     Virtio,
     Nvme,
 }
 
 /// A storage device.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct StorageDevice {
     /// The device interface to present to the guest.
     pub kind: StorageDeviceKind,
@@ -89,13 +89,13 @@ pub struct StorageDevice {
 
 /// A network backend, specifically a virtual NIC on the host system for which
 /// Virtio network adapter integration is enabled.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct NetworkBackend {
     /// The name of the vNIC to connect to.
     pub vnic_name: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct NetworkDevice {
     /// The name of the device's backend.
     pub backend_name: String,
@@ -119,7 +119,7 @@ pub enum SerialPortNumber {
 }
 
 /// A serial port device.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
 pub struct SerialPort {
     /// The serial port number for this port.
     pub num: SerialPortNumber,
@@ -131,7 +131,7 @@ pub struct SerialPort {
 }
 
 /// A PCI-PCI bridge.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
 pub struct PciPciBridge {
     /// The logical bus number of this bridge's downstream bus. Other devices
     /// may use this bus number in their PCI paths to indicate they should be
@@ -147,7 +147,7 @@ pub struct PciPciBridge {
 ///
 /// Named devices and backends are stored in maps with object names as keys
 /// and devices/backends as values.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct InstanceSpec {
     pub board: Board,
 
