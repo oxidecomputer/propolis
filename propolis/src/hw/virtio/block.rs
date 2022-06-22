@@ -201,7 +201,7 @@ impl Entity for PciVirtioBlock {
 impl Migrate for PciVirtioBlock {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciVirtioBlockV1 {
-            pci_virtio_state: self.virtio_state.export(&self.pci_state),
+            pci_virtio_state: PciVirtio::export(self),
         })
     }
 
@@ -214,14 +214,7 @@ impl Migrate for PciVirtioBlock {
         let deserialized: migrate::PciVirtioBlockV1 =
             erased_serde::deserialize(deserializer)?;
 
-        // TODO: separate pci and virtio state into separate fields?
-        // Kinda cludgy to give the whole thing to virtio_state and have it return
-        // just the pci bits.
-        let hdl = self.pci_state.msix_hdl().unwrap();
-        let pci_state =
-            self.virtio_state.import(deserialized.pci_virtio_state, hdl)?;
-        self.pci_state.import(pci_state)?;
-        Ok(())
+        PciVirtio::import(self, deserialized.pci_virtio_state)
     }
 }
 

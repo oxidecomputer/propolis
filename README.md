@@ -11,8 +11,8 @@ interface presented by the bhyve kernel component, running on recent illumos
 bits is required.
 
 To exercise the snapshot/restore or live migration functionality a build
-including [14635](https://www.illumos.org/issues/14635)
-([54cf5b6](https://github.com/illumos/illumos-gate/commit/54cf5b63effe805271443d5dd7afd37ec184fbab))
+including [14755](https://www.illumos.org/issues/14755)
+([a26f9c1](https://github.com/illumos/illumos-gate/commit/a26f9c149bc8e4c9206303674cdef16edec1ca70))
 is required.
 
 To build, run:

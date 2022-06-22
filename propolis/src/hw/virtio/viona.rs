@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Error, ErrorKind};
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::common::*;
@@ -17,7 +18,7 @@ use crate::vmm::VmmHdl;
 
 use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};
-use super::queue::{VirtQueue, VirtQueues};
+use super::queue::{self, VirtQueue, VirtQueues};
 use super::{VirtioDevice, VqChange, VqIntr};
 
 use erased_serde::Serialize;
@@ -48,6 +49,7 @@ pub struct PciVirtioViona {
     mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
+    rings_paused: Mutex<Vec<bool>>,
 
     me: Weak<PciVirtioViona>,
 }
@@ -88,6 +90,7 @@ impl PciVirtioViona {
                 mtu: info.mtu,
                 hdl,
                 inner: Mutex::new(Inner::new()),
+                rings_paused: Mutex::new(vec![false; 2]),
 
                 me: me.clone(),
             };
@@ -100,11 +103,7 @@ impl PciVirtioViona {
         self.hdl
             .intr_poll(|vq_idx| {
                 self.hdl.ring_intr_clear(vq_idx).unwrap();
-                self.virtio_state.queues[vq_idx as usize].with_intr(|intr| {
-                    if let Some(intr) = intr {
-                        intr.notify(ctx);
-                    }
-                });
+                self.virtio_state.queues[vq_idx as usize].send_intr(ctx);
             })
             .unwrap();
     }
@@ -126,6 +125,81 @@ impl PciVirtioViona {
                 // (return zero) than unwrap and panic here.
                 ro.write_u16(self.mtu.unwrap_or(0));
             }
+        }
+    }
+
+    /// Pause the associated virtqueues and sync any in-kernel state for them
+    /// into the userspace representation.
+    fn queues_sync(&self) {
+        let mut ring_paused = self.rings_paused.lock().unwrap();
+        for vq in self.virtio_state.queues.iter() {
+            if !vq.live.load(Ordering::Acquire) {
+                continue;
+            }
+            let mut info = vq.get_state();
+            if info.mapping.valid {
+                let _ = self.hdl.ring_pause(vq.id);
+                ring_paused[vq.id as usize] = true;
+
+                let live = self.hdl.ring_get_state(vq.id).unwrap();
+                assert_eq!(live.mapping.desc_addr, info.mapping.desc_addr);
+                info.used_idx = live.used_idx;
+                info.avail_idx = live.avail_idx;
+                vq.set_state(&info);
+            }
+        }
+    }
+
+    fn queues_restart(&self) {
+        let mut ring_paused = self.rings_paused.lock().unwrap();
+        for vq in self.virtio_state.queues.iter() {
+            self.hdl
+                .ring_reset(vq.id)
+                .unwrap_or_else(|_| todo!("viona error handling"));
+
+            let info = vq.get_state();
+            if info.mapping.valid {
+                self.hdl
+                    .ring_set_state(vq.id, vq.size, &info)
+                    .unwrap_or_else(|_| todo!("viona error handling"));
+                let intr_cfg = vq.read_intr();
+                self.hdl
+                    .ring_cfg_msi(vq.id, intr_cfg)
+                    .unwrap_or_else(|_| todo!("viona error handling"));
+                if vq.live.load(Ordering::Acquire) {
+                    // If the ring was already running, cut it.
+                    self.hdl
+                        .ring_kick(vq.id)
+                        .unwrap_or_else(|_| todo!("viona error handling"));
+                }
+            }
+            ring_paused[vq.id as usize] = false;
+        }
+    }
+    /// Make sure all in-kernel virtqueue processing is stopped
+    fn queues_kill(&self) {
+        let ring_paused = self.rings_paused.lock().unwrap();
+        for vq in self.virtio_state.queues.iter() {
+            if vq.live.load(Ordering::Acquire) || ring_paused[vq.id as usize] {
+                let _ = self.hdl.ring_reset(vq.id);
+            }
+        }
+    }
+
+    fn poller_start(&self, ctx: &DispCtx) {
+        let mut inner = self.inner.lock().unwrap();
+        assert!(inner.poller.is_none());
+        // Get interrupt notification for the rings setup
+        let (poller, task) =
+            VionaPoller::spawn(self.hdl.fd(), Weak::clone(&self.me), ctx)
+                .unwrap();
+        inner.poller = Some((poller, task));
+    }
+    fn poller_stop(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some((poller, task)) = inner.poller.take() {
+            task.abort();
+            drop(poller);
         }
     }
 }
@@ -158,9 +232,13 @@ impl VirtioDevice for PciVirtioViona {
     }
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>, _ctx: &DispCtx) {
-        self.hdl
-            .ring_kick(vq.id)
-            .unwrap_or_else(|_| todo!("viona error handling"));
+        let ring_paused = self.rings_paused.lock().unwrap();
+        // Kick the ring if it is not paused
+        if !ring_paused[vq.id as usize] {
+            self.hdl
+                .ring_kick(vq.id)
+                .unwrap_or_else(|_| todo!("viona error handling"));
+        }
     }
     fn queue_change(
         &self,
@@ -170,37 +248,29 @@ impl VirtioDevice for PciVirtioViona {
     ) {
         match change {
             VqChange::Reset => {
+                let mut ring_paused = self.rings_paused.lock().unwrap();
                 self.hdl
                     .ring_reset(vq.id)
                     .unwrap_or_else(|_| todo!("viona error handling"));
+
+                // Resetting a ring implies that is no longer paused.  This does
+                // not mean that it will immediately start processing ring
+                // descriptors, but rather is no longer exempt from receiving
+                // notifications to do so.
+                ring_paused[vq.id as usize] = false;
             }
             VqChange::Address => {
-                if let Some(info) = vq.map_info() {
+                let info = vq.get_state();
+                if info.mapping.valid {
                     self.hdl
-                        .ring_init(vq.id, vq.size, info.desc_addr)
+                        .ring_init(vq.id, vq.size, info.mapping.desc_addr)
                         .unwrap_or_else(|_| todo!("viona error handling"));
                 }
             }
             VqChange::IntrCfg => {
-                let mut addr = 0;
-                let mut msg = 0;
-                vq.with_intr(|i| {
-                    if let Some(intr) = i {
-                        if let VqIntr::Msi(a, d, masked) = intr.read() {
-                            // If the entry (or entire MSI function) is masked,
-                            // keep the in-kernel MSI acceleration disabled with
-                            // the zeroed address and message.  That will allow
-                            // us to poll the queue interrupt state and expose
-                            // it, as expected, via the PBA.
-                            if !masked {
-                                addr = a;
-                                msg = d;
-                            }
-                        }
-                    }
-                });
+                let cfg = vq.read_intr();
                 self.hdl
-                    .ring_cfg_msi(vq.id, addr, msg)
+                    .ring_cfg_msi(vq.id, cfg)
                     .unwrap_or_else(|_| todo!("viona error handling"));
             }
         }
@@ -213,38 +283,33 @@ impl Entity for PciVirtioViona {
     fn state_transition(
         &self,
         next: instance::State,
-        target: Option<instance::State>,
+        _target: Option<instance::State>,
         phase: instance::TransitionPhase,
         ctx: &DispCtx,
     ) {
-        use crate::instance::{State, TransitionPhase};
+        use crate::instance::{
+            MigratePhase, MigrateRole, State, TransitionPhase,
+        };
         match (next, phase) {
-            (State::Quiesce, TransitionPhase::Pre) => {
-                // XXX: This is a dirty hack, but we need to stop the viona
-                // rings from running in order to reset or halt the instance.
-                assert!(matches!(
-                    target,
-                    Some(instance::State::Reset) | Some(instance::State::Halt)
-                ));
-                let mut inner = self.inner.lock().unwrap();
-                let (poller, task) = inner.poller.take().unwrap();
-                task.abort();
-                drop(poller);
-                for vq in self.virtio_state.queues[..].iter() {
-                    let _ = self.hdl.ring_reset(vq.id);
-                }
+            (State::Quiesce, TransitionPhase::Pre)
+            | (
+                State::Migrate(MigrateRole::Source, MigratePhase::Pause),
+                TransitionPhase::Pre,
+            ) => {
+                self.poller_stop();
+                self.queues_sync();
             }
-            (instance::State::Boot, TransitionPhase::Post) => {
-                // Get interrupt notification for the rings setup
-                let (poller, task) = VionaPoller::spawn(
-                    self.hdl.fd(),
-                    Weak::clone(&self.me),
-                    ctx,
-                )
-                .unwrap();
-                let mut inner = self.inner.lock().unwrap();
-                assert!(inner.poller.is_none());
-                inner.poller = Some((poller, task));
+            (instance::State::Run, TransitionPhase::Pre) => {
+                self.poller_start(ctx);
+                self.queues_restart();
+            }
+            (instance::State::Halt, TransitionPhase::Post) => {
+                self.queues_kill();
+            }
+            (instance::State::Destroy, TransitionPhase::Pre) => {
+                // Destroy any in-kernel state to prevent it from impeding
+                // instance destruction.
+                self.hdl.delete().unwrap();
             }
             _ => {}
         }
@@ -259,7 +324,7 @@ impl Entity for PciVirtioViona {
 impl Migrate for PciVirtioViona {
     fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciVirtioVionaV1 {
-            pci_virtio_state: self.virtio_state.export(&self.pci_state),
+            pci_virtio_state: PciVirtio::export(self),
         })
     }
 
@@ -269,9 +334,15 @@ impl Migrate for PciVirtioViona {
         deserializer: &mut dyn erased_serde::Deserializer,
         _ctx: &DispCtx,
     ) -> Result<(), MigrateStateError> {
-        // TODO: import deserialized state
-        let _deserialized: migrate::PciVirtioVionaV1 =
+        let deserialized: migrate::PciVirtioVionaV1 =
             erased_serde::deserialize(deserializer)?;
+
+        PciVirtio::import(self, deserialized.pci_virtio_state)?;
+
+        // Configure viona device with already-negotiated features
+        let nego_feat = self.virtio_state.negotiated_features();
+        self.hdl.set_features(nego_feat)?;
+
         Ok(())
     }
 }
@@ -318,6 +389,10 @@ impl VionaHdl {
         sys::ioctl(fp.as_raw_fd(), viona_api::VNA_IOC_CREATE, &mut vna_create)?;
         Ok(Self { fp })
     }
+    fn delete(&self) -> io::Result<()> {
+        sys::ioctl_usize(self.fd(), viona_api::VNA_IOC_DELETE, 0)?;
+        Ok(())
+    }
     fn fd(&self) -> RawFd {
         self.fp.as_raw_fd()
     }
@@ -361,7 +436,54 @@ impl VionaHdl {
         )?;
         Ok(())
     }
-    fn ring_cfg_msi(&self, idx: u16, addr: u64, msg: u32) -> io::Result<()> {
+    fn ring_pause(&self, idx: u16) -> io::Result<()> {
+        sys::ioctl_usize(
+            self.fd(),
+            viona_api::VNA_IOC_RING_PAUSE,
+            idx as usize,
+        )?;
+        Ok(())
+    }
+    fn ring_set_state(
+        &self,
+        idx: u16,
+        size: u16,
+        info: &queue::Info,
+    ) -> io::Result<()> {
+        let mut cfg = viona_api::vioc_ring_state {
+            vrs_index: idx,
+            vrs_avail_idx: info.avail_idx,
+            vrs_used_idx: info.used_idx,
+            vrs_qsize: size,
+            vrs_qaddr: info.mapping.desc_addr,
+        };
+        sys::ioctl(self.fd(), viona_api::VNA_IOC_RING_SET_STATE, &mut cfg)?;
+        Ok(())
+    }
+    fn ring_get_state(&self, idx: u16) -> io::Result<queue::Info> {
+        let mut cfg =
+            viona_api::vioc_ring_state { vrs_index: idx, ..Default::default() };
+        sys::ioctl(self.fd(), viona_api::VNA_IOC_RING_GET_STATE, &mut cfg)?;
+        Ok(queue::Info {
+            mapping: queue::MapInfo {
+                desc_addr: cfg.vrs_qaddr,
+                avail_addr: 0,
+                used_addr: 0,
+                valid: true,
+            },
+            avail_idx: cfg.vrs_avail_idx,
+            used_idx: cfg.vrs_used_idx,
+        })
+    }
+    fn ring_cfg_msi(&self, idx: u16, cfg: Option<VqIntr>) -> io::Result<()> {
+        let (addr, msg) = match cfg {
+            Some(VqIntr::Msi(a, m, masked)) if !masked => (a, m),
+            // If MSI is disabled, or the entry is masked (individually,
+            // or at the function level), then disable in-kernel
+            // acceleration of MSI delivery.
+            _ => (0, 0),
+        };
+
         let mut vna_ring_msi = viona_api::vioc_ring_msi {
             rm_index: idx,
             _pad: [0; 3],

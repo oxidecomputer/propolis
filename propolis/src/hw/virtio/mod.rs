@@ -46,12 +46,15 @@ pub trait VirtioIntr: Send + 'static {
 }
 
 pub enum VqChange {
+    /// Underlying virtio device has been reset
     Reset,
+    /// Physical address changed for VQ
     Address,
+    /// MSI(-X) configuration changed for VQ
     IntrCfg,
 }
 pub enum VqIntr {
-    // Pin (lintr) interrupt
+    /// Pin (lintr) interrupt
     Pin,
     /// MSI(-X) with address, data, and masked state
     Msi(u64, u32, bool),

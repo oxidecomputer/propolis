@@ -239,7 +239,7 @@ impl DeviceState {
     ) -> MutexGuard<State> {
         state = self.cond.wait_while(state, |s| s.update_in_progress).unwrap();
         f(&mut state);
-        let next_mode = self.next_intr_mode(&state);
+        let next_mode = self.which_intr_mode(&state);
 
         state.update_in_progress = true;
         drop(state);
@@ -449,7 +449,7 @@ impl DeviceState {
         }
     }
 
-    fn next_intr_mode(&self, state: &State) -> IntrMode {
+    fn which_intr_mode(&self, state: &State) -> IntrMode {
         if self.msix_cfg.is_some()
             && self.msix_cfg.as_ref().unwrap().is_enabled()
         {
@@ -464,6 +464,11 @@ impl DeviceState {
         }
 
         IntrMode::Disabled
+    }
+
+    pub(crate) fn get_intr_mode(&self) -> IntrMode {
+        let state = self.state.lock().unwrap();
+        self.which_intr_mode(&state)
     }
 
     fn cfg_cap_rw(

@@ -18,6 +18,9 @@ use lazy_static::lazy_static;
 
 const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
+const VIRTIO_PCI_ISR_QUEUE: u8 = 1 << 0;
+const VIRTIO_PCI_ISR_CFG: u8 = 1 << 1;
+
 bitflags! {
     #[derive(Default)]
     pub struct Status: u8 {
@@ -36,6 +39,15 @@ enum IntrMode {
     IsrOnly,
     IsrLintr,
     Msi,
+}
+impl From<pci::IntrMode> for IntrMode {
+    fn from(pci_mode: pci::IntrMode) -> Self {
+        match pci_mode {
+            pci::IntrMode::Disabled => IntrMode::IsrOnly,
+            pci::IntrMode::INTxPin => IntrMode::IsrLintr,
+            pci::IntrMode::Msix => IntrMode::Msi,
+        }
+    }
 }
 
 struct VirtioState {
@@ -68,48 +80,52 @@ impl VirtioState {
         self.nego_feat = 0;
         self.msix_cfg_vec = VIRTIO_MSI_NO_VECTOR;
     }
-    pub fn export(&self) -> migrate::VirtioStateV1 {
-        let intr_mode = match self.intr_mode {
-            IntrMode::IsrOnly => migrate::IntrModeV1::IsrOnly,
-            IntrMode::IsrLintr => migrate::IntrModeV1::IsrLintr,
-            IntrMode::Msi => migrate::IntrModeV1::Msi,
-        };
-        migrate::VirtioStateV1 {
-            status: self.status.bits(),
-            queue_sel: self.queue_sel,
-            nego_feat: self.nego_feat,
-            intr_mode,
-            msix_cfg_vec: self.msix_cfg_vec,
-            msix_queue_vec: self.msix_queue_vec.clone(),
-        }
-    }
-    pub fn import(
-        &mut self,
-        state: migrate::VirtioStateV1,
-    ) -> Result<(), MigrateStateError> {
-        self.status = Status::from_bits(state.status).ok_or_else(|| {
-            MigrateStateError::ImportFailed(format!(
-                "virtio status: failed to import saved value {:#x}",
-                state.status
-            ))
-        })?;
-        self.queue_sel = state.queue_sel;
-        self.nego_feat = state.nego_feat;
-        self.msix_cfg_vec = state.msix_cfg_vec;
-        self.msix_queue_vec = state.msix_queue_vec;
-        self.intr_mode = match state.intr_mode {
-            migrate::IntrModeV1::IsrOnly => IntrMode::IsrOnly,
-            migrate::IntrModeV1::IsrLintr => IntrMode::IsrLintr,
-            migrate::IntrModeV1::Msi => IntrMode::Msi,
-        };
-
-        Ok(())
-    }
 }
 
 pub trait PciVirtio: VirtioDevice + Send + Sync + 'static {
     fn virtio_state(&self) -> &PciVirtioState;
     fn pci_state(&self) -> &pci::DeviceState;
+
+    fn export(&self) -> migrate::PciVirtioStateV1 {
+        let vs = self.virtio_state();
+        let ps = self.pci_state();
+
+        let queues = vs.queues.iter().map(|q| q.export()).collect();
+        migrate::PciVirtioStateV1 {
+            pci: ps.export(),
+            state: vs.export(),
+            queues,
+        }
+    }
+
+    fn import(
+        &self,
+        input: migrate::PciVirtioStateV1,
+    ) -> Result<(), MigrateStateError> {
+        let vs = self.virtio_state();
+        let ps = self.pci_state();
+
+        // Keep Virtio in ISR-only mode (no lintr-pin or MSIs) during import so
+        // it does not spuriously emit any observable interrupt events until all
+        // of the state can be made consistent prior to any re-enabling.
+        vs.set_intr_mode(ps, IntrMode::IsrOnly);
+
+        // Bulk of the virtio state
+        vs.import(input.state)?;
+
+        // VirtQueue state
+        for (vq, vq_input) in vs.queues.iter().zip(input.queues.into_iter()) {
+            vq.import(vq_input)?;
+        }
+
+        // PCI state
+        ps.import(input.pci)?;
+
+        // Reconcile interrupt mode now that PCI state is populated too
+        vs.set_intr_mode(ps, ps.get_intr_mode().into());
+
+        Ok(())
+    }
 }
 
 impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
@@ -145,14 +161,7 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
     }
     fn interrupt_mode_change(&self, mode: pci::IntrMode) {
         let vs = self.virtio_state();
-        vs.set_intr_mode(
-            self.pci_state(),
-            match mode {
-                pci::IntrMode::Disabled => IntrMode::IsrOnly,
-                pci::IntrMode::INTxPin => IntrMode::IsrLintr,
-                pci::IntrMode::Msix => IntrMode::Msi,
-            },
-        );
+        vs.set_intr_mode(self.pci_state(), mode.into());
 
         // Make sure the correct legacy register map is used
         vs.map_which.store(mode == pci::IntrMode::Msix, Ordering::SeqCst);
@@ -167,7 +176,7 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
             vs.state_cv.wait_while(state, |s| s.intr_mode_updating).unwrap();
         state.intr_mode_updating = true;
 
-        for vq in vs.queues[..].iter() {
+        for vq in vs.queues.iter() {
             let val = *state.msix_queue_vec.get(vq.id as usize).unwrap();
 
             // avoid deadlock while modify per-VQ interrupt config
@@ -260,8 +269,8 @@ impl PciVirtioState {
             map_which: AtomicBool::new(false),
         };
 
-        for queue in this.queues[..].iter() {
-            queue.set_interrupt(IsrIntr::new(&this.isr_state));
+        for queue in this.queues.iter() {
+            queue.set_intr(IsrIntr::new(&this.isr_state));
         }
 
         (this, pci_state)
@@ -285,7 +294,8 @@ impl PciVirtioState {
             LegacyReg::QueuePfn => {
                 let state = self.state.lock().unwrap();
                 if let Some(queue) = self.queues.get(state.queue_sel) {
-                    let addr = queue.ctrl.lock().unwrap().gpa_desc.0;
+                    let state = queue.get_state();
+                    let addr = state.mapping.desc_addr;
                     ro.write_u32((addr >> PAGE_SHIFT) as u32);
                 } else {
                     // bogus queue
@@ -386,7 +396,7 @@ impl PciVirtioState {
                         // State lock cannot be held while updating queue
                         // interrupt handlers due to deadlock possibility.
                         drop(state);
-                        queue.set_interrupt(MsiIntr::new(hdl, val));
+                        queue.set_intr(MsiIntr::new(hdl, val));
                         state = self.state.lock().unwrap();
 
                         // With the MSI configuration updated for the virtqueue,
@@ -426,6 +436,7 @@ impl PciVirtioState {
             queue
         ));
         if let Some(vq) = self.queues.get(queue) {
+            vq.live.store(true, Ordering::Release);
             dev.queue_notify(vq, ctx);
         }
     }
@@ -439,7 +450,7 @@ impl PciVirtioState {
         mut state: MutexGuard<VirtioState>,
         ctx: &DispCtx,
     ) {
-        for queue in self.queues[..].iter() {
+        for queue in self.queues.iter() {
             queue.reset();
             dev.queue_change(queue, VqChange::Reset, ctx);
         }
@@ -482,8 +493,8 @@ impl PciVirtioState {
                 // To avoid deadlock, the state lock must be dropped while
                 // updating the interrupts handlers on queues.
                 drop(state);
-                for queue in self.queues[..].iter() {
-                    queue.set_interrupt(IsrIntr::new(&self.isr_state));
+                for queue in self.queues.iter() {
+                    queue.set_intr(IsrIntr::new(&self.isr_state));
                 }
                 state = self.state.lock().unwrap();
             }
@@ -497,13 +508,14 @@ impl PciVirtioState {
             }
             IntrMode::Msi => {
                 let hdl = pci_state.msix_hdl().unwrap();
-                for (idx, queue) in self.queues[..].iter().enumerate() {
-                    let vec = *state.msix_queue_vec.get(idx).unwrap();
+                for vq in self.queues.iter() {
+                    let vec =
+                        *state.msix_queue_vec.get(vq.id as usize).unwrap();
 
                     // State lock cannot be held while updating queue interrupt
                     // handlers due to deadlock possibility.
                     drop(state);
-                    queue.set_interrupt(MsiIntr::new(hdl.clone(), vec));
+                    vq.set_intr(MsiIntr::new(hdl.clone(), vec));
                     state = self.state.lock().unwrap();
                 }
             }
@@ -512,63 +524,59 @@ impl PciVirtioState {
         state.intr_mode_updating = false;
         self.state_cv.notify_all();
     }
-    pub fn export(
-        &self,
-        pci_state: &pci::DeviceState,
-    ) -> migrate::PciVirtioStateV1 {
-        let state = self.state.lock().unwrap();
-        let isr_inner = self.isr_state.inner.lock().unwrap();
-        let queues = self.queues[..].iter().map(|q| q.export()).collect();
 
-        migrate::PciVirtioStateV1 {
-            pci: pci_state.export(),
-            state: state.export(),
-            queues,
-            isr: isr_inner.value != 0,
+    pub fn negotiated_features(&self) -> u32 {
+        let state = self.state.lock().unwrap();
+        state.nego_feat
+    }
+
+    pub fn export(&self) -> migrate::DeviceStateV1 {
+        let state = self.state.lock().unwrap();
+        let (isr_queue, isr_cfg) = self.isr_state.read();
+
+        migrate::DeviceStateV1 {
+            status: state.status.bits(),
+            queue_sel: state.queue_sel,
+            nego_feat: state.nego_feat,
+            msix_cfg_vec: state.msix_cfg_vec,
+            msix_queue_vec: state.msix_queue_vec.clone(),
+            isr_queue,
+            isr_cfg,
         }
     }
+
     pub fn import(
         &self,
-        state: migrate::PciVirtioStateV1,
-        hdl: pci::MsixHdl,
-    ) -> Result<pci::migrate::PciStateV1, MigrateStateError> {
-        let mut inner = self.state.lock().unwrap();
-        inner.import(state.state)?;
+        input: migrate::DeviceStateV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut state = self.state.lock().unwrap();
+        state.status = Status::from_bits(input.status).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "virtio status: failed to import saved value {:#x}",
+                state.status
+            ))
+        })?;
+        state.queue_sel = input.queue_sel;
+        state.nego_feat = input.nego_feat;
+        state.msix_cfg_vec = input.msix_cfg_vec;
+        state.msix_queue_vec = input.msix_queue_vec;
+        self.isr_state.write(input.isr_queue, input.isr_cfg);
 
-        for (q, state) in self.queues[..].iter().zip(state.queues.into_iter()) {
-            q.import(state)?;
-        }
-
-        let mut isr_inner = self.isr_state.inner.lock().unwrap();
-        isr_inner.value = state.isr as u8;
-        drop(isr_inner);
-
-        match inner.intr_mode {
-            IntrMode::IsrOnly => {}
-            IntrMode::IsrLintr => {
-                self.isr_state.enable();
-            }
-            IntrMode::Msi => {
-                for (idx, queue) in self.queues[..].iter().enumerate() {
-                    let vec = *inner.msix_queue_vec.get(idx).unwrap();
-                    drop(inner);
-                    queue.set_interrupt(MsiIntr::new(hdl.clone(), vec));
-                    inner = self.state.lock().unwrap();
-                }
-            }
-        }
-        self.map_which
-            .store(inner.intr_mode == IntrMode::Msi, Ordering::SeqCst);
-
-        Ok(state.pci)
+        Ok(())
     }
 }
 
 #[derive(Default)]
 struct IsrInner {
     disabled: bool,
-    value: u8,
+    intr_queue: bool,
+    intr_cfg: bool,
     pin: Option<Arc<dyn IntrPin>>,
+}
+impl IsrInner {
+    fn raised(&self) -> bool {
+        self.intr_queue || self.intr_cfg
+    }
 }
 struct IsrState {
     inner: Mutex<IsrInner>,
@@ -577,26 +585,65 @@ impl IsrState {
     fn new() -> Arc<Self> {
         Arc::new(Self { inner: Mutex::new(IsrInner::default()) })
     }
-    fn raise(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.value |= 1;
-        if !inner.disabled {
-            if let Some(pin) = inner.pin.as_ref() {
-                pin.assert()
-            }
-        }
+    /// Raise queue ISR condition
+    fn raise_queue(&self) {
+        self.sync_pin(|inner| {
+            inner.intr_queue = true;
+        });
     }
+    /// Read ISR value, then clear it.
     fn read_clear(&self) -> u8 {
-        let mut inner = self.inner.lock().unwrap();
-        let val = inner.value;
-        if val != 0 {
-            inner.value = 0;
-            if let Some(pin) = inner.pin.as_ref() {
-                pin.deassert();
-            }
+        let (mut queue, mut cfg) = (false, false);
+        self.sync_pin(|inner| {
+            queue = inner.intr_queue;
+            cfg = inner.intr_cfg;
+            inner.intr_queue = false;
+            inner.intr_cfg = false;
+        });
+        let mut val = 0;
+        if queue {
+            val |= VIRTIO_PCI_ISR_QUEUE;
+        }
+        if cfg {
+            val |= VIRTIO_PCI_ISR_CFG;
         }
         val
     }
+    /// Read ISR value.  Returns (`intr_queue`, `intr_cfg`)
+    fn read(&self) -> (bool, bool) {
+        let inner = self.inner.lock().unwrap();
+        (inner.intr_queue, inner.intr_cfg)
+    }
+    /// Write ISR value
+    fn write(&self, intr_queue: bool, intr_cfg: bool) {
+        self.sync_pin(|inner| {
+            inner.intr_queue = intr_queue;
+            inner.intr_cfg = intr_cfg;
+        });
+    }
+    /// Sync ISR state with any associated interrupt pin
+    fn sync_pin(&self, f: impl FnOnce(&mut IsrInner)) {
+        let mut inner = self.inner.lock().unwrap();
+
+        let raised_before = inner.raised();
+        f(&mut inner);
+        let raised_after = inner.raised();
+
+        // Sync pin state with ISR value
+        if !inner.disabled {
+            if !raised_before && raised_after {
+                if let Some(pin) = inner.pin.as_ref() {
+                    pin.assert()
+                }
+            }
+            if raised_before && !raised_after {
+                if let Some(pin) = inner.pin.as_ref() {
+                    pin.deassert()
+                }
+            }
+        }
+    }
+    /// Disable state emission via interrupt pin
     fn disable(&self) {
         let mut inner = self.inner.lock().unwrap();
         if !inner.disabled {
@@ -606,17 +653,19 @@ impl IsrState {
             inner.disabled = true;
         }
     }
+    /// Enable state emission via interrupt pin
     fn enable(&self) {
         let mut inner = self.inner.lock().unwrap();
         if inner.disabled {
-            if inner.value != 0 {
+            if inner.intr_queue || inner.intr_cfg {
                 if let Some(pin) = inner.pin.as_ref() {
-                    pin.deassert();
+                    pin.assert();
                 }
             }
             inner.disabled = false;
         }
     }
+    /// Set underlying interrupt pin. (Must be performed only once)
     fn set_pin(&self, pin: Arc<dyn IntrPin>) {
         let mut inner = self.inner.lock().unwrap();
         let old = inner.pin.replace(pin);
@@ -636,7 +685,7 @@ impl IsrIntr {
 impl VirtioIntr for IsrIntr {
     fn notify(&self, _ctx: &DispCtx) {
         if let Some(state) = Weak::upgrade(&self.state) {
-            state.raise()
+            state.raise_queue()
         }
     }
     fn read(&self) -> VqIntr {
@@ -720,22 +769,31 @@ pub mod migrate {
         IsrLintr,
         Msi,
     }
+    impl From<super::IntrMode> for IntrModeV1 {
+        fn from(inp: super::IntrMode) -> Self {
+            match inp {
+                super::IntrMode::IsrOnly => IntrModeV1::IsrOnly,
+                super::IntrMode::IsrLintr => IntrModeV1::IsrLintr,
+                super::IntrMode::Msi => IntrModeV1::Msi,
+            }
+        }
+    }
 
     #[derive(Deserialize, Serialize)]
-    pub struct VirtioStateV1 {
+    pub struct DeviceStateV1 {
         pub status: u8,
         pub queue_sel: u16,
         pub nego_feat: u32,
-        pub intr_mode: IntrModeV1,
         pub msix_cfg_vec: u16,
         pub msix_queue_vec: Vec<u16>,
+        pub isr_queue: bool,
+        pub isr_cfg: bool,
     }
 
     #[derive(Deserialize, Serialize)]
     pub struct PciVirtioStateV1 {
         pub pci: PciStateV1,
-        pub state: VirtioStateV1,
+        pub state: DeviceStateV1,
         pub queues: Vec<queue::migrate::VirtQueueV1>,
-        pub isr: bool,
     }
 }

@@ -2,12 +2,12 @@ use std::mem;
 use std::num::{NonZeroU16, Wrapping};
 use std::ops::Index;
 use std::slice::SliceIndex;
-use std::sync::atomic::{fence, Ordering};
+use std::sync::atomic::{fence, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::bits::*;
 use super::probes;
-use super::VirtioIntr;
+use super::{VirtioIntr, VqIntr};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::migrate::MigrateStateError;
@@ -28,12 +28,10 @@ struct VqdUsed {
     len: u32,
 }
 
-pub struct VqControl {
-    pub(super) gpa_desc: GuestAddr,
-}
-
-struct VqAvail {
+pub struct VqAvail {
+    /// Is populated with a valid physical address(es) for its contents
     valid: bool,
+
     gpa_flags: GuestAddr,
     gpa_idx: GuestAddr,
     gpa_ring: GuestAddr,
@@ -70,10 +68,27 @@ impl VqAvail {
         let addr = self.gpa_desc + (id as usize * mem::size_of::<VqdDesc>());
         mem.read::<VqdDesc>(addr)
     }
+    fn reset(&mut self) {
+        self.valid = false;
+        self.gpa_flags = GuestAddr(0);
+        self.gpa_idx = GuestAddr(0);
+        self.gpa_ring = GuestAddr(0);
+        self.gpa_desc = GuestAddr(0);
+        self.cur_avail_idx = Wrapping(0);
+    }
+    fn map_split(&mut self, desc_addr: u64, avail_addr: u64) {
+        self.gpa_desc = GuestAddr(desc_addr);
+        // 16-bit flags, followed by 16-bit idx, followed by avail desc ring
+        self.gpa_flags = GuestAddr(avail_addr);
+        self.gpa_idx = GuestAddr(avail_addr + 2);
+        self.gpa_ring = GuestAddr(avail_addr + 4);
+    }
 }
 
-struct VqUsed {
+pub struct VqUsed {
+    /// Is populated with a valid physical address(es) for its contents
     valid: bool,
+
     gpa_flags: GuestAddr,
     gpa_idx: GuestAddr,
     gpa_ring: GuestAddr,
@@ -82,6 +97,10 @@ struct VqUsed {
 }
 impl VqUsed {
     fn write_used(&mut self, id: u16, len: u32, rsize: u16, mem: &MemCtx) {
+        // We do not expect used entries to be pushed into a virtqueue which has
+        // not been configured atop physical addresses yet.
+        assert!(self.valid);
+
         let idx = self.used_idx.0 & (rsize - 1);
         self.used_idx += Wrapping(1);
         let desc_addr =
@@ -93,21 +112,36 @@ impl VqUsed {
         fence(Ordering::Release);
         mem.write(self.gpa_idx, &self.used_idx.0);
     }
-    fn suppress_intr(&self, mem: &MemCtx) -> bool {
+    fn intr_supressed(&self, mem: &MemCtx) -> bool {
         let flags: u16 = mem.read(self.gpa_flags).unwrap();
         flags & VRING_AVAIL_F_NO_INTERRUPT != 0
+    }
+    fn reset(&mut self) {
+        self.valid = false;
+        self.gpa_flags = GuestAddr(0);
+        self.gpa_idx = GuestAddr(0);
+        self.gpa_ring = GuestAddr(0);
+        self.used_idx = Wrapping(0);
+    }
+    fn map_split(&mut self, gpa: u64) {
+        // 16-bit flags, followed by 16-bit idx, followed by used desc ring
+        self.gpa_flags = GuestAddr(gpa);
+        self.gpa_idx = GuestAddr(gpa + 2);
+        self.gpa_ring = GuestAddr(gpa + 4);
     }
 }
 
 pub struct VirtQueue {
     pub id: u16,
     pub size: u16,
-    pub(super) ctrl: Mutex<VqControl>,
+    pub live: AtomicBool,
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
 }
 const LEGACY_QALIGN: u64 = PAGE_SIZE as u64;
-fn qalign(addr: u64, align: u64) -> u64 {
+const fn qalign(addr: u64, align: u64) -> u64 {
+    assert!(align.is_power_of_two());
+
     let mask = align - 1;
     (addr + mask) & !mask
 }
@@ -117,7 +151,7 @@ impl VirtQueue {
         Self {
             id,
             size,
-            ctrl: Mutex::new(VqControl { gpa_desc: GuestAddr(0) }),
+            live: AtomicBool::new(false),
             avail: Mutex::new(VqAvail {
                 valid: false,
                 gpa_flags: GuestAddr(0),
@@ -137,65 +171,67 @@ impl VirtQueue {
         }
     }
     pub(super) fn reset(&self) {
-        let mut state = self.ctrl.lock().unwrap();
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
 
         // XXX verify no outstanding chains
-        state.gpa_desc = GuestAddr(0);
-        avail.valid = false;
-        used.valid = false;
-        avail.cur_avail_idx = Wrapping(0);
-        used.used_idx = Wrapping(0);
+        avail.reset();
+        used.reset();
+        self.live.store(false, Ordering::Release);
     }
+
+    /// Attempt to establish ring mappings at a specified physical address,
+    /// using legacy-style split virtqueue layout.
+    ///
+    /// `addr` must be aligned to 4k per the legacy requirements
     pub fn map_legacy(&self, addr: u64) -> bool {
         assert_eq!(addr & (LEGACY_QALIGN - 1), 0);
-        let mut state = self.ctrl.lock().unwrap();
-        let mut avail = self.avail.lock().unwrap();
-        let mut used = self.used.lock().unwrap();
-
-        // even if the map is unsuccessful, track the address provided
-        state.gpa_desc = GuestAddr(addr);
 
         let size = self.size as usize;
 
         let desc_addr = addr;
         let desc_len = mem::size_of::<VqdDesc>() * size;
+
         let avail_addr = desc_addr + desc_len as u64;
         let avail_len = 2 * (size + 3);
+
         let used_addr = qalign(avail_addr + avail_len as u64, LEGACY_QALIGN);
         let _used_len = mem::size_of::<VqUsed>() * size + 2 * 3;
 
-        avail.gpa_flags = GuestAddr(avail_addr);
-        avail.gpa_idx = GuestAddr(avail_addr + 2);
-        avail.gpa_ring = GuestAddr(avail_addr + 4);
-        // The descriptor ring address is duplicated into the avail structure
-        // so it can be accessed with only the one lock.
-        avail.gpa_desc = GuestAddr(desc_addr);
-
-        used.gpa_flags = GuestAddr(used_addr);
-        used.gpa_idx = GuestAddr(used_addr + 2);
-        used.gpa_ring = GuestAddr(used_addr + 4);
-
+        let mut avail = self.avail.lock().unwrap();
+        let mut used = self.used.lock().unwrap();
+        avail.map_split(desc_addr, avail_addr);
+        used.map_split(used_addr);
         avail.valid = true;
         used.valid = true;
 
         true
     }
-    pub fn map_info(&self) -> Option<MapInfo> {
-        let state = self.ctrl.lock().unwrap();
+    pub fn get_state(&self) -> Info {
         let avail = self.avail.lock().unwrap();
         let used = self.used.lock().unwrap();
 
-        if avail.valid && used.valid {
-            Some(MapInfo {
-                desc_addr: state.gpa_desc.0,
+        Info {
+            mapping: MapInfo {
+                desc_addr: avail.gpa_desc.0,
                 avail_addr: avail.gpa_flags.0,
                 used_addr: used.gpa_flags.0,
-            })
-        } else {
-            None
+                valid: avail.valid,
+            },
+            avail_idx: avail.cur_avail_idx.0,
+            used_idx: used.used_idx.0,
         }
+    }
+    pub fn set_state(&self, info: &Info) {
+        let mut avail = self.avail.lock().unwrap();
+        let mut used = self.used.lock().unwrap();
+
+        avail.map_split(info.mapping.desc_addr, info.mapping.avail_addr);
+        used.map_split(info.mapping.used_addr);
+        avail.valid = info.mapping.valid;
+        used.valid = info.mapping.valid;
+        avail.cur_avail_idx = Wrapping(info.avail_idx);
+        used.used_idx = Wrapping(info.used_idx);
     }
     pub fn pop_avail(&self, chain: &mut Chain, mem: &MemCtx) -> Option<u32> {
         assert!(chain.idx.is_none());
@@ -281,40 +317,53 @@ impl VirtQueue {
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         probes::virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
         used.write_used(id, len, self.size, mem);
-        if !used.suppress_intr(mem) {
-            if let Some(i) = used.interrupt.as_ref() {
-                i.notify(ctx)
+        if !used.intr_supressed(mem) {
+            if let Some(intr) = used.interrupt.as_ref() {
+                intr.notify(ctx);
             }
         }
         chain.reset();
     }
 
-    pub(super) fn set_interrupt(&self, intr: Box<dyn VirtioIntr>) {
+    /// Set the backing interrupt resource for VQ
+    pub(super) fn set_intr(&self, intr: Box<dyn VirtioIntr>) {
         let mut used = self.used.lock().unwrap();
         used.interrupt = Some(intr)
     }
 
-    pub fn with_intr(&self, mut f: impl FnMut(Option<&dyn VirtioIntr>)) {
+    /// Read the interrupt configuration for the `Used` ring
+    pub(super) fn read_intr(&self) -> Option<VqIntr> {
         let used = self.used.lock().unwrap();
-        f(used.interrupt.as_ref().map(|x| x.as_ref()))
+        used.interrupt.as_ref().map(|x| x.read())
+    }
+
+    /// Send an interrupt for VQ
+    pub(super) fn send_intr(&self, ctx: &DispCtx) {
+        let used = self.used.lock().unwrap();
+        let mem = ctx.mctx.memctx();
+        if !used.intr_supressed(&mem) {
+            if let Some(intr) = used.interrupt.as_ref() {
+                intr.notify(ctx);
+            }
+        }
     }
 
     pub fn export(&self) -> migrate::VirtQueueV1 {
-        let ctrl = self.ctrl.lock().unwrap();
         let avail = self.avail.lock().unwrap();
         let used = self.used.lock().unwrap();
 
         migrate::VirtQueueV1 {
             id: self.id,
             size: self.size,
-            descr_gpa: ctrl.gpa_desc.0,
+            descr_gpa: avail.gpa_desc.0,
+            mapping_valid: avail.valid && used.valid,
+            live: self.live.load(Ordering::Acquire),
 
+            // `flags` field is the first member for avail and used rings
             avail_gpa: avail.gpa_flags.0,
-            avail_valid: avail.valid,
-            avail_cur_idx: avail.cur_avail_idx.0,
-
             used_gpa: used.gpa_flags.0,
-            used_valid: used.valid,
+
+            avail_cur_idx: avail.cur_avail_idx.0,
             used_idx: used.used_idx.0,
         }
     }
@@ -323,7 +372,6 @@ impl VirtQueue {
         &self,
         state: migrate::VirtQueueV1,
     ) -> Result<(), MigrateStateError> {
-        let mut ctrl = self.ctrl.lock().unwrap();
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
 
@@ -340,20 +388,14 @@ impl VirtQueue {
             )));
         }
 
-        ctrl.gpa_desc = GuestAddr(state.descr_gpa);
+        avail.map_split(state.descr_gpa, state.avail_gpa);
+        avail.valid = state.mapping_valid;
+        avail.cur_avail_idx = Wrapping(state.avail_cur_idx);
 
-        avail.valid = state.avail_valid;
-        avail.gpa_flags = GuestAddr(state.avail_gpa);
-        avail.gpa_idx = GuestAddr(state.avail_gpa + 2);
-        avail.gpa_ring = GuestAddr(state.avail_gpa + 4);
-        avail.gpa_desc = GuestAddr(state.descr_gpa);
-        avail.cur_avail_idx.0 = state.avail_cur_idx;
-
-        used.valid = state.used_valid;
-        used.gpa_flags = GuestAddr(state.used_gpa);
-        used.gpa_idx = GuestAddr(state.used_gpa + 2);
-        used.gpa_ring = GuestAddr(state.used_gpa + 4);
-        used.used_idx.0 = state.used_idx;
+        used.map_split(state.used_gpa);
+        used.valid = state.mapping_valid;
+        used.used_idx = Wrapping(state.used_idx);
+        self.live.store(state.live, Ordering::Release);
 
         Ok(())
     }
@@ -616,10 +658,18 @@ impl Chain {
     }
 }
 
+#[derive(Debug)]
 pub struct MapInfo {
     pub desc_addr: u64,
     pub avail_addr: u64,
     pub used_addr: u64,
+    pub valid: bool,
+}
+#[derive(Debug)]
+pub struct Info {
+    pub mapping: MapInfo,
+    pub avail_idx: u16,
+    pub used_idx: u16,
 }
 
 pub struct VirtQueues {
@@ -645,6 +695,9 @@ impl VirtQueues {
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
         self.queues.get(qid as usize)
     }
+    pub fn iter(&self) -> std::slice::Iter<Arc<VirtQueue>> {
+        self.queues.iter()
+    }
 }
 
 impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
@@ -663,13 +716,13 @@ pub mod migrate {
         pub id: u16,
         pub size: u16,
         pub descr_gpa: u64,
+        pub mapping_valid: bool,
+        pub live: bool,
 
         pub avail_gpa: u64,
-        pub avail_valid: bool,
         pub avail_cur_idx: u16,
 
         pub used_gpa: u64,
-        pub used_valid: bool,
         pub used_idx: u16,
     }
 }
