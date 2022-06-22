@@ -602,6 +602,14 @@ impl DeviceState {
         inner.reg_intr_line = state.reg_intr_line;
         inner.bars.import(state.bars)?;
 
+        // Reattach any imported Bars to their respective handlers (pio, mmio)
+        let attach = inner.attached();
+        for n in BarN::iter() {
+            if let Some((def, addr)) = inner.bars.get(n) {
+                attach.bar_register(n, def, addr);
+            }
+        }
+
         match (self.msix_cfg.as_ref(), state.msix) {
             (Some(msix_cfg), Some(saved_cfg)) => msix_cfg.import(saved_cfg)?,
             (None, None) => {}
