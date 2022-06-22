@@ -6,6 +6,7 @@ use dropshot::{
     HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
 use futures::future::Fuse;
+use futures::stream::{SplitSink, SplitStream};
 use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
@@ -18,7 +19,7 @@ use std::io::{Error, ErrorKind};
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
@@ -62,6 +63,8 @@ struct SerialTask {
     task: JoinHandle<()>,
     /// Oneshot channel used to detach an attached serial session
     detach_ch: oneshot::Sender<()>,
+    /// Channel used to send new client connections to the streaming task
+    websocks_ch: mpsc::Sender<WebSocketStream<Upgraded>>,
 }
 
 impl SerialTask {
@@ -667,9 +670,9 @@ async fn instance_state_put(
 }
 
 async fn instance_serial_task(
-    mut detach: oneshot::Receiver<()>,
+    mut websocks_recv: mpsc::Receiver<WebSocketStream<Upgraded>>,
+    detach_recv: oneshot::Receiver<()>,
     serial: Arc<Serial<LpcUart>>,
-    ws_stream: WebSocketStream<Upgraded>,
     log: Logger,
     actx: &AsyncCtx,
 ) -> Result<(), SerialTaskError> {
@@ -677,25 +680,87 @@ async fn instance_serial_task(
     let mut cur_output: Option<Range<usize>> = None;
     let mut cur_input: Option<(Vec<u8>, usize)> = None;
 
-    let (mut ws_sink, mut ws_stream) = ws_stream.split();
+    let mut ws_sinks: Vec<SplitSink<WebSocketStream<Upgraded>, Message>> =
+        Vec::new();
+    let mut ws_streams: Vec<SplitStream<WebSocketStream<Upgraded>>> =
+        Vec::new();
+    let mut incoming_ws_streams: Vec<SplitStream<WebSocketStream<Upgraded>>> =
+        Vec::new();
+
+    let mut detach_opt = Some(detach_recv);
+    let mut detaching = false;
+    let (done_detaching_send, mut done_detaching_recv) = oneshot::channel();
+    let mut done_detaching_send_opt = Some(done_detaching_send);
+
+    let (send_ch, mut recv_ch) = mpsc::channel(4);
+
     loop {
+        ws_streams.extend(incoming_ws_streams.drain(..));
+
         let (uart_read, ws_send) = match &cur_output {
+            _ if detaching => match done_detaching_send_opt.take() {
+                Some(done_send) => (
+                    Fuse::terminated(),
+                    futures::stream::iter(ws_sinks.iter_mut().zip(
+                        std::iter::repeat(CloseFrame {
+                            code: CloseCode::Policy,
+                            reason: Cow::Borrowed("serial console was detached"),
+                        }),
+                    ))
+                        .for_each_concurrent(4, |(ws, close)| {
+                            ws.send(Message::Close(Some(close))).map(|_| ())
+                        })
+                        .then(|_| async {
+                            if done_send.send(()).is_err() {
+                                error!(log, "Couldn't signal that all serial clients were closed");
+                            }
+                        })
+                        .left_future()
+                        .fuse(),
+                ),
+                None => (Fuse::terminated(), Fuse::terminated()),
+            },
             None => (
                 serial.read_source(&mut output, actx).fuse(),
                 Fuse::terminated(),
             ),
             Some(r) => (
                 Fuse::terminated(),
-                ws_sink.send(Message::binary(&output[r.clone()])).fuse(),
+                futures::stream::iter(
+                    ws_sinks
+                        .iter_mut()
+                        .zip(std::iter::repeat(Vec::from(&output[r.clone()]))),
+                )
+                .for_each_concurrent(4, |(ws, bin)| {
+                    ws.send(Message::binary(bin)).map(|_| ())
+                })
+                .right_future()
+                .fuse(),
             ),
         };
+
         let (ws_recv, uart_write) = match &cur_input {
-            None => (ws_stream.next().fuse(), Fuse::terminated()),
+            None => (
+                futures::stream::iter(ws_streams.iter_mut().enumerate())
+                    .for_each_concurrent(4, |(i, ws)| {
+                        // if we don't `move` below, rustc says that `i` (which is usize: Copy (!))
+                        // is borrowed. but if we move without making this explicit reference here,
+                        // it moves send_ch into the closure.
+                        let ch = &send_ch;
+                        ws.next().then(move |msg| ch.send((i, msg))).map(|_| ())
+                    })
+                    .fuse(),
+                Fuse::terminated(),
+            ),
             Some((data, consumed)) => (
                 Fuse::terminated(),
                 serial.write_sink(&data[*consumed..], actx).fuse(),
             ),
         };
+
+        let recv_ch_fut = recv_ch.recv();
+
+        let detach = detach_opt.as_mut().unwrap_or(&mut done_detaching_recv);
 
         tokio::select! {
             // Poll in the order written
@@ -704,14 +769,31 @@ async fn instance_serial_task(
             // It's important we always poll the detach channel first
             // so that a constant stream of incoming/outgoing messages
             // don't cause us to ignore a detach
-            _ = &mut detach => {
-                info!(log, "Detaching from serial console");
-                let close = CloseFrame {
-                    code: CloseCode::Policy,
-                    reason: Cow::Borrowed("serial console was detached"),
-                };
-                ws_sink.send(Message::Close(Some(close))).await?;
-                break;
+            _ = detach => {
+                if !detaching {
+                    detaching = true;
+                    detach_opt = None; // can't re-poll a consumed oneshot channel
+                    info!(log, "Detaching from serial console, disconnecting all clients");
+                } else {
+                    info!(log, "Finished detaching all serial clients");
+                    break;
+                }
+            }
+
+            new_ws = websocks_recv.recv() => {
+                if let Some(ws) = new_ws {
+                    let (mut ws_sink, ws_stream) = ws.split();
+                    if !detaching {
+                        ws_sinks.push(ws_sink);
+                        incoming_ws_streams.push(ws_stream);
+                    } else {
+                        let close = CloseFrame {
+                            code: CloseCode::Policy,
+                            reason: Cow::Borrowed("serial console is currently being detached"),
+                        };
+                        let _ = ws_sink.send(Message::Close(Some(close))).await;
+                    }
+                }
             }
 
             // Write bytes into the UART from the WS
@@ -729,8 +811,7 @@ async fn instance_serial_task(
             }
 
             // Transmit bytes from the UART through the WS
-            write_success = ws_send => {
-                write_success?;
+            _ = ws_send => {
                 cur_output = None;
             }
 
@@ -742,14 +823,23 @@ async fn instance_serial_task(
                 }
             }
 
-            // Receive bytes from the WS to be injected into the UART
-            msg = ws_recv => {
-                match msg {
-                    Some(Ok(Message::Binary(input))) => {
-                        cur_input = Some((input, 0));
+            // Receive bytes from connected WS clients to feed to the intermediate recv_ch
+            _ = ws_recv => {}
+
+            // Receive bytes from the intermediate channel to be injected into the UART
+            pair = recv_ch_fut => {
+                if let Some((i, msg)) = pair {
+                    match msg {
+                        Some(Ok(Message::Binary(input))) => {
+                            cur_input = Some((input, 0));
+                        }
+                        Some(Ok(Message::Close(..))) | None => {
+                            info!(log, "Removed a closed serial connection.");
+                            let _ = ws_sinks.remove(i).close().await;
+                            let _ = ws_streams.remove(i);
+                        },
+                        _ => continue,
                     }
-                    Some(Ok(Message::Close(..))) | None => break,
-                    _ => continue,
                 }
             }
         }
@@ -771,12 +861,6 @@ async fn instance_serial(
             "Server not initialized (no instance)".to_string(),
         )
     })?;
-    if context.serial_task.as_ref().map_or(false, |s| s.is_attached()) {
-        return Err(HttpError::for_unavail(
-            None,
-            "serial console already attached".to_string(),
-        ));
-    }
 
     let serial = context
         .serial
@@ -843,37 +927,53 @@ async fn instance_serial(
             )
         })?;
 
-    let (detach_ch, detach_recv) = oneshot::channel();
-
-    let upgrade_fut = upgrade::on(request);
+    let actx = context.instance.async_ctx();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-    let actx = context.instance.async_ctx();
-    let task = tokio::spawn(async move {
+
+    // Create or get active serial task handle and channels
+    let serial_task = context.serial_task.get_or_insert_with(move || {
+        let (websocks_ch, websocks_recv) = mpsc::channel(1);
+        let (detach_ch, detach_recv) = oneshot::channel();
+
+        let task = tokio::spawn(async move {
+            let _ = instance_serial_task(
+                websocks_recv,
+                detach_recv,
+                serial,
+                ws_log,
+                &actx,
+            )
+            .await;
+        });
+
+        SerialTask { task, detach_ch, websocks_ch }
+    });
+
+    let upgrade_fut = upgrade::on(request);
+    let config =
+        WebSocketConfig { max_send_queue: Some(4096), ..Default::default() };
+    let websocks_send = serial_task.websocks_ch.clone();
+    tokio::spawn(async move {
         let upgraded = match upgrade_fut.await {
             Ok(u) => u,
             Err(e) => {
-                error!(err_log, "Serial Task Failed: {}", e);
+                error!(err_log, "Serial socket upgrade failed: {}", e);
                 return;
             }
         };
-        let config = WebSocketConfig {
-            max_send_queue: Some(4096),
-            ..Default::default()
-        };
+
         let ws_stream = WebSocketStream::from_raw_socket(
             upgraded,
             Role::Server,
             Some(config),
         )
         .await;
-        let _ =
-            instance_serial_task(detach_recv, serial, ws_stream, ws_log, &actx)
-                .await;
-    });
 
-    // Save active serial task handle
-    context.serial_task = Some(SerialTask { task, detach_ch });
+        if let Err(e) = websocks_send.send(ws_stream).await {
+            error!(err_log, "Serial socket hand-off failed: {}", e);
+        }
+    });
 
     Ok(Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -918,6 +1018,9 @@ async fn instance_serial_detach(
             "failed to complete existing serial task".to_string(),
         )
     })?;
+
+    let log = rqctx.log.new(o!());
+    info!(log, "Detached serial console.");
 
     Ok(HttpResponseUpdatedNoContent {})
 }
