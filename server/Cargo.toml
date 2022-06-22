@@ -51,6 +51,7 @@ version = "0.8.10"
 features = [ "chrono", "uuid1" ]
 
 [dev-dependencies]
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "8314eeddd228ec0d76cefa40c4a41d3e2611ac18" }
 hex = "0.4.3"
 reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 ring = "0.16"

@@ -539,3 +539,121 @@ impl SpecBuilder {
         self.spec
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use propolis_client::api::Slot;
+
+    use crate::config::{self, Config};
+
+    use super::*;
+
+    fn default_spec_builder() -> anyhow::Result<SpecBuilder> {
+        SpecBuilder::new(
+            &InstanceProperties {
+                id: Default::default(),
+                name: Default::default(),
+                description: Default::default(),
+                image_id: Default::default(),
+                bootrom_id: Default::default(),
+                memory: 512,
+                vcpus: 4,
+            },
+            &Config::new(
+                PathBuf::from_str("").unwrap(),
+                config::Chipset::default(),
+                BTreeMap::new(),
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+        )
+    }
+
+    #[test]
+    fn make_default_builder() {
+        assert!(default_spec_builder().is_ok());
+    }
+
+    #[test]
+    fn duplicate_pci_slot() {
+        let mut builder = default_spec_builder().unwrap();
+
+        // Adding the same disk device twice should fail.
+        assert!(builder
+            .add_disk_from_request(&DiskRequest {
+                name: "disk1".to_string(),
+                slot: Slot(0),
+                read_only: true,
+                device: "nvme".to_string(),
+                gen: 0,
+                volume_construction_request:
+                    crucible::VolumeConstructionRequest::File {
+                        block_size: 512,
+                        path: "disk1.img".to_string()
+                    },
+            })
+            .is_ok());
+        assert!(matches!(
+            builder
+                .add_disk_from_request(&DiskRequest {
+                    name: "disk2".to_string(),
+                    slot: Slot(0),
+                    read_only: true,
+                    device: "virtio".to_string(),
+                    gen: 0,
+                    volume_construction_request:
+                        crucible::VolumeConstructionRequest::File {
+                            block_size: 512,
+                            path: "disk2.img".to_string()
+                        },
+                })
+                .err()
+                .unwrap()
+                .downcast_ref::<SpecBuilderError>(),
+            Some(SpecBuilderError::PciPathInUse(_))
+        ));
+    }
+
+    #[test]
+    fn duplicate_serial_port() {
+        let mut builder = default_spec_builder().unwrap();
+        assert!(builder.add_serial_port(SerialPortNumber::Com1, false).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com2, false).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com3, false).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com4, false).is_ok());
+        assert!(matches!(
+            builder
+                .add_serial_port(SerialPortNumber::Com1, false)
+                .err()
+                .unwrap()
+                .downcast_ref::<SpecBuilderError>(),
+            Some(SpecBuilderError::SerialPortInUse(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_storage_device_type() {
+        let mut builder = default_spec_builder().unwrap();
+        assert!(matches!(
+            builder
+                .add_disk_from_request(&DiskRequest {
+                    name: "disk3".to_string(),
+                    slot: Slot(0),
+                    read_only: true,
+                    device: "virtio-scsi".to_string(),
+                    gen: 0,
+                    volume_construction_request:
+                        crucible::VolumeConstructionRequest::File {
+                            block_size: 512,
+                            path: "disk3.img".to_string()
+                        },
+                })
+                .err()
+                .unwrap()
+                .downcast_ref::<SpecBuilderError>(),
+            Some(SpecBuilderError::UnrecognizedStorageDevice(_))
+        ));
+    }
+}
