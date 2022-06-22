@@ -55,7 +55,7 @@ mod common;
 pub use common::PciPath;
 
 // N.B.: When adding a new version, update the use statement below (search for
-// `_LatestInstanceSpec`) to re-export the latest and greatest spec types.
+// `LatestInstanceSpec`) to re-export the latest and greatest spec types.
 pub mod v1;
 
 // Re-export the latest and greatest spec types, but shadow off `InstanceSpec`,
