@@ -191,30 +191,33 @@ impl Bars {
     }
 
     pub(super) fn export(&self) -> migrate::BarStateV1 {
-        let mut entries = Vec::new();
-        for (idx, entry) in self.entries.iter().enumerate() {
-            match entry.kind {
-                EntryKind::Pio(sz) => entries.push(migrate::BarEntryV1 {
-                    n: idx as u8,
-                    kind: migrate::BarKindV1::Pio,
-                    size: sz as u64,
-                    value: entry.value,
-                }),
-                EntryKind::Mmio(sz) => entries.push(migrate::BarEntryV1 {
-                    n: idx as u8,
-                    kind: migrate::BarKindV1::Mmio,
-                    size: sz as u64,
-                    value: entry.value,
-                }),
-                EntryKind::Mmio64(sz) => entries.push(migrate::BarEntryV1 {
-                    n: idx as u8,
-                    kind: migrate::BarKindV1::Mmio64,
-                    size: sz,
-                    value: entry.value,
-                }),
-                EntryKind::Empty | EntryKind::Mmio64High => {}
-            }
-        }
+        let entries = self.entries.map(|entry| match entry.kind {
+            EntryKind::Pio(sz) => migrate::BarEntryV1 {
+                kind: migrate::BarKindV1::Pio,
+                size: sz as u64,
+                value: entry.value,
+            },
+            EntryKind::Mmio(sz) => migrate::BarEntryV1 {
+                kind: migrate::BarKindV1::Mmio,
+                size: sz as u64,
+                value: entry.value,
+            },
+            EntryKind::Mmio64(sz) => migrate::BarEntryV1 {
+                kind: migrate::BarKindV1::Mmio64,
+                size: sz,
+                value: entry.value,
+            },
+            EntryKind::Mmio64High => migrate::BarEntryV1 {
+                kind: migrate::BarKindV1::Mmio64High,
+                size: 0,
+                value: 0,
+            },
+            EntryKind::Empty => migrate::BarEntryV1 {
+                kind: migrate::BarKindV1::Empty,
+                size: 0,
+                value: 0,
+            },
+        });
         migrate::BarStateV1 { entries }
     }
 
@@ -222,9 +225,10 @@ impl Bars {
         &mut self,
         bars: migrate::BarStateV1,
     ) -> Result<(), MigrateStateError> {
-        for (idx, entry) in bars.entries.iter().enumerate() {
+        for (barn, entry) in self.entries.iter_mut().zip(bars.entries) {
             let sz = entry.size;
-            self.entries[idx].kind = match entry.kind {
+            barn.kind = match entry.kind {
+                migrate::BarKindV1::Empty => EntryKind::Empty,
                 migrate::BarKindV1::Pio => {
                     let sz = sz.try_into().map_err(|_| {
                         MigrateStateError::ImportFailed(format!(
@@ -244,8 +248,9 @@ impl Bars {
                     EntryKind::Mmio(sz)
                 }
                 migrate::BarKindV1::Mmio64 => EntryKind::Mmio64(sz),
+                migrate::BarKindV1::Mmio64High => EntryKind::Mmio64High,
             };
-            self.entries[idx].value = entry.value;
+            barn.value = entry.value;
         }
         Ok(())
     }
@@ -254,16 +259,19 @@ impl Bars {
 pub mod migrate {
     use serde::{Deserialize, Serialize};
 
+    use super::BAR_COUNT;
+
     #[derive(Deserialize, Serialize)]
     pub enum BarKindV1 {
+        Empty,
         Pio,
         Mmio,
         Mmio64,
+        Mmio64High,
     }
 
     #[derive(Deserialize, Serialize)]
     pub struct BarEntryV1 {
-        pub n: u8,
         pub kind: BarKindV1,
         pub size: u64,
         pub value: u64,
@@ -271,7 +279,7 @@ pub mod migrate {
 
     #[derive(Deserialize, Serialize)]
     pub struct BarStateV1 {
-        pub entries: Vec<BarEntryV1>,
+        pub entries: [BarEntryV1; BAR_COUNT],
     }
 }
 
