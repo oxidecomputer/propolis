@@ -974,8 +974,10 @@ impl MsixCfg {
             entries.push(migrate::MsixEntryV1 {
                 addr: lentry.addr,
                 data: lentry.data,
-                is_pending: lentry.pending,
                 is_vec_masked: lentry.mask_vec,
+                is_func_masked: lentry.mask_func,
+                is_enabled: lentry.enabled,
+                is_pending: lentry.pending,
             });
         }
         migrate::MsixStateV1 {
@@ -1011,9 +1013,10 @@ impl MsixCfg {
             let mut entry = entry.lock().unwrap();
             entry.addr = saved.addr;
             entry.data = saved.data;
-            entry.pending = saved.is_pending;
             entry.mask_vec = saved.is_vec_masked;
-            // TODO: what about mask_func and enabled?
+            entry.mask_func = saved.is_func_masked;
+            entry.enabled = saved.is_enabled;
+            entry.pending = saved.is_pending;
         }
 
         Ok(())
@@ -1190,8 +1193,10 @@ pub mod migrate {
     pub struct MsixEntryV1 {
         pub addr: u64,
         pub data: u32,
-        pub is_pending: bool,
         pub is_vec_masked: bool,
+        pub is_func_masked: bool,
+        pub is_enabled: bool,
+        pub is_pending: bool,
     }
 
     #[derive(Deserialize, Serialize)]
