@@ -8,7 +8,6 @@ use propolis_client::api::{
 };
 use propolis_client::instance_spec::*;
 
-use anyhow::Result;
 use thiserror::Error;
 
 use crate::config;
@@ -22,8 +21,17 @@ pub enum SpecBuilderError {
     #[error("A backend with name {0} already exists")]
     BackendNameInUse(String),
 
+    #[error("The opaque description of backend {0} was not serializable: {1}")]
+    BackendSpecNotSerializable(String, serde_json::error::Error),
+
+    #[error("The supplied cloud init bytes failed to decode: {0}")]
+    CloudInitDecodeFailed(String),
+
     #[error("A PCI device is already attached at {0:?}")]
     PciPathInUse(PciPath),
+
+    #[error("The string {0} could not be converted to a PCI path")]
+    PciPathNotParseable(String),
 
     #[error("Serial port {0:?} is already specified")]
     SerialPortInUse(SerialPortNumber),
@@ -57,7 +65,10 @@ pub enum SlotType {
 
 /// Translates a device type and PCI slot (as presented in an instance creation
 /// request) into a concrete PCI path. See the documentation for [`SlotType`].
-fn slot_to_pci_path(slot: api::Slot, ty: SlotType) -> Result<PciPath> {
+fn slot_to_pci_path(
+    slot: api::Slot,
+    ty: SlotType,
+) -> Result<PciPath, SpecBuilderError> {
     match ty {
         // Slots for NICS: 0x08 -> 0x0F
         SlotType::NIC if slot.0 <= 7 => Ok(PciPath(0, slot.0 + 0x8, 0)),
@@ -65,7 +76,7 @@ fn slot_to_pci_path(slot: api::Slot, ty: SlotType) -> Result<PciPath> {
         SlotType::Disk if slot.0 <= 7 => Ok(PciPath(0, slot.0 + 0x10, 0)),
         // Slot for CloudInit
         SlotType::CloudInit if slot.0 == 0 => Ok(PciPath(0, slot.0 + 0x18, 0)),
-        _ => Err(SpecBuilderError::PciSlotInvalid(slot.0, ty).into()),
+        _ => Err(SpecBuilderError::PciSlotInvalid(slot.0, ty)),
     }
 }
 
@@ -81,7 +92,7 @@ impl SpecBuilder {
     pub fn new(
         properties: &InstanceProperties,
         config: &config::Config,
-    ) -> Result<Self> {
+    ) -> Result<Self, SpecBuilderError> {
         let enable_pcie =
             config.get_chipset().options.get("enable-pcie").map_or_else(
                 || Ok(false),
@@ -116,9 +127,12 @@ impl SpecBuilder {
         })
     }
 
-    fn register_pci_device(&mut self, pci_path: PciPath) -> Result<()> {
+    fn register_pci_device(
+        &mut self,
+        pci_path: PciPath,
+    ) -> Result<(), SpecBuilderError> {
         if self.pci_paths.contains(&pci_path) {
-            Err(SpecBuilderError::PciPathInUse(pci_path).into())
+            Err(SpecBuilderError::PciPathInUse(pci_path))
         } else {
             self.pci_paths.insert(pci_path);
             Ok(())
@@ -130,7 +144,7 @@ impl SpecBuilder {
     pub fn add_nic_from_request(
         &mut self,
         nic: &NetworkInterfaceRequest,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         let pci_path = slot_to_pci_path(nic.slot, SlotType::NIC)?;
         self.register_pci_device(pci_path)?;
 
@@ -145,8 +159,7 @@ impl SpecBuilder {
         {
             return Err(SpecBuilderError::BackendNameInUse(
                 nic.name.to_string(),
-            )
-            .into());
+            ));
         }
 
         if self
@@ -160,8 +173,7 @@ impl SpecBuilder {
         {
             return Err(SpecBuilderError::DeviceNameInUse(
                 nic.name.to_string(),
-            )
-            .into());
+            ));
         }
 
         Ok(())
@@ -169,7 +181,10 @@ impl SpecBuilder {
 
     /// Converts an HTTP API request to add a disk to an instance into
     /// device/backend entries in the spec under construction.
-    pub fn add_disk_from_request(&mut self, disk: &DiskRequest) -> Result<()> {
+    pub fn add_disk_from_request(
+        &mut self,
+        disk: &DiskRequest,
+    ) -> Result<(), SpecBuilderError> {
         let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
         self.register_pci_device(pci_path)?;
 
@@ -183,7 +198,13 @@ impl SpecBuilder {
                         gen: disk.gen,
                         serialized_req: serde_json::to_string(
                             &disk.volume_construction_request,
-                        )?,
+                        )
+                        .map_err(|e| {
+                            SpecBuilderError::BackendSpecNotSerializable(
+                                disk.name.to_string(),
+                                e,
+                            )
+                        })?,
                     },
                     readonly: disk.read_only,
                 },
@@ -192,8 +213,7 @@ impl SpecBuilder {
         {
             return Err(SpecBuilderError::BackendNameInUse(
                 disk.name.to_string(),
-            )
-            .into());
+            ));
         }
 
         if self
@@ -209,8 +229,7 @@ impl SpecBuilder {
                             return Err(
                                 SpecBuilderError::UnrecognizedStorageDevice(
                                     disk.device.clone(),
-                                )
-                                .into(),
+                                ),
                             );
                         }
                     },
@@ -222,8 +241,7 @@ impl SpecBuilder {
         {
             return Err(SpecBuilderError::DeviceNameInUse(
                 disk.name.to_string(),
-            )
-            .into());
+            ));
         }
 
         Ok(())
@@ -234,11 +252,13 @@ impl SpecBuilder {
     pub fn add_cloud_init_from_request(
         &mut self,
         cloud_init_bytes: &str,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         self.register_pci_device(pci_path)?;
-        let bytes = base64::decode(&cloud_init_bytes)?;
+        let bytes = base64::decode(&cloud_init_bytes).map_err(|e| {
+            SpecBuilderError::CloudInitDecodeFailed(e.to_string())
+        })?;
 
         if self
             .spec
@@ -252,9 +272,7 @@ impl SpecBuilder {
             )
             .is_some()
         {
-            return Err(
-                SpecBuilderError::BackendNameInUse(name.to_string()).into()
-            );
+            return Err(SpecBuilderError::BackendNameInUse(name.to_string()));
         }
 
         if self
@@ -270,9 +288,7 @@ impl SpecBuilder {
             )
             .is_some()
         {
-            return Err(
-                SpecBuilderError::DeviceNameInUse(name.to_string()).into()
-            );
+            return Err(SpecBuilderError::DeviceNameInUse(name.to_string()));
         }
 
         Ok(())
@@ -282,7 +298,7 @@ impl SpecBuilder {
         &mut self,
         name: &str,
         backend: &config::BlockDevice,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         let backend_spec = StorageBackend {
             kind: match backend.bdtype.as_str() {
                 "file" => StorageBackendKind::File {
@@ -307,8 +323,7 @@ impl SpecBuilder {
                 _ => {
                     return Err(SpecBuilderError::UnrecognizedStorageBackend(
                         backend.bdtype.to_string(),
-                    )
-                    .into())
+                    ))
                 }
             },
             readonly: || -> Option<bool> {
@@ -326,9 +341,7 @@ impl SpecBuilder {
             .insert(name.to_string(), backend_spec)
             .is_some()
         {
-            return Err(
-                SpecBuilderError::BackendNameInUse(name.to_string()).into()
-            );
+            return Err(SpecBuilderError::BackendNameInUse(name.to_string()));
         }
         Ok(())
     }
@@ -338,7 +351,7 @@ impl SpecBuilder {
         name: &str,
         kind: StorageDeviceKind,
         device: &config::Device,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         let backend_name = device
             .options
             .get("block_dev")
@@ -360,8 +373,7 @@ impl SpecBuilder {
             return Err(SpecBuilderError::ConfigTomlError(format!(
                 "Couldn't find backend {} for storage device {}",
                 backend_name, name
-            ))
-            .into());
+            )));
         }
 
         let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
@@ -383,9 +395,7 @@ impl SpecBuilder {
             .insert(name.to_string(), device_spec)
             .is_some()
         {
-            return Err(
-                SpecBuilderError::DeviceNameInUse(name.to_string()).into()
-            );
+            return Err(SpecBuilderError::DeviceNameInUse(name.to_string()));
         }
         Ok(())
     }
@@ -394,7 +404,7 @@ impl SpecBuilder {
         &mut self,
         name: &str,
         device: &config::Device,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         let vnic_name = device.get_string("vnic").ok_or_else(|| {
             SpecBuilderError::ConfigTomlError(format!(
                 "Failed to parse vNIC name for device {}",
@@ -419,8 +429,7 @@ impl SpecBuilder {
         {
             return Err(SpecBuilderError::BackendNameInUse(
                 vnic_name.to_string(),
-            )
-            .into());
+            ));
         }
 
         if self
@@ -432,9 +441,7 @@ impl SpecBuilder {
             )
             .is_some()
         {
-            return Err(
-                SpecBuilderError::DeviceNameInUse(name.to_string()).into()
-            );
+            return Err(SpecBuilderError::DeviceNameInUse(name.to_string()));
         }
 
         Ok(())
@@ -443,9 +450,12 @@ impl SpecBuilder {
     fn add_pci_bridge_from_config(
         &mut self,
         bridge: &config::PciBridge,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         let name = format!("pci-bridge-{}", bridge.downstream_bus);
-        let pci_path = PciPath::from_str(&bridge.pci_path)?;
+        let pci_path = PciPath::from_str(&bridge.pci_path).map_err(|_| {
+            SpecBuilderError::PciPathNotParseable(bridge.pci_path.clone())
+        })?;
+
         if self
             .spec
             .pci_pci_bridges
@@ -461,8 +471,7 @@ impl SpecBuilder {
             return Err(SpecBuilderError::DeviceNameInUse(format!(
                 "pci-bridge-{}",
                 bridge.downstream_bus
-            ))
-            .into());
+            )));
         }
 
         Ok(())
@@ -473,7 +482,7 @@ impl SpecBuilder {
     pub fn add_devices_from_config(
         &mut self,
         config: &config::Config,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         // Initialize all the backends in the config file.
         for (name, backend) in config.block_devices() {
             self.add_storage_backend_from_config(name, backend)?;
@@ -498,8 +507,7 @@ impl SpecBuilder {
                     return Err(SpecBuilderError::ConfigTomlError(format!(
                         "Unrecognized device type {}",
                         driver
-                    ))
-                    .into())
+                    )))
                 }
             }
         }
@@ -514,7 +522,7 @@ impl SpecBuilder {
         &mut self,
         port: SerialPortNumber,
         autodiscard: bool,
-    ) -> Result<()> {
+    ) -> Result<(), SpecBuilderError> {
         if self
             .spec
             .serial_ports
@@ -530,7 +538,7 @@ impl SpecBuilder {
             )
             .is_some()
         {
-            return Err(SpecBuilderError::SerialPortInUse(port).into());
+            return Err(SpecBuilderError::SerialPortInUse(port));
         }
         Ok(())
     }
@@ -550,7 +558,7 @@ mod test {
 
     use super::*;
 
-    fn default_spec_builder() -> anyhow::Result<SpecBuilder> {
+    fn default_spec_builder() -> Result<SpecBuilder, SpecBuilderError> {
         SpecBuilder::new(
             &InstanceProperties {
                 id: Default::default(),
@@ -609,9 +617,7 @@ mod test {
                             path: "disk2.img".to_string()
                         },
                 })
-                .err()
-                .unwrap()
-                .downcast_ref::<SpecBuilderError>(),
+                .err(),
             Some(SpecBuilderError::PciPathInUse(_))
         ));
     }
@@ -624,11 +630,7 @@ mod test {
         assert!(builder.add_serial_port(SerialPortNumber::Com3, false).is_ok());
         assert!(builder.add_serial_port(SerialPortNumber::Com4, false).is_ok());
         assert!(matches!(
-            builder
-                .add_serial_port(SerialPortNumber::Com1, false)
-                .err()
-                .unwrap()
-                .downcast_ref::<SpecBuilderError>(),
+            builder.add_serial_port(SerialPortNumber::Com1, false).err(),
             Some(SpecBuilderError::SerialPortInUse(_))
         ));
     }
@@ -650,9 +652,7 @@ mod test {
                             path: "disk3.img".to_string()
                         },
                 })
-                .err()
-                .unwrap()
-                .downcast_ref::<SpecBuilderError>(),
+                .err(),
             Some(SpecBuilderError::UnrecognizedStorageDevice(_))
         ));
     }
