@@ -69,10 +69,16 @@ impl VirtioState {
         self.msix_cfg_vec = VIRTIO_MSI_NO_VECTOR;
     }
     pub fn export(&self) -> migrate::VirtioStateV1 {
+        let intr_mode = match self.intr_mode {
+            IntrMode::IsrOnly => migrate::IntrModeV1::IsrOnly,
+            IntrMode::IsrLintr => migrate::IntrModeV1::IsrLintr,
+            IntrMode::Msi => migrate::IntrModeV1::Msi,
+        };
         migrate::VirtioStateV1 {
             status: self.status.bits(),
             queue_sel: self.queue_sel,
             nego_feat: self.nego_feat,
+            intr_mode,
             msix_cfg_vec: self.msix_cfg_vec,
             msix_queue_vec: self.msix_queue_vec.clone(),
         }
@@ -91,7 +97,12 @@ impl VirtioState {
         self.nego_feat = state.nego_feat;
         self.msix_cfg_vec = state.msix_cfg_vec;
         self.msix_queue_vec = state.msix_queue_vec;
-        // TODO: intr_mode*
+        self.intr_mode = match state.intr_mode {
+            migrate::IntrModeV1::IsrOnly => IntrMode::IsrOnly,
+            migrate::IntrModeV1::IsrLintr => IntrMode::IsrLintr,
+            migrate::IntrModeV1::Msi => IntrMode::Msi,
+        };
+
         Ok(())
     }
 }
@@ -519,16 +530,35 @@ impl PciVirtioState {
     pub fn import(
         &self,
         state: migrate::PciVirtioStateV1,
+        hdl: pci::MsixHdl,
     ) -> Result<pci::migrate::PciStateV1, MigrateStateError> {
         let mut inner = self.state.lock().unwrap();
         inner.import(state.state)?;
 
-        let mut isr_inner = self.isr_state.inner.lock().unwrap();
-        isr_inner.value = state.isr as u8;
-
         for (q, state) in self.queues[..].iter().zip(state.queues.into_iter()) {
             q.import(state)?;
         }
+
+        let mut isr_inner = self.isr_state.inner.lock().unwrap();
+        isr_inner.value = state.isr as u8;
+        drop(isr_inner);
+
+        match inner.intr_mode {
+            IntrMode::IsrOnly => {}
+            IntrMode::IsrLintr => {
+                self.isr_state.enable();
+            }
+            IntrMode::Msi => {
+                for (idx, queue) in self.queues[..].iter().enumerate() {
+                    let vec = *inner.msix_queue_vec.get(idx).unwrap();
+                    drop(inner);
+                    queue.set_interrupt(MsiIntr::new(hdl.clone(), vec));
+                    inner = self.state.lock().unwrap();
+                }
+            }
+        }
+        self.map_which
+            .store(inner.intr_mode == IntrMode::Msi, Ordering::SeqCst);
 
         Ok(state.pci)
     }
@@ -685,10 +715,18 @@ pub mod migrate {
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
+    pub enum IntrModeV1 {
+        IsrOnly,
+        IsrLintr,
+        Msi,
+    }
+
+    #[derive(Deserialize, Serialize)]
     pub struct VirtioStateV1 {
         pub status: u8,
         pub queue_sel: u16,
         pub nego_feat: u32,
+        pub intr_mode: IntrModeV1,
         pub msix_cfg_vec: u16,
         pub msix_queue_vec: Vec<u16>,
     }

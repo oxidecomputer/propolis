@@ -217,8 +217,9 @@ impl Migrate for PciVirtioBlock {
         // TODO: separate pci and virtio state into separate fields?
         // Kinda cludgy to give the whole thing to virtio_state and have it return
         // just the pci bits.
+        let hdl = self.pci_state.msix_hdl().unwrap();
         let pci_state =
-            self.virtio_state.import(deserialized.pci_virtio_state)?;
+            self.virtio_state.import(deserialized.pci_virtio_state, hdl)?;
         self.pci_state.import(pci_state)?;
         Ok(())
     }
