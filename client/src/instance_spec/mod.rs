@@ -63,7 +63,7 @@ pub mod v1;
 pub use v1::{InstanceSpec as LatestInstanceSpec, *};
 
 /// A concrete version of an instance specification.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum InstanceSpec {
     V1(v1::InstanceSpec),
     // Append new versions of the spec to this enum. Old versions should be
