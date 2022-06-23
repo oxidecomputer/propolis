@@ -467,14 +467,7 @@ impl Instance {
                 let _ =
                     hdl.suspend(bhyve_api::vm_suspend_how::VM_SUSPEND_RESET);
                 inner.suspend_info = Some((kind, source));
-                let target = match source {
-                    SuspendSource::Migration => State::Migrate(
-                        MigrateRole::Source,
-                        MigratePhase::Paused,
-                    ),
-                    _ => State::Reset,
-                };
-                self.set_target_state_locked(inner, target)
+                self.set_target_state_locked(inner, State::Reset)
             }
             SuspendKind::Halt => {
                 if matches!(inner.suspend_info, Some((SuspendKind::Halt, _))) {
@@ -710,14 +703,6 @@ impl Instance {
                 }
                 State::Destroy => {}
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
-                    // Pause vCPUs
-                    self.trigger_suspend_locked(
-                        &mut inner,
-                        SuspendKind::Reset,
-                        SuspendSource::Migration,
-                    )
-                    .unwrap();
-
                     let migrate_ctx = inner.migrate_ctx.unwrap();
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.
@@ -726,6 +711,17 @@ impl Instance {
                     // We explicitly allow the migrate task to run
                     self.disp.release_one(migrate_ctx);
                     inner = self.inner.lock().unwrap();
+
+                    // All the vCPUs and devices should be paused by this point
+                    // so update the target state to indicate as such
+                    self.set_target_state_locked(
+                        &mut inner,
+                        State::Migrate(
+                            MigrateRole::Source,
+                            MigratePhase::Paused,
+                        ),
+                    )
+                    .unwrap();
                 }
                 _ => {}
             }
@@ -809,6 +805,4 @@ pub enum SuspendSource {
     Device(&'static str),
     /// External request (power/reset button)
     External,
-    /// Migrating vCPUs as part of a migration
-    Migration,
 }
