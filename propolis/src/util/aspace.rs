@@ -96,11 +96,8 @@ impl<T> ASpace<T> {
     where
         P: FnMut(&T) -> bool,
     {
-        let (&k, _) = self
-            .map
-            .iter()
-            .filter(|(_, (_, entry))| predicate(entry))
-            .next()?;
+        let (&k, _) =
+            self.map.iter().find(|(_, (_, entry))| predicate(entry))?;
         Some(k)
     }
 
@@ -108,12 +105,8 @@ impl<T> ASpace<T> {
     where
         P: FnMut(&T) -> bool,
     {
-        let (&k, &(len, _)) = self
-            .map
-            .iter()
-            .rev()
-            .filter(|(_, (_, entry))| predicate(entry))
-            .next()?;
+        let (&k, &(len, _)) =
+            self.map.iter().rev().find(|(_, (_, entry))| predicate(entry))?;
         Some(k + len - 1)
     }
 
