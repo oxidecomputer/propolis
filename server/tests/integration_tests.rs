@@ -72,12 +72,8 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
         vec![],
     );
     let p_ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
-    let context = server::Context::new(
-        config,
-        vnc_server,
-        log.new(slog::o!()),
-        p_ip,
-    );
+    let context =
+        server::Context::new(config, vnc_server, log.new(slog::o!()), p_ip);
 
     let config_dropshot = ConfigDropshot {
         bind_address: "127.0.0.1:0".parse().unwrap(),
