@@ -69,6 +69,10 @@ enum Command {
         // cloud_init ISO file
         #[clap(long, action)]
         cloud_init: Option<PathBuf>,
+
+        /// Enable metrics with Oximeter
+        #[clap(long, action)]
+        metrics: bool,
     },
 
     /// Get the properties of a propolis instance
@@ -149,6 +153,7 @@ async fn new_instance(
     memory: u64,
     disks: Vec<DiskRequest>,
     cloud_init_bytes: Option<String>,
+    metrics: bool,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
@@ -169,6 +174,7 @@ async fn new_instance(
         disks,
         migrate: None,
         cloud_init_bytes,
+        metrics,
     };
 
     // Try to create the instance
@@ -405,6 +411,7 @@ async fn migrate_instance(
             src_uuid,
         }),
         cloud_init_bytes: None,
+        metrics: false,
     };
 
     // Get the source instance ready
@@ -475,6 +482,7 @@ async fn main() -> anyhow::Result<()> {
             memory,
             crucible_disks,
             cloud_init,
+            metrics,
         } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
@@ -494,6 +502,7 @@ async fn main() -> anyhow::Result<()> {
                 memory,
                 disks,
                 cloud_init_bytes,
+                metrics,
             )
             .await?
         }

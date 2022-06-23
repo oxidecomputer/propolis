@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use oximeter::types::ProducerRegistry;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::PAGE_SIZE;
@@ -294,12 +295,14 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
+        producer_registry: Arc<tokio::sync::Mutex<Option<ProducerRegistry>>>,
     ) -> Result<(), Error> {
         info!(self.log, "Creating Crucible disk from {:#?}", disk);
         let be = propolis::block::CrucibleBackend::create(
             disk.gen,
             disk.volume_construction_request.clone(),
             disk.read_only,
+            producer_registry,
         )?;
 
         info!(self.log, "Creating ChildRegister");

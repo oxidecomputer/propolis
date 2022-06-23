@@ -33,6 +33,9 @@ pub struct InstanceEnsureRequest {
 
     // base64 encoded cloud-init ISO
     pub cloud_init_bytes: Option<String>,
+
+    // If the instance should post metrics to Oximeter
+    pub metrics: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

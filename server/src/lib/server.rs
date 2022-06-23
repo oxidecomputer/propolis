@@ -11,9 +11,11 @@ use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
 use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
+use oximeter::types::ProducerRegistry;
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::io::{Error, ErrorKind};
+use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
@@ -36,6 +38,7 @@ use propolis_client::api;
 use crate::config::Config;
 use crate::initializer::{build_instance, MachineInitializer};
 use crate::serial::Serial;
+use crate::stats::{prop_oximeter, PropCountStat, PropStatOuter};
 use crate::vnc::PropolisVncServer;
 use crate::{migrate, vnc};
 
@@ -87,6 +90,13 @@ pub(crate) struct InstanceContext {
     serial_task: Option<SerialTask>,
 }
 
+
+#[derive(Debug, Clone)]
+pub struct InstanceMetrics {
+    pub(crate) producer_registry: Arc<Mutex<Option<ProducerRegistry>>>,
+    pub(crate) pso: Arc<Mutex<Option<PropStatOuter>>>,
+}
+
 /// Contextual information accessible from HTTP callbacks.
 pub struct Context {
     pub(crate) context: Mutex<Option<InstanceContext>>,
@@ -94,6 +104,9 @@ pub struct Context {
     config: Config,
     log: Logger,
     pub(crate) vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+    // To register with Oximeter, we need to know our own address.
+    pub(crate) propolis_addr: SocketAddr,
+    pub instance_metrics: InstanceMetrics,
 }
 
 impl Context {
@@ -102,13 +115,21 @@ impl Context {
         config: Config,
         vnc_server: VncServer<PropolisVncServer>,
         log: Logger,
+        propolis_addr: SocketAddr,
     ) -> Self {
+
+        let instance_metrics = InstanceMetrics {
+            producer_registry: Arc::new(Mutex::new(None)),
+            pso: Arc::new(Mutex::new(None)),
+        };
         Context {
             context: Mutex::new(None),
             migrate_task: Mutex::new(None),
             config,
             log,
             vnc_server: Arc::new(Mutex::new(vnc_server)),
+            propolis_addr,
+            instance_metrics,
         }
     }
 }
@@ -234,6 +255,55 @@ async fn instance_ensure(
         }));
     }
 
+    // Determine if we need to setup the metrics endpoint or not.
+    if request.metrics {
+        let prop_count_stat = PropCountStat::new(properties.id.clone());
+        let pso = PropStatOuter {
+            prop_stat_wrap:
+                 Arc::new(std::sync::Mutex::new(prop_count_stat))
+        };
+        let mut lpso = server_context.instance_metrics.pso.lock().await;
+        assert!(lpso.is_none());
+        *lpso = Some(pso.clone());
+        drop(lpso);
+
+        // This is the address where stats will be collected.
+        let la = server_context.propolis_addr.ip();
+        let listen_addr = SocketAddr::new(la, 0);
+        // XXX if registration fails here, do we give up forever?
+        match prop_oximeter(
+            properties.id.clone(),
+            listen_addr,
+            rqctx.log.clone()
+        ).await {
+            Err(e) => {
+                error!(rqctx.log, "Failed to register with Oximeter {:?}", e);
+            },
+            Ok(server) => {
+                info!(
+                    rqctx.log,
+                    "registering metrics with instance uuid: {}",
+                     properties.id,
+                );
+                server.registry().register_producer(pso.clone()).unwrap();
+                let mut producer_registry =
+                    server_context.
+                    instance_metrics.
+                    producer_registry.
+                    lock().await;
+                assert!(producer_registry.is_none());
+                *producer_registry = Some(server.registry().clone());
+                drop(producer_registry);
+                // Spawn the metric endpoint.
+                tokio::spawn(async move {
+                    server.serve_forever().await.unwrap();
+                });
+            }
+        }
+    } else {
+        info!(rqctx.log, "No metrics registration was requested");
+    }
+
     const MB: usize = 1024 * 1024;
     const GB: usize = 1024 * 1024 * 1024;
     let memsize = properties.memory as usize * MB;
@@ -319,7 +389,12 @@ async fn instance_ensure(
                         )
                     })?;
 
-                init.initialize_crucible(&chipset, disk, bdf)?;
+                init.initialize_crucible(
+                    &chipset,
+                    disk,
+                    bdf,
+                    server_context.instance_metrics.producer_registry.clone(),
+                )?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
             }
 
@@ -644,6 +719,12 @@ async fn instance_state_put(
     context.instance.set_target_state(state).map_err(|err| {
         HttpError::for_internal_error(format!("Failed to set state: {:?}", err))
     })?;
+
+    let server_context = rqctx.context();
+    let pso = server_context.instance_metrics.pso.lock().await;
+    if let Some(p) = &*pso {
+        p.add_activation();
+    }
 
     Ok(HttpResponseUpdatedNoContent {})
 }

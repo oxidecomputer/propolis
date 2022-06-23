@@ -82,10 +82,15 @@ async fn main() -> anyhow::Result<()> {
             let vnc_server = setup_vnc(&log, vnc_addr);
             let vnc_server_hdl = vnc_server.clone();
 
-            let context =
-                server::Context::new(config, vnc_server, log.new(slog::o!()));
+            let context = server::Context::new(
+                config,
+                vnc_server,
+                log.new(slog::o!()),
+                propolis_addr,
+            );
 
             info!(log, "Starting server...");
+
             let server = HttpServerStarter::new(
                 &config_dropshot,
                 server::api(),
