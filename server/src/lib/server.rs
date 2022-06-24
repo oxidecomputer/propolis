@@ -90,7 +90,8 @@ pub(crate) struct InstanceContext {
     serial_task: Option<SerialTask>,
 
     /// A map of disk names to CrucibleBackend
-    pub(crate) crucible_backends: Mutex<BTreeMap<String, Arc<propolis::block::CrucibleBackend>>>,
+    pub(crate) crucible_backends:
+        Mutex<BTreeMap<String, Arc<propolis::block::CrucibleBackend>>>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -282,7 +283,10 @@ async fn instance_ensure(
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
 
-    let mut crucible_backends: BTreeMap<String, Arc<propolis::block::CrucibleBackend>> = BTreeMap::new();
+    let mut crucible_backends: BTreeMap<
+        String,
+        Arc<propolis::block::CrucibleBackend>,
+    > = BTreeMap::new();
 
     instance
         .initialize(|machine, mctx, disp, inv| {
@@ -330,14 +334,13 @@ async fn instance_ensure(
                 let be = init.initialize_crucible(&chipset, disk, bdf)?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
 
-                let prev = crucible_backends.insert(disk.name.clone(), be.clone());
+                let prev =
+                    crucible_backends.insert(disk.name.clone(), be.clone());
                 if prev.is_some() {
-                    return Err(
-                        Error::new(
-                            ErrorKind::InvalidData,
-                            format!("multiple disks named {}", disk.name),
-                        )
-                    );
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("multiple disks named {}", disk.name),
+                    ));
                 }
             }
 
