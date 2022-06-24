@@ -12,9 +12,10 @@ use hyper::{header, Body, Response, StatusCode};
 use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind};
 use std::ops::Range;
 use std::sync::Arc;
@@ -87,6 +88,9 @@ pub(crate) struct InstanceContext {
     serial: Option<Arc<Serial<LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
+
+    /// A map of disk names to CrucibleBackend
+    pub(crate) crucible_backends: Mutex<BTreeMap<String, Arc<propolis::block::CrucibleBackend>>>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -278,6 +282,8 @@ async fn instance_ensure(
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
 
+    let mut crucible_backends: BTreeMap<String, Arc<propolis::block::CrucibleBackend>> = BTreeMap::new();
+
     instance
         .initialize(|machine, mctx, disp, inv| {
             let init = MachineInitializer::new(
@@ -321,8 +327,18 @@ async fn instance_ensure(
                         )
                     })?;
 
-                init.initialize_crucible(&chipset, disk, bdf)?;
+                let be = init.initialize_crucible(&chipset, disk, bdf)?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
+
+                let prev = crucible_backends.insert(disk.name.clone(), be.clone());
+                if prev.is_some() {
+                    return Err(
+                        Error::new(
+                            ErrorKind::InvalidData,
+                            format!("multiple disks named {}", disk.name),
+                        )
+                    );
+                }
             }
 
             if let Some(cloud_init_bytes) = &cloud_init_bytes {
@@ -515,6 +531,7 @@ async fn instance_ensure(
         serial: com1,
         state_watcher: rx,
         serial_task: None,
+        crucible_backends: Mutex::new(crucible_backends),
     });
     drop(context);
 
@@ -938,80 +955,16 @@ async fn instance_migrate_status(
         .map(HttpResponseOk)
 }
 
-#[derive(Serialize, JsonSchema)]
-struct InstanceGetInventoryListResult {
-    entity_names: Vec<String>,
-}
-
-/// Return a list of inventory entity instance names
-#[endpoint {
-    method = GET,
-    path = "/instance/inventory",
-}]
-async fn instance_get_inventory_entity_list(
-    rqctx: Arc<RequestContext<Context>>,
-) -> Result<HttpResponseOk<InstanceGetInventoryListResult>, HttpError> {
-    let context = rqctx.context().context.lock().await;
-
-    let context = context.as_ref().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
-    })?;
-
-    Ok(HttpResponseOk(InstanceGetInventoryListResult {
-        entity_names: context.instance.inv().get_names(),
-    }))
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct InstanceGetInventoryPathParam {
-    name: String,
-}
-
-/// Get an inventory entity by instance name
-#[endpoint {
-    method = GET,
-    path = "/instance/inventory/{name}",
-}]
-async fn instance_get_inventory_entity(
-    rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<InstanceGetInventoryPathParam>,
-) -> Result<HttpResponseOk<api::InstanceGetInventoryResult>, HttpError> {
-    let context = rqctx.context().context.lock().await;
-    let path_params = path_params.into_inner();
-
-    let context = context.as_ref().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
-    })?;
-
-    let entity =
-        context.instance.inv().get_by_name(&path_params.name).ok_or_else(
-            || {
-                let s = format!("no entity for {}!", path_params.name);
-                HttpError::for_not_found(Some(s.clone()), s)
-            },
-        )?;
-
-    Ok(HttpResponseOk(api::InstanceGetInventoryResult {
-        type_name: entity.type_name().to_string(),
-    }))
-}
-
 #[derive(Deserialize, JsonSchema)]
 struct SnapshotRequestPathParams {
     name: String,
     snapshot_name: String,
 }
 
-/// Issue a snapshot request to a crucible backend inventory entity
-///
-/// Fails if the concrete type is not propolis::block::CrucibleBackend.
+/// Issue a snapshot request to a crucible backend
 #[endpoint {
     method = POST,
-    path = "/instance/inventory/{name}/snapshot/{snapshot_name}",
+    path = "/instance/disk/{name}/snapshot/{snapshot_name}",
 }]
 async fn instance_issue_crucible_snapshot_request(
     rqctx: Arc<RequestContext<Context>>,
@@ -1026,28 +979,19 @@ async fn instance_issue_crucible_snapshot_request(
         )
     })?;
 
-    // Does the entity exist?
-    context.instance.inv().get_by_name(&path_params.name).ok_or_else(|| {
-        let s = format!("no entity for {}!", path_params.name);
-        HttpError::for_not_found(Some(s.clone()), s)
-    })?;
+    let crucible_backends = context.crucible_backends.lock().await;
+    let crucible_backend = crucible_backends.get(&path_params.name);
 
-    // Is it a crucible backend?
-    let crucible: Arc<propolis::block::CrucibleBackend> = context
-        .instance
-        .inv()
-        .get_concrete_by_name(&path_params.name)
-        .ok_or_else(|| {
-            let s =
-                format!("entity {} not crucible backend!", path_params.name);
-            HttpError::for_not_found(Some(s.clone()), s)
+    if let Some(crucible_backend) = crucible_backend {
+        crucible_backend.snapshot(path_params.snapshot_name).map_err(|e| {
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
         })?;
 
-    crucible.snapshot(path_params.snapshot_name).map_err(|e| {
-        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-    })?;
-
-    Ok(HttpResponseOk(()))
+        Ok(HttpResponseOk(()))
+    } else {
+        let s = format!("no disk named {}!", path_params.name);
+        Err(HttpError::for_not_found(Some(s.clone()), s))
+    }
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
@@ -1061,8 +1005,6 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_serial_detach).unwrap();
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
-    api.register(instance_get_inventory_entity_list).unwrap();
-    api.register(instance_get_inventory_entity).unwrap();
     api.register(instance_issue_crucible_snapshot_request).unwrap();
 
     api

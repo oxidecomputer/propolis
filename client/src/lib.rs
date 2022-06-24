@@ -179,22 +179,13 @@ impl Client {
         format!("ws://{}/instance/serial", self.address)
     }
 
-    pub async fn instance_get_inventory_entity(
-        &self,
-        name: String,
-    ) -> Result<api::InstanceGetInventoryResult, Error> {
-        let path =
-            format!("http://{}/instance/inventory/{}", self.address, name);
-        self.get(path, None).await
-    }
-
     pub async fn instance_issue_crucible_snapshot_request(
         &self,
         inventory_name: String,
         snapshot_name: String,
     ) -> Result<(), Error> {
         let path = format!(
-            "http://{}/instance/inventory/{}/snapshot/{}",
+            "http://{}/instance/disk/{}/snapshot/{}",
             self.address, inventory_name, snapshot_name
         );
         self.post(path, None).await

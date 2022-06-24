@@ -294,7 +294,7 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
-    ) -> Result<(), Error> {
+    ) -> Result<Arc<propolis::block::CrucibleBackend>, Error> {
         info!(self.log, "Creating Crucible disk from {:#?}", disk);
         let be = propolis::block::CrucibleBackend::create(
             disk.gen,
@@ -308,7 +308,8 @@ impl<'a> MachineInitializer<'a> {
         match disk.device.as_ref() {
             "virtio" => {
                 info!(self.log, "Calling initialize_virtio_block");
-                self.initialize_virtio_block(chipset, bdf, be, creg)
+                self.initialize_virtio_block(chipset, bdf, be.clone(), creg)?;
+                Ok(be)
             }
             "nvme" => {
                 info!(self.log, "Calling initialize_nvme_block");
@@ -316,9 +317,10 @@ impl<'a> MachineInitializer<'a> {
                     chipset,
                     bdf,
                     disk.name.clone(),
-                    be,
+                    be.clone(),
                     creg,
-                )
+                )?;
+                Ok(be)
             }
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
