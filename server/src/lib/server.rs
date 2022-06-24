@@ -41,6 +41,7 @@ use crate::initializer::{build_instance, MachineInitializer};
 use crate::serial::Serial;
 use crate::vnc::PropolisVncServer;
 use crate::{migrate, vnc};
+use uuid::Uuid;
 
 // TODO(error) Do a pass of HTTP codes (error and ok)
 // TODO(idempotency) Idempotency mechanisms?
@@ -91,7 +92,7 @@ pub(crate) struct InstanceContext {
 
     /// A map of disk names to CrucibleBackend
     pub(crate) crucible_backends:
-        Mutex<BTreeMap<String, Arc<propolis::block::CrucibleBackend>>>,
+        Mutex<BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -284,7 +285,7 @@ async fn instance_ensure(
     // but it is currently hard-coded for simplicity.
 
     let mut crucible_backends: BTreeMap<
-        String,
+        Uuid,
         Arc<propolis::block::CrucibleBackend>,
     > = BTreeMap::new();
 
@@ -334,12 +335,12 @@ async fn instance_ensure(
                 let be = init.initialize_crucible(&chipset, disk, bdf)?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
 
-                let prev =
-                    crucible_backends.insert(disk.name.clone(), be.clone());
+                let disk_id = be.get_uuid()?;
+                let prev = crucible_backends.insert(disk_id, be.clone());
                 if prev.is_some() {
                     return Err(Error::new(
                         ErrorKind::InvalidData,
-                        format!("multiple disks named {}", disk.name),
+                        format!("multiple disks with id {}", disk_id),
                     ));
                 }
             }
@@ -960,14 +961,14 @@ async fn instance_migrate_status(
 
 #[derive(Deserialize, JsonSchema)]
 struct SnapshotRequestPathParams {
-    name: String,
-    snapshot_name: String,
+    id: Uuid,
+    snapshot_id: Uuid,
 }
 
 /// Issue a snapshot request to a crucible backend
 #[endpoint {
     method = POST,
-    path = "/instance/disk/{name}/snapshot/{snapshot_name}",
+    path = "/instance/disk/{id}/snapshot/{snapshot_id}",
 }]
 async fn instance_issue_crucible_snapshot_request(
     rqctx: Arc<RequestContext<Context>>,
@@ -983,16 +984,16 @@ async fn instance_issue_crucible_snapshot_request(
     })?;
 
     let crucible_backends = context.crucible_backends.lock().await;
-    let crucible_backend = crucible_backends.get(&path_params.name);
+    let crucible_backend = crucible_backends.get(&path_params.id);
 
     if let Some(crucible_backend) = crucible_backend {
-        crucible_backend.snapshot(path_params.snapshot_name).map_err(|e| {
+        crucible_backend.snapshot(path_params.snapshot_id).map_err(|e| {
             HttpError::for_bad_request(Some(e.to_string()), e.to_string())
         })?;
 
         Ok(HttpResponseOk(()))
     } else {
-        let s = format!("no disk named {}!", path_params.name);
+        let s = format!("no disk with id {}!", path_params.id);
         Err(HttpError::for_not_found(Some(s.clone()), s))
     }
 }

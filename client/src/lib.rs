@@ -181,12 +181,14 @@ impl Client {
 
     pub async fn instance_issue_crucible_snapshot_request(
         &self,
-        inventory_name: String,
-        snapshot_name: String,
+        disk_id: Uuid,
+        snapshot_id: Uuid,
     ) -> Result<(), Error> {
         let path = format!(
             "http://{}/instance/disk/{}/snapshot/{}",
-            self.address, inventory_name, snapshot_name
+            self.address,
+            disk_id.to_string(),
+            snapshot_id.to_string(),
         );
         self.post(path, None).await
     }
