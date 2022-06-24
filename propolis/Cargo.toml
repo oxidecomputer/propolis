@@ -22,7 +22,7 @@ usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "8314eeddd228ec0d76cefa40c4a41d3e2611ac18", optional = true }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main", optional = true }
 anyhow = "1"
 slog = "2.7"
 serde = { version = "1" }
