@@ -100,6 +100,7 @@ pub struct Context {
     config: Config,
     log: Logger,
     pub(crate) vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+    pub(crate) use_reservoir: bool,
 }
 
 impl Context {
@@ -107,6 +108,7 @@ impl Context {
     pub fn new(
         config: Config,
         vnc_server: VncServer<PropolisVncServer>,
+        use_reservoir: bool,
         log: Logger,
     ) -> Self {
         Context {
@@ -115,6 +117,7 @@ impl Context {
             config,
             log,
             vnc_server: Arc::new(Mutex::new(vnc_server)),
+            use_reservoir,
         }
     }
 }
@@ -257,6 +260,7 @@ async fn instance_ensure(
         properties.vcpus,
         lowmem,
         highmem,
+        server_context.use_reservoir,
         vmm_log,
     )
     .map_err(|err| {

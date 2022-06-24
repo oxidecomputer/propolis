@@ -12,7 +12,9 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::util::aspace::ASpace;
 use crate::vcpu::Vcpu;
-use crate::vmm::{create_vm, GuardSpace, Mapping, Prot, SubMapping, VmmHdl};
+use crate::vmm::{
+    create_vm, CreateOpts, GuardSpace, Mapping, Prot, SubMapping, VmmHdl,
+};
 
 // XXX: Arbitrary limits for now
 pub const MAX_PHYSMEM: usize = 0x80_0000_0000;
@@ -498,10 +500,14 @@ impl<'a, T: Copy> Iterator for MemMany<'a, T> {
 /// # Example
 ///
 /// ```no_run
-/// use propolis::vmm::{Builder, Prot};
+/// use propolis::vmm::{Builder, Prot, CreateOpts};
 /// use propolis::instance::Instance;
 ///
-/// let builder = Builder::new("my-machine", true).unwrap()
+/// let opts = CreateOpts {
+///     // Override any desired VM creation options
+///     ..Default::default()
+/// };
+/// let builder = Builder::new("my-machine", opts).unwrap()
 ///     .max_cpus(4).unwrap()
 ///     .add_mem_region(0, 0xc000_0000, Prot::ALL, "lowmem").unwrap()
 ///     .add_mem_region(0x1_0000_0000, 0xc000_0000, Prot::ALL, "highmem").unwrap()
@@ -528,8 +534,8 @@ impl Builder {
     /// # Arguments
     /// - `name`: The name for the new instance.
     /// - `force`: If true, deletes the VM if it already exists.
-    pub fn new(name: &str, force: bool) -> Result<Self> {
-        let hdl = create_vm(name, force)?;
+    pub fn new(name: &str, opts: CreateOpts) -> Result<Self> {
+        let hdl = create_vm(name, opts)?;
         Ok(Self {
             inner_hdl: Some(hdl),
             max_cpu: 1,

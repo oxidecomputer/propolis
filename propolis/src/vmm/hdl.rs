@@ -19,6 +19,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::common::PAGE_SIZE;
 use crate::util::sys::ioctl;
 
+#[derive(Default, Copy, Clone)]
+/// Configurable options for VMM instance creation
+///
+/// # Options:
+/// - `force`: If a VM with the name `name` already exists, attempt
+///   to destroy the VM before creating it.
+/// - `use_reservoir`: Allocate guest memory (only) from the VMM reservoir.  If
+/// this is enabled, and memory in excess of what is available from the
+/// reservoir is requested, creation of that guest memory resource will fail.
+pub struct CreateOpts {
+    pub force: bool,
+    pub use_reservoir: bool,
+}
+
 /// Creates a new virtual machine with the provided `name`.
 ///
 /// Operates on the bhyve controller object at `/dev/vmmctl`,
@@ -27,25 +41,30 @@ use crate::util::sys::ioctl;
 ///
 /// # Arguments
 /// - `name`: The name of the VM to create.
-/// - `force`: If a VM with the name `name` already exists, attempt
-/// to destroy the VM before creating it.
-pub fn create_vm(name: impl AsRef<str>, force: bool) -> Result<VmmHdl> {
-    create_vm_impl(name.as_ref(), force)
+/// - `opts`: Creation options (detailed in `CreateOpts`)
+pub(crate) fn create_vm(
+    name: impl AsRef<str>,
+    opts: CreateOpts,
+) -> Result<VmmHdl> {
+    create_vm_impl(name.as_ref(), opts)
 }
 
 #[cfg(target_os = "illumos")]
-fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
+fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
     let ctl = OpenOptions::new()
         .write(true)
         .custom_flags(libc::O_EXCL)
         .open(bhyve_api::VMM_CTL_PATH)?;
     let ctlfd = ctl.as_raw_fd();
 
-    let req = bhyve_api::vm_create_req::new(name);
+    let mut req = bhyve_api::vm_create_req::new(name);
+    if opts.use_reservoir {
+        req.flags |= bhyve_api::VCF_RESERVOIR_MEM;
+    }
     let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
     if res != 0 {
         let err = Error::last_os_error();
-        if err.kind() != ErrorKind::AlreadyExists || !force {
+        if err.kind() != ErrorKind::AlreadyExists || !opts.force {
             return Err(err);
         }
 
@@ -82,7 +101,7 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
     })
 }
 #[cfg(not(target_os = "illumos"))]
-fn create_vm_impl(_name: &str, _force: bool) -> Result<VmmHdl> {
+fn create_vm_impl(_name: &str, _opts: CreateOpts) -> Result<VmmHdl> {
     {
         // suppress unused warnings
         let mut _oo = OpenOptions::new();
@@ -416,4 +435,26 @@ impl VmmHdl {
             name: "TEST-ONLY VMM INSTANCE".to_string(),
         })
     }
+}
+
+#[cfg(target_os = "illumos")]
+pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
+    let ctl = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_EXCL)
+        .open(bhyve_api::VMM_CTL_PATH)?;
+    let ctlfd = ctl.as_raw_fd();
+
+    let mut data = bhyve_api::vmm_resv_query::default();
+    let res =
+        unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_RESV_QUERY, &mut data) };
+    if res != 0 {
+        Err(Error::last_os_error())
+    } else {
+        Ok(data)
+    }
+}
+#[cfg(not(target_os = "illumos"))]
+pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
+    Err(Error::new(ErrorKind::Other, "illumos required"))
 }

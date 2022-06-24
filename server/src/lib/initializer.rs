@@ -55,9 +55,11 @@ pub fn build_instance(
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
+    use_reservoir: bool,
     log: slog::Logger,
 ) -> Result<Arc<Instance>> {
-    let mut builder = Builder::new(name, true)?
+    let create_opts = propolis::vmm::CreateOpts { force: true, use_reservoir };
+    let mut builder = Builder::new(name, create_opts)?
         .max_cpus(max_cpu)?
         .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
         .add_rom_region(

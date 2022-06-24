@@ -11,6 +11,11 @@ pub const VMM_DESTROY_VM: i32 = VMMCTL_IOC_BASE | 0x02;
 pub const VMM_VM_SUPPORTED: i32 = VMMCTL_IOC_BASE | 0x03;
 pub const VMM_INTERFACE_VERSION: i32 = VMMCTL_IOC_BASE | 0x04;
 
+// VMM memory reservoir operations
+pub const VMM_RESV_QUERY: i32 = VMMCTL_IOC_BASE | 0x10;
+pub const VMM_RESV_ADD: i32 = VMMCTL_IOC_BASE | 0x11;
+pub const VMM_RESV_REMOVE: i32 = VMMCTL_IOC_BASE | 0x12;
+
 // Operations performed in the context of a given vCPU
 pub const VM_RUN: i32 = VMM_CPU_IOC_BASE | 0x01;
 pub const VM_SET_REGISTER: i32 = VMM_CPU_IOC_BASE | 0x02;

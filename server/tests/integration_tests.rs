@@ -71,7 +71,13 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
         block_devices,
         vec![],
     );
-    let context = server::Context::new(config, vnc_server, log.new(slog::o!()));
+    let use_reservoir = propolis_server::config::reservoir_decide(log);
+    let context = server::Context::new(
+        config,
+        vnc_server,
+        use_reservoir,
+        log.new(slog::o!()),
+    );
 
     let config_dropshot = ConfigDropshot {
         bind_address: "127.0.0.1:0".parse().unwrap(),

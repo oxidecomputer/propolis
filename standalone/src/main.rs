@@ -59,22 +59,25 @@ fn build_instance(
     highmem: usize,
     log: slog::Logger,
 ) -> Result<Arc<Instance>> {
-    let mut builder = Builder::new(name, true)?
-        .max_cpus(max_cpu)?
-        .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
-        .add_rom_region(
-            0x1_0000_0000 - MAX_ROM_SIZE,
-            MAX_ROM_SIZE,
-            Prot::READ | Prot::EXEC,
-            "bootrom",
-        )?
-        .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32")?
-        .add_mmio_region(0xe0000000_usize, 0x10000000_usize, "pcicfg")?
-        .add_mmio_region(
-            vmm::MAX_SYSMEM,
-            vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
-            "dev64",
-        )?;
+    let mut builder = Builder::new(
+        name,
+        propolis::vmm::CreateOpts { force: true, ..Default::default() },
+    )?
+    .max_cpus(max_cpu)?
+    .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
+    .add_rom_region(
+        0x1_0000_0000 - MAX_ROM_SIZE,
+        MAX_ROM_SIZE,
+        Prot::READ | Prot::EXEC,
+        "bootrom",
+    )?
+    .add_mmio_region(0xc0000000_usize, 0x20000000_usize, "dev32")?
+    .add_mmio_region(0xe0000000_usize, 0x10000000_usize, "pcicfg")?
+    .add_mmio_region(
+        vmm::MAX_SYSMEM,
+        vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
+        "dev64",
+    )?;
     if highmem > 0 {
         builder = builder.add_mem_region(
             0x1_0000_0000,
