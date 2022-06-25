@@ -82,7 +82,7 @@ fn slot_to_pci_path(
 
 /// A helper for building instance specs out of component parts.
 pub struct SpecBuilder {
-    spec: LatestInstanceSpec,
+    spec: InstanceSpec,
     pci_paths: BTreeSet<PciPath>,
 }
 
@@ -113,7 +113,7 @@ impl SpecBuilder {
         };
 
         Ok(Self {
-            spec: LatestInstanceSpec {
+            spec: InstanceSpec {
                 board,
                 storage_devices: Default::default(),
                 storage_backends: Default::default(),
@@ -543,7 +543,7 @@ impl SpecBuilder {
         Ok(())
     }
 
-    pub fn finish(self) -> LatestInstanceSpec {
+    pub fn finish(self) -> InstanceSpec {
         self.spec
     }
 }

@@ -49,7 +49,7 @@ fn open_bootrom<P: AsRef<std::path::Path>>(path: P) -> Result<(File, usize)> {
     }
 }
 
-fn get_spec_guest_ram_limits(spec: &LatestInstanceSpec) -> (usize, usize) {
+fn get_spec_guest_ram_limits(spec: &InstanceSpec) -> (usize, usize) {
     const MB: usize = 1024 * 1024;
     const GB: usize = 1024 * 1024 * 1024;
     let memsize = spec.board.memory_mb as usize * MB;
@@ -60,7 +60,7 @@ fn get_spec_guest_ram_limits(spec: &LatestInstanceSpec) -> (usize, usize) {
 
 pub fn build_instance(
     name: &str,
-    spec: &LatestInstanceSpec,
+    spec: &InstanceSpec,
     use_reservoir: bool,
     log: slog::Logger,
 ) -> Result<Arc<Instance>> {
@@ -112,7 +112,7 @@ pub struct MachineInitializer<'a> {
     mctx: &'a MachineCtx,
     disp: &'a Dispatcher,
     inv: &'a Inventory,
-    spec: &'a LatestInstanceSpec,
+    spec: &'a InstanceSpec,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -122,7 +122,7 @@ impl<'a> MachineInitializer<'a> {
         mctx: &'a MachineCtx,
         disp: &'a Dispatcher,
         inv: &'a Inventory,
-        spec: &'a LatestInstanceSpec,
+        spec: &'a InstanceSpec,
     ) -> Self {
         MachineInitializer { _log: log, machine, mctx, disp, inv, spec }
     }
