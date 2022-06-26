@@ -284,10 +284,7 @@ async fn instance_ensure(
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
 
-    let mut crucible_backends: BTreeMap<
-        Uuid,
-        Arc<propolis::block::CrucibleBackend>,
-    > = BTreeMap::new();
+    let mut crucible_backends = BTreeMap::new();
 
     instance
         .initialize(|machine, mctx, disp, inv| {
