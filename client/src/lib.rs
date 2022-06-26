@@ -186,9 +186,7 @@ impl Client {
     ) -> Result<(), Error> {
         let path = format!(
             "http://{}/instance/disk/{}/snapshot/{}",
-            self.address,
-            disk_id.to_string(),
-            snapshot_id.to_string(),
+            self.address, disk_id, snapshot_id,
         );
         self.post(path, None).await
     }
