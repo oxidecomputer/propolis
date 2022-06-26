@@ -11,8 +11,6 @@ use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
 use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -956,12 +954,6 @@ async fn instance_migrate_status(
         .map(HttpResponseOk)
 }
 
-#[derive(Deserialize, JsonSchema)]
-struct SnapshotRequestPathParams {
-    id: Uuid,
-    snapshot_id: Uuid,
-}
-
 /// Issue a snapshot request to a crucible backend
 #[endpoint {
     method = POST,
@@ -969,7 +961,7 @@ struct SnapshotRequestPathParams {
 }]
 async fn instance_issue_crucible_snapshot_request(
     rqctx: Arc<RequestContext<Context>>,
-    path_params: Path<SnapshotRequestPathParams>,
+    path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let context = rqctx.context().context.lock().await;
     let path_params = path_params.into_inner();

@@ -285,7 +285,8 @@ pub enum NetworkInterfaceAttachmentState {
     Faulted,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceGetInventoryResult {
-    pub type_name: String,
+#[derive(Deserialize, JsonSchema)]
+pub struct SnapshotRequestPathParams {
+    pub id: Uuid,
+    pub snapshot_id: Uuid,
 }
