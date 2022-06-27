@@ -9,9 +9,10 @@ use crate::block;
 use crate::dispatch::{DispCtx, Dispatcher};
 use crate::inventory::Entity;
 use crate::vmm::SubMapping;
+use uuid::Uuid;
 
 use crucible::{
-    crucible_bail, BlockIO, Buffer, CrucibleError, Volume,
+    crucible_bail, BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume,
     VolumeConstructionRequest,
 };
 use oximeter::types::ProducerRegistry;
@@ -78,6 +79,24 @@ impl CrucibleBackend {
     /// Retrieve the UUID identifying this Crucible backend.
     pub fn get_uuid(&self) -> Result<uuid::Uuid> {
         self.block_io.get_uuid().map_err(map_crucible_error_to_io)
+    }
+
+    /// Issue a snapshot request
+    pub fn snapshot(&self, snapshot_id: Uuid) -> Result<()> {
+        // XXX Crucible uses std::sync::mpsc::Receiver, not
+        // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
+        // Remove that when Crucible changes over to the tokio mpsc.
+        let mut waiter = tokio::task::block_in_place(|| {
+            self.block_io.flush(Some(SnapshotDetails {
+                snapshot_name: snapshot_id.to_string(),
+            }))
+        })
+        .map_err(map_crucible_error_to_io)?;
+
+        tokio::task::block_in_place(|| waiter.block_wait())
+            .map_err(map_crucible_error_to_io)?;
+
+        Ok(())
     }
 }
 

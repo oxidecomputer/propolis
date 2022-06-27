@@ -147,15 +147,9 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         let hdl = self.mctx.hdl();
 
-        let (pic, pit, hpet, ioapic, rtc) = propolis::hw::bhyve::defaults();
+        let rtc = &self.machine.kernel_devs.rtc;
         rtc.memsize_to_nvram(lowmem, highmem, hdl)?;
         rtc.set_time(SystemTime::now(), hdl)?;
-
-        self.inv.register(&pic)?;
-        self.inv.register(&pit)?;
-        self.inv.register(&hpet)?;
-        self.inv.register(&ioapic)?;
-        self.inv.register(&rtc)?;
 
         Ok(())
     }
@@ -296,7 +290,7 @@ impl<'a> MachineInitializer<'a> {
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
         producer_registry: Arc<tokio::sync::Mutex<Option<ProducerRegistry>>>,
-    ) -> Result<(), Error> {
+    ) -> Result<Arc<propolis::block::CrucibleBackend>, Error> {
         info!(self.log, "Creating Crucible disk from {:#?}", disk);
         let be = propolis::block::CrucibleBackend::create(
             disk.gen,
@@ -311,7 +305,8 @@ impl<'a> MachineInitializer<'a> {
         match disk.device.as_ref() {
             "virtio" => {
                 info!(self.log, "Calling initialize_virtio_block");
-                self.initialize_virtio_block(chipset, bdf, be, creg)
+                self.initialize_virtio_block(chipset, bdf, be.clone(), creg)?;
+                Ok(be)
             }
             "nvme" => {
                 info!(self.log, "Calling initialize_nvme_block");
@@ -319,9 +314,10 @@ impl<'a> MachineInitializer<'a> {
                     chipset,
                     bdf,
                     disk.name.clone(),
-                    be,
+                    be.clone(),
                     creg,
-                )
+                )?;
+                Ok(be)
             }
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -371,7 +367,7 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_cpus(&self) -> Result<(), Error> {
-        for mut vcpu in self.mctx.vcpus() {
+        for vcpu in self.mctx.vcpus() {
             vcpu.set_default_capabs().unwrap();
         }
         Ok(())

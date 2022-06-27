@@ -287,3 +287,9 @@ pub enum NetworkInterfaceAttachmentState {
     Detached,
     Faulted,
 }
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SnapshotRequestPathParams {
+    pub id: Uuid,
+    pub snapshot_id: Uuid,
+}

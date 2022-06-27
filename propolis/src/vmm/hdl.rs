@@ -45,9 +45,7 @@ fn create_vm_impl(name: &str, force: bool) -> Result<VmmHdl> {
     let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
     if res != 0 {
         let err = Error::last_os_error();
-        if err.kind() != ErrorKind::AlreadyExists {
-            return Err(err);
-        } else if !force {
+        if err.kind() != ErrorKind::AlreadyExists || !force {
             return Err(err);
         }
 

@@ -89,6 +89,20 @@ impl Client {
         send_and_parse_response(request).await
     }
 
+    async fn post<T: DeserializeOwned, U: IntoUrl + std::fmt::Display>(
+        &self,
+        path: U,
+        body: Option<Body>,
+    ) -> Result<T, Error> {
+        info!(self.log, "POST request to {}", path);
+        let mut request = self.client.post(path);
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+
+        send_and_parse_response(request).await
+    }
+
     async fn put_no_response<U: IntoUrl + std::fmt::Display>(
         &self,
         path: U,
@@ -163,5 +177,17 @@ impl Client {
     /// Returns the WebSocket URI to an instance's serial console stream.
     pub fn instance_serial_console_ws_uri(&self) -> String {
         format!("ws://{}/instance/serial", self.address)
+    }
+
+    pub async fn instance_issue_crucible_snapshot_request(
+        &self,
+        disk_id: Uuid,
+        snapshot_id: Uuid,
+    ) -> Result<(), Error> {
+        let path = format!(
+            "http://{}/instance/disk/{}/snapshot/{}",
+            self.address, disk_id, snapshot_id,
+        );
+        self.post(path, None).await
     }
 }

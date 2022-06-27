@@ -33,7 +33,7 @@ pub mod vmm;
 use bhyve_api::vm_reg_name;
 use dispatch::*;
 use exits::*;
-use vcpu::VcpuHdl;
+use vcpu::Vcpu;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -41,7 +41,7 @@ mod probes {
     fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
 }
 
-pub fn vcpu_run_loop(mut vcpu: VcpuHdl, sctx: &mut SyncCtx) {
+pub fn vcpu_run_loop(vcpu: &Vcpu, sctx: &mut SyncCtx) {
     let mut next_entry = VmEntry::Run;
     loop {
         if sctx.check_yield() {

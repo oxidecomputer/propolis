@@ -7,6 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 
 use crate::dispatch::*;
+use crate::hw;
 use crate::inventory::{self, Inventory};
 use crate::vcpu::VcpuRunFunc;
 use crate::vmm::*;
@@ -237,11 +238,20 @@ impl Instance {
             }
         });
 
+        // Register bhyve-internal devices
+        let mut state = this.inner.lock().unwrap();
+        let machine = state.machine.as_ref().unwrap();
+        machine.kernel_devs.register(&state.inv);
+        for vcpu in machine.vcpus.iter() {
+            state.inv.register_instance(vcpu, vcpu.cpuid());
+        }
+        drop(state);
+
+        // Fire up instance state driver task
         let driver_hdl = Arc::clone(&this);
         let driver = thread::Builder::new()
             .name("instance-driver".to_string())
             .spawn(move || driver_hdl.drive_state(driver_log))?;
-
         let mut state = this.inner.lock().unwrap();
         state.drive_thread = Some(driver);
         drop(state);
@@ -255,13 +265,14 @@ impl Instance {
     ///
     /// - Panics if the instance's state is not [`State::Initialize`].
     pub fn spawn_vcpu_workers(&self, vcpu_fn: VcpuRunFunc) -> io::Result<()> {
-        self.initialize(|_machine, mctx, disp, inv| {
-            for vcpu in mctx.vcpus() {
+        self.initialize(|machine, _mctx, disp, inv| {
+            for vcpu in machine.vcpus.iter() {
                 let vcpu_id = vcpu.cpuid() as usize;
                 let name = format!("vcpu-{}", vcpu_id);
 
+                let arc_vcpu = vcpu.clone();
                 let func = Box::new(move |sctx: &mut SyncCtx| {
-                    vcpu_fn(vcpu, sctx);
+                    vcpu_fn(&arc_vcpu, sctx);
                 });
                 let wake = Box::new(move |ctx: &DispCtx| {
                     let _ = ctx.mctx.vcpu(vcpu_id).barrier();

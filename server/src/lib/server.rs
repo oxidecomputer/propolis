@@ -3,7 +3,7 @@
 use anyhow::Result;
 use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
-    HttpResponseUpdatedNoContent, RequestContext, TypedBody,
+    HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
 use futures::future::Fuse;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -14,6 +14,7 @@ use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
 use slog::{error, info, o, Logger};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::ops::Range;
@@ -41,6 +42,7 @@ use crate::serial::Serial;
 use crate::stats::{prop_oximeter, PropCountStat, PropStatOuter};
 use crate::vnc::PropolisVncServer;
 use crate::{migrate, vnc};
+use uuid::Uuid;
 
 // TODO(error) Do a pass of HTTP codes (error and ok)
 // TODO(idempotency) Idempotency mechanisms?
@@ -88,6 +90,10 @@ pub(crate) struct InstanceContext {
     serial: Option<Arc<Serial<LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
+
+    /// A map of disk names to CrucibleBackend
+    pub(crate) crucible_backends:
+        Mutex<BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +350,8 @@ async fn instance_ensure(
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
 
+    let mut crucible_backends = BTreeMap::new();
+
     instance
         .initialize(|machine, mctx, disp, inv| {
             let init = MachineInitializer::new(
@@ -387,13 +395,22 @@ async fn instance_ensure(
                         )
                     })?;
 
-                init.initialize_crucible(
+                let be = init.initialize_crucible(
                     &chipset,
                     disk,
                     bdf,
                     server_context.instance_metrics.producer_registry.clone(),
                 )?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
+
+                let disk_id = be.get_uuid()?;
+                let prev = crucible_backends.insert(disk_id, be.clone());
+                if prev.is_some() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("multiple disks with id {}", disk_id),
+                    ));
+                }
             }
 
             if let Some(cloud_init_bytes) = &cloud_init_bytes {
@@ -586,6 +603,7 @@ async fn instance_ensure(
         serial: com1,
         state_watcher: rx,
         serial_task: None,
+        crucible_backends: Mutex::new(crucible_backends),
     });
     drop(context);
 
@@ -602,7 +620,7 @@ async fn instance_ensure(
             match next_state {
                 propolis::instance::State::Boot => {
                     // Set vCPUs to their proper boot (INIT) state
-                    for mut vcpu in ctx.mctx.vcpus() {
+                    for vcpu in ctx.mctx.vcpus() {
                         vcpu.reboot_state().unwrap();
                         vcpu.activate().unwrap();
                         // Set BSP to start up
@@ -1015,6 +1033,39 @@ async fn instance_migrate_status(
         .map(HttpResponseOk)
 }
 
+/// Issue a snapshot request to a crucible backend
+#[endpoint {
+    method = POST,
+    path = "/instance/disk/{id}/snapshot/{snapshot_id}",
+}]
+async fn instance_issue_crucible_snapshot_request(
+    rqctx: Arc<RequestContext<Context>>,
+    path_params: Path<api::SnapshotRequestPathParams>,
+) -> Result<HttpResponseOk<()>, HttpError> {
+    let context = rqctx.context().context.lock().await;
+    let path_params = path_params.into_inner();
+
+    let context = context.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+
+    let crucible_backends = context.crucible_backends.lock().await;
+    let crucible_backend = crucible_backends.get(&path_params.id);
+
+    if let Some(crucible_backend) = crucible_backend {
+        crucible_backend.snapshot(path_params.snapshot_id).map_err(|e| {
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+        })?;
+
+        Ok(HttpResponseOk(()))
+    } else {
+        let s = format!("no disk with id {}!", path_params.id);
+        Err(HttpError::for_not_found(Some(s.clone()), s))
+    }
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Context> {
     let mut api = ApiDescription::new();
@@ -1026,5 +1077,7 @@ pub fn api() -> ApiDescription<Context> {
     api.register(instance_serial_detach).unwrap();
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
+    api.register(instance_issue_crucible_snapshot_request).unwrap();
+
     api
 }

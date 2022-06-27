@@ -22,14 +22,29 @@ impl Entity for BhyveAtPic {
     }
 }
 impl Migrate for BhyveAtPic {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::BhyveAtPicV1 {})
+    fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize> {
+        let hdl = ctx.mctx.hdl();
+        Box::new(migrate::BhyveAtPicV1::read(hdl))
     }
 }
 
 pub mod migrate {
+    use crate::vmm;
+
     use serde::Serialize;
 
-    #[derive(Serialize)]
-    pub struct BhyveAtPicV1 {}
+    #[derive(Copy, Clone, Default, Serialize)]
+    pub struct BhyveAtPicV1 {
+        /// XXX: do not expose vdi struct
+        pub data: bhyve_api::vdi_atpic_v1,
+    }
+
+    impl BhyveAtPicV1 {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
+            Self {
+                data: vmm::data::read(hdl, -1, bhyve_api::VDC_ATPIC, 1)
+                    .unwrap(),
+            }
+        }
+    }
 }
