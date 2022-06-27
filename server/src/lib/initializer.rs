@@ -21,6 +21,7 @@ use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
 use propolis_client::instance_spec::{self, *};
+use slog::info;
 
 use crate::serial::Serial;
 
@@ -107,7 +108,7 @@ impl RegisteredChipset {
 }
 
 pub struct MachineInitializer<'a> {
-    _log: slog::Logger,
+    log: slog::Logger,
     machine: &'a Machine,
     mctx: &'a MachineCtx,
     disp: &'a Dispatcher,
@@ -124,7 +125,7 @@ impl<'a> MachineInitializer<'a> {
         inv: &'a Inventory,
         spec: &'a InstanceSpec,
     ) -> Self {
-        MachineInitializer { _log: log, machine, mctx, disp, inv, spec }
+        MachineInitializer { log, machine, mctx, disp, inv, spec }
     }
 
     pub fn initialize_rom<P: AsRef<std::path::Path>>(
@@ -259,6 +260,10 @@ impl<'a> MachineInitializer<'a> {
     {
         Ok(match &backend_spec.kind {
             StorageBackendKind::Crucible { gen, serialized_req } => {
+                info!(
+                    self.log,
+                    "Creating Crucible disk from request {}", serialized_req
+                );
                 let be = propolis::block::CrucibleBackend::create(
                     *gen,
                     serialized_req,
@@ -271,6 +276,10 @@ impl<'a> MachineInitializer<'a> {
                 (be, child)
             }
             StorageBackendKind::File { path } => {
+                info!(
+                    self.log,
+                    "Creating file disk backend using path {}", path
+                );
                 let nworkers = NonZeroUsize::new(8).unwrap();
                 let be = propolis::block::FileBackend::create(
                     path,
@@ -282,6 +291,11 @@ impl<'a> MachineInitializer<'a> {
                 (be, child)
             }
             StorageBackendKind::InMemory { bytes } => {
+                info!(
+                    self.log,
+                    "Creating in-memory disk backend from {} bytes",
+                    bytes.len()
+                );
                 let be = propolis::block::InMemoryBackend::create(
                     bytes.to_vec(),
                     backend_spec.readonly,
@@ -299,6 +313,12 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
         for (name, device_spec) in &self.spec.storage_devices {
+            info!(
+                self.log,
+                "Creating storage device {} of kind {:?}",
+                name,
+                device_spec.kind
+            );
             let backend_spec = self
                 .spec
                 .storage_backends
@@ -358,6 +378,7 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
         for (name, vnic_spec) in &self.spec.network_devices {
+            info!(self.log, "Creating vNIC {}", name);
             let backend_spec = self
                 .spec
                 .network_backends
