@@ -24,3 +24,4 @@ slog-term = "2.7"
 default = ["dtrace-probes"]
 dtrace-probes = ["propolis/dtrace-probes"]
 crucible = ["propolis/crucible"]
+oximeter = ["propolis/oximeter"]

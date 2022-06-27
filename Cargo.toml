@@ -25,7 +25,3 @@ exclude = [
 panic = "abort"
 [profile.release]
 panic = "abort"
-
-# Development
-[patch."https://github.com/oxidecomputer/crucible"]
-crucible = { path = "../stock/upstairs" }
