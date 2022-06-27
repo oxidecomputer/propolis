@@ -94,7 +94,7 @@ pub async fn prop_oximeter(
     my_address: SocketAddr,
     plog: Logger,
 ) -> anyhow::Result<Server> {
-    // XXX Replace with proper oximeter registration
+    // TODO: Replace with proper oximeter registration
     let ra = IpAddr::from_str("fd00:1122:3344:101::3").unwrap();
     let registration_address = SocketAddr::new(ra, 12221);
 
@@ -111,7 +111,6 @@ pub async fn prop_oximeter(
         tls: None,
     };
 
-    // XXX change this level
     let logging_config =
         ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Error };
     let log = logging_config
@@ -132,9 +131,6 @@ pub async fn prop_oximeter(
         logging_config,
     };
 
-    // If the server is not responding when propolis starts, keep trying.
-    // XXX What is the retry idea here?  If we cant start the server and
-    // register with Oximeter, what do we do?
     let mut retry_print_timeout = 0;
     loop {
         let server = Server::start(&config).await;

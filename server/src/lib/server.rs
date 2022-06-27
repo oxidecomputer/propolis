@@ -273,7 +273,6 @@ async fn instance_ensure(
         // This is the address where stats will be collected.
         let la = server_context.propolis_addr.ip();
         let listen_addr = SocketAddr::new(la, 0);
-        // XXX if registration fails here, do we give up forever?
         match prop_oximeter(
             properties.id.clone(),
             listen_addr,
