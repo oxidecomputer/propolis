@@ -362,7 +362,7 @@ pub async fn dest_initiate(
     let log = rqctx.log.new(o!(
         "migration_id" => migration_id.to_string(),
         "migrate_role" => "destination",
-        "migrate_src_addr" => migrate_info.src_addr.clone()
+        "migrate_src_addr" => migrate_info.src_addr
     ));
     info!(log, "Migration Destination");
 

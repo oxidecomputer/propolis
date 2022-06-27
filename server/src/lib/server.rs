@@ -569,7 +569,7 @@ async fn instance_ensure(
     vnc_server.server.set_async_ctx(actx).await;
     vnc_server.server.initialize_framebuffer(fb).await;
 
-    let rt = rt_handle.unwrap().clone();
+    let rt = rt_handle.unwrap();
     let hdl = Arc::clone(&vnc_hdl);
     ramfb.unwrap().set_notifier(Box::new(move |config, is_valid| {
         let h = Arc::clone(&hdl);

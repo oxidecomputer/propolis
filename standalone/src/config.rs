@@ -88,7 +88,13 @@ impl BlockDevice {
                 let path = self.options.get("path").unwrap().as_str().unwrap();
 
                 let readonly: bool = || -> Option<bool> {
-                    self.options.get("readonly")?.as_str()?.parse().ok()
+                    match self.options.get("readonly") {
+                        Some(toml::Value::Boolean(read_only)) => {
+                            Some(*read_only)
+                        }
+                        Some(toml::Value::String(v)) => v.parse().ok(),
+                        _ => None,
+                    }
                 }()
                 .unwrap_or(false);
 

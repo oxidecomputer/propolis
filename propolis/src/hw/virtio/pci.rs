@@ -360,6 +360,10 @@ impl PciVirtioState {
                         queue.set_interrupt(MsiIntr::new(hdl, val));
                         state = self.state.lock().unwrap();
 
+                        // With the MSI configuration updated for the virtqueue,
+                        // notify the device of the change
+                        dev.queue_change(queue, VqChange::IntrCfg, ctx);
+
                         state.intr_mode_updating = false;
                         self.state_cv.notify_all();
                     }

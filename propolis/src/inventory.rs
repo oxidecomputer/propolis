@@ -534,7 +534,7 @@ pub trait Entity: Send + Sync + 'static {
     /// may implement the `Migrate` trait along with its export/import
     /// methods. A device which shouldn't be migrated should instead
     /// override this method and explicity return `Migrator::NonMigratable`.
-    fn migrate<'a>(&'a self) -> Migrator<'a> {
+    fn migrate(&'_ self) -> Migrator<'_> {
         Migrator::Simple
     }
 }
