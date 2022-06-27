@@ -126,10 +126,27 @@ impl Inventory {
         inv.get_concrete(id)
     }
 
+    /// Access the concrete type of an entity by name.
+    ///
+    /// Returns the entity if it exists and has the requested concrete type.
+    pub fn get_concrete_by_name<T: Entity>(
+        &self,
+        instance_name: &str,
+    ) -> Option<Arc<T>> {
+        let inv = self.inner.lock().unwrap();
+        inv.get_concrete_by_name(instance_name)
+    }
+
     /// Lookup an entity by its instance name.
     pub fn get_by_name(&self, instance_name: &str) -> Option<Arc<dyn Entity>> {
         let inv = self.inner.lock().unwrap();
         inv.get_by_name(instance_name).map(|rec| Arc::clone(rec.entity()))
+    }
+
+    /// Return a list of entity instance names
+    pub fn get_names(&self) -> Vec<String> {
+        let inv = self.inner.lock().unwrap();
+        inv.get_names()
     }
 
     /// Removes an entity from the inventory.
@@ -286,6 +303,17 @@ impl InventoryInner {
         self.entities.get(&id)?.concrete()
     }
 
+    /// Access the concrete type of an entity by name.
+    ///
+    /// Returns the entity if it exists and has the requested concrete type.
+    pub fn get_concrete_by_name<T: Entity>(
+        &self,
+        instance_name: &str,
+    ) -> Option<Arc<T>> {
+        let id = self.reverse_name.get(instance_name)?;
+        self.entities.get(&id)?.concrete()
+    }
+
     /// Access an entity's record by ID.
     pub fn get(&self, id: EntityID) -> Option<&Record> {
         self.entities.get(&id)
@@ -295,6 +323,11 @@ impl InventoryInner {
     pub fn get_by_name(&self, instance_name: &str) -> Option<&Record> {
         let id = self.reverse_name.get(instance_name)?;
         self.entities.get(id)
+    }
+
+    /// Return a list of entity instance names
+    pub fn get_names(&self) -> Vec<String> {
+        self.reverse_name.keys().cloned().collect()
     }
 
     /// Removes an entity (and all its children) from the inventory.
@@ -557,6 +590,10 @@ impl ChildRegister {
             ent_any: Arc::clone(ent) as Arc<dyn Any + Send + Sync + 'static>,
             instance_name,
         }
+    }
+
+    pub fn instance_name(&self) -> Option<String> {
+        self.instance_name.clone()
     }
 }
 

@@ -130,7 +130,7 @@ impl Request {
         // Update the outstanding I/O count
         self.outstanding
             .take()
-            .expect("misssing OutstandingReqs ref")
+            .expect("missing OutstandingReqs ref")
             .decrement();
     }
 
