@@ -737,8 +737,11 @@ async fn instance_state_put(
 
     let server_context = rqctx.context();
     let pso = server_context.instance_metrics.pso.lock().await;
-    if let Some(p) = &*pso {
-        p.add_activation();
+
+    if state == propolis::instance::ReqState::Reset {
+        if let Some(p) = &*pso {
+            p.add_activation();
+        }
     }
 
     Ok(HttpResponseUpdatedNoContent {})
