@@ -606,7 +606,12 @@ impl DeviceState {
         let attach = inner.attached();
         for n in BarN::iter() {
             if let Some((def, addr)) = inner.bars.get(n) {
-                attach.bar_register(n, def, addr);
+                let pio_en = inner.reg_command.contains(RegCmd::IO_EN);
+                let mmio_en = inner.reg_command.contains(RegCmd::MMIO_EN);
+
+                if (pio_en && def.is_pio()) || (mmio_en && def.is_mmio()) {
+                    attach.bar_register(n, def, addr);
+                }
             }
         }
 
