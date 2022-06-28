@@ -988,8 +988,6 @@ impl MsixCfg {
                 addr: lentry.addr,
                 data: lentry.data,
                 is_vec_masked: lentry.mask_vec,
-                is_func_masked: lentry.mask_func,
-                is_enabled: lentry.enabled,
                 is_pending: lentry.pending,
             });
         }
@@ -1027,8 +1025,8 @@ impl MsixCfg {
             entry.addr = saved.addr;
             entry.data = saved.data;
             entry.mask_vec = saved.is_vec_masked;
-            entry.mask_func = saved.is_func_masked;
-            entry.enabled = saved.is_enabled;
+            entry.mask_func = state.is_func_masked;
+            entry.enabled = state.is_enabled;
             entry.pending = saved.is_pending;
         }
 
@@ -1207,8 +1205,6 @@ pub mod migrate {
         pub addr: u64,
         pub data: u32,
         pub is_vec_masked: bool,
-        pub is_func_masked: bool,
-        pub is_enabled: bool,
         pub is_pending: bool,
     }
 
