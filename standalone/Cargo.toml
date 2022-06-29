@@ -5,7 +5,16 @@ authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "propolis_standalone_shared"
+path = "src/lib.rs"
+
+[[bin]]
+name = "propolis-standalone"
+path = "src/main.rs"
+
+[[bin]]
+name = "savex"
 
 [dependencies]
 anyhow = "1.0"
@@ -22,6 +31,7 @@ serde_json = "1.0"
 slog = "2.7"
 slog-async = "2.7"
 slog-term = "2.7"
+num_enum = "0.5"
 
 [features]
 default = ["dtrace-probes"]

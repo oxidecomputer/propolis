@@ -507,7 +507,7 @@ pub mod migrate {
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
     pub struct BhyveVmV1 {
-        arch_entries: Vec<ArchEntryV1>,
+        pub arch_entries: Vec<ArchEntryV1>,
     }
 
     #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]

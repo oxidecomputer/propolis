@@ -101,12 +101,12 @@ pub fn setup_instance(
     config: config::Config,
     rt_handle: Handle,
 ) -> anyhow::Result<(Arc<Instance>, Arc<UDSock>)> {
-    let vm_name = config.get_name();
-    let cpus = config.get_cpus();
+    let vm_name = &config.main.name;
+    let cpus = config.main.cpus;
 
     const GB: usize = 1024 * 1024 * 1024;
     const MB: usize = 1024 * 1024;
-    let memsize: usize = config.get_mem() * MB;
+    let memsize: usize = config.main.memory * MB;
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
@@ -115,7 +115,7 @@ pub fn setup_instance(
             .context("Failed to create VM Instance")?;
     slog::info!(log, "VM created"; "name" => vm_name);
 
-    let (romfp, rom_len) = open_bootrom(config.get_bootrom())
+    let (romfp, rom_len) = open_bootrom(&config.main.bootrom)
         .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
     let com1_sock = UDSock::bind(Path::new("./ttya"))
         .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
@@ -189,7 +189,7 @@ pub fn setup_instance(
             .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
         inv.register(&debug_device)?;
 
-        for (name, dev) in config.devs() {
+        for (name, dev) in config.devices.iter() {
             let driver = &dev.driver as &str;
             let bdf = if driver.starts_with("pci-") {
                 config::parse_bdf(
@@ -200,10 +200,7 @@ pub fn setup_instance(
             };
             match driver {
                 "pci-virtio-block" => {
-                    let block_dev =
-                        dev.options.get("block_dev").unwrap().as_str().unwrap();
-
-                    let (backend, creg) = config.block_dev(block_dev, disp);
+                    let (backend, creg) = config::block_backend(&config, dev);
                     let bdf = bdf.unwrap();
 
                     let info = backend.info();
@@ -230,15 +227,18 @@ pub fn setup_instance(
                     chipset.pci_attach(bdf, viona);
                 }
                 "pci-nvme" => {
-                    let block_dev =
-                        dev.options.get("block_dev").unwrap().as_str().unwrap();
-
-                    let (backend, creg) = config.block_dev(block_dev, disp);
+                    let (backend, creg) = config::block_backend(&config, dev);
                     let bdf = bdf.unwrap();
 
+                    let dev_serial = dev
+                        .options
+                        .get("block_dev")
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string();
                     let info = backend.info();
-                    let nvme =
-                        hw::nvme::PciNvme::create(block_dev.to_string(), info);
+                    let nvme = hw::nvme::PciNvme::create(dev_serial, info);
 
                     let id = inv.register_instance(&nvme, bdf.to_string())?;
                     let _be_id = inv.register_child(creg, id)?;

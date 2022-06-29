@@ -12,7 +12,7 @@
 //!     3   - Low Mem
 //!     4   - High Mem
 
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,13 +34,8 @@ use tokio::{
 };
 use tokio::{task, time};
 
-use crate::config::Config;
-
-const SNAPSHOT_TAG_CONFIG: u8 = 0;
-const SNAPSHOT_TAG_GLOBAL: u8 = 1;
-const SNAPSHOT_TAG_DEVICE: u8 = 2;
-const SNAPSHOT_TAG_LOMEM: u8 = 3;
-const SNAPSHOT_TAG_HIMEM: u8 = 4;
+use propolis_standalone_shared as shared;
+use shared::{Config, SnapshotTag};
 
 /// Save a snapshot of the current state of the given instance to disk.
 pub async fn save(
@@ -51,7 +46,7 @@ pub async fn save(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
-    let snapshot = format!("{}-{}.bin", config.get_name(), now);
+    let snapshot = format!("{}-{}.bin", config.main.name, now);
 
     info!(log, "saving snapshot of VM to {}", snapshot);
 
@@ -221,17 +216,17 @@ pub async fn save(
 
     info!(log, "Writing VM config...");
     let config_bytes = toml::to_string(&config)?.into_bytes();
-    file.write_u8(SNAPSHOT_TAG_CONFIG).await?;
+    file.write_u8(SnapshotTag::Config.into()).await?;
     file.write_u64(config_bytes.len().try_into()?).await?;
     file.write_all(&config_bytes).await?;
 
     info!(log, "Writing global state...");
-    file.write_u8(SNAPSHOT_TAG_GLOBAL).await?;
+    file.write_u8(SnapshotTag::Global.into()).await?;
     file.write_u64(global_state.len().try_into()?).await?;
     file.write_all(&global_state).await?;
 
     info!(log, "Writing device state...");
-    file.write_u8(SNAPSHOT_TAG_DEVICE).await?;
+    file.write_u8(SnapshotTag::Device.into()).await?;
     file.write_u64(device_states.len().try_into()?).await?;
     file.write_all(&device_states).await?;
 
@@ -239,14 +234,14 @@ pub async fn save(
 
     // Low Mem
     // Note `pwrite` doesn't update the current position, so we do it manually
-    file.write_u8(SNAPSHOT_TAG_LOMEM).await?;
+    file.write_u8(SnapshotTag::Lowmem.into()).await?;
     file.write_u64(lo.try_into()?).await?;
     let offset = file.stream_position().await?.try_into()?;
     lo_mapping.pwrite(file.get_ref(), lo, offset)?; // Blocks; not great
     file.seek(std::io::SeekFrom::Current(lo.try_into()?)).await?;
 
     // High Mem
-    file.write_u8(SNAPSHOT_TAG_HIMEM).await?;
+    file.write_u8(SnapshotTag::Himem.into()).await?;
     if let (Some(hi), Some(hi_mapping)) = (hi, hi_mapping) {
         file.write_u64(hi.try_into()?).await?;
         let offset = file.stream_position().await?.try_into()?;
@@ -282,8 +277,9 @@ pub async fn restore(
 
     // First off we need the config
     let config: Config = {
-        if file.read_u8().await? != SNAPSHOT_TAG_CONFIG {
-            anyhow::bail!("Expected VM config");
+        match SnapshotTag::try_from(file.read_u8().await?) {
+            Ok(SnapshotTag::Config) => {}
+            _ => anyhow::bail!("Expected VM config"),
         }
         let config_len = file.read_u64().await?;
         let mut config_buf = vec![0; config_len.try_into()?];
@@ -320,8 +316,9 @@ pub async fn restore(
 
     {
         // Grab the global VM state
-        if file.read_u8().await? != SNAPSHOT_TAG_GLOBAL {
-            anyhow::bail!("Expected global VM state");
+        match SnapshotTag::try_from(file.read_u8().await?) {
+            Ok(SnapshotTag::Global) => {}
+            _ => anyhow::bail!("Expected VM config"),
         }
         let state_len = file.read_u64().await?;
         let mut global_state = vec![0; state_len.try_into()?];
@@ -341,8 +338,9 @@ pub async fn restore(
 
     // Next are the devices
     let device_states = {
-        if file.read_u8().await? != SNAPSHOT_TAG_DEVICE {
-            anyhow::bail!("Expected device states");
+        match SnapshotTag::try_from(file.read_u8().await?) {
+            Ok(SnapshotTag::Device) => {}
+            _ => anyhow::bail!("Expected VM config"),
         }
         let state_len = file.read_u64().await?;
         let mut state_buf = vec![0; state_len.try_into()?];
@@ -353,16 +351,18 @@ pub async fn restore(
     // Finally we have our RAM
 
     // Get low mem length and offset
-    if file.read_u8().await? != SNAPSHOT_TAG_LOMEM {
-        anyhow::bail!("Expected low mem");
+    match SnapshotTag::try_from(file.read_u8().await?) {
+        Ok(SnapshotTag::Lowmem) => {}
+        _ => anyhow::bail!("Expected VM config"),
     }
     let lo_mem: usize = file.read_u64().await?.try_into()?;
     let lo_offset = file.stream_position().await?.try_into()?;
 
     // Seek past low mem blob and get high mem length and offset
     file.seek(std::io::SeekFrom::Current(lo_mem.try_into()?)).await?;
-    if file.read_u8().await? != SNAPSHOT_TAG_HIMEM {
-        anyhow::bail!("Expected high mem");
+    match SnapshotTag::try_from(file.read_u8().await?) {
+        Ok(SnapshotTag::Himem) => {}
+        _ => anyhow::bail!("Expected VM config"),
     }
     let hi_mem: usize = file.read_u64().await?.try_into()?;
     let hi_offset = file.stream_position().await?.try_into()?;
