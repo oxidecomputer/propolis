@@ -207,12 +207,9 @@ impl Bars {
                 size: sz,
                 value: entry.value,
             },
-            EntryKind::Mmio64High => migrate::BarEntryV1 {
-                kind: migrate::BarKindV1::Mmio64High,
-                size: 0,
-                value: 0,
-            },
-            EntryKind::Empty => migrate::BarEntryV1 {
+            // We encode `Mmio64High` as Empty here because it is always implied
+            // by a preceding `Mmio64` entry.
+            EntryKind::Mmio64High | EntryKind::Empty => migrate::BarEntryV1 {
                 kind: migrate::BarKindV1::Empty,
                 size: 0,
                 value: 0,
@@ -223,11 +220,16 @@ impl Bars {
 
     pub(super) fn import(
         &mut self,
-        bars: migrate::BarStateV1,
+        input_bars: migrate::BarStateV1,
     ) -> Result<(), MigrateStateError> {
-        for (barn, entry) in self.entries.iter_mut().zip(bars.entries) {
-            let sz = entry.size;
-            barn.kind = match entry.kind {
+        let mut entries = self.entries.iter_mut();
+        let mut input_entries = IntoIterator::into_iter(input_bars.entries);
+
+        while let (Some(entry), Some(input_entry)) =
+            (entries.next(), input_entries.next())
+        {
+            let sz = input_entry.size;
+            entry.kind = match input_entry.kind {
                 migrate::BarKindV1::Empty => EntryKind::Empty,
                 migrate::BarKindV1::Pio => {
                     let sz = sz.try_into().map_err(|_| {
@@ -247,11 +249,34 @@ impl Bars {
                     })?;
                     EntryKind::Mmio(sz)
                 }
-                migrate::BarKindV1::Mmio64 => EntryKind::Mmio64(sz),
-                migrate::BarKindV1::Mmio64High => EntryKind::Mmio64High,
+                migrate::BarKindV1::Mmio64 => {
+                    // An `Mmio64` already implies the next should be `Mmio64High` so
+                    // the export logic just leaves the slot empty.
+                    match input_entries.next() {
+                        Some(e) if e.kind == migrate::BarKindV1::Empty => {
+                            // Verify there's an available next slot that will be
+                            // set to Mmio64High
+                            let next_entry = entries
+                                .next()
+                                .ok_or_else(|| {
+                                    MigrateStateError::ImportFailed(format!(
+                                        "Mmio64 Bar: last entry cannot be set as Mmio64"
+                                    ))
+                                })?;
+                            next_entry.kind = EntryKind::Mmio64High;
+                        }
+                        _ => {
+                            return Err(MigrateStateError::ImportFailed(format!(
+                                "Mmio64 Bar: expected empty entry for Mmio64High"
+                            )))
+                        }
+                    }
+                    EntryKind::Mmio64(sz)
+                }
             };
-            barn.value = entry.value;
+            entry.value = input_entry.value;
         }
+
         Ok(())
     }
 }
@@ -261,13 +286,12 @@ pub mod migrate {
 
     use super::BAR_COUNT;
 
-    #[derive(Deserialize, Serialize)]
+    #[derive(Eq, PartialEq, Deserialize, Serialize)]
     pub enum BarKindV1 {
         Empty,
         Pio,
         Mmio,
         Mmio64,
-        Mmio64High,
     }
 
     #[derive(Deserialize, Serialize)]
