@@ -28,6 +28,11 @@ pub struct Rebooted {
 }
 
 // All the counter stats in one struct.
+// To create additional stats that Oximeter will collect, add fields to this
+// structure.  See Oximeter for details, but each fields should be
+// constructed similar to "run_count".  In addition, a new method should
+// be added to the PropStatOuter impl that will be called when the new
+// field has changed.
 #[derive(Clone, Debug)]
 pub struct PropCountStat {
     stat_name: InstanceUuid,
