@@ -127,7 +127,7 @@ mod illumos_integration_tests {
             nics: vec![],
             migrate: None,
             cloud_init_bytes: None,
-            metrics: false,
+            metrics: None,
         }
     }
 

@@ -70,9 +70,9 @@ enum Command {
         #[clap(long, action)]
         cloud_init: Option<PathBuf>,
 
-        /// Enable metrics with Oximeter
+        /// Register address to enable metrics with Oximeter
         #[clap(long, action)]
-        metrics: bool,
+        metrics: Option<SocketAddr>,
     },
 
     /// Get the properties of a propolis instance
@@ -154,7 +154,7 @@ async fn new_instance(
     memory: u64,
     disks: Vec<DiskRequest>,
     cloud_init_bytes: Option<String>,
-    metrics: bool,
+    metrics: Option<SocketAddr>,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
@@ -412,7 +412,7 @@ async fn migrate_instance(
             src_uuid,
         }),
         cloud_init_bytes: None,
-        metrics: false,
+        metrics: None,
     };
 
     // Get the source instance ready

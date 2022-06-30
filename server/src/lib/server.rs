@@ -260,7 +260,7 @@ async fn instance_ensure(
     }
 
     // Determine if we need to setup the metrics endpoint or not.
-    if request.metrics {
+    if request.metrics.is_some() {
         let prop_count_stat = PropCountStat::new(properties.id.clone());
         let pso = PropStatOuter {
             prop_stat_wrap: Arc::new(std::sync::Mutex::new(prop_count_stat)),
@@ -273,9 +273,11 @@ async fn instance_ensure(
         // This is the address where stats will be collected.
         let la = server_context.propolis_addr.ip();
         let listen_addr = SocketAddr::new(la, 0);
+        let register_addr = request.metrics.unwrap();
         match prop_oximeter(
             properties.id.clone(),
             listen_addr,
+            register_addr,
             rqctx.log.clone(),
         )
         .await

@@ -9,9 +9,7 @@ use oximeter::{
 use oximeter_producer::{Config, Server};
 use slog::{error, info, Logger};
 
-use std::net::IpAddr;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -94,15 +92,14 @@ impl Producer for PropStatOuter {
 /// This starts a dropshot server, and then registers the PropStatOuter
 /// producer with Oximeter.
 /// Once registered, we return the server to the caller.
+/// By returning the server to the caller, we allow the ProducerRegister
+/// to be cloned and passed to any library that wishes to record metrics.
 pub async fn prop_oximeter(
     id: Uuid,
     my_address: SocketAddr,
+    registration_address: SocketAddr,
     plog: Logger,
 ) -> anyhow::Result<Server> {
-    // TODO: Replace with proper oximeter registration
-    let ra = IpAddr::from_str("fd00:1122:3344:101::3").unwrap();
-    let registration_address = SocketAddr::new(ra, 12221);
-
     info!(
         plog,
         "Attempt to register {:?} with Nexus/Oximeter at {:?}",
