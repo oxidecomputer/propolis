@@ -109,6 +109,7 @@ pub struct Context {
     config: Config,
     log: Logger,
     pub(crate) vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+    pub(crate) use_reservoir: bool,
     // To register with Oximeter, we need to know our own address.
     pub(crate) propolis_addr: SocketAddr,
     pub instance_metrics: InstanceMetrics,
@@ -119,6 +120,7 @@ impl Context {
     pub fn new(
         config: Config,
         vnc_server: VncServer<PropolisVncServer>,
+        use_reservoir: bool,
         log: Logger,
         propolis_addr: SocketAddr,
     ) -> Self {
@@ -132,6 +134,7 @@ impl Context {
             config,
             log,
             vnc_server: Arc::new(Mutex::new(vnc_server)),
+            use_reservoir,
             propolis_addr,
             instance_metrics,
         }
@@ -326,6 +329,7 @@ async fn instance_ensure(
         properties.vcpus,
         lowmem,
         highmem,
+        server_context.use_reservoir,
         vmm_log,
     )
     .map_err(|err| {

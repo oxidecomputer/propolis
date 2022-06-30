@@ -429,3 +429,12 @@ impl vm_destroy_req {
         res
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vmm_resv_query {
+    pub vrq_free_sz: size_t,
+    pub vrq_alloc_sz: size_t,
+    pub vrq_alloc_transient_sz: size_t,
+    pub vrq_limit: size_t,
+}

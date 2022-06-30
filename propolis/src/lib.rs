@@ -1,13 +1,8 @@
 #![allow(clippy::style)]
-#![feature(arc_new_cyclic)]
-// Pull in asm!() and asm_sym!() support for USDT
-#![cfg_attr(feature = "dtrace-probes", feature(asm))]
 #![cfg_attr(
     all(feature = "dtrace-probes", target_os = "macos"),
     feature(asm_sym)
 )]
-// Pull in `assert_matches` for tests
-#![cfg_attr(test, feature(assert_matches))]
 
 pub extern crate bhyve_api;
 pub extern crate usdt;
