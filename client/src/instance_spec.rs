@@ -49,6 +49,7 @@ use std::convert::TryFrom;
 
 use serde::{Deserialize, Serialize};
 
+pub use crucible::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
 /// A kind of virtual chipset.

@@ -596,11 +596,10 @@ mod test {
                 read_only: true,
                 device: "nvme".to_string(),
                 gen: 0,
-                volume_construction_request:
-                    crucible::VolumeConstructionRequest::File {
-                        block_size: 512,
-                        path: "disk1.img".to_string()
-                    },
+                volume_construction_request: VolumeConstructionRequest::File {
+                    block_size: 512,
+                    path: "disk1.img".to_string()
+                },
             })
             .is_ok());
         assert!(matches!(
@@ -612,7 +611,7 @@ mod test {
                     device: "virtio".to_string(),
                     gen: 0,
                     volume_construction_request:
-                        crucible::VolumeConstructionRequest::File {
+                        VolumeConstructionRequest::File {
                             block_size: 512,
                             path: "disk2.img".to_string()
                         },
@@ -647,7 +646,7 @@ mod test {
                     device: "virtio-scsi".to_string(),
                     gen: 0,
                     volume_construction_request:
-                        crucible::VolumeConstructionRequest::File {
+                        VolumeConstructionRequest::File {
                             block_size: 512,
                             path: "disk3.img".to_string()
                         },
