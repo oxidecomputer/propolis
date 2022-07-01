@@ -255,14 +255,23 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), Error>
     {
         Ok(match &backend_spec.kind {
-            StorageBackendKind::Crucible { gen, serialized_req } => {
+            StorageBackendKind::Crucible { gen, req } => {
                 info!(
                     self.log,
-                    "Creating Crucible disk from request {}", serialized_req
+                    "Creating Crucible disk from request {}", req.json
                 );
                 let be = propolis::block::CrucibleBackend::create(
                     *gen,
-                    serialized_req,
+                    req.try_into().map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidData,
+                            format!(
+                                "Failed to deserialize Crucible volume \
+                                   construction request: {}",
+                                e
+                            ),
+                        )
+                    })?,
                     backend_spec.readonly,
                 )?;
                 let child = inventory::ChildRegister::new(

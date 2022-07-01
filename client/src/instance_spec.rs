@@ -45,6 +45,7 @@
 //! field.
 
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +83,60 @@ pub struct Board {
 // Storage devices.
 //
 
+/// A description of a Crucible volume construction request.
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub struct CrucibleRequestContents {
+    /// A [`crucible::VolumeConstructionRequest`], serialized as JSON.
+    //
+    // Storing volume construction requests in serialized form allows external
+    // types to change without causing a breaking change to instance specs.
+    // Consider the following scenario, assuming the VolumeConstructionRequest
+    // struct is used directly:
+    //
+    // - Sled agent v1 starts Propolis v1 using Crucible request v1.
+    // - Sled agent v2 (on some other sled with newer software) starts Propolis
+    //   v2 using Crucible request v2, which has a new field not present in v1.
+    // - Nexus orders a migration from v1 to v2. This requires someone to
+    //   compare the two instances' specs for migratability.
+    //
+    // Migration compatibility is normally checked by the two Propolis servers
+    // involved: one server sends its instance spec to the other, and the
+    // recipient compares the specs to see if they're compatible. In this case,
+    // v2 can't deserialize v1's spec (a field is missing), and v1 can't
+    // deserialize v2's (an extra field is present), so migration will always
+    // fail.
+    //
+    // Storing a serialized request avoids this problem as follows:
+    //
+    // - Sled agent v2 starts Propolis v2 with spec v2. It deserializes the
+    //   request contents in the spec body into a v2 construction request.
+    // - Migration begins. Propolis v2 can now deserialize the v1 instance spec
+    //   and check it for compatibility. It can't deserialize the v1 *request
+    //   contents*, but this can be dealt with separately (e.g. by having the v1
+    //   and v2 Crucible components in the Propolis server negotiate
+    //   compatibility themselves, which is an affordance the migration protocol
+    //   allows).
+    pub json: String,
+}
+
+impl TryFrom<&CrucibleRequestContents> for crucible::VolumeConstructionRequest {
+    type Error = serde_json::Error;
+
+    fn try_from(value: &CrucibleRequestContents) -> Result<Self, Self::Error> {
+        serde_json::from_str(&value.json)
+    }
+}
+
+impl TryFrom<&crucible::VolumeConstructionRequest> for CrucibleRequestContents {
+    type Error = serde_json::Error;
+
+    fn try_from(
+        value: &crucible::VolumeConstructionRequest,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self { json: serde_json::to_string(value)? })
+    }
+}
+
 /// A kind of storage backend: a connection to on-sled resources or other
 /// services that provide the functions storage devices need to implement their
 /// contracts.
@@ -89,8 +144,8 @@ pub struct Board {
 #[serde(deny_unknown_fields)]
 pub enum StorageBackendKind {
     /// A Crucible-backed device, containing a generation number and a
-    /// serialized [`crucible::VolumeConstructionRequest`].
-    Crucible { gen: u64, serialized_req: String },
+    /// construction request.
+    Crucible { gen: u64, req: CrucibleRequestContents },
 
     /// A device backed by a file on the host machine. The payload is a path to
     /// this file.

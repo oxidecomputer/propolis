@@ -1,6 +1,7 @@
 //! Helper functions for building instance specs from server parameters.
 
 use std::collections::BTreeSet;
+use std::convert::TryInto;
 use std::str::FromStr;
 
 use propolis_client::api::{
@@ -196,15 +197,14 @@ impl SpecBuilder {
                 StorageBackend {
                     kind: StorageBackendKind::Crucible {
                         gen: disk.gen,
-                        serialized_req: serde_json::to_string(
-                            &disk.volume_construction_request,
-                        )
-                        .map_err(|e| {
-                            SpecBuilderError::BackendSpecNotSerializable(
-                                disk.name.to_string(),
-                                e,
-                            )
-                        })?,
+                        req: (&disk.volume_construction_request)
+                            .try_into()
+                            .map_err(|e| {
+                                SpecBuilderError::BackendSpecNotSerializable(
+                                    disk.name.to_string(),
+                                    e,
+                                )
+                            })?,
                     },
                     readonly: disk.read_only,
                 },
