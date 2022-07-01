@@ -13,28 +13,31 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-// These structs are used to construct the desired stats for Oximeter.
+// How frequently Oximeter will collect metrics.
+const OXIMETER_STAT_INTERVAL: u64 = 30;
+
+// These structs are used to construct the desired metrics for Oximeter.
 #[derive(Debug, Copy, Clone, Target)]
 struct InstanceUuid {
     pub uuid: Uuid,
 }
 #[derive(Debug, Default, Copy, Clone, Metric)]
-pub struct Rebooted {
+pub struct Reset {
     /// Count of times instance was rebooted
     #[datum]
     pub count: Cumulative<i64>,
 }
 
-// All the counter stats in one struct.
-// To create additional stats that Oximeter will collect, add fields to this
+// All the counter metrics in one struct.
+// To create additional metrics that Oximeter will collect, add fields to this
 // structure.  See Oximeter for details, but each fields should be
-// constructed similar to "run_count".  In addition, a new method should
-// be added to the PropStatOuter impl that will be called when the new
-// field has changed.
+// constructed similar to "run_count". A new method should be added to the
+// PropStatOuter impl that will be called when the new field has changed.
+// The produce method should be updated as well.
 #[derive(Clone, Debug)]
 pub struct PropCountStat {
     stat_name: InstanceUuid,
-    run_count: Rebooted,
+    run_count: Reset,
 }
 
 impl PropCountStat {
@@ -60,18 +63,15 @@ impl PropStatOuter {
     // When an operation happens that we wish to record in Oximeter,
     // one of these methods will be called.  Each method will get the
     // correct field of PropCountStat to record the update.
-    pub fn add_activation(&self) {
+    pub fn count_reset(&self) {
         let mut pso = self.prop_stat_wrap.lock().unwrap();
         let datum = pso.run_count.datum_mut();
         *datum += 1;
     }
 }
 
-// This trait is what is called to update the data to send to Oximeter.
-// It is called on whatever interval was specified when setting up the
-// connection to Oximeter.  Since we get a lock in here (and on every
-// IO, don't call this too frequently, for some value of frequently that
-// I'm not sure of.
+// This trait is what is called to update the data that is collected
+// by Oximeter every OXIMETER_STAT_INTERVAL seconds.
 impl Producer for PropStatOuter {
     fn produce(
         &mut self,
@@ -123,7 +123,7 @@ pub async fn prop_oximeter(
         id,
         address: my_address,
         base_route: "/collect".to_string(),
-        interval: tokio::time::Duration::from_secs(30),
+        interval: tokio::time::Duration::from_secs(OXIMETER_STAT_INTERVAL),
     };
 
     let config = Config {

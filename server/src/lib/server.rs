@@ -746,7 +746,7 @@ async fn instance_state_put(
 
     if state == propolis::instance::ReqState::Reset {
         if let Some(p) = &*pso {
-            p.add_activation();
+            p.count_reset();
         }
     }
 
