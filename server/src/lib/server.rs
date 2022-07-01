@@ -102,6 +102,17 @@ pub struct InstanceMetrics {
     pub(crate) pso: Arc<Mutex<Option<PropStatOuter>>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct InstanceMetricsConfig {
+    pub propolis_addr: SocketAddr,
+    pub metric_addr: SocketAddr,
+}
+impl InstanceMetricsConfig {
+    pub fn new(propolis_addr: SocketAddr, metric_addr: SocketAddr) -> Self {
+        InstanceMetricsConfig { propolis_addr, metric_addr }
+    }
+}
+
 /// Contextual information accessible from HTTP callbacks.
 pub struct Context {
     pub(crate) context: Mutex<Option<InstanceContext>>,
@@ -110,8 +121,8 @@ pub struct Context {
     log: Logger,
     pub(crate) vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
     pub(crate) use_reservoir: bool,
-    // To register with Oximeter, we need to know our own address.
-    pub(crate) propolis_addr: SocketAddr,
+    // To register with Oximeter.
+    pub(crate) metric_config: Option<InstanceMetricsConfig>,
     pub instance_metrics: InstanceMetrics,
 }
 
@@ -122,7 +133,7 @@ impl Context {
         vnc_server: VncServer<PropolisVncServer>,
         use_reservoir: bool,
         log: Logger,
-        propolis_addr: SocketAddr,
+        metric_config: Option<InstanceMetricsConfig>,
     ) -> Self {
         let instance_metrics = InstanceMetrics {
             producer_registry: Arc::new(Mutex::new(None)),
@@ -135,7 +146,7 @@ impl Context {
             log,
             vnc_server: Arc::new(Mutex::new(vnc_server)),
             use_reservoir,
-            propolis_addr,
+            metric_config,
             instance_metrics,
         }
     }
@@ -263,7 +274,7 @@ async fn instance_ensure(
     }
 
     // Determine if we need to setup the metrics endpoint or not.
-    if request.metrics.is_some() {
+    if server_context.metric_config.is_some() {
         let prop_count_stat = PropCountStat::new(properties.id.clone());
         let pso = PropStatOuter {
             prop_stat_wrap: Arc::new(std::sync::Mutex::new(prop_count_stat)),
@@ -274,9 +285,11 @@ async fn instance_ensure(
         drop(lpso);
 
         // This is the address where stats will be collected.
-        let la = server_context.propolis_addr.ip();
-        let listen_addr = SocketAddr::new(la, 0);
-        let register_addr = request.metrics.unwrap();
+        let propolis_addr =
+            server_context.metric_config.as_ref().unwrap().propolis_addr.ip();
+        let listen_addr = SocketAddr::new(propolis_addr, 0);
+        let register_addr =
+            server_context.metric_config.as_ref().unwrap().metric_addr;
         match prop_oximeter(
             properties.id.clone(),
             listen_addr,

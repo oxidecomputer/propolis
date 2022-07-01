@@ -72,14 +72,13 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
         vec![],
     );
 
-    let p_ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let use_reservoir = propolis_server::config::reservoir_decide(log);
     let context = server::Context::new(
         config,
         vnc_server,
         use_reservoir,
         log.new(slog::o!()),
-        p_ip,
+        None,
     );
 
     let config_dropshot = ConfigDropshot {
@@ -134,7 +133,6 @@ mod illumos_integration_tests {
             nics: vec![],
             migrate: None,
             cloud_init_bytes: None,
-            metrics: None,
         }
     }
 

@@ -15,6 +15,7 @@ use slog::info;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
+use propolis_server::server::InstanceMetricsConfig;
 use propolis_server::vnc::setup_vnc;
 use propolis_server::{config, server};
 
@@ -31,6 +32,10 @@ enum Args {
 
         #[clap(name = "PROPOLIS_IP:PORT", action)]
         propolis_addr: SocketAddr,
+
+        /// IP:Port for the Oximeter register address, which is Nexus.
+        #[clap(long, action)]
+        metric_addr: Option<SocketAddr>,
 
         #[clap(
             name = "VNC_IP:PORT",
@@ -62,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     match args {
         Args::OpenApi => run_openapi()
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
-        Args::Run { cfg, propolis_addr, vnc_addr } => {
+        Args::Run { cfg, propolis_addr, metric_addr, vnc_addr } => {
             let config = config::parse(&cfg)?;
 
             // Dropshot configuration.
@@ -82,12 +87,23 @@ async fn main() -> anyhow::Result<()> {
             let vnc_server_hdl = vnc_server.clone();
             let use_reservoir = config::reservoir_decide(&log);
 
+            let metric_config = if metric_addr.is_some() {
+                let imc = InstanceMetricsConfig::new(
+                    propolis_addr,
+                    metric_addr.unwrap(),
+                );
+                info!(log, "Metrics server will use {:?}", imc);
+                Some(imc)
+            } else {
+                None
+            };
+
             let context = server::Context::new(
                 config,
                 vnc_server,
                 use_reservoir,
                 log.new(slog::o!()),
-                propolis_addr,
+                metric_config,
             );
 
             info!(log, "Starting server...");
