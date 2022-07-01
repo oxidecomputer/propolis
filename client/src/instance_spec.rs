@@ -48,8 +48,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-mod common;
-pub use common::PciPath;
+pub use propolis_types::PciPath;
 
 /// A kind of virtual chipset.
 #[derive(Clone, Copy, Deserialize, Serialize, Debug)]

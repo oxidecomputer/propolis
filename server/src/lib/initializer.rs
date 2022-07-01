@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::num::NonZeroUsize;
@@ -167,17 +168,12 @@ impl<'a> MachineInitializer<'a> {
         for (name, bridge) in &self.spec.pci_pci_bridges {
             let desc = pci::topology::BridgeDescription::new(
                 pci::topology::LogicalBusId(bridge.downstream_bus),
-                pci::Bdf::new(
-                    bridge.pci_path.0,
-                    bridge.pci_path.1,
-                    bridge.pci_path.2,
-                )
-                .ok_or_else(|| {
+                bridge.pci_path.try_into().map_err(|e| {
                     Error::new(
-                        ErrorKind::InvalidData,
+                        ErrorKind::InvalidInput,
                         format!(
-                            "Invalid PCI path {:?} for PCI bridge {}",
-                            bridge.pci_path, name
+                            "Couldn't get PCI BDF for bridge {}: {}",
+                            name, e
                         ),
                     )
                 })?,
@@ -336,20 +332,16 @@ impl<'a> MachineInitializer<'a> {
                 &device_spec.backend_name,
                 &backend_spec,
             )?;
-            let bdf = pci::Bdf::new(
-                device_spec.pci_path.0,
-                device_spec.pci_path.1,
-                device_spec.pci_path.2,
-            )
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidData,
-                    format!(
-                        "Invalid PCI path {:?} for storage device {}",
-                        device_spec.pci_path, name
-                    ),
-                )
-            })?;
+            let bdf: pci::Bdf =
+                device_spec.pci_path.try_into().map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Couldn't get PCI BDF for storage device {}: {}",
+                            name, e
+                        ),
+                    )
+                })?;
             let be_info = backend.info();
             match device_spec.kind {
                 StorageDeviceKind::Virtio => {
@@ -392,18 +384,10 @@ impl<'a> MachineInitializer<'a> {
                         ),
                     )
                 })?;
-            let bdf = pci::Bdf::new(
-                vnic_spec.pci_path.0,
-                vnic_spec.pci_path.1,
-                vnic_spec.pci_path.2,
-            )
-            .ok_or_else(|| {
+            let bdf: pci::Bdf = vnic_spec.pci_path.try_into().map_err(|e| {
                 Error::new(
-                    ErrorKind::InvalidData,
-                    format!(
-                        "Invalid PCI path {:?} for network device {}",
-                        vnic_spec.pci_path, name
-                    ),
+                    ErrorKind::InvalidInput,
+                    format!("Couldn't get PCI BDF for vNIC {}: {}", name, e),
                 )
             })?;
             let hdl = self.machine.get_hdl();

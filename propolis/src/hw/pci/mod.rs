@@ -122,6 +122,19 @@ impl FromStr for Bdf {
     }
 }
 
+impl TryFrom<propolis_types::PciPath> for Bdf {
+    type Error = std::io::Error;
+
+    fn try_from(value: propolis_types::PciPath) -> Result<Self, Self::Error> {
+        Bdf::new(value.0, value.1, value.2).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "Failed to convert raw PCI path to BDF".to_string(),
+            )
+        })
+    }
+}
+
 impl Bdf {
     /// Attempts to make a new BDF.
     ///

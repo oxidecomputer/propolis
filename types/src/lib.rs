@@ -1,4 +1,9 @@
-//! Common definitions and helpers shared by all instance spec versions.
+//! Fundamental types shared by other Propolis crates.
+//!
+//! This crate defines some basic types that are shared by multiple other
+//! Propolis crates (library, client, server, and/or standalone) such that they
+//! can all use those types (and implement their own conversions to/from them)
+//! without any layering oddities.
 
 use std::io::ErrorKind;
 use std::str::FromStr;
