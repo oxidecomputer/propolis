@@ -21,7 +21,7 @@ viona_api = { path = "../viona-api" }
 usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-crucible = { git = "https://github.com/oxidecomputer/crucible", branch = "producemetric", optional = true }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "2add0de8489f1d4de901bfe98fc28b0a6efcc3ea", optional = true }
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main", optional = true }
 anyhow = "1"
 slog = "2.7"
