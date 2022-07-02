@@ -10,7 +10,6 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::{self, Upgraded};
 use hyper::{header, Body, Response, StatusCode};
-use oximeter::types::ProducerRegistry;
 use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
 use slog::{error, info, o, Logger};
@@ -97,12 +96,6 @@ pub(crate) struct InstanceContext {
 }
 
 #[derive(Debug, Clone)]
-pub struct InstanceMetrics {
-    pub(crate) producer_registry: Arc<Mutex<Option<ProducerRegistry>>>,
-    pub(crate) pso: Arc<Mutex<Option<PropStatOuter>>>,
-}
-
-#[derive(Debug, Clone)]
 pub struct InstanceMetricsConfig {
     pub propolis_addr: SocketAddr,
     pub metric_addr: SocketAddr,
@@ -123,7 +116,7 @@ pub struct Context {
     pub(crate) use_reservoir: bool,
     // To register with Oximeter.
     pub(crate) metric_config: Option<InstanceMetricsConfig>,
-    pub instance_metrics: InstanceMetrics,
+    pub instance_metrics: Mutex<Option<PropStatOuter>>,
 }
 
 impl Context {
@@ -135,10 +128,6 @@ impl Context {
         log: Logger,
         metric_config: Option<InstanceMetricsConfig>,
     ) -> Self {
-        let instance_metrics = InstanceMetrics {
-            producer_registry: Arc::new(Mutex::new(None)),
-            pso: Arc::new(Mutex::new(None)),
-        };
         Context {
             context: Mutex::new(None),
             migrate_task: Mutex::new(None),
@@ -147,7 +136,7 @@ impl Context {
             vnc_server: Arc::new(Mutex::new(vnc_server)),
             use_reservoir,
             metric_config,
-            instance_metrics,
+            instance_metrics: Mutex::new(None),
         }
     }
 }
@@ -273,16 +262,18 @@ async fn instance_ensure(
         }));
     }
 
+    // If anyone outside Propolis wishes to register for metrics, this
+    // will hold the producer registry they can use.
+    let mut producer_registry = None;
+
     // Determine if we need to setup the metrics endpoint or not.
+    // If we do, we will then populate producer_registry with something.
     if server_context.metric_config.is_some() {
+        // Create some propolis level metrics.
         let prop_count_stat = PropCountStat::new(properties.id.clone());
         let pso = PropStatOuter {
             prop_stat_wrap: Arc::new(std::sync::Mutex::new(prop_count_stat)),
         };
-        let mut lpso = server_context.instance_metrics.pso.lock().await;
-        assert!(lpso.is_none());
-        *lpso = Some(pso.clone());
-        drop(lpso);
 
         // This is the address where stats will be collected.
         let propolis_addr =
@@ -290,6 +281,7 @@ async fn instance_ensure(
         let listen_addr = SocketAddr::new(propolis_addr, 0);
         let register_addr =
             server_context.metric_config.as_ref().unwrap().metric_addr;
+
         match prop_oximeter(
             properties.id.clone(),
             listen_addr,
@@ -306,15 +298,21 @@ async fn instance_ensure(
                     rqctx.log,
                     "registering metrics with instance uuid: {}", properties.id,
                 );
+                // Register the propolis level instance metrics.
                 server.registry().register_producer(pso.clone()).unwrap();
-                let mut producer_registry = server_context
-                    .instance_metrics
-                    .producer_registry
-                    .lock()
-                    .await;
-                assert!(producer_registry.is_none());
-                *producer_registry = Some(server.registry().clone());
-                drop(producer_registry);
+
+                // Now that our metrics are registered, attach them to
+                // the server context so they can be updated.
+                let mut im = server_context.instance_metrics.lock().await;
+                *im = Some(pso.clone());
+                drop(im);
+
+                // Clone the producer_registry that we can pass to any
+                // other library that may want to register their own
+                // metrics.  Doing it this way means propolis does not have
+                // to know what metrics they register.
+                producer_registry = Some(server.registry().clone());
+
                 // Spawn the metric endpoint.
                 tokio::spawn(async move {
                     server.serve_forever().await.unwrap();
@@ -417,7 +415,7 @@ async fn instance_ensure(
                     &chipset,
                     disk,
                     bdf,
-                    server_context.instance_metrics.producer_registry.clone(),
+                    producer_registry.clone(),
                 )?;
                 info!(rqctx.log, "Disk {} created successfully", disk.name);
 
@@ -754,12 +752,12 @@ async fn instance_state_put(
         HttpError::for_internal_error(format!("Failed to set state: {:?}", err))
     })?;
 
-    let server_context = rqctx.context();
-    let pso = server_context.instance_metrics.pso.lock().await;
-
+    // Update the metrics counter when we apply a reset
     if state == propolis::instance::ReqState::Reset {
-        if let Some(p) = &*pso {
-            p.count_reset();
+        let server_context = rqctx.context();
+        let instance_metrics = server_context.instance_metrics.lock().await;
+        if let Some(im) = &*instance_metrics {
+            im.count_reset();
         }
     }
 

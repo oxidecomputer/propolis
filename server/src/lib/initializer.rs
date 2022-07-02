@@ -291,7 +291,7 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
         disk: &propolis_client::api::DiskRequest,
         bdf: pci::Bdf,
-        producer_registry: Arc<tokio::sync::Mutex<Option<ProducerRegistry>>>,
+        producer_registry: Option<ProducerRegistry>,
     ) -> Result<Arc<propolis::block::CrucibleBackend>, Error> {
         info!(self.log, "Creating Crucible disk from {:#?}", disk);
         let be = propolis::block::CrucibleBackend::create(
