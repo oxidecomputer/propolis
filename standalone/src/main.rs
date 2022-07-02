@@ -137,7 +137,7 @@ pub fn setup_instance(
         })?;
 
         let rtc = &machine.kernel_devs.rtc;
-        rtc.memsize_to_nvram(lowmem, highmem, mctx.hdl())?;
+        rtc.memsize_to_nvram(lowmem as u32, highmem as u64, mctx.hdl())?;
         rtc.set_time(SystemTime::now(), mctx.hdl())?;
 
         let hdl = machine.get_hdl();

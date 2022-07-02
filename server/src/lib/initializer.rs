@@ -149,7 +149,7 @@ impl<'a> MachineInitializer<'a> {
         let hdl = self.mctx.hdl();
 
         let rtc = &self.machine.kernel_devs.rtc;
-        rtc.memsize_to_nvram(lowmem, highmem, hdl)?;
+        rtc.memsize_to_nvram(lowmem as u32, highmem as u64, hdl)?;
         rtc.set_time(SystemTime::now(), hdl)?;
 
         Ok(())
