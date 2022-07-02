@@ -7,6 +7,7 @@ use super::{bus, BarN, Endpoint};
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
+use crate::migrate::MigrateStateError;
 use crate::util::regmap::{Flags, RegMap};
 
 use lazy_static::lazy_static;
@@ -585,6 +586,53 @@ impl DeviceState {
             msix,
         }
     }
+
+    pub fn import(
+        &self,
+        state: migrate::PciStateV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut inner = self.state.lock().unwrap();
+        inner.reg_command =
+            RegCmd::from_bits(state.reg_command).ok_or_else(|| {
+                MigrateStateError::ImportFailed(format!(
+                    "PciState reg_command: failed to import saved value {:#x}",
+                    state.reg_command
+                ))
+            })?;
+        inner.reg_intr_line = state.reg_intr_line;
+        inner.bars.import(state.bars)?;
+
+        // Reattach any imported Bars to their respective handlers (pio, mmio)
+        let attach = inner.attached();
+        for n in BarN::iter() {
+            if let Some((def, addr)) = inner.bars.get(n) {
+                let pio_en = inner.reg_command.contains(RegCmd::IO_EN);
+                let mmio_en = inner.reg_command.contains(RegCmd::MMIO_EN);
+
+                if (pio_en && def.is_pio()) || (mmio_en && def.is_mmio()) {
+                    attach.bar_register(n, def, addr);
+                }
+            }
+        }
+
+        match (self.msix_cfg.as_ref(), state.msix) {
+            (Some(msix_cfg), Some(saved_cfg)) => msix_cfg.import(saved_cfg)?,
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(MigrateStateError::ImportFailed(
+                    "PciState: device has no MSI-X config".to_string(),
+                ))
+            }
+            (Some(_), None) => {
+                return Err(MigrateStateError::ImportFailed(
+                    "PciState: device has MSI-X config but none in payload"
+                        .to_string(),
+                ))
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -939,8 +987,8 @@ impl MsixCfg {
             entries.push(migrate::MsixEntryV1 {
                 addr: lentry.addr,
                 data: lentry.data,
-                is_pending: lentry.pending,
                 is_vec_masked: lentry.mask_vec,
+                is_pending: lentry.pending,
             });
         }
         migrate::MsixStateV1 {
@@ -949,6 +997,40 @@ impl MsixCfg {
             is_func_masked: state.func_mask,
             entries,
         }
+    }
+
+    fn import(
+        &self,
+        state: migrate::MsixStateV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut inner = self.state.lock().unwrap();
+
+        if self.count != state.count {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "MsixCfg: count mismatch {} vs {}",
+                self.count, state.count
+            )));
+        }
+        if self.entries.len() != state.entries.len() {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "MsixCfg: entry count mismatch {} vs {}",
+                self.entries.len(),
+                state.entries.len()
+            )));
+        }
+        inner.enabled = state.is_enabled;
+        inner.func_mask = state.is_func_masked;
+        for (entry, saved) in self.entries.iter().zip(state.entries) {
+            let mut entry = entry.lock().unwrap();
+            entry.addr = saved.addr;
+            entry.data = saved.data;
+            entry.mask_vec = saved.is_vec_masked;
+            entry.mask_func = state.is_func_masked;
+            entry.enabled = state.is_enabled;
+            entry.pending = saved.is_pending;
+        }
+
+        Ok(())
     }
 }
 
@@ -1116,17 +1198,17 @@ impl Builder {
 pub mod migrate {
     use crate::hw::pci::bar;
 
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct MsixEntryV1 {
         pub addr: u64,
         pub data: u32,
-        pub is_pending: bool,
         pub is_vec_masked: bool,
+        pub is_pending: bool,
     }
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct MsixStateV1 {
         pub count: u16,
         pub is_enabled: bool,
@@ -1134,7 +1216,7 @@ pub mod migrate {
         pub entries: Vec<MsixEntryV1>,
     }
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PciStateV1 {
         pub reg_command: u16,
         pub reg_intr_line: u8,

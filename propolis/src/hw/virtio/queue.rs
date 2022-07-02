@@ -10,6 +10,7 @@ use super::probes;
 use super::VirtioIntr;
 use crate::common::*;
 use crate::dispatch::DispCtx;
+use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
 #[repr(C)]
@@ -308,14 +309,53 @@ impl VirtQueue {
             size: self.size,
             descr_gpa: ctrl.gpa_desc.0,
 
-            avail_gpa: avail.gpa_idx.0,
+            avail_gpa: avail.gpa_flags.0,
             avail_valid: avail.valid,
             avail_cur_idx: avail.cur_avail_idx.0,
 
-            used_gpa: used.gpa_idx.0,
+            used_gpa: used.gpa_flags.0,
             used_valid: used.valid,
             used_idx: used.used_idx.0,
         }
+    }
+
+    pub fn import(
+        &self,
+        state: migrate::VirtQueueV1,
+    ) -> Result<(), MigrateStateError> {
+        let mut ctrl = self.ctrl.lock().unwrap();
+        let mut avail = self.avail.lock().unwrap();
+        let mut used = self.used.lock().unwrap();
+
+        if self.id != state.id {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "VirtQueue: mismatched IDs {} vs {}",
+                self.id, state.id,
+            )));
+        }
+        if self.size != state.size {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "VirtQueue: mismatched size {} vs {}",
+                self.size, state.size,
+            )));
+        }
+
+        ctrl.gpa_desc = GuestAddr(state.descr_gpa);
+
+        avail.valid = state.avail_valid;
+        avail.gpa_flags = GuestAddr(state.avail_gpa);
+        avail.gpa_idx = GuestAddr(state.avail_gpa + 2);
+        avail.gpa_ring = GuestAddr(state.avail_gpa + 4);
+        avail.gpa_desc = GuestAddr(state.descr_gpa);
+        avail.cur_avail_idx.0 = state.avail_cur_idx;
+
+        used.valid = state.used_valid;
+        used.gpa_flags = GuestAddr(state.used_gpa);
+        used.gpa_idx = GuestAddr(state.used_gpa + 2);
+        used.gpa_ring = GuestAddr(state.used_gpa + 4);
+        used.used_idx.0 = state.used_idx;
+
+        Ok(())
     }
 }
 
@@ -616,9 +656,9 @@ impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
 }
 
 pub mod migrate {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct VirtQueueV1 {
         pub id: u16,
         pub size: u16,

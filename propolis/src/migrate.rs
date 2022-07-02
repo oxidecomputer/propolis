@@ -19,11 +19,21 @@ pub enum MigrateStateError {
     /// The device doesn't implement [`Migrate::import`].
     #[error("device state importation unimplemented for `{0}`")]
     ImportUnimplmented(String),
+
+    /// The device failed to import the deserialized device state.
+    #[error("failed to apply deserialized device state: {0}")]
+    ImportFailed(String),
 }
 
 impl From<erased_serde::Error> for MigrateStateError {
     fn from(err: erased_serde::Error) -> Self {
         MigrateStateError::ImportDeserialization(err.to_string())
+    }
+}
+
+impl From<std::io::Error> for MigrateStateError {
+    fn from(err: std::io::Error) -> Self {
+        MigrateStateError::ImportFailed(err.to_string())
     }
 }
 

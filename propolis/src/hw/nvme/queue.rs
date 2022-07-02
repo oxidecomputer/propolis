@@ -6,6 +6,7 @@ use super::cmds::Completion;
 use crate::common::*;
 use crate::dispatch::DispCtx;
 use crate::hw::pci;
+use crate::migrate::MigrateStateError;
 
 use thiserror::Error;
 
@@ -434,11 +435,43 @@ impl SubQueue {
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
     }
+
+    pub(super) fn export(&self) -> migrate::NvmeSubQueueV1 {
+        let inner = self.state.inner.lock().unwrap();
+        migrate::NvmeSubQueueV1 {
+            id: self.id,
+            size: self.state.size,
+            head: inner.head,
+            tail: inner.tail,
+            base: self.base.0,
+            cq_id: self.cq.id,
+        }
+    }
+
+    pub(super) fn import(
+        &self,
+        state: migrate::NvmeSubQueueV1,
+    ) -> Result<(), MigrateStateError> {
+        // These must've been provided at construction
+        assert_eq!(self.id, state.id);
+        assert_eq!(self.cq.id, state.cq_id);
+        assert_eq!(self.base.0, state.base);
+        assert_eq!(self.state.size, state.size);
+
+        let mut inner = self.state.inner.lock().unwrap();
+        inner.head = state.head;
+        inner.tail = state.tail;
+
+        Ok(())
+    }
 }
 
 /// Type for manipulating Completion Queues.
 #[derive(Debug)]
 pub struct CompQueue {
+    /// The ID of this Completion Queue.
+    id: QueueId,
+
     /// The Interrupt Vector used to signal to the host (VM) upon pushing
     /// entries onto the Completion Queue.
     iv: u16,
@@ -469,6 +502,7 @@ impl CompQueue {
     ) -> Result<Self, QueueCreateErr> {
         Self::validate(id, base, size, ctx)?;
         Ok(Self {
+            id,
             iv,
             state: QueueState::new_completion_state(size),
             base,
@@ -591,6 +625,39 @@ impl CompQueue {
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
     }
+
+    pub(super) fn export(&self) -> migrate::NvmeCompQueueV1 {
+        let inner = self.state.inner.lock().unwrap();
+        migrate::NvmeCompQueueV1 {
+            id: self.id,
+            size: self.state.size,
+            head: inner.head,
+            tail: inner.tail,
+            avail: inner.avail,
+            phase: inner.phase,
+            base: self.base.0,
+            iv: self.iv,
+        }
+    }
+
+    pub(super) fn import(
+        &self,
+        state: migrate::NvmeCompQueueV1,
+    ) -> Result<(), MigrateStateError> {
+        // These must've been provided at construction
+        assert_eq!(self.id, state.id);
+        assert_eq!(self.iv, state.iv);
+        assert_eq!(self.base.0, state.base);
+        assert_eq!(self.state.size, state.size);
+
+        let mut inner = self.state.inner.lock().unwrap();
+        inner.head = state.head;
+        inner.tail = state.tail;
+        inner.avail = state.avail;
+        inner.phase = state.phase;
+
+        Ok(())
+    }
 }
 
 /// A type which allows pushing a Completion Entry onto the Completion Queue.
@@ -658,6 +725,37 @@ impl CompQueueEntryPermit {
             let mut state = cq.state.inner.lock().unwrap();
             state.avail += 1;
         }
+    }
+}
+
+pub(super) mod migrate {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, Serialize)]
+    pub struct NvmeCompQueueV1 {
+        pub id: u16,
+
+        pub size: u32,
+        pub head: u16,
+        pub tail: u16,
+
+        pub avail: u16,
+        pub phase: bool,
+
+        pub base: u64,
+        pub iv: u16,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    pub struct NvmeSubQueueV1 {
+        pub id: u16,
+
+        pub size: u32,
+        pub head: u16,
+        pub tail: u16,
+
+        pub base: u64,
+        pub cq_id: u16,
     }
 }
 

@@ -8,7 +8,7 @@ use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::instance;
 use crate::intr_pins::LegacyPin;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -339,6 +339,68 @@ impl Migrate for PS2Ctrl {
             },
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        let migrate::PS2CtrlV1 {
+            ctrl: saved_ctrl,
+            kbd: saved_kbd,
+            mouse: saved_mouse,
+        } = erased_serde::deserialize(deserializer)?;
+
+        let mut inner = self.state.lock().unwrap();
+
+        inner.resp = saved_ctrl.response;
+        inner.cmd_prefix = saved_ctrl.cmd_prefix;
+        inner.ctrl_cfg =
+            CtrlCfg::from_bits(saved_ctrl.ctrl_cfg).ok_or_else(|| {
+                MigrateStateError::ImportFailed(format!(
+                    "PS2 ctrl_cfg: failed to import value {:#x}",
+                    saved_ctrl.ctrl_cfg
+                ))
+            })?;
+        inner.ctrl_out_port = CtrlOutPort::from_bits(saved_ctrl.ctrl_out_port)
+            .ok_or_else(|| {
+                MigrateStateError::ImportFailed(format!(
+                    "PS2 ctrl_out_port: failed to import value {:#x}",
+                    saved_ctrl.ctrl_cfg
+                ))
+            })?;
+        inner.ram = saved_ctrl.ram;
+
+        let kbd = &mut inner.pri_port;
+        kbd.cur_cmd = saved_kbd.current_cmd;
+        kbd.enabled = saved_kbd.enabled;
+        kbd.led_status = saved_kbd.led_status;
+        kbd.typematic = saved_kbd.typematic;
+        kbd.scan_code_set = PS2ScanCodeSet::from_byte(saved_kbd.scan_code_set)
+            .ok_or_else(|| {
+                MigrateStateError::ImportDeserialization(format!(
+                    "PS2 kbd scan code: failed to import value {}",
+                    saved_kbd.scan_code_set
+                ))
+            })?;
+        kbd.buf = VecDeque::from(saved_kbd.buf);
+
+        let mouse = &mut inner.aux_port;
+        mouse.cur_cmd = saved_mouse.current_cmd;
+        mouse.status =
+            PS2MStatus::from_bits(saved_mouse.status).ok_or_else(|| {
+                MigrateStateError::ImportDeserialization(format!(
+                    "PS2 mouse status: failed to import value {:#x}",
+                    saved_mouse.status
+                ))
+            })?;
+        mouse.resolution = saved_mouse.resolution;
+        mouse.sample_rate = saved_mouse.sample_rate;
+        mouse.buf = VecDeque::from(saved_mouse.buf);
+
+        Ok(())
+    }
 }
 
 const PS2K_CMD_SET_LEDS: u8 = 0xed;
@@ -371,6 +433,14 @@ impl PS2ScanCodeSet {
         match self {
             PS2ScanCodeSet::Set1 => 0x1,
             PS2ScanCodeSet::Set2 => 0x2,
+        }
+    }
+
+    fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(PS2ScanCodeSet::Set1),
+            2 => Some(PS2ScanCodeSet::Set2),
+            _ => None,
         }
     }
 }
@@ -700,15 +770,15 @@ impl Default for PS2Mouse {
 
 pub mod migrate {
     use super::PS2C_RAM_LEN;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2CtrlV1 {
         pub ctrl: PS2CtrlStateV1,
         pub kbd: PS2KbdV1,
         pub mouse: PS2MouseV1,
     }
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2CtrlStateV1 {
         pub response: Option<u8>,
         pub cmd_prefix: Option<u8>,
@@ -716,7 +786,7 @@ pub mod migrate {
         pub ctrl_out_port: u8,
         pub ram: [u8; PS2C_RAM_LEN],
     }
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2KbdV1 {
         pub buf: Vec<u8>,
         pub current_cmd: Option<u8>,
@@ -725,7 +795,7 @@ pub mod migrate {
         pub typematic: u8,
         pub scan_code_set: u8,
     }
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PS2MouseV1 {
         pub buf: Vec<u8>,
         pub current_cmd: Option<u8>,

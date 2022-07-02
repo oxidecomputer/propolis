@@ -6,7 +6,6 @@ use crate::common::PAGE_SIZE;
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmFile;
 
-use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -371,7 +370,7 @@ impl<'a> SubMapping<'a> {
     /// Pread from `file` into the mapping.
     pub fn pread(
         &self,
-        file: &File,
+        file: &impl AsRawFd,
         length: usize,
         offset: i64,
     ) -> Result<usize> {
@@ -456,7 +455,7 @@ impl<'a> SubMapping<'a> {
     /// Pwrite from the mapping to `file`.
     pub fn pwrite(
         &self,
-        file: &File,
+        file: &impl AsRawFd,
         length: usize,
         offset: i64,
     ) -> Result<usize> {

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::common::*;
 use crate::dispatch::DispCtx;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::pio::{PioBus, PioFn};
 use bits::*;
 
@@ -668,12 +668,30 @@ impl Migrate for FwCfg {
             offset: state.offset,
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> std::result::Result<(), MigrateStateError> {
+        let deserialized: migrate::FwCfgV1 =
+            erased_serde::deserialize(deserializer)?;
+
+        let mut inner = self.state.lock().unwrap();
+        inner.addr_low = deserialized.dma_addr as u32;
+        inner.addr_high = (deserialized.dma_addr >> 32) as u32;
+        inner.selector = deserialized.selector;
+        inner.offset = deserialized.offset;
+
+        Ok(())
+    }
 }
 
 pub mod migrate {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct FwCfgV1 {
         pub dma_addr: u64,
         pub selector: u16,

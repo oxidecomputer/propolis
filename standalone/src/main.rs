@@ -4,53 +4,34 @@
     feature(asm_sym)
 )]
 
-extern crate pico_args;
-extern crate propolis;
-extern crate serde;
-extern crate serde_derive;
-extern crate toml;
-
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::SystemTime;
 
-use propolis::chardev::{BlockingSource, Sink, Source};
+use anyhow::Context;
+use clap::Parser;
+use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::{Instance, ReqState, State};
-use propolis::migrate::Migrator;
 use propolis::vmm::{Builder, Prot};
 use propolis::*;
 
 use propolis::usdt::register_probes;
 
 use slog::{o, Drain};
+use tokio::runtime::Handle;
 
 mod config;
+mod snapshot;
 
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
-
-fn parse_args() -> config::Config {
-    let mut args = pico_args::Arguments::from_env();
-
-    // Parse options first
-    let dump_state = args.opt_value_from_str("--dump-state").unwrap();
-
-    if let Some(cpath) = args.free().ok().map(|mut f| f.pop()).flatten() {
-        let mut cfg = config::parse(&cpath);
-        cfg.opts.dump_state = dump_state;
-        cfg
-    } else {
-        eprintln!("usage: propolis <CONFIG.toml>");
-        std::process::exit(libc::EXIT_FAILURE);
-    }
-}
 
 fn build_instance(
     name: &str,
@@ -58,6 +39,7 @@ fn build_instance(
     lowmem: usize,
     highmem: usize,
     log: slog::Logger,
+    rt_handle: Handle,
 ) -> Result<Arc<Instance>> {
     let mut builder = Builder::new(
         name,
@@ -86,7 +68,7 @@ fn build_instance(
             "highmem",
         )?;
     }
-    Instance::create(builder.finalize()?, None, Some(log))
+    Instance::create(builder.finalize()?, Some(rt_handle), Some(log))
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -107,20 +89,18 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
     }
 }
 
-fn build_log() -> slog::Logger {
+fn build_log() -> (slog::Logger, slog_async::AsyncGuard) {
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::CompactFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    slog::Logger::root(drain, o!())
+    let (drain, guard) = slog_async::Async::new(drain).build_with_guard();
+    (slog::Logger::root(drain.fuse(), o!()), guard)
 }
 
-fn main() {
-    // Ensure proper setup of USDT probes
-    register_probes().unwrap();
-
-    let config = parse_args();
-
+pub fn setup_instance(
+    log: slog::Logger,
+    config: config::Config,
+    rt_handle: Handle,
+) -> anyhow::Result<(Arc<Instance>, Arc<UDSock>)> {
     let vm_name = config.get_name();
     let cpus = config.get_cpus();
 
@@ -130,14 +110,14 @@ fn main() {
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
-    let log = build_log();
     let inst =
-        build_instance(vm_name, cpus, lowmem, highmem, log.clone()).unwrap();
+        build_instance(vm_name, cpus, lowmem, highmem, log.clone(), rt_handle)
+            .context("Failed to create VM Instance")?;
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) = open_bootrom(config.get_bootrom())
         .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
-    let com1_sock = chardev::UDSock::bind(Path::new("./ttya"))
+    let com1_sock = UDSock::bind(Path::new("./ttya"))
         .unwrap_or_else(|e| panic!("Cannot bind UDSock: {}", e));
 
     inst.initialize(|machine, mctx, disp, inv| {
@@ -202,8 +182,8 @@ fn main() {
         ps2_ctrl.attach(pio, chipset.as_ref());
         inv.register(&ps2_ctrl)?;
 
-        let debug_file = std::fs::File::create("debug.out").unwrap();
-        let debug_out = chardev::BlockingFileOutput::new(debug_file).unwrap();
+        let debug_file = std::fs::File::create("debug.out")?;
+        let debug_out = chardev::BlockingFileOutput::new(debug_file);
         let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
         debug_out
             .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>, disp);
@@ -269,7 +249,10 @@ fn main() {
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver"; "name" => name);
-                    std::process::exit(libc::EXIT_FAILURE);
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "Unrecognized driver",
+                    ));
                 }
             }
         }
@@ -280,7 +263,7 @@ fn main() {
                 hw::qemu::fwcfg::LegacyId::SmpCpuCount,
                 hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
             )
-            .unwrap();
+            .map_err(|err| Error::new(ErrorKind::Other, err))?;
 
         let ramfb = hw::qemu::ramfb::RamFb::create();
         ramfb.attach(&mut fwcfg);
@@ -292,89 +275,112 @@ fn main() {
         inv.register(&ramfb)?;
 
         for vcpu in mctx.vcpus() {
-            vcpu.set_default_capabs().unwrap();
+            vcpu.set_default_capabs()?;
         }
 
         Ok(())
     })
-    .unwrap_or_else(|e| panic!("Failed to initialize instance: {}", e));
+    .context("Failed to initialize instance")?;
 
     inst.spawn_vcpu_workers(propolis::vcpu_run_loop)
-        .unwrap_or_else(|e| panic!("Failed spawn vCPU workers: {}", e));
+        .context("Failed spawn vCPU workers: {}")?;
 
     drop(romfp);
 
     inst.print();
 
+    Ok((inst, com1_sock))
+}
+
+#[derive(clap::Parser)]
+/// Propolis command-line frontend for running a VM.
+struct Args {
+    /// Either the VM config file or a previously captured snapshot image.
+    #[clap(value_name = "CONFIG|SNAPSHOT", action)]
+    target: String,
+
+    /// Take a snapshot on Ctrl-C before exiting.
+    #[clap(short, long, action)]
+    snapshot: bool,
+
+    /// Restore previously captured snapshot.
+    #[clap(short, long, action)]
+    restore: bool,
+}
+
+fn main() -> anyhow::Result<()> {
+    let Args { target, snapshot, restore } = Args::parse();
+
+    // Ensure proper setup of USDT probes
+    register_probes().context("Failed to setup USDT probes")?;
+
+    let (log, _log_async_guard) = build_log();
+
+    // Create tokio runtime, we don't use the tokio::main macro
+    // since we'll block in main when we call `Instance::wait_for_state`
+    let rt =
+        tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt_handle = rt.handle();
+
+    // Create the VM afresh or restore it from a snapshot
+    let (config, inst, com1_sock) = if restore {
+        rt_handle.block_on(snapshot::restore(log.clone(), &target))?
+    } else {
+        let config = config::parse(&target)?;
+        let (inst, com1_sock) =
+            setup_instance(log.clone(), config.clone(), rt_handle.clone())?;
+        (config, inst, com1_sock)
+    };
+
     // Wait until someone connects to ttya
     slog::error!(log, "Waiting for a connection to ttya");
     com1_sock.wait_for_connect();
 
-    let dump_state = config.opts.dump_state.clone();
-    inst.on_transition(Box::new(move |next_state, inv, ctx| {
-        match next_state {
-            State::Boot => {
-                for vcpu in ctx.mctx.vcpus() {
-                    vcpu.reboot_state().unwrap();
-                    vcpu.activate().unwrap();
-                    // Set BSP to start up
-                    if vcpu.is_bsp() {
-                        vcpu.set_run_state(bhyve_api::VRS_RUN).unwrap();
-                        vcpu.set_reg(
-                            bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                            0xfff0,
-                        )
-                        .unwrap();
-                    }
+    // Register a Ctrl-C handler so we can snapshot before exiting if needed
+    let inst_weak = Arc::downgrade(&inst);
+    let signal_log = log.clone();
+    let signal_rt_handle = rt_handle.clone();
+    ctrlc::set_handler(move || {
+        static SNAPSHOT: Once = Once::new();
+        if let Some(inst) = inst_weak.upgrade() {
+            if snapshot {
+                if SNAPSHOT.is_completed() {
+                    slog::warn!(signal_log, "snapshot already in progress");
+                } else {
+                    let snap_log = signal_log.new(o!("task" => "snapshot"));
+                    let snap_rt_handle = signal_rt_handle.clone();
+                    let config = config.clone();
+                    SNAPSHOT.call_once(move || {
+                        snap_rt_handle.spawn(async move {
+                            if let Err(err) = snapshot::save(
+                                snap_log.clone(),
+                                inst.clone(),
+                                config,
+                            )
+                            .await
+                            .context("Failed to save snapshot of VM")
+                            {
+                                slog::error!(snap_log, "{:?}", err);
+                                let _ = inst.set_target_state(ReqState::Halt);
+                            }
+                        });
+                    });
                 }
+            } else {
+                slog::info!(signal_log, "Destroying instance...");
+                inst.set_target_state(ReqState::Halt)
+                    .expect("failed to stop VM");
             }
-            State::Quiesce => {
-                if let Some(str_path) = dump_state.as_ref() {
-                    slog::info!(ctx.log, "Dumping device state at quiesce");
-                    do_dump_state(str_path, inv, ctx);
-                }
-            }
-            _ => {}
         }
-    }));
-    inst.set_target_state(ReqState::Run).unwrap();
+    })
+    .context("Failed to register Ctrl-C signal handler.")?;
+
+    // Let the VM start and we're off to the races
+    slog::info!(log, "Starting instance...");
+    inst.set_target_state(ReqState::Run).context("Failed to run VM")?;
 
     inst.wait_for_state(State::Destroy);
     drop(inst);
-}
 
-pub fn do_dump_state(
-    path: &str,
-    inv: &propolis::inventory::Inventory,
-    ctx: &propolis::dispatch::DispCtx,
-) {
-    let mut opts = File::options();
-    opts.write(true).create(true).truncate(true);
-
-    if let Ok(fp) = opts.open(path) {
-        inv.for_each_node::<(), _>(
-            propolis::inventory::Order::Post,
-            |_id, record| {
-                let ent = record.entity();
-                if let Migrator::Custom(mig_ent) = ent.migrate() {
-                    let data = mig_ent.export(ctx);
-                    let output =
-                        DevExport { id: record.name().to_string(), data };
-                    serde_json::to_writer(&fp, &output).map_err(|_| ())?;
-                }
-                Ok(())
-            },
-        )
-        .unwrap();
-    } else {
-        slog::error!(ctx.log, "Could not open dump state file")
-    }
-}
-
-use serde::Serialize;
-
-#[derive(Serialize)]
-struct DevExport {
-    id: String,
-    data: Box<dyn erased_serde::Serialize>,
+    Ok(())
 }

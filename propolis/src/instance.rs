@@ -41,6 +41,9 @@ pub enum MigratePhase {
 
     /// Wind down the instance and give devices a chance to complete in-flight requests.
     Pause,
+
+    /// Devices and vCPUs have been paused
+    Paused,
 }
 
 /// States of operation for an instance.
@@ -92,6 +95,12 @@ impl State {
         let next = match self {
             State::Initialize => match target {
                 Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
+                Some(
+                    target @ State::Migrate(
+                        MigrateRole::Destination,
+                        MigratePhase::Start,
+                    ),
+                ) => target,
                 _ => State::Boot,
             },
             State::Boot => match target {
@@ -130,7 +139,12 @@ impl State {
             }
             State::Migrate(role, phase) => match target {
                 Some(State::Run) => State::Run,
-                Some(State::Halt) | Some(State::Destroy) => State::Halt,
+                Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
+                Some(State::Migrate(target_role, target_phase))
+                    if *role == target_role =>
+                {
+                    State::Migrate(target_role, target_phase)
+                }
                 _ => State::Migrate(*role, *phase),
             },
             State::Halt => State::Destroy,
@@ -161,7 +175,8 @@ pub enum ReqState {
     Run,
     Reset,
     Halt,
-    StartMigrate,
+    MigrateStart,
+    MigrateResume,
 }
 
 /// Errors that may be returned when an instance is requested to transition
@@ -182,7 +197,7 @@ pub enum TransitionError {
 }
 
 type TransitionFunc =
-    dyn Fn(State, &Inventory, &DispCtx) + Send + Sync + 'static;
+    dyn Fn(State, Option<State>, &Inventory, &DispCtx) + Send + Sync + 'static;
 
 struct Inner {
     state_current: State,
@@ -358,9 +373,13 @@ impl Instance {
                 SuspendKind::Halt,
                 SuspendSource::External,
             ),
-            ReqState::StartMigrate => self.set_target_state_locked(
+            ReqState::MigrateStart => self.set_target_state_locked(
                 &mut inner,
                 State::Migrate(MigrateRole::Source, MigratePhase::Start),
+            ),
+            ReqState::MigrateResume => self.set_target_state_locked(
+                &mut inner,
+                State::Migrate(MigrateRole::Destination, MigratePhase::Start),
             ),
         }
     }
@@ -488,9 +507,9 @@ impl Instance {
     pub fn wait_for_state(&self, target: State) {
         let mut state = self.inner.lock().unwrap();
         self.cv.wait_while(state, |state| {
-            // bail if we reach the target state _or Destroy
+            // bail if we reach the target state or Destroy
             state.state_current != target
-                || state.state_current != State::Destroy
+                && state.state_current != State::Destroy
         });
     }
 
@@ -539,7 +558,7 @@ impl Instance {
             // notifications for now.
             if phase == TransitionPhase::Post {
                 for f in inner.transition_funcs.iter() {
-                    f(state, &inner.inv, ctx)
+                    f(state, target, &inner.inv, ctx)
                 }
             }
         });
@@ -591,6 +610,36 @@ impl Instance {
 
             // Implicit actions for a state change
             match state {
+                // Gated on Illumos here because the non-Illumos test runners
+                // still create a fake Instance which transitions through to
+                // the "Run" state and would otherwise fail on the ioctl calls
+                // invoked here.
+                State::Boot if cfg!(target_os = "illumos") => {
+                    // Set vCPUs to their proper boot (INIT) state
+                    for vcpu in &inner.machine.as_ref().unwrap().vcpus {
+                        vcpu.reboot_state().unwrap();
+                        vcpu.activate().unwrap();
+                        // Set BSP to start up
+                        if vcpu.is_bsp() {
+                            vcpu.set_run_state(bhyve_api::VRS_RUN, None)
+                                .unwrap();
+                            vcpu.set_reg(
+                                bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                                0xfff0,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                State::Migrate(
+                    MigrateRole::Destination,
+                    MigratePhase::Start,
+                ) => {
+                    // Activate the vCPUs. We leave setting the vCPU state to the import logic
+                    for vcpu in &inner.machine.as_ref().unwrap().vcpus {
+                        vcpu.activate().unwrap();
+                    }
+                }
                 State::Quiesce => {
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.
@@ -612,6 +661,8 @@ impl Instance {
                     // Upon entry to the Run state, details about any previous
                     // suspend become stale.
                     inner.suspend_info = None;
+
+                    self.disp.release();
                 }
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
                     // Give an opportunity to migration requestor to take
@@ -621,11 +672,14 @@ impl Instance {
                     let pause_chan =
                         inner.pause_chan.take().expect("migrate pause channel");
                     drop(inner);
-                    if let Err(_) = pause_chan.recv() {
-                        // The other end is gone without waking us first
-                        slog::warn!(log, "migrate pause chan dropped early");
-                    }
+                    let pause = pause_chan.recv();
                     inner = self.inner.lock().unwrap();
+                    if let Err(_) = pause {
+                        // The other end is gone without waking us first, bail out
+                        slog::warn!(log, "migrate pause chan dropped early");
+                        inner.state_target = Some(State::Halt);
+                        continue;
+                    }
                 }
                 _ => {}
             }
@@ -646,10 +700,6 @@ impl Instance {
                     if inner.state_target == Some(State::Reset) {
                         inner.state_target = None;
                     }
-
-                    if matches!(inner.state_target, None | Some(State::Run)) {
-                        self.disp.release();
-                    }
                 }
                 State::Destroy => {}
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
@@ -661,6 +711,17 @@ impl Instance {
                     // We explicitly allow the migrate task to run
                     self.disp.release_one(migrate_ctx);
                     inner = self.inner.lock().unwrap();
+
+                    // All the vCPUs and devices should be paused by this point
+                    // so update the target state to indicate as such
+                    self.set_target_state_locked(
+                        &mut inner,
+                        State::Migrate(
+                            MigrateRole::Source,
+                            MigratePhase::Paused,
+                        ),
+                    )
+                    .unwrap();
                 }
                 _ => {}
             }
@@ -708,7 +769,12 @@ impl Drop for Instance {
                 })
                 .unwrap();
         }
-        let _joined = state.drive_thread.take().unwrap().join();
+        let join_handle = state.drive_thread.take().unwrap();
+        // The last Instance handle may be held by the drive_thread itself
+        // which would mean a deadlock or error if we tried to join
+        if std::thread::current().id() != join_handle.thread().id() {
+            let _joined = join_handle.join();
+        }
     }
 }
 

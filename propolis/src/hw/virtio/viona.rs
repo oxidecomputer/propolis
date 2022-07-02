@@ -1,7 +1,7 @@
 #![cfg_attr(not(target_os = "illumos"), allow(dead_code, unused_imports))]
 
 use std::fs::{File, OpenOptions};
-use std::io::{Error, ErrorKind, Result};
+use std::io::{self, Error, ErrorKind};
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex, Weak};
@@ -10,7 +10,7 @@ use crate::common::*;
 use crate::dispatch::{AsyncCtx, DispCtx};
 use crate::hw::pci;
 use crate::instance;
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::{Migrate, MigrateStateError, Migrator};
 use crate::util::regmap::RegMap;
 use crate::util::sys;
 use crate::vmm::VmmHdl;
@@ -56,7 +56,7 @@ impl PciVirtioViona {
         vnic_name: &str,
         queue_size: u16,
         vm: &VmmHdl,
-    ) -> Result<Arc<PciVirtioViona>> {
+    ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_vnic(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
@@ -262,6 +262,18 @@ impl Migrate for PciVirtioViona {
             pci_virtio_state: self.virtio_state.export(&self.pci_state),
         })
     }
+
+    fn import(
+        &self,
+        _dev: &str,
+        deserializer: &mut dyn erased_serde::Deserializer,
+        _ctx: &DispCtx,
+    ) -> Result<(), MigrateStateError> {
+        // TODO: import deserialized state
+        let _deserialized: migrate::PciVirtioVionaV1 =
+            erased_serde::deserialize(deserializer)?;
+        Ok(())
+    }
 }
 impl PciVirtio for PciVirtioViona {
     fn virtio_state(&self) -> &PciVirtioState {
@@ -295,7 +307,7 @@ struct VionaHdl {
     fp: File,
 }
 impl VionaHdl {
-    fn new(link_id: u32, vm_fd: RawFd) -> Result<Self> {
+    fn new(link_id: u32, vm_fd: RawFd) -> io::Result<Self> {
         let fp = OpenOptions::new()
             .read(true)
             .write(true)
@@ -309,17 +321,17 @@ impl VionaHdl {
     fn fd(&self) -> RawFd {
         self.fp.as_raw_fd()
     }
-    fn get_avail_features(&self) -> Result<u32> {
+    fn get_avail_features(&self) -> io::Result<u32> {
         let mut value = 0;
         sys::ioctl(self.fd(), viona_api::VNA_IOC_GET_FEATURES, &mut value)?;
         Ok(value)
     }
-    fn set_features(&self, feat: u32) -> Result<()> {
+    fn set_features(&self, feat: u32) -> io::Result<()> {
         let mut value = feat;
         sys::ioctl(self.fd(), viona_api::VNA_IOC_SET_FEATURES, &mut value)?;
         Ok(())
     }
-    fn ring_init(&self, idx: u16, size: u16, addr: u64) -> Result<()> {
+    fn ring_init(&self, idx: u16, size: u16, addr: u64) -> io::Result<()> {
         let mut vna_ring_init = viona_api::vioc_ring_init {
             ri_index: idx,
             ri_qsize: size,
@@ -333,7 +345,7 @@ impl VionaHdl {
         )?;
         Ok(())
     }
-    fn ring_reset(&self, idx: u16) -> Result<()> {
+    fn ring_reset(&self, idx: u16) -> io::Result<()> {
         sys::ioctl_usize(
             self.fd(),
             viona_api::VNA_IOC_RING_RESET,
@@ -341,7 +353,7 @@ impl VionaHdl {
         )?;
         Ok(())
     }
-    fn ring_kick(&self, idx: u16) -> Result<()> {
+    fn ring_kick(&self, idx: u16) -> io::Result<()> {
         sys::ioctl_usize(
             self.fd(),
             viona_api::VNA_IOC_RING_KICK,
@@ -349,7 +361,7 @@ impl VionaHdl {
         )?;
         Ok(())
     }
-    fn ring_cfg_msi(&self, idx: u16, addr: u64, msg: u32) -> Result<()> {
+    fn ring_cfg_msi(&self, idx: u16, addr: u64, msg: u32) -> io::Result<()> {
         let mut vna_ring_msi = viona_api::vioc_ring_msi {
             rm_index: idx,
             _pad: [0; 3],
@@ -363,7 +375,7 @@ impl VionaHdl {
         )?;
         Ok(())
     }
-    fn intr_poll(&self, mut f: impl FnMut(u16)) -> Result<()> {
+    fn intr_poll(&self, mut f: impl FnMut(u16)) -> io::Result<()> {
         let mut vna_ip = viona_api::vioc_intr_poll {
             vip_status: [0; viona_api::VIONA_VQ_MAX as usize],
         };
@@ -375,7 +387,7 @@ impl VionaHdl {
         }
         Ok(())
     }
-    fn ring_intr_clear(&self, idx: u16) -> Result<()> {
+    fn ring_intr_clear(&self, idx: u16) -> io::Result<()> {
         sys::ioctl_usize(
             self.fd(),
             viona_api::VNA_IOC_RING_INTR_CLR,
@@ -406,7 +418,7 @@ impl VionaPoller {
         viona_fd: RawFd,
         dev: Weak<PciVirtioViona>,
         ctx: &DispCtx,
-    ) -> Result<(Arc<Self>, JoinHandle<()>)> {
+    ) -> io::Result<(Arc<Self>, JoinHandle<()>)> {
         let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) } as RawFd;
         if epfd == -1 {
             return Err(Error::last_os_error());
@@ -428,7 +440,7 @@ impl VionaPoller {
         });
         Ok((this, task))
     }
-    fn event_present(&self) -> Result<bool> {
+    fn event_present(&self) -> io::Result<bool> {
         let max_events = 1;
         let mut event = libc::epoll_event { events: 0, u64: 0 };
         let res =
@@ -488,7 +500,7 @@ impl VionaPoller {
         _viona_fd: RawFd,
         _dev: Weak<PciVirtioViona>,
         _ctx: &DispCtx,
-    ) -> Result<(Arc<Self>, JoinHandle<()>)> {
+    ) -> io::Result<(Arc<Self>, JoinHandle<()>)> {
         Err(Error::new(
             ErrorKind::Other,
             "viona not available on non-illumos systems",
@@ -506,9 +518,9 @@ impl Drop for VionaPoller {
 
 pub mod migrate {
     use crate::hw::virtio::pci::migrate::PciVirtioStateV1;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct PciVirtioVionaV1 {
         pub pci_virtio_state: PciVirtioStateV1,
     }
