@@ -114,16 +114,7 @@ impl SpecBuilder {
         };
 
         Ok(Self {
-            spec: InstanceSpec {
-                board,
-                storage_devices: Default::default(),
-                storage_backends: Default::default(),
-                network_devices: Default::default(),
-                network_backends: Default::default(),
-                serial_ports: Default::default(),
-                pci_pci_bridges: Default::default(),
-            },
-
+            spec: InstanceSpec { board, ..Default::default() },
             pci_paths: Default::default(),
         })
     }

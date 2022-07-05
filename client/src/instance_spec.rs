@@ -80,6 +80,16 @@ pub struct Board {
     // TODO: NUMA topology.
 }
 
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            cpus: 0,
+            memory_mb: 0,
+            chipset: Chipset::I440Fx { enable_pcie: false },
+        }
+    }
+}
+
 //
 // Storage devices.
 //
@@ -265,7 +275,7 @@ pub struct PciPciBridge {
 ///
 /// Named devices and backends are stored in maps with object names as keys
 /// and devices/backends as values.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Default, Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceSpec {
     pub board: Board,
