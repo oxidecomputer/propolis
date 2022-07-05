@@ -83,11 +83,11 @@ impl Config {
         IterDevs { inner: self.devices.iter() }
     }
 
-    pub fn block_devices(&self) -> IterBlockDevs {
+    pub fn block_devs(&self) -> IterBlockDevs {
         IterBlockDevs { inner: self.block_devs.iter() }
     }
 
-    pub fn get_pci_bridges(&self) -> IterPciBridges {
+    pub fn pci_bridges(&self) -> IterPciBridges {
         IterPciBridges { inner: self.pci_bridges.iter() }
     }
 

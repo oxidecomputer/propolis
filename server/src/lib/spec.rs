@@ -475,7 +475,7 @@ impl SpecBuilder {
         config: &config::Config,
     ) -> Result<(), SpecBuilderError> {
         // Initialize all the backends in the config file.
-        for (name, backend) in config.block_devices() {
+        for (name, backend) in config.block_devs() {
             self.add_storage_backend_from_config(name, backend)?;
         }
         for (name, device) in config.devs() {
@@ -502,7 +502,7 @@ impl SpecBuilder {
                 }
             }
         }
-        for bridge in config.get_pci_bridges() {
+        for bridge in config.pci_bridges() {
             self.add_pci_bridge_from_config(bridge)?;
         }
         Ok(())
