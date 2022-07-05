@@ -9,3 +9,6 @@ edition = "2018"
 
 [dependencies]
 serde = "1.0"
+
+[dev-dependencies]
+serde_test = "1.0.138"
