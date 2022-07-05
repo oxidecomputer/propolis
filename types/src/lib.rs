@@ -16,10 +16,14 @@ const PCI_FUNCTIONS_PER_DEVICE: u8 = 8;
 /// A PCI bus/device/function tuple. Supports conversion from a string formatted
 /// as "B.D.F", e.g. "0.7.0".
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct PciPath(pub u8, pub u8, pub u8);
+pub struct PciPath(u8, u8, u8);
 
 impl PciPath {
-    fn new(bus: u8, device: u8, function: u8) -> Result<Self, std::io::Error> {
+    pub fn new(
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Result<Self, std::io::Error> {
         if device >= PCI_DEVICES_PER_BUS {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -43,6 +47,16 @@ impl PciPath {
         }
 
         Ok(Self(bus, device, function))
+    }
+
+    pub fn bus(&self) -> u8 {
+        self.0
+    }
+    pub fn device(&self) -> u8 {
+        self.1
+    }
+    pub fn function(&self) -> u8 {
+        self.2
     }
 }
 

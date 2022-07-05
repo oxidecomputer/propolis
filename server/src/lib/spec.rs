@@ -72,13 +72,14 @@ fn slot_to_pci_path(
 ) -> Result<PciPath, SpecBuilderError> {
     match ty {
         // Slots for NICS: 0x08 -> 0x0F
-        SlotType::NIC if slot.0 <= 7 => Ok(PciPath(0, slot.0 + 0x8, 0)),
+        SlotType::NIC if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x8, 0),
         // Slots for Disks: 0x10 -> 0x17
-        SlotType::Disk if slot.0 <= 7 => Ok(PciPath(0, slot.0 + 0x10, 0)),
+        SlotType::Disk if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x10, 0),
         // Slot for CloudInit
-        SlotType::CloudInit if slot.0 == 0 => Ok(PciPath(0, slot.0 + 0x18, 0)),
-        _ => Err(SpecBuilderError::PciSlotInvalid(slot.0, ty)),
+        SlotType::CloudInit if slot.0 == 0 => PciPath::new(0, slot.0 + 0x18, 0),
+        _ => return Err(SpecBuilderError::PciSlotInvalid(slot.0, ty)),
     }
+    .map_err(|_| SpecBuilderError::PciSlotInvalid(slot.0, ty))
 }
 
 /// A helper for building instance specs out of component parts.
