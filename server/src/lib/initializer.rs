@@ -214,7 +214,7 @@ impl<'a> MachineInitializer<'a> {
             };
 
             let dev = LpcUart::new(chipset.device().irq_pin(irq).unwrap());
-            dev.set_autodiscard(serial_spec.autodiscard);
+            dev.set_autodiscard(true);
             LpcUart::attach(&dev, pio, port);
             self.inv.register_instance(&dev, name)?;
             if matches!(serial_spec.num, SerialPortNumber::Com1) {

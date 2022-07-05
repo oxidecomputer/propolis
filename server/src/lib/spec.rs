@@ -510,7 +510,6 @@ impl SpecBuilder {
     pub fn add_serial_port(
         &mut self,
         port: SerialPortNumber,
-        autodiscard: bool,
     ) -> Result<(), SpecBuilderError> {
         if self
             .spec
@@ -523,7 +522,7 @@ impl SpecBuilder {
                     SerialPortNumber::Com4 => "com4",
                 }
                 .to_string(),
-                SerialPort { num: port, autodiscard },
+                SerialPort { num: port },
             )
             .is_some()
         {
@@ -613,12 +612,12 @@ mod test {
     #[test]
     fn duplicate_serial_port() {
         let mut builder = default_spec_builder().unwrap();
-        assert!(builder.add_serial_port(SerialPortNumber::Com1, false).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com2, false).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com3, false).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com4, false).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com3).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com4).is_ok());
         assert!(matches!(
-            builder.add_serial_port(SerialPortNumber::Com1, false).err(),
+            builder.add_serial_port(SerialPortNumber::Com1).err(),
             Some(SpecBuilderError::SerialPortInUse(_))
         ));
     }

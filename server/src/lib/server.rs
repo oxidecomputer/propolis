@@ -249,7 +249,7 @@ async fn instance_ensure(
         instance_spec::SerialPortNumber::Com3,
         instance_spec::SerialPortNumber::Com4,
     ] {
-        spec_builder.add_serial_port(port, true).map_err(|e| {
+        spec_builder.add_serial_port(port).map_err(|e| {
             HttpError::for_internal_error(format!(
                 "failed to add serial port {:?} to spec: {}",
                 port, e

@@ -250,11 +250,6 @@ pub enum SerialPortNumber {
 pub struct SerialPort {
     /// The serial port number for this port.
     pub num: SerialPortNumber,
-
-    /// The initial discard discipline for this port. If true, the device will
-    /// not buffer bytes written from the guest until the port's discipline
-    /// changes.
-    pub autodiscard: bool,
 }
 
 /// A PCI-PCI bridge.
