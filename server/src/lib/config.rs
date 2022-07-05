@@ -79,16 +79,19 @@ impl Config {
         &self.chipset
     }
 
-    pub fn devs(&self) -> IterDevs {
-        IterDevs { inner: self.devices.iter() }
+    /// Returns an iterator over all [`Device`] entries in the config.
+    pub fn devs(&self) -> btree_map::Iter<String, Device> {
+        self.devices.iter()
     }
 
-    pub fn block_devs(&self) -> IterBlockDevs {
-        IterBlockDevs { inner: self.block_devs.iter() }
+    /// Returns an iterator over all ['BlockDevice`] entries in the config.
+    pub fn block_devs(&self) -> btree_map::Iter<String, BlockDevice> {
+        self.block_devs.iter()
     }
 
-    pub fn pci_bridges(&self) -> IterPciBridges {
-        IterPciBridges { inner: self.pci_bridges.iter() }
+    /// Returns an iterator over all [`PciBridge`]s in the config.
+    pub fn pci_bridges(&self) -> std::slice::Iter<PciBridge> {
+        self.pci_bridges.iter()
     }
 
     pub fn create_block_backend(
@@ -215,44 +218,6 @@ impl BlockDevice {
                 panic!("unrecognized block dev type {}!", self.bdtype);
             }
         }
-    }
-}
-
-/// Iterator returned from [`Config::devs`] which allows iteration over
-/// all [`Device`] objects.
-pub struct IterDevs<'a> {
-    inner: btree_map::Iter<'a, String, Device>,
-}
-
-impl<'a> Iterator for IterDevs<'a> {
-    type Item = (&'a String, &'a Device);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
-pub struct IterBlockDevs<'a> {
-    inner: btree_map::Iter<'a, String, BlockDevice>,
-}
-
-impl<'a> Iterator for IterBlockDevs<'a> {
-    type Item = (&'a String, &'a BlockDevice);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
-pub struct IterPciBridges<'a> {
-    inner: std::slice::Iter<'a, PciBridge>,
-}
-
-impl<'a> Iterator for IterPciBridges<'a> {
-    type Item = &'a PciBridge;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
     }
 }
 
