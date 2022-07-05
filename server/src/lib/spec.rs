@@ -317,13 +317,11 @@ impl SpecBuilder {
                     ))
                 }
             },
-            readonly: || -> Option<bool> {
-                match backend.options.get("readonly") {
-                    Some(toml::Value::Boolean(ro)) => Some(*ro),
-                    Some(toml::Value::String(v)) => v.parse().ok(),
-                    _ => None,
-                }
-            }()
+            readonly: match backend.options.get("readonly") {
+                Some(toml::Value::Boolean(ro)) => Some(*ro),
+                Some(toml::Value::String(v)) => v.parse().ok(),
+                _ => None,
+            }
             .unwrap_or(false),
         };
         if self
