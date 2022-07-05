@@ -270,6 +270,9 @@ pub struct PciPciBridge {
     pub pci_path: PciPath,
 }
 
+/// Type alias for keys in the instance spec's maps.
+type SpecKey = String;
+
 /// A full instance specification. See the documentation for individual
 /// elements for more information about the fields in this structure.
 ///
@@ -280,10 +283,10 @@ pub struct PciPciBridge {
 pub struct InstanceSpec {
     pub board: Board,
 
-    pub storage_devices: BTreeMap<String, StorageDevice>,
-    pub storage_backends: BTreeMap<String, StorageBackend>,
-    pub network_devices: BTreeMap<String, NetworkDevice>,
-    pub network_backends: BTreeMap<String, NetworkBackend>,
-    pub serial_ports: BTreeMap<String, SerialPort>,
-    pub pci_pci_bridges: BTreeMap<String, PciPciBridge>,
+    pub storage_devices: BTreeMap<SpecKey, StorageDevice>,
+    pub storage_backends: BTreeMap<SpecKey, StorageBackend>,
+    pub network_devices: BTreeMap<SpecKey, NetworkDevice>,
+    pub network_backends: BTreeMap<SpecKey, NetworkBackend>,
+    pub serial_ports: BTreeMap<SpecKey, SerialPort>,
+    pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
 }
