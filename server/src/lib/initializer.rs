@@ -25,6 +25,7 @@ use propolis_client::instance_spec::{self, *};
 use slog::info;
 
 use crate::serial::Serial;
+use crate::server::CrucibleBackendMap;
 
 use anyhow::Result;
 use tokio::runtime::Handle;
@@ -106,6 +107,12 @@ impl RegisteredChipset {
     pub fn device(&self) -> &Arc<I440Fx> {
         &self.0
     }
+}
+
+struct StorageBackendInstance {
+    be: Arc<dyn block::Backend>,
+    child: inventory::ChildRegister,
+    crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
 }
 
 pub struct MachineInitializer<'a> {
@@ -252,8 +259,7 @@ impl<'a> MachineInitializer<'a> {
         &self,
         name: &str,
         backend_spec: &StorageBackend,
-    ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), Error>
-    {
+    ) -> Result<StorageBackendInstance, Error> {
         Ok(match &backend_spec.kind {
             StorageBackendKind::Crucible { gen, req } => {
                 info!(
@@ -278,7 +284,8 @@ impl<'a> MachineInitializer<'a> {
                     &be,
                     Some(be.get_uuid()?.to_string()),
                 );
-                (be, child)
+                let crucible = Some((be.get_uuid()?, be.clone()));
+                StorageBackendInstance { be, child, crucible }
             }
             StorageBackendKind::File { path } => {
                 info!(
@@ -293,7 +300,7 @@ impl<'a> MachineInitializer<'a> {
                 )?;
                 let child =
                     inventory::ChildRegister::new(&be, Some(path.to_string()));
-                (be, child)
+                StorageBackendInstance { be, child, crucible: None }
             }
             StorageBackendKind::InMemory { bytes } => {
                 info!(
@@ -308,15 +315,21 @@ impl<'a> MachineInitializer<'a> {
                 )?;
                 let child =
                     inventory::ChildRegister::new(&be, Some(name.to_string()));
-                (be, child)
+                StorageBackendInstance { be, child, crucible: None }
             }
         })
     }
 
+    /// Initializes the storage devices and backends listed in this
+    /// initializer's instance spec.
+    ///
+    /// On success, returns a map from Crucible backend IDs to Crucible
+    /// backends.
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    ) -> Result<CrucibleBackendMap, Error> {
+        let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.storage_devices {
             info!(
                 self.log,
@@ -337,10 +350,11 @@ impl<'a> MachineInitializer<'a> {
                         ),
                     )
                 })?;
-            let (backend, child) = self.initialize_storage_backend(
-                &device_spec.backend_name,
-                &backend_spec,
-            )?;
+            let StorageBackendInstance { be: backend, child, crucible } = self
+                .initialize_storage_backend(
+                    &device_spec.backend_name,
+                    &backend_spec,
+                )?;
             let bdf: pci::Bdf =
                 device_spec.pci_path.try_into().map_err(|e| {
                     Error::new(
@@ -370,8 +384,17 @@ impl<'a> MachineInitializer<'a> {
                     chipset.device().pci_attach(bdf, nvme);
                 }
             };
+            if let Some((id, backend)) = crucible {
+                let prev = crucible_backends.insert(id, backend);
+                if prev.is_some() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!("multiple disks with id {}", id),
+                    ));
+                }
+            }
         }
-        Ok(())
+        Ok(crucible_backends)
     }
 
     pub fn initialize_network_devices(

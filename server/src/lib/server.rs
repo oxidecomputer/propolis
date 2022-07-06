@@ -77,6 +77,9 @@ struct StateChange {
     state: propolis::instance::State,
 }
 
+pub(crate) type CrucibleBackendMap =
+    BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>;
+
 // All context for a single propolis instance.
 pub(crate) struct InstanceContext {
     // The instance, which may or may not be instantiated.
@@ -87,8 +90,7 @@ pub(crate) struct InstanceContext {
     serial_task: Option<SerialTask>,
 
     /// A map of disk names to CrucibleBackend
-    pub(crate) crucible_backends:
-        Mutex<BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>>,
+    pub(crate) crucible_backends: Mutex<CrucibleBackendMap>,
 }
 
 /// Contextual information accessible from HTTP callbacks.
@@ -287,9 +289,7 @@ async fn instance_ensure(
     let mut com1 = None;
     let mut ramfb: Option<Arc<RamFb>> = None;
     let mut rt_handle = None;
-
-    // TODO(gjcolombo) Hook this back up.
-    let crucible_backends = BTreeMap::new();
+    let mut crucible_backends = BTreeMap::new();
 
     // Initialize (some) of the instance's hardware.
     //
@@ -313,7 +313,13 @@ async fn instance_ensure(
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port()?;
             init.initialize_network_devices(&chipset)?;
-            init.initialize_storage_devices(&chipset)?;
+            crucible_backends = init.initialize_storage_devices(&chipset)?;
+            info!(
+                server_context.log,
+                "Initialized {} Crucible backends: {:?}",
+                crucible_backends.len(),
+                crucible_backends.keys()
+            );
             let ramfb_id = init.initialize_fwcfg(properties.vcpus)?;
             ramfb = inv.get_concrete(ramfb_id);
             rt_handle = disp.handle();

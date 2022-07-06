@@ -542,6 +542,7 @@ mod test {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use propolis_client::api::Slot;
+    use uuid::Uuid;
 
     use crate::config::{self, Config};
 
@@ -586,6 +587,7 @@ mod test {
                 device: "nvme".to_string(),
                 gen: 0,
                 volume_construction_request: VolumeConstructionRequest::File {
+                    id: Uuid::new_v4(),
                     block_size: 512,
                     path: "disk1.img".to_string()
                 },
@@ -601,6 +603,7 @@ mod test {
                     gen: 0,
                     volume_construction_request:
                         VolumeConstructionRequest::File {
+                            id: Uuid::new_v4(),
                             block_size: 512,
                             path: "disk2.img".to_string()
                         },
@@ -636,6 +639,7 @@ mod test {
                     gen: 0,
                     volume_construction_request:
                         VolumeConstructionRequest::File {
+                            id: Uuid::new_v4(),
                             block_size: 512,
                             path: "disk3.img".to_string()
                         },
