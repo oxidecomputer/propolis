@@ -36,7 +36,7 @@ lazy_static! {
 
 fn fourcc_bytepp(fourcc: u32) -> Option<u32> {
     match fourcc {
-        // edk2 default - xRGB, 4 bytes per pixels
+        // The edk2 default: XR24, little-endian xRGB with 4 bytes per pixel.
         0x34325258 => Some(4),
         _ => None,
     }
@@ -72,9 +72,22 @@ impl Config {
         Some(())
     }
 
-    pub fn get_framebuffer_info(&self) -> (u64, u32, u32) {
-        (self.addr, self.width, self.height)
+    pub fn get_framebuffer_spec(&self) -> FramebufferSpec {
+        FramebufferSpec {
+            addr: self.addr,
+            width: self.width,
+            height: self.height,
+            fourcc: self.fourcc,
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct FramebufferSpec {
+    pub addr: u64,
+    pub width: u32,
+    pub height: u32,
+    pub fourcc: u32,
 }
 
 type NotifyFn = Box<dyn Fn(&Config, bool) + Send + Sync + 'static>;
@@ -93,8 +106,8 @@ impl RamFb {
             .add_named("etc/ramfb", Arc::clone(self) as Arc<dyn Item>)
             .unwrap();
     }
-    pub fn get_framebuffer_info(&self) -> (u64, u32, u32) {
-        self.config.lock().unwrap().get_framebuffer_info()
+    pub fn get_framebuffer_spec(&self) -> FramebufferSpec {
+        self.config.lock().unwrap().get_framebuffer_spec()
     }
     pub fn set_notifier(&self, n: NotifyFn) {
         let mut locked = self.notify.lock().unwrap();
