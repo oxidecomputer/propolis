@@ -101,6 +101,8 @@ fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
         inner,
         destroyed: AtomicBool::new(false),
         name: name.to_string(),
+        #[cfg(test)]
+        is_test_hdl: false,
     })
 }
 #[cfg(not(target_os = "illumos"))]
@@ -169,6 +171,10 @@ pub struct VmmHdl {
     pub(super) inner: VmmFile,
     destroyed: AtomicBool,
     name: String,
+
+    #[cfg(test)]
+    /// Track if this VmmHdl belongs to a wholly fictitious Instance/Machine.
+    is_test_hdl: bool,
 }
 impl VmmHdl {
     /// Accesses the raw file descriptor behind the VMM.
@@ -180,6 +186,14 @@ impl VmmHdl {
         if self.destroyed.load(Ordering::Acquire) {
             return Err(Error::new(ErrorKind::NotFound, "instance destroyed"));
         }
+
+        #[cfg(test)]
+        if self.is_test_hdl {
+            // Lie about all ioctl results, since there is no real vmm resource
+            // underlying this handle.
+            return Ok(());
+        }
+
         ioctl(self.fd(), cmd, data)?;
         Ok(())
     }
@@ -454,6 +468,7 @@ impl VmmHdl {
             inner: VmmFile(fp),
             destroyed: AtomicBool::new(false),
             name: "TEST-ONLY VMM INSTANCE".to_string(),
+            is_test_hdl: true,
         })
     }
 }

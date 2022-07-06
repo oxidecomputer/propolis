@@ -610,11 +610,7 @@ impl Instance {
 
             // Implicit actions for a state change
             match state {
-                // Gated on Illumos here because the non-Illumos test runners
-                // still create a fake Instance which transitions through to
-                // the "Run" state and would otherwise fail on the ioctl calls
-                // invoked here.
-                State::Boot if cfg!(target_os = "illumos") => {
+                State::Boot => {
                     // Set vCPUs to their proper boot (INIT) state
                     for vcpu in &inner.machine.as_ref().unwrap().vcpus {
                         vcpu.reboot_state().unwrap();
