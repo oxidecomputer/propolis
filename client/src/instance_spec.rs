@@ -204,18 +204,23 @@ pub struct StorageDevice {
 //
 // Network devices.
 //
-// Because there is only one kind of virtual networking device (a virtio-net
-// device with an enlightened vNIC), networking devices don't have the same
-// BackendKind and DeviceKind enums that storage devices do, but they can
-// be added if needed in future versions.
 
-/// A network backend, specifically a virtual NIC on the host system for which
-/// Virtio network adapter integration is enabled.
+/// A kind of network backend: a connection to an on-sled networking resource
+/// that provides the functions needed for guest network adapters to implement
+/// their contracts.
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub enum NetworkBackendKind {
+    /// A virtio-net (viona) backend associated with the supplied named vNIC on
+    /// the host.
+    Virtio { vnic_name: String },
+}
+
+/// A network backend.
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkBackend {
-    /// The name of the vNIC to connect to.
-    pub vnic_name: String,
+    pub kind: NetworkBackendKind,
 }
 
 /// A virtual network adapter that presents a virtio network device interface.

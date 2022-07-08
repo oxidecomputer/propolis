@@ -424,7 +424,9 @@ impl<'a> MachineInitializer<'a> {
             })?;
             let hdl = self.machine.get_hdl();
             let viona = virtio::PciVirtioViona::new(
-                &backend_spec.vnic_name,
+                match &backend_spec.kind {
+                    NetworkBackendKind::Virtio { vnic_name } => vnic_name
+                },
                 0x100,
                 &hdl,
             )?;

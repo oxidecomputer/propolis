@@ -146,7 +146,11 @@ impl SpecBuilder {
             .network_backends
             .insert(
                 nic.name.to_string(),
-                NetworkBackend { vnic_name: nic.name.to_string() },
+                NetworkBackend {
+                    kind: NetworkBackendKind::Virtio {
+                        vnic_name: nic.name.to_string(),
+                    },
+                },
             )
             .is_some()
         {
@@ -413,7 +417,11 @@ impl SpecBuilder {
             .network_backends
             .insert(
                 vnic_name.to_string(),
-                NetworkBackend { vnic_name: vnic_name.to_string() },
+                NetworkBackend {
+                    kind: NetworkBackendKind::Virtio {
+                        vnic_name: vnic_name.to_string(),
+                    },
+                },
             )
             .is_some()
         {
