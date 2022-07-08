@@ -1,4 +1,5 @@
 #![allow(clippy::style)]
+#![allow(clippy::drop_non_drop)]
 #![cfg_attr(
     all(feature = "dtrace-probes", target_os = "macos"),
     feature(asm_sym)

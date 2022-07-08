@@ -234,7 +234,7 @@ async fn instance_ensure(
     // If we do, we will then populate producer_registry with something.
     if server_context.metric_config.is_some() {
         // Create some propolis level metrics.
-        let prop_count_stat = PropCountStat::new(properties.id.clone());
+        let prop_count_stat = PropCountStat::new(properties.id);
         let pso = PropStatOuter {
             prop_stat_wrap: Arc::new(std::sync::Mutex::new(prop_count_stat)),
         };
@@ -247,7 +247,7 @@ async fn instance_ensure(
             server_context.metric_config.as_ref().unwrap().metric_addr;
 
         match prop_oximeter(
-            properties.id.clone(),
+            properties.id,
             listen_addr,
             register_addr,
             rqctx.log.clone(),
@@ -430,7 +430,7 @@ async fn instance_ensure(
     // Initialize framebuffer data for the VNC server.
     let vnc_hdl = Arc::clone(&server_context.vnc_server);
     let fb_spec = ramfb.as_ref().unwrap().get_framebuffer_spec();
-    let fb = vnc::RamFb::new(fb_spec.clone());
+    let fb = vnc::RamFb::new(fb_spec);
     let actx = instance.async_ctx();
     let vnc_server = vnc_hdl.lock().await;
     vnc_server.server.initialize(fb, actx, vnc_server.clone()).await;

@@ -294,8 +294,7 @@ impl DeviceState {
                     let pin_ident = state
                         .attach
                         .as_ref()
-                        .map(bus::Attachment::lintr_cfg)
-                        .flatten()
+                        .and_then(bus::Attachment::lintr_cfg)
                         .map(|(id, _pin)| *id as u8)
                         .unwrap_or(0);
                     ro.write_u8(pin_ident)

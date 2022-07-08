@@ -71,8 +71,8 @@ impl BhyveRtc {
         hdl.rtc_write(CMOS_OFF_MEM_BASE + 1, base[1])?;
 
         // Next 64MiB
-        if low_mem > 1 * MIB {
-            let ext = (((low_mem - (1 * MIB)) / KIB) as u16).to_le_bytes();
+        if low_mem > MIB {
+            let ext = (((low_mem - MIB) / KIB) as u16).to_le_bytes();
 
             hdl.rtc_write(CMOS_OFF_MEM_EXT, ext[0])?;
             hdl.rtc_write(CMOS_OFF_MEM_EXT + 1, ext[1])?;

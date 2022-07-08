@@ -78,10 +78,8 @@ impl Handle {
         BufReader::new(&output.stdout[..])
             .lines()
             .next()
-            .map(|l| l.ok())
-            .flatten()
-            .map(|line| line.parse::<u16>().ok())
-            .flatten()
+            .and_then(Result::ok)
+            .and_then(|line| line.parse::<u16>().ok())
             .ok_or_else(|| Error::new(ErrorKind::Other, "invalid mtu"))
     }
     fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
@@ -100,9 +98,8 @@ impl Handle {
         let addr = BufReader::new(&output.stdout[..])
             .lines()
             .next()
-            .map(|l| l.ok())
-            .flatten()
-            .map(|line| {
+            .and_then(Result::ok)
+            .and_then(|line| {
                 let fields: Vec<u8> = line
                     .split(':')
                     .filter_map(|f| u8::from_str_radix(f, 16).ok())
@@ -112,7 +109,6 @@ impl Handle {
                     _ => None,
                 }
             })
-            .flatten()
             .ok_or_else(|| {
                 Error::new(ErrorKind::Other, "cannot query mac addr")
             })?;

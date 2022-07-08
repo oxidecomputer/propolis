@@ -147,7 +147,7 @@ impl UDSock {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             if let Some(n) = source_buf.read(&mut buf, source, actx).await {
-                writeh.write(&buf[..n]).await?;
+                writeh.write_all(&buf[..n]).await?;
             }
         }
     }

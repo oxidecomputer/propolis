@@ -1,4 +1,5 @@
 #![allow(clippy::style)]
+#![allow(clippy::drop_non_drop)]
 
 pub mod config;
 mod initializer;

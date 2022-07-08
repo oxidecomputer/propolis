@@ -173,9 +173,9 @@ impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
         // Each key in `self`'s map must be present in `other`'s map, and the
         // corresponding values must be compatible with one another.
         for (key, this_val) in self.iter() {
-            let other_val = other
-                .get(key)
-                .ok_or(SpecMismatchDetails::CollectionKeyAbsent(key.clone()))?;
+            let other_val = other.get(key).ok_or_else(|| {
+                SpecMismatchDetails::CollectionKeyAbsent(key.clone())
+            })?;
 
             this_val.is_migration_compatible(other_val)?;
         }

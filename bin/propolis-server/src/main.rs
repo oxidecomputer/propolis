@@ -87,16 +87,11 @@ async fn main() -> anyhow::Result<()> {
             let vnc_server_hdl = vnc_server.clone();
             let use_reservoir = config::reservoir_decide(&log);
 
-            let metric_config = if metric_addr.is_some() {
-                let imc = InstanceMetricsConfig::new(
-                    propolis_addr,
-                    metric_addr.unwrap(),
-                );
+            let metric_config = metric_addr.map(|addr| {
+                let imc = InstanceMetricsConfig::new(propolis_addr, addr);
                 info!(log, "Metrics server will use {:?}", imc);
-                Some(imc)
-            } else {
-                None
-            };
+                imc
+            });
 
             let context = server::Context::new(
                 config,

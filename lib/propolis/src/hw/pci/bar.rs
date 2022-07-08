@@ -259,17 +259,17 @@ impl Bars {
                             let next_entry = entries
                                 .next()
                                 .ok_or_else(|| {
-                                    MigrateStateError::ImportFailed(format!(
+                                    MigrateStateError::ImportFailed(
                                         "Mmio64 Bar: last entry cannot be set as Mmio64"
-                                    ))
+                                        .to_string()
+                                    )
                                 })?;
                             next_entry.kind = EntryKind::Mmio64High;
                         }
-                        _ => {
-                            return Err(MigrateStateError::ImportFailed(format!(
-                                "Mmio64 Bar: expected empty entry for Mmio64High"
-                            )))
-                        }
+                        _ => return Err(MigrateStateError::ImportFailed(
+                            "Mmio64 Bar: expected empty entry for Mmio64High"
+                                .to_string(),
+                        )),
                     }
                     EntryKind::Mmio64(sz)
                 }

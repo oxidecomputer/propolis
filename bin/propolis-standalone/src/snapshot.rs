@@ -88,9 +88,7 @@ pub async fn save(
         let device = Arc::clone(device);
         let pause_fut = device.paused();
         migrate_ready_futs.push(task::spawn(async move {
-            if let Err(_) =
-                time::timeout(Duration::from_secs(2), pause_fut).await
-            {
+            if time::timeout(Duration::from_secs(2), pause_fut).await.is_err() {
                 error!(log, "Timed out pausing device");
                 return Err(device);
             }
@@ -144,7 +142,7 @@ pub async fn save(
     let dispctx = async_ctx
         .dispctx()
         .await
-        .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to get DispCtx"))?;
 
     info!(log, "Serializing global VM state");
     let global_state = {
@@ -185,7 +183,7 @@ pub async fn save(
     let memctx = dispctx.mctx.memctx();
     let mem_bounds = memctx
         .mem_bounds()
-        .ok_or(anyhow::anyhow!("Failed to get VM RAM bounds"))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to get VM RAM bounds"))?;
     let len: usize =
         (mem_bounds.end().0 - mem_bounds.start().0 + 1).try_into()?;
     let (lo, hi) = if len > 3 * GB {
@@ -197,7 +195,7 @@ pub async fn save(
 
     let lo_mapping = memctx
         .direct_readable_region(&GuestRegion(GuestAddr(0), lo))
-        .ok_or(anyhow::anyhow!("Failed to get lowmem region"))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to get lowmem region"))?;
     let hi_mapping = hi
         .map(|hi| {
             memctx
@@ -205,7 +203,7 @@ pub async fn save(
                     GuestAddr(0x1_0000_0000),
                     hi,
                 ))
-                .ok_or(anyhow::anyhow!("Failed to get himem region"))
+                .ok_or_else(|| anyhow::anyhow!("Failed to get himem region"))
         })
         .transpose()?;
 
@@ -313,7 +311,7 @@ pub async fn restore(
     let dispctx = async_ctx
         .dispctx()
         .await
-        .ok_or(anyhow::anyhow!("Failed to get DispCtx"))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to get DispCtx"))?;
 
     {
         // Grab the global VM state
