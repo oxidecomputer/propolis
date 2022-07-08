@@ -162,9 +162,10 @@ pub enum StorageBackendKind {
     /// this file.
     File { path: String },
 
-    /// A device backed by an in-memory buffer in the VMM process. The payload
-    /// is the buffer's contents.
-    InMemory { bytes: Vec<u8> },
+    /// A device backed by an in-memory buffer in the VMM process. The initial
+    /// contents of this buffer are supplied out-of-band, either at
+    /// instance initialization time or from a migration source.
+    InMemory,
 }
 
 /// A storage backend.

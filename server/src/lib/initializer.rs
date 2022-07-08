@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
@@ -255,9 +256,8 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn initialize_storage_backend(
+    fn initialize_persistent_storage_backend(
         &self,
-        name: &str,
         backend_spec: &StorageBackend,
     ) -> Result<StorageBackendInstance, Error> {
         Ok(match &backend_spec.kind {
@@ -302,14 +302,29 @@ impl<'a> MachineInitializer<'a> {
                     inventory::ChildRegister::new(&be, Some(path.to_string()));
                 StorageBackendInstance { be, child, crucible: None }
             }
-            StorageBackendKind::InMemory { bytes } => {
+            StorageBackendKind::InMemory => {
+                panic!(
+                    "Passed an in-memory backend spec as a persistent backend"
+                );
+            }
+        })
+    }
+
+    fn initialize_volatile_storage_backend(
+        &self,
+        name: &str,
+        backend_spec: &StorageBackend,
+        contents: Vec<u8>,
+    ) -> Result<StorageBackendInstance, Error> {
+        Ok(match &backend_spec.kind {
+            StorageBackendKind::InMemory => {
                 info!(
                     self.log,
                     "Creating in-memory disk backend from {} bytes",
-                    bytes.len()
+                    contents.len()
                 );
                 let be = propolis::block::InMemoryBackend::create(
-                    bytes.to_vec(),
+                    contents,
                     backend_spec.readonly,
                     512,
                 )?;
@@ -317,6 +332,10 @@ impl<'a> MachineInitializer<'a> {
                     inventory::ChildRegister::new(&be, Some(name.to_string()));
                 StorageBackendInstance { be, child, crucible: None }
             }
+            _ => panic!(
+                "Passed a persistent storage backend spec as \
+                        a volatile backend"
+            ),
         })
     }
 
@@ -328,6 +347,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
+        in_memory_contents: BTreeMap<String, Vec<u8>>,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.storage_devices {
@@ -350,11 +370,32 @@ impl<'a> MachineInitializer<'a> {
                         ),
                     )
                 })?;
-            let StorageBackendInstance { be: backend, child, crucible } = self
-                .initialize_storage_backend(
-                    &device_spec.backend_name,
-                    &backend_spec,
-                )?;
+            let StorageBackendInstance { be: backend, child, crucible } =
+                match &backend_spec.kind {
+                    StorageBackendKind::Crucible { .. }
+                    | StorageBackendKind::File { .. } => self
+                        .initialize_persistent_storage_backend(&backend_spec),
+                    StorageBackendKind::InMemory => {
+                        let contents = in_memory_contents
+                            .get(&device_spec.backend_name)
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidInput,
+                                    format!(
+                                        "In-memory storage backend {} has no \
+                                        contents",
+                                        device_spec.backend_name
+                                    ),
+                                )
+                            })?;
+                        self.initialize_volatile_storage_backend(
+                            &device_spec.backend_name,
+                            &backend_spec,
+                            contents.clone(),
+                        )
+                    }
+                }?;
+
             let bdf: pci::Bdf =
                 device_spec.pci_path.try_into().map_err(|e| {
                     Error::new(
@@ -425,7 +466,7 @@ impl<'a> MachineInitializer<'a> {
             let hdl = self.machine.get_hdl();
             let viona = virtio::PciVirtioViona::new(
                 match &backend_spec.kind {
-                    NetworkBackendKind::Virtio { vnic_name } => vnic_name
+                    NetworkBackendKind::Virtio { vnic_name } => vnic_name,
                 },
                 0x100,
                 &hdl,

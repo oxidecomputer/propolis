@@ -206,6 +206,8 @@ async fn instance_ensure(
         }));
     }
 
+    let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
+        BTreeMap::new();
     let mut spec_builder =
         SpecBuilder::new(&properties, &server_context.config).map_err(|e| {
             HttpError::for_bad_request(
@@ -229,13 +231,20 @@ async fn instance_ensure(
             )
         })?;
     }
-    if let Some(bytes) = cloud_init_bytes.as_ref() {
-        spec_builder.add_cloud_init_from_request(bytes).map_err(|e| {
+    if let Some(as_base64) = cloud_init_bytes {
+        let bytes = base64::decode(&as_base64).map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to decode cloud-init bytes: {}", e),
+            )
+        })?;
+        spec_builder.add_cloud_init_from_request().map_err(|e| {
             HttpError::for_bad_request(
                 None,
                 format!("failed to add requested cloud-init bytes: {}", e),
             )
         })?;
+        in_memory_disk_contents.insert("cloud-init".to_string(), bytes);
     }
     spec_builder.add_devices_from_config(&server_context.config).map_err(
         |e| {
@@ -313,7 +322,10 @@ async fn instance_ensure(
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port()?;
             init.initialize_network_devices(&chipset)?;
-            crucible_backends = init.initialize_storage_devices(&chipset)?;
+            crucible_backends = init.initialize_storage_devices(
+                &chipset,
+                in_memory_disk_contents,
+            )?;
             info!(
                 server_context.log,
                 "Initialized {} Crucible backends: {:?}",

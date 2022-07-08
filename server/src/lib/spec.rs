@@ -25,9 +25,6 @@ pub enum SpecBuilderError {
     #[error("The opaque description of backend {0} was not serializable: {1}")]
     BackendSpecNotSerializable(String, serde_json::error::Error),
 
-    #[error("The supplied cloud init bytes failed to decode: {0}")]
-    CloudInitDecodeFailed(String),
-
     #[error("A PCI device is already attached at {0:?}")]
     PciPathInUse(PciPath),
 
@@ -247,14 +244,10 @@ impl SpecBuilder {
     /// into device/backend entries in the spec under construction.
     pub fn add_cloud_init_from_request(
         &mut self,
-        cloud_init_bytes: &str,
     ) -> Result<(), SpecBuilderError> {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         self.register_pci_device(pci_path)?;
-        let bytes = base64::decode(&cloud_init_bytes).map_err(|e| {
-            SpecBuilderError::CloudInitDecodeFailed(e.to_string())
-        })?;
 
         if self
             .spec
@@ -262,7 +255,7 @@ impl SpecBuilder {
             .insert(
                 name.to_string(),
                 StorageBackend {
-                    kind: StorageBackendKind::InMemory { bytes },
+                    kind: StorageBackendKind::InMemory,
                     readonly: true,
                 },
             )
