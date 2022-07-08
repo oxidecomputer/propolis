@@ -49,12 +49,17 @@ impl PciPath {
         Ok(Self(bus, device, function))
     }
 
+    #[inline]
     pub fn bus(&self) -> u8 {
         self.0
     }
+
+    #[inline]
     pub fn device(&self) -> u8 {
         self.1
     }
+
+    #[inline]
     pub fn function(&self) -> u8 {
         self.2
     }
