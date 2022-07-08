@@ -49,6 +49,7 @@ pub enum vm_reg_name {
     VM_REG_GUEST_DR3,
     VM_REG_GUEST_DR6,
     VM_REG_GUEST_ENTRY_INST_LENGTH,
+    VM_REG_GUEST_XCR0,
     VM_REG_LAST,
 }
 

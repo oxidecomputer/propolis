@@ -3,15 +3,16 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde_derive::Deserialize;
+use anyhow::Context;
+use serde::{Deserialize, Serialize};
 
 use crate::hw::pci;
 use propolis::block;
 use propolis::dispatch::Dispatcher;
 use propolis::inventory::ChildRegister;
 
-#[derive(Deserialize, Debug)]
-struct Top {
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Config {
     main: Main,
 
     #[serde(default, rename = "dev")]
@@ -21,7 +22,7 @@ struct Top {
     block_devs: BTreeMap<String, BlockDevice>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Main {
     name: String,
     cpus: u8,
@@ -29,32 +30,21 @@ struct Main {
     memory: usize,
 }
 
-#[derive(Default)]
-pub struct Opts {
-    /// Should the device state of the instance be dumped (to a named file) when
-    /// the instance reaches the quiesce state.
-    pub dump_state: Option<String>,
-}
-
-pub struct Config {
-    inner: Top,
-    pub opts: Opts,
-}
 impl Config {
     pub fn get_name(&self) -> &String {
-        &self.inner.main.name
+        &self.main.name
     }
     pub fn get_cpus(&self) -> u8 {
-        self.inner.main.cpus
+        self.main.cpus
     }
     pub fn get_mem(&self) -> usize {
-        self.inner.main.memory
+        self.main.memory
     }
     pub fn get_bootrom(&self) -> &String {
-        &self.inner.main.bootrom
+        &self.main.bootrom
     }
     pub fn devs(&self) -> IterDevs {
-        IterDevs { inner: self.inner.devices.iter() }
+        IterDevs { inner: self.devices.iter() }
     }
 
     pub fn block_dev(
@@ -62,14 +52,14 @@ impl Config {
         name: &str,
         disp: &Dispatcher,
     ) -> (Arc<dyn block::Backend>, ChildRegister) {
-        let entry = self.inner.block_devs.get(name).unwrap();
+        let entry = self.block_devs.get(name).unwrap();
         entry.block_dev(disp)
     }
 }
 
 /// A hard-coded device, either enabled by default or accessible locally
 /// on a machine.
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Device {
     pub driver: String,
 
@@ -77,7 +67,7 @@ pub struct Device {
     pub options: BTreeMap<String, toml::Value>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BlockDevice {
     #[serde(default, rename = "type")]
     pub bdtype: String,
@@ -137,10 +127,10 @@ impl<'a> Iterator for IterDevs<'a> {
     }
 }
 
-pub fn parse(path: &str) -> Config {
-    let file_data = std::fs::read(path).unwrap();
-    let top = toml::from_slice::<Top>(&file_data).unwrap();
-    Config { inner: top, opts: Opts::default() }
+pub fn parse(path: &str) -> anyhow::Result<Config> {
+    let file_data =
+        std::fs::read(path).context("Failed to read given config.toml")?;
+    Ok(toml::from_slice::<Config>(&file_data)?)
 }
 
 pub fn parse_bdf(v: &str) -> Option<pci::Bdf> {

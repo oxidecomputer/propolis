@@ -14,6 +14,23 @@ pub enum VmmDataError {
     SpaceNeeded(u32),
 }
 
+impl From<VmmDataError> for std::io::Error {
+    fn from(err: VmmDataError) -> Self {
+        use std::io::{Error, ErrorKind};
+        match err {
+            VmmDataError::IoError(e) => e,
+            VmmDataError::SpaceNeeded(c) => {
+                // ErrorKind::StorageFull would more accurately match the underlying ENOSPC
+                // but that variant is unstable still
+                Error::new(
+                    ErrorKind::Other,
+                    format!("operation requires {} bytes", c),
+                )
+            }
+        }
+    }
+}
+
 fn ioctl_xlate(
     hdl: &VmmHdl,
     op: i32,
@@ -125,7 +142,8 @@ pub fn write_many<T: Sized>(
         vdx_result_len: 0,
         vdx_data: data.as_mut_ptr() as *mut c_void,
     };
-    let bytes_written = ioctl_xlate(hdl, bhyve_api::VM_DATA_WRITE, &mut xfer)?;
-    assert_eq!(bytes_written, write_len);
+    let _bytes_written = ioctl_xlate(hdl, bhyve_api::VM_DATA_WRITE, &mut xfer)?;
+    // TODO: restore once `vmm_data_write_vmm_arch` updates the count on return
+    // assert_eq!(bytes_written, write_len);
     Ok(())
 }

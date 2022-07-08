@@ -258,6 +258,11 @@ impl PioCfgDecoder {
         let addr = self.addr.lock().unwrap();
         *addr
     }
+
+    pub(super) fn set_addr(&self, addr: u32) {
+        let mut inner = self.addr.lock().unwrap();
+        *inner = addr;
+    }
 }
 
 pub struct PcieCfgDecoder {

@@ -7,6 +7,8 @@
 //! for encapsulating commands to the underlying kernel
 //! object which represents a single VM.
 
+use erased_serde::{Deserializer, Serialize};
+
 use super::mapping::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result, Write};
@@ -17,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::common::PAGE_SIZE;
+use crate::migrate::MigrateStateError;
 use crate::util::sys::ioctl;
 
 #[derive(Default, Copy, Clone)]
@@ -98,6 +101,8 @@ fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
         inner,
         destroyed: AtomicBool::new(false),
         name: name.to_string(),
+        #[cfg(test)]
+        is_test_hdl: false,
     })
 }
 #[cfg(not(target_os = "illumos"))]
@@ -166,6 +171,10 @@ pub struct VmmHdl {
     pub(super) inner: VmmFile,
     destroyed: AtomicBool,
     name: String,
+
+    #[cfg(test)]
+    /// Track if this VmmHdl belongs to a wholly fictitious Instance/Machine.
+    is_test_hdl: bool,
 }
 impl VmmHdl {
     /// Accesses the raw file descriptor behind the VMM.
@@ -177,6 +186,14 @@ impl VmmHdl {
         if self.destroyed.load(Ordering::Acquire) {
             return Err(Error::new(ErrorKind::NotFound, "instance destroyed"));
         }
+
+        #[cfg(test)]
+        if self.is_test_hdl {
+            // Lie about all ioctl results, since there is no real vmm resource
+            // underlying this handle.
+            return Ok(());
+        }
+
         ioctl(self.fd(), cmd, data)?;
         Ok(())
     }
@@ -418,6 +435,24 @@ impl VmmHdl {
             destroy_vm(&self.name)
         }
     }
+
+    /// Export the global VMM state.
+    pub fn export(
+        &self,
+    ) -> std::result::Result<Box<dyn Serialize>, MigrateStateError> {
+        Ok(Box::new(migrate::BhyveVmV1::read(self)?))
+    }
+
+    /// Restore previously exported global VMM state.
+    pub fn import(
+        &self,
+        deserializer: &mut dyn Deserializer,
+    ) -> std::result::Result<(), MigrateStateError> {
+        let deserialized: migrate::BhyveVmV1 =
+            erased_serde::deserialize(deserializer)?;
+        deserialized.write(self)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -433,6 +468,7 @@ impl VmmHdl {
             inner: VmmFile(fp),
             destroyed: AtomicBool::new(false),
             name: "TEST-ONLY VMM INSTANCE".to_string(),
+            is_test_hdl: true,
         })
     }
 }
@@ -457,4 +493,72 @@ pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
 #[cfg(not(target_os = "illumos"))]
 pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
+}
+
+pub mod migrate {
+    use std::io;
+
+    use bhyve_api::vdi_field_entry_v1;
+    use serde::{Deserialize, Serialize};
+
+    use crate::vmm;
+
+    use super::VmmHdl;
+
+    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
+    pub struct BhyveVmV1 {
+        arch_entries: Vec<ArchEntryV1>,
+    }
+
+    #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
+    pub struct ArchEntryV1 {
+        pub ident: u32,
+        pub value: u64,
+    }
+
+    impl From<vdi_field_entry_v1> for ArchEntryV1 {
+        fn from(raw: vdi_field_entry_v1) -> Self {
+            Self { ident: raw.vfe_ident, value: raw.vfe_value }
+        }
+    }
+    impl From<ArchEntryV1> for vdi_field_entry_v1 {
+        fn from(entry: ArchEntryV1) -> Self {
+            vdi_field_entry_v1 {
+                vfe_ident: entry.ident,
+                vfe_value: entry.value,
+                ..Default::default()
+            }
+        }
+    }
+
+    impl BhyveVmV1 {
+        pub(super) fn read(hdl: &VmmHdl) -> io::Result<Self> {
+            let arch_entries: Vec<bhyve_api::vdi_field_entry_v1> =
+                vmm::data::read_many(hdl, -1, bhyve_api::VDC_VMM_ARCH, 1)?;
+            Ok(Self {
+                arch_entries: arch_entries
+                    .into_iter()
+                    .map(From::from)
+                    .collect(),
+            })
+        }
+
+        pub(super) fn write(self, hdl: &VmmHdl) -> io::Result<()> {
+            let mut arch_entries: Vec<bhyve_api::vdi_field_entry_v1> = self
+                .arch_entries
+                .into_iter()
+                // TODO: Guest TSC frequency is not currently adjustable
+                .filter(|e| e.ident != bhyve_api::VAI_TSC_FREQ)
+                .map(From::from)
+                .collect();
+            vmm::data::write_many(
+                hdl,
+                -1,
+                bhyve_api::VDC_VMM_ARCH,
+                1,
+                &mut arch_entries,
+            )?;
+            Ok(())
+        }
+    }
 }

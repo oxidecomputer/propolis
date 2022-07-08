@@ -10,9 +10,10 @@ Given the current tight coupling of the `bhyve-api` component to the ioctl
 interface presented by the bhyve kernel component, running on recent illumos
 bits is required.
 
-At a minimum, the build must include the fix for
-[14024](https://www.illumos.org/issues/14024). (Present since commit
-[52fac30](https://github.com/illumos/illumos-gate/commit/52fac30e3e977464254b44b1dfb4717fb8d2fbde))
+To exercise the snapshot/restore or live migration functionality a build
+including [14635](https://www.illumos.org/issues/14635)
+([54cf5b6](https://github.com/illumos/illumos-gate/commit/54cf5b63effe805271443d5dd7afd37ec184fbab))
+is required.
 
 To build, run:
 
