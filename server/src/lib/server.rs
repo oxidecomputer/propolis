@@ -501,7 +501,7 @@ async fn instance_serial_task(
     let mut ws_streams: Vec<SplitStream<WebSocketStream<Upgraded>>> =
         Vec::new();
 
-    let (send_ch, mut recv_ch) = mpsc::channel(1);
+    let (send_ch, mut recv_ch) = mpsc::channel(4);
 
     loop {
         let (uart_read, ws_send) =
@@ -531,8 +531,9 @@ async fn instance_serial_task(
                 if !ws_streams.is_empty() {
                     futures::stream::iter(ws_streams.iter_mut().enumerate())
                         .for_each_concurrent(4, |(i, ws)| {
-                            // if we don't `move` below, rustc says that `i` (which is usize: Copy (!))
-                            // is borrowed. but if we move without making this explicit reference here,
+                            // if we don't `move` below, rustc says that `i`
+                            // (which is usize: Copy (!)) is borrowed. but if we
+                            // move without making this explicit reference here,
                             // it moves send_ch into the closure.
                             let ch = &send_ch;
                             ws.next()
@@ -600,10 +601,12 @@ async fn instance_serial_task(
                 }
             }
 
-            // Receive bytes from connected WS clients to feed to the intermediate recv_ch
+            // Receive bytes from connected WS clients to feed to the
+            // intermediate recv_ch
             _ = ws_recv => {}
 
-            // Receive bytes from the intermediate channel to be injected into the UART
+            // Receive bytes from the intermediate channel to be injected into
+            // the UART
             pair = recv_ch_fut => {
                 if let Some((i, msg)) = pair {
                     match msg {
