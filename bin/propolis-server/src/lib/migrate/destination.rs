@@ -273,6 +273,12 @@ impl DestinationProtocol {
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Finish).await;
+
+        // Allow the destination to be resumed now that the migration is
+        // complete.
+        self.mctx
+            .instance
+            .set_target_state(propolis::instance::ReqState::MigrateResume)?;
         self.send_msg(codec::Message::Okay).await?;
         let _ = self.read_ok().await; // A failure here is ok.
         Ok(())
