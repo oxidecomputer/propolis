@@ -137,7 +137,7 @@ impl SourceProtocol {
         let end_gpa = req_end_gpa.min(vmm_ram_end.0);
         let step = bits.len() * 8 * 4096;
         for gpa in (start_gpa..end_gpa).step_by(step) {
-            self.track_dirty(GuestAddr(0), &mut bits).await?;
+            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
             if bits.iter().all(|&b| b == 0) {
                 continue;
             }

@@ -476,7 +476,7 @@ impl<'a> MemCtx<'a> {
         }
     }
 
-    /// Returns the [lowest, highest] memory addresses in the space, inclusive.
+    /// Returns the [lowest, highest + 1) memory addresses in the space.
     pub fn mem_bounds(&self) -> Option<Range<GuestAddr>> {
         let lowest = self
             .map
@@ -486,7 +486,7 @@ impl<'a> MemCtx<'a> {
             .map
             .highest_addr(|entry| matches!(entry.kind, MapKind::SysMem(_, _)))?
             as u64;
-        Some(GuestAddr(lowest)..GuestAddr(highest))
+        Some(GuestAddr(lowest)..GuestAddr(highest + 1))
     }
 }
 

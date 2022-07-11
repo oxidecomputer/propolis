@@ -186,7 +186,7 @@ pub async fn save(
     let mem_bounds = memctx
         .mem_bounds()
         .ok_or(anyhow::anyhow!("Failed to get VM RAM bounds"))?;
-    let len: usize = (mem_bounds.end.0 - mem_bounds.start.0 + 1).try_into()?;
+    let len: usize = (mem_bounds.end.0 - mem_bounds.start.0).try_into()?;
     let (lo, hi) = if len > 3 * GB {
         (3 * GB, Some(len.saturating_sub(4 * GB)))
     } else {
