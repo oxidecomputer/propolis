@@ -42,62 +42,66 @@ enum Framebuffer {
     Initialized(RamFb),
 }
 
+struct PropolisVncServerInner {
+    framebuffer: Framebuffer,
+    actx: Option<AsyncCtx>,
+    vnc_server: Option<VncServer<PropolisVncServer>>,
+}
+
 #[derive(Clone)]
 pub struct PropolisVncServer {
-    framebuffer: Arc<Mutex<Framebuffer>>,
-    actx: Arc<Mutex<Option<AsyncCtx>>>,
+    inner: Arc<Mutex<PropolisVncServerInner>>,
     log: Logger,
-
-    vnc_server: Arc<Mutex<Option<VncServer<PropolisVncServer>>>>,
 }
 
 impl PropolisVncServer {
     pub fn new(initial_width: u16, initial_height: u16, log: Logger) -> Self {
         PropolisVncServer {
-            framebuffer: Arc::new(Mutex::new(Framebuffer::Uninitialized(
-                DefaultFb { width: initial_width, height: initial_height },
-            ))),
-            actx: Arc::new(Mutex::new(None)),
+            inner: Arc::new(Mutex::new(PropolisVncServerInner {
+                framebuffer: Framebuffer::Uninitialized(DefaultFb {
+                    width: initial_width,
+                    height: initial_height,
+                }),
+                actx: None,
+                vnc_server: None,
+            })),
             log,
-            vnc_server: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub async fn set_vnc_server(
+    pub async fn initialize(
         &self,
-        vnc_server: VncServer<PropolisVncServer>,
+        fb: RamFb,
+        actx: AsyncCtx,
+        vnc_server: VncServer<Self>,
     ) {
-        let mut locked = self.vnc_server.lock().await;
-        *locked = Some(vnc_server);
+        let mut inner = self.inner.lock().await;
+        inner.framebuffer = Framebuffer::Initialized(fb);
+        inner.actx = Some(actx);
+        inner.vnc_server = Some(vnc_server);
     }
 
-    pub async fn set_async_ctx(&self, actx: AsyncCtx) {
-        let mut locked = self.actx.lock().await;
-        *locked = Some(actx);
-    }
-
-    pub async fn initialize_framebuffer(&self, fb: RamFb) {
-        if fb.addr != 0 {
-            let mut locked = self.framebuffer.lock().await;
-            *locked = Framebuffer::Initialized(fb);
-        }
-    }
-
-    pub async fn update(
-        &self,
-        vnc_server: &VncServer<PropolisVncServer>,
-        config: &Config,
-        is_valid: bool,
-    ) {
+    pub async fn update(&self, config: &Config, is_valid: bool) {
         if is_valid {
             debug!(self.log, "updating framebuffer");
+
             let fb_spec = config.get_framebuffer_spec();
             let fb = RamFb::new(fb_spec);
-            self.initialize_framebuffer(fb.clone()).await;
+
+            let mut inner = self.inner.lock().await;
+
+            if fb.addr != 0 {
+                inner.framebuffer = Framebuffer::Initialized(fb);
+            }
 
             match fourcc::fourcc_to_pixel_format(fb.fourcc) {
                 Ok(pf) => {
-                    vnc_server.set_pixel_format(pf).await;
+                    inner
+                        .vnc_server
+                        .as_ref()
+                        .unwrap()
+                        .set_pixel_format(pf)
+                        .await;
                     info!(
                         self.log,
                         "pixel format set to fourcc={:#04x}", fb.fourcc
@@ -116,8 +120,9 @@ impl PropolisVncServer {
 #[async_trait]
 impl Server for PropolisVncServer {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate {
-        let locked = self.framebuffer.lock().await;
-        let fb = match &*locked {
+        let inner = self.inner.lock().await;
+
+        let fb = match &inner.framebuffer {
             Framebuffer::Uninitialized(fb) => {
                 debug!(self.log, "framebuffer: uninitialized");
 
@@ -140,9 +145,15 @@ impl Server for PropolisVncServer {
                 let len = fb.height as usize * fb.width as usize * 4;
                 let mut buf = vec![0u8; len];
 
-                let locked = self.actx.lock().await;
-                let actx = locked.as_ref().unwrap();
-                let memctx = actx.dispctx().await.unwrap().mctx.memctx();
+                let memctx = inner
+                    .actx
+                    .as_ref()
+                    .unwrap()
+                    .dispctx()
+                    .await
+                    .unwrap()
+                    .mctx
+                    .memctx();
                 let read = memctx.read_into(GuestAddr(fb.addr), &mut buf, len);
                 drop(memctx);
 

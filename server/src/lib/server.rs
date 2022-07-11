@@ -432,8 +432,7 @@ async fn instance_ensure(
     let fb = vnc::RamFb::new(fb_spec.clone());
     let actx = instance.async_ctx();
     let vnc_server = vnc_hdl.lock().await;
-    vnc_server.server.set_async_ctx(actx).await;
-    vnc_server.server.initialize_framebuffer(fb).await;
+    vnc_server.server.initialize(fb, actx, vnc_server.clone()).await;
 
     let rt = rt_handle.unwrap();
     let hdl = Arc::clone(&vnc_hdl);
@@ -441,7 +440,7 @@ async fn instance_ensure(
         let h = Arc::clone(&hdl);
         rt.block_on(async move {
             let vnc = h.lock().await;
-            vnc.server.update(&vnc, config, is_valid).await;
+            vnc.server.update(config, is_valid).await;
         });
     }));
 

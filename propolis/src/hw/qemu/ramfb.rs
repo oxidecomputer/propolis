@@ -37,7 +37,7 @@ lazy_static! {
 fn fourcc_bytepp(fourcc: u32) -> Option<u32> {
     match fourcc {
         // The edk2 default: XR24, little-endian xRGB with 4 bytes per pixel.
-        0x34325258 => Some(4),
+        rfb::pixel_formats::fourcc::FOURCC_XR24 => Some(4),
         _ => None,
     }
 }
