@@ -601,12 +601,10 @@ async fn instance_serial_task(
                 }
             }
 
-            // Receive bytes from connected WS clients to feed to the
-            // intermediate recv_ch
-            _ = ws_recv => {}
-
             // Receive bytes from the intermediate channel to be injected into
-            // the UART
+            // the UART. This needs to be checked before `ws_recv` so that
+            // "close" messages can be processed and their indicated
+            // sinks/streams removed before they are polled again.
             pair = recv_ch_fut => {
                 if let Some((i, msg)) = pair {
                     match msg {
@@ -622,6 +620,10 @@ async fn instance_serial_task(
                     }
                 }
             }
+
+            // Receive bytes from connected WS clients to feed to the
+            // intermediate recv_ch
+            _ = ws_recv => {}
         }
     }
     Ok(())
