@@ -377,10 +377,8 @@ pub async fn dest_initiate(
 
     // TODO: https
     // TODO: We need to make sure the src_addr is a valid target
-    let src_migrate_url = format!(
-        "http://{}/instance/{}/migrate/start",
-        migrate_info.src_addr, migrate_info.src_uuid
-    );
+    let src_migrate_url =
+        format!("http://{}/instance/migrate/start", migrate_info.src_addr);
     info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
 
     let body = Body::from(
