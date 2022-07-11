@@ -137,7 +137,15 @@ impl<'a> MachineInitializer<'a> {
         spec: &'a InstanceSpec,
         producer_registry: Option<ProducerRegistry>,
     ) -> Self {
-        MachineInitializer { log, machine, mctx, disp, inv, spec, producer_registry }
+        MachineInitializer {
+            log,
+            machine,
+            mctx,
+            disp,
+            inv,
+            spec,
+            producer_registry,
+        }
     }
 
     pub fn initialize_rom<P: AsRef<std::path::Path>>(
