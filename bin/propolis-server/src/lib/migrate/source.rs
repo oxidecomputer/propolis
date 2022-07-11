@@ -62,8 +62,11 @@ impl SourceProtocol {
     async fn run(&mut self) -> Result<(), MigrateError> {
         self.start();
         self.sync().await?;
-        self.ram_push().await?;
+
+        // TODO: Optimize RAM transfer so that most memory can be transferred
+        // prior to pausing.
         self.pause().await?;
+        self.ram_push().await?;
         self.device_state().await?;
         self.arch_state().await?;
         self.ram_pull().await?;
@@ -305,6 +308,17 @@ impl SourceProtocol {
         self.mctx.set_state(MigrationState::Finish).await;
         self.read_ok().await?;
         let _ = self.send_msg(codec::Message::Okay).await; // A failure here is ok.
+
+        // This VMM is going away, so if any guest memory is still dirty, it
+        // won't be transferred. Assert that there is no such memory.
+        let vmm_range = self.vmm_ram_bounds().await?;
+        let mut bits = [0u8; 4096];
+        let step = bits.len() * 8 * 4096;
+        for gpa in (vmm_range.start.0..vmm_range.end.0).step_by(step) {
+            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
+            assert!(bits.iter().all(|&b| b == 0));
+        }
+
         Ok(())
     }
 
