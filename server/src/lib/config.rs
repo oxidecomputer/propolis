@@ -6,14 +6,11 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
-use propolis::hw::pci::topology::BridgeDescription;
-use propolis::hw::pci::Bdf;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use propolis::block;
 use propolis::dispatch::Dispatcher;
-use propolis::hw::pci;
 use propolis::inventory;
 
 /// Errors which may be returned when parsing the server configuration.
@@ -82,21 +79,19 @@ impl Config {
         &self.chipset
     }
 
-    pub fn get_pci_bridge_descriptions(
-        &self,
-    ) -> Vec<pci::topology::BridgeDescription> {
-        let mut descs = Vec::with_capacity(self.pci_bridges.len());
-        for bridge in &self.pci_bridges {
-            descs.push(BridgeDescription::new(
-                pci::topology::LogicalBusId(bridge.downstream_bus),
-                Bdf::from_str(bridge.pci_path.as_str()).unwrap(),
-            ));
-        }
-        descs
+    /// Returns an iterator over all [`Device`] entries in the config.
+    pub fn devs(&self) -> btree_map::Iter<String, Device> {
+        self.devices.iter()
     }
 
-    pub fn devs(&self) -> IterDevs {
-        IterDevs { inner: self.devices.iter() }
+    /// Returns an iterator over all ['BlockDevice`] entries in the config.
+    pub fn block_devs(&self) -> btree_map::Iter<String, BlockDevice> {
+        self.block_devs.iter()
+    }
+
+    /// Returns an iterator over all [`PciBridge`]s in the config.
+    pub fn pci_bridges(&self) -> std::slice::Iter<PciBridge> {
+        self.pci_bridges.iter()
     }
 
     pub fn create_block_backend(
@@ -223,20 +218,6 @@ impl BlockDevice {
                 panic!("unrecognized block dev type {}!", self.bdtype);
             }
         }
-    }
-}
-
-/// Iterator returned from [`Config::devs`] which allows iteration over
-/// all [`Device`] objects.
-pub struct IterDevs<'a> {
-    inner: btree_map::Iter<'a, String, Device>,
-}
-
-impl<'a> Iterator for IterDevs<'a> {
-    type Item = (&'a String, &'a Device);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
     }
 }
 

@@ -9,12 +9,6 @@ use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
 
-const MEM_CHUNK: usize = 64 * 1024;
-const MEM_BASE: usize = 16 * 1024 * 1024;
-
-const MEM_OFF_LOW: u8 = 0x34;
-const MEM_OFF_HIGH: u8 = 0x5b;
-
 pub struct BhyveRtc {}
 impl BhyveRtc {
     pub fn create() -> Arc<Self> {
@@ -34,31 +28,76 @@ impl BhyveRtc {
     ///
     /// This provides a mechanism for transferring this sizing information
     /// to the host device software.
+    /// - `low_mem_bytes`: Memory below 32-bit boundary, must be != 0
+    /// - `high_mem_bytes`: Memory above 32-bit boundary
+    ///
+    /// Size(s) must be aligned to 4KiB.
     pub fn memsize_to_nvram(
         &self,
-        lowmem: usize,
-        highmem: usize,
+        low_mem_bytes: u32,
+        high_mem_bytes: u64,
         hdl: &VmmHdl,
     ) -> io::Result<()> {
-        assert!(lowmem >= MEM_BASE);
+        assert_ne!(low_mem_bytes, 0, "low-mem must not be zero");
+        assert_eq!(low_mem_bytes & 0xfff, 0, "low-mem must be 4KiB aligned");
+        assert_eq!(high_mem_bytes & 0xfff, 0, "high-mem must be 4KiB aligned");
 
-        // physical memory below 4GB (less 16MB base) in 64k chunks
-        let low_chunks = (lowmem - MEM_BASE) / MEM_CHUNK;
-        // physical memory above 4GB in 64k chunks
-        let high_chunks = highmem / MEM_CHUNK;
+        // We mimic the CMOS layout of qemu (expected by OVMF) when it comes to
+        // communicating the sizing of instance memory:
+        //
+        // - 0x15-0x16: Base memory in KiB (0-1MiB, less 384KiB BDA)
+        // - 0x17-0x18: Extended memory in KiB (1MiB-64MiB)
+        // - 0x30-0x31: Extended memory (duplicate)
+        // - 0x34-0x35: Low-mem, less 16MiB, in 64KiB units
+        // - 0x5b-0x5d: High-mem in 64KiB units
 
-        // System software (bootrom) goes looking for this data in the RTC CMOS!
-        // Offsets 0x34-0x35 - lowmem
-        // Offsets 0x5b-0x5d - highmem
+        const CMOS_OFF_MEM_BASE: u8 = 0x15;
+        const CMOS_OFF_MEM_EXT: u8 = 0x17;
+        const CMOS_OFF_MEM_EXT_DUP: u8 = 0x30;
+        const CMOS_OFF_MEM_LOW: u8 = 0x34;
+        const CMOS_OFF_MEM_HIGH: u8 = 0x5b;
 
-        let low_bytes = low_chunks.to_le_bytes();
-        hdl.rtc_write(MEM_OFF_LOW, low_bytes[0])?;
-        hdl.rtc_write(MEM_OFF_LOW + 1, low_bytes[1])?;
+        const KIB: usize = 1024;
+        const MIB: usize = 1024 * 1024;
+        const CHUNK: usize = 64 * KIB;
 
-        let high_bytes = high_chunks.to_le_bytes();
-        hdl.rtc_write(MEM_OFF_HIGH, high_bytes[0])?;
-        hdl.rtc_write(MEM_OFF_HIGH + 1, high_bytes[1])?;
-        hdl.rtc_write(MEM_OFF_HIGH + 2, high_bytes[2])?;
+        // Convert for convenience
+        let low_mem = low_mem_bytes as usize;
+        let high_mem = high_mem_bytes as usize;
+
+        // First 1MiB, less 384KiB
+        let base = u16::min((low_mem / KIB) as u16, 640).to_le_bytes();
+        hdl.rtc_write(CMOS_OFF_MEM_BASE, base[0])?;
+        hdl.rtc_write(CMOS_OFF_MEM_BASE + 1, base[1])?;
+
+        // Next 64MiB
+        if low_mem > 1 * MIB {
+            let ext = (((low_mem - (1 * MIB)) / KIB) as u16).to_le_bytes();
+
+            hdl.rtc_write(CMOS_OFF_MEM_EXT, ext[0])?;
+            hdl.rtc_write(CMOS_OFF_MEM_EXT + 1, ext[1])?;
+
+            // ... and in the duplicate location
+            hdl.rtc_write(CMOS_OFF_MEM_EXT_DUP, ext[0])?;
+            hdl.rtc_write(CMOS_OFF_MEM_EXT_DUP + 1, ext[1])?;
+        }
+
+        // Low-mem, less 16MiB
+        if low_mem > 16 * MIB {
+            let low = (((low_mem - 16 * MIB) / CHUNK) as u16).to_le_bytes();
+
+            hdl.rtc_write(CMOS_OFF_MEM_LOW, low[0])?;
+            hdl.rtc_write(CMOS_OFF_MEM_LOW + 1, low[1])?;
+        }
+
+        // High-mem
+        if high_mem > 0 {
+            let high = ((high_mem / CHUNK) as u32).to_le_bytes();
+
+            hdl.rtc_write(CMOS_OFF_MEM_HIGH, high[0])?;
+            hdl.rtc_write(CMOS_OFF_MEM_HIGH + 1, high[1])?;
+            hdl.rtc_write(CMOS_OFF_MEM_HIGH + 2, high[2])?;
+        }
 
         Ok(())
     }

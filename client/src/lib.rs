@@ -10,6 +10,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod api;
+pub mod instance_spec;
 
 /// Errors which may be returend from the Propolis Client.
 #[derive(Debug, Error)]

@@ -18,6 +18,7 @@ thiserror = "1.0"
 bhyve_api = { path = "../bhyve-api" }
 dladm = { path = "../dladm" }
 viona_api = { path = "../viona-api" }
+propolis-types = { path = "../types" }
 usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"

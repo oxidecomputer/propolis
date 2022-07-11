@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::num::NonZeroUsize;
@@ -19,12 +21,13 @@ use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::instance::Instance;
-use propolis::inventory::{ChildRegister, EntityID, Inventory};
+use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine, MachineCtx, Prot};
+use propolis_client::instance_spec::{self, *};
 use slog::info;
 
-use crate::config;
 use crate::serial::Serial;
+use crate::server::CrucibleBackendMap;
 
 use anyhow::Result;
 use tokio::runtime::Handle;
@@ -51,17 +54,25 @@ fn open_bootrom<P: AsRef<std::path::Path>>(path: P) -> Result<(File, usize)> {
     }
 }
 
+fn get_spec_guest_ram_limits(spec: &InstanceSpec) -> (usize, usize) {
+    const MB: usize = 1024 * 1024;
+    const GB: usize = 1024 * 1024 * 1024;
+    let memsize = spec.board.memory_mb as usize * MB;
+    let lowmem = memsize.min(3 * GB);
+    let highmem = memsize.saturating_sub(3 * GB);
+    (lowmem, highmem)
+}
+
 pub fn build_instance(
     name: &str,
-    max_cpu: u8,
-    lowmem: usize,
-    highmem: usize,
+    spec: &InstanceSpec,
     use_reservoir: bool,
     log: slog::Logger,
 ) -> Result<Arc<Instance>> {
+    let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
     let create_opts = propolis::vmm::CreateOpts { force: true, use_reservoir };
     let mut builder = Builder::new(name, create_opts)?
-        .max_cpus(max_cpu)?
+        .max_cpus(spec.board.cpus)?
         .add_mem_region(0, lowmem, Prot::ALL, "lowmem")?
         .add_rom_region(
             0x1_0000_0000 - MAX_ROM_SIZE,
@@ -100,12 +111,20 @@ impl RegisteredChipset {
     }
 }
 
+struct StorageBackendInstance {
+    be: Arc<dyn block::Backend>,
+    child: inventory::ChildRegister,
+    crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
+}
+
 pub struct MachineInitializer<'a> {
     log: slog::Logger,
     machine: &'a Machine,
     mctx: &'a MachineCtx,
     disp: &'a Dispatcher,
     inv: &'a Inventory,
+    spec: &'a InstanceSpec,
+    producer_registry: Option<ProducerRegistry>,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -115,8 +134,10 @@ impl<'a> MachineInitializer<'a> {
         mctx: &'a MachineCtx,
         disp: &'a Dispatcher,
         inv: &'a Inventory,
+        spec: &'a InstanceSpec,
+        producer_registry: Option<ProducerRegistry>,
     ) -> Self {
-        MachineInitializer { log, machine, mctx, disp, inv }
+        MachineInitializer { log, machine, mctx, disp, inv, spec, producer_registry }
     }
 
     pub fn initialize_rom<P: AsRef<std::path::Path>>(
@@ -142,73 +163,73 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_kernel_devs(
-        &self,
-        lowmem: usize,
-        highmem: usize,
-    ) -> Result<(), Error> {
+    pub fn initialize_kernel_devs(&self) -> Result<(), Error> {
+        let (lowmem, highmem) = get_spec_guest_ram_limits(self.spec);
         let hdl = self.mctx.hdl();
 
         let rtc = &self.machine.kernel_devs.rtc;
-        rtc.memsize_to_nvram(lowmem, highmem, hdl)?;
+        rtc.memsize_to_nvram(lowmem as u32, highmem as u64, hdl)?;
         rtc.set_time(SystemTime::now(), hdl)?;
 
         Ok(())
     }
 
-    pub fn initialize_chipset(
-        &self,
-        config: &config::Chipset,
-        pci_bridges: Vec<pci::topology::BridgeDescription>,
-    ) -> Result<RegisteredChipset, Error> {
+    pub fn initialize_chipset(&self) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
-        for bridge in pci_bridges {
-            pci_builder.add_bridge(bridge)?;
+        for (name, bridge) in &self.spec.pci_pci_bridges {
+            let desc = pci::topology::BridgeDescription::new(
+                pci::topology::LogicalBusId(bridge.downstream_bus),
+                bridge.pci_path.try_into().map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Couldn't get PCI BDF for bridge {}: {}",
+                            name, e
+                        ),
+                    )
+                })?,
+            );
+            pci_builder.add_bridge(desc)?;
         }
         let pci_topology = pci_builder.finish(
             &self.inv,
             &self.machine.bus_pio,
             &self.machine.bus_mmio,
         )?;
-        let enable_pcie = config.options.get("enable-pcie").map_or_else(
-            || Ok(false),
-            |v| {
-                v.as_bool().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidData,
-                        format!("invalid value {} for enable-pcie", v),
-                    )
-                })
-            },
-        )?;
 
-        let chipset = I440Fx::create(
-            self.machine,
-            pci_topology,
-            i440fx::CreateOptions { enable_pcie },
-        );
-        let id = self.inv.register(&chipset)?;
-        Ok(RegisteredChipset(chipset, id))
+        match self.spec.board.chipset {
+            instance_spec::Chipset::I440Fx { enable_pcie } => {
+                let chipset = I440Fx::create(
+                    self.machine,
+                    pci_topology,
+                    i440fx::CreateOptions { enable_pcie },
+                );
+                let id = self.inv.register(&chipset)?;
+                Ok(RegisteredChipset(chipset, id))
+            }
+        }
     }
 
     pub fn initialize_uart(
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
-        let uarts = vec![
-            (ibmpc::IRQ_COM1, ibmpc::PORT_COM1, "com1"),
-            (ibmpc::IRQ_COM2, ibmpc::PORT_COM2, "com2"),
-            (ibmpc::IRQ_COM3, ibmpc::PORT_COM3, "com3"),
-            (ibmpc::IRQ_COM4, ibmpc::PORT_COM4, "com4"),
-        ];
         let pio = self.mctx.pio();
         let mut com1 = None;
-        for (irq, port, name) in uarts.iter() {
-            let dev = LpcUart::new(chipset.device().irq_pin(*irq).unwrap());
+        for (name, serial_spec) in &self.spec.serial_ports {
+            let (irq, port) = match serial_spec.num {
+                SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
+                SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
+                SerialPortNumber::Com3 => (ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
+                SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
+            };
+
+            let dev = LpcUart::new(chipset.device().irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
-            LpcUart::attach(&dev, pio, *port);
+            LpcUart::attach(&dev, pio, port);
             self.inv.register_instance(&dev, name)?;
-            if com1.is_none() {
+            if matches!(serial_spec.num, SerialPortNumber::Com1) {
+                assert!(com1.is_none());
                 com1 = Some(dev);
             }
         }
@@ -238,113 +259,226 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_virtio_block(
+    fn initialize_persistent_storage_backend(
         &self,
-        chipset: &RegisteredChipset,
-        bdf: pci::Bdf,
-        backend: Arc<dyn block::Backend>,
-        be_register: ChildRegister,
-    ) -> Result<(), Error> {
-        let be_info = backend.info();
-        let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
-        let id = self.inv.register_instance(&vioblk, bdf.to_string())?;
-        let _ = self.inv.register_child(be_register, id).unwrap();
-
-        backend.attach(vioblk.clone(), self.disp)?;
-        chipset.device().pci_attach(bdf, vioblk);
-        Ok(())
-    }
-
-    pub fn initialize_nvme_block(
-        &self,
-        chipset: &RegisteredChipset,
-        bdf: pci::Bdf,
-        name: String,
-        backend: Arc<dyn block::Backend>,
-        be_register: ChildRegister,
-    ) -> Result<(), Error> {
-        let be_info = backend.info();
-        let nvme = nvme::PciNvme::create(name, be_info);
-        let id = self.inv.register_instance(&nvme, bdf.to_string())?;
-        let _ = self.inv.register_child(be_register, id).unwrap();
-
-        backend.attach(nvme.clone(), self.disp)?;
-        chipset.device().pci_attach(bdf, nvme);
-        Ok(())
-    }
-
-    pub fn initialize_vnic(
-        &self,
-        chipset: &RegisteredChipset,
-        vnic_name: &str,
-        bdf: pci::Bdf,
-    ) -> Result<(), Error> {
-        let hdl = self.machine.get_hdl();
-        let viona = virtio::PciVirtioViona::new(vnic_name, 0x100, &hdl)?;
-        let _id = self.inv.register_instance(&viona, bdf.to_string())?;
-        chipset.device().pci_attach(bdf, viona);
-        Ok(())
-    }
-
-    pub fn initialize_crucible(
-        &self,
-        chipset: &RegisteredChipset,
-        disk: &propolis_client::api::DiskRequest,
-        bdf: pci::Bdf,
-        producer_registry: Option<ProducerRegistry>,
-    ) -> Result<Arc<propolis::block::CrucibleBackend>, Error> {
-        info!(self.log, "Creating Crucible disk from {:#?}", disk);
-        let be = propolis::block::CrucibleBackend::create(
-            disk.gen,
-            disk.volume_construction_request.clone(),
-            disk.read_only,
-            producer_registry,
-        )?;
-
-        info!(self.log, "Creating ChildRegister");
-        let creg = ChildRegister::new(&be, Some(be.get_uuid()?.to_string()));
-
-        match disk.device.as_ref() {
-            "virtio" => {
-                info!(self.log, "Calling initialize_virtio_block");
-                self.initialize_virtio_block(chipset, bdf, be.clone(), creg)?;
-                Ok(be)
-            }
-            "nvme" => {
-                info!(self.log, "Calling initialize_nvme_block");
-                self.initialize_nvme_block(
-                    chipset,
-                    bdf,
-                    disk.name.clone(),
-                    be.clone(),
-                    creg,
+        backend_spec: &StorageBackend,
+    ) -> Result<StorageBackendInstance, Error> {
+        Ok(match &backend_spec.kind {
+            StorageBackendKind::Crucible { gen, req } => {
+                info!(
+                    self.log,
+                    "Creating Crucible disk from request {}", req.json
+                );
+                let be = propolis::block::CrucibleBackend::create(
+                    *gen,
+                    req.try_into().map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidData,
+                            format!(
+                                "Failed to deserialize Crucible volume \
+                                   construction request: {}",
+                                e
+                            ),
+                        )
+                    })?,
+                    backend_spec.readonly,
+                    self.producer_registry.clone(),
                 )?;
-                Ok(be)
+                let child = inventory::ChildRegister::new(
+                    &be,
+                    Some(be.get_uuid()?.to_string()),
+                );
+                let crucible = Some((be.get_uuid()?, be.clone()));
+                StorageBackendInstance { be, child, crucible }
             }
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Bad disk device!",
-            )),
-        }
+            StorageBackendKind::File { path } => {
+                info!(
+                    self.log,
+                    "Creating file disk backend using path {}", path
+                );
+                let nworkers = NonZeroUsize::new(8).unwrap();
+                let be = propolis::block::FileBackend::create(
+                    path,
+                    backend_spec.readonly,
+                    nworkers,
+                )?;
+                let child =
+                    inventory::ChildRegister::new(&be, Some(path.to_string()));
+                StorageBackendInstance { be, child, crucible: None }
+            }
+            StorageBackendKind::InMemory => {
+                panic!(
+                    "Passed an in-memory backend spec as a persistent backend"
+                );
+            }
+        })
     }
 
-    pub fn initialize_in_memory_virtio_from_bytes(
+    fn initialize_volatile_storage_backend(
+        &self,
+        name: &str,
+        backend_spec: &StorageBackend,
+        contents: Vec<u8>,
+    ) -> Result<StorageBackendInstance, Error> {
+        Ok(match &backend_spec.kind {
+            StorageBackendKind::InMemory => {
+                info!(
+                    self.log,
+                    "Creating in-memory disk backend from {} bytes",
+                    contents.len()
+                );
+                let be = propolis::block::InMemoryBackend::create(
+                    contents,
+                    backend_spec.readonly,
+                    512,
+                )?;
+                let child =
+                    inventory::ChildRegister::new(&be, Some(name.to_string()));
+                StorageBackendInstance { be, child, crucible: None }
+            }
+            _ => panic!(
+                "Passed a persistent storage backend spec as \
+                        a volatile backend"
+            ),
+        })
+    }
+
+    /// Initializes the storage devices and backends listed in this
+    /// initializer's instance spec.
+    ///
+    /// On success, returns a map from Crucible backend IDs to Crucible
+    /// backends.
+    pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
-        name: impl Into<String>,
-        bytes: Vec<u8>,
-        bdf: pci::Bdf,
-        read_only: bool,
+        in_memory_contents: BTreeMap<String, Vec<u8>>,
+    ) -> Result<CrucibleBackendMap, Error> {
+        let mut crucible_backends: CrucibleBackendMap = Default::default();
+        for (name, device_spec) in &self.spec.storage_devices {
+            info!(
+                self.log,
+                "Creating storage device {} of kind {:?}",
+                name,
+                device_spec.kind
+            );
+            let backend_spec = self
+                .spec
+                .storage_backends
+                .get(&device_spec.backend_name)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Backend {} not found for storage device {}",
+                            device_spec.backend_name, name
+                        ),
+                    )
+                })?;
+            let StorageBackendInstance { be: backend, child, crucible } =
+                match &backend_spec.kind {
+                    StorageBackendKind::Crucible { .. }
+                    | StorageBackendKind::File { .. } => self
+                        .initialize_persistent_storage_backend(&backend_spec),
+                    StorageBackendKind::InMemory => {
+                        let contents = in_memory_contents
+                            .get(&device_spec.backend_name)
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::InvalidInput,
+                                    format!(
+                                        "In-memory storage backend {} has no \
+                                        contents",
+                                        device_spec.backend_name
+                                    ),
+                                )
+                            })?;
+                        self.initialize_volatile_storage_backend(
+                            &device_spec.backend_name,
+                            &backend_spec,
+                            contents.clone(),
+                        )
+                    }
+                }?;
+
+            let bdf: pci::Bdf =
+                device_spec.pci_path.try_into().map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Couldn't get PCI BDF for storage device {}: {}",
+                            name, e
+                        ),
+                    )
+                })?;
+            let be_info = backend.info();
+            match device_spec.kind {
+                StorageDeviceKind::Virtio => {
+                    let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
+                    let id =
+                        self.inv.register_instance(&vioblk, bdf.to_string())?;
+                    let _ = self.inv.register_child(child, id).unwrap();
+                    backend.attach(vioblk.clone(), self.disp)?;
+                    chipset.device().pci_attach(bdf, vioblk);
+                }
+                StorageDeviceKind::Nvme => {
+                    let nvme = nvme::PciNvme::create(name.to_string(), be_info);
+                    let id =
+                        self.inv.register_instance(&nvme, bdf.to_string())?;
+                    let _ = self.inv.register_child(child, id).unwrap();
+                    backend.attach(nvme.clone(), self.disp)?;
+                    chipset.device().pci_attach(bdf, nvme);
+                }
+            };
+            if let Some((id, backend)) = crucible {
+                let prev = crucible_backends.insert(id, backend);
+                if prev.is_some() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!("multiple disks with id {}", id),
+                    ));
+                }
+            }
+        }
+        Ok(crucible_backends)
+    }
+
+    pub fn initialize_network_devices(
+        &self,
+        chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
-        info!(self.log, "Creating in-memory disk from bytes");
-        let be =
-            propolis::block::InMemoryBackend::create(bytes, read_only, 512)?;
-
-        info!(self.log, "Creating ChildRegister");
-        let creg = ChildRegister::new(&be, Some(name.into()));
-
-        info!(self.log, "Calling initialize_virtio_block");
-        self.initialize_virtio_block(chipset, bdf, be, creg)
+        for (name, vnic_spec) in &self.spec.network_devices {
+            info!(self.log, "Creating vNIC {}", name);
+            let backend_spec = self
+                .spec
+                .network_backends
+                .get(&vnic_spec.backend_name)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Backend {} not found for vNIC {}",
+                            vnic_spec.backend_name, name
+                        ),
+                    )
+                })?;
+            let bdf: pci::Bdf = vnic_spec.pci_path.try_into().map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("Couldn't get PCI BDF for vNIC {}: {}", name, e),
+                )
+            })?;
+            let hdl = self.machine.get_hdl();
+            let viona = virtio::PciVirtioViona::new(
+                match &backend_spec.kind {
+                    NetworkBackendKind::Virtio { vnic_name } => vnic_name,
+                },
+                0x100,
+                &hdl,
+            )?;
+            let _ = self.inv.register_instance(&viona, bdf.to_string())?;
+            chipset.device().pci_attach(bdf, viona);
+        }
+        Ok(())
     }
 
     pub fn initialize_fwcfg(&self, cpus: u8) -> Result<EntityID, Error> {

@@ -14,7 +14,6 @@ use propolis::hw::qemu::ramfb::RamFb;
 use rfb::server::VncServer;
 use slog::{error, info, o, Logger};
 use std::collections::BTreeMap;
-use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::Arc;
@@ -26,15 +25,15 @@ use tokio_tungstenite::tungstenite::{self, handshake, Message};
 use tokio_tungstenite::WebSocketStream;
 
 use propolis::dispatch::AsyncCtx;
-use propolis::hw::pci;
 use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
-use propolis_client::api;
+use propolis_client::{api, instance_spec};
 
 use crate::config::Config;
 use crate::initializer::{build_instance, MachineInitializer};
 use crate::serial::Serial;
 use crate::stats::{prop_oximeter, PropCountStat, PropStatOuter};
+use crate::spec::SpecBuilder;
 use crate::vnc::PropolisVncServer;
 use crate::{migrate, vnc};
 use uuid::Uuid;
@@ -80,6 +79,9 @@ struct StateChange {
     state: propolis::instance::State,
 }
 
+pub(crate) type CrucibleBackendMap =
+    BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>;
+
 // All context for a single propolis instance.
 pub(crate) struct InstanceContext {
     // The instance, which may or may not be instantiated.
@@ -90,8 +92,7 @@ pub(crate) struct InstanceContext {
     serial_task: Option<SerialTask>,
 
     /// A map of disk names to CrucibleBackend
-    pub(crate) crucible_backends:
-        Mutex<BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>>,
+    pub(crate) crucible_backends: Mutex<CrucibleBackendMap>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,43 +170,6 @@ fn propolis_to_api_state(
         PropolisState::Halt => ApiState::Stopped,
         PropolisState::Reset => ApiState::Rebooting,
         PropolisState::Destroy => ApiState::Destroyed,
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum SlotType {
-    NIC,
-    Disk,
-    CloudInit,
-}
-
-// TODO: Slot ranges as constants, exposed to Omicron?
-
-// This is a somewhat hard-coded translation of a stable "PCI slot" to a BDF.
-//
-// For all the devices requested by Nexus (network interfaces, disks, etc),
-// we'd like to assign a stable PCI slot, such that re-allocating these
-// devices on a new instance of propolis produces the same guest-visible
-// BDFs.
-fn slot_to_bdf(slot: api::Slot, ty: SlotType) -> Result<pci::Bdf> {
-    match ty {
-        // Slots for NICS: 0x08 -> 0x0F
-        SlotType::NIC if slot.0 <= 7 => {
-            Ok(pci::Bdf::new(0, slot.0 + 0x8, 0).unwrap())
-        }
-        // Slots for Disks: 0x10 -> 0x17
-        SlotType::Disk if slot.0 <= 7 => {
-            Ok(pci::Bdf::new(0, slot.0 + 0x10, 0).unwrap())
-        }
-        // Slot for CloudInit
-        SlotType::CloudInit if slot.0 == 0 => {
-            Ok(pci::Bdf::new(0, slot.0 + 0x18, 0).unwrap())
-        }
-        _ => Err(anyhow::anyhow!(
-            "PCI Slot {} has no translation to BDF for type {:?}",
-            slot.0,
-            ty
-        )),
     }
 }
 
@@ -322,11 +286,68 @@ async fn instance_ensure(
         info!(rqctx.log, "No metrics registration was requested");
     }
 
-    const MB: usize = 1024 * 1024;
-    const GB: usize = 1024 * 1024 * 1024;
-    let memsize = properties.memory as usize * MB;
-    let lowmem = memsize.min(3 * GB);
-    let highmem = memsize.saturating_sub(3 * GB);
+    let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
+        BTreeMap::new();
+    let mut spec_builder =
+        SpecBuilder::new(&properties, &server_context.config).map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to build instance spec: {}", e),
+            )
+        })?;
+    for nic in &nics {
+        spec_builder.add_nic_from_request(nic).map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to add requested NIC: {}", e),
+            )
+        })?;
+    }
+    for disk in &disks {
+        spec_builder.add_disk_from_request(disk).map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to add requested disk: {}", e),
+            )
+        })?;
+    }
+    if let Some(as_base64) = cloud_init_bytes {
+        let bytes = base64::decode(&as_base64).map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to decode cloud-init bytes: {}", e),
+            )
+        })?;
+        spec_builder.add_cloud_init_from_request().map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to add requested cloud-init bytes: {}", e),
+            )
+        })?;
+        in_memory_disk_contents.insert("cloud-init".to_string(), bytes);
+    }
+    spec_builder.add_devices_from_config(&server_context.config).map_err(
+        |e| {
+            HttpError::for_internal_error(format!(
+                "failed to add static devices from config: {}",
+                e
+            ))
+        },
+    )?;
+    for port in [
+        instance_spec::SerialPortNumber::Com1,
+        instance_spec::SerialPortNumber::Com2,
+        instance_spec::SerialPortNumber::Com3,
+        instance_spec::SerialPortNumber::Com4,
+    ] {
+        spec_builder.add_serial_port(port).map_err(|e| {
+            HttpError::for_internal_error(format!(
+                "failed to add serial port {:?} to spec: {}",
+                port, e
+            ))
+        })?;
+    }
+    let spec = spec_builder.finish();
 
     // Create child logger for instance-related messages
     let vmm_log = server_context.log.new(o!("component" => "vmm"));
@@ -336,9 +357,7 @@ async fn instance_ensure(
     // The VM is named after the UUID, ensuring that it is unique.
     let instance = build_instance(
         &properties.id.to_string(),
-        properties.vcpus,
-        lowmem,
-        highmem,
+        &spec,
         server_context.use_reservoir,
         vmm_log,
     )
@@ -359,14 +378,12 @@ async fn instance_ensure(
     let mut com1 = None;
     let mut ramfb: Option<Arc<RamFb>> = None;
     let mut rt_handle = None;
+    let mut crucible_backends = BTreeMap::new();
 
     // Initialize (some) of the instance's hardware.
     //
     // This initialization may be refactored to be client-controlled,
     // but it is currently hard-coded for simplicity.
-
-    let mut crucible_backends = BTreeMap::new();
-
     instance
         .initialize(|machine, mctx, disp, inv| {
             let init = MachineInitializer::new(
@@ -375,210 +392,27 @@ async fn instance_ensure(
                 mctx,
                 disp,
                 inv,
+                &spec,
+                producer_registry.clone(),
             );
             init.initialize_rom(server_context.config.get_bootrom())?;
-            init.initialize_kernel_devs(lowmem, highmem)?;
+            init.initialize_kernel_devs()?;
 
-            let chipset = init.initialize_chipset(
-                server_context.config.get_chipset(),
-                server_context.config.get_pci_bridge_descriptions(),
-            )?;
+            let chipset = init.initialize_chipset()?;
             com1 = Some(Arc::new(init.initialize_uart(&chipset)?));
             init.initialize_ps2(&chipset)?;
             init.initialize_qemu_debug_port()?;
-
-            // Attach devices which have been requested from the HTTP interface.
-            for nic in &nics {
-                info!(rqctx.log, "Creating NIC: {:#?}", nic);
-                let bdf =
-                    slot_to_bdf(nic.slot, SlotType::NIC).map_err(|e| {
-                        Error::new(
-                            ErrorKind::InvalidData,
-                            format!("Cannot parse vnic PCI: {}", e),
-                        )
-                    })?;
-                init.initialize_vnic(&chipset, &nic.name, bdf)?;
-            }
-
-            for disk in &disks {
-                info!(rqctx.log, "Creating Disk: {:#?}", disk);
-                let bdf =
-                    slot_to_bdf(disk.slot, SlotType::Disk).map_err(|e| {
-                        Error::new(
-                            ErrorKind::InvalidData,
-                            format!("Cannot parse disk PCI: {}", e),
-                        )
-                    })?;
-
-                let be = init.initialize_crucible(
-                    &chipset,
-                    disk,
-                    bdf,
-                    producer_registry.clone(),
-                )?;
-                info!(rqctx.log, "Disk {} created successfully", disk.name);
-
-                let disk_id = be.get_uuid()?;
-                let prev = crucible_backends.insert(disk_id, be.clone());
-                if prev.is_some() {
-                    return Err(Error::new(
-                        ErrorKind::InvalidData,
-                        format!("multiple disks with id {}", disk_id),
-                    ));
-                }
-            }
-
-            if let Some(cloud_init_bytes) = &cloud_init_bytes {
-                info!(rqctx.log, "Creating cloud-init disk");
-                let bdf = slot_to_bdf(api::Slot(0), SlotType::CloudInit)
-                    .map_err(|e| {
-                        Error::new(ErrorKind::InvalidData, e.to_string())
-                    })?;
-
-                let bytes = base64::decode(&cloud_init_bytes).map_err(|e| {
-                    Error::new(ErrorKind::InvalidInput, e.to_string())
-                })?;
-
-                init.initialize_in_memory_virtio_from_bytes(
-                    &chipset,
-                    "cloud-init",
-                    bytes,
-                    bdf,
-                    true,
-                )?;
-
-                info!(rqctx.log, "cloud-init disk created");
-            }
-
-            // Attach devices which are hard-coded in the config.
-            //
-            // NOTE: This interface is effectively a stop-gap for development
-            // purposes. Longer term, peripherals will be attached via separate
-            // HTTP interfaces.
-            for (devname, dev) in server_context.config.devs() {
-                let driver = &dev.driver as &str;
-                match driver {
-                    "pci-virtio-block" => {
-                        let block_dev_name = dev
-                            .options
-                            .get("block_dev")
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    format!(
-                                        "no block_dev key for {}!",
-                                        devname
-                                    ),
-                                )
-                            })?
-                            .as_str()
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    format!(
-                                        "as_str() failed for {}'s block_dev!",
-                                        devname
-                                    ),
-                                )
-                            })?;
-
-                        let (backend, creg) = server_context
-                            .config
-                            .create_block_backend(block_dev_name, &disp)
-                            .map_err(|e| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    format!("ParseError: {:?}", e),
-                                )
-                            })?;
-
-                        let bdf: pci::Bdf =
-                            dev.get("pci-path").ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    "Cannot parse disk PCI",
-                                )
-                            })?;
-
-                        init.initialize_virtio_block(
-                            &chipset, bdf, backend, creg,
-                        )?;
-                    }
-                    "pci-nvme" => {
-                        let block_dev_name = dev
-                            .options
-                            .get("block_dev")
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    format!(
-                                        "no block_dev key for {}!",
-                                        devname
-                                    ),
-                                )
-                            })?
-                            .as_str()
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    format!(
-                                        "as_str() failed for {}'s block_dev!",
-                                        devname
-                                    ),
-                                )
-                            })?;
-
-                        let (backend, creg) = server_context
-                            .config
-                            .create_block_backend(block_dev_name, &disp)
-                            .map_err(|e| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    format!("ParseError: {:?}", e),
-                                )
-                            })?;
-
-                        let bdf: pci::Bdf =
-                            dev.get("pci-path").ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    "Cannot parse disk PCI",
-                                )
-                            })?;
-
-                        init.initialize_nvme_block(
-                            &chipset,
-                            bdf,
-                            block_dev_name.to_string(),
-                            backend,
-                            creg,
-                        )?;
-                    }
-                    "pci-virtio-viona" => {
-                        let name = dev.get_string("vnic").ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::InvalidData,
-                                "Cannot parse vnic name",
-                            )
-                        })?;
-                        let bdf: pci::Bdf =
-                            dev.get("pci-path").ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidData,
-                                    "Cannot parse vnic PCI",
-                                )
-                            })?;
-                        init.initialize_vnic(&chipset, name, bdf)?;
-                    }
-                    _ => {
-                        return Err(Error::new(
-                            ErrorKind::InvalidData,
-                            format!("Unknown driver in config: {}", driver),
-                        ));
-                    }
-                }
-            }
-
+            init.initialize_network_devices(&chipset)?;
+            crucible_backends = init.initialize_storage_devices(
+                &chipset,
+                in_memory_disk_contents,
+            )?;
+            info!(
+                server_context.log,
+                "Initialized {} Crucible backends: {:?}",
+                crucible_backends.len(),
+                crucible_backends.keys()
+            );
             let ramfb_id = init.initialize_fwcfg(properties.vcpus)?;
             ramfb = inv.get_concrete(ramfb_id);
             rt_handle = disp.handle();
