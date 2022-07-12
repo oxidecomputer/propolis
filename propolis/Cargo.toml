@@ -22,7 +22,6 @@ propolis-types = { path = "../types" }
 usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "fed3e8ca7762130ee146fc516a4ef6eed2b91629", optional = true }
 anyhow = "1"
 slog = "2.7"
 serde = { version = "1" }
@@ -30,6 +29,16 @@ serde_arrays = "0.1"
 erased-serde = "0.3"
 serde_json = "1.0"
 uuid = "1.0.0"
+
+[dependencies.crucible]
+git = "https://github.com/oxidecomputer/crucible"
+rev = "2add0de8489f1d4de901bfe98fc28b0a6efcc3ea"
+optional = true
+
+[dependencies.oximeter]
+git = "https://github.com/oxidecomputer/omicron"
+branch = "main"
+optional = true
 
 [dev-dependencies]
 crossbeam-channel = "0.5"

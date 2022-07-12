@@ -15,6 +15,7 @@ use crucible::{
     crucible_bail, BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume,
     VolumeConstructionRequest,
 };
+use oximeter::types::ProducerRegistry;
 
 /// Helper function, because Rust couldn't derive the types
 fn map_crucible_error_to_io(x: CrucibleError) -> std::io::Error {
@@ -35,8 +36,9 @@ impl CrucibleBackend {
         gen: u64,
         request: VolumeConstructionRequest,
         read_only: bool,
+        producer_registry: Option<ProducerRegistry>,
     ) -> Result<Arc<Self>> {
-        CrucibleBackend::_create(gen, request, read_only)
+        CrucibleBackend::_create(gen, request, read_only, producer_registry)
             .map_err(map_crucible_error_to_io)
     }
 
@@ -44,12 +46,13 @@ impl CrucibleBackend {
         gen: u64,
         request: VolumeConstructionRequest,
         read_only: bool,
+        producer_registry: Option<ProducerRegistry>,
     ) -> anyhow::Result<Arc<Self>, crucible::CrucibleError> {
         // XXX Crucible uses std::sync::mpsc::Receiver, not
         // tokio::sync::mpsc::Receiver, so use tokio::task::block_in_place here.
         // Remove that when Crucible changes over to the tokio mpsc.
         let volume = Arc::new(tokio::task::block_in_place(|| {
-            Volume::construct(request)
+            Volume::construct(request, producer_registry)
         })?);
 
         volume.activate(gen)?;

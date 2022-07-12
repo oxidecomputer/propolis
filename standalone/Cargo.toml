@@ -26,4 +26,4 @@ slog-term = "2.7"
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["propolis/dtrace-probes"]
-crucible = ["propolis/crucible"]
+crucible = ["propolis/crucible", "propolis/oximeter"]

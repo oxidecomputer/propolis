@@ -22,6 +22,7 @@ async-trait = "0.1.53"
 bit_field = "0.10.1"
 bitvec = "1.0"
 bytes = "1.1"
+chrono = { version = "0.4.19", features = [ "serde" ] }
 clap = { version = "3.2", features = ["derive"] }
 const_format = "0.2"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
@@ -29,6 +30,9 @@ erased-serde = "0.3"
 futures = "0.3"
 hyper =  "0.14"
 num_enum = "0.5"
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 ron = "0.7"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
@@ -40,7 +44,7 @@ serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
 slog = "2.7"
-propolis = { path = "../propolis", features = ["crucible"], default-features = false }
+propolis = { path = "../propolis", features = ["crucible", "oximeter"], default-features = false }
 propolis-client = { path = "../client" }
 rfb = { git = "https://github.com/oxidecomputer/rfb", branch = "main" }
 uuid = "1.0.0"

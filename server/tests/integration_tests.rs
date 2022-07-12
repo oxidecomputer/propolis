@@ -71,12 +71,14 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
         block_devices,
         vec![],
     );
+
     let use_reservoir = propolis_server::config::reservoir_decide(log);
     let context = server::Context::new(
         config,
         vnc_server,
         use_reservoir,
         log.new(slog::o!()),
+        None,
     );
 
     let config_dropshot = ConfigDropshot {

@@ -6,6 +6,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use oximeter::types::ProducerRegistry;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::PAGE_SIZE;
@@ -123,6 +124,7 @@ pub struct MachineInitializer<'a> {
     disp: &'a Dispatcher,
     inv: &'a Inventory,
     spec: &'a InstanceSpec,
+    producer_registry: Option<ProducerRegistry>,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -133,8 +135,17 @@ impl<'a> MachineInitializer<'a> {
         disp: &'a Dispatcher,
         inv: &'a Inventory,
         spec: &'a InstanceSpec,
+        producer_registry: Option<ProducerRegistry>,
     ) -> Self {
-        MachineInitializer { log, machine, mctx, disp, inv, spec }
+        MachineInitializer {
+            log,
+            machine,
+            mctx,
+            disp,
+            inv,
+            spec,
+            producer_registry,
+        }
     }
 
     pub fn initialize_rom<P: AsRef<std::path::Path>>(
@@ -279,6 +290,7 @@ impl<'a> MachineInitializer<'a> {
                         )
                     })?,
                     backend_spec.readonly,
+                    self.producer_registry.clone(),
                 )?;
                 let child = inventory::ChildRegister::new(
                     &be,

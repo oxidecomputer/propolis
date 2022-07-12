@@ -141,6 +141,7 @@ fn create_logger(opt: &Opt) -> Logger {
     Logger::root(drain, o!())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn new_instance(
     client: &Client,
     name: String,
