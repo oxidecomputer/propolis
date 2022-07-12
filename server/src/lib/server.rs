@@ -504,36 +504,46 @@ async fn instance_serial_task(
     let (send_ch, mut recv_ch) = mpsc::channel(4);
 
     loop {
-        let (uart_read, ws_send) = match &cur_output {
-            None => (
-                serial.read_source(&mut output, actx).fuse(),
-                Fuse::terminated(),
-            ),
-            Some(r) => (
-                Fuse::terminated(),
-                futures::stream::iter(
-                    ws_sinks
-                        .iter_mut()
-                        .zip(std::iter::repeat(Vec::from(&output[r.clone()]))),
-                )
-                .for_each_concurrent(4, |(ws, bin)| {
-                    ws.send(Message::binary(bin)).map(|_| ())
-                })
-                .fuse(),
-            ),
-        };
+        let (uart_read, ws_send) =
+            match &cur_output {
+                None => (
+                    serial.read_source(&mut output, actx).fuse(),
+                    Fuse::terminated(),
+                ),
+                Some(r) => (
+                    Fuse::terminated(),
+                    if !ws_sinks.is_empty() {
+                        futures::stream::iter(ws_sinks.iter_mut().zip(
+                            std::iter::repeat(Vec::from(&output[r.clone()])),
+                        ))
+                        .for_each_concurrent(4, |(ws, bin)| {
+                            ws.send(Message::binary(bin)).map(|_| ())
+                        })
+                        .fuse()
+                    } else {
+                        Fuse::terminated()
+                    },
+                ),
+            };
 
         let (ws_recv, uart_write) = match &cur_input {
             None => (
-                futures::stream::iter(ws_streams.iter_mut().enumerate())
-                    .for_each_concurrent(4, |(i, ws)| {
-                        // if we don't `move` below, rustc says that `i` (which is usize: Copy (!))
-                        // is borrowed. but if we move without making this explicit reference here,
-                        // it moves send_ch into the closure.
-                        let ch = &send_ch;
-                        ws.next().then(move |msg| ch.send((i, msg))).map(|_| ())
-                    })
-                    .fuse(),
+                if !ws_streams.is_empty() {
+                    futures::stream::iter(ws_streams.iter_mut().enumerate())
+                        .for_each_concurrent(4, |(i, ws)| {
+                            // if we don't `move` below, rustc says that `i`
+                            // (which is usize: Copy (!)) is borrowed. but if we
+                            // move without making this explicit reference here,
+                            // it moves send_ch into the closure.
+                            let ch = &send_ch;
+                            ws.next()
+                                .then(move |msg| ch.send((i, msg)))
+                                .map(|_| ())
+                        })
+                        .fuse()
+                } else {
+                    Fuse::terminated()
+                },
                 Fuse::terminated(),
             ),
             Some((data, consumed)) => (
@@ -542,7 +552,7 @@ async fn instance_serial_task(
             ),
         };
 
-        let recv_ch_fut = recv_ch.recv();
+        let recv_ch_fut = recv_ch.recv().fuse();
 
         tokio::select! {
             // Poll in the order written
@@ -591,10 +601,10 @@ async fn instance_serial_task(
                 }
             }
 
-            // Receive bytes from connected WS clients to feed to the intermediate recv_ch
-            _ = ws_recv => {}
-
-            // Receive bytes from the intermediate channel to be injected into the UART
+            // Receive bytes from the intermediate channel to be injected into
+            // the UART. This needs to be checked before `ws_recv` so that
+            // "close" messages can be processed and their indicated
+            // sinks/streams removed before they are polled again.
             pair = recv_ch_fut => {
                 if let Some((i, msg)) = pair {
                     match msg {
@@ -610,6 +620,10 @@ async fn instance_serial_task(
                     }
                 }
             }
+
+            // Receive bytes from connected WS clients to feed to the
+            // intermediate recv_ch
+            _ = ws_recv => {}
         }
     }
     Ok(())
