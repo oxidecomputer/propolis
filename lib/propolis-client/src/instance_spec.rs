@@ -52,8 +52,52 @@ use serde::{Deserialize, Serialize};
 pub use crucible::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
+/// Type alias for keys in the instance spec's maps.
+type SpecKey = String;
+
+/// Routines used to check whether two components are migration-compatible.
+pub trait MigrationCompatible {
+    /// Returns true if `self` and `other` describe spec elements that are
+    /// similar enough to permit migration of this element from one VMM to
+    /// another.
+    ///
+    /// Note that this can be, but isn't always, a simple check for equality.
+    /// Backends, in particular, may be migration-compatible but have different
+    /// configuration payloads. The migration protocol allows components like
+    /// this to augment this check with their own compatibility checks.
+    fn is_migration_compatible(&self, other: &Self) -> bool;
+}
+
+impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
+    // Two keyed maps of components are compatible if they contain all the same
+    // keys and if, for each key, the corresponding values are
+    // migration-compatible.
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        // If the two maps have different sizes, then they have different key
+        // sets.
+        if self.len() != other.len() {
+            return false;
+        }
+
+        // Each key in `self`'s map must be present in `other`'s map, and the
+        // corresponding values must be compatible with one another.
+        for (key, this_val) in self.iter() {
+            match other.get(key) {
+                Some(other_val) => {
+                    if !this_val.is_migration_compatible(other_val) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+
+        true
+    }
+}
+
 /// A kind of virtual chipset.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum Chipset {
     /// An Intel 440FX-compatible chipset.
@@ -65,7 +109,7 @@ pub enum Chipset {
 }
 
 /// A VM's mainboard.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
     /// The number of virtual logical processors attached to this VM.
@@ -87,6 +131,12 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx { enable_pcie: false },
         }
+    }
+}
+
+impl MigrationCompatible for Board {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
@@ -168,6 +218,14 @@ pub enum StorageBackendKind {
     InMemory,
 }
 
+impl MigrationCompatible for StorageBackendKind {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        // Two storage backends are compatible if they have the same kind,
+        // irrespective of their configurations.
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 /// A storage backend.
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -179,9 +237,16 @@ pub struct StorageBackend {
     pub readonly: bool,
 }
 
+impl MigrationCompatible for StorageBackend {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self.readonly == other.readonly
+            && self.kind.is_migration_compatible(&other.kind)
+    }
+}
+
 /// A kind of storage device: the sort of virtual device interface the VMM
 /// exposes to guest software.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum StorageDeviceKind {
     Virtio,
@@ -189,7 +254,7 @@ pub enum StorageDeviceKind {
 }
 
 /// A storage device.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StorageDevice {
     /// The device interface to present to the guest.
@@ -200,6 +265,12 @@ pub struct StorageDevice {
 
     /// The PCI path at which to attach this device.
     pub pci_path: PciPath,
+}
+
+impl MigrationCompatible for StorageDevice {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 //
@@ -217,6 +288,14 @@ pub enum NetworkBackendKind {
     Virtio { vnic_name: String },
 }
 
+impl MigrationCompatible for NetworkBackendKind {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        // Two network backends are compatible if they have the same kind,
+        // irrespective of their configurations.
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 /// A network backend.
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -224,8 +303,14 @@ pub struct NetworkBackend {
     pub kind: NetworkBackendKind,
 }
 
+impl MigrationCompatible for NetworkBackend {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self.kind.is_migration_compatible(&other.kind)
+    }
+}
+
 /// A virtual network adapter that presents a virtio network device interface.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkDevice {
     /// The name of the device's backend.
@@ -235,13 +320,19 @@ pub struct NetworkDevice {
     pub pci_path: PciPath,
 }
 
+impl MigrationCompatible for NetworkDevice {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 //
 // Serial ports.
 //
 
 /// A serial port identifier, which determines what I/O ports a guest can use to
 /// access a port.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum SerialPortNumber {
     Com1,
@@ -251,15 +342,21 @@ pub enum SerialPortNumber {
 }
 
 /// A serial port device.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SerialPort {
     /// The serial port number for this port.
     pub num: SerialPortNumber,
 }
 
+impl MigrationCompatible for SerialPort {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 /// A PCI-PCI bridge.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PciPciBridge {
     /// The logical bus number of this bridge's downstream bus. Other devices
@@ -271,8 +368,11 @@ pub struct PciPciBridge {
     pub pci_path: PciPath,
 }
 
-/// Type alias for keys in the instance spec's maps.
-type SpecKey = String;
+impl MigrationCompatible for PciPciBridge {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
+}
 
 /// A full instance specification. See the documentation for individual
 /// elements for more information about the fields in this structure.
@@ -290,4 +390,26 @@ pub struct InstanceSpec {
     pub network_backends: BTreeMap<SpecKey, NetworkBackend>,
     pub serial_ports: BTreeMap<SpecKey, SerialPort>,
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+}
+
+impl MigrationCompatible for InstanceSpec {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self.board.is_migration_compatible(&other.board)
+            && self
+                .storage_devices
+                .is_migration_compatible(&other.storage_devices)
+            && self
+                .storage_backends
+                .is_migration_compatible(&other.storage_backends)
+            && self
+                .network_devices
+                .is_migration_compatible(&other.network_devices)
+            && self
+                .network_backends
+                .is_migration_compatible(&other.network_backends)
+            && self.serial_ports.is_migration_compatible(&other.serial_ports)
+            && self
+                .pci_pci_bridges
+                .is_migration_compatible(&other.pci_pci_bridges)
+    }
 }
