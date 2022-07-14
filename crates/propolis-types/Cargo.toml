@@ -1,6 +1,6 @@
 [package]
-name = "propolis-types"
-version = "0.1.0"
+name = "propolis_types"
+version = "0.0.0"
 authors = ["Greg Colombo <greg@oxidecomputer.com>"]
 license = "MPL-2.0"
 edition = "2018"

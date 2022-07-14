@@ -1,26 +1,22 @@
 [workspace]
 
 members = [
-  "cli",
-  "client",
-  "package",
-  "propolis",
-  "server",
-  "standalone",
-  "types",
+  "crates/*",
+  "bin/*",
+  "lib/*",
+  "packaging/propolis-package",
 ]
 
 default-members = [
-  "cli",
-  "client",
-  "propolis",
-  "server",
-  "standalone",
-  "types",
+  "crates/*",
+  "lib/*",
+  "bin/propolis-cli",
+  "bin/propolis-server",
+  "bin/propolis-standalone",
 ]
 
 exclude = [
-  "bhyve-api/header-check"
+  "crates/*/header-check",
 ]
 
 [profile.dev]

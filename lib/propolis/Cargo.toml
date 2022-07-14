@@ -15,10 +15,10 @@ byteorder = "1"
 lazy_static = "1.4"
 num_enum = "0.5"
 thiserror = "1.0"
-bhyve_api = { path = "../bhyve-api" }
-dladm = { path = "../dladm" }
-viona_api = { path = "../viona-api" }
-propolis-types = { path = "../types" }
+bhyve_api = { path = "../../crates/bhyve-api" }
+dladm = { path = "../../crates/dladm" }
+viona_api = { path = "../../crates/viona-api" }
+propolis_types = { path = "../../crates/propolis-types" }
 usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"

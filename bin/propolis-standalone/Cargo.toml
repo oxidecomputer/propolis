@@ -25,7 +25,7 @@ libc = "0.2"
 toml = "0.5"
 tokio = { version = "1", features = ["io-util", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
-propolis = { path = "../propolis", default-features = false }
+propolis = { path = "../../lib/propolis", default-features = false }
 erased-serde = "0.3"
 serde_json = "1.0"
 slog = "2.7"

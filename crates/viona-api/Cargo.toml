@@ -1,6 +1,6 @@
 [package]
 name = "viona_api"
-version = "0.1.0"
+version = "0.0.0"
 authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
 edition = "2018"

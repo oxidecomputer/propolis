@@ -5,5 +5,5 @@ service_name = "propolis-server"
 zone = true
 blobs = [ "alpine.iso", "OVMF_CODE.fd" ]
 [[package.propolis-server.paths]]
-from = "smf/propolis-server"
+from = "packaging/smf/propolis-server"
 to = "/var/svc/manifest/site/propolis-server"
