@@ -375,7 +375,7 @@ pub async fn dest_initiate(
     // This should be a fresh propolis-server
     assert!(migrate_task.is_none());
 
-    // TODO: https
+    // TODO(#165): https
     // TODO: We need to make sure the src_addr is a valid target
     let src_migrate_url =
         format!("http://{}/instance/migrate/start", migrate_info.src_addr);

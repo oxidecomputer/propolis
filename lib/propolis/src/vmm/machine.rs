@@ -487,7 +487,7 @@ impl<'a> MemCtx<'a> {
             .map
             .highest_addr(|entry| matches!(entry.kind, MapKind::SysMem(_, _)))?
             as u64;
-        Some(RangeInclusive::new(GuestAddr(lowest), GuestAddr(highest)))
+        Some(GuestAddr(lowest)..=GuestAddr(highest))
     }
 }
 
