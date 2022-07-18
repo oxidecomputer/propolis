@@ -6,7 +6,7 @@ use propolis::inventory::Order;
 use propolis::migrate::{MigrateStateError, Migrator};
 use slog::{error, info};
 use std::io;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{task, time};
@@ -62,8 +62,11 @@ impl SourceProtocol {
     async fn run(&mut self) -> Result<(), MigrateError> {
         self.start();
         self.sync().await?;
-        self.ram_push().await?;
+
+        // TODO: Optimize RAM transfer so that most memory can be transferred
+        // prior to pausing.
         self.pause().await?;
+        self.ram_push().await?;
         self.device_state().await?;
         self.arch_state().await?;
         self.ram_pull().await?;
@@ -124,20 +127,33 @@ impl SourceProtocol {
 
     async fn offer_ram(
         &mut self,
-        vmm_ram_range: Range<GuestAddr>,
+        vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
     ) -> Result<(), MigrateError> {
         info!(self.log(), "offering ram");
-        let vmm_ram_start = vmm_ram_range.start;
-        let vmm_ram_end = vmm_ram_range.end;
+        let vmm_ram_start = *vmm_ram_range.start();
+        let vmm_ram_end = *vmm_ram_range.end();
         let mut bits = [0u8; 4096];
         let req_start_gpa = req_ram_range.start;
         let req_end_gpa = req_ram_range.end;
         let start_gpa = req_start_gpa.max(vmm_ram_start.0);
+
+        // The RAM bounds reported to this routine set the end of the range to
+        // the last valid address in the address space (e.g. 0x6FFF for a
+        // one-page range beginning at 0x6000), but this routine's callees
+        // expect the end address to be the first invalid (page-aligned) address
+        // (in our example, 0x7000 instead of 0x6FFF). Correct that here.
+        //
+        // N.B. This assumes that the guest address space is small enough to
+        //      add 1 in this fashion without overflowing, i.e. the last valid
+        //      GPA cannot be `u64::MAX`.
         let end_gpa = req_end_gpa.min(vmm_ram_end.0);
+        assert!(end_gpa < u64::MAX);
+        let end_gpa = end_gpa + 1;
+
         let step = bits.len() * 8 * 4096;
         for gpa in (start_gpa..end_gpa).step_by(step) {
-            self.track_dirty(GuestAddr(0), &mut bits).await?;
+            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
             if bits.iter().all(|&b| b == 0) {
                 continue;
             }
@@ -305,6 +321,17 @@ impl SourceProtocol {
         self.mctx.set_state(MigrationState::Finish).await;
         self.read_ok().await?;
         let _ = self.send_msg(codec::Message::Okay).await; // A failure here is ok.
+
+        // This VMM is going away, so if any guest memory is still dirty, it
+        // won't be transferred. Assert that there is no such memory.
+        let vmm_range = self.vmm_ram_bounds().await?;
+        let mut bits = [0u8; 4096];
+        let step = bits.len() * 8 * 4096;
+        for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
+            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
+            assert!(bits.iter().all(|&b| b == 0));
+        }
+
         Ok(())
     }
 
@@ -370,7 +397,7 @@ impl SourceProtocol {
 
     async fn vmm_ram_bounds(
         &mut self,
-    ) -> Result<Range<GuestAddr>, MigrateError> {
+    ) -> Result<RangeInclusive<GuestAddr>, MigrateError> {
         let memctx = self
             .mctx
             .async_ctx

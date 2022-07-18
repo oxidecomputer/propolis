@@ -3,7 +3,7 @@
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ops::Range;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use crate::common::{GuestAddr, GuestRegion};
@@ -476,8 +476,9 @@ impl<'a> MemCtx<'a> {
         }
     }
 
-    /// Returns the [lowest, highest] memory addresses in the space, inclusive.
-    pub fn mem_bounds(&self) -> Option<Range<GuestAddr>> {
+    /// Returns the [lowest, highest] memory addresses in the space as an
+    /// inclusive range.
+    pub fn mem_bounds(&self) -> Option<RangeInclusive<GuestAddr>> {
         let lowest = self
             .map
             .lowest_addr(|entry| matches!(entry.kind, MapKind::SysMem(_, _)))?
@@ -486,7 +487,7 @@ impl<'a> MemCtx<'a> {
             .map
             .highest_addr(|entry| matches!(entry.kind, MapKind::SysMem(_, _)))?
             as u64;
-        Some(GuestAddr(lowest)..GuestAddr(highest))
+        Some(GuestAddr(lowest)..=GuestAddr(highest))
     }
 }
 
