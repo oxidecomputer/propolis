@@ -52,8 +52,45 @@ use serde::{Deserialize, Serialize};
 pub use crucible::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
+/// Type alias for keys in the instance spec's maps.
+type SpecKey = String;
+
+/// Routines used to check whether two components are migration-compatible.
+pub trait MigrationCompatible {
+    /// Returns true if `self` and `other` describe spec elements that are
+    /// similar enough to permit migration of this element from one VMM to
+    /// another.
+    ///
+    /// Note that this can be, but isn't always, a simple check for equality.
+    /// Backends, in particular, may be migration-compatible but have different
+    /// configuration payloads. The migration protocol allows components like
+    /// this to augment this check with their own compatibility checks.
+    fn is_migration_compatible(&self, other: &Self) -> bool;
+}
+
+impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
+    // Two keyed maps of components are compatible if they contain all the same
+    // keys and if, for each key, the corresponding values are
+    // migration-compatible.
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        // If the two maps have different sizes, then they have different key
+        // sets.
+        if self.len() != other.len() {
+            return false;
+        }
+
+        // Each key in `self`'s map must be present in `other`'s map, and the
+        // corresponding values must be compatible with one another.
+        self.iter().all(|(key, this_val)| {
+            other.get(key).map_or(false, |other_val| {
+                this_val.is_migration_compatible(other_val)
+            })
+        })
+    }
+}
+
 /// A kind of virtual chipset.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum Chipset {
     /// An Intel 440FX-compatible chipset.
@@ -65,7 +102,7 @@ pub enum Chipset {
 }
 
 /// A VM's mainboard.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
     /// The number of virtual logical processors attached to this VM.
@@ -87,6 +124,12 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx { enable_pcie: false },
         }
+    }
+}
+
+impl MigrationCompatible for Board {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
@@ -168,6 +211,17 @@ pub enum StorageBackendKind {
     InMemory,
 }
 
+impl MigrationCompatible for StorageBackendKind {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        // Two storage backends are compatible if they have the same kind,
+        // irrespective of their configurations. The migration protocol allows
+        // individual backend instances to include messages in the preamble that
+        // allow a source and target to decide independently whether they are
+        // compatible with each other.
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 /// A storage backend.
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -179,9 +233,16 @@ pub struct StorageBackend {
     pub readonly: bool,
 }
 
+impl MigrationCompatible for StorageBackend {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self.readonly == other.readonly
+            && self.kind.is_migration_compatible(&other.kind)
+    }
+}
+
 /// A kind of storage device: the sort of virtual device interface the VMM
 /// exposes to guest software.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum StorageDeviceKind {
     Virtio,
@@ -189,7 +250,7 @@ pub enum StorageDeviceKind {
 }
 
 /// A storage device.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StorageDevice {
     /// The device interface to present to the guest.
@@ -200,6 +261,12 @@ pub struct StorageDevice {
 
     /// The PCI path at which to attach this device.
     pub pci_path: PciPath,
+}
+
+impl MigrationCompatible for StorageDevice {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 //
@@ -217,6 +284,14 @@ pub enum NetworkBackendKind {
     Virtio { vnic_name: String },
 }
 
+impl MigrationCompatible for NetworkBackendKind {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        // Two network backends are compatible if they have the same kind,
+        // irrespective of their configurations.
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
 /// A network backend.
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -224,8 +299,14 @@ pub struct NetworkBackend {
     pub kind: NetworkBackendKind,
 }
 
+impl MigrationCompatible for NetworkBackend {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self.kind.is_migration_compatible(&other.kind)
+    }
+}
+
 /// A virtual network adapter that presents a virtio network device interface.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkDevice {
     /// The name of the device's backend.
@@ -235,13 +316,19 @@ pub struct NetworkDevice {
     pub pci_path: PciPath,
 }
 
+impl MigrationCompatible for NetworkDevice {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 //
 // Serial ports.
 //
 
 /// A serial port identifier, which determines what I/O ports a guest can use to
 /// access a port.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum SerialPortNumber {
     Com1,
@@ -251,15 +338,21 @@ pub enum SerialPortNumber {
 }
 
 /// A serial port device.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SerialPort {
     /// The serial port number for this port.
     pub num: SerialPortNumber,
 }
 
+impl MigrationCompatible for SerialPort {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 /// A PCI-PCI bridge.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PciPciBridge {
     /// The logical bus number of this bridge's downstream bus. Other devices
@@ -271,8 +364,11 @@ pub struct PciPciBridge {
     pub pci_path: PciPath,
 }
 
-/// Type alias for keys in the instance spec's maps.
-type SpecKey = String;
+impl MigrationCompatible for PciPciBridge {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self == other
+    }
+}
 
 /// A full instance specification. See the documentation for individual
 /// elements for more information about the fields in this structure.
@@ -290,4 +386,283 @@ pub struct InstanceSpec {
     pub network_backends: BTreeMap<SpecKey, NetworkBackend>,
     pub serial_ports: BTreeMap<SpecKey, SerialPort>,
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+}
+
+impl MigrationCompatible for InstanceSpec {
+    fn is_migration_compatible(&self, other: &Self) -> bool {
+        self.board.is_migration_compatible(&other.board)
+            && self
+                .storage_devices
+                .is_migration_compatible(&other.storage_devices)
+            && self
+                .storage_backends
+                .is_migration_compatible(&other.storage_backends)
+            && self
+                .network_devices
+                .is_migration_compatible(&other.network_devices)
+            && self
+                .network_backends
+                .is_migration_compatible(&other.network_backends)
+            && self.serial_ports.is_migration_compatible(&other.serial_ports)
+            && self
+                .pci_pci_bridges
+                .is_migration_compatible(&other.pci_pci_bridges)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum TestComponent {
+        Widget,
+        Gizmo,
+        Contraption,
+    }
+
+    impl MigrationCompatible for TestComponent {
+        fn is_migration_compatible(&self, other: &Self) -> bool {
+            self == other
+        }
+    }
+
+    // Verifies that the generic compatibility check for <key, component> maps
+    // works correctly with a simple test type.
+    #[test]
+    fn generic_map_compatibility() {
+        let m1: BTreeMap<SpecKey, TestComponent> = BTreeMap::from([
+            ("widget".to_string(), TestComponent::Widget),
+            ("gizmo".to_string(), TestComponent::Gizmo),
+            ("contraption".to_string(), TestComponent::Contraption),
+        ]);
+
+        let mut m2 = m1.clone();
+        assert!(m1.is_migration_compatible(&m2));
+
+        // Mismatched key counts make two maps incompatible.
+        m2.insert("second_widget".to_string(), TestComponent::Widget);
+        assert!(!m1.is_migration_compatible(&m2));
+        m2.remove("second_widget");
+
+        // Two maps are incompatible if their keys refer to components that are
+        // not compatible with each other.
+        *m2.get_mut("gizmo").unwrap() = TestComponent::Contraption;
+        assert!(!m1.is_migration_compatible(&m2));
+        *m2.get_mut("gizmo").unwrap() = TestComponent::Gizmo;
+
+        // Two maps are incompatible if they have the same number of keys and
+        // values, but different sets of key names.
+        m2.remove("gizmo");
+        m2.insert("other_gizmo".to_string(), TestComponent::Gizmo);
+        assert!(!m1.is_migration_compatible(&m2));
+    }
+
+    #[test]
+    fn compatible_boards() {
+        let b1 = Board {
+            cpus: 8,
+            memory_mb: 8192,
+            chipset: Chipset::I440Fx { enable_pcie: false },
+        };
+        let b2 = b1.clone();
+        assert!(b1.is_migration_compatible(&b2));
+    }
+
+    #[test]
+    fn incompatible_boards() {
+        let b1 = Board {
+            cpus: 4,
+            memory_mb: 4096,
+            chipset: Chipset::I440Fx { enable_pcie: true },
+        };
+
+        let mut b2 = b1.clone();
+        b2.cpus = 8;
+        assert!(!b1.is_migration_compatible(&b2));
+        b2.cpus = b1.cpus;
+
+        b2.memory_mb = b1.memory_mb * 2;
+        assert!(!b1.is_migration_compatible(&b2));
+        b2.memory_mb = b1.memory_mb;
+
+        b2.chipset = Chipset::I440Fx { enable_pcie: false };
+        assert!(!b2.is_migration_compatible(&b1));
+    }
+
+    #[test]
+    fn compatible_storage_backends() {
+        let b1: BTreeMap<SpecKey, StorageBackend> = BTreeMap::from([
+            (
+                "crucible".to_string(),
+                StorageBackend {
+                    kind: StorageBackendKind::Crucible {
+                        gen: 1,
+                        req: CrucibleRequestContents {
+                            json: "this_crucible_config".to_string(),
+                        },
+                    },
+                    readonly: true,
+                },
+            ),
+            (
+                "file".to_string(),
+                StorageBackend {
+                    kind: StorageBackendKind::File {
+                        path: "this_path".to_string(),
+                    },
+                    readonly: false,
+                },
+            ),
+            (
+                "memory".to_string(),
+                StorageBackend {
+                    kind: StorageBackendKind::InMemory,
+                    readonly: true,
+                },
+            ),
+        ]);
+
+        let mut b2 = b1.clone();
+        match &mut b2.get_mut("crucible").unwrap().kind {
+            StorageBackendKind::Crucible { gen, req } => {
+                *gen += 1;
+                *req = CrucibleRequestContents {
+                    json: "that_crucible_config".to_string(),
+                };
+            }
+            _ => panic!("Crucible backend not present in cloned map"),
+        }
+        assert!(b1.is_migration_compatible(&b2));
+
+        match &mut b2.get_mut("file").unwrap().kind {
+            StorageBackendKind::File { path } => {
+                *path = "that_path".to_string()
+            }
+            _ => panic!("File backend not present in cloned map"),
+        }
+        assert!(b1.is_migration_compatible(&b2));
+    }
+
+    #[test]
+    fn incompatible_storage_backends() {
+        let b1 = StorageBackend {
+            kind: StorageBackendKind::Crucible {
+                gen: 1,
+                req: CrucibleRequestContents { json: "config".to_string() },
+            },
+            readonly: true,
+        };
+
+        let mut b2 = b1.clone();
+        b2.readonly = !b2.readonly;
+        assert!(!b1.is_migration_compatible(&b2));
+        b2.readonly = b1.readonly;
+
+        b2.kind = StorageBackendKind::File { path: "path".to_string() };
+        assert!(!b1.is_migration_compatible(&b2));
+        b2.kind = StorageBackendKind::InMemory;
+        assert!(!b1.is_migration_compatible(&b2));
+    }
+
+    #[test]
+    fn compatible_storage_devices() {
+        let d1 = StorageDevice {
+            kind: StorageDeviceKind::Virtio,
+            backend_name: "storage_backend".to_string(),
+            pci_path: PciPath::new(0, 5, 0).unwrap(),
+        };
+        let d2 = d1.clone();
+        assert!(d1.is_migration_compatible(&d2));
+    }
+
+    #[test]
+    fn incompatible_storage_devices() {
+        let d1 = StorageDevice {
+            kind: StorageDeviceKind::Virtio,
+            backend_name: "storage_backend".to_string(),
+            pci_path: PciPath::new(0, 5, 0).unwrap(),
+        };
+
+        let mut d2 = d1.clone();
+        d2.kind = StorageDeviceKind::Nvme;
+        assert!(!d1.is_migration_compatible(&d2));
+        d2.kind = d1.kind;
+
+        d2.backend_name = "other_storage_backend".to_string();
+        assert!(!d1.is_migration_compatible(&d2));
+        d2.backend_name = d1.backend_name.clone();
+
+        d2.pci_path = PciPath::new(0, 6, 0).unwrap();
+        assert!(!d1.is_migration_compatible(&d2));
+    }
+
+    #[test]
+    fn compatible_network_devices() {
+        let n1 = NetworkDevice {
+            backend_name: "net_backend".to_string(),
+            pci_path: PciPath::new(0, 7, 0).unwrap(),
+        };
+        let n2 = n1.clone();
+        assert!(n1.is_migration_compatible(&n2));
+    }
+
+    #[test]
+    fn incompatible_network_devices() {
+        let n1 = NetworkDevice {
+            backend_name: "net_backend".to_string(),
+            pci_path: PciPath::new(0, 7, 0).unwrap(),
+        };
+        let mut n2 = n1.clone();
+
+        n2.backend_name = "other_net_backend".to_string();
+        assert!(!n1.is_migration_compatible(&n2));
+        n2.backend_name = n1.backend_name.clone();
+
+        n2.pci_path = PciPath::new(0, 8, 1).unwrap();
+        assert!(!n1.is_migration_compatible(&n2));
+    }
+
+    #[test]
+    fn compatible_network_backends() {
+        let n1 = NetworkBackend {
+            kind: NetworkBackendKind::Virtio { vnic_name: "vnic".to_string() },
+        };
+        let n2 = NetworkBackend {
+            kind: NetworkBackendKind::Virtio {
+                vnic_name: "other_vnic".to_string(),
+            },
+        };
+        assert!(n1.is_migration_compatible(&n2));
+    }
+
+    #[test]
+    fn serial_port_compatibility() {
+        assert!((SerialPort { num: SerialPortNumber::Com1 })
+            .is_migration_compatible(&SerialPort {
+                num: SerialPortNumber::Com1
+            }));
+        assert!(!(SerialPort { num: SerialPortNumber::Com2 })
+            .is_migration_compatible(&SerialPort {
+                num: SerialPortNumber::Com3
+            }));
+    }
+
+    #[test]
+    fn pci_bridge_compatibility() {
+        let b1 = PciPciBridge {
+            downstream_bus: 1,
+            pci_path: PciPath::new(1, 2, 3).unwrap(),
+        };
+
+        let mut b2 = b1.clone();
+        assert!(b1.is_migration_compatible(&b2));
+
+        b2.downstream_bus += 1;
+        assert!(!b1.is_migration_compatible(&b2));
+        b2.downstream_bus = b1.downstream_bus;
+
+        b2.pci_path = PciPath::new(4, 5, 6).unwrap();
+        assert!(!b1.is_migration_compatible(&b2));
+    }
 }
