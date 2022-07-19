@@ -81,18 +81,11 @@ impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
 
         // Each key in `self`'s map must be present in `other`'s map, and the
         // corresponding values must be compatible with one another.
-        for (key, this_val) in self.iter() {
-            match other.get(key) {
-                Some(other_val) => {
-                    if !this_val.is_migration_compatible(other_val) {
-                        return false;
-                    }
-                }
-                None => return false,
-            }
-        }
-
-        true
+        self.iter().all(|(key, this_val)| {
+            other.get(key).map_or(false, |other_val| {
+                this_val.is_migration_compatible(other_val)
+            })
+        })
     }
 }
 
