@@ -214,7 +214,10 @@ pub enum StorageBackendKind {
 impl MigrationCompatible for StorageBackendKind {
     fn is_migration_compatible(&self, other: &Self) -> bool {
         // Two storage backends are compatible if they have the same kind,
-        // irrespective of their configurations.
+        // irrespective of their configurations. The migration protocol allows
+        // individual backend instances to include messages in the preamble that
+        // allow a source and target to decide independently whether they are
+        // compatible with each other.
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
