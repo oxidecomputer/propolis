@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use dropshot::{
-    endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
-    HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
+    channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
+    HttpResponseOk, HttpResponseUpdatedNoContent, Path, RequestContext,
+    TypedBody, WebsocketConnection,
 };
-use hyper::StatusCode;
-use hyper::{http::header, upgrade, Body, Response};
+use hyper::{Body, Response};
 use oximeter::types::ProducerRegistry;
 use propolis_client::instance_spec;
 use propolis_client::{api, instance_spec::InstanceSpec};
@@ -22,7 +22,6 @@ use rfb::server::VncServer;
 use slog::{error, o, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
-use tokio_tungstenite::tungstenite::handshake;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
@@ -604,73 +603,21 @@ async fn instance_state_put(
     result
 }
 
-#[endpoint {
-    method = GET,
+#[channel {
+    protocol = WEBSOCKETS,
     path = "/instance/serial",
 }]
 async fn instance_serial(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-) -> Result<Response<Body>, HttpError> {
+    websock: WebsocketConnection,
+) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
     let vm = ctx.vm().await?;
     let serial = vm.com1().clone();
-    let request = &mut *rqctx.request.lock().await;
 
-    if !request
-        .headers()
-        .get(header::CONNECTION)
-        .and_then(|hv| hv.to_str().ok())
-        .map(|hv| {
-            hv.split(|c| c == ',' || c == ' ')
-                .any(|vs| vs.eq_ignore_ascii_case("upgrade"))
-        })
-        .unwrap_or(false)
-    {
-        return Err(HttpError::for_bad_request(
-            None,
-            "expected connection upgrade".to_string(),
-        ));
-    }
-    if !request
-        .headers()
-        .get(header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| {
-            v.split(|c| c == ',' || c == ' ')
-                .any(|v| v.eq_ignore_ascii_case("websocket"))
-        })
-        .unwrap_or(false)
-    {
-        return Err(HttpError::for_bad_request(
-            None,
-            "unexpected protocol for upgrade".to_string(),
-        ));
-    }
-    if request
-        .headers()
-        .get(header::SEC_WEBSOCKET_VERSION)
-        .map(|v| v.as_bytes())
-        != Some(b"13")
-    {
-        return Err(HttpError::for_bad_request(
-            None,
-            "missing or invalid websocket version".to_string(),
-        ));
-    }
-    let accept_key = request
-        .headers()
-        .get(header::SEC_WEBSOCKET_KEY)
-        .map(|hv| hv.as_bytes())
-        .map(handshake::derive_accept_key)
-        .ok_or_else(|| {
-            HttpError::for_bad_request(
-                None,
-                "missing websocket key".to_string(),
-            )
-        })?;
+    let err_log = rqctx.log.new(o!());
 
-    let ws_log = rqctx.log.new(o!());
-    let err_log = ws_log.clone();
+    // Create or get active serial task handle and channels
     let mut serial_task = ctx.services.serial_task.lock().await;
     let serial_task = serial_task.get_or_insert_with(move || {
         let (websocks_ch, websocks_recv) = mpsc::channel(1);
@@ -681,11 +628,11 @@ async fn instance_serial(
                 websocks_recv,
                 close_recv,
                 serial,
-                ws_log.clone(),
+                err_log.clone(),
             )
             .await
             {
-                error!(ws_log, "Failed to spawn instance serial task: {}", e);
+                error!(err_log, "Failed to spawn instance serial task: {}", e);
             }
         });
 
@@ -696,37 +643,21 @@ async fn instance_serial(
         }
     });
 
-    let upgrade_fut = upgrade::on(request);
     let config =
         WebSocketConfig { max_send_queue: Some(4096), ..Default::default() };
     let websocks_send = serial_task.websocks_ch.clone();
-    tokio::spawn(async move {
-        let upgraded = match upgrade_fut.await {
-            Ok(u) => u,
-            Err(e) => {
-                error!(err_log, "Serial socket upgrade failed: {}", e);
-                return;
-            }
-        };
 
-        let ws_stream = WebSocketStream::from_raw_socket(
-            upgraded,
-            Role::Server,
-            Some(config),
-        )
-        .await;
+    let ws_stream = WebSocketStream::from_raw_socket(
+        websock.into_inner(),
+        Role::Server,
+        Some(config),
+    )
+    .await;
 
-        if let Err(e) = websocks_send.send(ws_stream).await {
-            error!(err_log, "Serial socket hand-off failed: {}", e);
-        }
-    });
-
-    Ok(Response::builder()
-        .status(StatusCode::SWITCHING_PROTOCOLS)
-        .header(header::CONNECTION, "Upgrade")
-        .header(header::UPGRADE, "websocket")
-        .header(header::SEC_WEBSOCKET_ACCEPT, accept_key)
-        .body(Body::empty())?)
+    websocks_send
+        .send(ws_stream.into())
+        .await
+        .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
 }
 
 // This endpoint is meant to only be called during a migration from the destination
