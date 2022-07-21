@@ -5,6 +5,7 @@ members = [
   "bin/*",
   "lib/*",
   "packaging/propolis-package",
+  "phd-tests/*",
 ]
 
 default-members = [
@@ -13,13 +14,20 @@ default-members = [
   "bin/propolis-cli",
   "bin/propolis-server",
   "bin/propolis-standalone",
+  "phd-tests/*",
 ]
 
 exclude = [
   "crates/*/header-check",
+  "phd-tests/target",
 ]
 
 [profile.dev]
 panic = "abort"
 [profile.release]
 panic = "abort"
+
+# Special
+[profile.phd]
+inherits = "dev"
+panic = "unwind"

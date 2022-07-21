@@ -1,0 +1,31 @@
+[package]
+name = "phd-framework"
+version = "0.1.0"
+authors = ["Greg Colombo <greg@oxidecomputer.com>"]
+license = "MPL-2.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.58"
+futures = "0.3"
+hex = "0.4.3"
+propolis-client = { path = "../../lib/propolis-client" }
+propolis-server = { path = "../../bin/propolis-server" }
+propolis_types = { path = "../../crates/propolis-types" }
+reqwest = "0.11.11"
+ring = "0.16.20"
+serde = { version = "1.0.139", features = ["derive"] }
+serde_derive = "1.0.139"
+slog = "2.7"
+slog-async = "2.7"
+slog-term = "2.8"
+tempfile = "3.3.0"
+thiserror = "1.0.31"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.17"
+toml = "0.5.9"
+tracing = "0.1.35"
+uuid = "1.1.2"
+vte = "0.10.1"
