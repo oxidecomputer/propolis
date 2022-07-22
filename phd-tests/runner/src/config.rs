@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+/// Runtime configuration options for the runner.
 #[derive(Debug, Parser)]
 pub struct Config {
     /// The command to use to launch the Propolis server.
@@ -56,6 +57,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Returns the parsed arguments from the command line.
     pub fn get() -> Self {
         Self::parse()
     }

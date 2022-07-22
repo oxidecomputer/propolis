@@ -6,13 +6,27 @@ use tracing::{error, info};
 
 use crate::fixtures::TestFixtures;
 
+/// Statistics returned after executing a set of tests.
 pub struct ExecutionStats {
+    /// The number of tests that passed.
     pub tests_passed: u32,
+
+    /// The number of tests that failed.
     pub tests_failed: u32,
+
+    /// The number of tests that marked themselves as skipped.
     pub tests_skipped: u32,
+
+    /// The number of tests that the runner decided not to run (e.g. because of
+    /// a failure in a fixture).
     pub tests_not_run: u32,
+
+    /// The total time spent running tests and fixtures. This spans the time
+    /// from just before the first test setup fixture runs to the time just
+    /// after the last fixture finishes.
     pub duration: Duration,
 
+    /// A collection of test cases that returned a failed result.
     pub failed_test_cases: Vec<&'static TestCase>,
 }
 
@@ -27,10 +41,16 @@ struct Execution {
     status: Status,
 }
 
+// The executor will install a global panic hook that allows a thread that
+// panics to store a message for the executor to log after unwinding. A
+// `RefCell` is safe here because this message is stored once per thread, and a
+// thread running the panic hook is by definition not running the code that
+// handles a caught panic.
 thread_local! {
     static PANIC_MSG: RefCell<Option<String>> = RefCell::new(None);
 }
 
+/// Executes a set of tests using the supplied test context.
 pub fn run_tests_with_ctx<'fix>(
     ctx: TestContext,
     mut fixtures: TestFixtures,
@@ -64,6 +84,10 @@ pub fn run_tests_with_ctx<'fix>(
     let start_time = Instant::now();
     'exec_loop: for execution in &mut executions {
         info!("Starting test {}", execution.tc.fully_qualified_name());
+
+        // Failure to run a setup fixture is fatal to the rest of the run, but
+        // it's still possible to report results, so return gracefully instead
+        // of panicking.
         if let Err(e) = fixtures.test_setup() {
             error!("Error running test setup fixture: {}", e);
             break 'exec_loop;

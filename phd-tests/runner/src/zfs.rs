@@ -3,12 +3,21 @@ use std::process::{Command, Output};
 use anyhow::{anyhow, Result};
 use tracing::{error, info, warn};
 
+/// A helper for implementing ZFS snapshots of on-disk artifacts as a fixture.
 pub struct ZfsFixture {
     fs_name: String,
     snapshot_name: Option<String>,
 }
 
 impl ZfsFixture {
+    /// Creates a new fixture.
+    ///
+    /// # Arguments
+    ///
+    /// - fs_name: The name of the ZFS filesystem object that should be the
+    ///   subject of this fixture's ZFS commands.
+    /// - expected_mountpoint: The directory at which the given file system
+    ///   should be mounted, as reported by `zfs list`.
     pub fn new(fs_name: String, expected_mountpoint: &str) -> Result<Self> {
         let zfs_list_out =
             Command::new("zfs").args(["list", &fs_name]).output()?;
@@ -48,6 +57,8 @@ impl ZfsFixture {
         Ok(Self { fs_name, snapshot_name: Default::default() })
     }
 
+    /// Runs the execution setup fixture, which creates a base ZFS snapshot to
+    /// roll back to after every test.
     pub fn execution_setup(&mut self) -> anyhow::Result<()> {
         let snapshot_name =
             format!("{}@phd_base_{}", self.fs_name, uuid::Uuid::new_v4());
@@ -67,6 +78,8 @@ impl ZfsFixture {
         Ok(())
     }
 
+    /// Runs the execution cleanup fixture, which deletes the base snapshot if
+    /// it was created.
     pub fn execution_cleanup(&mut self) -> anyhow::Result<()> {
         let snapshot_name = self
             .snapshot_name
@@ -76,6 +89,7 @@ impl ZfsFixture {
         run_zfs_command(&["destroy", &snapshot_name])
     }
 
+    /// Runs the test cleanup fixture, which rolls back to the base snapshot.
     pub fn test_cleanup(&mut self) -> anyhow::Result<()> {
         let snapshot_name = self
             .snapshot_name
@@ -102,6 +116,8 @@ fn warn_if_zfs_not_silent(command: &str, zfs_output: Output) {
     }
 }
 
+// Try to destroy the base snapshot even if the fixture's owner fails to call
+// the appropriate cleanup function.
 impl Drop for ZfsFixture {
     fn drop(&mut self) {
         if let Some(snapshot_name) = self.snapshot_name.take() {

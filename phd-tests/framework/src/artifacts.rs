@@ -1,4 +1,23 @@
-//! Artifact management.
+//! Management of artifacts: guest OS and guest firmware images that can be
+//! attached to guests.
+//!
+//! The runner requires a path to a TOML file defining a set of artifacts. This
+//! file defines
+//!
+//! - a local directory (on the runner's host machine) where these resources can
+//! be found,
+//! - an optional remote URI from which to download resources that are missing,
+//! - a table of guest OS images, specifying the
+//! [`crate::guest_os::GuestOsKind`] of each image and its metadata, and
+//! - a table of guest firmware images (bootroms), specifying metadata for each
+//! one.
+//!
+//! Artifact metadata includes
+//!
+//! - the path to the artifact relative to the local root directory,
+//! - an optional SHA256 digest against which to compare the local artifact, and
+//! - an optional path to the artifact relative to the remote URI from which the
+//! artifact can be reacquired if it is missing or corrupted.
 
 use std::{
     collections::BTreeMap,
@@ -16,14 +35,22 @@ use tracing::{error, info, info_span, instrument};
 
 use crate::guest_os::GuestOsKind;
 
+/// Errors that can arise while loading or interacting with an artifact store.
 #[derive(Debug, Error)]
 pub enum ArtifactStoreError {
+    /// Raised when the local artifact root specified in the artifact TOML
+    /// doesn't appear to exist.
     #[error("The local root directory {0} does not exist")]
     LocalRootNotFound(PathBuf),
 
+    /// Raised when the local artifact root specified in the artifact TOML
+    /// exists but doesn't appear to be a directory.
     #[error("The local root {0} is inaccessible or not a directory")]
     LocalRootNotDirectory(PathBuf),
 
+    /// Raised by [`ArtifactStore::check_local_copies`] when an artifact is not
+    /// usable (e.g. because it is missing or has an invalid digest) and cannot
+    /// be fixed (because no remote path to it is present).
     #[error(
         "One or more artifacts had invalid contents; check logs for details"
     )]
@@ -49,6 +76,8 @@ struct ArtifactMetadata {
 }
 
 impl ArtifactMetadata {
+    /// Determine whether a local artifact is present and usable under the terms
+    /// specified in its metadata.
     fn check_local_artifact(
         &self,
         local_root: &Path,
@@ -128,12 +157,14 @@ impl ArtifactMetadata {
     }
 }
 
+/// A wrapper for guest OS artifacts that includes their OS kind.
 #[derive(Debug, Serialize, Deserialize)]
 struct GuestOsArtifact {
     guest_os_kind: GuestOsKind,
     metadata: ArtifactMetadata,
 }
 
+/// A collection of artifacts that can be loaded by test VMs.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ArtifactStore {
     /// The root directory from which to construct paths to local artifacts.
@@ -143,27 +174,40 @@ pub struct ArtifactStore {
     /// digests do not match when the store is refreshed.
     remote_root: Option<String>,
 
+    /// A map from names to guest OS artifacts.
     guest_images: BTreeMap<String, GuestOsArtifact>,
+
+    /// A map from names to bootrom artifact metadata.
     bootroms: BTreeMap<String, ArtifactMetadata>,
 }
 
 impl ArtifactStore {
+    /// Opens the supplied file, reads its contents, and uses
+    /// [`ArtifactStore::from_toml`] to try to interpret those contents as TOML
+    /// describing an artifact store.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         info!(path = ?path.as_ref(), "Reading artifact store from file");
         let contents = std::fs::read_to_string(path.as_ref())?;
         Self::from_toml(&contents)
     }
 
+    /// Interprets the supplied string as TOML and attempts to deserialize it as
+    /// an artifact store.
     pub fn from_toml(raw_toml: &str) -> Result<Self> {
         let store: Self = toml::de::from_str(raw_toml)?;
         info!(?store, "Parsed artifact store");
         store.verify().map(|_| store)
     }
 
+    /// Retrieves this store's local root directory.
     pub fn get_local_root(&self) -> &Path {
         &self.local_root
     }
 
+    /// Given an artifact name, attempts to retrieve the guest OS artifact with
+    /// that name and returns a tuple containing (1) the path to the artifact in
+    /// the local store, and (2) the kind of guest OS this artifact bears in the
+    /// store.
     pub fn get_guest_image_by_name(
         &self,
         artifact: &str,
@@ -176,6 +220,8 @@ impl ArtifactStore {
         })
     }
 
+    /// Given an artifact name, attempts to retrieve the guest firmware artifact
+    /// with that name and returns the local path to that artifact.
     pub fn get_bootrom_by_name(&self, artifact: &str) -> Option<PathBuf> {
         self.bootroms
             .get(artifact)
@@ -235,7 +281,8 @@ impl ArtifactStore {
 
         for (name, metadata) in iter {
             info!(?name, ?metadata, "Checking artifact");
-            let _span = info_span!("Artifact {}", ?name);
+            let span = info_span!("Artifact {}", ?name);
+            let _guard = span.enter();
             if let Err(e) = metadata.check_local_artifact(
                 &self.local_root,
                 self.remote_root.as_ref().map(|s| s.as_str()),

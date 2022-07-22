@@ -25,7 +25,7 @@ To get started running PHD tests:
 
 1. Obtain a Propolis server binary, e.g. by cloning the [Propolis
    repo](https://github.com/oxidecomputer/propolis) and running `cargo build`.
-1. From the PHD root directory, run `./quickstart.sh $PROPOLIS_PATH`, where
+1. From the `phd-tests` directory, run `./quickstart.sh $PROPOLIS_PATH`, where
    `$PROPOLIS_PATH` is the path to the server binary built in the previous step.
 
 That's it! PHD will obtain a guest OS image and a bootrom and run its tests

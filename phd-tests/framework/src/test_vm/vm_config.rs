@@ -27,6 +27,8 @@ struct Nic {
     pci_device_num: u8,
 }
 
+/// An abstract description of a VM's configuration: its CPUs, memory, and
+/// devices.
 #[derive(Debug, Default)]
 pub struct VmConfig {
     cpus: u8,
@@ -37,14 +39,18 @@ pub struct VmConfig {
 }
 
 impl VmConfig {
+    /// Returns the number of CPUs in this config.
     pub fn cpus(&self) -> u8 {
         self.cpus
     }
 
+    /// Returns the amount of memory in this config.
     pub fn memory_mib(&self) -> u64 {
         self.memory_mib
     }
 
+    // Writes those portions of the config that are specified to Propolis
+    // servers via the config TOML into a file containing said TOML.
     pub fn write_config_toml(
         &self,
         toml_path: &impl AsRef<Path>,
@@ -135,30 +141,38 @@ impl VmConfig {
     }
 }
 
+/// A builder for [`VmConfig`] structures.
 pub struct VmConfigBuilder {
     config: VmConfig,
 }
 
 impl VmConfigBuilder {
+    /// Creates a new, empty builder.
     pub(crate) fn new() -> Self {
         Self { config: Default::default() }
     }
 
+    /// Sets the number of CPUs in the config.
     pub fn set_cpus(mut self, cpus: u8) -> Self {
         self.config.cpus = cpus;
         self
     }
 
+    /// Sets the amount of memory in the config.
     pub fn set_memory_mib(mut self, mem: u64) -> Self {
         self.config.memory_mib = mem;
         self
     }
 
+    /// Sets the config's bootrom path.
     pub fn set_bootrom_path(mut self, path: PathBuf) -> Self {
         self.config.bootrom_path = path;
         self
     }
 
+    /// Adds a disk descriptor for a virtio-block disk device backed by the file
+    /// at `image_path`, which will manifest to the guest at PCI BDF
+    /// 0/`pci_slot`/0.
     pub fn add_virtio_block_disk(
         mut self,
         image_path: &str,
@@ -172,6 +186,9 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Adds a disk descriptor for an NVMe device backed by the file at
+    /// `image_path`, which will manifest to the guest at PCI BDF
+    /// 0/`pci_slot`/0.
     pub fn add_nvme_disk(mut self, image_path: &str, pci_slot: u8) -> Self {
         self.config.disks.push(Disk {
             image_path: image_path.to_string(),
@@ -181,6 +198,9 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Adds a NIC descriptor for a virtio network device backed by the vNIC
+    /// with the supplied name, which will manifest to the guest at PCI BDF
+    /// 0/`pci_slot`/0.
     pub fn add_vnic(mut self, host_vnic_name: &str, pci_slot: u8) -> Self {
         self.config.nics.push(Nic {
             vnic_device_name: host_vnic_name.to_string(),
@@ -189,6 +209,7 @@ impl VmConfigBuilder {
         self
     }
 
+    /// Creates the configuration described by this builder.
     pub fn finish(self) -> VmConfig {
         self.config
     }
