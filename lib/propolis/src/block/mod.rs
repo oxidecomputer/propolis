@@ -405,9 +405,12 @@ impl Driver {
         for i in 0..worker_count.get() {
             let worker_self = Arc::clone(self);
 
-            // Configure a waker to help threads to reach their yield points
-            // Doing this once (from thread 0) is adequate to wake them all.
-            let wake = if i == 0 {
+            // Configure a waker to help threads to reach their yield points.
+            // Each worker needs to register a waker to avoid a race in which an
+            // unregistered worker blocks on the queue condition variable only
+            // after all the registered workers have already had their wakers
+            // invoked.
+            let wake = {
                 let notify_self = Arc::downgrade(self);
                 Some(Box::new(move |_ctx: &DispCtx| {
                     if let Some(this) = notify_self.upgrade() {
@@ -415,8 +418,6 @@ impl Driver {
                         this.cv.notify_all();
                     }
                 }) as Box<WakeFn>)
-            } else {
-                None
             };
 
             // Spawn worker thread
