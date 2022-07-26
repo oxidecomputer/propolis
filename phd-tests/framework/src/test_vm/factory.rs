@@ -130,9 +130,11 @@ impl VmFactory {
 
     /// Creates a VM configuration that specifies this factory's defaults for
     /// CPUs, memory, bootrom, and guest image.
+    ///
+    /// The guest OS disk is attached as an NVMe disk in PCI slot 4.
     pub fn default_vm_config(&self) -> vm_config::VmConfigBuilder {
         self.deviceless_vm_config()
-            .add_virtio_block_disk(&self.default_guest_image_path, 4)
+            .add_nvme_disk(&self.default_guest_image_path, 4)
     }
 
     /// Creates a VM configuration that specifies this factory's defaults for
