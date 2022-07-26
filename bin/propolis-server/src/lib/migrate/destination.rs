@@ -4,6 +4,7 @@ use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::MigrateRole;
 use propolis::migrate::{MigrateStateError, Migrator};
+use propolis_client::instance_spec::MigrationCompatible;
 use slog::{error, info, warn};
 use std::io;
 use std::sync::Arc;
@@ -86,12 +87,14 @@ impl DestinationProtocol {
                 Err(MigrateError::UnexpectedMessage)
             }
         }?;
-        info!(self.log(), "Src read Preamble: {:?}", preamble);
-        // XXX: For demonstration purposes only.
-        if preamble.vm_descr.vcpus != vec![0u32, 1, 2, 3] {
+        info!(self.log(), "Destination read Preamble: {:?}", preamble);
+        if !preamble
+            .instance_spec
+            .is_migration_compatible(&self.mctx.instance_spec)
+        {
             error!(
                 self.log(),
-                "invalid CPU count in preamble ({:?})", preamble.vm_descr.vcpus
+                "Source and destination instance specs incompatible"
             );
             return Err(MigrateError::InvalidInstanceState);
         }
@@ -216,6 +219,11 @@ impl DestinationProtocol {
 
         let inv = self.mctx.instance.inv();
         for device in devices {
+            info!(
+                self.log(),
+                "Applying state to device {}", device.instance_name
+            );
+
             let dev_ent =
                 inv.get_by_name(&device.instance_name).ok_or_else(|| {
                     MigrateError::UnknownDevice(device.instance_name.clone())

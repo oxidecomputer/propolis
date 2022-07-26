@@ -81,7 +81,7 @@ impl SourceProtocol {
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.mctx.set_state(MigrationState::Sync).await;
-        let preamble = Preamble::new(self.mctx.instance.as_ref());
+        let preamble = Preamble::new(self.mctx.instance_spec.clone());
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;

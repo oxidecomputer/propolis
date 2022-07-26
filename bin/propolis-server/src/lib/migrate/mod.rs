@@ -8,7 +8,10 @@ use propolis::{
     instance::{Instance, MigratePhase, MigrateRole, State, TransitionError},
     migrate::MigrateStateError,
 };
-use propolis_client::api::{self, MigrationState};
+use propolis_client::{
+    api::{self, MigrationState},
+    instance_spec::InstanceSpec,
+};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use thiserror::Error;
@@ -60,6 +63,9 @@ pub struct MigrateContext {
     /// A handle to the underlying propolis [`Instance`].
     instance: Arc<Instance>,
 
+    /// A copy of this instance's spec.
+    instance_spec: InstanceSpec,
+
     /// Async descriptor context for the migrate task to access machine state in async context.
     async_ctx: AsyncCtx,
 
@@ -71,6 +77,7 @@ impl MigrateContext {
     fn new(
         migration_id: Uuid,
         instance: Arc<Instance>,
+        instance_spec: InstanceSpec,
         log: slog::Logger,
     ) -> MigrateContext {
         MigrateContext {
@@ -78,6 +85,7 @@ impl MigrateContext {
             state: RwLock::new(MigrationState::Sync),
             async_ctx: instance.async_ctx(),
             instance,
+            instance_spec,
             log,
         }
     }
@@ -311,6 +319,7 @@ pub async fn source_start(
     let migrate_context = Arc::new(MigrateContext::new(
         migration_id,
         context.instance.clone(),
+        context.spec.clone(),
         log.clone(),
     ));
     let mctx = migrate_context.clone();
@@ -434,6 +443,7 @@ pub async fn dest_initiate(
     let migrate_context = Arc::new(MigrateContext::new(
         migration_id,
         context.instance.clone(),
+        context.spec.clone(),
         log.clone(),
     ));
     let mctx = migrate_context.clone();
