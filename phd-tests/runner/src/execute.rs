@@ -69,6 +69,8 @@ pub fn run_tests_with_ctx<'fix>(
         failed_test_cases: Vec::new(),
     };
 
+    fixtures.execution_setup().unwrap();
+
     std::panic::set_hook(Box::new(|info| {
         PANIC_MSG.with(|val| {
             let backtrace = backtrace::Backtrace::new();
@@ -77,8 +79,6 @@ pub fn run_tests_with_ctx<'fix>(
             *val.borrow_mut() = Some(msg);
         });
     }));
-
-    fixtures.execution_setup().unwrap();
 
     info!("Running {} tests", executions.len());
     let start_time = Instant::now();
