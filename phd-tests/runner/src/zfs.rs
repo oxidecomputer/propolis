@@ -57,9 +57,9 @@ impl ZfsFixture {
         Ok(Self { fs_name, snapshot_name: Default::default() })
     }
 
-    /// Runs the execution setup fixture, which creates a base ZFS snapshot to
-    /// roll back to after every test.
-    pub fn execution_setup(&mut self) -> anyhow::Result<()> {
+    /// Creates a base artifact snapshot. The fixture will roll back to this
+    /// snapshot after every test.
+    pub fn create_artifact_snapshot(&mut self) -> anyhow::Result<()> {
         let snapshot_name =
             format!("{}@phd_base_{}", self.fs_name, uuid::Uuid::new_v4());
 
@@ -78,9 +78,8 @@ impl ZfsFixture {
         Ok(())
     }
 
-    /// Runs the execution cleanup fixture, which deletes the base snapshot if
-    /// it was created.
-    pub fn execution_cleanup(&mut self) -> anyhow::Result<()> {
+    /// Destroys the base artifact snapshot.
+    pub fn destroy_artifact_snapshot(&mut self) -> anyhow::Result<()> {
         let snapshot_name = self
             .snapshot_name
             .take()
@@ -89,8 +88,8 @@ impl ZfsFixture {
         run_zfs_command(&["destroy", &snapshot_name])
     }
 
-    /// Runs the test cleanup fixture, which rolls back to the base snapshot.
-    pub fn test_cleanup(&mut self) -> anyhow::Result<()> {
+    /// Rolls back to this fixture's artifact snapshot.
+    pub fn rollback_to_artifact_snapshot(&mut self) -> anyhow::Result<()> {
         let snapshot_name = self
             .snapshot_name
             .as_ref()

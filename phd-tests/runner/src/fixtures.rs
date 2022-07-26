@@ -40,7 +40,7 @@ impl<'a> TestFixtures<'a> {
         // snapshot includes the up-to-date artifacts.
         self.artifact_store.check_local_copies()?;
         if let Some(zfs) = &mut self.zfs {
-            zfs.execution_setup()
+            zfs.create_artifact_snapshot()
         } else {
             Ok(())
         }
@@ -54,7 +54,7 @@ impl<'a> TestFixtures<'a> {
     #[instrument(skip_all)]
     pub fn execution_cleanup(&mut self) -> Result<()> {
         if let Some(zfs) = &mut self.zfs {
-            zfs.execution_cleanup()
+            zfs.destroy_artifact_snapshot()
         } else {
             Ok(())
         }
@@ -74,7 +74,7 @@ impl<'a> TestFixtures<'a> {
     #[instrument(skip_all)]
     pub fn test_cleanup(&mut self) -> Result<()> {
         if let Some(zfs) = &mut self.zfs {
-            zfs.test_cleanup()
+            zfs.rollback_to_artifact_snapshot()
         } else {
             Ok(())
         }
