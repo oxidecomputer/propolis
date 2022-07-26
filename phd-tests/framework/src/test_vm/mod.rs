@@ -108,7 +108,7 @@ impl TestVm {
     ) -> Result<Self> {
         info!(?process_params, ?vm_config, ?guest_os_kind);
         let vm_id = Uuid::new_v4();
-        let span = info_span!("VM", name = ?vm_name);
+        let span = info_span!(parent: None, "VM", name = ?vm_name);
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
