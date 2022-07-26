@@ -19,7 +19,6 @@ default-members = [
 
 exclude = [
   "crates/*/header-check",
-  "phd-tests/target",
 ]
 
 [profile.dev]
