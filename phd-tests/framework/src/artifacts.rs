@@ -281,7 +281,7 @@ impl ArtifactStore {
 
         for (name, metadata) in iter {
             info!(?name, ?metadata, "Checking artifact");
-            let span = info_span!("Artifact {}", ?name);
+            let span = info_span!("Artifact", ?name);
             let _guard = span.enter();
             if let Err(e) = metadata.check_local_artifact(
                 &self.local_root,
