@@ -119,11 +119,8 @@ impl ArtifactMetadata {
             info!("Artifact does not exist, will download it");
         }
 
-        if exists {
-            info!(?local_path, "Removing mismatched artifact before replacing");
-            std::fs::remove_file(&local_path)?;
-        }
-
+        // The artifact is not usable as-is. See if it can be reacquired from
+        // the remote source.
         if remote_root.is_none() {
             return Err(anyhow!("Can't download artifact: no remote root"));
         }
@@ -133,6 +130,11 @@ impl ArtifactMetadata {
         }
         let remote_relative = self.relative_remote_path.as_ref().unwrap();
         let remote_path = format!("{}/{}", remote_root, remote_relative);
+
+        if exists {
+            info!(?local_path, "Removing mismatched artifact before replacing");
+            std::fs::remove_file(&local_path)?;
+        }
 
         let download_timeout = Duration::from_secs(600);
         info!(
