@@ -3,6 +3,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     path::PathBuf,
+    str::FromStr,
 };
 
 use anyhow::Result;
@@ -28,20 +29,39 @@ pub enum FactoryConstructionError {
     /// yield a valid image from the artifact store.
     #[error("Default guest image {0} not in artifact store")]
     DefaultGuestImageMissing(String),
+
+    /// Raised on a failure to convert from a named server logging mode to a
+    /// [`ServerLogMode`].
+    #[error("Invalid server log mode name '{0}'")]
+    InvalidServerLogModeName(String),
 }
 
 /// Specifies where propolis-server's log output should be written.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ServerLogMode {
-    /// Write to files in the specified directory. The files will be named
-    /// `vm_name.stdout.log` and `vm_name.stderr.log`.
-    File(PathBuf),
+    /// Write to files in the server's factory's temporary directory.
+    TmpFile,
 
     /// Write stdout/stderr to the console.
     Stdio,
 
     /// Redirect stdout/stderr to /dev/null.
     Null,
+}
+
+impl FromStr for ServerLogMode {
+    type Err = FactoryConstructionError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "file" | "tmpfile" => Ok(ServerLogMode::TmpFile),
+            "stdio" => Ok(ServerLogMode::Stdio),
+            "null" => Ok(ServerLogMode::Null),
+            _ => Err(FactoryConstructionError::InvalidServerLogModeName(
+                s.to_string(),
+            )),
+        }
+    }
 }
 
 /// Parameters used to construct a new VM factory.
@@ -51,9 +71,9 @@ pub struct FactoryOptions {
     /// factory.
     pub propolis_server_path: String,
 
-    /// The file path to which to write the temporary config TOMLs that this
-    /// factory's VMs will load.
-    pub config_toml_path: PathBuf,
+    /// The directory to use as a temporary directory for config TOML files,
+    /// server logs, and the like.
+    pub tmp_directory: PathBuf,
 
     /// The logging discipline to use for this factory's Propolis servers.
     pub server_log_mode: ServerLogMode,
@@ -136,13 +156,16 @@ impl VmFactory {
     ) -> Result<TestVm> {
         let vm_config = builder.finish();
         info!(?vm_name, ?vm_config);
-        vm_config.write_config_toml(&self.opts.config_toml_path)?;
+
+        let mut config_toml_path = self.opts.tmp_directory.clone();
+        config_toml_path.push(format!("{}.config.toml", vm_name));
+        vm_config.write_config_toml(&config_toml_path)?;
 
         let (server_stdout, server_stderr) = match &self.opts.server_log_mode {
-            ServerLogMode::File(dir) => {
-                let mut stdout_path = dir.clone();
+            ServerLogMode::TmpFile => {
+                let mut stdout_path = self.opts.tmp_directory.clone();
                 stdout_path.push(format!("{}.stdout.log", vm_name));
-                let mut stderr_path = dir.clone();
+                let mut stderr_path = self.opts.tmp_directory.clone();
                 stderr_path.push(format!("{}.stderr.log", vm_name));
                 info!(?stdout_path, ?stderr_path, "Opening server log files");
                 (
@@ -160,11 +183,7 @@ impl VmFactory {
 
         let server_params = ServerProcessParameters {
             server_path: &self.opts.propolis_server_path,
-            config_toml_path: &self
-                .opts
-                .config_toml_path
-                .as_os_str()
-                .to_string_lossy(),
+            config_toml_path: &config_toml_path.as_os_str().to_string_lossy(),
             server_addr: SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9000),
             server_stdout,
             server_stderr,

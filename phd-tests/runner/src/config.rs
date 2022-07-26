@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use phd_framework::test_vm::factory::ServerLogMode;
 
 /// Runtime configuration options for the runner.
 #[derive(Debug, Parser)]
+#[clap(verbatim_doc_comment)]
 pub struct Config {
     /// The command to use to launch the Propolis server.
     #[clap(long, value_parser)]
@@ -16,8 +18,16 @@ pub struct Config {
 
     /// If true, direct Propolis servers created by the runner to log to
     /// stdout/stderr handles inherited from the runner.
-    #[clap(long, value_parser, default_value = "false")]
-    pub log_server_to_stdio: bool,
+    ///
+    /// Valid options are:
+    ///
+    /// - file, tmpfile: Log to a temporary file under tmp-directory.
+    ///
+    /// - stdio: Log to stdout/stderr.
+    ///
+    /// - null: Don't log anywhere.
+    #[clap(long, default_value = "file")]
+    pub server_logging_mode: ServerLogMode,
 
     /// The number of CPUs to assign to the guest in tests where the test is
     /// using the default machine configuration.

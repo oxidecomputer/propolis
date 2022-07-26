@@ -4,7 +4,6 @@ mod fixtures;
 pub(crate) mod zfs;
 
 use phd_framework::artifacts::ArtifactStore;
-use phd_framework::test_vm::factory::ServerLogMode;
 use phd_tests::phd_testcase::TestContext;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Registry};
@@ -34,11 +33,8 @@ fn main() {
             .propolis_server_cmd
             .to_string_lossy()
             .to_string(),
-        config_toml_path,
-        server_log_mode: match runner_config.log_server_to_stdio {
-            false => ServerLogMode::File(runner_config.tmp_directory.clone()),
-            true => ServerLogMode::Stdio,
-        },
+        tmp_directory: runner_config.tmp_directory.clone(),
+        server_log_mode: runner_config.server_logging_mode,
         default_guest_image_artifact: runner_config
             .default_guest_artifact
             .clone(),
