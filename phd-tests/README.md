@@ -1,10 +1,9 @@
-# Pheidippides (PHD): the Oxide Propolis test runner
+# Pheidippides (PHD): the Propolis test runner
 
 [Pheidippides](https://en.wikipedia.org/wiki/Pheidippides), or "PHD" for short,
-is a freestanding test framework and runner for testing the
-[Propolis](https://github.com/oxidecomputer/propolis) virtual machine monitor.
+is a freestanding test framework and runner for testing Propolis.
 
-The PHD framework aims to make it easy to test that Propolis provides the right
+PHD's test framework aims to make it easy to test that Propolis provides correct
 abstractions to guest software. PHD's helpers let test authors concisely launch
 VMs and interact with the guest OS via the guest serial console.
 
@@ -23,8 +22,8 @@ sufficiently modern to run the Propolis server of interest).
 
 To get started running PHD tests:
 
-1. Obtain a Propolis server binary, e.g. by cloning the [Propolis
-   repo](https://github.com/oxidecomputer/propolis) and running `cargo build`.
+1. Build the `propolis-server` target (e.g. with `cargo build --bin
+   propolis-server`).
 1. From the `phd-tests` directory, run `./quickstart.sh $PROPOLIS_PATH`, where
    `$PROPOLIS_PATH` is the path to the server binary built in the previous step.
 
