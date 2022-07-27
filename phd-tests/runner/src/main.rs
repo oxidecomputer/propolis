@@ -4,7 +4,7 @@ mod fixtures;
 pub(crate) mod zfs;
 
 use clap::Parser;
-use config::{ProcessArgs, RunOptions};
+use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_framework::artifacts::ArtifactStore;
 use phd_tests::phd_testcase::TestContext;
 use tracing::info;
@@ -27,12 +27,12 @@ fn main() {
     info!(?runner_args);
 
     match &runner_args.command {
-        config::Command::Run(opts) => run_tests(&runner_args, opts),
-        config::Command::List => list_tests(runner_args),
+        config::Command::Run(opts) => run_tests(opts),
+        config::Command::List(opts) => list_tests(opts),
     }
 }
 
-fn run_tests(process_args: &ProcessArgs, run_opts: &RunOptions) {
+fn run_tests(run_opts: &RunOptions) {
     let artifact_store =
         ArtifactStore::from_file(&run_opts.artifact_toml_path).unwrap();
 
@@ -65,8 +65,7 @@ fn run_tests(process_args: &ProcessArgs, run_opts: &RunOptions) {
     let fixtures = TestFixtures::new(&run_opts, &artifact_store).unwrap();
 
     // Run the tests and print results.
-    let execution_stats =
-        execute::run_tests_with_ctx(ctx, fixtures, &process_args);
+    let execution_stats = execute::run_tests_with_ctx(ctx, fixtures, &run_opts);
     if execution_stats.failed_test_cases.len() != 0 {
         println!("\nfailures:");
         for tc in execution_stats.failed_test_cases {
@@ -87,13 +86,13 @@ fn run_tests(process_args: &ProcessArgs, run_opts: &RunOptions) {
     );
 }
 
-fn list_tests(runner_config: ProcessArgs) {
+fn list_tests(list_opts: &ListOptions) {
     println!("Tests enabled after applying filters:\n");
 
     let mut count = 0;
     for tc in phd_tests::phd_testcase::filtered_test_cases(
-        &runner_config.include_filter,
-        &runner_config.exclude_filter,
+        &list_opts.include_filter,
+        &list_opts.exclude_filter,
     ) {
         println!("    {}", tc.fully_qualified_name());
         count += 1

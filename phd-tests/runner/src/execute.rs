@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use phd_tests::phd_testcase::{TestCase, TestContext, TestOutcome};
 use tracing::{error, info};
 
-use crate::config::ProcessArgs;
+use crate::config::RunOptions;
 use crate::fixtures::TestFixtures;
 
 /// Statistics returned after executing a set of tests.
@@ -55,13 +55,13 @@ thread_local! {
 pub fn run_tests_with_ctx<'fix>(
     ctx: TestContext,
     mut fixtures: TestFixtures,
-    process_args: &ProcessArgs,
+    run_opts: &RunOptions,
 ) -> ExecutionStats {
     let mut executions = Vec::new();
 
     for tc in phd_tests::phd_testcase::filtered_test_cases(
-        &process_args.include_filter,
-        &process_args.exclude_filter,
+        &run_opts.include_filter,
+        &run_opts.exclude_filter,
     ) {
         executions.push(Execution { tc, status: Status::NotRun });
     }
