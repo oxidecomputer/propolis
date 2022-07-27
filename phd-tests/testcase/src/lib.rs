@@ -56,14 +56,14 @@ impl TestCase {
         Self { module_path, name, function }
     }
 
-    /// Returns the test case's name.
-    pub fn name(&self) -> &str {
-        self.name
-    }
-
     /// Returns the test case's fully qualified name, i.e. `module_path::name`.
     pub fn fully_qualified_name(&self) -> String {
         format!("{}::{}", self.module_path, self.name)
+    }
+
+    /// Returns the test case's name.
+    pub fn name(&self) -> &str {
+        self.name
     }
 
     /// Runs the test case's body with the supplied test context and returns its
