@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use phd_tests::phd_testcase::{TestCase, TestContext, TestOutcome};
 use tracing::{error, info};
 
+use crate::config::RunnerConfig;
 use crate::fixtures::TestFixtures;
 
 /// Statistics returned after executing a set of tests.
@@ -41,6 +42,18 @@ struct Execution {
     status: Status,
 }
 
+struct TestCaseFilter<'a> {
+    must_include: &'a Vec<String>,
+    must_exclude: &'a Vec<String>,
+}
+
+impl<'a> TestCaseFilter<'a> {
+    fn check(&self, name: &str) -> bool {
+        self.must_include.iter().all(|inc| name.contains(inc))
+            && self.must_exclude.iter().all(|exc| !name.contains(exc))
+    }
+}
+
 // The executor will install a global panic hook that allows a thread that
 // panics to store a message for the executor to log after unwinding. A
 // `RefCell` is safe here because this message is stored once per thread, and a
@@ -54,9 +67,19 @@ thread_local! {
 pub fn run_tests_with_ctx<'fix>(
     ctx: TestContext,
     mut fixtures: TestFixtures,
+    runner_config: &RunnerConfig,
 ) -> ExecutionStats {
     let mut executions = Vec::new();
-    for tc in phd_tests::phd_testcase::all_test_cases() {
+
+    for tc in
+        phd_tests::phd_testcase::all_test_cases().into_iter().filter(|tc| {
+            let filt = TestCaseFilter {
+                must_include: &runner_config.include_filter,
+                must_exclude: &runner_config.exclude_filter,
+            };
+            filt.check(&tc.fully_qualified_name())
+        })
+    {
         executions.push(Execution { tc, status: Status::NotRun });
     }
 
@@ -69,6 +92,11 @@ pub fn run_tests_with_ctx<'fix>(
         failed_test_cases: Vec::new(),
     };
 
+    if executions.len() == 0 {
+        info!("No tests selected for execution");
+        return stats;
+    }
+
     fixtures.execution_setup().unwrap();
 
     std::panic::set_hook(Box::new(|info| {
@@ -80,7 +108,7 @@ pub fn run_tests_with_ctx<'fix>(
         });
     }));
 
-    info!("Running {} tests", executions.len());
+    info!("Running {} test(s)", executions.len());
     let start_time = Instant::now();
     'exec_loop: for execution in &mut executions {
         info!("Starting test {}", execution.tc.fully_qualified_name());

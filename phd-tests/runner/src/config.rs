@@ -6,7 +6,7 @@ use phd_framework::test_vm::factory::ServerLogMode;
 /// Runtime configuration options for the runner.
 #[derive(Debug, Parser)]
 #[clap(verbatim_doc_comment)]
-pub struct Config {
+pub struct RunnerConfig {
     /// The command to use to launch the Propolis server.
     #[clap(long, value_parser)]
     pub propolis_server_cmd: PathBuf,
@@ -64,9 +64,19 @@ pub struct Config {
     /// create, destroy, mount.
     #[clap(long, value_parser)]
     pub zfs_fs_name: Option<String>,
+
+    /// Only run tests whose fully-qualified names contain this string. Can be
+    /// specified multiple times.
+    #[clap(long, value_parser)]
+    pub include_filter: Vec<String>,
+
+    /// Only run tests whose fully-qualified names do not contain this string.
+    /// Can be specified multiple times.
+    #[clap(long, value_parser)]
+    pub exclude_filter: Vec<String>,
 }
 
-impl Config {
+impl RunnerConfig {
     /// Returns the parsed arguments from the command line.
     pub fn get() -> Self {
         Self::parse()

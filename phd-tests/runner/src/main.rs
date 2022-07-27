@@ -20,7 +20,7 @@ fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     // Set up global state: the command-line config and the artifact store.
-    let runner_config = config::Config::get();
+    let runner_config = config::RunnerConfig::get();
     let artifact_store =
         ArtifactStore::from_file(&runner_config.artifact_toml_path).unwrap();
 
@@ -57,7 +57,8 @@ fn main() {
     let fixtures = TestFixtures::new(&runner_config, &artifact_store).unwrap();
 
     // Run the tests and print results.
-    let execution_stats = execute::run_tests_with_ctx(ctx, fixtures);
+    let execution_stats =
+        execute::run_tests_with_ctx(ctx, fixtures, &runner_config);
     if execution_stats.failed_test_cases.len() != 0 {
         println!("\nfailures:");
         for tc in execution_stats.failed_test_cases {

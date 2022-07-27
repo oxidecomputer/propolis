@@ -15,7 +15,7 @@ impl<'a> TestFixtures<'a> {
     /// Creates a new set of test fixtures using the supplied command-line
     /// parameters and artifact store.
     pub fn new(
-        runner_cfg: &config::Config,
+        runner_cfg: &config::RunnerConfig,
         artifact_store: &'a ArtifactStore,
     ) -> Result<Self> {
         let zfs = runner_cfg
