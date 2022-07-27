@@ -10,7 +10,7 @@ if [ ! -d "$PHD_QUICKSTART_DIR" ]; then
 	mkdir $PHD_QUICKSTART_DIR
 fi
 
-cargo run --profile=phd --bin=phd-runner -- \
+cargo run --profile=phd -p phd-runner -- \
 	--artifact-toml-path ./sample_artifacts.toml \
 	--tmp-directory $PHD_QUICKSTART_DIR \
 	--propolis-server-cmd $1
