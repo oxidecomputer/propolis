@@ -7,8 +7,8 @@ PHD's test framework aims to make it easy to test that Propolis provides correct
 abstractions to guest software. PHD's helpers let test authors concisely launch
 VMs and interact with the guest OS via the guest serial console.
 
-PHD is very much a work in progress. Some of the features on its roadmap are
-listed in the project's [TODO list](TODO.adoc).
+PHD is very much a work in progress. PHD issues in this repo bear the `testing`
+label.
 
 ## Requirements
 
