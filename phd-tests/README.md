@@ -40,7 +40,12 @@ unwinding).
 
 ## Runtime options
 
-The PHD runner requires the following command-line parameters:
+The runner takes one of two subcommands:
+
+- `run` actually runs a set of tests.
+- `list` lists the tests that would be run given the values of other parameters.
+
+In `run` mode, the following sub-arguments are required:
 
 - `--propolis-server-cmd $PROPOLIS_PATH` supplies the path to the
   `propolis-server` binary to execute.
@@ -52,8 +57,7 @@ The PHD runner requires the following command-line parameters:
   file's format is described below; [`sample_artifacts.toml`] contains a small
   example to get you started.
 
-Most other options are described in the runner's help text (`cargo run --
---help`).
+Other options are described in the runner's help text (`cargo run -- --help`).
 
 ### Specifying artifacts
 
