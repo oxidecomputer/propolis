@@ -5,6 +5,7 @@ members = [
   "bin/*",
   "lib/*",
   "packaging/propolis-package",
+  "phd-tests/*",
 ]
 
 default-members = [
@@ -23,3 +24,8 @@ exclude = [
 panic = "abort"
 [profile.release]
 panic = "abort"
+
+# Special
+[profile.phd]
+inherits = "dev"
+panic = "unwind"
