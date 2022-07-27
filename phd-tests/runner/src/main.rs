@@ -1,6 +1,5 @@
 mod config;
 mod execute;
-mod filter;
 mod fixtures;
 pub(crate) mod zfs;
 
@@ -92,17 +91,13 @@ fn list_tests(runner_config: ProcessArgs) {
     println!("Tests enabled after applying filters:\n");
 
     let mut count = 0;
-    for tc in
-        phd_tests::phd_testcase::all_test_cases().into_iter().filter(|tc| {
-            let filt = filter::TestCaseFilter {
-                must_include: &runner_config.include_filter,
-                must_exclude: &runner_config.exclude_filter,
-            };
-            filt.check(&tc.fully_qualified_name())
-        })
-    {
+    for tc in phd_tests::phd_testcase::filtered_test_cases(
+        &runner_config.include_filter,
+        &runner_config.exclude_filter,
+    ) {
         println!("    {}", tc.fully_qualified_name());
         count += 1
     }
+
     println!("\n{} tests selected", count);
 }

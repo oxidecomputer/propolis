@@ -56,14 +56,14 @@ impl TestCase {
         Self { module_path, name, function }
     }
 
-    /// Returns the test case's fully qualified name, i.e. `module_path::name`.
-    pub fn fully_qualified_name(&self) -> String {
-        format!("{}::{}", self.module_path, self.name)
-    }
-
     /// Returns the test case's name.
     pub fn name(&self) -> &str {
         self.name
+    }
+
+    /// Returns the test case's fully qualified name, i.e. `module_path::name`.
+    pub fn fully_qualified_name(&self) -> String {
+        format!("{}::{}", self.module_path, self.name)
     }
 
     /// Runs the test case's body with the supplied test context and returns its
@@ -77,4 +77,16 @@ inventory::collect!(TestCase);
 
 pub fn all_test_cases() -> inventory::iter<TestCase> {
     inventory::iter::<TestCase>
+}
+
+pub fn filtered_test_cases<'filt>(
+    must_include: &'filt Vec<String>,
+    must_exclude: &'filt Vec<String>,
+) -> impl Iterator<Item = &'static TestCase> + 'filt {
+    inventory::iter::<TestCase>.into_iter().filter(|tc| {
+        must_include.iter().all(|inc| tc.fully_qualified_name().contains(inc))
+            && must_exclude
+                .iter()
+                .all(|exc| !tc.fully_qualified_name().contains(exc))
+    })
 }
