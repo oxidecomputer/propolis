@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use phd_tests::phd_testcase::{TestCase, TestContext, TestOutcome};
 use tracing::{error, info};
 
-use crate::config::RunnerConfig;
+use crate::config::ProcessArgs;
+use crate::filter::TestCaseFilter;
 use crate::fixtures::TestFixtures;
 
 /// Statistics returned after executing a set of tests.
@@ -42,18 +43,6 @@ struct Execution {
     status: Status,
 }
 
-struct TestCaseFilter<'a> {
-    must_include: &'a Vec<String>,
-    must_exclude: &'a Vec<String>,
-}
-
-impl<'a> TestCaseFilter<'a> {
-    fn check(&self, name: &str) -> bool {
-        self.must_include.iter().all(|inc| name.contains(inc))
-            && self.must_exclude.iter().all(|exc| !name.contains(exc))
-    }
-}
-
 // The executor will install a global panic hook that allows a thread that
 // panics to store a message for the executor to log after unwinding. A
 // `RefCell` is safe here because this message is stored once per thread, and a
@@ -67,15 +56,15 @@ thread_local! {
 pub fn run_tests_with_ctx<'fix>(
     ctx: TestContext,
     mut fixtures: TestFixtures,
-    runner_config: &RunnerConfig,
+    process_args: &ProcessArgs,
 ) -> ExecutionStats {
     let mut executions = Vec::new();
 
     for tc in
         phd_tests::phd_testcase::all_test_cases().into_iter().filter(|tc| {
             let filt = TestCaseFilter {
-                must_include: &runner_config.include_filter,
-                must_exclude: &runner_config.exclude_filter,
+                must_include: &process_args.include_filter,
+                must_exclude: &process_args.exclude_filter,
             };
             filt.check(&tc.fully_qualified_name())
         })

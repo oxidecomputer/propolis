@@ -1,12 +1,34 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use phd_framework::test_vm::factory::ServerLogMode;
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    Run(RunOptions),
+    List,
+}
 
 /// Runtime configuration options for the runner.
 #[derive(Debug, Parser)]
 #[clap(verbatim_doc_comment)]
-pub struct RunnerConfig {
+pub struct ProcessArgs {
+    #[clap(subcommand)]
+    pub command: Command,
+
+    /// Only run tests whose fully-qualified names contain this string. Can be
+    /// specified multiple times.
+    #[clap(long, value_parser)]
+    pub include_filter: Vec<String>,
+
+    /// Only run tests whose fully-qualified names do not contain this string.
+    /// Can be specified multiple times.
+    #[clap(long, value_parser)]
+    pub exclude_filter: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct RunOptions {
     /// The command to use to launch the Propolis server.
     #[clap(long, value_parser)]
     pub propolis_server_cmd: PathBuf,
@@ -64,21 +86,4 @@ pub struct RunnerConfig {
     /// create, destroy, mount.
     #[clap(long, value_parser)]
     pub zfs_fs_name: Option<String>,
-
-    /// Only run tests whose fully-qualified names contain this string. Can be
-    /// specified multiple times.
-    #[clap(long, value_parser)]
-    pub include_filter: Vec<String>,
-
-    /// Only run tests whose fully-qualified names do not contain this string.
-    /// Can be specified multiple times.
-    #[clap(long, value_parser)]
-    pub exclude_filter: Vec<String>,
-}
-
-impl RunnerConfig {
-    /// Returns the parsed arguments from the command line.
-    pub fn get() -> Self {
-        Self::parse()
-    }
 }
