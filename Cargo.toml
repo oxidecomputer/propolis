@@ -14,7 +14,6 @@ default-members = [
   "bin/propolis-cli",
   "bin/propolis-server",
   "bin/propolis-standalone",
-  "phd-tests/*",
 ]
 
 exclude = [
