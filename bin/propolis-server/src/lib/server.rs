@@ -87,6 +87,7 @@ pub(crate) struct InstanceContext {
     // The instance, which may or may not be instantiated.
     pub instance: Arc<Instance>,
     pub properties: api::InstanceProperties,
+    pub spec: instance_spec::InstanceSpec,
     serial: Option<Arc<Serial<LpcUart>>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
@@ -448,6 +449,7 @@ async fn instance_ensure(
     *context = Some(InstanceContext {
         instance: instance.clone(),
         properties,
+        spec,
         serial: com1,
         state_watcher: rx,
         serial_task: None,
