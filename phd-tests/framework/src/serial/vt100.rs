@@ -6,7 +6,7 @@ use tokio::{
     sync::{mpsc, Mutex},
     task::JoinHandle,
 };
-use tracing::{info, info_span, Instrument};
+use tracing::{debug, info, info_span, Instrument};
 
 #[derive(Error, Debug)]
 pub enum Vt100Error {
@@ -29,11 +29,15 @@ pub struct Vt100Processor {
 
 impl Vt100Processor {
     pub fn new(vt_rx: mpsc::Receiver<Vec<u8>>) -> Self {
-        let state = Arc::new(SharedState::default());
-        let state_for_task = state.clone();
-
         let vt_span = info_span!("Serial");
         vt_span.follows_from(tracing::Span::current());
+
+        let state = Arc::new(SharedState {
+            span: vt_span.clone(),
+            inner: Mutex::default(),
+        });
+
+        let state_for_task = state.clone();
         let task = tokio::spawn(
             async move {
                 vt100_handler(state_for_task, vt_rx).await;
@@ -98,8 +102,8 @@ struct Waiter {
 
 /// State shared between the receiver task and the public interface to the VT
 /// processor.
-#[derive(Default)]
 struct SharedState {
+    span: tracing::Span,
     inner: Mutex<Inner>,
 }
 
@@ -140,6 +144,7 @@ impl SharedState {
         wanted: String,
         output_tx: mpsc::Sender<String>,
     ) -> Result<()> {
+        let _span = self.span.enter();
         info!(wanted, "Registering wait for serial console output");
         let mut guard = self.inner.lock().await;
 
@@ -177,7 +182,7 @@ struct Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        info!(
+        debug!(
             self.next_output_line,
             "Dropped serial console with partial line"
         );

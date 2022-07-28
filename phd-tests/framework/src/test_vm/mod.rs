@@ -247,9 +247,8 @@ impl TestVm {
     /// initial login prompt and the login prompt itself.
     pub fn wait_to_boot(&self) -> Result<()> {
         let timeout_duration = Duration::from_secs(300);
-        let wait_span =
-            info_span!("Waiting {} for guest to boot", ?timeout_duration);
-        wait_span.follows_from(&self.tracing_span);
+        let _span = self.tracing_span.enter();
+        info!("Waiting {:?} for guest to boot", timeout_duration);
 
         let boot_sequence = self.guest_os.get_login_sequence();
         let _ = self.rt.block_on(async {
@@ -272,7 +271,7 @@ impl TestVm {
                     }
                     Ok::<(), anyhow::Error>(())
                 }
-                .instrument(wait_span),
+                .instrument(info_span!("wait_to_boot")),
             )
             .await
             .map_err(|e| anyhow!(e))
