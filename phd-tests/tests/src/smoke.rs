@@ -17,7 +17,7 @@ fn multiple_vms_test(ctx: &TestContext) {
     let vms = (0..5)
         .into_iter()
         .map(|i| {
-            let name = format!("vm{}", i);
+            let name = format!("multiple_vms_test_vm{}", i);
             ctx.vm_factory.new_vm(&name, ctx.vm_factory.default_vm_config())
         })
         .collect::<Result<Vec<_>, _>>()?;
