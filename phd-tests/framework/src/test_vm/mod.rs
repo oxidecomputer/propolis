@@ -1,12 +1,7 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{
-    fmt::Debug,
-    net::{Ipv4Addr, SocketAddrV4},
-    process::Stdio,
-    time::Duration,
-};
+use std::{fmt::Debug, net::SocketAddrV4, process::Stdio, time::Duration};
 
 use crate::guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind};
 use crate::serial::SerialConsole;
@@ -71,6 +66,9 @@ pub struct ServerProcessParameters<'a, T: Into<Stdio> + Debug> {
     /// The address at which the server should serve.
     pub server_addr: SocketAddrV4,
 
+    /// The address at which the server should offer its VNC server.
+    pub vnc_addr: SocketAddrV4,
+
     /// The [`Stdio`] descriptor to which the server's stdout should be
     /// directed.
     pub server_stdout: T,
@@ -116,6 +114,7 @@ impl TestVm {
             server_path,
             config_toml_path,
             server_addr,
+            vnc_addr,
             server_stdout,
             server_stderr,
         } = process_params;
@@ -134,6 +133,7 @@ impl TestVm {
                     "run",
                     config_toml_path,
                     server_addr.to_string().as_str(),
+                    vnc_addr.to_string().as_str(),
                 ])
                 .stdout(server_stdout)
                 .stderr(server_stderr)
@@ -148,10 +148,7 @@ impl TestVm {
         let client_async_drain =
             slog_async::Async::new(client_drain).build().fuse();
         let client = Client::new(
-            std::net::SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(127, 0, 0, 1),
-                9000,
-            )),
+            server_addr.into(),
             slog::Logger::root(client_async_drain, slog::o!()),
         );
 

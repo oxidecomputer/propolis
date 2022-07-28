@@ -51,6 +51,7 @@ fn run_tests(run_opts: &RunOptions) {
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         default_guest_cpus: run_opts.default_guest_cpus,
         default_guest_memory_mib: run_opts.default_guest_memory_mib,
+        server_port_range: 9000..10000,
     };
 
     // The VM factory config and artifact store are enough to create a test
