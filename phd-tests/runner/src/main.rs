@@ -63,10 +63,11 @@ fn run_tests(run_opts: &RunOptions) {
         )
         .unwrap(),
     };
-    let fixtures = TestFixtures::new(&run_opts, &artifact_store).unwrap();
+    let fixtures = TestFixtures::new(&run_opts, &artifact_store, &ctx).unwrap();
 
     // Run the tests and print results.
-    let execution_stats = execute::run_tests_with_ctx(ctx, fixtures, &run_opts);
+    let execution_stats =
+        execute::run_tests_with_ctx(&ctx, fixtures, &run_opts);
     if execution_stats.failed_test_cases.len() != 0 {
         println!("\nfailures:");
         for tc in execution_stats.failed_test_cases {

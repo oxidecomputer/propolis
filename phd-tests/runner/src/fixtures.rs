@@ -2,12 +2,15 @@ use anyhow::Result;
 use phd_framework::artifacts::ArtifactStore;
 use tracing::instrument;
 
+use crate::TestContext;
+
 use super::config;
 use super::zfs::ZfsFixture;
 
 /// A wrapper containing the objects needed to run the executor's test fixtures.
 pub struct TestFixtures<'a> {
     artifact_store: &'a ArtifactStore,
+    test_context: &'a TestContext,
     zfs: Option<ZfsFixture>,
 }
 
@@ -17,6 +20,7 @@ impl<'a> TestFixtures<'a> {
     pub fn new(
         run_opts: &config::RunOptions,
         artifact_store: &'a ArtifactStore,
+        test_context: &'a TestContext,
     ) -> Result<Self> {
         let zfs = run_opts
             .zfs_fs_name
@@ -30,7 +34,7 @@ impl<'a> TestFixtures<'a> {
             })
             .transpose()?;
 
-        Ok(Self { artifact_store, zfs })
+        Ok(Self { artifact_store, test_context, zfs })
     }
 
     /// Calls fixture routines that need to run before any tests run.
@@ -73,6 +77,7 @@ impl<'a> TestFixtures<'a> {
     /// corresponding setup fixture has run.
     #[instrument(skip_all)]
     pub fn test_cleanup(&mut self) -> Result<()> {
+        self.test_context.vm_factory.reset();
         if let Some(zfs) = &mut self.zfs {
             zfs.rollback_to_artifact_snapshot()
         } else {

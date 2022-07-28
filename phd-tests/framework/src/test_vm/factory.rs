@@ -107,17 +107,12 @@ pub struct VmFactory {
     default_guest_kind: GuestOsKind,
     default_bootrom_path: String,
 
-    // The test runner executes test cases in a `catch_unwind` block to allow
-    // those cases to use macros like `assert!` and `panic!`. This requires that
-    // arguments to test cases (like the `TestContext` and, by extension, the VM
-    // factory) be `UnwindSafe`. This in turn means that the factory cannot be
-    // passed by mutable reference or contain any interiorly mutable types that
-    // are not themselves `UnwindSafe` (e.g. `RefCell`).
-    //
-    // `AtomicU16` is unwind-safe and less expensive to manipulate than a full
-    // `Mutex`. If and when the factory needs more complex mutable state, this
-    // should move to an `Inner` struct guarded by an unwind-safe primitive like
-    // Mutex.
+    // Mutable state in the VM factory must be unwind-safe because the runner
+    // passes the factory to test cases (via their test contexts), and test
+    // cases run in a `catch_unwind` block to enable the use of `assert!` and
+    // `panic!`. For assigning sequential port numbers, `AtomicU16` fits the
+    // bill without requiring the extra interlocked operations needed to acquire
+    // and release an entire `Mutex`.
     next_port: AtomicU16,
 }
 
@@ -150,7 +145,7 @@ impl VmFactory {
 
     /// Resets this factory to the state it had when it was created, preparing
     /// it for use in a new test case.
-    pub fn reset(&mut self) {
+    pub fn reset(&self) {
         self.next_port
             .store(self.opts.server_port_range.start, Ordering::Relaxed);
     }
