@@ -98,5 +98,5 @@ fn list_tests(list_opts: &ListOptions) {
         count += 1
     }
 
-    println!("\n{} tests selected", count);
+    println!("\n{} test(s) selected", count);
 }
