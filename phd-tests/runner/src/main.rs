@@ -15,16 +15,18 @@ use crate::execute::ExecutionStats;
 use crate::fixtures::TestFixtures;
 
 fn main() {
+    let runner_args = ProcessArgs::parse();
+
     // Set up a tracing subscriber.
     let filter = EnvFilter::builder()
         .with_default_directive(tracing::Level::INFO.into());
-    let stdout_log = tracing_subscriber::fmt::layer().with_line_number(true);
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .with_line_number(true)
+        .with_ansi(!runner_args.disable_ansi);
     let subscriber =
         Registry::default().with(filter.from_env_lossy()).with(stdout_log);
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    // Set up global state: the command-line config and the artifact store.
-    let runner_args = ProcessArgs::parse();
     info!(?runner_args);
 
     match &runner_args.command {
