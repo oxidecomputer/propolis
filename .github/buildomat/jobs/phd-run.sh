@@ -6,6 +6,7 @@
 #: output_rules = [
 #:	"/tmp/propolis-phd/*.log",
 #:	"/tmp/propolis-phd/*.toml",
+#:	"/tmp/phd-runner.log",
 #: ]
 #: skip_clone = true
 #:
@@ -55,11 +56,12 @@ ls $artifacts
 ls $propolis
 
 if RUST_BACKTRACE=1 ptime -m $runner \
+	--disable-ansi \
 	run \
 	--propolis-server-cmd $propolis \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir | \
-	tee $tmpdir/runner.out; then
+	tee /tmp/phd-runner.log; then
 
 	echo
 	echo "ALL TESTS PASSED"
