@@ -7,10 +7,11 @@ use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_framework::artifacts::ArtifactStore;
 use phd_tests::phd_testcase::TestContext;
-use tracing::info;
+use tracing::{debug, info};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
+use crate::execute::ExecutionStats;
 use crate::fixtures::TestFixtures;
 
 fn main() {
@@ -27,12 +28,16 @@ fn main() {
     info!(?runner_args);
 
     match &runner_args.command {
-        config::Command::Run(opts) => run_tests(opts),
+        config::Command::Run(opts) => {
+            let exit_code = run_tests(opts).tests_failed;
+            debug!(exit_code);
+            std::process::exit(exit_code.try_into().unwrap());
+        }
         config::Command::List(opts) => list_tests(opts),
     }
 }
 
-fn run_tests(run_opts: &RunOptions) {
+fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
     let artifact_store =
         ArtifactStore::from_file(&run_opts.artifact_toml_path).unwrap();
 
@@ -70,7 +75,7 @@ fn run_tests(run_opts: &RunOptions) {
         execute::run_tests_with_ctx(&ctx, fixtures, &run_opts);
     if execution_stats.failed_test_cases.len() != 0 {
         println!("\nfailures:");
-        for tc in execution_stats.failed_test_cases {
+        for tc in &execution_stats.failed_test_cases {
             println!("    {}", tc.fully_qualified_name());
         }
         print!("\n");
@@ -86,6 +91,8 @@ fn run_tests(run_opts: &RunOptions) {
         execution_stats.tests_not_run,
         execution_stats.duration.as_secs_f64()
     );
+
+    execution_stats
 }
 
 fn list_tests(list_opts: &ListOptions) {
