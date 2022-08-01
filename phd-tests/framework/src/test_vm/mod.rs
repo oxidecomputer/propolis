@@ -89,43 +89,13 @@ impl TestVm {
 
         let console: SerialConsole = rt.block_on(
             async {
-                let properties = InstanceProperties {
-                    id: vm_id,
-                    name: "phd-vm".to_string(),
-                    description: "Pheidippides-managed VM".to_string(),
-                    image_id: Uuid::default(),
-                    bootrom_id: Uuid::default(),
-                    memory: vm_config.memory_mib(),
-                    vcpus: vm_config.cpus(),
-                };
-                let ensure_req = InstanceEnsureRequest {
-                    properties,
-                    nics: vec![],
-                    disks: vec![],
-                    migrate: None,
-                    cloud_init_bytes: None,
-                };
-
-                if let Err(e) = client.instance_ensure(&ensure_req).await {
-                    info!("Error {} while creating instance, will retry", e);
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    client.instance_ensure(&ensure_req).await?;
-                }
-
-                let serial_uri = client.instance_serial_console_ws_uri();
-                let console = SerialConsole::new(serial_uri).await?;
-
-                let instance_description =
-                    client.instance_get().await.with_context(|| {
-                        anyhow!("failed to get instance properties")
-                    })?;
-
-                info!(
-                    ?instance_description.instance,
-                    "Started instance"
-                );
-
-                anyhow::Ok(console)
+                Self::instance_ensure(
+                    &client,
+                    vm_id,
+                    vm_config.cpus(),
+                    vm_config.memory_mib(),
+                )
+                .await
             }
             .instrument(span.clone()),
         )?;
@@ -139,6 +109,51 @@ impl TestVm {
             guest_os_kind,
             tracing_span: span,
         })
+    }
+
+    async fn instance_ensure(
+        client: &Client,
+        vm_id: Uuid,
+        vcpus: u8,
+        memory_mib: u64,
+    ) -> Result<SerialConsole> {
+        let properties = InstanceProperties {
+            id: vm_id,
+            name: format!("phd-vm-{}", vm_id),
+            description: "Pheidippides-managed VM".to_string(),
+            image_id: Uuid::default(),
+            bootrom_id: Uuid::default(),
+            memory: memory_mib,
+            vcpus,
+        };
+        let ensure_req = InstanceEnsureRequest {
+            properties,
+            nics: vec![],
+            disks: vec![],
+            migrate: None,
+            cloud_init_bytes: None,
+        };
+
+        if let Err(e) = client.instance_ensure(&ensure_req).await {
+            info!("Error {} while creating instance, will retry", e);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            client.instance_ensure(&ensure_req).await?;
+        }
+
+        let serial_uri = client.instance_serial_console_ws_uri();
+        let console = SerialConsole::new(serial_uri).await?;
+
+        let instance_description = client
+            .instance_get()
+            .await
+            .with_context(|| anyhow!("failed to get instance properties"))?;
+
+        info!(
+            ?instance_description.instance,
+            "Started instance"
+        );
+
+        anyhow::Ok(console)
     }
 
     /// Returns the kind of guest OS running in this VM.
