@@ -12,6 +12,10 @@ fn instance_start_stop_test(ctx: &TestContext) {
         ctx.vm_factory.default_vm_config(),
     )?;
 
+    vm.instance_ensure()?;
+    let instance = vm.get()?.instance;
+    assert_eq!(instance.state, InstanceState::Creating);
+
     vm.launch()?;
     vm.wait_for_state(InstanceState::Running, Duration::from_secs(60))?;
 
@@ -30,10 +34,7 @@ fn instance_stop_causes_destroy_test(ctx: &TestContext) {
     vm.stop()?;
     vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))?;
 
-    assert!(matches!(
-        vm.launch().unwrap_err().downcast_ref::<ClientError>().unwrap(),
-        ClientError::Status(500)
-    ));
+    assert!(matches!(vm.run().unwrap_err(), ClientError::Status(500)));
     assert!(matches!(vm.stop().unwrap_err(), ClientError::Status(500)));
     assert!(matches!(vm.reset().unwrap_err(), ClientError::Status(500)));
 }

@@ -118,7 +118,7 @@ impl TestVm {
 
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
-    async fn instance_ensure(&self) -> Result<SerialConsole> {
+    async fn instance_ensure_async(&self) -> Result<SerialConsole> {
         let (vcpus, memory_mib) = match self.state {
             VmState::New { vcpus, memory_mib } => (vcpus, memory_mib),
             VmState::Launched { .. } => {
@@ -175,20 +175,28 @@ impl TestVm {
     /// (by sending a Propolis instance-ensure request to it), send that request
     /// first.
     pub fn launch(&mut self) -> Result<()> {
+        self.instance_ensure()?;
+        self.run()?;
+        Ok(())
+    }
+
+    /// Sends an instance-ensure request.
+    pub fn instance_ensure(&mut self) -> Result<()> {
         match self.state {
             VmState::New { .. } => {
-                let console =
-                    self.rt.block_on(async { self.instance_ensure().await })?;
+                let console = self
+                    .rt
+                    .block_on(async { self.instance_ensure_async().await })?;
                 self.state = VmState::Launched { serial: console };
             }
             VmState::Launched { .. } => {}
         }
 
-        self.run()?;
         Ok(())
     }
 
-    fn run(&self) -> StdResult<(), PropolisClientError> {
+    /// Starts the VM.
+    pub fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Run).await
         })
