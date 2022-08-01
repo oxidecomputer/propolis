@@ -18,6 +18,7 @@ use propolis_client::{
     Client, Error as PropolisClientError,
 };
 use slog::Drain;
+use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, info_span, instrument, Instrument};
 use uuid::Uuid;
@@ -25,6 +26,20 @@ use uuid::Uuid;
 pub mod factory;
 pub mod server;
 pub mod vm_config;
+
+#[derive(Debug, Error)]
+pub enum VmStateError {
+    #[error("Operation can only be performed on a launched VM")]
+    InstanceNotLaunched,
+
+    #[error("Operation can only be performed on an unlaunched VM")]
+    InstanceAlreadyLaunched,
+}
+
+enum VmState {
+    New { vcpus: u8, memory_mib: u64 },
+    Launched { serial: SerialConsole },
+}
 
 /// A virtual machine running in a Propolis server. Test cases create these VMs
 /// using the [`factory::VmFactory`] embedded in their test contexts.
@@ -36,10 +51,11 @@ pub struct TestVm {
     rt: tokio::runtime::Runtime,
     client: Client,
     _server: server::PropolisServer,
-    serial: SerialConsole,
     guest_os: Box<dyn GuestOs>,
     guest_os_kind: GuestOsKind,
     tracing_span: tracing::Span,
+
+    state: VmState,
 }
 
 impl TestVm {
@@ -69,7 +85,6 @@ impl TestVm {
         guest_os_kind: GuestOsKind,
     ) -> Result<Self> {
         info!(?process_params, ?vm_config, ?guest_os_kind);
-        let vm_id = Uuid::new_v4();
         let span = info_span!(parent: None, "VM", vm = ?vm_name);
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -87,36 +102,31 @@ impl TestVm {
             slog::Logger::root(client_async_drain, slog::o!()),
         );
 
-        let console: SerialConsole = rt.block_on(
-            async {
-                Self::instance_ensure(
-                    &client,
-                    vm_id,
-                    vm_config.cpus(),
-                    vm_config.memory_mib(),
-                )
-                .await
-            }
-            .instrument(span.clone()),
-        )?;
-
         Ok(Self {
             rt,
             client,
             _server: server,
-            serial: console,
             guest_os: guest_os::get_guest_os_adapter(guest_os_kind),
             guest_os_kind,
             tracing_span: span,
+            state: VmState::New {
+                vcpus: vm_config.cpus(),
+                memory_mib: vm_config.memory_mib(),
+            },
         })
     }
 
-    async fn instance_ensure(
-        client: &Client,
-        vm_id: Uuid,
-        vcpus: u8,
-        memory_mib: u64,
-    ) -> Result<SerialConsole> {
+    /// Sends an instance ensure request to this VM's server, allowing it to
+    /// transition into the running state.
+    async fn instance_ensure(&self) -> Result<SerialConsole> {
+        let (vcpus, memory_mib) = match self.state {
+            VmState::New { vcpus, memory_mib } => (vcpus, memory_mib),
+            VmState::Launched { .. } => {
+                return Err(VmStateError::InstanceAlreadyLaunched.into())
+            }
+        };
+
+        let vm_id = Uuid::new_v4();
         let properties = InstanceProperties {
             id: vm_id,
             name: format!("phd-vm-{}", vm_id),
@@ -134,26 +144,26 @@ impl TestVm {
             cloud_init_bytes: None,
         };
 
-        if let Err(e) = client.instance_ensure(&ensure_req).await {
+        if let Err(e) = self.client.instance_ensure(&ensure_req).await {
             info!("Error {} while creating instance, will retry", e);
             tokio::time::sleep(Duration::from_millis(500)).await;
-            client.instance_ensure(&ensure_req).await?;
+            self.client.instance_ensure(&ensure_req).await?;
         }
 
-        let serial_uri = client.instance_serial_console_ws_uri();
+        let serial_uri = self.client.instance_serial_console_ws_uri();
         let console = SerialConsole::new(serial_uri).await?;
 
-        let instance_description = client
-            .instance_get()
-            .await
-            .with_context(|| anyhow!("failed to get instance properties"))?;
+        let instance_description =
+            self.client.instance_get().await.with_context(|| {
+                anyhow!("failed to get instance properties")
+            })?;
 
         info!(
             ?instance_description.instance,
             "Started instance"
         );
 
-        anyhow::Ok(console)
+        Ok(console)
     }
 
     /// Returns the kind of guest OS running in this VM.
@@ -161,8 +171,24 @@ impl TestVm {
         self.guest_os_kind
     }
 
-    /// Starts the VM.
-    pub fn run(&self) -> StdResult<(), PropolisClientError> {
+    /// Sets the VM to the running state. If the VM has not yet been launched
+    /// (by sending a Propolis instance-ensure request to it), send that request
+    /// first.
+    pub fn launch(&mut self) -> Result<()> {
+        match self.state {
+            VmState::New { .. } => {
+                let console =
+                    self.rt.block_on(async { self.instance_ensure().await })?;
+                self.state = VmState::Launched { serial: console };
+            }
+            VmState::Launched { .. } => {}
+        }
+
+        self.run()?;
+        Ok(())
+    }
+
+    fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Run).await
         })
@@ -324,16 +350,23 @@ impl TestVm {
     ) -> Result<Option<String>> {
         let line = line.to_string();
         let (preceding_tx, mut preceding_rx) = mpsc::channel(1);
-        self.serial
-            .register_wait_for_string(line.clone(), preceding_tx)
-            .await?;
-        let t = timeout(timeout_duration, preceding_rx.recv()).await;
-        match t {
-            Err(timeout_elapsed) => {
-                self.serial.cancel_wait_for_string().await;
-                Err(anyhow!(timeout_elapsed))
+        match &self.state {
+            VmState::Launched { serial } => {
+                serial
+                    .register_wait_for_string(line.clone(), preceding_tx)
+                    .await?;
+                let t = timeout(timeout_duration, preceding_rx.recv()).await;
+                match t {
+                    Err(timeout_elapsed) => {
+                        serial.cancel_wait_for_string().await;
+                        Err(anyhow!(timeout_elapsed))
+                    }
+                    Ok(received_string) => Ok(received_string),
+                }
             }
-            Ok(received_string) => Ok(received_string),
+            VmState::New { .. } => {
+                Err(VmStateError::InstanceNotLaunched.into())
+            }
         }
     }
 
@@ -368,6 +401,11 @@ impl TestVm {
     }
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
-        self.serial.send_bytes(bytes).await
+        match &self.state {
+            VmState::Launched { serial } => serial.send_bytes(bytes).await,
+            VmState::New { .. } => {
+                Err(VmStateError::InstanceNotLaunched.into())
+            }
+        }
     }
 }
