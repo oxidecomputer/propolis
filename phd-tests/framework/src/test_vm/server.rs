@@ -34,10 +34,11 @@ pub struct ServerProcessParameters<'a, T: Into<Stdio>> {
 
 pub struct PropolisServer {
     server: std::process::Child,
+    address: SocketAddrV4,
 }
 
 impl PropolisServer {
-    pub fn new<T: Into<Stdio> + Debug>(
+    pub(crate) fn new<T: Into<Stdio> + Debug>(
         process_params: ServerProcessParameters<T>,
     ) -> Result<Self> {
         let ServerProcessParameters {
@@ -68,10 +69,15 @@ impl PropolisServer {
                 .stdout(server_stdout)
                 .stderr(server_stderr)
                 .spawn()?,
+            address: server_addr,
         };
 
         info!("Launched server with pid {}", server.server.id());
         Ok(server)
+    }
+
+    pub(crate) fn server_addr(&self) -> SocketAddrV4 {
+        self.address
     }
 }
 

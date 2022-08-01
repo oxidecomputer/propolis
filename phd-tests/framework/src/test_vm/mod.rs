@@ -9,11 +9,11 @@ use crate::serial::SerialConsole;
 use anyhow::{anyhow, Context, Result};
 use backoff::backoff::Backoff;
 use core::result::Result as StdResult;
-use propolis_client::api::InstanceState;
 use propolis_client::{
     api::{
-        InstanceEnsureRequest, InstanceGetResponse, InstanceProperties,
-        InstanceStateRequested,
+        InstanceEnsureRequest, InstanceGetResponse,
+        InstanceMigrateInitiateRequest, InstanceProperties, InstanceState,
+        InstanceStateRequested, MigrationState,
     },
     Client, Error as PropolisClientError,
 };
@@ -29,16 +29,18 @@ pub mod vm_config;
 
 #[derive(Debug, Error)]
 pub enum VmStateError {
-    #[error("Operation can only be performed on a launched VM")]
-    InstanceNotLaunched,
+    #[error("Operation can only be performed on a VM that has been ensured")]
+    InstanceNotEnsured,
 
-    #[error("Operation can only be performed on an unlaunched VM")]
-    InstanceAlreadyLaunched,
+    #[error(
+        "Operation can only be performed on a new VM that has not been ensured"
+    )]
+    InstanceAlreadyEnsured,
 }
 
 enum VmState {
     New { vcpus: u8, memory_mib: u64 },
-    Launched { serial: SerialConsole },
+    Ensured { serial: SerialConsole },
 }
 
 /// A virtual machine running in a Propolis server. Test cases create these VMs
@@ -50,7 +52,7 @@ enum VmState {
 pub struct TestVm {
     rt: tokio::runtime::Runtime,
     client: Client,
-    _server: server::PropolisServer,
+    server: server::PropolisServer,
     guest_os: Box<dyn GuestOs>,
     guest_os_kind: GuestOsKind,
     tracing_span: tracing::Span,
@@ -105,7 +107,7 @@ impl TestVm {
         Ok(Self {
             rt,
             client,
-            _server: server,
+            server,
             guest_os: guest_os::get_guest_os_adapter(guest_os_kind),
             guest_os_kind,
             tracing_span: span,
@@ -118,11 +120,14 @@ impl TestVm {
 
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
-    async fn instance_ensure_async(&self) -> Result<SerialConsole> {
+    async fn instance_ensure_async(
+        &self,
+        migrate: Option<InstanceMigrateInitiateRequest>,
+    ) -> Result<SerialConsole> {
         let (vcpus, memory_mib) = match self.state {
             VmState::New { vcpus, memory_mib } => (vcpus, memory_mib),
-            VmState::Launched { .. } => {
-                return Err(VmStateError::InstanceAlreadyLaunched.into())
+            VmState::Ensured { .. } => {
+                return Err(VmStateError::InstanceAlreadyEnsured.into())
             }
         };
 
@@ -140,7 +145,7 @@ impl TestVm {
             properties,
             nics: vec![],
             disks: vec![],
-            migrate: None,
+            migrate,
             cloud_init_bytes: None,
         };
 
@@ -180,22 +185,24 @@ impl TestVm {
         Ok(())
     }
 
-    /// Sends an instance-ensure request.
+    /// Sends an instance ensure request to this VM's server, but does not run
+    /// the VM.
     pub fn instance_ensure(&mut self) -> Result<()> {
         match self.state {
             VmState::New { .. } => {
-                let console = self
-                    .rt
-                    .block_on(async { self.instance_ensure_async().await })?;
-                self.state = VmState::Launched { serial: console };
+                let console = self.rt.block_on(async {
+                    self.instance_ensure_async(None).await
+                })?;
+                self.state = VmState::Ensured { serial: console };
             }
-            VmState::Launched { .. } => {}
+            VmState::Ensured { .. } => {}
         }
 
         Ok(())
     }
 
-    /// Starts the VM.
+    /// Sets the VM to the running state without first sending an instance
+    /// ensure request.
     pub fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Run).await
@@ -214,6 +221,14 @@ impl TestVm {
     pub fn reset(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Reboot).await
+        })
+    }
+
+    /// Moves this VM into the migrate-start state.
+    fn start_migrate(&self) -> StdResult<(), PropolisClientError> {
+        self.rt.block_on(async {
+            self.put_instance_state_async(InstanceStateRequested::MigrateStart)
+                .await
         })
     }
 
@@ -238,6 +253,90 @@ impl TestVm {
             .instance_get()
             .await
             .with_context(|| anyhow!("failed to query instance properties"))
+    }
+
+    ///
+    pub fn migrate_from(
+        &mut self,
+        source: &Self,
+        timeout_duration: Duration,
+    ) -> Result<()> {
+        let _vm_guard = self.tracing_span.enter();
+        let span = info_span!("Migrate");
+        let _guard = span.enter();
+        info!(
+            "Migrating from source at address {}",
+            source.server.server_addr()
+        );
+
+        match self.state {
+            VmState::New { .. } => {
+                source.start_migrate()?;
+                let migration_id = Uuid::new_v4();
+                let console = self.rt.block_on(async {
+                    self.instance_ensure_async(Some(
+                        InstanceMigrateInitiateRequest {
+                            migration_id,
+                            src_addr: source.server.server_addr().into(),
+                            src_uuid: Uuid::default(),
+                        },
+                    ))
+                    .await
+                })?;
+                self.state = VmState::Ensured { serial: console };
+
+                let mut backoff = backoff::ExponentialBackoff::default();
+                backoff.max_elapsed_time = Some(timeout_duration);
+                loop {
+                    let state = self.get_migration_state(migration_id)?;
+                    match state {
+                        MigrationState::Finish => break,
+                        MigrationState::Error => {
+                            info!(
+                                "Instance encountered error during migration"
+                            );
+                            return Err(anyhow!(
+                                "Instance encountered error during migration"
+                            ));
+                        }
+                        _ => {}
+                    }
+
+                    match backoff.next_backoff() {
+                        Some(to_wait) => {
+                            info!(
+                                "Waiting for migration to finish, \
+                                  in state {:?}, \
+                                  waiting {:#?} before querying again",
+                                state, to_wait
+                            );
+                            std::thread::sleep(to_wait);
+                        }
+                        None => {
+                            info!("Timed out waiting for migration to finish");
+                            return Err(anyhow!(
+                                "Timed out waiting for migration to finish"
+                            ));
+                        }
+                    }
+                }
+            }
+            VmState::Ensured { .. } => {
+                return Err(VmStateError::InstanceAlreadyEnsured.into());
+            }
+        }
+
+        self.run()?;
+        Ok(())
+    }
+
+    fn get_migration_state(
+        &self,
+        migration_id: Uuid,
+    ) -> Result<MigrationState> {
+        self.rt.block_on(async {
+            Ok(self.client.instance_migrate_status(migration_id).await?.state)
+        })
     }
 
     pub fn wait_for_state(
@@ -359,7 +458,7 @@ impl TestVm {
         let line = line.to_string();
         let (preceding_tx, mut preceding_rx) = mpsc::channel(1);
         match &self.state {
-            VmState::Launched { serial } => {
+            VmState::Ensured { serial } => {
                 serial
                     .register_wait_for_string(line.clone(), preceding_tx)
                     .await?;
@@ -372,9 +471,7 @@ impl TestVm {
                     Ok(received_string) => Ok(received_string),
                 }
             }
-            VmState::New { .. } => {
-                Err(VmStateError::InstanceNotLaunched.into())
-            }
+            VmState::New { .. } => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 
@@ -410,10 +507,8 @@ impl TestVm {
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
         match &self.state {
-            VmState::Launched { serial } => serial.send_bytes(bytes).await,
-            VmState::New { .. } => {
-                Err(VmStateError::InstanceNotLaunched.into())
-            }
+            VmState::Ensured { serial } => serial.send_bytes(bytes).await,
+            VmState::New { .. } => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 }
