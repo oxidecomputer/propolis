@@ -1,7 +1,7 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, net::SocketAddrV4, process::Stdio, time::Duration};
+use std::{fmt::Debug, process::Stdio, time::Duration};
 
 use crate::guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind};
 use crate::serial::SerialConsole;
@@ -23,20 +23,8 @@ use tracing::{info, info_span, instrument, Instrument};
 use uuid::Uuid;
 
 pub mod factory;
+pub mod server;
 pub mod vm_config;
-
-struct ServerWrapper {
-    server: std::process::Child,
-}
-
-impl Drop for ServerWrapper {
-    fn drop(&mut self) {
-        std::process::Command::new("pfexec")
-            .args(["kill", self.server.id().to_string().as_str()])
-            .spawn()
-            .unwrap();
-    }
-}
 
 /// A virtual machine running in a Propolis server. Test cases create these VMs
 /// using the [`factory::VmFactory`] embedded in their test contexts.
@@ -47,38 +35,11 @@ impl Drop for ServerWrapper {
 pub struct TestVm {
     rt: tokio::runtime::Runtime,
     client: Client,
-    _server: ServerWrapper,
+    _server: server::PropolisServer,
     serial: SerialConsole,
     guest_os: Box<dyn GuestOs>,
     guest_os_kind: GuestOsKind,
     tracing_span: tracing::Span,
-}
-
-/// Parameters used to launch and configure the Propolis server process. These
-/// are distinct from the parameters used to configure the VM that that process
-/// will host.
-#[derive(Debug)]
-pub struct ServerProcessParameters<'a, T: Into<Stdio> + Debug> {
-    /// The path to the server binary to launch.
-    pub server_path: &'a str,
-
-    /// The path to the configuration TOML that should be placed on the server's
-    /// command line.
-    pub config_toml_path: &'a str,
-
-    /// The address at which the server should serve.
-    pub server_addr: SocketAddrV4,
-
-    /// The address at which the server should offer its VNC server.
-    pub vnc_addr: SocketAddrV4,
-
-    /// The [`Stdio`] descriptor to which the server's stdout should be
-    /// directed.
-    pub server_stdout: T,
-
-    /// The [`Stdio`] descriptor to which the server's stderr should be
-    /// directed.
-    pub server_stderr: T,
 }
 
 impl TestVm {
@@ -103,7 +64,7 @@ impl TestVm {
     #[instrument(skip_all)]
     pub(crate) fn new<T: Into<Stdio> + Debug>(
         vm_name: &str,
-        process_params: ServerProcessParameters<T>,
+        process_params: server::ServerProcessParameters<T>,
         vm_config: &vm_config::VmConfig,
         guest_os_kind: GuestOsKind,
     ) -> Result<Self> {
@@ -113,38 +74,8 @@ impl TestVm {
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
-        let ServerProcessParameters {
-            server_path,
-            config_toml_path,
-            server_addr,
-            vnc_addr,
-            server_stdout,
-            server_stderr,
-        } = process_params;
-
-        info!(
-            ?server_path,
-            ?config_toml_path,
-            ?server_addr,
-            ?vm_config,
-            "Launching Propolis server"
-        );
-
-        let server = ServerWrapper {
-            server: std::process::Command::new("pfexec")
-                .args([
-                    server_path,
-                    "run",
-                    config_toml_path,
-                    server_addr.to_string().as_str(),
-                    vnc_addr.to_string().as_str(),
-                ])
-                .stdout(server_stdout)
-                .stderr(server_stderr)
-                .spawn()?,
-        };
-
-        info!("Launched server with pid {}", server.server.id());
+        let server_addr = process_params.server_addr.clone();
+        let server = server::PropolisServer::new(process_params)?;
 
         let client_decorator = slog_term::TermDecorator::new().stdout().build();
         let client_drain =

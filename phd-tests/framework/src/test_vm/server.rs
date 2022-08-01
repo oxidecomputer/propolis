@@ -1,0 +1,85 @@
+//! Routines and data structures for working with Propolis server processes.
+
+use std::{fmt::Debug, net::SocketAddrV4, process::Stdio};
+
+use anyhow::Result;
+use tracing::info;
+
+/// Parameters used to launch and configure the Propolis server process. These
+/// are distinct from the parameters used to configure the VM that that process
+/// will host.
+#[derive(Debug)]
+pub struct ServerProcessParameters<'a, T: Into<Stdio>> {
+    /// The path to the server binary to launch.
+    pub server_path: &'a str,
+
+    /// The path to the configuration TOML that should be placed on the server's
+    /// command line.
+    pub config_toml_path: &'a str,
+
+    /// The address at which the server should serve.
+    pub server_addr: SocketAddrV4,
+
+    /// The address at which the server should offer its VNC server.
+    pub vnc_addr: SocketAddrV4,
+
+    /// The [`Stdio`] descriptor to which the server's stdout should be
+    /// directed.
+    pub server_stdout: T,
+
+    /// The [`Stdio`] descriptor to which the server's stderr should be
+    /// directed.
+    pub server_stderr: T,
+}
+
+pub struct PropolisServer {
+    server: std::process::Child,
+}
+
+impl PropolisServer {
+    pub fn new<T: Into<Stdio> + Debug>(
+        process_params: ServerProcessParameters<T>,
+    ) -> Result<Self> {
+        let ServerProcessParameters {
+            server_path,
+            config_toml_path,
+            server_addr,
+            vnc_addr,
+            server_stdout,
+            server_stderr,
+        } = process_params;
+
+        info!(
+            ?server_path,
+            ?config_toml_path,
+            ?server_addr,
+            "Launching Propolis server"
+        );
+
+        let server = PropolisServer {
+            server: std::process::Command::new("pfexec")
+                .args([
+                    server_path,
+                    "run",
+                    config_toml_path,
+                    server_addr.to_string().as_str(),
+                    vnc_addr.to_string().as_str(),
+                ])
+                .stdout(server_stdout)
+                .stderr(server_stderr)
+                .spawn()?,
+        };
+
+        info!("Launched server with pid {}", server.server.id());
+        Ok(server)
+    }
+}
+
+impl Drop for PropolisServer {
+    fn drop(&mut self) {
+        std::process::Command::new("pfexec")
+            .args(["kill", self.server.id().to_string().as_str()])
+            .spawn()
+            .unwrap();
+    }
+}

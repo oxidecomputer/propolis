@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::{
     artifacts::ArtifactStore, guest_os::GuestOsKind,
-    test_vm::ServerProcessParameters,
+    test_vm::server::ServerProcessParameters,
 };
 
 use super::{vm_config, TestVm};
