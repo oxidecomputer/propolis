@@ -262,17 +262,16 @@ impl TestVm {
         timeout_duration: Duration,
     ) -> Result<()> {
         let _vm_guard = self.tracing_span.enter();
-        let span = info_span!("Migrate");
-        let _guard = span.enter();
-        info!(
-            "Migrating from source at address {}",
-            source.server.server_addr()
-        );
-
         match self.state {
             VmState::New { .. } => {
-                source.start_migrate()?;
                 let migration_id = Uuid::new_v4();
+                info!(
+                    ?migration_id,
+                    "Migrating from source at address {}",
+                    source.server.server_addr()
+                );
+
+                source.start_migrate()?;
                 let console = self.rt.block_on(async {
                     self.instance_ensure_async(Some(
                         InstanceMigrateInitiateRequest {
@@ -285,12 +284,17 @@ impl TestVm {
                 })?;
                 self.state = VmState::Ensured { serial: console };
 
+                let span = info_span!("Migrate", ?migration_id);
+                let _guard = span.enter();
                 let mut backoff = backoff::ExponentialBackoff::default();
                 backoff.max_elapsed_time = Some(timeout_duration);
                 loop {
                     let state = self.get_migration_state(migration_id)?;
                     match state {
-                        MigrationState::Finish => break,
+                        MigrationState::Finish => {
+                            info!("Migration completed successfully");
+                            break;
+                        }
                         MigrationState::Error => {
                             info!(
                                 "Instance encountered error during migration"
