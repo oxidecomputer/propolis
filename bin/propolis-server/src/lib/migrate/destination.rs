@@ -4,7 +4,6 @@ use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::instance::MigrateRole;
 use propolis::migrate::{MigrateStateError, Migrator};
-use propolis_client::instance_spec::MigrationCompatible;
 use slog::{error, info, warn};
 use std::io;
 use std::sync::Arc;
