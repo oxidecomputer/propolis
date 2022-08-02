@@ -88,13 +88,13 @@ impl DestinationProtocol {
             }
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
-        if !preamble
+        if let Err(e) = preamble
             .instance_spec
             .is_migration_compatible(&self.mctx.instance_spec)
         {
             error!(
                 self.log(),
-                "Source and destination instance specs incompatible"
+                "Source and destination instance specs incompatible: {}", e
             );
             return Err(MigrateError::InvalidInstanceState);
         }

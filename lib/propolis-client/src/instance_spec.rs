@@ -48,12 +48,88 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 pub use crucible::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
 /// Type alias for keys in the instance spec's maps.
 type SpecKey = String;
+
+/// An error type describing possible mismatches between two instance specs that
+/// render them migration-incompatible.
+#[derive(Debug, Error)]
+pub enum SpecMismatch {
+    #[error(
+        "Specs have collections with different lengths (self: {0}, other: {1})"
+    )]
+    CollectionSize(usize, usize),
+
+    #[error("Collection key {0} present in self but absent from other")]
+    CollectionKeyAbsent(SpecKey),
+
+    #[error(
+        "Spec elements have different PCI paths (self: {0:?}, other: {1:?})"
+    )]
+    PciPath(PciPath, PciPath),
+
+    #[error("Specs have different CPU counts (self: {0}, other: {1})")]
+    CpuCount(u8, u8),
+
+    #[error("Specs have different memory amounts (self: {0}, other: {1})")]
+    MemorySize(u64, u64),
+
+    #[error("Specs have different chipset types (self: {0:?}, other: {1:?})")]
+    ChipsetType(Chipset, Chipset),
+
+    #[error(
+        "Specs have different PCIe chipset settings (self: {0}, other: {1})"
+    )]
+    PcieEnablement(bool, bool),
+
+    #[error(
+        "Storage backends have different kinds (self: {0:?}, other: {1:?})"
+    )]
+    StorageBackendKind(StorageBackendKind, StorageBackendKind),
+
+    #[error(
+        "Storage backends have different read-only settings \
+        (self: {0}, other: {1})"
+    )]
+    StorageBackendReadonly(bool, bool),
+
+    #[error(
+        "Storage devices have different kinds (self: {0:?}, other: {1:?})"
+    )]
+    StorageDeviceKind(StorageDeviceKind, StorageDeviceKind),
+
+    #[error(
+        "Storage devices have different backend names (self: {0}, other: {1})"
+    )]
+    StorageDeviceBackend(String, String),
+
+    #[error(
+        "Network backends have different kinds (self: {0:?}, other: {1:?})"
+    )]
+    NetworkBackendKind(NetworkBackendKind, NetworkBackendKind),
+
+    #[error(
+        "Network devices have different backend names (self: {0}, other: {1})"
+    )]
+    NetworkDeviceBackend(String, String),
+
+    #[error("Serial ports have different numbers (self: {0:?}, other: {1:?})")]
+    SerialPortNumber(SerialPortNumber, SerialPortNumber),
+
+    #[error(
+        "PCI bridges have different downstream buses (self: {0}, other: {1})"
+    )]
+    PciBridgeDownstreamBus(u8, u8),
+
+    #[cfg(test)]
+    #[error("Test components differ")]
+    TestComponents(),
+}
 
 /// Routines used to check whether two components are migration-compatible.
 pub trait MigrationCompatible {
@@ -65,27 +141,35 @@ pub trait MigrationCompatible {
     /// Backends, in particular, may be migration-compatible but have different
     /// configuration payloads. The migration protocol allows components like
     /// this to augment this check with their own compatibility checks.
-    fn is_migration_compatible(&self, other: &Self) -> bool;
+    fn is_migration_compatible(&self, other: &Self)
+        -> Result<(), SpecMismatch>;
 }
 
 impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
     // Two keyed maps of components are compatible if they contain all the same
     // keys and if, for each key, the corresponding values are
     // migration-compatible.
-    fn is_migration_compatible(&self, other: &Self) -> bool {
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
         // If the two maps have different sizes, then they have different key
         // sets.
         if self.len() != other.len() {
-            return false;
+            return Err(SpecMismatch::CollectionSize(self.len(), other.len()));
         }
 
         // Each key in `self`'s map must be present in `other`'s map, and the
         // corresponding values must be compatible with one another.
-        self.iter().all(|(key, this_val)| {
-            other.get(key).map_or(false, |other_val| {
-                this_val.is_migration_compatible(other_val)
-            })
-        })
+        for (key, this_val) in self.iter() {
+            let other_val = other
+                .get(key)
+                .ok_or(SpecMismatch::CollectionKeyAbsent(key.clone()))?;
+
+            this_val.is_migration_compatible(other_val)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -128,8 +212,34 @@ impl Default for Board {
 }
 
 impl MigrationCompatible for Board {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self == other
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        if self.cpus != other.cpus {
+            return Err(SpecMismatch::CpuCount(self.cpus, other.cpus));
+        }
+        if self.memory_mb != other.memory_mb {
+            return Err(SpecMismatch::MemorySize(
+                self.memory_mb,
+                other.memory_mb,
+            ));
+        }
+        match (self.chipset, other.chipset) {
+            (
+                Chipset::I440Fx { enable_pcie: this_enable },
+                Chipset::I440Fx { enable_pcie: other_enable },
+            ) => {
+                if this_enable != other_enable {
+                    return Err(SpecMismatch::PcieEnablement(
+                        this_enable,
+                        other_enable,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -212,13 +322,23 @@ pub enum StorageBackendKind {
 }
 
 impl MigrationCompatible for StorageBackendKind {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
         // Two storage backends are compatible if they have the same kind,
         // irrespective of their configurations. The migration protocol allows
         // individual backend instances to include messages in the preamble that
         // allow a source and target to decide independently whether they are
         // compatible with each other.
-        std::mem::discriminant(self) == std::mem::discriminant(other)
+        if std::mem::discriminant(self) != std::mem::discriminant(other) {
+            return Err(SpecMismatch::StorageBackendKind(
+                self.clone(),
+                other.clone(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -234,9 +354,17 @@ pub struct StorageBackend {
 }
 
 impl MigrationCompatible for StorageBackend {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self.readonly == other.readonly
-            && self.kind.is_migration_compatible(&other.kind)
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        if self.readonly != other.readonly {
+            return Err(SpecMismatch::StorageBackendReadonly(
+                self.readonly,
+                other.readonly,
+            ));
+        }
+        self.kind.is_migration_compatible(&other.kind)
     }
 }
 
@@ -264,8 +392,23 @@ pub struct StorageDevice {
 }
 
 impl MigrationCompatible for StorageDevice {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self == other
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        if self.kind != other.kind {
+            return Err(SpecMismatch::StorageDeviceKind(self.kind, other.kind));
+        }
+        if self.backend_name != other.backend_name {
+            return Err(SpecMismatch::StorageDeviceBackend(
+                self.backend_name.clone(),
+                other.backend_name.clone(),
+            ));
+        }
+        if self.pci_path != other.pci_path {
+            return Err(SpecMismatch::PciPath(self.pci_path, other.pci_path));
+        }
+        Ok(())
     }
 }
 
@@ -285,10 +428,20 @@ pub enum NetworkBackendKind {
 }
 
 impl MigrationCompatible for NetworkBackendKind {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
         // Two network backends are compatible if they have the same kind,
         // irrespective of their configurations.
-        std::mem::discriminant(self) == std::mem::discriminant(other)
+        if std::mem::discriminant(self) != std::mem::discriminant(other) {
+            return Err(SpecMismatch::NetworkBackendKind(
+                self.clone(),
+                other.clone(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -300,7 +453,10 @@ pub struct NetworkBackend {
 }
 
 impl MigrationCompatible for NetworkBackend {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
         self.kind.is_migration_compatible(&other.kind)
     }
 }
@@ -317,8 +473,21 @@ pub struct NetworkDevice {
 }
 
 impl MigrationCompatible for NetworkDevice {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self == other
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        if self.backend_name != other.backend_name {
+            return Err(SpecMismatch::NetworkDeviceBackend(
+                self.backend_name.clone(),
+                other.backend_name.clone(),
+            ));
+        }
+        if self.pci_path != other.pci_path {
+            return Err(SpecMismatch::PciPath(self.pci_path, other.pci_path));
+        }
+
+        Ok(())
     }
 }
 
@@ -346,8 +515,15 @@ pub struct SerialPort {
 }
 
 impl MigrationCompatible for SerialPort {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self == other
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        if self.num != other.num {
+            return Err(SpecMismatch::SerialPortNumber(self.num, other.num));
+        }
+
+        Ok(())
     }
 }
 
@@ -365,8 +541,21 @@ pub struct PciPciBridge {
 }
 
 impl MigrationCompatible for PciPciBridge {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self == other
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        if self.downstream_bus != other.downstream_bus {
+            return Err(SpecMismatch::PciBridgeDownstreamBus(
+                self.downstream_bus,
+                other.downstream_bus,
+            ));
+        }
+        if self.pci_path != other.pci_path {
+            return Err(SpecMismatch::PciPath(self.pci_path, other.pci_path));
+        }
+
+        Ok(())
     }
 }
 
@@ -389,24 +578,21 @@ pub struct InstanceSpec {
 }
 
 impl MigrationCompatible for InstanceSpec {
-    fn is_migration_compatible(&self, other: &Self) -> bool {
-        self.board.is_migration_compatible(&other.board)
-            && self
-                .storage_devices
-                .is_migration_compatible(&other.storage_devices)
-            && self
-                .storage_backends
-                .is_migration_compatible(&other.storage_backends)
-            && self
-                .network_devices
-                .is_migration_compatible(&other.network_devices)
-            && self
-                .network_backends
-                .is_migration_compatible(&other.network_backends)
-            && self.serial_ports.is_migration_compatible(&other.serial_ports)
-            && self
-                .pci_pci_bridges
-                .is_migration_compatible(&other.pci_pci_bridges)
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), SpecMismatch> {
+        self.board.is_migration_compatible(&other.board)?;
+        self.storage_devices.is_migration_compatible(&other.storage_devices)?;
+        self.storage_backends
+            .is_migration_compatible(&other.storage_backends)?;
+        self.network_devices.is_migration_compatible(&other.network_devices)?;
+        self.network_backends
+            .is_migration_compatible(&other.network_backends)?;
+        self.serial_ports.is_migration_compatible(&other.serial_ports)?;
+        self.pci_pci_bridges.is_migration_compatible(&other.pci_pci_bridges)?;
+
+        Ok(())
     }
 }
 
@@ -422,8 +608,15 @@ mod test {
     }
 
     impl MigrationCompatible for TestComponent {
-        fn is_migration_compatible(&self, other: &Self) -> bool {
-            self == other
+        fn is_migration_compatible(
+            &self,
+            other: &Self,
+        ) -> Result<(), SpecMismatch> {
+            if self != other {
+                Err(SpecMismatch::TestComponents())
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -438,24 +631,24 @@ mod test {
         ]);
 
         let mut m2 = m1.clone();
-        assert!(m1.is_migration_compatible(&m2));
+        assert!(m1.is_migration_compatible(&m2).is_ok());
 
         // Mismatched key counts make two maps incompatible.
         m2.insert("second_widget".to_string(), TestComponent::Widget);
-        assert!(!m1.is_migration_compatible(&m2));
+        assert!(m1.is_migration_compatible(&m2).is_err());
         m2.remove("second_widget");
 
         // Two maps are incompatible if their keys refer to components that are
         // not compatible with each other.
         *m2.get_mut("gizmo").unwrap() = TestComponent::Contraption;
-        assert!(!m1.is_migration_compatible(&m2));
+        assert!(m1.is_migration_compatible(&m2).is_err());
         *m2.get_mut("gizmo").unwrap() = TestComponent::Gizmo;
 
         // Two maps are incompatible if they have the same number of keys and
         // values, but different sets of key names.
         m2.remove("gizmo");
         m2.insert("other_gizmo".to_string(), TestComponent::Gizmo);
-        assert!(!m1.is_migration_compatible(&m2));
+        assert!(m1.is_migration_compatible(&m2).is_err());
     }
 
     #[test]
@@ -466,7 +659,7 @@ mod test {
             chipset: Chipset::I440Fx { enable_pcie: false },
         };
         let b2 = b1.clone();
-        assert!(b1.is_migration_compatible(&b2));
+        assert!(b1.is_migration_compatible(&b2).is_ok());
     }
 
     #[test]
@@ -479,15 +672,24 @@ mod test {
 
         let mut b2 = b1.clone();
         b2.cpus = 8;
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::CpuCount(4, 8))
+        ));
         b2.cpus = b1.cpus;
 
         b2.memory_mb = b1.memory_mb * 2;
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::MemorySize(4096, 8192))
+        ));
         b2.memory_mb = b1.memory_mb;
 
         b2.chipset = Chipset::I440Fx { enable_pcie: false };
-        assert!(!b2.is_migration_compatible(&b1));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::PcieEnablement(true, false))
+        ));
     }
 
     #[test]
@@ -533,7 +735,7 @@ mod test {
             }
             _ => panic!("Crucible backend not present in cloned map"),
         }
-        assert!(b1.is_migration_compatible(&b2));
+        assert!(b1.is_migration_compatible(&b2).is_ok());
 
         match &mut b2.get_mut("file").unwrap().kind {
             StorageBackendKind::File { path } => {
@@ -541,7 +743,7 @@ mod test {
             }
             _ => panic!("File backend not present in cloned map"),
         }
-        assert!(b1.is_migration_compatible(&b2));
+        assert!(b1.is_migration_compatible(&b2).is_ok());
     }
 
     #[test]
@@ -556,13 +758,29 @@ mod test {
 
         let mut b2 = b1.clone();
         b2.readonly = !b2.readonly;
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::StorageBackendReadonly(true, false))
+        ));
         b2.readonly = b1.readonly;
 
         b2.kind = StorageBackendKind::File { path: "path".to_string() };
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::StorageBackendKind(
+                StorageBackendKind::Crucible { .. },
+                StorageBackendKind::File { .. }
+            ))
+        ));
+
         b2.kind = StorageBackendKind::InMemory;
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::StorageBackendKind(
+                StorageBackendKind::Crucible { .. },
+                StorageBackendKind::InMemory { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -573,7 +791,7 @@ mod test {
             pci_path: PciPath::new(0, 5, 0).unwrap(),
         };
         let d2 = d1.clone();
-        assert!(d1.is_migration_compatible(&d2));
+        assert!(d1.is_migration_compatible(&d2).is_ok());
     }
 
     #[test]
@@ -586,15 +804,27 @@ mod test {
 
         let mut d2 = d1.clone();
         d2.kind = StorageDeviceKind::Nvme;
-        assert!(!d1.is_migration_compatible(&d2));
+        assert!(matches!(
+            d1.is_migration_compatible(&d2),
+            Err(SpecMismatch::StorageDeviceKind(
+                StorageDeviceKind::Virtio,
+                StorageDeviceKind::Nvme
+            ))
+        ));
         d2.kind = d1.kind;
 
         d2.backend_name = "other_storage_backend".to_string();
-        assert!(!d1.is_migration_compatible(&d2));
+        assert!(matches!(
+            d1.is_migration_compatible(&d2),
+            Err(SpecMismatch::StorageDeviceBackend(_, _))
+        ));
         d2.backend_name = d1.backend_name.clone();
 
         d2.pci_path = PciPath::new(0, 6, 0).unwrap();
-        assert!(!d1.is_migration_compatible(&d2));
+        assert!(matches!(
+            d1.is_migration_compatible(&d2),
+            Err(SpecMismatch::PciPath(_, _))
+        ));
     }
 
     #[test]
@@ -604,7 +834,7 @@ mod test {
             pci_path: PciPath::new(0, 7, 0).unwrap(),
         };
         let n2 = n1.clone();
-        assert!(n1.is_migration_compatible(&n2));
+        assert!(n1.is_migration_compatible(&n2).is_ok());
     }
 
     #[test]
@@ -616,11 +846,17 @@ mod test {
         let mut n2 = n1.clone();
 
         n2.backend_name = "other_net_backend".to_string();
-        assert!(!n1.is_migration_compatible(&n2));
+        assert!(matches!(
+            n1.is_migration_compatible(&n2),
+            Err(SpecMismatch::NetworkDeviceBackend(_, _))
+        ));
         n2.backend_name = n1.backend_name.clone();
 
         n2.pci_path = PciPath::new(0, 8, 1).unwrap();
-        assert!(!n1.is_migration_compatible(&n2));
+        assert!(matches!(
+            n1.is_migration_compatible(&n2),
+            Err(SpecMismatch::PciPath(_, _))
+        ));
     }
 
     #[test]
@@ -633,7 +869,7 @@ mod test {
                 vnic_name: "other_vnic".to_string(),
             },
         };
-        assert!(n1.is_migration_compatible(&n2));
+        assert!(n1.is_migration_compatible(&n2).is_ok());
     }
 
     #[test]
@@ -641,11 +877,18 @@ mod test {
         assert!((SerialPort { num: SerialPortNumber::Com1 })
             .is_migration_compatible(&SerialPort {
                 num: SerialPortNumber::Com1
-            }));
-        assert!(!(SerialPort { num: SerialPortNumber::Com2 })
-            .is_migration_compatible(&SerialPort {
-                num: SerialPortNumber::Com3
-            }));
+            })
+            .is_ok());
+        assert!(matches!(
+            (SerialPort { num: SerialPortNumber::Com2 })
+                .is_migration_compatible(&SerialPort {
+                    num: SerialPortNumber::Com3
+                }),
+            Err(SpecMismatch::SerialPortNumber(
+                SerialPortNumber::Com2,
+                SerialPortNumber::Com3
+            ))
+        ));
     }
 
     #[test]
@@ -656,13 +899,19 @@ mod test {
         };
 
         let mut b2 = b1.clone();
-        assert!(b1.is_migration_compatible(&b2));
+        assert!(b1.is_migration_compatible(&b2).is_ok());
 
         b2.downstream_bus += 1;
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::PciBridgeDownstreamBus(1, 2))
+        ));
         b2.downstream_bus = b1.downstream_bus;
 
         b2.pci_path = PciPath::new(4, 5, 6).unwrap();
-        assert!(!b1.is_migration_compatible(&b2));
+        assert!(matches!(
+            b1.is_migration_compatible(&b2),
+            Err(SpecMismatch::PciPath(_, _))
+        ));
     }
 }
