@@ -124,6 +124,7 @@ impl TestVm {
         &self,
         migrate: Option<InstanceMigrateInitiateRequest>,
     ) -> Result<SerialConsole> {
+        let _span = self.tracing_span.enter();
         let (vcpus, memory_mib) = match self.state {
             VmState::New { vcpus, memory_mib } => (vcpus, memory_mib),
             VmState::Ensured { .. } => {
