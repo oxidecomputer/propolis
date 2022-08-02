@@ -22,3 +22,27 @@ fn smoke_test(ctx: &TestContext) {
     let lsout = target.run_shell_command("ls foo.bar")?;
     assert_eq!(lsout, "foo.bar");
 }
+
+#[phd_testcase]
+fn incompatible_vms(ctx: &TestContext) {
+    let configs = vec![
+        ("cpus", ctx.vm_factory.default_vm_config().set_cpus(8)),
+        ("memory", ctx.vm_factory.default_vm_config().set_memory_mib(1024)),
+    ];
+
+    for (i, (name, cfg)) in configs.into_iter().enumerate() {
+        let mut source = ctx.vm_factory.new_vm(
+            format!("migration_incompatible_source_{}", i).as_str(),
+            ctx.vm_factory.default_vm_config().set_cpus(4).set_memory_mib(512),
+        )?;
+
+        source.launch()?;
+
+        let mut target = ctx.vm_factory.new_vm(
+            format!("migration_incompatible_target_{}", name).as_str(),
+            cfg,
+        )?;
+
+        assert!(target.migrate_from(&source, Duration::from_secs(60)).is_err());
+    }
+}
