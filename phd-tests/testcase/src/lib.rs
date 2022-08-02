@@ -75,6 +75,21 @@ impl TestCase {
 
 inventory::collect!(TestCase);
 
-pub fn all_test_cases() -> inventory::iter<TestCase> {
-    inventory::iter::<TestCase>
+pub fn all_test_cases() -> impl Iterator<Item = &'static TestCase> {
+    inventory::iter::<TestCase>.into_iter()
+}
+
+/// Returns an iterator over the subset of tests for which (a) the fully
+/// qualified name of the test includes every string in `must_include`, and (b)
+/// the fully qualified name does not include any strings in `must_exclude`.
+pub fn filtered_test_cases<'rule>(
+    must_include: &'rule Vec<String>,
+    must_exclude: &'rule Vec<String>,
+) -> impl Iterator<Item = &'static TestCase> + 'rule {
+    inventory::iter::<TestCase>.into_iter().filter(|tc| {
+        must_include.iter().all(|inc| tc.fully_qualified_name().contains(inc))
+            && must_exclude
+                .iter()
+                .all(|exc| !tc.fully_qualified_name().contains(exc))
+    })
 }

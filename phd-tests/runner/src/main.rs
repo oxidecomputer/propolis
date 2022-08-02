@@ -3,8 +3,11 @@ mod execute;
 mod fixtures;
 pub(crate) mod zfs;
 
+use clap::Parser;
+use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_framework::artifacts::ArtifactStore;
 use phd_tests::phd_testcase::TestContext;
+use tracing::info;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
@@ -20,29 +23,34 @@ fn main() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     // Set up global state: the command-line config and the artifact store.
-    let runner_config = config::Config::get();
+    let runner_args = ProcessArgs::parse();
+    info!(?runner_args);
+
+    match &runner_args.command {
+        config::Command::Run(opts) => run_tests(opts),
+        config::Command::List(opts) => list_tests(opts),
+    }
+}
+
+fn run_tests(run_opts: &RunOptions) {
     let artifact_store =
-        ArtifactStore::from_file(&runner_config.artifact_toml_path).unwrap();
+        ArtifactStore::from_file(&run_opts.artifact_toml_path).unwrap();
 
     // Convert the command-line config and artifact store into a VM factory
     // definition.
-    let mut config_toml_path = runner_config.tmp_directory.clone();
+    let mut config_toml_path = run_opts.tmp_directory.clone();
     config_toml_path.push("vm_config.toml");
     let factory_config = phd_framework::test_vm::factory::FactoryOptions {
-        propolis_server_path: runner_config
+        propolis_server_path: run_opts
             .propolis_server_cmd
             .to_string_lossy()
             .to_string(),
-        tmp_directory: runner_config.tmp_directory.clone(),
-        server_log_mode: runner_config.server_logging_mode,
-        default_guest_image_artifact: runner_config
-            .default_guest_artifact
-            .clone(),
-        default_bootrom_artifact: runner_config
-            .default_bootrom_artifact
-            .clone(),
-        default_guest_cpus: runner_config.default_guest_cpus,
-        default_guest_memory_mib: runner_config.default_guest_memory_mib,
+        tmp_directory: run_opts.tmp_directory.clone(),
+        server_log_mode: run_opts.server_logging_mode,
+        default_guest_image_artifact: run_opts.default_guest_artifact.clone(),
+        default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
+        default_guest_cpus: run_opts.default_guest_cpus,
+        default_guest_memory_mib: run_opts.default_guest_memory_mib,
     };
 
     // The VM factory config and artifact store are enough to create a test
@@ -54,10 +62,10 @@ fn main() {
         )
         .unwrap(),
     };
-    let fixtures = TestFixtures::new(&runner_config, &artifact_store).unwrap();
+    let fixtures = TestFixtures::new(&run_opts, &artifact_store).unwrap();
 
     // Run the tests and print results.
-    let execution_stats = execute::run_tests_with_ctx(ctx, fixtures);
+    let execution_stats = execute::run_tests_with_ctx(ctx, fixtures, &run_opts);
     if execution_stats.failed_test_cases.len() != 0 {
         println!("\nfailures:");
         for tc in execution_stats.failed_test_cases {
@@ -76,4 +84,19 @@ fn main() {
         execution_stats.tests_not_run,
         execution_stats.duration.as_secs_f64()
     );
+}
+
+fn list_tests(list_opts: &ListOptions) {
+    println!("Tests enabled after applying filters:\n");
+
+    let mut count = 0;
+    for tc in phd_tests::phd_testcase::filtered_test_cases(
+        &list_opts.include_filter,
+        &list_opts.exclude_filter,
+    ) {
+        println!("    {}", tc.fully_qualified_name());
+        count += 1
+    }
+
+    println!("\n{} test(s) selected", count);
 }

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use phd_tests::phd_testcase::{TestCase, TestContext, TestOutcome};
 use tracing::{error, info};
 
+use crate::config::RunOptions;
 use crate::fixtures::TestFixtures;
 
 /// Statistics returned after executing a set of tests.
@@ -54,9 +55,14 @@ thread_local! {
 pub fn run_tests_with_ctx<'fix>(
     ctx: TestContext,
     mut fixtures: TestFixtures,
+    run_opts: &RunOptions,
 ) -> ExecutionStats {
     let mut executions = Vec::new();
-    for tc in phd_tests::phd_testcase::all_test_cases() {
+
+    for tc in phd_tests::phd_testcase::filtered_test_cases(
+        &run_opts.include_filter,
+        &run_opts.exclude_filter,
+    ) {
         executions.push(Execution { tc, status: Status::NotRun });
     }
 
@@ -69,6 +75,11 @@ pub fn run_tests_with_ctx<'fix>(
         failed_test_cases: Vec::new(),
     };
 
+    if executions.len() == 0 {
+        info!("No tests selected for execution");
+        return stats;
+    }
+
     fixtures.execution_setup().unwrap();
 
     std::panic::set_hook(Box::new(|info| {
@@ -80,7 +91,7 @@ pub fn run_tests_with_ctx<'fix>(
         });
     }));
 
-    info!("Running {} tests", executions.len());
+    info!("Running {} test(s)", executions.len());
     let start_time = Instant::now();
     'exec_loop: for execution in &mut executions {
         info!("Starting test {}", execution.tc.fully_qualified_name());
