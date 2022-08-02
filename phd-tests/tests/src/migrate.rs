@@ -26,11 +26,11 @@ fn smoke_test(ctx: &TestContext) {
 #[phd_testcase]
 fn incompatible_vms(ctx: &TestContext) {
     let configs = vec![
-        ("cpus", ctx.vm_factory.default_vm_config().set_cpus(8)),
-        ("memory", ctx.vm_factory.default_vm_config().set_memory_mib(1024)),
+        ctx.vm_factory.default_vm_config().set_cpus(8),
+        ctx.vm_factory.default_vm_config().set_memory_mib(1024),
     ];
 
-    for (i, (name, cfg)) in configs.into_iter().enumerate() {
+    for (i, cfg) in configs.into_iter().enumerate() {
         let mut source = ctx.vm_factory.new_vm(
             format!("migration_incompatible_source_{}", i).as_str(),
             ctx.vm_factory.default_vm_config().set_cpus(4).set_memory_mib(512),
@@ -39,7 +39,7 @@ fn incompatible_vms(ctx: &TestContext) {
         source.launch()?;
 
         let mut target = ctx.vm_factory.new_vm(
-            format!("migration_incompatible_target_{}", name).as_str(),
+            format!("migration_incompatible_target_{}", i).as_str(),
             cfg,
         )?;
 
