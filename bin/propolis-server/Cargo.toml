@@ -44,7 +44,7 @@ serde = "1.0"
 serde_derive = "1.0"
 serde_json = "1.0"
 slog = "2.7"
-propolis = { path = "../../lib/propolis", features = ["crucible", "oximeter"], default-features = false }
+propolis = { path = "../../lib/propolis", features = ["crucible-full", "oximeter"], default-features = false }
 propolis-client = { path = "../../lib/propolis-client" }
 rfb = { git = "https://github.com/oxidecomputer/rfb", branch = "main" }
 uuid = "1.0.0"
