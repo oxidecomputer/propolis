@@ -98,5 +98,6 @@ pub const VM_TRACK_DIRTY_PAGES: i32 = VMM_IOC_BASE | 0x20;
 pub const VM_DESC_FPU_AREA: i32 = VMM_IOC_BASE | 0x21;
 pub const VM_DATA_READ: i32 = VMM_IOC_BASE | 0x22;
 pub const VM_DATA_WRITE: i32 = VMM_IOC_BASE | 0x23;
+pub const VM_SET_AUTODESTRUCT: i32 = VMM_IOC_BASE | 0x24;
 
 pub const VM_DEVMEM_GETOFFSET: i32 = VMM_IOC_BASE | 0xff;

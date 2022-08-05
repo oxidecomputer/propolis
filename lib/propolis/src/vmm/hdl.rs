@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::common::PAGE_SIZE;
 use crate::migrate::MigrateStateError;
-use crate::util::sys::ioctl;
+use crate::util::sys::{ioctl, ioctl_usize};
 
 #[derive(Default, Copy, Clone)]
 /// Configurable options for VMM instance creation
@@ -197,6 +197,24 @@ impl VmmHdl {
         ioctl(self.fd(), cmd, data)?;
         Ok(())
     }
+
+    /// Sends an ioctl (with usize param) to the underlying VMM.
+    pub fn ioctl_usize(&self, cmd: i32, data: usize) -> Result<()> {
+        if self.destroyed.load(Ordering::Acquire) {
+            return Err(Error::new(ErrorKind::NotFound, "instance destroyed"));
+        }
+
+        #[cfg(test)]
+        if self.is_test_hdl {
+            // Lie about all ioctl results, since there is no real vmm resource
+            // underlying this handle.
+            return Ok(());
+        }
+
+        ioctl_usize(self.fd(), cmd, data)?;
+        Ok(())
+    }
+
     /// Creates and sends a request to allocate a memory segment within the VM.
     ///
     /// # Arguments
@@ -452,6 +470,14 @@ impl VmmHdl {
             erased_serde::deserialize(deserializer)?;
         deserialized.write(self)?;
         Ok(())
+    }
+
+    /// Set whether instance should auto-destruct when closed
+    pub fn set_autodestruct(&self, enable_autodestruct: bool) -> Result<()> {
+        self.ioctl_usize(
+            bhyve_api::VM_SET_AUTODESTRUCT,
+            enable_autodestruct as usize,
+        )
     }
 }
 
