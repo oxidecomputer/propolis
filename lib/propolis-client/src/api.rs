@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
-// Re-export types that are of a public struct
-pub use crucible::VolumeConstructionRequest;
+pub use crucible_client_types::VolumeConstructionRequest;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceNameParams {
@@ -240,7 +239,8 @@ pub struct DiskRequest {
 
     // Crucible related opts
     pub gen: u64,
-    pub volume_construction_request: crucible::VolumeConstructionRequest,
+    pub volume_construction_request:
+        crucible_client_types::VolumeConstructionRequest,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

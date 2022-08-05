@@ -50,7 +50,7 @@ use std::convert::TryFrom;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use crucible::VolumeConstructionRequest;
+pub use crucible_client_types::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
 /// Type alias for keys in the instance spec's maps.
@@ -261,8 +261,7 @@ impl MigrationCompatible for Board {
 /// A description of a Crucible volume construction request.
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct CrucibleRequestContents {
-    /// A [`crucible::VolumeConstructionRequest`], serialized as JSON.
-    //
+    /// A [`crucible_client_types::VolumeConstructionRequest`], serialized as JSON.
     // Storing volume construction requests in serialized form allows external
     // types to change without causing a breaking change to instance specs.
     // Consider the following scenario, assuming the VolumeConstructionRequest
@@ -294,7 +293,9 @@ pub struct CrucibleRequestContents {
     pub json: String,
 }
 
-impl TryFrom<&CrucibleRequestContents> for crucible::VolumeConstructionRequest {
+impl TryFrom<&CrucibleRequestContents>
+    for crucible_client_types::VolumeConstructionRequest
+{
     type Error = serde_json::Error;
 
     fn try_from(value: &CrucibleRequestContents) -> Result<Self, Self::Error> {
@@ -302,11 +303,13 @@ impl TryFrom<&CrucibleRequestContents> for crucible::VolumeConstructionRequest {
     }
 }
 
-impl TryFrom<&crucible::VolumeConstructionRequest> for CrucibleRequestContents {
+impl TryFrom<&crucible_client_types::VolumeConstructionRequest>
+    for CrucibleRequestContents
+{
     type Error = serde_json::Error;
 
     fn try_from(
-        value: &crucible::VolumeConstructionRequest,
+        value: &crucible_client_types::VolumeConstructionRequest,
     ) -> Result<Self, Self::Error> {
         Ok(Self { json: serde_json::to_string(value)? })
     }

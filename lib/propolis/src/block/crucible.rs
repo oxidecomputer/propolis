@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crucible::{
     crucible_bail, BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume,
-    VolumeConstructionRequest,
 };
+use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
 
 /// Helper function, because Rust couldn't derive the types
