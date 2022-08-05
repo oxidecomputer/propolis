@@ -262,6 +262,7 @@ impl MigrationCompatible for Board {
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct CrucibleRequestContents {
     /// A [`crucible_client_types::VolumeConstructionRequest`], serialized as JSON.
+    //
     // Storing volume construction requests in serialized form allows external
     // types to change without causing a breaking change to instance specs.
     // Consider the following scenario, assuming the VolumeConstructionRequest

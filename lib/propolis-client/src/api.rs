@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
+// Re-export types that are of a public struct
 pub use crucible_client_types::VolumeConstructionRequest;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
