@@ -56,3 +56,4 @@ rand = "0.8"
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["usdt/asm"]
+crucible-full = ["crucible", "crucible-client-types"]
