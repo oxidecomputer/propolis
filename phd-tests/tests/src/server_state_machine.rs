@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use phd_testcase::*;
-use propolis_client::api::InstanceState;
+use propolis_client::{api::InstanceState, Error as ClientError};
 
 #[phd_testcase]
 fn instance_start_stop_test(ctx: &TestContext) {
@@ -33,9 +33,9 @@ fn instance_stop_causes_destroy_test(ctx: &TestContext) {
     vm.stop()?;
     vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))?;
 
-    assert!(vm.run().is_err());
-    assert!(vm.stop().is_err());
-    assert!(vm.reset().is_err());
+    assert!(matches!(vm.run().unwrap_err(), ClientError::Status(500)));
+    assert!(matches!(vm.stop().unwrap_err(), ClientError::Status(500)));
+    assert!(matches!(vm.reset().unwrap_err(), ClientError::Status(500)));
 }
 
 #[phd_testcase]

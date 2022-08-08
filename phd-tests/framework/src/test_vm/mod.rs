@@ -8,13 +8,14 @@ use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
 use backoff::backoff::Backoff;
+use core::result::Result as StdResult;
 use propolis_client::api::InstanceState;
 use propolis_client::{
     api::{
         InstanceEnsureRequest, InstanceGetResponse, InstanceProperties,
         InstanceStateRequested,
     },
-    Client,
+    Client, Error as PropolisClientError,
 };
 use slog::Drain;
 use tokio::{sync::mpsc, time::timeout};
@@ -213,15 +214,15 @@ impl TestVm {
         self.guest_os_kind
     }
 
-    /// Starts the VM's guest.
-    pub fn run(&self) -> Result<()> {
+    /// Starts the VM.
+    pub fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state(InstanceStateRequested::Run).await
         })
     }
 
     /// Stops the VM.
-    pub fn stop(&self) -> Result<()> {
+    pub fn stop(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state(InstanceStateRequested::Stop).await
         })
@@ -229,7 +230,7 @@ impl TestVm {
 
     /// Resets the VM by requesting the `Reboot` state from the server (as
     /// distinct from requesting a reboot from within the guest).
-    pub fn reset(&self) -> Result<()> {
+    pub fn reset(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state(InstanceStateRequested::Reboot).await
         })
@@ -238,14 +239,10 @@ impl TestVm {
     async fn put_instance_state(
         &self,
         state: InstanceStateRequested,
-    ) -> Result<()> {
+    ) -> StdResult<(), PropolisClientError> {
         let _span = self.tracing_span.enter();
         info!(?state, "Requesting instance state change");
-        self.client
-            .instance_state_put(state)
-            .await
-            .with_context(|| anyhow!("failed to set instance state"))?;
-        Ok(())
+        self.client.instance_state_put(state).await
     }
 
     /// Issues a Propolis client `instance_get` request.
