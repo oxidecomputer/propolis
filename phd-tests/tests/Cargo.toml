@@ -8,4 +8,3 @@ edition = "2021"
 [dependencies]
 propolis-client = { path = "../../lib/propolis-client" }
 phd-testcase = { path = "../testcase" }
-tracing = "0.1.35"
