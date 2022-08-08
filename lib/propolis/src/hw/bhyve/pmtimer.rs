@@ -47,7 +47,7 @@ pub mod migrate {
 
     #[derive(Default, Deserialize, Serialize)]
     pub struct BhyvePmTimerV1 {
-        pub start_time: u64,
+        pub start_time: i64,
     }
     impl BhyvePmTimerV1 {
         pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {

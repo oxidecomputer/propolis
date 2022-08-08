@@ -141,7 +141,7 @@ pub mod migrate {
         pub cmos: [u8; 128],
         pub time_sec: u64,
         pub time_nsec: u64,
-        pub time_base: u64,
+        pub time_base: i64,
         pub addr: u8,
     }
 

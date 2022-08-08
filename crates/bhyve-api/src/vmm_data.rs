@@ -70,7 +70,7 @@ pub struct vdi_lapic_page_v1 {
 pub struct vdi_lapic_v1 {
     pub vl_lapic: vdi_lapic_page_v1,
     pub vl_msr_apicbase: u64,
-    pub vl_timer_target: u64,
+    pub vl_timer_target: i64,
     pub vl_esr_pending: u32,
 }
 
@@ -100,7 +100,7 @@ pub struct vdi_atpit_channel_v1 {
     /// - 0b10000 free-running timer
     pub vac_status: u8,
 
-    pub vac_time_target: u64,
+    pub vac_time_target: i64,
 }
 
 #[repr(C)]
@@ -146,7 +146,7 @@ pub struct vdi_hpet_timer_v1 {
     pub vht_msi: u64,
     pub vht_comp_val: u32,
     pub vht_comp_rate: u32,
-    pub vht_time_base: u64,
+    pub vht_time_target: i64,
 }
 
 #[repr(C)]
@@ -155,7 +155,7 @@ pub struct vdi_hpet_v1 {
     pub vh_config: u64,
     pub vh_isr: u64,
     pub vh_count_base: u32,
-    pub vh_time_base: u64,
+    pub vh_time_base: i64,
 
     pub vh_timers: [vdi_hpet_timer_v1; 8],
 }
@@ -163,7 +163,7 @@ pub struct vdi_hpet_v1 {
 #[repr(C)]
 #[derive(Copy, Clone, Default, Serialize, Deserialize)]
 pub struct vdi_pm_timer_v1 {
-    pub vpt_time_base: u64,
+    pub vpt_time_base: i64,
     pub vpt_ioport: u16,
 }
 
@@ -173,7 +173,7 @@ pub struct vdi_rtc_v1 {
     #[serde(with = "serde_arrays")]
     pub vr_content: [u8; 128],
     pub vr_addr: u8,
-    pub vr_time_base: u64,
+    pub vr_time_base: i64,
     pub vr_rtc_sec: u64,
     pub vr_rtc_nsec: u64,
 }
