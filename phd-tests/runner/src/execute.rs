@@ -53,7 +53,7 @@ thread_local! {
 
 /// Executes a set of tests using the supplied test context.
 pub fn run_tests_with_ctx<'fix>(
-    ctx: TestContext,
+    ctx: &TestContext,
     mut fixtures: TestFixtures,
     run_opts: &RunOptions,
 ) -> ExecutionStats {

@@ -51,6 +51,7 @@ fn run_tests(run_opts: &RunOptions) {
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         default_guest_cpus: run_opts.default_guest_cpus,
         default_guest_memory_mib: run_opts.default_guest_memory_mib,
+        server_port_range: 9000..10000,
     };
 
     // The VM factory config and artifact store are enough to create a test
@@ -62,10 +63,11 @@ fn run_tests(run_opts: &RunOptions) {
         )
         .unwrap(),
     };
-    let fixtures = TestFixtures::new(&run_opts, &artifact_store).unwrap();
+    let fixtures = TestFixtures::new(&run_opts, &artifact_store, &ctx).unwrap();
 
     // Run the tests and print results.
-    let execution_stats = execute::run_tests_with_ctx(ctx, fixtures, &run_opts);
+    let execution_stats =
+        execute::run_tests_with_ctx(&ctx, fixtures, &run_opts);
     if execution_stats.failed_test_cases.len() != 0 {
         println!("\nfailures:");
         for tc in execution_stats.failed_test_cases {
