@@ -4,9 +4,8 @@
 #: variety = "basic"
 #: target = "lab"
 #: output_rules = [
-#:	"/tmp/propolis-phd/*.log",
-#:	"/tmp/propolis-phd/*.toml",
 #:	"/tmp/phd-runner.log",
+#:	"/tmp/phd-tmp-files.tar.gz",
 #: ]
 #: skip_clone = true
 #:
@@ -55,14 +54,21 @@ ls $runner
 ls $artifacts
 ls $propolis
 
-if RUST_BACKTRACE=1 ptime -m $runner \
+(RUST_BACKTRACE=1 ptime -m $runner \
 	--disable-ansi \
 	run \
 	--propolis-server-cmd $propolis \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir | \
-	tee /tmp/phd-runner.log; then
+	tee /tmp/phd-runner.log)
 
+failcount=$?
+
+tar -czvf /tmp/phd-tmp-files.tar.gz \
+	-C /tmp/propolis-phd /tmp/propolis-phd/*.log \
+	-C /tmp/propolis-phd /tmp/propolis-phd/*.toml
+
+if [ $failcount -eq 0 ]; then
 	echo
 	echo "ALL TESTS PASSED"
 	echo
