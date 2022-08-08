@@ -6,7 +6,7 @@ license = "MPL-2.0"
 build = "build.rs"
 
 [dependencies]
-bhyve_api = { path = ".." }
+viona_api = { path = ".." }
 libc = "0.2"
 
 [build-dependencies]
