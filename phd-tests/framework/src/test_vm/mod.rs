@@ -217,14 +217,14 @@ impl TestVm {
     /// Starts the VM.
     pub fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
-            self.put_instance_state(InstanceStateRequested::Run).await
+            self.put_instance_state_async(InstanceStateRequested::Run).await
         })
     }
 
     /// Stops the VM.
     pub fn stop(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
-            self.put_instance_state(InstanceStateRequested::Stop).await
+            self.put_instance_state_async(InstanceStateRequested::Stop).await
         })
     }
 
@@ -232,11 +232,11 @@ impl TestVm {
     /// distinct from requesting a reboot from within the guest).
     pub fn reset(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
-            self.put_instance_state(InstanceStateRequested::Reboot).await
+            self.put_instance_state_async(InstanceStateRequested::Reboot).await
         })
     }
 
-    async fn put_instance_state(
+    async fn put_instance_state_async(
         &self,
         state: InstanceStateRequested,
     ) -> StdResult<(), PropolisClientError> {
@@ -280,7 +280,11 @@ impl TestVm {
 
             match backoff.next_backoff() {
                 Some(to_wait) => {
-                    info!("Waiting for state {:?}, got state {:?}, waiting {:#?} before trying again", target, current, to_wait);
+                    info!(
+                        "Waiting for state {:?}, got state {:?}, \
+                          waiting {:#?} before trying again",
+                        target, current, to_wait
+                    );
                     std::thread::sleep(to_wait);
                 }
                 None => {
