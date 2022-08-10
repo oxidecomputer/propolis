@@ -1,5 +1,5 @@
 use anyhow::Result;
-use phd_framework::artifacts::ArtifactStore;
+use phd_framework::{artifacts::ArtifactStore, host_api::VmmStateWriteGuard};
 use tracing::instrument;
 
 use crate::TestContext;
@@ -12,6 +12,7 @@ pub struct TestFixtures<'a> {
     artifact_store: &'a ArtifactStore,
     test_context: &'a TestContext,
     zfs: Option<ZfsFixture>,
+    _vmm_state_write_guard: VmmStateWriteGuard,
 }
 
 impl<'a> TestFixtures<'a> {
@@ -34,7 +35,13 @@ impl<'a> TestFixtures<'a> {
             })
             .transpose()?;
 
-        Ok(Self { artifact_store, test_context, zfs })
+        let vmm_guard = phd_framework::host_api::enable_vmm_state_writes()?;
+        Ok(Self {
+            artifact_store,
+            test_context,
+            zfs,
+            _vmm_state_write_guard: vmm_guard,
+        })
     }
 
     /// Calls fixture routines that need to run before any tests run.

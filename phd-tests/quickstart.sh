@@ -10,7 +10,7 @@ if [ ! -d "$PHD_QUICKSTART_DIR" ]; then
 	mkdir $PHD_QUICKSTART_DIR
 fi
 
-cargo run --profile=phd -p phd-runner -- \
+pfexec cargo run --profile=phd -p phd-runner -- \
 	run \
 	--artifact-toml-path ./sample_artifacts.toml \
 	--tmp-directory $PHD_QUICKSTART_DIR \

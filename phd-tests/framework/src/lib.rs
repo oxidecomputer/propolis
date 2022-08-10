@@ -3,6 +3,7 @@
 
 pub mod artifacts;
 pub mod guest_os;
+pub mod host_api;
 mod serial;
 pub mod test_vm;
 

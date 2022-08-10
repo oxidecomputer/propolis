@@ -30,13 +30,22 @@ To get started running PHD tests:
 That's it! PHD will obtain a guest OS image and a bootrom and run its tests
 against them.
 
-## Building the runner
+## Building & executing the runner
 
-`cargo [build|run] --bin=phd-runner --profile=phd -- <OPTIONS>`
+To build:
+
+`cargo build -p phd-runner --profile=phd`
 
 Note that `--profile=phd` is required to allow the runner to catch assertions
 from test cases (the default Propolis profile aborts on panic instead of
 unwinding).
+
+To run:
+
+`pfexec cargo run -p phd-runner --profile=phd -- [OPTIONS]`
+
+Running under pfexec is required to allow PHD to ensure the host system is
+correctly configured to run live migration tests.
 
 ## Runtime options
 
