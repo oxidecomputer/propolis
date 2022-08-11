@@ -26,7 +26,8 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
-# Special
+# The PHD test runner needs to use unwinding to catch panics that occur during
+# tests (e.g. due to a failed `assert!` in a test case).
 [profile.phd]
 inherits = "dev"
 panic = "unwind"
