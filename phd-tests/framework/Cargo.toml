@@ -13,9 +13,9 @@ backoff = "0.4.0"
 futures = "0.3"
 hex = "0.4.3"
 propolis-client = { path = "../../lib/propolis-client" }
-propolis-server = { path = "../../bin/propolis-server" }
+propolis-server-config = { path = "../../crates/propolis-server-config" }
 propolis_types = { path = "../../crates/propolis-types" }
-reqwest = "0.11.11"
+reqwest = { version = "0.11.11", features = ["blocking"] }
 ring = "0.16.20"
 serde = { version = "1.0.139", features = ["derive"] }
 serde_derive = "1.0.139"

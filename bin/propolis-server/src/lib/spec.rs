@@ -93,7 +93,7 @@ impl SpecBuilder {
         config: &config::Config,
     ) -> Result<Self, SpecBuilderError> {
         let enable_pcie =
-            config.get_chipset().options.get("enable-pcie").map_or_else(
+            config.chipset.options.get("enable-pcie").map_or_else(
                 || Ok(false),
                 |v| {
                     v.as_bool().ok_or_else(|| {
@@ -475,10 +475,10 @@ impl SpecBuilder {
         config: &config::Config,
     ) -> Result<(), SpecBuilderError> {
         // Initialize all the backends in the config file.
-        for (name, backend) in config.block_devs() {
+        for (name, backend) in config.block_devs.iter() {
             self.add_storage_backend_from_config(name, backend)?;
         }
-        for (name, device) in config.devs() {
+        for (name, device) in config.devices.iter() {
             let driver = device.driver.as_str();
             match driver {
                 "pci-virtio-block" => self.add_storage_device_from_config(
@@ -502,7 +502,7 @@ impl SpecBuilder {
                 }
             }
         }
-        for bridge in config.pci_bridges() {
+        for bridge in config.pci_bridges.iter() {
             self.add_pci_bridge_from_config(bridge)?;
         }
         Ok(())
