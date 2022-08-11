@@ -7,12 +7,15 @@ use crate::guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind};
 use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
+use backoff::backoff::Backoff;
+use core::result::Result as StdResult;
+use propolis_client::api::InstanceState;
 use propolis_client::{
     api::{
         InstanceEnsureRequest, InstanceGetResponse, InstanceProperties,
         InstanceStateRequested,
     },
-    Client,
+    Client, Error as PropolisClientError,
 };
 use slog::Drain;
 use tokio::{sync::mpsc, time::timeout};
@@ -211,32 +214,90 @@ impl TestVm {
         self.guest_os_kind
     }
 
-    /// Starts the VM's guest.
-    pub fn run(&self) -> Result<()> {
-        let _span = self.tracing_span.enter();
-        info!("Sending run request to server");
+    /// Starts the VM.
+    pub fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
-            self.client
-                .instance_state_put(InstanceStateRequested::Run)
-                .await
-                .with_context(|| {
-                anyhow!("failed to set instance state to running")
-            })?;
-
-            Ok(())
+            self.put_instance_state_async(InstanceStateRequested::Run).await
         })
+    }
+
+    /// Stops the VM.
+    pub fn stop(&self) -> StdResult<(), PropolisClientError> {
+        self.rt.block_on(async {
+            self.put_instance_state_async(InstanceStateRequested::Stop).await
+        })
+    }
+
+    /// Resets the VM by requesting the `Reboot` state from the server (as
+    /// distinct from requesting a reboot from within the guest).
+    pub fn reset(&self) -> StdResult<(), PropolisClientError> {
+        self.rt.block_on(async {
+            self.put_instance_state_async(InstanceStateRequested::Reboot).await
+        })
+    }
+
+    async fn put_instance_state_async(
+        &self,
+        state: InstanceStateRequested,
+    ) -> StdResult<(), PropolisClientError> {
+        let _span = self.tracing_span.enter();
+        info!(?state, "Requesting instance state change");
+        self.client.instance_state_put(state).await
     }
 
     /// Issues a Propolis client `instance_get` request.
     pub fn get(&self) -> Result<InstanceGetResponse> {
         let _span = self.tracing_span.enter();
         info!("Sending instance get request to server");
-        self.rt.block_on(async {
-            let res = self.client.instance_get().await.with_context(|| {
-                anyhow!("failed to query instance properties")
-            })?;
-            Ok(res)
-        })
+        self.rt.block_on(async { self.get_async().await })
+    }
+
+    async fn get_async(&self) -> Result<InstanceGetResponse> {
+        self.client
+            .instance_get()
+            .await
+            .with_context(|| anyhow!("failed to query instance properties"))
+    }
+
+    pub fn wait_for_state(
+        &self,
+        target: InstanceState,
+        timeout_duration: Duration,
+    ) -> Result<()> {
+        let _span = self.tracing_span.enter();
+        info!(
+            "Waiting {:?} for server to reach state {:?}",
+            timeout_duration, target
+        );
+
+        let mut backoff = backoff::ExponentialBackoff::default();
+        backoff.max_elapsed_time = Some(timeout_duration);
+        loop {
+            let current = self.get()?.instance.state;
+            if current == target {
+                return Ok(());
+            }
+
+            match backoff.next_backoff() {
+                Some(to_wait) => {
+                    info!(
+                        "Waiting for state {:?}, got state {:?}, \
+                          waiting {:#?} before trying again",
+                        target, current, to_wait
+                    );
+                    std::thread::sleep(to_wait);
+                }
+                None => {
+                    info!("Timed out waiting for state {:?}", target);
+                    break;
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "Timed out waiting for instance to reach state {:?}",
+            target
+        ))
     }
 
     /// Waits for the guest to reach a login prompt and then logs in. Note that
