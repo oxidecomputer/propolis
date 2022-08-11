@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, MappedMutexGuard, Mutex, MutexGuard};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{self, handshake, Message};
@@ -88,7 +88,7 @@ pub(crate) struct InstanceContext {
     pub instance: Arc<Instance>,
     pub properties: api::InstanceProperties,
     pub spec: instance_spec::InstanceSpec,
-    serial: Option<Arc<Serial<LpcUart>>>,
+    serial: Arc<Serial<LpcUart>>,
     state_watcher: watch::Receiver<StateChange>,
     serial_task: Option<SerialTask>,
 
@@ -109,7 +109,7 @@ impl InstanceMetricsConfig {
 
 /// Contextual information accessible from HTTP callbacks.
 pub struct Context {
-    pub(crate) context: Mutex<Option<InstanceContext>>,
+    pub(crate) instance: Mutex<Option<InstanceContext>>,
     pub(crate) migrate_task: Mutex<Option<migrate::MigrateTask>>,
     config: Config,
     log: Logger,
@@ -130,7 +130,7 @@ impl Context {
         metric_config: Option<InstanceMetricsConfig>,
     ) -> Self {
         Context {
-            context: Mutex::new(None),
+            instance: Mutex::new(None),
             migrate_task: Mutex::new(None),
             config,
             log,
@@ -139,6 +139,20 @@ impl Context {
             metric_config,
             instance_metrics: Mutex::new(None),
         }
+    }
+
+    /// Get access to the instance portion of the `Context`, emitting a
+    /// consistent error if it is absent.
+    pub(crate) async fn instance(
+        &self,
+    ) -> Result<MappedMutexGuard<InstanceContext>, HttpError> {
+        MutexGuard::try_map(self.instance.lock().await, Option::as_mut).map_err(
+            |_| {
+                HttpError::for_internal_error(
+                    "Server not initialized (no instance)".to_string(),
+                )
+            },
+        )
     }
 }
 
@@ -197,8 +211,8 @@ async fn instance_ensure(
     );
 
     // Handle requests to an instance that has already been initialized.
-    let mut context = server_context.context.lock().await;
-    if let Some(ctx) = &*context {
+    let mut instance_context = server_context.instance.lock().await;
+    if let Some(ctx) = instance_context.as_ref() {
         if ctx.properties.id != properties.id {
             return Err(HttpError::for_internal_error(format!(
                 "Server already initialized with ID {}",
@@ -446,24 +460,27 @@ async fn instance_ensure(
     }));
 
     // Save the newly created instance in the server's context.
-    *context = Some(InstanceContext {
+    *instance_context = Some(InstanceContext {
         instance: instance.clone(),
         properties,
         spec,
-        serial: com1,
+        serial: com1.unwrap(),
         state_watcher: rx,
         serial_task: None,
         crucible_backends: Mutex::new(crucible_backends),
     });
-    drop(context);
 
     // Is this part of a migration?
     let migrate = if let Some(migrate_request) = request.migrate {
         // This is a migrate request and so we should try to establish a
         // connection with the source instance.
-        let res = migrate::dest_initiate(rqctx, migrate_request)
-            .await
-            .map_err(<_ as Into<HttpError>>::into)?;
+        let res = migrate::dest_initiate(
+            &rqctx,
+            instance_context.as_ref().unwrap(),
+            migrate_request,
+        )
+        .await
+        .map_err(<_ as Into<HttpError>>::into)?;
         Some(res)
     } else {
         None
@@ -481,17 +498,11 @@ async fn instance_ensure(
 async fn instance_get(
     rqctx: Arc<RequestContext<Context>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    let context = rqctx.context().context.lock().await;
-
-    let context = context.as_ref().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
-    })?;
+    let inst = rqctx.context().instance().await?;
 
     let instance_info = api::Instance {
-        properties: context.properties.clone(),
-        state: propolis_to_api_state(context.instance.current_state()),
+        properties: inst.properties.clone(),
+        state: propolis_to_api_state(inst.instance.current_state()),
         disks: vec![],
         // TODO: Fix this; we need a way to enumerate attached NICs.
         // Possibly using the inventory of the instance?
@@ -516,19 +527,9 @@ async fn instance_state_monitor(
     rqctx: Arc<RequestContext<Context>>,
     request: TypedBody<api::InstanceStateMonitorRequest>,
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
-    let (mut state_watcher, gen) = {
-        let context = rqctx.context().context.lock().await;
-        let context = context.as_ref().ok_or_else(|| {
-            HttpError::for_internal_error(
-                "Server not initialized (no instance)".to_string(),
-            )
-        })?;
-
-        let gen = request.into_inner().gen;
-        let state_watcher = context.state_watcher.clone();
-
-        (state_watcher, gen)
-    };
+    let gen = request.into_inner().gen;
+    let mut state_watcher =
+        rqctx.context().instance().await?.state_watcher.clone();
 
     loop {
         let last = state_watcher.borrow().clone();
@@ -551,16 +552,10 @@ async fn instance_state_put(
     rqctx: Arc<RequestContext<Context>>,
     request: TypedBody<api::InstanceStateRequested>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
-    let context = rqctx.context().context.lock().await;
-
-    let context = context.as_ref().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
-    })?;
+    let inst = rqctx.context().instance().await?;
 
     let state = api_to_propolis_state(request.into_inner());
-    context.instance.set_target_state(state).map_err(|err| {
+    inst.instance.set_target_state(state).map_err(|err| {
         HttpError::for_internal_error(format!("Failed to set state: {:?}", err))
     })?;
 
@@ -727,24 +722,9 @@ async fn instance_serial_task(
 async fn instance_serial(
     rqctx: Arc<RequestContext<Context>>,
 ) -> Result<Response<Body>, HttpError> {
-    let mut context = rqctx.context().context.lock().await;
+    let mut inst = rqctx.context().instance().await?;
 
-    let context = context.as_mut().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
-    })?;
-
-    let serial = context
-        .serial
-        .as_ref()
-        .ok_or_else(|| {
-            HttpError::for_internal_error(
-                "Instance present but serial not initialized".to_string(),
-            )
-        })?
-        .clone();
-
+    let serial = inst.serial.clone();
     let request = &mut *rqctx.request.lock().await;
 
     if !request
@@ -800,12 +780,12 @@ async fn instance_serial(
             )
         })?;
 
-    let actx = context.instance.async_ctx();
+    let actx = inst.instance.async_ctx();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
 
     // Create or get active serial task handle and channels
-    let serial_task = context.serial_task.get_or_insert_with(move || {
+    let serial_task = inst.serial_task.get_or_insert_with(move || {
         let (websocks_ch, websocks_recv) = mpsc::channel(1);
         let (close_ch, close_recv) = oneshot::channel();
 
@@ -900,28 +880,19 @@ async fn instance_issue_crucible_snapshot_request(
     rqctx: Arc<RequestContext<Context>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let context = rqctx.context().context.lock().await;
+    let inst = rqctx.context().instance().await?;
     let path_params = path_params.into_inner();
 
-    let context = context.as_ref().ok_or_else(|| {
-        HttpError::for_internal_error(
-            "Server not initialized (no instance)".to_string(),
-        )
+    let crucible_backends = inst.crucible_backends.lock().await;
+    let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
+        let s = format!("no disk with id {}!", path_params.id);
+        HttpError::for_not_found(Some(s.clone()), s)
+    })?;
+    backend.snapshot(path_params.snapshot_id).map_err(|e| {
+        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
     })?;
 
-    let crucible_backends = context.crucible_backends.lock().await;
-    let crucible_backend = crucible_backends.get(&path_params.id);
-
-    if let Some(crucible_backend) = crucible_backend {
-        crucible_backend.snapshot(path_params.snapshot_id).map_err(|e| {
-            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-        })?;
-
-        Ok(HttpResponseOk(()))
-    } else {
-        let s = format!("no disk with id {}!", path_params.id);
-        Err(HttpError::for_not_found(Some(s.clone()), s))
-    }
+    Ok(HttpResponseOk(()))
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.

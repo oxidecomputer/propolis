@@ -261,13 +261,15 @@ pub async fn source_start(
     ));
     info!(log, "Migration Source");
 
-    let mut context = rqctx.context().context.lock().await;
-    let context =
-        context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
+    let inst_context = tokio::sync::MutexGuard::try_map(
+        rqctx.context().instance.lock().await,
+        Option::as_mut,
+    )
+    .map_err(|_| MigrateError::InstanceNotInitialized)?;
 
     // Bail if the instance hasn't been preset to Migrate Start state.
     if !matches!(
-        context.instance.current_state(),
+        inst_context.instance.current_state(),
         State::Migrate(MigrateRole::Source, MigratePhase::Start)
     ) {
         return Err(MigrateError::InvalidInstanceState);
@@ -280,7 +282,7 @@ pub async fn source_start(
         return Err(MigrateError::MigrationAlreadyInProgress);
     }
 
-    let request = &mut *rqctx.request.lock().await;
+    let mut request = rqctx.request.lock().await;
 
     // Check this is a valid migration request
     if !request
@@ -312,14 +314,14 @@ pub async fn source_start(
     }
 
     // Grab the future for plucking out the upgraded socket
-    let upgrade = hyper::upgrade::on(request);
+    let upgrade = hyper::upgrade::on(&mut *request);
 
     // We've successfully negotiated a migration protocol w/ the destination.
     // Now, we spawn a new task to handle the actual migration over the upgraded socket
     let migrate_context = Arc::new(MigrateContext::new(
         migration_id,
-        context.instance.clone(),
-        context.spec.clone(),
+        inst_context.instance.clone(),
+        inst_context.spec.clone(),
         log.clone(),
     ));
     let mctx = migrate_context.clone();
@@ -361,8 +363,9 @@ pub async fn source_start(
 /// it to a `propolis-migrate` connection, to the given source instance. Once
 /// we've successfully established the connection, we can begin the migration
 /// process (destination-side).
-pub async fn dest_initiate(
-    rqctx: Arc<RequestContext<Context>>,
+pub(crate) async fn dest_initiate(
+    rqctx: &Arc<RequestContext<Context>>,
+    instance_context: &crate::server::InstanceContext,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -374,10 +377,6 @@ pub async fn dest_initiate(
         "migrate_src_addr" => migrate_info.src_addr
     ));
     info!(log, "Migration Destination");
-
-    let mut context = rqctx.context().context.lock().await;
-    let context =
-        context.as_mut().ok_or_else(|| MigrateError::InstanceNotInitialized)?;
 
     let mut migrate_task = rqctx.context().migrate_task.lock().await;
 
@@ -438,12 +437,12 @@ pub async fn dest_initiate(
     // Now co-opt the socket for the migration protocol
     let conn = hyper::upgrade::on(res).await?;
 
-    // We've successfully negotiated a migration protocol w/ the source.
-    // Now, we spawn a new task to handle the actual migration over the upgraded socket
+    // We've successfully negotiated a migration protocol w/ the source. Now, we
+    // spawn a new task to handle the actual migration over the upgraded socket
     let migrate_context = Arc::new(MigrateContext::new(
         migration_id,
-        context.instance.clone(),
-        context.spec.clone(),
+        instance_context.instance.clone(),
+        instance_context.spec.clone(),
         log.clone(),
     ));
     let mctx = migrate_context.clone();
