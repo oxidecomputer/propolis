@@ -410,7 +410,7 @@ async fn instance_ensure(
                 &spec,
                 producer_registry.clone(),
             );
-            init.initialize_rom(server_context.config.get_bootrom())?;
+            init.initialize_rom(&server_context.config.bootrom)?;
             init.initialize_kernel_devs()?;
 
             let chipset = init.initialize_chipset()?;

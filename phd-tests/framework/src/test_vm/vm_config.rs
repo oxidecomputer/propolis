@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
+use propolis_server_config as config;
 
 #[derive(Debug)]
 enum DiskInterface {
@@ -58,20 +59,16 @@ impl VmConfig {
         // TODO: Change this to use instance specs when Propolis has an API that
         // accepts those.
         let bootrom: PathBuf = self.bootrom_path.clone().into();
-        let chipset =
-            propolis_server::config::Chipset { options: BTreeMap::default() };
+        let chipset = config::Chipset { options: BTreeMap::default() };
 
-        let mut device_map: BTreeMap<String, propolis_server::config::Device> =
+        let mut device_map: BTreeMap<String, config::Device> = BTreeMap::new();
+        let mut backend_map: BTreeMap<String, config::BlockDevice> =
             BTreeMap::new();
-        let mut backend_map: BTreeMap<
-            String,
-            propolis_server::config::BlockDevice,
-        > = BTreeMap::new();
 
         let mut disk_idx = 0;
         for disk in &self.disks {
             let backend_name = format!("block{}", disk_idx);
-            let backend = propolis_server::config::BlockDevice {
+            let backend = config::BlockDevice {
                 bdtype: "file".to_string(),
                 options: BTreeMap::from([
                     ("path".to_string(), disk.image_path.clone().into()),
@@ -83,7 +80,7 @@ impl VmConfig {
                 DiskInterface::Virtio => format!("vioblk{}", disk_idx),
                 DiskInterface::Nvme => format!("nvme{}", disk_idx),
             };
-            let device = propolis_server::config::Device {
+            let device = config::Device {
                 driver: match disk.interface {
                     DiskInterface::Virtio => "pci-virtio-block".to_string(),
                     DiskInterface::Nvme => "pci-nvme".to_string(),
@@ -105,7 +102,7 @@ impl VmConfig {
         let mut vnic_idx = 0;
         for vnic in &self.nics {
             let device_name = format!("viona{}", vnic_idx);
-            let device = propolis_server::config::Device {
+            let device = config::Device {
                 driver: "pci-virtio-viona".to_string(),
                 options: BTreeMap::from([
                     ("vnic".to_string(), vnic.vnic_device_name.clone().into()),
@@ -120,7 +117,7 @@ impl VmConfig {
             vnic_idx += 1;
         }
 
-        let config = propolis_server::config::Config::new(
+        let config = config::Config::new(
             bootrom,
             chipset,
             device_map,
