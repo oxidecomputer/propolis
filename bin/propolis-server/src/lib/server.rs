@@ -107,16 +107,42 @@ impl InstanceMetricsConfig {
     }
 }
 
+/// Objects that this server creates, owns, and manipulates in response to API
+/// calls.
 pub(crate) struct ServerObjects {
+    /// The server's Propolis instance, if one has been created via
+    /// `instance_ensure`.
     pub instance: Mutex<Option<InstanceContext>>,
+
+    /// The currently active live migration task, if a migration is in progress.
     pub migrate_task: Mutex<Option<migrate::MigrateTask>>,
+
+    /// The VNC server hosted in this process. Note that this server exists even
+    /// when no instance has been created yet (it serves a white screen);
+    /// creating an instance with `instance_ensure` hooks the inner
+    /// `PropolisVncServer` up to the new instance's framebuffer.
     vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+
+    /// The Oximeter metrics provider for this server's instance, created when
+    /// the instance is created. This is used to record "server-level" metrics
+    /// only. Propolis components that want to log their own metrics must be
+    /// given access to the Oximeter producer registry (from which this stats
+    /// endpoint is also derived).
     metrics: Mutex<Option<PropStatOuter>>,
 }
 
+/// Static configuration for objects owned by this server. The server obtains
+/// this configuration at startup time and refers to it when manipulating its
+/// objects.
 struct StaticConfig {
+    /// The TOML-driven VM configuration for this server's instances.
     vm: VmConfig,
+
+    /// Whether to use the host's guest memory reservoir to back guest memory.
     use_reservoir: bool,
+
+    /// The configuration to use when setting up this server's Oximeter
+    /// endpoint.
     metrics: Option<InstanceMetricsConfig>,
 }
 
