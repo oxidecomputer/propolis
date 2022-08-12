@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 imc
             });
 
-            let context = server::Context::new(
+            let context = server::DropshotEndpointContext::new(
                 config,
                 vnc_server,
                 use_reservoir,

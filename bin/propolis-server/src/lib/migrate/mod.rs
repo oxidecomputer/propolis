@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::{sync::RwLock, task::JoinHandle};
 use uuid::Uuid;
 
-use crate::server::Context;
+use crate::server::DropshotEndpointContext;
 
 mod codec;
 mod destination;
@@ -251,7 +251,7 @@ struct Device {
 ///This will attempt to upgrade the given HTTP request to a `propolis-migrate`
 /// connection and begin the migration in a separate task.
 pub async fn source_start(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     migration_id: Uuid,
 ) -> Result<Response<Body>, MigrateError> {
     // Create a new log context for the migration
@@ -262,7 +262,7 @@ pub async fn source_start(
     info!(log, "Migration Source");
 
     let inst_context = tokio::sync::MutexGuard::try_map(
-        rqctx.context().instance.lock().await,
+        rqctx.context().objects.instance.lock().await,
         Option::as_mut,
     )
     .map_err(|_| MigrateError::InstanceNotInitialized)?;
@@ -277,7 +277,7 @@ pub async fn source_start(
 
     // Bail if there's already one in progress
     // TODO: Should we just instead hold the context lock during the whole process?
-    let mut migrate_task = rqctx.context().migrate_task.lock().await;
+    let mut migrate_task = rqctx.context().objects.migrate_task.lock().await;
     if migrate_task.is_some() {
         return Err(MigrateError::MigrationAlreadyInProgress);
     }
@@ -364,7 +364,7 @@ pub async fn source_start(
 /// we've successfully established the connection, we can begin the migration
 /// process (destination-side).
 pub(crate) async fn dest_initiate(
-    rqctx: &Arc<RequestContext<Context>>,
+    rqctx: &Arc<RequestContext<DropshotEndpointContext>>,
     instance_context: &crate::server::InstanceContext,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
@@ -378,7 +378,7 @@ pub(crate) async fn dest_initiate(
     ));
     info!(log, "Migration Destination");
 
-    let mut migrate_task = rqctx.context().migrate_task.lock().await;
+    let mut migrate_task = rqctx.context().objects.migrate_task.lock().await;
 
     // This should be a fresh propolis-server
     assert!(migrate_task.is_none());
@@ -461,10 +461,10 @@ pub(crate) async fn dest_initiate(
 
 /// Return the current status of an ongoing migration
 pub async fn migrate_status(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     migration_id: Uuid,
 ) -> Result<api::InstanceMigrateStatusResponse, MigrateError> {
-    let migrate_task = rqctx.context().migrate_task.lock().await;
+    let migrate_task = rqctx.context().objects.migrate_task.lock().await;
     let migrate_task = migrate_task
         .as_ref()
         .ok_or_else(|| MigrateError::NoMigrationInProgress)?;

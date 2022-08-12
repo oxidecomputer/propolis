@@ -27,7 +27,9 @@ fn initialize_log(test_name: &str) -> Logger {
     config_logging.to_logger(test_name).unwrap()
 }
 
-async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
+async fn initialize_server(
+    log: &Logger,
+) -> HttpServer<server::DropshotEndpointContext> {
     let artifacts = setup().await;
 
     let mut block_options = BTreeMap::new();
@@ -73,7 +75,7 @@ async fn initialize_server(log: &Logger) -> HttpServer<server::Context> {
     );
 
     let use_reservoir = propolis_server::config::reservoir_decide(log);
-    let context = server::Context::new(
+    let context = server::DropshotEndpointContext::new(
         config,
         vnc_server,
         use_reservoir,
