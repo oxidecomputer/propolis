@@ -29,7 +29,7 @@ use propolis::hw::uart::LpcUart;
 use propolis::instance::Instance;
 use propolis_client::{api, instance_spec};
 
-use crate::config::Config;
+use crate::config::Config as VmConfig;
 use crate::initializer::{build_instance, MachineInitializer};
 use crate::serial::Serial;
 use crate::spec::SpecBuilder;
@@ -107,37 +107,48 @@ impl InstanceMetricsConfig {
     }
 }
 
-/// Contextual information accessible from HTTP callbacks.
-pub struct Context {
-    pub(crate) instance: Mutex<Option<InstanceContext>>,
-    pub(crate) migrate_task: Mutex<Option<migrate::MigrateTask>>,
-    config: Config,
-    log: Logger,
-    pub(crate) vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
-    pub(crate) use_reservoir: bool,
-    // To register with Oximeter.
-    pub(crate) metric_config: Option<InstanceMetricsConfig>,
-    pub instance_metrics: Mutex<Option<PropStatOuter>>,
+pub(crate) struct ServerObjects {
+    pub instance: Mutex<Option<InstanceContext>>,
+    pub migrate_task: Mutex<Option<migrate::MigrateTask>>,
+    vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+    metrics: Mutex<Option<PropStatOuter>>,
 }
 
-impl Context {
+struct StaticConfig {
+    vm: VmConfig,
+    use_reservoir: bool,
+    metrics: Option<InstanceMetricsConfig>,
+}
+
+/// Contextual information accessible from HTTP callbacks.
+pub struct DropshotEndpointContext {
+    static_config: StaticConfig,
+    pub(crate) objects: ServerObjects,
+    log: Logger,
+}
+
+impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
-        config: Config,
+        vm_config: VmConfig,
         vnc_server: VncServer<PropolisVncServer>,
         use_reservoir: bool,
         log: Logger,
         metric_config: Option<InstanceMetricsConfig>,
     ) -> Self {
-        Context {
-            instance: Mutex::new(None),
-            migrate_task: Mutex::new(None),
-            config,
+        DropshotEndpointContext {
+            static_config: StaticConfig {
+                vm: vm_config,
+                use_reservoir,
+                metrics: metric_config,
+            },
+            objects: ServerObjects {
+                instance: Mutex::new(None),
+                migrate_task: Mutex::new(None),
+                vnc_server: Arc::new(Mutex::new(vnc_server)),
+                metrics: Mutex::new(None),
+            },
             log,
-            vnc_server: Arc::new(Mutex::new(vnc_server)),
-            use_reservoir,
-            metric_config,
-            instance_metrics: Mutex::new(None),
         }
     }
 
@@ -146,13 +157,12 @@ impl Context {
     pub(crate) async fn instance(
         &self,
     ) -> Result<MappedMutexGuard<InstanceContext>, HttpError> {
-        MutexGuard::try_map(self.instance.lock().await, Option::as_mut).map_err(
-            |_| {
+        MutexGuard::try_map(self.objects.instance.lock().await, Option::as_mut)
+            .map_err(|_| {
                 HttpError::for_internal_error(
                     "Server not initialized (no instance)".to_string(),
                 )
-            },
-        )
+            })
     }
 }
 
@@ -197,7 +207,7 @@ fn propolis_to_api_state(
     path = "/instance",
 }]
 async fn instance_ensure(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
@@ -211,7 +221,7 @@ async fn instance_ensure(
     );
 
     // Handle requests to an instance that has already been initialized.
-    let mut instance_context = server_context.instance.lock().await;
+    let mut instance_context = server_context.objects.instance.lock().await;
     if let Some(ctx) = instance_context.as_ref() {
         if ctx.properties.id != properties.id {
             return Err(HttpError::for_internal_error(format!(
@@ -246,7 +256,7 @@ async fn instance_ensure(
 
     // Determine if we need to setup the metrics endpoint or not.
     // If we do, we will then populate producer_registry with something.
-    if server_context.metric_config.is_some() {
+    if server_context.static_config.metrics.is_some() {
         // Create some propolis level metrics.
         let prop_count_stat = PropCountStat::new(properties.id);
         let pso = PropStatOuter {
@@ -254,11 +264,16 @@ async fn instance_ensure(
         };
 
         // This is the address where stats will be collected.
-        let propolis_addr =
-            server_context.metric_config.as_ref().unwrap().propolis_addr.ip();
+        let propolis_addr = server_context
+            .static_config
+            .metrics
+            .as_ref()
+            .unwrap()
+            .propolis_addr
+            .ip();
         let listen_addr = SocketAddr::new(propolis_addr, 0);
         let register_addr =
-            server_context.metric_config.as_ref().unwrap().metric_addr;
+            server_context.static_config.metrics.as_ref().unwrap().metric_addr;
 
         match prop_oximeter(
             properties.id,
@@ -281,7 +296,7 @@ async fn instance_ensure(
 
                 // Now that our metrics are registered, attach them to
                 // the server context so they can be updated.
-                let mut im = server_context.instance_metrics.lock().await;
+                let mut im = server_context.objects.metrics.lock().await;
                 *im = Some(pso.clone());
                 drop(im);
 
@@ -304,12 +319,13 @@ async fn instance_ensure(
     let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
         BTreeMap::new();
     let mut spec_builder =
-        SpecBuilder::new(&properties, &server_context.config).map_err(|e| {
-            HttpError::for_bad_request(
-                None,
-                format!("failed to build instance spec: {}", e),
-            )
-        })?;
+        SpecBuilder::new(&properties, &server_context.static_config.vm)
+            .map_err(|e| {
+                HttpError::for_bad_request(
+                    None,
+                    format!("failed to build instance spec: {}", e),
+                )
+            })?;
     for nic in &nics {
         spec_builder.add_nic_from_request(nic).map_err(|e| {
             HttpError::for_bad_request(
@@ -341,14 +357,14 @@ async fn instance_ensure(
         })?;
         in_memory_disk_contents.insert("cloud-init".to_string(), bytes);
     }
-    spec_builder.add_devices_from_config(&server_context.config).map_err(
-        |e| {
+    spec_builder
+        .add_devices_from_config(&server_context.static_config.vm)
+        .map_err(|e| {
             HttpError::for_internal_error(format!(
                 "failed to add static devices from config: {}",
                 e
             ))
-        },
-    )?;
+        })?;
     for port in [
         instance_spec::SerialPortNumber::Com1,
         instance_spec::SerialPortNumber::Com2,
@@ -373,7 +389,7 @@ async fn instance_ensure(
     let instance = build_instance(
         &properties.id.to_string(),
         &spec,
-        server_context.use_reservoir,
+        server_context.static_config.use_reservoir,
         vmm_log,
     )
     .map_err(|err| {
@@ -410,7 +426,7 @@ async fn instance_ensure(
                 &spec,
                 producer_registry.clone(),
             );
-            init.initialize_rom(&server_context.config.bootrom)?;
+            init.initialize_rom(&server_context.static_config.vm.bootrom)?;
             init.initialize_kernel_devs()?;
 
             let chipset = init.initialize_chipset()?;
@@ -442,7 +458,7 @@ async fn instance_ensure(
         })?;
 
     // Initialize framebuffer data for the VNC server.
-    let vnc_hdl = Arc::clone(&server_context.vnc_server);
+    let vnc_hdl = Arc::clone(&server_context.objects.vnc_server);
     let fb_spec = ramfb.as_ref().unwrap().get_framebuffer_spec();
     let fb = vnc::RamFb::new(fb_spec);
     let actx = instance.async_ctx();
@@ -496,7 +512,7 @@ async fn instance_ensure(
     path = "/instance",
 }]
 async fn instance_get(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
     let inst = rqctx.context().instance().await?;
 
@@ -524,7 +540,7 @@ async fn instance_get(
     path = "/instance/state-monitor",
 }]
 async fn instance_state_monitor(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceStateMonitorRequest>,
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
     let gen = request.into_inner().gen;
@@ -549,7 +565,7 @@ async fn instance_state_monitor(
     path = "/instance/state",
 }]
 async fn instance_state_put(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceStateRequested>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let inst = rqctx.context().instance().await?;
@@ -562,7 +578,7 @@ async fn instance_state_put(
     // Update the metrics counter when we apply a reset
     if state == propolis::instance::ReqState::Reset {
         let server_context = rqctx.context();
-        let instance_metrics = server_context.instance_metrics.lock().await;
+        let instance_metrics = server_context.objects.metrics.lock().await;
         if let Some(im) = &*instance_metrics {
             im.count_reset();
         }
@@ -720,7 +736,7 @@ async fn instance_serial_task(
     path = "/instance/serial",
 }]
 async fn instance_serial(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
 ) -> Result<Response<Body>, HttpError> {
     let mut inst = rqctx.context().instance().await?;
 
@@ -849,7 +865,7 @@ async fn instance_serial(
     unpublished = true,
 }]
 async fn instance_migrate_start(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceMigrateStartRequest>,
 ) -> Result<Response<Body>, HttpError> {
     let migration_id = request.into_inner().migration_id;
@@ -861,7 +877,7 @@ async fn instance_migrate_start(
     path = "/instance/migrate/status"
 }]
 async fn instance_migrate_status(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
     let migration_id = request.into_inner().migration_id;
@@ -877,7 +893,7 @@ async fn instance_migrate_status(
     path = "/instance/disk/{id}/snapshot/{snapshot_id}",
 }]
 async fn instance_issue_crucible_snapshot_request(
-    rqctx: Arc<RequestContext<Context>>,
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let inst = rqctx.context().instance().await?;
@@ -896,7 +912,7 @@ async fn instance_issue_crucible_snapshot_request(
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
-pub fn api() -> ApiDescription<Context> {
+pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
     api.register(instance_get).unwrap();
