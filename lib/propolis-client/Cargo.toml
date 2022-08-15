@@ -16,4 +16,4 @@ serde_json = "1.0"
 slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_debug" ] }
 thiserror = "1.0"
 uuid = { version = "1.0.0", features = [ "serde", "v4" ] }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "1d67a53042f19ff7ca30dd20a04da94b7715ed7c" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "bacffd142fc38a01fe255407b0c8d5d0aacfe778" }
