@@ -7,26 +7,6 @@
 #: output_rules = [
 #:   "/out/*",
 #: ]
-#:
-#: [[publish]]
-#: series = "image"
-#: name = "propolis-server-debug.tar.gz"
-#: from_output = "/out/propolis-server-debug.tar.gz"
-#:
-#: [[publish]]
-#: series = "image"
-#: name = "propolis-server-debug.sha256.txt"
-#: from_output = "/out/propolis-server-debug.sha256.txt"
-#:
-#: [[publish]]
-#: series = "image"
-#: name = "phd-runner.tar.gz"
-#: from_output = "/out/phd-runner.tar.gz"
-#:
-#: [[publish]]
-#: series = "image"
-#: name = "phd-runner.sha256.txt"
-#: from_output = "/out/phd-runner.sha256.txt"
 
 set -o errexit
 set -o pipefail
