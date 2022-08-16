@@ -107,18 +107,17 @@ fn list_tests(list_opts: &ListOptions) {
 fn set_tracing_subscriber(args: &ProcessArgs) {
     let filter = EnvFilter::builder()
         .with_default_directive(tracing::Level::INFO.into());
+    let subscriber = Registry::default().with(filter.from_env_lossy());
     if args.emit_bunyan {
         let bunyan_layer =
             BunyanFormattingLayer::new("phd-runner".into(), std::io::stdout);
-        let subscriber =
-            Registry::default().with(JsonStorageLayer).with(bunyan_layer);
+        let subscriber = subscriber.with(JsonStorageLayer).with(bunyan_layer);
         tracing::subscriber::set_global_default(subscriber).unwrap();
     } else {
         let stdout_log = tracing_subscriber::fmt::layer()
             .with_line_number(true)
             .with_ansi(!args.disable_ansi);
-        let subscriber =
-            Registry::default().with(filter.from_env_lossy()).with(stdout_log);
+        let subscriber = subscriber.with(stdout_log);
         tracing::subscriber::set_global_default(subscriber).unwrap();
     }
 }
