@@ -28,31 +28,31 @@ impl From<&vm_exit> for VmExit {
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct IoPort {
     pub port: u16,
     pub bytes: u8,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum InoutReq {
     In(IoPort),
     Out(IoPort, u32),
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct MmioReadReq {
     pub addr: u64,
     pub bytes: u8,
 }
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct MmioWriteReq {
     pub addr: u64,
     pub data: u64,
     pub bytes: u8,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum MmioReq {
     Read(MmioReadReq),
     Write(MmioWriteReq),
@@ -268,6 +268,16 @@ pub enum InoutRes {
     In(IoPort, u32),
     Out(IoPort),
 }
+impl InoutRes {
+    /// Emit result equivalent to failed IO port operation.  Reads (INx) yield
+    /// all 1s, while writes are ignored.
+    pub fn emulate_failed(req: &InoutReq) -> Self {
+        match req {
+            InoutReq::In(port) => InoutRes::In(*port, !0u32),
+            InoutReq::Out(port, _data) => InoutRes::Out(*port),
+        }
+    }
+}
 
 pub struct MmioReadRes {
     pub addr: u64,
@@ -283,11 +293,28 @@ pub enum MmioRes {
     Read(MmioReadRes),
     Write(MmioWriteRes),
 }
+impl MmioRes {
+    /// Emit result equivalent to failed MMIO operation.  Reads yield all 1s,
+    /// while writes are ignored.
+    pub fn emulate_failed(req: &MmioReq) -> Self {
+        match req {
+            MmioReq::Read(read) => MmioRes::Read(MmioReadRes {
+                addr: read.addr,
+                data: !0u64,
+                bytes: read.bytes,
+            }),
+            MmioReq::Write(write) => MmioRes::Write(MmioWriteRes {
+                addr: write.addr,
+                bytes: write.bytes,
+            }),
+        }
+    }
+}
 
 pub enum VmEntry {
     Run,
     InoutFulfill(InoutRes),
-    MmioFulFill(MmioRes),
+    MmioFulfill(MmioRes),
 }
 impl VmEntry {
     pub fn to_raw(&self, cpuid: i32, exit_ptr: *mut vm_exit) -> vm_entry {
@@ -311,7 +338,7 @@ impl VmEntry {
                 payload.inout.bytes = io.bytes;
                 vm_entry_cmds::VEC_FULFILL_INOUT
             }
-            VmEntry::MmioFulFill(res) => {
+            VmEntry::MmioFulfill(res) => {
                 let (addr, bytes) = match res {
                     MmioRes::Read(read) => {
                         payload.mmio.read = 1;

@@ -3,8 +3,8 @@
 pub mod data;
 pub mod hdl;
 pub mod machine;
-pub mod mapping;
+pub mod mem;
 
 pub use hdl::*;
 pub use machine::*;
-pub use mapping::*;
+pub use mem::*;

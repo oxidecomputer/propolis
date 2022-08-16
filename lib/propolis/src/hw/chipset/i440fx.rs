@@ -1,10 +1,9 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::Chipset;
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::hw::bhyve::BhyvePmTimer;
+use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::hw::ids::pci::{
     PIIX3_ISA_DEV_ID, PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID,
@@ -15,10 +14,9 @@ use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
     self, Bdf, BusLocation, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
 };
-use crate::instance::{State, SuspendKind, SuspendSource, TransitionPhase};
-use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin};
+use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
 use crate::inventory;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
 use crate::mmio::MmioFn;
 use crate::pio::{PioBus, PioFn};
 use crate::util::regmap::RegMap;
@@ -37,9 +35,11 @@ const PM_FUNC: u8 = 3;
 const ADDR_PCIE_ECAM_REGION: usize = 0xe000_0000;
 const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
 
-#[derive(Default, Debug, Clone, Copy)]
-pub struct CreateOptions {
+#[derive(Default)]
+pub struct Opts {
     pub enable_pcie: bool,
+    pub power_pin: Option<Arc<dyn IntrPin>>,
+    pub reset_pin: Option<Arc<dyn IntrPin>>,
 }
 
 pub struct I440Fx {
@@ -48,20 +48,30 @@ pub struct I440Fx {
     pcie_cfg: PcieCfgDecoder,
     irq_config: Arc<IrqConfig>,
 
+    pin_power: Arc<dyn IntrPin>,
+    pin_reset: Arc<dyn IntrPin>,
+
     dev_hb: Arc<Piix4HostBridge>,
     dev_lpc: Arc<Piix3Lpc>,
     dev_pm: Arc<Piix3PM>,
 
     pm_timer: Arc<BhyvePmTimer>,
+    // TODO: could attach the PCI topology as part of chipset
+    // acc_mem: MemAccessor,
+    // acc_msi: MsiAccessor,
 }
 impl I440Fx {
     pub fn create(
         machine: &Machine,
         pci_topology: Arc<pci::topology::Topology>,
-        options: CreateOptions,
+        opts: Opts,
+        log: slog::Logger,
     ) -> Arc<Self> {
         let hdl = machine.hdl.clone();
-        let irq_config = IrqConfig::create(hdl);
+        let irq_config = IrqConfig::create(hdl.clone());
+
+        let power_pin = opts.power_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
+        let reset_pin = opts.reset_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
 
         let this = Arc::new(Self {
             pci_topology,
@@ -71,11 +81,14 @@ impl I440Fx {
             ),
             irq_config: irq_config.clone(),
 
+            pin_power: power_pin.clone(),
+            pin_reset: reset_pin,
+
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
-            dev_pm: Piix3PM::create(),
+            dev_pm: Piix3PM::create(hdl.clone(), power_pin, log),
 
-            pm_timer: BhyvePmTimer::create(),
+            pm_timer: BhyvePmTimer::create(hdl),
         });
 
         this.pci_attach(
@@ -93,14 +106,13 @@ impl I440Fx {
 
         // Attach chipset devices
         let pio = &machine.bus_pio;
-        let hdl = &machine.hdl;
         this.dev_lpc.attach(pio);
-        this.dev_pm.attach(pio, hdl);
+        this.dev_pm.attach(pio);
 
         let pio_dev = Arc::clone(&this);
-        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
-            pio_dev.pio_rw(port, rwo, ctx)
-        }) as Arc<PioFn>;
+        let piofn =
+            Arc::new(move |port: u16, rwo: RWOp| pio_dev.pio_rw(port, rwo))
+                as Arc<PioFn>;
         pio.register(
             pci::bits::PORT_PCI_CONFIG_ADDR,
             pci::bits::LEN_PCI_CONFIG_ADDR,
@@ -114,13 +126,12 @@ impl I440Fx {
         )
         .unwrap();
 
-        if options.enable_pcie {
+        if opts.enable_pcie {
             let mmio = &machine.bus_mmio;
             let mmio_dev = Arc::clone(&this);
-            let mmio_ecam_fn =
-                Arc::new(move |_addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                    mmio_dev.pcie_ecam_rw(rwo, ctx);
-                }) as Arc<MmioFn>;
+            let mmio_ecam_fn = Arc::new(move |_addr: usize, rwo: RWOp| {
+                mmio_dev.pcie_ecam_rw(rwo);
+            }) as Arc<MmioFn>;
             mmio.register(
                 ADDR_PCIE_ECAM_REGION,
                 LEN_PCI_ECAM_REGION,
@@ -148,31 +159,30 @@ impl I440Fx {
         (intx_pin, self.irq_config.intr_pin(pin_route as usize))
     }
 
-    fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp, ctx: &DispCtx) -> Option<()> {
+    fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp) -> Option<()> {
         self.pci_topology.pci_cfg_rw(
             RoutedBusId(bdf.bus.get()),
             bdf.location,
             rwo,
-            ctx,
         )
     }
 
-    fn pio_rw(&self, port: u16, rwo: RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, rwo: RWOp) {
         match port {
             pci::bits::PORT_PCI_CONFIG_ADDR => {
                 self.pci_cfg.service_addr(rwo);
             }
             pci::bits::PORT_PCI_CONFIG_DATA => self
                 .pci_cfg
-                .service_data(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo, ctx)),
+                .service_data(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo)),
             _ => {
                 panic!();
             }
         }
     }
 
-    fn pcie_ecam_rw(&self, rwo: RWOp, ctx: &DispCtx) {
-        self.pcie_cfg.service(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo, ctx));
+    fn pcie_ecam_rw(&self, rwo: RWOp) {
+        self.pcie_cfg.service(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo));
     }
 }
 impl Chipset for I440Fx {
@@ -190,12 +200,21 @@ impl Chipset for I440Fx {
             )
             .unwrap();
     }
-    fn irq_pin(&self, irq: u8) -> Option<LegacyPin> {
-        self.irq_config.pic.pin_handle(irq)
+    fn irq_pin(&self, irq: u8) -> Option<Box<dyn IntrPin>> {
+        self.irq_config
+            .pic
+            .pin_handle(irq)
+            .map(|pin| Box::new(pin) as Box<dyn IntrPin>)
+    }
+    fn power_pin(&self) -> Arc<dyn IntrPin> {
+        self.pin_power.clone()
+    }
+    fn reset_pin(&self) -> Arc<dyn IntrPin> {
+        self.pin_reset.clone()
     }
 }
 impl Migrate for I440Fx {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         // TODO: serialize PCI topology state?
         Box::new(migrate::I440TopV1 { pci_cfg_addr: self.pci_cfg.addr() })
     }
@@ -204,7 +223,7 @@ impl Migrate for I440Fx {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::I440TopV1 =
             erased_serde::deserialize(deserializer)?;
@@ -358,7 +377,7 @@ impl Entity for Piix4HostBridge {
     fn type_name(&self) -> &'static str {
         "pci-piix4-hb"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         self.pci_state.reset(self);
     }
     fn migrate(&self) -> Migrator {
@@ -366,7 +385,7 @@ impl Entity for Piix4HostBridge {
     }
 }
 impl Migrate for Piix4HostBridge {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         Box::new(migrate::Piix4HostBridgeV1 {
             pci_state: self.pci_state.export(),
         })
@@ -376,7 +395,7 @@ impl Migrate for Piix4HostBridge {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::Piix4HostBridgeV1 =
             erased_serde::deserialize(deserializer)?;
@@ -415,9 +434,8 @@ impl Piix3Lpc {
 
     fn attach(self: &Arc<Self>, pio: &PioBus) {
         let this = Arc::clone(self);
-        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
-            this.pio_rw(port, rwo, ctx)
-        }) as Arc<PioFn>;
+        let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
+            as Arc<PioFn>;
         pio.register(
             ibmpc::PORT_FAST_A20,
             ibmpc::LEN_FAST_A20,
@@ -428,7 +446,7 @@ impl Piix3Lpc {
             .unwrap();
     }
 
-    fn pio_rw(&self, port: u16, rwo: RWOp, _ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, rwo: RWOp) {
         match port {
             ibmpc::PORT_FAST_A20 => {
                 match rwo {
@@ -477,7 +495,7 @@ impl pci::Device for Piix3Lpc {
         &self.pci_state
     }
 
-    fn cfg_rw(&self, region: u8, rwo: RWOp, _ctx: &DispCtx) {
+    fn cfg_rw(&self, region: u8, rwo: RWOp) {
         assert_eq!(region as usize, PIR_OFFSET);
         assert!(rwo.offset() + rwo.len() <= PIR_END - PIR_OFFSET);
 
@@ -500,7 +518,7 @@ impl Entity for Piix3Lpc {
     fn type_name(&self) -> &'static str {
         "pci-piix3-lpc"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         self.pci_state.reset(self);
     }
     fn migrate(&self) -> Migrator {
@@ -508,7 +526,7 @@ impl Entity for Piix3Lpc {
     }
 }
 impl Migrate for Piix3Lpc {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let pir = self.reg_pir.lock().unwrap();
         Box::new(migrate::Piix3LpcV1 {
             pci_state: self.pci_state.export(),
@@ -521,7 +539,7 @@ impl Migrate for Piix3Lpc {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::Piix3LpcV1 =
             erased_serde::deserialize(deserializer)?;
@@ -708,9 +726,16 @@ impl PMRegs {
 pub struct Piix3PM {
     pci_state: pci::DeviceState,
     regs: Mutex<PMRegs>,
+    power_pin: Arc<dyn IntrPin>,
+    hdl: Arc<VmmHdl>,
+    log: slog::Logger,
 }
 impl Piix3PM {
-    pub fn create() -> Arc<Self> {
+    pub fn create(
+        hdl: Arc<VmmHdl>,
+        power_pin: Arc<dyn IntrPin>,
+        log: slog::Logger,
+    ) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX4_PM_DEV_ID,
@@ -725,27 +750,32 @@ impl Piix3PM {
         .add_lintr()
         .finish();
 
-        Arc::new(Self { pci_state, regs: Mutex::new(PMRegs::default()) })
+        Arc::new(Self {
+            pci_state,
+            regs: Mutex::new(PMRegs::default()),
+            power_pin,
+            hdl,
+            log,
+        })
     }
 
-    fn attach(self: &Arc<Self>, pio: &PioBus, hdl: &VmmHdl) {
+    fn attach(self: &Arc<Self>, pio: &PioBus) {
         // XXX: static registration for now
         let this = Arc::clone(&self);
-        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
-            this.pio_rw(port, rwo, ctx)
-        }) as Arc<PioFn>;
+        let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
+            as Arc<PioFn>;
         pio.register(PMBASE_DEFAULT, PMBASE_LEN, piofn).unwrap();
-        hdl.pmtmr_locate(PMBASE_DEFAULT + PM_TMR_OFFSET).unwrap();
+        self.hdl.pmtmr_locate(PMBASE_DEFAULT + PM_TMR_OFFSET).unwrap();
     }
 
-    fn pio_rw(&self, _port: u16, mut rwo: RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, _port: u16, mut rwo: RWOp) {
         PM_REGS.process(&mut rwo, |id, rwo| match rwo {
-            RWOp::Read(ro) => self.pmreg_read(id, ro, ctx),
-            RWOp::Write(wo) => self.pmreg_write(id, wo, ctx),
+            RWOp::Read(ro) => self.pmreg_read(id, ro),
+            RWOp::Write(wo) => self.pmreg_write(id, wo),
         });
     }
 
-    fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp, ctx: &DispCtx) {
+    fn pmcfg_read(&self, id: &PmCfg, ro: &mut ReadOp) {
         match id {
             PmCfg::PmRegMisc => {
                 // Report IO space as enabled
@@ -759,18 +789,18 @@ impl Piix3PM {
             }
             _ => {
                 // XXX: report everything else as zeroed
-                slog::info!(ctx.log, "piix3pm ignored cfg read";
+                slog::info!(self.log, "piix3pm ignored cfg read";
                     "offset" => ro.offset(), "register" => ?id);
                 ro.fill(0);
             }
         }
     }
-    fn pmcfg_write(&self, id: &PmCfg, _wo: &WriteOp, ctx: &DispCtx) {
+    fn pmcfg_write(&self, id: &PmCfg, _wo: &WriteOp) {
         // XXX: ignore writes for now
-        slog::info!(ctx.log, "piix3pm ignored cfg write";
+        slog::info!(self.log, "piix3pm ignored cfg write";
             "offset" => _wo.offset(), "register" => ?id);
     }
-    fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp, ctx: &DispCtx) {
+    fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp) {
         let regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
@@ -797,7 +827,7 @@ impl Piix3PM {
             | PmReg::GpiReg
             | PmReg::GpoReg => {
                 // TODO: flesh out the rest of PM emulation
-                slog::info!(ctx.log, "piix3pm unhandled read";
+                slog::info!(self.log, "piix3pm unhandled read";
                     "offset" => ro.offset(), "register" => ?id);
                 ro.fill(0);
             }
@@ -806,7 +836,7 @@ impl Piix3PM {
             }
         }
     }
-    fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp, ctx: &DispCtx) {
+    fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp) {
         let mut regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
@@ -826,10 +856,7 @@ impl Piix3PM {
                     let suspend_type = (regs.pm_ctrl & PmCntrl::SUS_TYP).bits();
                     if suspend_type == 0 {
                         // 0b000 corresponds to soft-off
-                        ctx.trigger_suspend(
-                            SuspendKind::Halt,
-                            SuspendSource::Device("ACPI PmCntrl"),
-                        );
+                        self.power_pin.pulse();
                     }
                 }
             }
@@ -846,30 +873,23 @@ impl Piix3PM {
             | PmReg::DevCtl
             | PmReg::GpiReg
             | PmReg::GpoReg => {
-                slog::info!(ctx.log, "piix3pm unhandled write";
+                slog::info!(self.log, "piix3pm unhandled write";
                     "offset" => wo.offset(), "register" => ?id);
             }
             PmReg::Reserved => {}
         }
-    }
-    fn post_reset(&self, ctx: &DispCtx) {
-        let mut regs = self.regs.lock().unwrap();
-        regs.reset();
-        // Make sure PM timer is attached to the right IO port
-        // TODO: error handling?
-        ctx.mctx.hdl().pmtmr_locate(PMBASE_DEFAULT + PM_TMR_OFFSET).unwrap();
     }
 }
 impl pci::Device for Piix3PM {
     fn device_state(&self) -> &pci::DeviceState {
         &self.pci_state
     }
-    fn cfg_rw(&self, region: u8, mut rwo: RWOp, ctx: &DispCtx) {
+    fn cfg_rw(&self, region: u8, mut rwo: RWOp) {
         assert_eq!(region as usize, PMCFG_OFFSET);
 
         PM_CFG_REGS.process(&mut rwo, |id, rwo| match rwo {
-            RWOp::Read(ro) => self.pmcfg_read(id, ro, ctx),
-            RWOp::Write(wo) => self.pmcfg_write(id, wo, ctx),
+            RWOp::Read(ro) => self.pmcfg_read(id, ro),
+            RWOp::Write(wo) => self.pmcfg_write(id, wo),
         })
     }
 }
@@ -877,26 +897,27 @@ impl Entity for Piix3PM {
     fn type_name(&self) -> &'static str {
         "pci-piix3-pm"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         self.pci_state.reset(self);
+
+        // The `run` hook in `Entity` is used to establish the proper IO port
+        // registration of the PM timer, since it might be relocated as part of
+        // a reboot.
+        let mut regs = self.regs.lock().unwrap();
+        regs.reset();
+    }
+    fn run(&self) {
+        // Make sure PM timer is attached to the right IO port
+        // TODO: error handling?
+        let regs = self.regs.lock().unwrap();
+        self.hdl.pmtmr_locate(regs.pm_base + PM_TMR_OFFSET).unwrap();
     }
     fn migrate(&self) -> Migrator {
         Migrator::Custom(self)
     }
-    fn state_transition(
-        &self,
-        next: State,
-        _target: Option<State>,
-        phase: TransitionPhase,
-        ctx: &DispCtx,
-    ) {
-        if next == State::Reset && phase == TransitionPhase::Post {
-            self.post_reset(ctx);
-        }
-    }
 }
 impl Migrate for Piix3PM {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let regs = self.regs.lock().unwrap();
         Box::new(migrate::Piix3PmV1 {
             pci_state: self.pci_state.export(),
@@ -911,7 +932,7 @@ impl Migrate for Piix3PM {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::Piix3PmV1 =
             erased_serde::deserialize(deserializer)?;

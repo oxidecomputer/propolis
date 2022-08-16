@@ -9,7 +9,6 @@ use super::topology::{LogicalBusId, RoutedBusId, Topology};
 use super::{bits::*, Endpoint, Ident};
 use super::{BarN, BusNum, StdCfgReg};
 use crate::common::{RWOp, ReadOp, WriteOp};
-use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
 use crate::migrate::Migrator;
 use crate::util::regmap::RegMap;
@@ -124,18 +123,18 @@ impl Bridge {
         })
     }
 
-    fn cfg_header_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
+    fn cfg_header_rw(&self, mut rwo: RWOp) {
         CFG_HEADER_MAP.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => {
-                self.cfg_std_read(id, ro, ctx);
+                self.cfg_std_read(id, ro);
             }
             RWOp::Write(wo) => {
-                self.cfg_std_write(id, wo, ctx);
+                self.cfg_std_write(id, wo);
             }
         })
     }
 
-    fn cfg_std_read(&self, id: &BridgeReg, ro: &mut ReadOp, _ctx: &DispCtx) {
+    fn cfg_std_read(&self, id: &BridgeReg, ro: &mut ReadOp) {
         match id {
             BridgeReg::Common(id) => match id {
                 StdCfgReg::VendorId => ro.write_u16(self.ident.vendor_id),
@@ -222,7 +221,7 @@ impl Bridge {
         }
     }
 
-    fn cfg_std_write(&self, id: &BridgeReg, wo: &mut WriteOp, _ctx: &DispCtx) {
+    fn cfg_std_write(&self, id: &BridgeReg, wo: &mut WriteOp) {
         match id {
             BridgeReg::Common(id) => match id {
                 // Ignore writes to read-only standard registers.
@@ -316,10 +315,10 @@ impl Endpoint for Bridge {
         assert!(_old.is_none());
     }
 
-    fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
+    fn cfg_rw(&self, mut rwo: RWOp) {
         self.cfg_map.process(&mut rwo, |id, rwo| match id {
             CfgReg::Std => {
-                self.cfg_header_rw(rwo, ctx);
+                self.cfg_header_rw(rwo);
             }
             _ => {
                 panic!(
@@ -330,7 +329,7 @@ impl Endpoint for Bridge {
         });
     }
 
-    fn bar_rw(&self, _bar: BarN, _rwo: RWOp, _ctx: &DispCtx) {
+    fn bar_rw(&self, _bar: BarN, _rwo: RWOp) {
         // Bridges don't consume any additional I/O or memory space that would
         // be described in a BAR (and indeed their BARs are read-only), so this
         // routine should never be reached.
@@ -342,7 +341,7 @@ impl Entity for Bridge {
     fn type_name(&self) -> &'static str {
         "pci-bridge"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         self.inner.lock().unwrap().reset();
     }
     fn migrate(&self) -> Migrator {
@@ -417,8 +416,6 @@ mod test {
     use crate::hw::pci::topology::{BridgeDescription, Builder, LogicalBusId};
     use crate::hw::pci::{Bdf, Endpoint};
     use crate::instance::Instance;
-    use crate::mmio::MmioBus;
-    use crate::pio::PioBus;
 
     use super::*;
 
@@ -428,41 +425,25 @@ mod test {
     const OFFSET_SECONDARY_BUS: usize = 0x19;
 
     struct Env {
-        instance: Arc<Instance>,
+        _instance: Instance,
         topology: Arc<Topology>,
     }
 
     impl Env {
-        fn new() -> Self {
-            let instance = Instance::new_test(None).unwrap();
-            let inventory = instance.inv();
-            let pio = Arc::new(PioBus::new());
-            let mmio = Arc::new(MmioBus::new(u32::MAX as usize));
-            let topology_builder = Builder::new();
-            Self {
-                instance,
-                topology: topology_builder
-                    .finish(&inventory, &pio, &mmio)
-                    .unwrap(),
-            }
-        }
-
-        fn with_bridges(bridges: Vec<BridgeDescription>) -> Self {
-            let instance = Instance::new_test(None).unwrap();
-            let inventory = instance.inv();
-            let pio = Arc::new(PioBus::new());
-            let mmio = Arc::new(MmioBus::new(u32::MAX as usize));
-            let mut topology_builder = Builder::new();
-            for bridge in bridges {
-                topology_builder.add_bridge(bridge).unwrap();
+        fn new(bridges: Option<Vec<BridgeDescription>>) -> Self {
+            let mut builder = Builder::new();
+            if let Some(bridges) = bridges {
+                for bridge in bridges {
+                    builder.add_bridge(bridge).unwrap();
+                }
             }
 
-            Self {
-                instance,
-                topology: topology_builder
-                    .finish(&inventory, &pio, &mmio)
-                    .unwrap(),
-            }
+            let instance = Instance::new_test().unwrap();
+            let guard = instance.lock();
+            let topology =
+                builder.finish(guard.inventory(), guard.machine()).unwrap();
+            drop(guard);
+            Self { _instance: instance, topology }
         }
 
         fn make_bridge(&self) -> Arc<Bridge> {
@@ -477,14 +458,11 @@ mod test {
         fn read_header_byte(&self, target: Bdf, offset: usize) -> u8 {
             let mut buf = [0u8; 1];
             let mut ro = ReadOp::from_buf(offset, &mut buf);
-            self.instance.disp.with_ctx(|ctx| {
-                self.topology.pci_cfg_rw(
-                    RoutedBusId(target.bus.get()),
-                    target.location,
-                    RWOp::Read(&mut ro),
-                    ctx,
-                );
-            });
+            self.topology.pci_cfg_rw(
+                RoutedBusId(target.bus.get()),
+                target.location,
+                RWOp::Read(&mut ro),
+            );
             buf[0]
         }
 
@@ -499,14 +477,11 @@ mod test {
         fn write_header_byte(&self, target: Bdf, offset: usize, val: u8) {
             let mut buf = [val; 1];
             let mut wo = WriteOp::from_buf(offset, &mut buf);
-            self.instance.disp.with_ctx(|ctx| {
-                self.topology.pci_cfg_rw(
-                    RoutedBusId(target.bus.get()),
-                    target.location,
-                    RWOp::Write(&mut wo),
-                    ctx,
-                );
-            });
+            self.topology.pci_cfg_rw(
+                RoutedBusId(target.bus.get()),
+                target.location,
+                RWOp::Write(&mut wo),
+            );
         }
 
         fn write_secondary_bus(&self, target: Bdf, val: u8) {
@@ -516,38 +491,32 @@ mod test {
 
     #[test]
     fn bridge_properties() {
-        let env = Env::new();
+        let env = Env::new(None);
         let bridge = env.make_bridge();
         let mut buf = [0xffu8; 1];
         let mut ro = ReadOp::from_buf(OFFSET_HEADER_TYPE, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
-        });
+        Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro));
         assert_eq!(buf[0], HEADER_TYPE_BRIDGE);
 
         let mut buf = [0xffu8; 2];
         let mut ro = ReadOp::from_buf(OFFSET_VENDOR_ID, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
-        });
+        Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro));
         assert_eq!(u16::from_le_bytes(buf), ids::pci::VENDOR_OXIDE);
 
         let mut buf = [0xffu8; 2];
         let mut ro = ReadOp::from_buf(OFFSET_DEVICE_ID, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro), ctx);
-        });
+        Endpoint::cfg_rw(bridge.as_ref(), RWOp::Read(&mut ro));
         assert_eq!(u16::from_le_bytes(buf), ids::pci::PROPOLIS_BRIDGE_DEV_ID);
     }
 
     #[test]
     fn bridge_routing() {
-        let env = Env::with_bridges(vec![
+        let env = Env::new(Some(vec![
             BridgeDescription::new(LogicalBusId(1), Bdf::new(0, 1, 0).unwrap()),
             BridgeDescription::new(LogicalBusId(2), Bdf::new(0, 2, 0).unwrap()),
             BridgeDescription::new(LogicalBusId(3), Bdf::new(1, 1, 0).unwrap()),
             BridgeDescription::new(LogicalBusId(4), Bdf::new(2, 1, 0).unwrap()),
-        ]);
+        ]));
 
         // Set the first test bridge's downstream bus to 81, then verify that
         // 81.1.0 is a valid bridge device.

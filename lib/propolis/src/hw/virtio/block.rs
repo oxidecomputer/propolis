@@ -1,17 +1,19 @@
+use std::any::Any;
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
+use crate::accessors::MemAccessor;
 use crate::block;
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::hw::pci;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
 use crate::util::regmap::RegMap;
 
 use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};
 use super::queue::{Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
+use bits::*;
 
 use erased_serde::Serialize;
 use futures::future::BoxFuture;
@@ -72,15 +74,15 @@ impl PciVirtioBlock {
         }
     }
 
-    fn next_req(&self, ctx: &DispCtx) -> Option<block::Request> {
+    fn next_req(&self) -> Option<block::Request> {
         let vq = &self.virtio_state.queues[0];
-        let mem = &ctx.mctx.memctx();
+        let mem = self.pci_state.acc_mem.access()?;
 
         let mut chain = Chain::with_capacity(4);
-        let _clen = vq.pop_avail(&mut chain, mem)?;
+        let _clen = vq.pop_avail(&mut chain, &mem)?;
 
         let mut breq = VbReq::default();
-        if !chain.read(&mut breq, mem) {
+        if !chain.read(&mut breq, &mem) {
             todo!("error handling");
         }
         let req = match breq.rtype {
@@ -90,13 +92,10 @@ impl PciVirtioBlock {
                 let blocks = (chain.remain_write_bytes() - 1) / SECTOR_SZ;
 
                 if let Some(regions) = chain.writable_bufs(blocks * SECTOR_SZ) {
-                    let mvq = Arc::clone(vq);
                     Ok(block::Request::new_read(
                         breq.sector as usize * SECTOR_SZ,
                         regions,
-                        Box::new(move |_op, res, ctx| {
-                            complete_blockreq(res, chain, mvq, ctx);
-                        }),
+                        Box::new(chain),
                     ))
                 } else {
                     Err(chain)
@@ -107,13 +106,10 @@ impl PciVirtioBlock {
                 let blocks = chain.remain_read_bytes() / SECTOR_SZ;
 
                 if let Some(regions) = chain.readable_bufs(blocks * SECTOR_SZ) {
-                    let mvq = Arc::clone(vq);
                     Ok(block::Request::new_write(
                         breq.sector as usize * SECTOR_SZ,
                         regions,
-                        Box::new(move |_op, res, ctx| {
-                            complete_blockreq(res, chain, mvq, ctx);
-                        }),
+                        Box::new(chain),
                     ))
                 } else {
                     Err(chain)
@@ -127,12 +123,28 @@ impl PciVirtioBlock {
                 let remain = chain.remain_write_bytes();
                 if remain >= 1 {
                     chain.write_skip(remain - 1);
-                    chain.write(&VIRTIO_BLK_S_UNSUPP, mem);
+                    chain.write(&VIRTIO_BLK_S_UNSUPP, &mem);
                 }
-                vq.push_used(&mut chain, mem, ctx);
+                vq.push_used(&mut chain, &mem);
                 None
             }
             Ok(r) => Some(r),
+        }
+    }
+
+    fn complete_req(&self, res: block::Result, chain: &mut Chain) {
+        let vq = self.virtio_state.queues.get(0).expect("vq must exist");
+        if let Some(mem) = vq.acc_mem.access() {
+            let _ = match res {
+                block::Result::Success => chain.write(&VIRTIO_BLK_S_OK, &mem),
+                block::Result::Failure => {
+                    chain.write(&VIRTIO_BLK_S_IOERR, &mem)
+                }
+                block::Result::Unsupported => {
+                    chain.write(&VIRTIO_BLK_S_UNSUPP, &mem)
+                }
+            };
+            vq.push_used(chain, &mem);
         }
     }
 }
@@ -159,8 +171,8 @@ impl VirtioDevice for PciVirtioBlock {
         // XXX: real features
     }
 
-    fn queue_notify(&self, _vq: &Arc<VirtQueue>, ctx: &DispCtx) {
-        self.notifier.notify(self, ctx);
+    fn queue_notify(&self, _vq: &Arc<VirtQueue>) {
+        self.notifier.notify(self);
     }
 }
 impl PciVirtio for PciVirtioBlock {
@@ -172,8 +184,23 @@ impl PciVirtio for PciVirtioBlock {
     }
 }
 impl block::Device for PciVirtioBlock {
-    fn next(&self, ctx: &DispCtx) -> Option<block::Request> {
-        self.notifier.next_arming(|| self.next_req(ctx))
+    fn next(&self) -> Option<block::Request> {
+        self.notifier.next_arming(|| self.next_req())
+    }
+
+    fn complete(
+        &self,
+        _op: block::Operation,
+        res: block::Result,
+        payload: Box<dyn Any>,
+    ) {
+        let mut chain: Box<Chain> =
+            payload.downcast().expect("payload must be correct type");
+        self.complete_req(res, &mut chain);
+    }
+
+    fn accessor_mem(&self) -> MemAccessor {
+        self.pci_state.acc_mem.child()
     }
 
     fn set_notifier(&self, val: Option<Box<block::NotifierFn>>) {
@@ -184,10 +211,10 @@ impl Entity for PciVirtioBlock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-block"
     }
-    fn reset(&self, ctx: &DispCtx) {
-        self.virtio_state.reset(self, ctx);
+    fn reset(&self) {
+        self.virtio_state.reset(self);
     }
-    fn pause(&self, _ctx: &DispCtx) {
+    fn pause(&self) {
         self.notifier.pause();
     }
     fn paused(&self) -> BoxFuture<'static, ()> {
@@ -199,7 +226,7 @@ impl Entity for PciVirtioBlock {
     }
 }
 impl Migrate for PciVirtioBlock {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciVirtioBlockV1 {
             pci_virtio_state: PciVirtio::export(self),
         })
@@ -209,28 +236,13 @@ impl Migrate for PciVirtioBlock {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::PciVirtioBlockV1 =
             erased_serde::deserialize(deserializer)?;
 
         PciVirtio::import(self, deserialized.pci_virtio_state)
     }
-}
-
-fn complete_blockreq(
-    res: block::Result,
-    mut chain: Chain,
-    vq: Arc<VirtQueue>,
-    ctx: &DispCtx,
-) {
-    let mem = &ctx.mctx.memctx();
-    let _ = match res {
-        block::Result::Success => chain.write(&VIRTIO_BLK_S_OK, mem),
-        block::Result::Failure => chain.write(&VIRTIO_BLK_S_IOERR, mem),
-        block::Result::Unsupported => chain.write(&VIRTIO_BLK_S_UNSUPP, mem),
-    };
-    vq.push_used(&mut chain, mem, ctx);
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -320,4 +332,3 @@ mod bits {
 
     pub const VIRTIO_BLK_CFG_SIZE: usize = 0x3c;
 }
-use bits::*;

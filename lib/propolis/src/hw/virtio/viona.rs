@@ -5,13 +5,11 @@ use std::io::{self, Error, ErrorKind};
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use crate::common::*;
-use crate::dispatch::{AsyncCtx, DispCtx};
 use crate::hw::pci;
-use crate::instance;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
 use crate::util::regmap::RegMap;
 use crate::util::sys;
 use crate::vmm::VmmHdl;
@@ -25,16 +23,18 @@ use erased_serde::Serialize;
 use lazy_static::lazy_static;
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 const ETHERADDRL: usize = 6;
 
 struct Inner {
-    poller: Option<(Arc<VionaPoller>, JoinHandle<()>)>,
+    poller: Option<PollerHdl>,
+    ring_paused: [bool; 2],
 }
 impl Inner {
     fn new() -> Self {
-        Self { poller: None }
+        Self { poller: None, ring_paused: [false; 2] }
     }
 }
 
@@ -49,9 +49,6 @@ pub struct PciVirtioViona {
     mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
-    rings_paused: Mutex<Vec<bool>>,
-
-    me: Weak<PciVirtioViona>,
 }
 impl PciVirtioViona {
     pub fn new(
@@ -80,32 +77,37 @@ impl PciVirtioViona {
             VIRTIO_NET_CFG_SIZE,
         );
 
-        Ok(Arc::new_cyclic(|me| {
-            let mut this = PciVirtioViona {
-                virtio_state,
-                pci_state,
+        let mut this = PciVirtioViona {
+            virtio_state,
+            pci_state,
 
-                dev_features,
-                mac_addr: [0; ETHERADDRL],
-                mtu: info.mtu,
-                hdl,
-                inner: Mutex::new(Inner::new()),
-                rings_paused: Mutex::new(vec![false; 2]),
+            dev_features,
+            mac_addr: [0; ETHERADDRL],
+            mtu: info.mtu,
+            hdl,
+            inner: Mutex::new(Inner::new()),
+        };
+        this.mac_addr.copy_from_slice(&info.mac_addr);
+        let this = Arc::new(this);
 
-                me: me.clone(),
-            };
-            this.mac_addr.copy_from_slice(&info.mac_addr);
-            this
-        }))
+        // Spawn the interrupt poller
+        let mut inner = this.inner.lock().unwrap();
+        inner.poller =
+            Some(Poller::spawn(this.hdl.fd(), Arc::downgrade(&this))?);
+        drop(inner);
+
+        Ok(this)
     }
 
-    fn process_interrupts(&self, ctx: &DispCtx) {
-        self.hdl
-            .intr_poll(|vq_idx| {
-                self.hdl.ring_intr_clear(vq_idx).unwrap();
-                self.virtio_state.queues[vq_idx as usize].send_intr(ctx);
-            })
-            .unwrap();
+    fn process_interrupts(&self) {
+        if let Some(mem) = self.pci_state.acc_mem.access() {
+            self.hdl
+                .intr_poll(|vq_idx| {
+                    self.hdl.ring_intr_clear(vq_idx).unwrap();
+                    self.virtio_state.queues[vq_idx as usize].send_intr(&mem);
+                })
+                .unwrap();
+        }
     }
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
@@ -131,7 +133,7 @@ impl PciVirtioViona {
     /// Pause the associated virtqueues and sync any in-kernel state for them
     /// into the userspace representation.
     fn queues_sync(&self) {
-        let mut ring_paused = self.rings_paused.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         for vq in self.virtio_state.queues.iter() {
             if !vq.live.load(Ordering::Acquire) {
                 continue;
@@ -139,7 +141,7 @@ impl PciVirtioViona {
             let mut info = vq.get_state();
             if info.mapping.valid {
                 let _ = self.hdl.ring_pause(vq.id);
-                ring_paused[vq.id as usize] = true;
+                inner.ring_paused[vq.id as usize] = true;
 
                 let live = self.hdl.ring_get_state(vq.id).unwrap();
                 assert_eq!(live.mapping.desc_addr, info.mapping.desc_addr);
@@ -151,7 +153,7 @@ impl PciVirtioViona {
     }
 
     fn queues_restart(&self) {
-        let mut ring_paused = self.rings_paused.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         for vq in self.virtio_state.queues.iter() {
             self.hdl
                 .ring_reset(vq.id)
@@ -173,34 +175,40 @@ impl PciVirtioViona {
                         .unwrap_or_else(|_| todo!("viona error handling"));
                 }
             }
-            ring_paused[vq.id as usize] = false;
+            inner.ring_paused[vq.id as usize] = false;
         }
     }
     /// Make sure all in-kernel virtqueue processing is stopped
     fn queues_kill(&self) {
-        let ring_paused = self.rings_paused.lock().unwrap();
+        let inner = self.inner.lock().unwrap();
         for vq in self.virtio_state.queues.iter() {
-            if vq.live.load(Ordering::Acquire) || ring_paused[vq.id as usize] {
+            if vq.live.load(Ordering::Acquire)
+                || inner.ring_paused[vq.id as usize]
+            {
                 let _ = self.hdl.ring_reset(vq.id);
             }
         }
     }
 
-    fn poller_start(&self, ctx: &DispCtx) {
+    fn poller_start(&self) {
         let mut inner = self.inner.lock().unwrap();
-        assert!(inner.poller.is_none());
-        // Get interrupt notification for the rings setup
-        let (poller, task) =
-            VionaPoller::spawn(self.hdl.fd(), Weak::clone(&self.me), ctx)
-                .unwrap();
-        inner.poller = Some((poller, task));
+        let poller = inner.poller.as_mut().expect("poller should be spawned");
+        let _ = poller.sender.send(TargetState::Run);
     }
-    fn poller_stop(&self) {
+    fn poller_stop(&self, should_exit: bool) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some((poller, task)) = inner.poller.take() {
-            task.abort();
-            drop(poller);
-        }
+        let wait_state = if should_exit {
+            let poller = inner.poller.take().expect("poller should be spawned");
+            let _ = poller.sender.send(TargetState::Exit);
+            poller.state
+        } else {
+            let poller =
+                inner.poller.as_mut().expect("poller should be spawned");
+            let _ = poller.sender.send(TargetState::Pause);
+            poller.state.clone()
+        };
+        drop(inner);
+        wait_state.wait_stopped();
     }
 }
 impl VirtioDevice for PciVirtioViona {
@@ -231,24 +239,19 @@ impl VirtioDevice for PciVirtioViona {
             .unwrap_or_else(|_| todo!("viona error handling"));
     }
 
-    fn queue_notify(&self, vq: &Arc<VirtQueue>, _ctx: &DispCtx) {
-        let ring_paused = self.rings_paused.lock().unwrap();
+    fn queue_notify(&self, vq: &Arc<VirtQueue>) {
+        let inner = self.inner.lock().unwrap();
         // Kick the ring if it is not paused
-        if !ring_paused[vq.id as usize] {
+        if !inner.ring_paused[vq.id as usize] {
             self.hdl
                 .ring_kick(vq.id)
                 .unwrap_or_else(|_| todo!("viona error handling"));
         }
     }
-    fn queue_change(
-        &self,
-        vq: &Arc<VirtQueue>,
-        change: VqChange,
-        _ctx: &DispCtx,
-    ) {
+    fn queue_change(&self, vq: &Arc<VirtQueue>, change: VqChange) {
         match change {
             VqChange::Reset => {
-                let mut ring_paused = self.rings_paused.lock().unwrap();
+                let mut inner = self.inner.lock().unwrap();
                 self.hdl
                     .ring_reset(vq.id)
                     .unwrap_or_else(|_| todo!("viona error handling"));
@@ -257,7 +260,7 @@ impl VirtioDevice for PciVirtioViona {
                 // not mean that it will immediately start processing ring
                 // descriptors, but rather is no longer exempt from receiving
                 // notifications to do so.
-                ring_paused[vq.id as usize] = false;
+                inner.ring_paused[vq.id as usize] = false;
             }
             VqChange::Address => {
                 let info = vq.get_state();
@@ -280,49 +283,30 @@ impl Entity for PciVirtioViona {
     fn type_name(&self) -> &'static str {
         "pci-virtio-viona"
     }
-    fn state_transition(
-        &self,
-        next: instance::State,
-        _target: Option<instance::State>,
-        phase: instance::TransitionPhase,
-        ctx: &DispCtx,
-    ) {
-        use crate::instance::{
-            MigratePhase, MigrateRole, State, TransitionPhase,
-        };
-        match (next, phase) {
-            (State::Quiesce, TransitionPhase::Pre)
-            | (
-                State::Migrate(MigrateRole::Source, MigratePhase::Pause),
-                TransitionPhase::Pre,
-            ) => {
-                self.poller_stop();
-                self.queues_sync();
-            }
-            (instance::State::Run, TransitionPhase::Pre) => {
-                self.poller_start(ctx);
-                self.queues_restart();
-            }
-            (instance::State::Halt, TransitionPhase::Post) => {
-                self.queues_kill();
-            }
-            (instance::State::Destroy, TransitionPhase::Pre) => {
-                // Destroy any in-kernel state to prevent it from impeding
-                // instance destruction.
-                self.hdl.delete().unwrap();
-            }
-            _ => {}
-        }
+    fn reset(&self) {
+        self.virtio_state.reset(self);
     }
-    fn reset(&self, ctx: &DispCtx) {
-        self.virtio_state.reset(self, ctx);
+    fn run(&self) {
+        self.poller_start();
+        self.queues_restart();
+    }
+    fn pause(&self) {
+        self.poller_stop(false);
+        self.queues_sync();
+    }
+    fn halt(&self) {
+        self.poller_stop(true);
+        // Destroy any in-kernel state to prevent it from impeding instance
+        // destruction.
+        self.queues_kill();
+        let _ = self.hdl.delete();
     }
     fn migrate(&self) -> Migrator {
         Migrator::Custom(self)
     }
 }
 impl Migrate for PciVirtioViona {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         Box::new(migrate::PciVirtioVionaV1 {
             pci_virtio_state: PciVirtio::export(self),
         })
@@ -332,7 +316,7 @@ impl Migrate for PciVirtioViona {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::PciVirtioVionaV1 =
             erased_serde::deserialize(deserializer)?;
@@ -529,18 +513,52 @@ impl VionaHdl {
 //
 // In the long term, viona should probably move to something like eventfd to
 // make polling on those ring interrupt events more accessible.
-struct VionaPoller {
+struct Poller {
     epfd: RawFd,
+    receiver: watch::Receiver<TargetState>,
     dev: Weak<PciVirtioViona>,
+    state: Arc<PollerState>,
+}
+
+enum TargetState {
+    Pause,
+    Run,
+    Exit,
+}
+struct PollerState {
+    cv: Condvar,
+    running: Mutex<bool>,
+}
+impl PollerState {
+    fn wait_stopped(&self) {
+        let guard = self.running.lock().unwrap();
+        let _res = self.cv.wait_while(guard, |g| *g).unwrap();
+    }
+    fn set_stopped(&self) {
+        let mut guard = self.running.lock().unwrap();
+        if *guard {
+            *guard = false;
+            self.cv.notify_all();
+        }
+    }
+    fn set_running(&self) {
+        let mut guard = self.running.lock().unwrap();
+        *guard = true;
+    }
+}
+
+struct PollerHdl {
+    _join: JoinHandle<()>,
+    sender: watch::Sender<TargetState>,
+    state: Arc<PollerState>,
 }
 
 #[cfg(target_os = "illumos")]
-impl VionaPoller {
+impl Poller {
     fn spawn(
         viona_fd: RawFd,
         dev: Weak<PciVirtioViona>,
-        ctx: &DispCtx,
-    ) -> io::Result<(Arc<Self>, JoinHandle<()>)> {
+    ) -> io::Result<PollerHdl> {
         let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) } as RawFd;
         if epfd == -1 {
             return Err(Error::last_os_error());
@@ -553,14 +571,20 @@ impl VionaPoller {
         if res == -1 {
             return Err(Error::last_os_error());
         }
-        let this = Arc::new(Self { epfd, dev });
 
-        let for_spawn = Arc::clone(&this);
-        let actx = ctx.async_ctx();
-        let task = tokio::spawn(async move {
-            for_spawn.poll_interrupts(&actx).await;
+        let state = Arc::new(PollerState {
+            cv: Condvar::new(),
+            running: Mutex::new(false),
         });
-        Ok((this, task))
+        let (sender, receiver) = watch::channel(TargetState::Pause);
+        let mut poller = Poller { epfd, receiver, dev, state: state.clone() };
+
+        let _join = tokio::spawn(async move {
+            poller.poll_interrupts().await;
+            poller.state.set_stopped();
+        });
+
+        Ok(PollerHdl { _join, sender, state })
     }
     fn event_present(&self) -> io::Result<bool> {
         let max_events = 1;
@@ -583,31 +607,53 @@ impl VionaPoller {
             }
         }
     }
-    async fn poll_interrupts(&self, actx: &AsyncCtx) {
+    async fn poll_interrupts(&mut self) {
         let afd =
             AsyncFd::with_interest(self.epfd, Interest::READABLE).unwrap();
         loop {
-            let readable = afd.readable().await;
-            if readable.is_err() {
-                return;
-            }
-            let mut readable = readable.unwrap();
-            match self.event_present() {
-                Ok(false) => {
-                    readable.clear_ready();
-                    continue;
+            loop {
+                match *self.receiver.borrow_and_update() {
+                    TargetState::Exit => return,
+                    TargetState::Run => {
+                        self.state.set_running();
+                        break;
+                    }
+                    TargetState::Pause => {
+                        self.state.set_stopped();
+                        // Fall through to wait for next state change
+                    }
                 }
-                Ok(true) => {}
-                Err(_) => {
+                if self.receiver.changed().await.is_err() {
                     return;
                 }
-            };
+            }
 
-            if let Some(ctx) = actx.dispctx().await {
-                let dev = Weak::upgrade(&self.dev).unwrap();
-                dev.process_interrupts(&ctx);
-            } else {
-                return;
+            tokio::select! {
+                readable = afd.readable() => {
+                    if readable.is_err() {
+                        return;
+                    }
+                    let mut readable = readable.unwrap();
+                    match self.event_present() {
+                        Ok(false) => {
+                            readable.clear_ready();
+                        }
+                        Ok(true) => {
+                            if let Some(dev) = Weak::upgrade(&self.dev) {
+                                dev.process_interrupts();
+                            } else {
+                                // Underlying device has been dropped
+                                return;
+                            }
+                        }
+                        Err(_) => {
+                            return;
+                        }
+                    };
+                }
+                _state_change = self.receiver.changed() => {
+                    // Fall through to the state management above
+                }
             }
         }
     }
@@ -617,12 +663,11 @@ impl VionaPoller {
 // constants used above. Given viona isn't available on non-illumos systems
 // anyways, we stub with just enough that it builds and can run unit tests.
 #[cfg(not(target_os = "illumos"))]
-impl VionaPoller {
+impl Poller {
     fn spawn(
         _viona_fd: RawFd,
         _dev: Weak<PciVirtioViona>,
-        _ctx: &DispCtx,
-    ) -> io::Result<(Arc<Self>, JoinHandle<()>)> {
+    ) -> io::Result<PollerHdl> {
         Err(Error::new(
             ErrorKind::Other,
             "viona not available on non-illumos systems",
@@ -630,7 +675,7 @@ impl VionaPoller {
     }
 }
 
-impl Drop for VionaPoller {
+impl Drop for Poller {
     fn drop(&mut self) {
         unsafe {
             libc::close(self.epfd);

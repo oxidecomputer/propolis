@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::bar::BarDefine;
 use super::{BarN, BusLocation, Endpoint, LintrCfg};
+use crate::accessors::*;
 use crate::common::RWOp;
-use crate::dispatch::DispCtx;
 use crate::mmio::{MmioBus, MmioFn};
 use crate::pio::{PioBus, PioFn};
 
@@ -14,8 +14,17 @@ pub struct Bus {
 }
 
 impl Bus {
-    pub fn new(pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
-        Self { inner: Arc::new(Mutex::new(Inner::new(pio, mmio))) }
+    pub fn new(
+        pio: &Arc<PioBus>,
+        mmio: &Arc<MmioBus>,
+        acc_mem: MemAccessor,
+        acc_msi: MsiAccessor,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Inner::new(
+                pio, mmio, acc_mem, acc_msi,
+            ))),
+        }
     }
 
     pub fn attach(
@@ -25,13 +34,16 @@ impl Bus {
         lintr_cfg: Option<LintrCfg>,
     ) {
         let mut inner = self.inner.lock().unwrap();
-        let slot_state = inner.attach(location, dev.clone());
+        let (slot_state, acc_msi, acc_mem) =
+            inner.attach(location, dev.clone());
 
         let attached = Attachment {
             inner: Arc::downgrade(&self.inner),
             location,
             lintr_cfg,
             slot_state,
+            acc_msi,
+            acc_mem,
         };
         dev.attach(attached);
     }
@@ -50,6 +62,8 @@ pub struct Attachment {
     location: BusLocation,
     lintr_cfg: Option<LintrCfg>,
     slot_state: Arc<SlotState>,
+    pub acc_msi: MsiAccessor,
+    pub acc_mem: MemAccessor,
 }
 impl Attachment {
     pub fn bar_register(&self, n: BarN, def: BarDefine, addr: u64) {
@@ -120,14 +134,25 @@ struct Inner {
     bar_state: BTreeMap<(BusLocation, BarN), BarState>,
     bus_pio: Weak<PioBus>,
     bus_mmio: Weak<MmioBus>,
+
+    acc_msi: MsiAccessor,
+    acc_mem: MemAccessor,
 }
 impl Inner {
-    fn new(pio: &Arc<PioBus>, mmio: &Arc<MmioBus>) -> Self {
+    fn new(
+        pio: &Arc<PioBus>,
+        mmio: &Arc<MmioBus>,
+        acc_mem: MemAccessor,
+        acc_msi: MsiAccessor,
+    ) -> Self {
         Self {
             slots: Default::default(),
             bar_state: BTreeMap::new(),
             bus_pio: Arc::downgrade(pio),
             bus_mmio: Arc::downgrade(mmio),
+
+            acc_msi,
+            acc_mem,
         }
     }
     fn device_at(&self, location: BusLocation) -> Option<Arc<dyn Endpoint>> {
@@ -141,8 +166,10 @@ impl Inner {
         &mut self,
         location: BusLocation,
         dev: Arc<dyn Endpoint>,
-    ) -> Arc<SlotState> {
-        self.slots[location.dev.get() as usize].attach(location, dev)
+    ) -> (Arc<SlotState>, MsiAccessor, MemAccessor) {
+        let slot_state =
+            self.slots[location.dev.get() as usize].attach(location, dev);
+        (slot_state, self.acc_msi.child(), self.acc_mem.child())
     }
     fn bar_register(
         &mut self,
@@ -156,10 +183,9 @@ impl Inner {
         let live = match def {
             BarDefine::Pio(sz) => {
                 if let Some(pio) = self.bus_pio.upgrade() {
-                    let func =
-                        Arc::new(move |_port: u16, rwo: RWOp, ctx: &DispCtx| {
-                            dev.bar_rw(n, rwo, ctx)
-                        }) as Arc<PioFn>;
+                    let func = Arc::new(move |_port: u16, rwo: RWOp| {
+                        dev.bar_rw(n, rwo)
+                    }) as Arc<PioFn>;
                     pio.register(value as u16, sz, func).is_ok()
                 } else {
                     false
@@ -167,11 +193,9 @@ impl Inner {
             }
             BarDefine::Mmio(sz) => {
                 if let Some(mmio) = self.bus_mmio.upgrade() {
-                    let func = Arc::new(
-                        move |_addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                            dev.bar_rw(n, rwo, ctx)
-                        },
-                    ) as Arc<MmioFn>;
+                    let func = Arc::new(move |_addr: usize, rwo: RWOp| {
+                        dev.bar_rw(n, rwo)
+                    }) as Arc<MmioFn>;
                     mmio.register(value as usize, sz as usize, func).is_ok()
                 } else {
                     false
@@ -179,11 +203,9 @@ impl Inner {
             }
             BarDefine::Mmio64(sz) => {
                 if let Some(mmio) = self.bus_mmio.upgrade() {
-                    let func = Arc::new(
-                        move |_addr: usize, rwo: RWOp, ctx: &DispCtx| {
-                            dev.bar_rw(n, rwo, ctx)
-                        },
-                    ) as Arc<MmioFn>;
+                    let func = Arc::new(move |_addr: usize, rwo: RWOp| {
+                        dev.bar_rw(n, rwo)
+                    }) as Arc<MmioFn>;
                     mmio.register(value as usize, sz as usize, func).is_ok()
                 } else {
                     false
@@ -222,8 +244,13 @@ impl Inner {
 mod test {
     use super::*;
 
-    fn prep() -> (Arc<PioBus>, Arc<MmioBus>) {
-        (Arc::new(PioBus::new()), Arc::new(MmioBus::new(u32::MAX as usize)))
+    fn prep() -> (Arc<PioBus>, Arc<MmioBus>, MemAccessor, MsiAccessor) {
+        (
+            Arc::new(PioBus::new()),
+            Arc::new(MmioBus::new(u32::MAX as usize)),
+            MemAccessor::new_orphan(),
+            MsiAccessor::new_orphan(),
+        )
     }
 
     #[derive(Default)]
@@ -235,8 +262,8 @@ mod test {
             let mut attach = self.inner.lock().unwrap();
             attach.replace(attachment);
         }
-        fn cfg_rw(&self, _op: RWOp, _ctx: &DispCtx) {}
-        fn bar_rw(&self, _bar: BarN, _rwo: RWOp, _ctx: &DispCtx) {}
+        fn cfg_rw(&self, _op: RWOp) {}
+        fn bar_rw(&self, _bar: BarN, _rwo: RWOp) {}
     }
     impl TestDev {
         fn check_multifunc(&self) -> Option<bool> {
@@ -246,8 +273,8 @@ mod test {
 
     #[test]
     fn empty() {
-        let (pio, mmio) = prep();
-        let bus = Bus::new(&pio, &mmio);
+        let (pio, mmio, mem, msi) = prep();
+        let bus = Bus::new(&pio, &mmio, mem, msi);
 
         for slot in 0..31 {
             for func in 0..7 {
@@ -263,8 +290,8 @@ mod test {
 
     #[test]
     fn set_multifunc() {
-        let (pio, mmio) = prep();
-        let bus = Bus::new(&pio, &mmio);
+        let (pio, mmio, mem, msi) = prep();
+        let bus = Bus::new(&pio, &mmio, mem, msi);
 
         let first = Arc::new(TestDev::default());
         let other_slot = Arc::new(TestDev::default());

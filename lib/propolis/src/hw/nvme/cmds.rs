@@ -1,5 +1,6 @@
 use super::bits::{self, RawSubmission, StatusCodeType};
 use super::queue::{QueueCreateErr, QueueId};
+use crate::block;
 use crate::common::*;
 use crate::vmm::MemCtx;
 
@@ -244,7 +245,7 @@ pub struct GetLogPageCmd {
 
 impl GetLogPageCmd {
     /// Returns an Iterator that yields [`GuestRegion`]'s to write the log page data to.
-    pub fn data<'a>(&'a self, mem: MemCtx<'a>) -> PrpIter<'a> {
+    pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(PAGE_SIZE as u64, self.prp1, self.prp2, mem)
     }
 }
@@ -308,7 +309,7 @@ pub struct IdentifyCmd {
 
 impl IdentifyCmd {
     /// Returns an Iterator that yields [`GuestRegion`]'s to write the identify structure data to.
-    pub fn data<'a>(&'a self, mem: MemCtx<'a>) -> PrpIter<'a> {
+    pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(PAGE_SIZE as u64, self.prp1, self.prp2, mem)
     }
 }
@@ -492,8 +493,8 @@ pub struct WriteCmd {
 }
 
 impl WriteCmd {
-    /// Returns an Iterator that yields [`GuestRegion`]'s to read the data to tranfer out.
-    pub fn data<'a>(&'a self, sz: u64, mem: MemCtx<'a>) -> PrpIter<'a> {
+    /// Returns an Iterator that yields [`GuestRegion`]'s to read the data to transfer out.
+    pub fn data<'a>(&self, sz: u64, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(sz, self.prp1, self.prp2, mem)
     }
 }
@@ -525,7 +526,7 @@ pub struct ReadCmd {
 
 impl ReadCmd {
     /// Returns an Iterator that yields [`GuestRegion`]'s to write the data to transfer in.
-    pub fn data<'a>(&'a self, sz: u64, mem: MemCtx<'a>) -> PrpIter<'a> {
+    pub fn data<'a>(&self, sz: u64, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(sz, self.prp1, self.prp2, mem)
     }
 }
@@ -562,7 +563,7 @@ pub struct PrpIter<'a> {
     prp2: u64,
 
     /// Handle to Guest's [`MemCtx`]
-    mem: MemCtx<'a>,
+    mem: &'a MemCtx,
 
     /// How many bytes remaining to be read/written
     remain: u64,
@@ -578,7 +579,7 @@ impl<'a> PrpIter<'a> {
     /// Create a new `PrpIter` object.
     ///
     /// See corresponding `data` methods on any relevant commands.
-    pub fn new(size: u64, prp1: u64, prp2: u64, mem: MemCtx<'a>) -> Self {
+    pub fn new(size: u64, prp1: u64, prp2: u64, mem: &'a MemCtx) -> Self {
         // prp1 and prp2 are expected to be 32-bit aligned
         assert!(prp1 & 0b11 == 0);
         assert!(prp2 & 0b11 == 0);
@@ -790,6 +791,21 @@ impl From<QueueCreateErr> for Completion {
                     bits::STS_CREATE_IO_Q_INVAL_QID,
                 )
             }
+        }
+    }
+}
+
+impl From<block::Result> for Completion {
+    fn from(res: block::Result) -> Completion {
+        match res {
+            block::Result::Success => Completion::success(),
+            block::Result::Failure => {
+                Completion::generic_err(bits::STS_DATA_XFER_ERR)
+            }
+            block::Result::Unsupported => Completion::specific_err(
+                bits::StatusCodeType::CmdSpecific,
+                bits::STS_READ_CONFLICTING_ATTRS,
+            ),
         }
     }
 }

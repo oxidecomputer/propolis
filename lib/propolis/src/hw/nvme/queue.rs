@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, Weak};
 use super::bits::{self, RawCompletion, RawSubmission};
 use super::cmds::Completion;
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::hw::pci;
 use crate::migrate::MigrateStateError;
+use crate::vmm::MemCtx;
 
 use thiserror::Error;
 
@@ -342,10 +342,10 @@ impl SubQueue {
         cq: Arc<CompQueue>,
         size: u32,
         base: GuestAddr,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result<Arc<Self>, QueueCreateErr> {
         use std::collections::hash_map::Entry;
-        Self::validate(id, base, size, ctx)?;
+        Self::validate(id, base, size, mem)?;
         let sq = Arc::new(Self {
             id,
             cq,
@@ -374,12 +374,11 @@ impl SubQueue {
     /// Returns the next entry off of the Queue or [`None`] if it is empty.
     pub fn pop(
         self: &Arc<SubQueue>,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Option<(bits::RawSubmission, CompQueueEntryPermit)> {
         // Attempt to reserve an entry on the Completion Queue
         let cqe_permit = self.cq.reserve_entry(self.clone())?;
         if let Some(idx) = self.state.pop_head() {
-            let mem = ctx.mctx.memctx();
             let ent: Option<RawSubmission> = mem.read(self.entry_addr(idx));
             // XXX: handle a guest addr that becomes unmapped later
             ent.map(|ent| (ent, cqe_permit))
@@ -415,7 +414,7 @@ impl SubQueue {
         id: QueueId,
         base: GuestAddr,
         size: u32,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result<(), QueueCreateErr> {
         if (base.0 & PAGE_OFFSET as u64) != 0 {
             return Err(QueueCreateErr::InvalidBaseAddr);
@@ -430,8 +429,7 @@ impl SubQueue {
         }
         let queue_size =
             size as usize * std::mem::size_of::<bits::RawSubmission>();
-        let memctx = ctx.mctx.memctx();
-        let region = memctx.readable_region(&GuestRegion(base, queue_size));
+        let region = mem.readable_region(&GuestRegion(base, queue_size));
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
     }
@@ -497,10 +495,10 @@ impl CompQueue {
         iv: u16,
         size: u32,
         base: GuestAddr,
-        ctx: &DispCtx,
         hdl: pci::MsixHdl,
+        mem: &MemCtx,
     ) -> Result<Self, QueueCreateErr> {
-        Self::validate(id, base, size, ctx)?;
+        Self::validate(id, base, size, mem)?;
         Ok(Self {
             id,
             iv,
@@ -518,10 +516,10 @@ impl CompQueue {
 
     /// Fires an interrupt to the guest with the associated interrupt vector
     /// if the queue is not currently empty.
-    pub fn fire_interrupt(&self, ctx: &DispCtx) {
+    pub fn fire_interrupt(&self) {
         let state = self.state.inner.lock().unwrap();
         if !self.state.is_empty(state.head, state.tail) {
-            self.hdl.fire(self.iv, ctx);
+            self.hdl.fire(self.iv);
         }
     }
 
@@ -569,12 +567,11 @@ impl CompQueue {
         &self,
         _permit: CompQueueEntryPermit,
         entry: RawCompletion,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) {
         // Since we have a permit, there should always be at least
         // one space in the queue and this unwrap shouldn't fail.
         let idx = self.state.push_tail().unwrap();
-        let mem = ctx.mctx.memctx();
         let addr = self.entry_addr(idx);
         mem.write(addr, &entry);
         // XXX: handle a guest addr that becomes unmapped later
@@ -605,7 +602,7 @@ impl CompQueue {
         id: QueueId,
         base: GuestAddr,
         size: u32,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result<(), QueueCreateErr> {
         if (base.0 & PAGE_OFFSET as u64) != 0 {
             return Err(QueueCreateErr::InvalidBaseAddr);
@@ -620,8 +617,7 @@ impl CompQueue {
         }
         let queue_size =
             size as usize * std::mem::size_of::<bits::RawSubmission>();
-        let memctx = ctx.mctx.memctx();
-        let region = memctx.writable_region(&GuestRegion(base, queue_size));
+        let region = mem.writable_region(&GuestRegion(base, queue_size));
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
     }
@@ -672,7 +668,12 @@ pub struct CompQueueEntryPermit {
 
 impl CompQueueEntryPermit {
     /// Consume the permit by placing an entry into the Completion Queue.
-    pub fn push_completion(self, cid: u16, comp: Completion, ctx: &DispCtx) {
+    pub fn push_completion(
+        self,
+        cid: u16,
+        comp: Completion,
+        mem: Option<&MemCtx>,
+    ) {
         let cq = match self.cq.upgrade() {
             Some(cq) => cq,
             None => {
@@ -682,7 +683,8 @@ impl CompQueueEntryPermit {
                 return;
             }
         };
-        if let Some(sq) = self.sq.upgrade() {
+
+        if let (Some(sq), Some(mem)) = (self.sq.upgrade(), mem) {
             let completion = bits::RawCompletion {
                 dw0: comp.dw0,
                 rsvd: 0,
@@ -692,13 +694,15 @@ impl CompQueueEntryPermit {
                 status_phase: comp.status | cq.phase(),
             };
 
-            cq.push(self, completion, ctx);
+            cq.push(self, completion, mem);
 
             // TODO: should this be done here?
-            cq.fire_interrupt(ctx);
+            cq.fire_interrupt();
         } else {
-            // The SQ has since been deleted so this request has already
-            // implicitly been aborted by the prior Delete Queue command.
+            // The SQ has since been deleted (so the request has already
+            // implicitly been aborted by the prior Delete Queue command) or
+            // the device currently lacks access to guest memory.
+            //
             // Just make sure we return the permit
             self.remit();
         }
@@ -711,9 +715,9 @@ impl CompQueueEntryPermit {
     /// completion data. Meant just for excercising the Submission & Completion
     /// Queues in unit tests.
     #[cfg(test)]
-    fn push_completion_test(self, ctx: &DispCtx) {
+    fn push_completion_test(self, mem: &MemCtx) {
         if let Some(cq) = self.cq.upgrade() {
-            cq.push(self, bits::RawCompletion::default(), ctx);
+            cq.push(self, bits::RawCompletion::default(), mem);
         }
     }
 
@@ -772,433 +776,419 @@ mod tests {
 
     #[test]
     fn create_cqs() -> Result<(), Error> {
-        let instance = Instance::new_test(None)?;
+        let instance = Instance::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        instance.disp.with_ctx(|ctx| {
-            // Admin queues must be less than 4K
-            let cq = CompQueue::new(
-                ADMIN_QUEUE_ID,
-                0,
-                1024,
-                write_base,
-                ctx,
-                hdl.clone(),
-            );
-            assert!(matches!(cq, Ok(_)));
-            let cq = CompQueue::new(
-                ADMIN_QUEUE_ID,
-                0,
-                5 * 1024,
-                write_base,
-                ctx,
-                hdl.clone(),
-            );
-            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
+        let acc_mem = instance.lock().machine().acc_mem.child();
+        let mem = acc_mem.access().unwrap();
 
-            // I/O queues must be less than 64K
-            let cq = CompQueue::new(1, 0, 1024, write_base, ctx, hdl.clone());
-            assert!(matches!(cq, Ok(_)));
-            let cq =
-                CompQueue::new(1, 0, 65 * 1024, write_base, ctx, hdl.clone());
-            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
+        // Admin queues must be less than 4K
+        let cq = CompQueue::new(
+            ADMIN_QUEUE_ID,
+            0,
+            1024,
+            write_base,
+            hdl.clone(),
+            &mem,
+        );
+        assert!(matches!(cq, Ok(_)));
+        let cq = CompQueue::new(
+            ADMIN_QUEUE_ID,
+            0,
+            5 * 1024,
+            write_base,
+            hdl.clone(),
+            &mem,
+        );
+        assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
-            // Neither must be less than 2
-            let cq = CompQueue::new(
-                ADMIN_QUEUE_ID,
-                0,
-                1,
-                write_base,
-                ctx,
-                hdl.clone(),
-            );
-            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
-            let cq = CompQueue::new(1, 0, 1, write_base, ctx, hdl.clone());
-            assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
+        // I/O queues must be less than 64K
+        let cq = CompQueue::new(1, 0, 1024, write_base, hdl.clone(), &mem);
+        assert!(matches!(cq, Ok(_)));
+        let cq = CompQueue::new(1, 0, 65 * 1024, write_base, hdl.clone(), &mem);
+        assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
-            // Completion Queue's must be mapped to writable memory
-            let cq = CompQueue::new(
-                ADMIN_QUEUE_ID,
-                0,
-                2,
-                read_base,
-                ctx,
-                hdl.clone(),
-            );
-            assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
-            let cq = CompQueue::new(1, 0, 2, read_base, ctx, hdl.clone());
-            assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
-        });
+        // Neither must be less than 2
+        let cq =
+            CompQueue::new(ADMIN_QUEUE_ID, 0, 1, write_base, hdl.clone(), &mem);
+        assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
+        let cq = CompQueue::new(1, 0, 1, write_base, hdl.clone(), &mem);
+        assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
+
+        // Completion Queue's must be mapped to writable memory
+        let cq =
+            CompQueue::new(ADMIN_QUEUE_ID, 0, 2, read_base, hdl.clone(), &mem);
+        assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
+        let cq = CompQueue::new(1, 0, 2, read_base, hdl.clone(), &mem);
+        assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
 
         Ok(())
     }
 
     #[test]
     fn create_sqs() -> Result<(), Error> {
-        let instance = Instance::new_test(None)?;
+        let instance = Instance::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        instance.disp.with_ctx(|ctx| {
-            // Create corresponding CQs
-            let admin_cq = Arc::new(
-                CompQueue::new(
-                    ADMIN_QUEUE_ID,
-                    0,
-                    1024,
-                    write_base,
-                    ctx,
-                    hdl.clone(),
-                )
-                .unwrap(),
-            );
-            let io_cq = Arc::new(
-                CompQueue::new(1, 0, 1024, write_base, ctx, hdl.clone())
-                    .unwrap(),
-            );
+        let acc_mem = instance.lock().machine().acc_mem.child();
+        let mem = acc_mem.access().unwrap();
 
-            // Admin queues must be less than 4K
-            let sq = SubQueue::new(
+        // Create corresponding CQs
+        let admin_cq = Arc::new(
+            CompQueue::new(
                 ADMIN_QUEUE_ID,
-                admin_cq.clone(),
+                0,
                 1024,
-                read_base,
-                ctx,
-            );
-            assert!(matches!(sq, Ok(_)));
-            let sq = SubQueue::new(
-                ADMIN_QUEUE_ID,
-                admin_cq.clone(),
-                5 * 1024,
-                read_base,
-                ctx,
-            );
-            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
-
-            // I/O queues must be less than 64K
-            let sq = SubQueue::new(1, io_cq.clone(), 1024, read_base, ctx);
-            assert!(matches!(sq, Ok(_)));
-            let sq = SubQueue::new(1, io_cq.clone(), 65 * 1024, read_base, ctx);
-            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
-
-            // Neither must be less than 2
-            let sq = SubQueue::new(
-                ADMIN_QUEUE_ID,
-                admin_cq.clone(),
-                1,
-                read_base,
-                ctx,
-            );
-            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
-            let sq = SubQueue::new(1, admin_cq.clone(), 1, read_base, ctx);
-            assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
-
-            // Completion Queue's must be mapped to readable memory
-            let sq = SubQueue::new(
-                ADMIN_QUEUE_ID,
-                admin_cq.clone(),
-                2,
                 write_base,
-                ctx,
-            );
-            assert!(matches!(sq, Err(QueueCreateErr::InvalidBaseAddr)));
-            let sq = SubQueue::new(1, admin_cq.clone(), 2, write_base, ctx);
-            assert!(matches!(sq, Err(QueueCreateErr::InvalidBaseAddr)));
-        });
+                hdl.clone(),
+                &mem,
+            )
+            .unwrap(),
+        );
+        let io_cq = Arc::new(
+            CompQueue::new(1, 0, 1024, write_base, hdl.clone(), &mem).unwrap(),
+        );
+
+        // Admin queues must be less than 4K
+        let sq = SubQueue::new(
+            ADMIN_QUEUE_ID,
+            admin_cq.clone(),
+            1024,
+            read_base,
+            &mem,
+        );
+        assert!(matches!(sq, Ok(_)));
+        let sq = SubQueue::new(
+            ADMIN_QUEUE_ID,
+            admin_cq.clone(),
+            5 * 1024,
+            read_base,
+            &mem,
+        );
+        assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
+
+        // I/O queues must be less than 64K
+        let sq = SubQueue::new(1, io_cq.clone(), 1024, read_base, &mem);
+        assert!(matches!(sq, Ok(_)));
+        let sq = SubQueue::new(1, io_cq.clone(), 65 * 1024, read_base, &mem);
+        assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
+
+        // Neither must be less than 2
+        let sq =
+            SubQueue::new(ADMIN_QUEUE_ID, admin_cq.clone(), 1, read_base, &mem);
+        assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
+        let sq = SubQueue::new(1, admin_cq.clone(), 1, read_base, &mem);
+        assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
+
+        // Completion Queue's must be mapped to readable memory
+        //
+        // This relied on the test machinery establishing the writable memory
+        // region as write-only.  Until we expose such a region, it is not clear
+        // how much value such a test brings to the table.
+        //
+        // let sq = SubQueue::new(
+        //     ADMIN_QUEUE_ID,
+        //     admin_cq.clone(),
+        //     2,
+        //     write_base,
+        //     &mem,
+        // );
+        // assert!(matches!(sq, Err(QueueCreateErr::InvalidBaseAddr)));
+        // let sq = SubQueue::new(1, admin_cq.clone(), 2, write_base, &mem);
+        // assert!(matches!(sq, Err(QueueCreateErr::InvalidBaseAddr)));
 
         Ok(())
     }
 
     #[test]
     fn push_failures() -> Result<(), Error> {
-        let instance = Instance::new_test(None)?;
+        let instance = Instance::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        instance.disp.with_ctx(|ctx| {
-            // Create our queues
-            let cq = Arc::new(
-                CompQueue::new(1, 0, 4, write_base, ctx, hdl.clone()).unwrap(),
-            );
-            let sq = Arc::new(
-                SubQueue::new(1, cq.clone(), 4, read_base, ctx).unwrap(),
-            );
+        let acc_mem = instance.lock().machine().acc_mem.child();
+        let mem = acc_mem.access().unwrap();
 
-            // Replicate guest VM notifying us things were pushed to the SQ
-            let mut sq_tail = 0;
-            for _ in 0..sq.state.size - 1 {
-                sq_tail = sq.state.wrap_add(sq_tail, 1);
-                // These should all succeed
-                assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
-            }
+        // Create our queues
+        let cq = Arc::new(
+            CompQueue::new(1, 0, 4, write_base, hdl.clone(), &mem).unwrap(),
+        );
+        let sq =
+            Arc::new(SubQueue::new(1, cq.clone(), 4, read_base, &mem).unwrap());
 
-            // But anything more should fail
+        // Replicate guest VM notifying us things were pushed to the SQ
+        let mut sq_tail = 0;
+        for _ in 0..sq.state.size - 1 {
             sq_tail = sq.state.wrap_add(sq_tail, 1);
-            assert!(matches!(
-                sq.notify_tail(sq_tail),
-                Err(QueueUpdateError::TooManyEntries)
-            ));
+            // These should all succeed
+            assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
+        }
 
-            // Also anything that falls outside the boundaries (i.e. we didn't wrap properly)
-            assert!(matches!(
-                sq.notify_tail(sq.state.size as u16),
-                Err(QueueUpdateError::InvalidEntry)
-            ));
+        // But anything more should fail
+        sq_tail = sq.state.wrap_add(sq_tail, 1);
+        assert!(matches!(
+            sq.notify_tail(sq_tail),
+            Err(QueueUpdateError::TooManyEntries)
+        ));
 
-            // Now pop those SQ items and complete them in the CQ
-            while let Some((_, permit)) = sq.pop(ctx) {
-                permit.push_completion_test(ctx);
-            }
+        // Also anything that falls outside the boundaries (i.e. we didn't wrap properly)
+        assert!(matches!(
+            sq.notify_tail(sq.state.size as u16),
+            Err(QueueUpdateError::InvalidEntry)
+        ));
 
-            // Replicate guest VM notifying us things were consumed off the CQ
-            let mut cq_head = 0;
-            for _ in 0..sq.state.size - 1 {
-                cq_head = cq.state.wrap_add(cq_head, 1);
-                // These should all succeed
-                assert!(matches!(cq.notify_head(cq_head), Ok(_)));
-            }
+        // Now pop those SQ items and complete them in the CQ
+        while let Some((_, permit)) = sq.pop(&mem) {
+            permit.push_completion_test(&mem);
+        }
 
-            // There's nothing else to pop so this should fail
+        // Replicate guest VM notifying us things were consumed off the CQ
+        let mut cq_head = 0;
+        for _ in 0..sq.state.size - 1 {
             cq_head = cq.state.wrap_add(cq_head, 1);
-            assert!(matches!(
-                cq.notify_head(cq_head),
-                Err(QueueUpdateError::TooManyEntries)
-            ));
+            // These should all succeed
+            assert!(matches!(cq.notify_head(cq_head), Ok(_)));
+        }
 
-            // Also anything that falls outside the boundaries (i.e. we didn't wrap properly)
-            assert!(matches!(
-                cq.notify_head(cq.state.size as u16),
-                Err(QueueUpdateError::InvalidEntry)
-            ));
-        });
+        // There's nothing else to pop so this should fail
+        cq_head = cq.state.wrap_add(cq_head, 1);
+        assert!(matches!(
+            cq.notify_head(cq_head),
+            Err(QueueUpdateError::TooManyEntries)
+        ));
+
+        // Also anything that falls outside the boundaries (i.e. we didn't wrap properly)
+        assert!(matches!(
+            cq.notify_head(cq.state.size as u16),
+            Err(QueueUpdateError::InvalidEntry)
+        ));
 
         Ok(())
     }
 
     #[test]
     fn cq_kicks() -> Result<(), Error> {
-        let instance = Instance::new_test(None)?;
+        let instance = Instance::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        instance.disp.with_ctx(|ctx| {
-            // Create our queues
-            // Purposely make the CQ smaller to test kicks
-            let cq = Arc::new(
-                CompQueue::new(1, 0, 2, write_base, ctx, hdl.clone()).unwrap(),
-            );
-            let sq = Arc::new(
-                SubQueue::new(1, cq.clone(), 4, read_base, ctx).unwrap(),
-            );
+        let acc_mem = instance.lock().machine().acc_mem.child();
+        let mem = acc_mem.access().unwrap();
 
-            // Replicate guest VM notifying us things were pushed to the SQ
-            let mut sq_tail = 0;
-            for _ in 0..sq.state.size - 1 {
-                sq_tail = sq.state.wrap_add(sq_tail, 1);
-                assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
-            }
+        // Create our queues
+        // Purposely make the CQ smaller to test kicks
+        let cq = Arc::new(
+            CompQueue::new(1, 0, 2, write_base, hdl.clone(), &mem).unwrap(),
+        );
+        let sq =
+            Arc::new(SubQueue::new(1, cq.clone(), 4, read_base, &mem).unwrap());
 
-            // We should be able to pop based on how much space is in the CQ
-            for _ in 0..cq.state.size - 1 {
-                let pop = sq.pop(ctx);
-                assert!(matches!(pop, Some(_)));
+        // Replicate guest VM notifying us things were pushed to the SQ
+        let mut sq_tail = 0;
+        for _ in 0..sq.state.size - 1 {
+            sq_tail = sq.state.wrap_add(sq_tail, 1);
+            assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
+        }
 
-                // Complete these in the CQ (but note guest won't have acknowledged them yet)
-                pop.unwrap().1.push_completion_test(ctx);
-            }
+        // We should be able to pop based on how much space is in the CQ
+        for _ in 0..cq.state.size - 1 {
+            let pop = sq.pop(&mem);
+            assert!(matches!(pop, Some(_)));
 
-            // But we can't pop anymore due to no more CQ space to reserve
-            assert!(matches!(sq.pop(ctx), None));
+            // Complete these in the CQ (but note guest won't have acknowledged them yet)
+            pop.unwrap().1.push_completion_test(&mem);
+        }
 
-            // The guest consuming things off the CQ should let free us
-            assert!(matches!(cq.notify_head(1), Ok(_)));
+        // But we can't pop anymore due to no more CQ space to reserve
+        assert!(matches!(sq.pop(&mem), None));
 
-            // Kick should've been set in the failed pop
-            assert!(cq.kick());
+        // The guest consuming things off the CQ should let free us
+        assert!(matches!(cq.notify_head(1), Ok(_)));
 
-            // We should have one more space now and should be able to pop 1 more
-            assert!(matches!(sq.pop(ctx), Some(_)));
-        });
+        // Kick should've been set in the failed pop
+        assert!(cq.kick());
+
+        // We should have one more space now and should be able to pop 1 more
+        assert!(matches!(sq.pop(&mem), Some(_)));
 
         Ok(())
     }
 
     #[test]
     fn push_pop() -> Result<(), Error> {
-        let instance = Instance::new_test(None)?;
+        let instance = Instance::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        instance.disp.with_ctx(|ctx| {
-            // Create a pair of Completion and Submission Queues
-            // with a random size. We purposefully give the CQ a smaller
-            // size to exercise the "kick" conditions where we have some
-            // request available in the SQ but can't pop it until there's
-            // space available in the CQ.
-            let mut rng = rand::thread_rng();
-            let sq_size = rng.gen_range(512..2048);
-            let cq = Arc::new(
-                CompQueue::new(1, 0, 4, write_base, ctx, hdl.clone()).unwrap(),
-            );
-            let sq = Arc::new(
-                SubQueue::new(1, cq.clone(), sq_size, read_base, ctx).unwrap(),
-            );
+        let acc_mem = instance.lock().machine().acc_mem.child();
+        let mem = acc_mem.access().unwrap();
 
-            // We'll be generating a random number of submissions
-            let submissions_rand = rng.gen_range(2..sq.state.size - 1);
+        // Create a pair of Completion and Submission Queues
+        // with a random size. We purposefully give the CQ a smaller
+        // size to exercise the "kick" conditions where we have some
+        // request available in the SQ but can't pop it until there's
+        // space available in the CQ.
+        let mut rng = rand::thread_rng();
+        let sq_size = rng.gen_range(512..2048);
+        let cq = Arc::new(
+            CompQueue::new(1, 0, 4, write_base, hdl.clone(), &mem).unwrap(),
+        );
+        let sq = Arc::new(
+            SubQueue::new(1, cq.clone(), sq_size, read_base, &mem).unwrap(),
+        );
 
-            let (doorbell_tx, doorbell_rx) =
-                crossbeam_channel::unbounded::<Doorbell>();
-            let (workers_tx, workers_rx) = crossbeam_channel::unbounded();
-            let (comp_tx, comp_rx) = crossbeam_channel::unbounded();
+        // We'll be generating a random number of submissions
+        let submissions_rand = rng.gen_range(2..sq.state.size - 1);
 
-            // Create a thread to mimic the main device thread that
-            // will handle "doorbell" read/write ops.
-            enum Doorbell {
-                Cq(u16),
-                Sq(u16),
-            }
-            let (doorbell_cq, doorbell_sq) = (cq.clone(), sq.clone());
-            let doorbell_handler = spawn(move || {
-                // Keep track of the "host" side CQ head and SQ tail as
-                // we receive "doorbell" hits.
-                let mut cq_head = 0;
-                let mut sq_tail = 0;
-                loop {
-                    match doorbell_rx.recv() {
-                        Ok(Doorbell::Cq(n)) => {
-                            cq_head = doorbell_cq.state.wrap_add(cq_head, n);
-                            assert!(matches!(
-                                doorbell_cq.notify_head(cq_head),
-                                Ok(_)
-                            ));
-                            if doorbell_cq.kick() {
-                                assert!(workers_tx.send(()).is_ok());
-                            }
-                        }
-                        Ok(Doorbell::Sq(n)) => {
-                            sq_tail = doorbell_sq.state.wrap_add(sq_tail, n);
-                            // The "doorbell" was rung and so let's have the SQ
-                            // update its internal state before poking the workers
-                            assert!(matches!(
-                                doorbell_sq.notify_tail(sq_tail),
-                                Ok(_)
-                            ));
+        let (doorbell_tx, doorbell_rx) =
+            crossbeam_channel::unbounded::<Doorbell>();
+        let (workers_tx, workers_rx) = crossbeam_channel::unbounded();
+        let (comp_tx, comp_rx) = crossbeam_channel::unbounded();
+
+        // Create a thread to mimic the main device thread that
+        // will handle "doorbell" read/write ops.
+        enum Doorbell {
+            Cq(u16),
+            Sq(u16),
+        }
+        let (doorbell_cq, doorbell_sq) = (cq.clone(), sq.clone());
+        let doorbell_handler = spawn(move || {
+            // Keep track of the "host" side CQ head and SQ tail as
+            // we receive "doorbell" hits.
+            let mut cq_head = 0;
+            let mut sq_tail = 0;
+            loop {
+                match doorbell_rx.recv() {
+                    Ok(Doorbell::Cq(n)) => {
+                        cq_head = doorbell_cq.state.wrap_add(cq_head, n);
+                        assert!(matches!(
+                            doorbell_cq.notify_head(cq_head),
+                            Ok(_)
+                        ));
+                        if doorbell_cq.kick() {
                             assert!(workers_tx.send(()).is_ok());
                         }
-                        Err(_) => break,
                     }
+                    Ok(Doorbell::Sq(n)) => {
+                        sq_tail = doorbell_sq.state.wrap_add(sq_tail, n);
+                        // The "doorbell" was rung and so let's have the SQ
+                        // update its internal state before poking the workers
+                        assert!(matches!(
+                            doorbell_sq.notify_tail(sq_tail),
+                            Ok(_)
+                        ));
+                        assert!(workers_tx.send(()).is_ok());
+                    }
+                    Err(_) => break,
                 }
-            });
+            }
+        });
 
-            // Create a number of worker threads to simulate the block
-            // dev backend workers that will be notified every time the
-            // SQ "doorbell" is hit and will attempt to pull a new IO
-            // request off the SQ. At the end, each will return a count
-            // of how many requests they received and then completed.
-            let io_workers = (0..4)
-                .map(|_| {
-                    let worker_instance = instance.clone();
-                    let worker_rx = workers_rx.clone();
-                    let worker_sq = sq.clone();
-                    let worker_comp_tx = comp_tx.clone();
-                    spawn(move || {
-                        let mut submissions = 0;
-                        worker_instance.disp.with_ctx(|ctx| {
-                            let mut rng = rand::thread_rng();
-                            loop {
-                                match worker_rx.recv() {
-                                    Ok(()) => {
-                                        while let Some((_, cqe_permit)) =
-                                            worker_sq.pop(ctx)
-                                        {
-                                            submissions += 1;
+        // Create a number of worker threads to simulate the block
+        // dev backend workers that will be notified every time the
+        // SQ "doorbell" is hit and will attempt to pull a new IO
+        // request off the SQ. At the end, each will return a count
+        // of how many requests they received and then completed.
+        let io_workers = (0..4)
+            .map(|_| {
+                let worker_rx = workers_rx.clone();
+                let worker_sq = sq.clone();
+                let worker_comp_tx = comp_tx.clone();
 
-                                            // Sleep for a bit to mimic actually doing some
-                                            // work before we complete the IO
-                                            sleep(Duration::from_micros(
-                                                rng.gen_range(0..500),
-                                            ));
+                let child_acc = acc_mem.child();
 
-                                            cqe_permit
-                                                .push_completion_test(ctx);
+                spawn(move || {
+                    let mut submissions = 0;
+                    let mem = child_acc.access().unwrap();
 
-                                            // Signal the "guest" side of the completion handler
-                                            assert!(worker_comp_tx
-                                                .send(())
-                                                .is_ok());
-                                        }
-                                    }
-                                    Err(_) => break,
+                    let mut rng = rand::thread_rng();
+                    loop {
+                        match worker_rx.recv() {
+                            Ok(()) => {
+                                while let Some((_, cqe_permit)) =
+                                    worker_sq.pop(&mem)
+                                {
+                                    submissions += 1;
+
+                                    // Sleep for a bit to mimic actually doing
+                                    // some work before we complete the IO
+                                    sleep(Duration::from_micros(
+                                        rng.gen_range(0..500),
+                                    ));
+
+                                    cqe_permit.push_completion_test(&mem);
+
+                                    // Signal "guest" side of completion handler
+                                    assert!(worker_comp_tx.send(()).is_ok());
                                 }
                             }
-                        });
-                        submissions
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            // Create a thread to "consume" things off the Completion Queue.
-            // This simulates the host reacting to our CQ pushes and "ringing" the
-            // CQ doorbell. At the end, it returns how many completion were handled.
-            // Regardless, it'll stop after the number of completions is at least
-            // as many as the number of submissions we decided to generate.
-            let comp_doorbell_tx = doorbell_tx.clone();
-            let comp_handler = spawn(move || {
-                let exit_after = submissions_rand;
-                let mut completions = 0;
-                loop {
-                    match comp_rx.recv() {
-                        Ok(()) => {
-                            // "Ring" the CQ doorbell
-                            // TODO: test completing more than 1 at a time
-                            assert!(comp_doorbell_tx
-                                .send(Doorbell::Cq(1))
-                                .is_ok());
-                            completions += 1;
+                            Err(_) => break,
                         }
-                        Err(_) => break completions,
                     }
-                    if completions >= exit_after {
-                        break completions;
+                    submissions
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Create a thread to "consume" things off the Completion Queue. This
+        // simulates the host reacting to our CQ pushes and "ringing" the CQ
+        // doorbell. At the end, it returns how many completion were handled.
+        // Regardless, it'll stop after the number of completions is at least as
+        // many as the number of submissions we decided to generate.
+        let comp_doorbell_tx = doorbell_tx.clone();
+        let comp_handler = spawn(move || {
+            let exit_after = submissions_rand;
+            let mut completions = 0;
+            loop {
+                match comp_rx.recv() {
+                    Ok(()) => {
+                        // "Ring" the CQ doorbell
+                        // TODO: test completing more than 1 at a time
+                        assert!(comp_doorbell_tx.send(Doorbell::Cq(1)).is_ok());
+                        completions += 1;
                     }
+                    Err(_) => break completions,
                 }
-            });
-
-            // Now, start generating a random number of submissions
-            for _ in 0..submissions_rand {
-                // "Ring" the SQ doorbell
-                // TODO: test submitting more than 1 at a time
-                //let doorbell_tx = doorbell_tx.clone();
-                assert!(doorbell_tx.send(Doorbell::Sq(1)).is_ok());
-
-                // Sleep up to 100us in between
-                sleep(Duration::from_micros(rng.gen_range(0..100)));
+                if completions >= exit_after {
+                    break completions;
+                }
             }
-            drop(doorbell_tx);
-
-            // Wait for the completion handler and its count
-            let completions: u32 = comp_handler.join().unwrap();
-
-            // Wait for doorbell handler
-            doorbell_handler.join().unwrap();
-
-            // Wait for the IO workers to complete and sum the total
-            // number of submissions they recevied
-            let submissions: u32 =
-                io_workers.into_iter().map(|j| j.join().unwrap()).sum();
-
-            // Make sure the number of submission we recevied matched the
-            // number we generated and completed
-            assert_eq!(submissions, submissions_rand);
-            assert_eq!(submissions, completions);
         });
+
+        // Now, start generating a random number of submissions
+        for _ in 0..submissions_rand {
+            // "Ring" the SQ doorbell
+            // TODO: test submitting more than 1 at a time
+            //let doorbell_tx = doorbell_tx.clone();
+            assert!(doorbell_tx.send(Doorbell::Sq(1)).is_ok());
+
+            // Sleep up to 100us in between
+            sleep(Duration::from_micros(rng.gen_range(0..100)));
+        }
+        drop(doorbell_tx);
+
+        // Wait for the completion handler and its count
+        let completions: u32 = comp_handler.join().unwrap();
+
+        // Wait for doorbell handler
+        doorbell_handler.join().unwrap();
+
+        // Wait for the IO workers to complete and sum the total
+        // number of submissions they recevied
+        let submissions: u32 =
+            io_workers.into_iter().map(|j| j.join().unwrap()).sum();
+
+        // Make sure the number of submission we recevied matched the number we
+        // generated and completed
+        assert_eq!(submissions, submissions_rand);
+        assert_eq!(submissions, completions);
 
         Ok(())
     }

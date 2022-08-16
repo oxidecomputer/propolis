@@ -1,15 +1,18 @@
 //! Implements an interface to virtualized block devices.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
+use crate::accessors::MemAccessor;
 use crate::common::*;
-use crate::dispatch::{AsyncCtx, DispCtx, Dispatcher, SyncCtx, WakeFn};
+use crate::tasks::*;
 use crate::vmm::{MemCtx, SubMapping};
 
 use futures::future::BoxFuture;
+use once_cell::sync::OnceCell;
 use tokio::sync::{Notify, Semaphore};
 
 mod file;
@@ -44,8 +47,7 @@ pub enum Result {
     Unsupported,
 }
 
-pub type CompleteFn =
-    dyn FnOnce(Operation, Result, &DispCtx) + Send + Sync + 'static;
+pub type BlockPayload = dyn Any + Send + 'static;
 
 /// Block device operation request
 pub struct Request {
@@ -55,8 +57,8 @@ pub struct Request {
     /// A list of regions of guest memory to read/write into as part of the I/O request
     regions: Vec<GuestRegion>,
 
-    /// Block device specific completion function for this I/O request
-    donef: Option<Box<CompleteFn>>,
+    /// Block device specific completion payload for this I/O request
+    payload: Option<Box<dyn Any + Send>>,
 
     /// Book-keeping for tracking outstanding requests from the block device
     ///
@@ -70,24 +72,33 @@ impl Request {
     pub fn new_read(
         off: usize,
         regions: Vec<GuestRegion>,
-        donef: Box<CompleteFn>,
+        payload: Box<BlockPayload>,
     ) -> Self {
         let op = Operation::Read(off);
-        Self { op, regions, donef: Some(donef), outstanding: None }
+        Self { op, regions, payload: Some(payload), outstanding: None }
     }
 
     pub fn new_write(
         off: usize,
         regions: Vec<GuestRegion>,
-        donef: Box<CompleteFn>,
+        payload: Box<BlockPayload>,
     ) -> Self {
         let op = Operation::Write(off);
-        Self { op, regions, donef: Some(donef), outstanding: None }
+        Self { op, regions, payload: Some(payload), outstanding: None }
     }
 
-    pub fn new_flush(off: usize, len: usize, donef: Box<CompleteFn>) -> Self {
+    pub fn new_flush(
+        off: usize,
+        len: usize,
+        payload: Box<BlockPayload>,
+    ) -> Self {
         let op = Operation::Flush(off, len);
-        Self { op, regions: Vec::new(), donef: Some(donef), outstanding: None }
+        Self {
+            op,
+            regions: Vec::new(),
+            payload: Some(payload),
+            outstanding: None,
+        }
     }
 
     /// Type of operation being issued.
@@ -123,9 +134,9 @@ impl Request {
     }
 
     /// Indiciate disposition of completed request
-    pub fn complete(mut self, res: Result, ctx: &DispCtx) {
-        let func = self.donef.take().unwrap();
-        func(self.op, res, ctx);
+    pub fn complete(mut self, res: Result, dev: &dyn Device) {
+        let payload = self.payload.take().unwrap();
+        dev.complete(self.op, res, payload);
 
         // Update the outstanding I/O count
         self.outstanding
@@ -142,7 +153,7 @@ impl Request {
 }
 impl Drop for Request {
     fn drop(&mut self) {
-        if self.donef.is_some() {
+        if self.payload.is_some() {
             panic!("request dropped prior to completion");
         }
     }
@@ -162,21 +173,27 @@ pub struct DeviceInfo {
 /// API to access a virtualized block device.
 pub trait Device: Send + Sync + 'static {
     /// Retreive the next request (if any)
-    fn next(&self, ctx: &DispCtx) -> Option<Request>;
+    fn next(&self) -> Option<Request>;
+
+    /// Complete processing of result
+    fn complete(&self, op: Operation, res: Result, payload: Box<dyn Any>);
+
+    /// Get an accessor to guest memory via the underlying device
+    fn accessor_mem(&self) -> MemAccessor;
 
     fn set_notifier(&self, f: Option<Box<NotifierFn>>);
 }
 
 pub trait Backend: Send + Sync + 'static {
-    fn attach(
-        &self,
-        dev: Arc<dyn Device>,
-        disp: &Dispatcher,
-    ) -> std::io::Result<()>;
+    fn attach(&self, dev: Arc<dyn Device>) -> std::io::Result<()>;
     fn info(&self) -> DeviceInfo;
+    /// Process a block device request.  It is expected that the `Backend`
+    /// itself will call this through some queuing driver apparatus, rather than
+    /// the block device emulation itself.
+    fn process(&self, req: &Request, mem: &MemCtx) -> Result;
 }
 
-pub type NotifierFn = dyn Fn(&dyn Device, &DispCtx) + Send + Sync + 'static;
+pub type NotifierFn = dyn Fn(&dyn Device) + Send + Sync + 'static;
 
 /// Helper type for keeping track of outstanding I/O requests received
 /// from the block device and given to the block backend.
@@ -308,11 +325,11 @@ impl Notifier {
             None
         }
     }
-    pub fn notify(&self, dev: &dyn Device, ctx: &DispCtx) {
+    pub fn notify(&self, dev: &dyn Device) {
         if self.armed.load(Ordering::Acquire) {
             let inner = self.notifier.lock().unwrap();
             if let Some(func) = inner.as_ref() {
-                func(dev, ctx);
+                func(dev);
             }
         }
     }
@@ -348,21 +365,135 @@ impl Notifier {
     }
 }
 
-pub type BackendProcessFn =
-    dyn Fn(&Request, &DispCtx) -> std::io::Result<()> + Send + Sync + 'static;
-
 /// Driver used to service requests from a block device with a specific backend.
 pub struct Driver {
-    /// The block device generating the requests to service
-    bdev: Arc<dyn Device>,
+    inner: Arc<DriverInner>,
+    outer: Weak<dyn Backend>,
+    name: String,
+}
 
-    /// Backend provided handler for requests from block device
-    req_handler: Box<BackendProcessFn>,
+impl Driver {
+    /// Create new `BackendDriver` to service requests for the given block device.
+    pub fn new(
+        outer: Weak<dyn Backend>,
+        name: String,
+        worker_count: NonZeroUsize,
+    ) -> Self {
+        Self {
+            inner: Arc::new(DriverInner {
+                bdev: OnceCell::new(),
+                acc_mem: OnceCell::new(),
+                queue: Mutex::new(VecDeque::new()),
+                cv: Condvar::new(),
+                idle_threads: Semaphore::new(0),
+                wake: Arc::new(Notify::new()),
+                task_ctrl: Mutex::new(DriverCtrls::new(worker_count)),
+            }),
+            outer,
+            name,
+        }
+    }
+
+    /// Attach driver to emulated device and spawn worker tasks for processing requests.
+    pub fn attach(&self, bdev: Arc<dyn Device>) -> std::io::Result<()> {
+        let be = self.outer.upgrade().expect("backend must exist");
+
+        let _old_bdev = self.inner.bdev.set(bdev.clone());
+        assert!(_old_bdev.is_ok(), "driver already attached");
+        let _old_acc = self.inner.acc_mem.set(bdev.accessor_mem());
+        assert!(_old_acc.is_ok(), "driver already attached");
+
+        // Wire up notifier to the block device
+        let wake = self.inner.wake.clone();
+        bdev.set_notifier(Some(Box::new(move |_bdev| wake.notify_one())));
+
+        // Spawn (held) worker tasks
+        let mut tasks = self.inner.task_ctrl.lock().unwrap();
+        for (i, ctrl_slot) in tasks.workers.iter_mut().enumerate() {
+            let (mut task, ctrl) = TaskHdl::new_held(Some(self.worker_waker()));
+
+            let worker_self = Arc::clone(&self.inner);
+            let worker_be = be.clone();
+            let _join = std::thread::Builder::new()
+                .name(format!("{} {i}", &self.name))
+                .spawn(move || {
+                    worker_self.process_requests(&mut task, worker_be);
+                })?;
+            let old = ctrl_slot.replace(ctrl);
+            assert!(old.is_none(), "worker {} task already exists", 1);
+        }
+
+        // Create async task to get requests from block device and feed the worker threads
+        let sched_self = Arc::clone(&self.inner);
+        let (mut task, ctrl) = TaskHdl::new_held(None);
+        let _join = tokio::spawn(async move {
+            let _ = sched_self.schedule_requests(&mut task).await;
+        });
+        let old = tasks.sched.replace(ctrl);
+        assert!(old.is_none(), "sched task already exists");
+
+        Ok(())
+    }
+
+    fn worker_waker(&self) -> Box<NotifyFn> {
+        let this = Arc::downgrade(&self.inner);
+
+        Box::new(move || {
+            if let Some(this) = this.upgrade() {
+                // Take the queue lock in order to synchronize notification with
+                // any activity in the processing thread.
+                let _guard = this.queue.lock().unwrap();
+                this.cv.notify_all()
+            }
+        })
+    }
+
+    pub fn run(&self) {
+        let mut ctrls = self.inner.task_ctrl.lock().unwrap();
+        let _ = ctrls.sched.as_mut().unwrap().run();
+        for worker in ctrls.workers.iter_mut() {
+            let _ = worker.as_mut().unwrap().run();
+        }
+    }
+    pub fn pause(&self) {
+        let mut ctrls = self.inner.task_ctrl.lock().unwrap();
+        let _ = ctrls.sched.as_mut().unwrap().hold();
+        for worker in ctrls.workers.iter_mut() {
+            let _ = worker.as_mut().unwrap().hold();
+        }
+    }
+    pub fn halt(&self) {
+        let mut ctrls = self.inner.task_ctrl.lock().unwrap();
+        ctrls.sched.take().unwrap().exit();
+        for worker in ctrls.workers.iter_mut() {
+            worker.take().unwrap().exit();
+        }
+    }
+}
+
+struct DriverCtrls {
+    sched: Option<TaskCtrl>,
+    workers: Vec<Option<TaskCtrl>>,
+}
+impl DriverCtrls {
+    fn new(sz: NonZeroUsize) -> Self {
+        let mut workers = Vec::with_capacity(sz.get());
+        workers.resize_with(sz.get(), Default::default);
+        Self { sched: None, workers }
+    }
+}
+
+struct DriverInner {
+    /// The block device providing the requests to be serviced
+    bdev: OnceCell<Arc<dyn Device>>,
+
+    /// Memory accessor through the underlying device
+    acc_mem: OnceCell<MemAccessor>,
 
     /// Queue of I/O requests from the device ready to be serviced by the backend
     queue: Mutex<VecDeque<Request>>,
 
-    /// Synchronization primitive used to block backend worker threads on requests in the queue
+    /// Sync for blocking backend worker threads on requests in the queue
     cv: Condvar,
 
     /// Semaphore to block polling block device unless we have idle backend worker threads
@@ -370,97 +501,39 @@ pub struct Driver {
 
     /// Notify handle used by block device to proactively inform us of any new requests
     wake: Arc<Notify>,
+
+    /// Task control handles for workers
+    task_ctrl: Mutex<DriverCtrls>,
 }
-
-impl Driver {
-    /// Create new `BackendDriver` to service requests for the given block device.
-    pub fn new(
-        bdev: Arc<dyn Device>,
-        req_handler: Box<BackendProcessFn>,
-    ) -> Self {
-        let wake = Arc::new(Notify::new());
-        // Wire up notifier to the block device
-        let bdev_wake = Arc::clone(&wake);
-        bdev.set_notifier(Some(Box::new(move |_dev, _ctx| {
-            bdev_wake.notify_one()
-        })));
-        Self {
-            bdev,
-            req_handler,
-            queue: Mutex::new(VecDeque::new()),
-            cv: Condvar::new(),
-            idle_threads: Semaphore::new(0),
-            wake,
-        }
-    }
-
-    /// Start the given number of worker threads and an async task to feed the worker
-    /// with requests from the block device.
-    pub fn spawn(
-        self: &Arc<Self>,
-        name: &'static str,
-        worker_count: NonZeroUsize,
-        disp: &Dispatcher,
-    ) -> std::io::Result<()> {
-        for i in 0..worker_count.get() {
-            let worker_self = Arc::clone(self);
-
-            // Configure a waker to help threads to reach their yield points.
-            // Each worker needs to register a waker to avoid a race in which an
-            // unregistered worker blocks on the queue condition variable only
-            // after all the registered workers have already had their wakers
-            // invoked.
-            let wake = {
-                let notify_self = Arc::downgrade(self);
-                Some(Box::new(move |_ctx: &DispCtx| {
-                    if let Some(this) = notify_self.upgrade() {
-                        let _guard = this.queue.lock().unwrap();
-                        this.cv.notify_all();
-                    }
-                }) as Box<WakeFn>)
-            };
-
-            // Spawn worker thread
-            let _ = disp.spawn_sync(
-                format!("{name} bdev {i}"),
-                Box::new(move |mut sctx| {
-                    worker_self.blocking_loop(&mut sctx);
-                }),
-                wake,
-            )?;
-        }
-
-        // Create async task to get requests from block device and feed the worker threads
-        let sched_self = Arc::clone(self);
-        let sched_actx = disp.async_ctx();
-        let sched_task = tokio::spawn(async move {
-            let _ = sched_self.do_scheduling(&sched_actx).await;
-        });
-        disp.track(sched_task);
-
-        Ok(())
-    }
-
+impl DriverInner {
     /// Worker thread's main-loop: looks for requests to service in the queue.
-    fn blocking_loop(&self, sctx: &mut SyncCtx) {
+    fn process_requests(&self, task: &mut TaskHdl, be: Arc<dyn Backend>) {
         let mut idled = false;
         loop {
-            if sctx.check_yield() {
-                break;
+            // Heed task events
+            match task.pending_event() {
+                Some(Event::Hold) => {
+                    task.hold();
+                    continue;
+                }
+                Some(Event::Exit) => return,
+                _ => {}
             }
 
+            let bdev = self.bdev.get().expect("attached block device").as_ref();
+            let acc_mem = self.acc_mem.get().expect("attached memory accessor");
             // Check if we've received any requests to process
             let mut guard = self.queue.lock().unwrap();
             if let Some(req) = guard.pop_front() {
                 drop(guard);
                 idled = false;
-                let logger = sctx.log().clone();
-                let ctx = sctx.dispctx();
-                match (self.req_handler)(&req, &ctx) {
-                    Ok(()) => req.complete(Result::Success, &ctx),
-                    Err(e) => {
-                        slog::error!(logger, "{e:?} error on req {:?}", req.op);
-                        req.complete(Result::Failure, &ctx)
+                match acc_mem.access() {
+                    Some(mem) => {
+                        let result = be.process(&req, &mem);
+                        req.complete(result, bdev);
+                    }
+                    None => {
+                        req.complete(Result::Failure, bdev);
                     }
                 }
             } else {
@@ -472,10 +545,9 @@ impl Driver {
                 let _guard = self
                     .cv
                     .wait_while(guard, |g| {
-                        // While `sctx.check_yield()` is tempting here, it will
-                        // block if this thread goes into a quiesce state,
-                        // excluding all others from the queue lock.
-                        g.is_empty() && !sctx.pending_reqs()
+                        // Be cognizant of task events in addition to the state
+                        // of the queue.
+                        g.is_empty() && task.pending_event().is_none()
                     })
                     .unwrap();
             }
@@ -483,13 +555,11 @@ impl Driver {
     }
 
     /// Attempt to grab a request from the block device (if one's available)
-    async fn next_req(&self, actx: &AsyncCtx) -> Option<Request> {
+    async fn next_req(&self) -> Request {
+        let bdev = self.bdev.get().expect("attached block device");
         loop {
-            {
-                let ctx = actx.dispctx().await?;
-                if let Some(req) = self.bdev.next(&ctx) {
-                    return Some(req);
-                }
+            if let Some(req) = bdev.next() {
+                return req;
             }
 
             // Don't busy-loop on the device but just wait for it to wake us
@@ -499,20 +569,43 @@ impl Driver {
     }
 
     /// Scheduling task body: feed worker threads with requests from block device.
-    async fn do_scheduling(&self, actx: &AsyncCtx) {
+    async fn schedule_requests(&self, task: &mut TaskHdl) {
         loop {
-            // Are they any idle worker threads?
-            let avail = self.idle_threads.acquire().await.unwrap();
-            // We found an idle thread!
-            // It will increase the permit count once it's done with any work
-            avail.forget();
+            let avail = tokio::select! {
+                event = task.get_event() => {
+                    match event {
+                        Event::Hold => {
+                            task.wait_held().await;
+                            continue;
+                        }
+                        Event::Exit => {
+                            return;
+                        }
+                    }
+                },
+                avail = self.idle_threads.acquire() => {
+                    // We found an idle thread!
+                    avail.unwrap()
+                }
+            };
 
-            // Get the next request to process
-            if let Some(req) = self.next_req(actx).await {
-                let mut queue = self.queue.lock().unwrap();
-                queue.push_back(req);
-                drop(queue);
-                self.cv.notify_one();
+            tokio::select! {
+                _event = task.get_event() => {
+                    // Take another lap if an event arrives while we are waiting
+                    // for a request to schedule to the worker
+                    continue;
+                },
+                req = self.next_req() => {
+                    // With a request in hand, we can discard the permit for the
+                    // idle thread which is about to pick up the work.
+                    avail.forget();
+
+                    // Put the request on the queue for processing
+                    let mut queue = self.queue.lock().unwrap();
+                    queue.push_back(req);
+                    drop(queue);
+                    self.cv.notify_one();
+                }
             }
         }
     }

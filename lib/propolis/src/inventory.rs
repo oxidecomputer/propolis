@@ -5,8 +5,6 @@ use std::io::{Error as IoError, ErrorKind};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-use crate::dispatch::DispCtx;
-use crate::instance::{State, TransitionPhase};
 use crate::migrate::Migrator;
 
 /// Errors returned while registering or deregistering from [`Inventory`].
@@ -193,6 +191,11 @@ impl Inventory {
         Ok(())
     }
 
+    pub(crate) fn clear(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.clear();
+    }
+
     pub fn print(&self) {
         let inv = self.inner.lock().unwrap();
         inv.print()
@@ -299,14 +302,14 @@ impl InventoryInner {
     /// Access the concrete type of an entity by ID.
     ///
     /// Returns the entity if it exists and has the requested concrete type.
-    pub fn get_concrete<T: Entity>(&self, id: EntityID) -> Option<Arc<T>> {
+    fn get_concrete<T: Entity>(&self, id: EntityID) -> Option<Arc<T>> {
         self.entities.get(&id)?.concrete()
     }
 
     /// Access the concrete type of an entity by name.
     ///
     /// Returns the entity if it exists and has the requested concrete type.
-    pub fn get_concrete_by_name<T: Entity>(
+    fn get_concrete_by_name<T: Entity>(
         &self,
         instance_name: &str,
     ) -> Option<Arc<T>> {
@@ -315,28 +318,25 @@ impl InventoryInner {
     }
 
     /// Access an entity's record by ID.
-    pub fn get(&self, id: EntityID) -> Option<&Record> {
+    fn get(&self, id: EntityID) -> Option<&Record> {
         self.entities.get(&id)
     }
 
     /// Access an entity's record by its instance name.
-    pub fn get_by_name(&self, instance_name: &str) -> Option<&Record> {
+    fn get_by_name(&self, instance_name: &str) -> Option<&Record> {
         let id = self.reverse_name.get(instance_name)?;
         self.entities.get(id)
     }
 
     /// Return a list of entity instance names
-    pub fn get_names(&self) -> Vec<String> {
+    fn get_names(&self) -> Vec<String> {
         self.reverse_name.keys().cloned().collect()
     }
 
     /// Removes an entity (and all its children) from the inventory.
     ///
     /// No-op if the entity does not exist.
-    pub fn deregister(
-        &mut self,
-        id: EntityID,
-    ) -> Result<(), RegistrationError> {
+    fn deregister(&mut self, id: EntityID) -> Result<(), RegistrationError> {
         // Remove all children recursively.
         let children = {
             let record = self
@@ -370,7 +370,7 @@ impl InventoryInner {
     }
 
     /// Returns true if the inventory is empty.
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.entities.is_empty()
     }
 
@@ -380,11 +380,18 @@ impl InventoryInner {
     }
 
     /// Iterates through the inventory according to the specified order.
-    pub fn iter(&self, order: Order) -> Iter<'_> {
+    fn iter(&self, order: Order) -> Iter<'_> {
         Iter::new(self, order)
     }
 
-    pub fn print(&self) {
+    fn clear(&mut self) {
+        self.entities.clear();
+        self.roots.clear();
+        self.reverse.clear();
+        self.reverse_name.clear();
+    }
+
+    fn print(&self) {
         let mut stack: Vec<EntityID> = Vec::new();
         for (id, rec) in self.iter(Order::Pre) {
             let rec_parent = rec.parent();
@@ -523,27 +530,21 @@ pub trait Entity: Send + Sync + 'static {
     fn type_name(&self) -> &'static str;
 
     #[allow(unused_variables)]
-    fn state_transition(
-        &self,
-        next: State,
-        target: Option<State>,
-        phase: TransitionPhase,
-        ctx: &DispCtx,
-    ) {
-    }
-    /// Function dedicated to `State::Reset` event delivery so implementers do
-    /// not need to create a more verbose `state_transition` implementation for
-    /// emulating device reset.
-    ///
-    /// This is called as part of `TransitionPhase::Pre`.  Entities which
-    /// require logic in the `Post` phase should do so via the
-    /// `state_transition` hook.
-    #[allow(unused_variables)]
-    fn reset(&self, ctx: &DispCtx) {}
-    #[allow(unused_variables)]
     fn child_register(&self) -> Option<Vec<ChildRegister>> {
         None
     }
+
+    /// Return a future indicating when the device has finished pausing.
+    fn paused(&self) -> BoxFuture<'static, ()> {
+        Box::pin(future::ready(()))
+    }
+
+    /// Called to indicate the device should start servicing the guest.
+    ///
+    /// This occurs during first boot, as well as after any `pause()` call due
+    /// to a reboot or migration.  It can be used to restore device state in the
+    /// kernel VMM which was reset during reboot-initiated reinitialization.
+    fn run(&self) {}
 
     /// Called to indicate the device should stop servicing the guest
     /// and attempt to cancel or complete any pending operations.
@@ -551,12 +552,20 @@ pub trait Entity: Send + Sync + 'static {
     /// The device isn't necessarily expected to complete the pause
     /// operation within the scope of this call but should return a
     /// future indicating such via the [`Entity::paused`] method.
-    fn pause(&self, _ctx: &DispCtx) {}
+    fn pause(&self) {}
 
-    /// Return a future indicating when the device has finished pausing.
-    fn paused(&self) -> BoxFuture<'static, ()> {
-        Box::pin(future::ready(()))
-    }
+    /// XXX: Reword
+    /// Function dedicated to `State::Reset` event delivery so implementers do
+    /// not need to create a more verbose `state_transition` implementation for
+    /// emulating device reset.
+    ///
+    /// This is called as part of `TransitionPhase::Pre`.  Entities which
+    /// require logic in the `Post` phase should do so via the
+    /// `state_transition` hook.
+    fn reset(&self) {}
+
+    /// XXX: more detail
+    fn halt(&self) {}
 
     /// Return the Migrator object that will be used to export/import
     /// this device's state.

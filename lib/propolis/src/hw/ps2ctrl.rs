@@ -3,12 +3,10 @@ use std::mem::replace;
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
-use crate::instance;
-use crate::intr_pins::LegacyPin;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::intr_pins::IntrPin;
+use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -93,8 +91,9 @@ struct PS2State {
     pri_port: PS2Kbd,
     aux_port: PS2Mouse,
 
-    pri_pin: Option<LegacyPin>,
-    aux_pin: Option<LegacyPin>,
+    pri_pin: Option<Box<dyn IntrPin>>,
+    aux_pin: Option<Box<dyn IntrPin>>,
+    reset_pin: Option<Arc<dyn IntrPin>>,
 }
 
 pub struct PS2Ctrl {
@@ -106,9 +105,8 @@ impl PS2Ctrl {
     }
     pub fn attach(self: &Arc<Self>, bus: &PioBus, chipset: &dyn Chipset) {
         let this = Arc::clone(self);
-        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
-            this.pio_rw(port, rwo, ctx)
-        }) as Arc<PioFn>;
+        let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
+            as Arc<PioFn>;
 
         bus.register(ibmpc::PORT_PS2_DATA, 1, Arc::clone(&piofn)).unwrap();
         bus.register(ibmpc::PORT_PS2_CMD_STATUS, 1, piofn).unwrap();
@@ -116,9 +114,10 @@ impl PS2Ctrl {
         let mut state = self.state.lock().unwrap();
         state.pri_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_PRI).unwrap());
         state.aux_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap());
+        state.reset_pin = Some(chipset.reset_pin());
     }
 
-    fn pio_rw(&self, port: u16, rwo: RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, rwo: RWOp) {
         assert_eq!(rwo.len(), 1);
         match port {
             ibmpc::PORT_PS2_DATA => match rwo {
@@ -127,7 +126,7 @@ impl PS2Ctrl {
             },
             ibmpc::PORT_PS2_CMD_STATUS => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.status_read()),
-                RWOp::Write(wo) => self.cmd_write(wo.read_u8(), ctx),
+                RWOp::Write(wo) => self.cmd_write(wo.read_u8()),
             },
             _ => {
                 panic!("unexpected pio in {:x}", port);
@@ -186,7 +185,7 @@ impl PS2Ctrl {
             0
         }
     }
-    fn cmd_write(&self, v: u8, ctx: &DispCtx) {
+    fn cmd_write(&self, v: u8) {
         let mut state = self.state.lock().unwrap();
         match v {
             PS2C_CMD_READ_CTRL_CFG => {
@@ -237,10 +236,7 @@ impl PS2Ctrl {
             PS2C_CMD_PULSE_START..=PS2C_CMD_PULSE_END => {
                 let to_pulse = v - PS2C_CMD_PULSE_START;
                 if to_pulse == 0xe {
-                    ctx.trigger_suspend(
-                        instance::SuspendKind::Reset,
-                        instance::SuspendSource::Device("PS/2 Controller"),
-                    );
+                    state.reset_pin.as_ref().unwrap().pulse();
                 }
             }
 
@@ -302,7 +298,7 @@ impl Entity for PS2Ctrl {
     fn type_name(&self) -> &'static str {
         "lpc-ps2ctrl"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         PS2Ctrl::reset(self);
     }
     fn migrate(&self) -> Migrator {
@@ -310,7 +306,7 @@ impl Entity for PS2Ctrl {
     }
 }
 impl Migrate for PS2Ctrl {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let state = self.state.lock().unwrap();
         let kbd = &state.pri_port;
         let mouse = &state.aux_port;
@@ -344,7 +340,7 @@ impl Migrate for PS2Ctrl {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let migrate::PS2CtrlV1 {
             ctrl: saved_ctrl,

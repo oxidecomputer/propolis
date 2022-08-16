@@ -4,8 +4,8 @@ use super::bar::{BarDefine, Bars};
 use super::bits::*;
 use super::cfgspace::{CfgBuilder, CfgReg};
 use super::{bus, BarN, Endpoint};
+use crate::accessors::{MemAccessor, MsiAccessor};
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
 use crate::migrate::MigrateStateError;
 use crate::util::regmap::{Flags, RegMap};
@@ -16,7 +16,7 @@ pub trait Device: Send + Sync + 'static {
     fn device_state(&self) -> &DeviceState;
 
     #[allow(unused_variables)]
-    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: BarN, rwo: RWOp) {
         match rwo {
             RWOp::Read(ro) => {
                 unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset())
@@ -27,7 +27,7 @@ pub trait Device: Send + Sync + 'static {
         }
     }
     #[allow(unused_variables)]
-    fn cfg_rw(&self, region: u8, rwo: RWOp, ctx: &DispCtx) {
+    fn cfg_rw(&self, region: u8, rwo: RWOp) {
         match rwo {
             RWOp::Read(ro) => {
                 unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset())
@@ -41,7 +41,7 @@ pub trait Device: Send + Sync + 'static {
     #[allow(unused_variables)]
     fn interrupt_mode_change(&self, mode: IntrMode) {}
     #[allow(unused_variables)]
-    fn msi_update(&self, info: MsiUpdate, ctx: &DispCtx) {}
+    fn msi_update(&self, info: MsiUpdate) {}
     // TODO
     // fn cap_read(&self);
     // fn cap_write(&self);
@@ -53,34 +53,30 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
         ds.attach(attachment);
         self.attach();
     }
-    fn cfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) {
+    fn cfg_rw(&self, mut rwo: RWOp) {
         let ds = self.device_state();
         ds.cfg_space.process(&mut rwo, |id, mut rwo| match id {
             CfgReg::Std => {
                 STD_CFG_MAP.process(&mut rwo, |id, rwo| match rwo {
-                    RWOp::Read(ro) => ds.cfg_std_read(id, ro, ctx),
-                    RWOp::Write(wo) => ds.cfg_std_write(self, id, wo, ctx),
+                    RWOp::Read(ro) => ds.cfg_std_read(id, ro),
+                    RWOp::Write(wo) => ds.cfg_std_write(self, id, wo),
                 });
             }
-            CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo, ctx),
+            CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo),
             CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
-                ds.cfg_cap_rw(self, id, rwo, ctx)
+                ds.cfg_cap_rw(self, id, rwo)
             }
         });
     }
-    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: BarN, rwo: RWOp) {
         let ds = self.device_state();
         if let Some(msix) = ds.msix_cfg.as_ref() {
             if msix.bar_match(bar) {
-                msix.bar_rw(
-                    rwo,
-                    |info| ds.notify_msi_update(self, info, ctx),
-                    ctx,
-                );
+                msix.bar_rw(rwo, |info| ds.notify_msi_update(self, info));
                 return;
             }
         }
-        Device::bar_rw(self, bar, rwo, ctx);
+        Device::bar_rw(self, bar, rwo);
     }
 }
 
@@ -201,6 +197,10 @@ pub struct DeviceState {
     msix_cfg: Option<Arc<MsixCfg>>,
     caps: Vec<Cap>,
 
+    pub acc_mem: MemAccessor,
+    // MSI accessor remains "hidden" behind MsixCfg machinery
+    acc_msi: MsiAccessor,
+
     state: Mutex<State>,
     cond: Condvar,
 }
@@ -214,12 +214,20 @@ impl DeviceState {
         caps: Vec<Cap>,
         bars: Bars,
     ) -> Self {
+        let acc_msi = MsiAccessor::new_orphan();
+        if let Some(cfg) = msix_cfg.as_ref() {
+            cfg.attach(&acc_msi);
+        }
+
         Self {
             ident,
             lintr_support,
             cfg_space,
             msix_cfg,
             caps,
+
+            acc_mem: MemAccessor::new_orphan(),
+            acc_msi,
 
             state: Mutex::new(State::new(bars)),
             cond: Condvar::new(),
@@ -253,7 +261,7 @@ impl DeviceState {
         state
     }
 
-    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp, _ctx: &DispCtx) {
+    fn cfg_std_read(&self, id: &StdCfgReg, ro: &mut ReadOp) {
         assert!(ro.offset() == 0 || *id == StdCfgReg::Reserved);
 
         match id {
@@ -349,7 +357,6 @@ impl DeviceState {
         dev: &dyn Device,
         id: &StdCfgReg,
         wo: &mut WriteOp,
-        _ctx: &DispCtx,
     ) {
         assert!(wo.offset() == 0 || *id == StdCfgReg::Reserved);
 
@@ -446,6 +453,7 @@ impl DeviceState {
         } else {
             state.reg_command = val;
         }
+        // TODO: disable memory and MSI access when busmastering is disabled
     }
 
     fn which_intr_mode(&self, state: &State) -> IntrMode {
@@ -470,13 +478,7 @@ impl DeviceState {
         self.which_intr_mode(&state)
     }
 
-    fn cfg_cap_rw(
-        &self,
-        dev: &dyn Device,
-        id: &CfgReg,
-        rwo: RWOp,
-        ctx: &DispCtx,
-    ) {
+    fn cfg_cap_rw(&self, dev: &dyn Device, id: &CfgReg, rwo: RWOp) {
         match id {
             CfgReg::CapId(i) => {
                 if let RWOp::Read(ro) = rwo {
@@ -493,13 +495,13 @@ impl DeviceState {
                     }
                 }
             }
-            CfgReg::CapBody(i) => self.do_cap_rw(dev, *i, rwo, ctx),
+            CfgReg::CapBody(i) => self.do_cap_rw(dev, *i, rwo),
 
             // Should be filtered down to only cap regs by now
             _ => panic!(),
         }
     }
-    fn do_cap_rw(&self, dev: &dyn Device, idx: u8, rwo: RWOp, ctx: &DispCtx) {
+    fn do_cap_rw(&self, dev: &dyn Device, idx: u8, rwo: RWOp) {
         assert!(idx < self.caps.len() as u8);
         // XXX: no fancy capability support for now
         let cap = &self.caps[idx as usize];
@@ -511,33 +513,22 @@ impl DeviceState {
                     // mode of the device which requires extra locking concerns.
                     let state = self.state.lock().unwrap();
                     let _state = self.affects_intr_mode(dev, state, |_state| {
-                        msix_cfg.cfg_rw(
-                            rwo,
-                            |info| self.notify_msi_update(dev, info, ctx),
-                            ctx,
-                        );
+                        msix_cfg.cfg_rw(rwo, |info| {
+                            self.notify_msi_update(dev, info)
+                        });
                     });
                 } else {
-                    msix_cfg.cfg_rw(
-                        rwo,
-                        |info| self.notify_msi_update(dev, info, ctx),
-                        ctx,
-                    );
+                    msix_cfg
+                        .cfg_rw(rwo, |info| self.notify_msi_update(dev, info));
                 }
             }
             _ => {
-                slog::info!(ctx.log, "unhandled PCI cap access";
-                    "id" => cap.id, "offset" => rwo.offset());
+                // XXX: do some logging?
             }
         }
     }
-    fn notify_msi_update(
-        &self,
-        dev: &dyn Device,
-        info: MsiUpdate,
-        ctx: &DispCtx,
-    ) {
-        dev.msi_update(info, ctx);
+    fn notify_msi_update(&self, dev: &dyn Device, info: MsiUpdate) {
+        dev.msi_update(info);
     }
     pub fn reset(&self, dev: &dyn Device) {
         let state = self.state.lock().unwrap();
@@ -566,6 +557,9 @@ impl DeviceState {
         let mut state = self.state.lock().unwrap();
         let _old = state.attach.replace(attachment);
         assert!(_old.is_none());
+        let attach = state.attach.as_ref().unwrap();
+        self.acc_mem.set_parent(&attach.acc_mem);
+        self.acc_msi.set_parent(&attach.acc_msi);
     }
 
     pub fn lintr_pin(&self) -> Option<Arc<dyn IntrPin>> {
@@ -690,9 +684,10 @@ struct MsixEntry {
     mask_func: bool,
     enabled: bool,
     pending: bool,
+    acc_msi: Option<MsiAccessor>,
 }
 impl MsixEntry {
-    fn fire(&mut self, ctx: &DispCtx) {
+    fn fire(&mut self) {
         if !self.enabled {
             return;
         }
@@ -700,12 +695,17 @@ impl MsixEntry {
             self.pending = true;
             return;
         }
-        ctx.mctx.hdl().lapic_msi(self.addr, self.data as u64).unwrap();
+        self.send();
     }
-    fn check_mask(&mut self, ctx: &DispCtx) {
+    fn check_mask(&mut self) {
         if !self.mask_vec && !self.mask_func && self.pending {
             self.pending = false;
-            ctx.mctx.hdl().lapic_msi(self.addr, self.data as u64).unwrap();
+            self.send();
+        }
+    }
+    fn send(&self) {
+        if let Some(acc) = self.acc_msi.as_ref() {
+            let _ = acc.send(self.addr, self.data as u64);
         }
     }
     fn reset(&mut self) {
@@ -800,12 +800,7 @@ impl MsixCfg {
     fn bar_match(&self, bar: BarN) -> bool {
         self.bar == bar
     }
-    fn bar_rw(
-        &self,
-        mut rwo: RWOp,
-        updatef: impl Fn(MsiUpdate),
-        ctx: &DispCtx,
-    ) {
+    fn bar_rw(&self, mut rwo: RWOp, updatef: impl Fn(MsiUpdate)) {
         self.map.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
                 MsixBarReg::Addr(i) => {
@@ -853,7 +848,7 @@ impl MsixCfg {
                         let mut ent = self.entries[*i as usize].lock().unwrap();
                         let val = wo.read_u32();
                         ent.mask_vec = val & MSIX_VEC_MASK != 0;
-                        ent.check_mask(ctx);
+                        ent.check_mask();
                         drop(ent);
                         updatef(MsiUpdate::Modify(*i));
                     }
@@ -881,12 +876,7 @@ impl MsixCfg {
             ro.write_u8(val);
         }
     }
-    fn cfg_rw(
-        &self,
-        mut rwo: RWOp,
-        updatef: impl Fn(MsiUpdate),
-        ctx: &DispCtx,
-    ) {
+    fn cfg_rw(&self, mut rwo: RWOp, updatef: impl Fn(MsiUpdate)) {
         CAP_MSIX_MAP.process(&mut rwo, |id, rwo| {
             match rwo {
                 RWOp::Read(ro) => {
@@ -925,7 +915,7 @@ impl MsixCfg {
                                 self.each_entry(|ent| {
                                     ent.mask_func = new_mask;
                                     ent.enabled = new_ena;
-                                    ent.check_mask(ctx);
+                                    ent.check_mask();
                                 });
                             }
                             state.enabled = new_ena;
@@ -957,10 +947,10 @@ impl MsixCfg {
             cb(&mut locked)
         }
     }
-    fn fire(&self, idx: u16, ctx: &DispCtx) {
+    fn fire(&self, idx: u16) {
         assert!(idx < self.count);
         let mut ent = self.entries[idx as usize].lock().unwrap();
-        ent.fire(ctx);
+        ent.fire();
     }
     fn is_enabled(&self) -> bool {
         let state = self.state.lock().unwrap();
@@ -983,6 +973,12 @@ impl MsixCfg {
         drop(state);
         self.each_entry(|ent| ent.reset());
     }
+    fn attach(&self, msi_acc: &MsiAccessor) {
+        for entry in self.entries.iter() {
+            let mut guard = entry.lock().unwrap();
+            guard.acc_msi = Some(msi_acc.child());
+        }
+    }
     fn export(&self) -> migrate::MsixStateV1 {
         let state = self.state.lock().unwrap();
         let mut entries = Vec::new();
@@ -1002,7 +998,6 @@ impl MsixCfg {
             entries,
         }
     }
-
     fn import(
         &self,
         state: migrate::MsixStateV1,
@@ -1058,8 +1053,8 @@ impl MsixHdl {
     pub(crate) fn new_test() -> Self {
         Self { cfg: MsixCfg::new(2048, BarN::BAR0).0 }
     }
-    pub fn fire(&self, idx: u16, ctx: &DispCtx) {
-        self.cfg.fire(idx, ctx);
+    pub fn fire(&self, idx: u16) {
+        self.cfg.fire(idx);
     }
     pub fn read(&self, idx: u16) -> MsiEnt {
         self.cfg.read(idx)

@@ -5,11 +5,9 @@ use std::io::{Error as IoError, ErrorKind};
 use std::sync::{Arc, Mutex};
 
 use crate::common::RWOp;
-use crate::dispatch::DispCtx;
 use crate::hw::ids;
 use crate::inventory::{Inventory, RegistrationError};
-use crate::mmio::MmioBus;
-use crate::pio::PioBus;
+use crate::vmm::Machine;
 
 use super::bridge::Bridge;
 use super::{Bdf, Bus, BusLocation, Endpoint, LintrCfg};
@@ -102,7 +100,6 @@ impl Topology {
         bus: RoutedBusId,
         location: BusLocation,
         rwo: RWOp,
-        ctx: &DispCtx,
     ) -> Option<()> {
         let guard = self.inner.lock().unwrap();
         let device = match guard.routed_buses.get(&bus) {
@@ -118,7 +115,7 @@ impl Topology {
         // to reconfigure part of the topology).
         drop(guard);
         if let Some(device) = device {
-            device.cfg_rw(rwo, ctx);
+            device.cfg_rw(rwo);
             Some(())
         } else {
             None
@@ -155,9 +152,13 @@ impl Topology {
     }
 }
 
-#[derive(Default)]
 struct Inner {
     routed_buses: BTreeMap<RoutedBusId, BusIndex>,
+}
+impl Inner {
+    fn new() -> Self {
+        Self { routed_buses: BTreeMap::new() }
+    }
 }
 
 /// An abstract description of a PCI bridge that should be added to a topology.
@@ -190,7 +191,7 @@ impl BridgeDescription {
     }
 
     /// Creates a new PCI bridge description with an explicitly supplied vendor
-    /// and device ID. See the documentation for [`new`].
+    /// and device ID. See the documentation for [`new`](Self::new).
     pub fn with_pci_ids(
         downstream_bus_id: LogicalBusId,
         attachment_addr: Bdf,
@@ -254,15 +255,24 @@ impl Builder {
     pub fn finish(
         self,
         inventory: &Inventory,
-        pio_bus: &Arc<PioBus>,
-        mmio_bus: &Arc<MmioBus>,
+        machine: &Machine,
     ) -> Result<Arc<Topology>, PciTopologyError> {
         let mut buses = Vec::new();
         let mut logical_buses = BTreeMap::new();
-        let mut inner = Inner::default();
+        let mut inner = Inner::new();
+
+        let pio_bus = &machine.bus_pio;
+        let mmio_bus = &machine.bus_mmio;
+        let acc_mem = machine.acc_mem.child();
+        let acc_msi = machine.acc_msi.child();
 
         // Bus 0 is always present and always routes to itself.
-        buses.push(Bus::new(pio_bus, mmio_bus));
+        buses.push(Bus::new(
+            pio_bus,
+            mmio_bus,
+            acc_mem.child(),
+            acc_msi.child(),
+        ));
         logical_buses.insert(LogicalBusId(0), BusIndex(0));
         inner.routed_buses.insert(RoutedBusId(0), BusIndex(0));
 
@@ -271,7 +281,13 @@ impl Builder {
                 LogicalBusId(bridge.downstream_bus_id.0),
                 BusIndex(buses.len()),
             );
-            buses.push(Bus::new(&pio_bus, &mmio_bus));
+            // TODO: wire up accessors to mirror actual bus topology
+            buses.push(Bus::new(
+                &pio_bus,
+                &mmio_bus,
+                acc_mem.child(),
+                acc_msi.child(),
+            ));
         }
 
         let topology = Arc::new(Topology {
@@ -306,47 +322,25 @@ impl Builder {
 
 #[cfg(test)]
 mod test {
-    use crate::{common::ReadOp, instance::Instance};
+    use crate::common::ReadOp;
+    use crate::instance::Instance;
 
     use super::*;
 
-    struct Env {
-        instance: Arc<Instance>,
-        inventory: Arc<Inventory>,
-        pio_bus: Arc<PioBus>,
-        mmio_bus: Arc<MmioBus>,
-    }
-
-    impl Env {
-        fn new() -> Self {
-            let instance = Instance::new_test(None).unwrap();
-            let inventory = instance.inv();
-            Self {
-                instance,
-                inventory,
-                pio_bus: Arc::new(PioBus::new()),
-                mmio_bus: Arc::new(MmioBus::new(u32::MAX as usize)),
-            }
-        }
-
-        fn make_builder(&self) -> Builder {
-            Builder::new()
-        }
-    }
-
     #[test]
     fn build_without_bridges() {
-        let env = Env::new();
-        let builder = env.make_builder();
-        assert!(builder
-            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
-            .is_ok());
+        let inst = Instance::new_test().unwrap();
+        let builder = Builder::new();
+
+        let guard = inst.lock();
+        assert!(builder.finish(guard.inventory(), guard.machine()).is_ok());
     }
 
     #[test]
     fn build_with_bridges() {
-        let env = Env::new();
-        let mut builder = env.make_builder();
+        let inst = Instance::new_test().unwrap();
+        let mut builder = Builder::new();
+
         assert!(builder
             .add_bridge(BridgeDescription::new(
                 LogicalBusId(1),
@@ -359,15 +353,14 @@ mod test {
                 Bdf::new(0, 4, 0).unwrap(),
             ))
             .is_ok());
-        assert!(builder
-            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
-            .is_ok());
+
+        let guard = inst.lock();
+        assert!(builder.finish(guard.inventory(), guard.machine()).is_ok());
     }
 
     #[test]
     fn builder_bus_zero_reserved() {
-        let env = Env::new();
-        let mut builder = env.make_builder();
+        let mut builder = Builder::new();
         assert!(builder
             .add_bridge(BridgeDescription::new(
                 LogicalBusId(0),
@@ -378,8 +371,7 @@ mod test {
 
     #[test]
     fn builder_conflicts() {
-        let env = Env::new();
-        let mut builder = env.make_builder();
+        let mut builder = Builder::new();
         assert!(builder
             .add_bridge(BridgeDescription::new(
                 LogicalBusId(7),
@@ -402,8 +394,8 @@ mod test {
 
     #[test]
     fn cfg_read() {
-        let env = Env::new();
-        let mut builder = env.make_builder();
+        let inst = Instance::new_test().unwrap();
+        let mut builder = Builder::new();
         assert!(builder
             .add_bridge(BridgeDescription::new(
                 LogicalBusId(1),
@@ -411,29 +403,25 @@ mod test {
             ))
             .is_ok());
 
-        let topology = builder
-            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
-            .unwrap();
+        let guard = inst.lock();
+        let topology =
+            builder.finish(guard.inventory(), guard.machine()).unwrap();
         let mut buf = [0u8; 1];
         let mut ro = ReadOp::from_buf(0, &mut buf);
-        env.instance.disp.with_ctx(|ctx| {
-            assert!(topology
-                .pci_cfg_rw(
-                    RoutedBusId(0),
-                    BusLocation::new(1, 0).unwrap(),
-                    RWOp::Read(&mut ro),
-                    ctx,
-                )
-                .is_some());
-            assert!(topology
-                .pci_cfg_rw(
-                    RoutedBusId(1),
-                    BusLocation::new(1, 0).unwrap(),
-                    RWOp::Read(&mut ro),
-                    ctx,
-                )
-                .is_none());
-        })
+        assert!(topology
+            .pci_cfg_rw(
+                RoutedBusId(0),
+                BusLocation::new(1, 0).unwrap(),
+                RWOp::Read(&mut ro),
+            )
+            .is_some());
+        assert!(topology
+            .pci_cfg_rw(
+                RoutedBusId(1),
+                BusLocation::new(1, 0).unwrap(),
+                RWOp::Read(&mut ro),
+            )
+            .is_none());
     }
 
     fn inventory_count(inv: &Inventory) -> usize {
@@ -451,19 +439,21 @@ mod test {
 
     #[test]
     fn registered_bridges() {
-        let env = Env::new();
-        let before = inventory_count(&env.inventory);
-        let mut builder = env.make_builder();
+        let inst = Instance::new_test().unwrap();
+
+        let guard = inst.lock();
+        let before = inventory_count(guard.inventory());
+
+        let mut builder = Builder::new();
         assert!(builder
             .add_bridge(BridgeDescription::new(
                 LogicalBusId(1),
                 Bdf::new(0, 1, 0).unwrap()
             ))
             .is_ok());
-        assert!(builder
-            .finish(env.inventory.as_ref(), &env.pio_bus, &env.mmio_bus)
-            .is_ok());
-        let after = inventory_count(&env.inventory);
+        let _topology =
+            builder.finish(guard.inventory(), guard.machine()).unwrap();
+        let after = inventory_count(guard.inventory());
         assert!(after > before);
     }
 }

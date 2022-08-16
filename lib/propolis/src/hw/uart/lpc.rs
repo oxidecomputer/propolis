@@ -3,9 +3,8 @@ use std::sync::{Arc, Mutex};
 use super::base::Uart;
 use crate::chardev::*;
 use crate::common::*;
-use crate::dispatch::DispCtx;
-use crate::intr_pins::{IntrPin, LegacyPin};
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::intr_pins::IntrPin;
+use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
@@ -14,7 +13,7 @@ pub const REGISTER_LEN: usize = 8;
 
 struct UartState {
     uart: Uart,
-    irq_pin: LegacyPin,
+    irq_pin: Box<dyn IntrPin>,
     auto_discard: bool,
 }
 
@@ -35,7 +34,7 @@ pub struct LpcUart {
 }
 
 impl LpcUart {
-    pub fn new(irq_pin: LegacyPin) -> Arc<Self> {
+    pub fn new(irq_pin: Box<dyn IntrPin>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(UartState {
                 uart: Uart::new(),
@@ -48,12 +47,11 @@ impl LpcUart {
     }
     pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
         let this = self.clone();
-        let piofn = Arc::new(move |_port: u16, rwo: RWOp, ctx: &DispCtx| {
-            this.pio_rw(rwo, ctx)
-        }) as Arc<PioFn>;
+        let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))
+            as Arc<PioFn>;
         bus.register(port, REGISTER_LEN as u16, piofn).unwrap();
     }
-    fn pio_rw(&self, rwo: RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, rwo: RWOp) {
         assert!(rwo.offset() < REGISTER_LEN);
         assert!(rwo.len() != 0);
         let mut state = self.state.lock().unwrap();
@@ -81,10 +79,10 @@ impl LpcUart {
         // could immediately attempt to read/write the pending data.
         drop(state);
         if read_notify {
-            self.notify_readable.notify(self as &dyn Source, ctx);
+            self.notify_readable.notify(self as &dyn Source);
         }
         if write_notify {
-            self.notify_writable.notify(self as &dyn Sink, ctx);
+            self.notify_writable.notify(self as &dyn Sink);
         }
     }
     fn reset(&self) {
@@ -95,7 +93,7 @@ impl LpcUart {
 }
 
 impl Sink for LpcUart {
-    fn write(&self, data: u8, _ctx: &DispCtx) -> bool {
+    fn write(&self, data: u8) -> bool {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_write(data);
         state.sync_intr_pin();
@@ -106,13 +104,13 @@ impl Sink for LpcUart {
     }
 }
 impl Source for LpcUart {
-    fn read(&self, _ctx: &DispCtx) -> Option<u8> {
+    fn read(&self) -> Option<u8> {
         let mut state = self.state.lock().unwrap();
         let res = state.uart.data_read();
         state.sync_intr_pin();
         res
     }
-    fn discard(&self, count: usize, _ctx: &DispCtx) -> usize {
+    fn discard(&self, count: usize) -> usize {
         let mut state = self.state.lock().unwrap();
         let mut discarded = 0;
         while discarded < count {
@@ -138,7 +136,7 @@ impl Entity for LpcUart {
     fn type_name(&self) -> &'static str {
         "lpc-uart"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         LpcUart::reset(self);
     }
     fn migrate(&self) -> Migrator {
@@ -146,7 +144,7 @@ impl Entity for LpcUart {
     }
 }
 impl Migrate for LpcUart {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let state = self.state.lock().unwrap();
         Box::new(migrate::LpcUartV1 { uart_state: state.uart.export() })
     }
@@ -155,7 +153,7 @@ impl Migrate for LpcUart {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::LpcUartV1 =
             erased_serde::deserialize(deserializer)?;
