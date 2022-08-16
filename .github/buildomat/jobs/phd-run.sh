@@ -55,7 +55,7 @@ ls $artifacts
 ls $propolis
 
 (RUST_BACKTRACE=1 ptime -m $runner \
-	--disable-ansi \
+	--emit-bunyan \
 	run \
 	--propolis-server-cmd $propolis \
 	--artifact-toml-path $artifacts \

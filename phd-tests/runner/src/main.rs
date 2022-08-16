@@ -8,6 +8,7 @@ use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_framework::artifacts::ArtifactStore;
 use phd_tests::phd_testcase::TestContext;
 use tracing::{debug, info};
+use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
@@ -16,16 +17,7 @@ use crate::fixtures::TestFixtures;
 
 fn main() {
     let runner_args = ProcessArgs::parse();
-
-    // Set up a tracing subscriber.
-    let filter = EnvFilter::builder()
-        .with_default_directive(tracing::Level::INFO.into());
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .with_line_number(true)
-        .with_ansi(!runner_args.disable_ansi);
-    let subscriber =
-        Registry::default().with(filter.from_env_lossy()).with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    set_tracing_subscriber(&runner_args);
 
     info!(?runner_args);
 
@@ -110,4 +102,23 @@ fn list_tests(list_opts: &ListOptions) {
     }
 
     println!("\n{} test(s) selected", count);
+}
+
+fn set_tracing_subscriber(args: &ProcessArgs) {
+    let filter = EnvFilter::builder()
+        .with_default_directive(tracing::Level::INFO.into());
+    if args.emit_bunyan {
+        let bunyan_layer =
+            BunyanFormattingLayer::new("phd-runner".into(), std::io::stdout);
+        let subscriber =
+            Registry::default().with(JsonStorageLayer).with(bunyan_layer);
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+    } else {
+        let stdout_log = tracing_subscriber::fmt::layer()
+            .with_line_number(true)
+            .with_ansi(!args.disable_ansi);
+        let subscriber =
+            Registry::default().with(filter.from_env_lossy()).with(stdout_log);
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+    }
 }
