@@ -9,7 +9,6 @@ mod queue;
 pub mod viona;
 
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use queue::VirtQueue;
 
 pub use block::PciVirtioBlock;
@@ -23,25 +22,15 @@ pub trait VirtioDevice: Send + Sync + 'static + Entity {
     /// Set the device-specific virtio feature bits
     fn set_features(&self, feat: u32);
     /// Service driver notification for a given virtqueue
-    fn queue_notify(&self, vq: &Arc<VirtQueue>, ctx: &DispCtx);
-
-    #[allow(unused_variables)]
-    /// Device-wide reset actions during virtio reset
-    fn reset(&self, ctx: &DispCtx) {}
+    fn queue_notify(&self, vq: &Arc<VirtQueue>);
 
     #[allow(unused_variables)]
     /// Notification of virtqueue configuration change
-    fn queue_change(
-        &self,
-        vq: &Arc<VirtQueue>,
-        change: VqChange,
-        ctx: &DispCtx,
-    ) {
-    }
+    fn queue_change(&self, vq: &Arc<VirtQueue>, change: VqChange) {}
 }
 
 pub trait VirtioIntr: Send + 'static {
-    fn notify(&self, ctx: &DispCtx);
+    fn notify(&self);
     fn read(&self) -> VqIntr;
 }
 

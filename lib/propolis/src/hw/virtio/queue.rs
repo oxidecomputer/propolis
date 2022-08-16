@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use super::bits::*;
 use super::probes;
 use super::{VirtioIntr, VqIntr};
+use crate::accessors::MemAccessor;
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
@@ -137,6 +137,7 @@ pub struct VirtQueue {
     pub live: AtomicBool,
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
+    pub acc_mem: MemAccessor,
 }
 const LEGACY_QALIGN: u64 = PAGE_SIZE as u64;
 const fn qalign(addr: u64, align: u64) -> u64 {
@@ -168,6 +169,7 @@ impl VirtQueue {
                 used_idx: Wrapping(0),
                 interrupt: None,
             }),
+            acc_mem: MemAccessor::new_orphan(),
         }
     }
     pub(super) fn reset(&self) {
@@ -309,7 +311,7 @@ impl VirtQueue {
         }
         Some(len)
     }
-    pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx, ctx: &DispCtx) {
+    pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx) {
         assert!(chain.idx.is_some());
         let mut used = self.used.lock().unwrap();
         let id = mem::replace(&mut chain.idx, None).unwrap();
@@ -319,7 +321,7 @@ impl VirtQueue {
         used.write_used(id, len, self.size, mem);
         if !used.intr_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
-                intr.notify(ctx);
+                intr.notify();
             }
         }
         chain.reset();
@@ -338,12 +340,11 @@ impl VirtQueue {
     }
 
     /// Send an interrupt for VQ
-    pub(super) fn send_intr(&self, ctx: &DispCtx) {
+    pub(super) fn send_intr(&self, mem: &MemCtx) {
         let used = self.used.lock().unwrap();
-        let mem = ctx.mctx.memctx();
-        if !used.intr_supressed(&mem) {
+        if !used.intr_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
-                intr.notify(ctx);
+                intr.notify();
             }
         }
     }

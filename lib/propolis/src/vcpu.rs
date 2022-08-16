@@ -3,29 +3,33 @@
 use std::io::Result;
 use std::sync::Arc;
 
-use crate::dispatch::DispCtx;
-use crate::dispatch::SyncCtx;
 use crate::exits::{VmEntry, VmExit};
 use crate::inventory::Entity;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
+use crate::mmio::MmioBus;
+use crate::pio::PioBus;
+use crate::tasks;
 use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
 
-/// Alias for a function acting on a virtualized CPU within a dispatcher
-/// callback.
-pub type VcpuRunFunc = fn(&Vcpu, &mut SyncCtx);
-
 /// A handle to a virtual CPU.
 pub struct Vcpu {
     hdl: Arc<VmmHdl>,
-    id: i32,
+    pub id: i32,
+    pub bus_mmio: Arc<MmioBus>,
+    pub bus_pio: Arc<PioBus>,
 }
 
 impl Vcpu {
     /// Creates a handle to a virtual CPU.
-    pub(crate) fn new(hdl: Arc<VmmHdl>, id: i32) -> Arc<Self> {
-        Arc::new(Self { hdl, id })
+    pub(crate) fn new(
+        hdl: Arc<VmmHdl>,
+        id: i32,
+        bus_mmio: Arc<MmioBus>,
+        bus_pio: Arc<PioBus>,
+    ) -> Arc<Self> {
+        Arc::new(Self { hdl, id, bus_mmio, bus_pio })
     }
 
     /// ID of the virtual CPU.
@@ -180,6 +184,18 @@ impl Vcpu {
         self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
         Ok(())
     }
+
+    /// Emit a barrier `Fn`, suitable for use as a
+    /// [`TaskHdl`](tasks::TaskHdl) notifier to kick a vCPU out of VMM
+    /// context so it undergo state changes in userspace.
+    pub fn barrier_fn(self: &Arc<Self>) -> Box<tasks::NotifyFn> {
+        let wake_ref = Arc::downgrade(self);
+        Box::new(move || {
+            if let Some(vcpu) = wake_ref.upgrade() {
+                let _ = vcpu.barrier();
+            }
+        })
+    }
 }
 
 impl Entity for Vcpu {
@@ -189,9 +205,13 @@ impl Entity for Vcpu {
     fn migrate(&self) -> Migrator {
         Migrator::Custom(self)
     }
+
+    // The consumer is expected to handle run/pause/halt events directly, since
+    // the vCPUs are mostly likely to be driven in manner separate from the
+    // other emulated devices.
 }
 impl Migrate for Vcpu {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         Box::new(migrate::BhyveVcpuV1::read(self))
     }
 
@@ -199,7 +219,7 @@ impl Migrate for Vcpu {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> std::result::Result<(), MigrateStateError> {
         let deserialized: migrate::BhyveVcpuV1 =
             erased_serde::deserialize(deserializer)?;
@@ -562,11 +582,10 @@ pub mod migrate {
         pub(super) fn read(vcpu: &Vcpu) -> Self {
             let hdl = &vcpu.hdl;
             let msrs: Vec<bhyve_api::vdi_field_entry_v1> =
-                vmm::data::read_many(hdl, vcpu.cpuid(), bhyve_api::VDC_MSR, 1)
+                vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)
                     .unwrap();
             let lapic: bhyve_api::vdi_lapic_v1 =
-                vmm::data::read(hdl, vcpu.cpuid(), bhyve_api::VDC_LAPIC, 1)
-                    .unwrap();
+                vmm::data::read(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1).unwrap();
             let res = Self {
                 run_state: BhyveVcpuRunStateV1::read(vcpu).unwrap(),
                 gp_regs: GpRegsV1::read(vcpu).unwrap(),
@@ -585,14 +604,14 @@ pub mod migrate {
                 self.ms_regs.into_iter().map(From::from).collect();
             vmm::data::write_many(
                 hdl,
-                vcpu.cpuid(),
+                vcpu.id,
                 bhyve_api::VDC_MSR,
                 1,
                 &mut msrs,
             )?;
             vmm::data::write(
                 hdl,
-                vcpu.cpuid(),
+                vcpu.id,
                 bhyve_api::VDC_LAPIC,
                 1,
                 self.lapic,

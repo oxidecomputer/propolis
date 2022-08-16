@@ -16,6 +16,13 @@ pub trait IntrPin: Send + Sync + 'static {
             self.deassert();
         }
     }
+    fn set_state(&self, is_asserted: bool) {
+        if is_asserted {
+            self.assert();
+        } else {
+            self.deassert();
+        }
+    }
 }
 
 /// Describes the operation to take with an interrupt pin.
@@ -110,13 +117,6 @@ impl LegacyPin {
     fn new(irq: u8, pic: Weak<LegacyPIC>) -> Self {
         Self { irq, asserted: Mutex::new(false), pic }
     }
-    pub fn set_state(&self, is_asserted: bool) {
-        if is_asserted {
-            self.assert();
-        } else {
-            self.deassert();
-        }
-    }
 }
 impl IntrPin for LegacyPin {
     fn assert(&self) {
@@ -148,5 +148,55 @@ impl IntrPin for LegacyPin {
     fn is_asserted(&self) -> bool {
         let asserted = self.asserted.lock().unwrap();
         *asserted
+    }
+}
+
+/// Interrupt pin which calls a provided function on rising and falling edges.
+///
+/// The consumer-provided function is called when the pin undergoes a state
+/// transition (`low->high` or `high->low`) with its argument corresponding to the
+/// pin level after the transition (true = high).
+///
+/// That function call is made under the protection of a mutex, excluding all
+/// other operations on the pin until it returns.
+pub struct FuncPin(Mutex<FPInner>);
+impl FuncPin {
+    pub fn new(func: Box<dyn Fn(bool) + Send + 'static>) -> Self {
+        Self(Mutex::new(FPInner { level: false, func }))
+    }
+}
+impl IntrPin for FuncPin {
+    fn assert(&self) {
+        let mut inner = self.0.lock().unwrap();
+        if !inner.level {
+            inner.level = true;
+            (inner.func)(inner.level);
+        }
+    }
+    fn deassert(&self) {
+        let mut inner = self.0.lock().unwrap();
+        if inner.level {
+            inner.level = false;
+            (inner.func)(inner.level);
+        }
+    }
+    fn is_asserted(&self) -> bool {
+        let inner = self.0.lock().unwrap();
+        inner.level
+    }
+}
+struct FPInner {
+    level: bool,
+    func: Box<dyn Fn(bool) + Send + 'static>,
+}
+
+pub struct NoOpPin {}
+
+impl IntrPin for NoOpPin {
+    fn assert(&self) {}
+    fn deassert(&self) {}
+    fn pulse(&self) {}
+    fn is_asserted(&self) -> bool {
+        false
     }
 }

@@ -3,23 +3,21 @@ use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Weak};
 
 use super::DeviceInfo;
 use crate::block;
-use crate::dispatch::{DispCtx, Dispatcher};
 use crate::inventory::Entity;
-use crate::vmm::MappingExt;
+use crate::vmm::{MappingExt, MemCtx};
 
 // XXX: completely arb for now
 const MAX_WORKERS: usize = 32;
 
-/// Standard [`BlockDev`] implementation.
+/// Standard [`Backend`](super::Backend) implementation.
 pub struct FileBackend {
     fp: Arc<File>,
-
-    driver: Mutex<Option<Arc<block::Driver>>>,
-    worker_count: NonZeroUsize,
+    driver: block::Driver,
+    log: slog::Logger,
 
     read_only: bool,
     block_size: usize,
@@ -32,6 +30,7 @@ impl FileBackend {
         path: impl AsRef<Path>,
         readonly: bool,
         worker_count: NonZeroUsize,
+        log: slog::Logger,
     ) -> Result<Arc<Self>> {
         if worker_count.get() > MAX_WORKERS {
             return Err(Error::new(
@@ -47,18 +46,64 @@ impl FileBackend {
         let fp = OpenOptions::new().read(true).write(!read_only).open(p)?;
         let len = fp.metadata().unwrap().len() as usize;
 
-        let this = Self {
+        Ok(Arc::new_cyclic(|me| Self {
             fp: Arc::new(fp),
-
-            driver: Mutex::new(None),
-            worker_count,
+            driver: block::Driver::new(
+                me.clone() as Weak<dyn block::Backend>,
+                "file-bdev".to_string(),
+                worker_count,
+            ),
+            log,
 
             read_only,
             block_size: 512,
             sectors: len / 512,
-        };
+        }))
+    }
+    fn process_request(
+        &self,
+        req: &block::Request,
+        mem: &MemCtx,
+    ) -> Result<()> {
+        match req.oper() {
+            block::Operation::Read(off) => {
+                let maps = req.mappings(mem).ok_or_else(|| {
+                    Error::new(ErrorKind::Other, "bad guest region")
+                })?;
 
-        Ok(Arc::new(this))
+                let nbytes = maps.preadv(self.fp.as_raw_fd(), off as i64)?;
+                if nbytes != req.len() {
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "bad read length",
+                    ));
+                }
+            }
+            block::Operation::Write(off) => {
+                if self.read_only {
+                    return Err(Error::new(
+                        ErrorKind::PermissionDenied,
+                        "backend is read-only",
+                    ));
+                }
+
+                let maps = req.mappings(mem).ok_or_else(|| {
+                    Error::new(ErrorKind::Other, "bad guest region")
+                })?;
+
+                let nbytes = maps.pwritev(self.fp.as_raw_fd(), off as i64)?;
+                if nbytes != req.len() {
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "bad write length",
+                    ));
+                }
+            }
+            block::Operation::Flush(_off, _len) => {
+                self.fp.sync_data()?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -71,73 +116,31 @@ impl block::Backend for FileBackend {
         }
     }
 
-    fn attach(
-        &self,
-        dev: Arc<dyn block::Device>,
-        disp: &Dispatcher,
-    ) -> Result<()> {
-        let mut driverg = self.driver.lock().unwrap();
-        assert!(driverg.is_none());
+    fn attach(&self, dev: Arc<dyn block::Device>) -> Result<()> {
+        self.driver.attach(dev)
+    }
 
-        let fp = Arc::clone(&self.fp);
-        let read_only = self.read_only;
-        let req_handler =
-            Box::new(move |req: &block::Request, ctx: &DispCtx| {
-                process_request(&fp, req, ctx, read_only)
-            });
-
-        // Spawn driver to service block dev requests
-        let driver = Arc::new(block::Driver::new(dev, req_handler));
-        driver.spawn("file", self.worker_count, disp)?;
-        *driverg = Some(driver);
-
-        Ok(())
+    fn process(&self, req: &block::Request, mem: &MemCtx) -> block::Result {
+        match self.process_request(req, mem) {
+            Ok(_) => block::Result::Success,
+            Err(e) => {
+                slog::info!(self.log, "block IO error {:?}", req.op; "error" => e);
+                block::Result::Failure
+            }
+        }
     }
 }
 impl Entity for FileBackend {
     fn type_name(&self) -> &'static str {
         "block-file"
     }
-}
-
-fn process_request(
-    fp: &File,
-    req: &block::Request,
-    ctx: &DispCtx,
-    read_only: bool,
-) -> Result<()> {
-    let mem = ctx.mctx.memctx();
-    match req.oper() {
-        block::Operation::Read(off) => {
-            let maps = req.mappings(&mem).ok_or_else(|| {
-                Error::new(ErrorKind::Other, "bad guest region")
-            })?;
-
-            let nbytes = maps.preadv(fp.as_raw_fd(), off as i64)?;
-            if nbytes != req.len() {
-                return Err(Error::new(ErrorKind::Other, "bad read length"));
-            }
-        }
-        block::Operation::Write(off) => {
-            if read_only {
-                return Err(Error::new(
-                    ErrorKind::PermissionDenied,
-                    "backend is read-only",
-                ));
-            }
-
-            let maps = req.mappings(&mem).ok_or_else(|| {
-                Error::new(ErrorKind::Other, "bad guest region")
-            })?;
-
-            let nbytes = maps.pwritev(fp.as_raw_fd(), off as i64)?;
-            if nbytes != req.len() {
-                return Err(Error::new(ErrorKind::Other, "bad write length"));
-            }
-        }
-        block::Operation::Flush(_off, _len) => {
-            fp.sync_data()?;
-        }
+    fn run(&self) {
+        self.driver.run();
     }
-    Ok(())
+    fn pause(&self) {
+        self.driver.pause();
+    }
+    fn halt(&self) {
+        self.driver.halt();
+    }
 }

@@ -7,8 +7,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::chardev::{pollers, Sink, Source};
-use crate::dispatch::AsyncCtx;
-use crate::dispatch::Dispatcher;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf, SocketAddr};
@@ -63,17 +61,15 @@ impl UDSock {
         self: &Arc<Self>,
         sink: Arc<dyn Sink>,
         source: Arc<dyn Source>,
-        disp: &Dispatcher,
     ) {
         self.sink_buf.attach(sink.as_ref());
         self.source_buf.attach(source.as_ref());
 
         let this = Arc::clone(self);
-        let actx = disp.async_ctx();
-        let task = tokio::spawn(async move {
-            let _ = this.run(sink, source, &actx).await;
+        let _task = tokio::spawn(async move {
+            let _ = this.run(sink, source).await;
+            todo!("get async task hdl");
         });
-        disp.track(task);
     }
 
     fn notify_connected(&self, addr: Option<SocketAddr>) {
@@ -94,7 +90,6 @@ impl UDSock {
         &self,
         sink: Arc<dyn Sink>,
         source: Arc<dyn Source>,
-        actx: &AsyncCtx,
     ) -> Result<()> {
         let lsock = {
             let mut inner = self.inner.lock().unwrap();
@@ -112,13 +107,11 @@ impl UDSock {
                     sink.as_ref(),
                     &self.sink_buf,
                     readh,
-                    actx
                 ) => {},
                 _source_done = Self::run_source(
                     source.as_ref(),
                     &self.source_buf,
                     writeh,
-                    actx
                 ) => {},
             };
 
@@ -130,23 +123,21 @@ impl UDSock {
         sink: &dyn Sink,
         sink_buf: &pollers::SinkBuffer,
         mut readh: OwnedReadHalf,
-        actx: &AsyncCtx,
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let num = readh.read(&mut buf).await?;
-            sink_buf.write(&buf[..num], sink, actx).await;
+            sink_buf.write(&buf[..num], sink).await;
         }
     }
     async fn run_source(
         source: &dyn Source,
         source_buf: &pollers::SourceBuffer,
         mut writeh: OwnedWriteHalf,
-        actx: &AsyncCtx,
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
-            if let Some(n) = source_buf.read(&mut buf, source, actx).await {
+            if let Some(n) = source_buf.read(&mut buf, source).await {
                 writeh.write_all(&buf[..n]).await?;
             }
         }

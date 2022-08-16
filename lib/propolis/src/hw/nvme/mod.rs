@@ -2,13 +2,15 @@ use std::convert::TryInto;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::dispatch::DispCtx;
+use crate::accessors::Guard;
+use crate::block;
+use crate::common::*;
 use crate::hw::ids::pci::{PROPOLIS_NVME_DEV_ID, VENDOR_OXIDE};
 use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
 use crate::util::regmap::RegMap;
-use crate::{block, common::*};
+use crate::vmm::MemCtx;
 
 use erased_serde::Serialize;
 use futures::future::BoxFuture;
@@ -92,6 +94,10 @@ pub enum NvmeError {
     /// The specified Namespace ID did not correspond to a valid Namespace
     #[error("the namespace specified ({0}) is invalid")]
     InvalidNamespace(u32),
+
+    /// Controller cannot access guest memory
+    #[error("memory access inaccessible")]
+    MemoryInaccessible,
 }
 
 /// Internal NVMe Controller State
@@ -161,7 +167,7 @@ impl NvmeCtrl {
     /// Creates the admin completion and submission queues.
     ///
     /// Admin queues are always created with `cqid`/`sqid` `0`.
-    fn create_admin_queues(&mut self, ctx: &DispCtx) -> Result<(), NvmeError> {
+    fn create_admin_queues(&mut self, mem: &MemCtx) -> Result<(), NvmeError> {
         // Admin CQ uses interrupt vector 0 (See NVMe 1.0e Section 3.1.9 ACQ)
         self.create_cq(
             queue::ADMIN_QUEUE_ID,
@@ -169,7 +175,7 @@ impl NvmeCtrl {
             GuestAddr(self.ctrl.admin_cq_base),
             // Convert from 0's based
             self.ctrl.aqa.acqs() as u32 + 1,
-            ctx,
+            mem,
         )?;
         self.create_sq(
             queue::ADMIN_QUEUE_ID,
@@ -177,7 +183,7 @@ impl NvmeCtrl {
             GuestAddr(self.ctrl.admin_sq_base),
             // Convert from 0's based
             self.ctrl.aqa.asqs() as u32 + 1,
-            ctx,
+            mem,
         )?;
         Ok(())
     }
@@ -191,7 +197,7 @@ impl NvmeCtrl {
         iv: u16,
         base: GuestAddr,
         size: u32,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result<Arc<CompQueue>, NvmeError> {
         if (cqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidCompQueue(cqid));
@@ -204,7 +210,7 @@ impl NvmeCtrl {
             .as_ref()
             .ok_or(NvmeError::MsixHdlUnavailable)?
             .clone();
-        let cq = Arc::new(CompQueue::new(cqid, iv, size, base, ctx, msix_hdl)?);
+        let cq = Arc::new(CompQueue::new(cqid, iv, size, base, msix_hdl, mem)?);
         self.cqs[cqid as usize] = Some(cq.clone());
         Ok(cq)
     }
@@ -219,7 +225,7 @@ impl NvmeCtrl {
         cqid: QueueId,
         base: GuestAddr,
         size: u32,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result<Arc<SubQueue>, NvmeError> {
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
@@ -228,7 +234,7 @@ impl NvmeCtrl {
             return Err(NvmeError::SubQueueAlreadyExists(sqid));
         }
         let cq = self.get_cq(cqid)?;
-        let sq = SubQueue::new(sqid, cq, size, base, ctx)?;
+        let sq = SubQueue::new(sqid, cq, size, base, mem)?;
         self.sqs[sqid as usize] = Some(sq.clone());
         Ok(sq)
     }
@@ -365,9 +371,9 @@ impl NvmeCtrl {
     }
 
     /// Get the controller in a state ready to process requests
-    fn enable(&mut self, ctx: &DispCtx) -> Result<(), NvmeError> {
+    fn enable(&mut self, mem: &MemCtx) -> Result<(), NvmeError> {
         // Create the Admin Queues
-        self.create_admin_queues(ctx)?;
+        self.create_admin_queues(mem)?;
 
         Ok(())
     }
@@ -426,7 +432,7 @@ impl NvmeCtrl {
     fn import(
         &mut self,
         state: migrate::NvmeCtrlV1,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result<(), MigrateStateError> {
         // TODO: bitstruct doesn't have a validation routine?
         self.ctrl.cap.0 = state.cap;
@@ -438,7 +444,7 @@ impl NvmeCtrl {
         self.ctrl.admin_sq_base = state.asq_base;
 
         for cq in state.cqs {
-            self.create_cq(cq.id, cq.iv, GuestAddr(cq.base), cq.size, ctx)
+            self.create_cq(cq.id, cq.iv, GuestAddr(cq.base), cq.size, mem)
                 .map_err(|e| {
                     MigrateStateError::ImportFailed(format!(
                         "NVMe: failed to create CQ: {}",
@@ -449,7 +455,7 @@ impl NvmeCtrl {
         }
 
         for sq in state.sqs {
-            self.create_sq(sq.id, sq.cq_id, GuestAddr(sq.base), sq.size, ctx)
+            self.create_sq(sq.id, sq.cq_id, GuestAddr(sq.base), sq.size, mem)
                 .map_err(|e| {
                     MigrateStateError::ImportFailed(format!(
                         "NVMe: failed to create SQ: {}",
@@ -473,6 +479,9 @@ pub struct PciNvme {
 
     /// PCI device state
     pci_state: pci::DeviceState,
+
+    /// Logger resource
+    log: slog::Logger,
 }
 
 impl PciNvme {
@@ -480,6 +489,7 @@ impl PciNvme {
     pub fn create(
         serial_number: String,
         binfo: block::DeviceInfo,
+        log: slog::Logger,
     ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_OXIDE,
@@ -602,15 +612,12 @@ impl PciNvme {
             state: Mutex::new(state),
             notifier: block::Notifier::new(),
             pci_state,
+            log,
         })
     }
 
     /// Service a write to the NVMe Controller Configuration from the VM
-    fn ctrlr_cfg_write(
-        &self,
-        new: Configuration,
-        ctx: &DispCtx,
-    ) -> Result<(), NvmeError> {
+    fn ctrlr_cfg_write(&self, new: Configuration) -> Result<(), NvmeError> {
         let mut state = self.state.lock().unwrap();
 
         // Propogate any CC changes first
@@ -620,8 +627,11 @@ impl PciNvme {
 
         let cur = state.ctrl.cc;
         if new.enabled() && !cur.enabled() {
+            let mem = self.mem_access();
+            let mem = mem.ok_or(NvmeError::MemoryInaccessible)?;
+
             // Get the controller ready to service requests
-            if let Err(e) = state.enable(ctx) {
+            if let Err(e) = state.enable(&mem) {
                 // Couldn't enable controller, set Controller Fail Status
                 state.ctrl.csts.set_cfs(true);
                 return Err(e);
@@ -654,7 +664,6 @@ impl PciNvme {
         &self,
         id: &CtrlrReg,
         ro: &mut ReadOp,
-        _ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         match id {
             CtrlrReg::CtrlrCaps => {
@@ -716,7 +725,6 @@ impl PciNvme {
         &self,
         id: &CtrlrReg,
         wo: &mut WriteOp,
-        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         match id {
             CtrlrReg::CtrlrCaps
@@ -730,7 +738,7 @@ impl PciNvme {
             }
 
             CtrlrReg::CtrlrCfg => {
-                self.ctrlr_cfg_write(Configuration(wo.read_u32()), ctx)?;
+                self.ctrlr_cfg_write(Configuration(wo.read_u32()))?;
             }
             CtrlrReg::AdminQueueAttr => {
                 let mut state = self.state.lock().unwrap();
@@ -758,7 +766,7 @@ impl PciNvme {
                 admin_sq.notify_tail(val)?;
 
                 // Process any new SQ entries
-                self.process_admin_queue(state, admin_sq, ctx)?;
+                self.process_admin_queue(state, admin_sq)?;
             }
             CtrlrReg::DoorBellAdminCQ => {
                 let val = wo.read_u32().try_into().unwrap();
@@ -771,7 +779,7 @@ impl PciNvme {
                 // kick it here again in case.
                 if admin_cq.kick() {
                     let admin_sq = state.get_admin_sq();
-                    self.process_admin_queue(state, admin_sq, ctx)?;
+                    self.process_admin_queue(state, admin_sq)?;
                 }
             }
 
@@ -801,7 +809,7 @@ impl PciNvme {
                     // TODO: worth kicking only the SQs specifically associated
                     //       with this CQ?
                     if !state.paused && cq.kick() {
-                        self.notifier.notify(self, ctx);
+                        self.notifier.notify(self);
                     }
                 } else {
                     // Submission Queue y Tail Doorbell
@@ -811,7 +819,7 @@ impl PciNvme {
 
                     // Poke block device to service new requests
                     if !state.paused {
-                        self.notifier.notify(self, ctx);
+                        self.notifier.notify(self);
                     }
                 }
             }
@@ -825,7 +833,6 @@ impl PciNvme {
         &self,
         mut state: MutexGuard<NvmeCtrl>,
         sq: Arc<SubQueue>,
-        ctx: &DispCtx,
     ) -> Result<(), NvmeError> {
         if state.paused {
             return Ok(());
@@ -834,7 +841,13 @@ impl PciNvme {
         // Grab the Admin CQ too
         let cq = state.get_admin_cq();
 
-        while let Some((sub, cqe_permit)) = sq.pop(ctx) {
+        let mem = self.mem_access();
+        if mem.is_none() {
+            // XXX: set controller error state?
+        }
+        let mem = mem.unwrap();
+
+        while let Some((sub, cqe_permit)) = sq.pop(&mem) {
             use cmds::AdminCmd;
 
             let parsed = AdminCmd::parse(sub);
@@ -845,22 +858,18 @@ impl PciNvme {
             let cmd = parsed.unwrap();
             let comp = match cmd {
                 AdminCmd::CreateIOCompQ(cmd) => {
-                    state.acmd_create_io_cq(&cmd, ctx)
+                    state.acmd_create_io_cq(&cmd, &mem)
                 }
                 AdminCmd::CreateIOSubQ(cmd) => {
-                    state.acmd_create_io_sq(&cmd, ctx)
+                    state.acmd_create_io_sq(&cmd, &mem)
                 }
-                AdminCmd::GetLogPage(cmd) => state.acmd_get_log_page(&cmd, ctx),
-                AdminCmd::Identify(cmd) => state.acmd_identify(&cmd, ctx),
-                AdminCmd::SetFeatures(cmd) => {
-                    state.acmd_set_features(&cmd, ctx)
+                AdminCmd::GetLogPage(cmd) => {
+                    state.acmd_get_log_page(&cmd, &mem)
                 }
-                AdminCmd::DeleteIOCompQ(cqid) => {
-                    state.acmd_delete_io_cq(cqid, ctx)
-                }
-                AdminCmd::DeleteIOSubQ(sqid) => {
-                    state.acmd_delete_io_sq(sqid, ctx)
-                }
+                AdminCmd::Identify(cmd) => state.acmd_identify(&cmd, &mem),
+                AdminCmd::SetFeatures(cmd) => state.acmd_set_features(&cmd),
+                AdminCmd::DeleteIOCompQ(cqid) => state.acmd_delete_io_cq(cqid),
+                AdminCmd::DeleteIOSubQ(sqid) => state.acmd_delete_io_sq(sqid),
                 AdminCmd::Abort
                 | AdminCmd::GetFeatures
                 | AdminCmd::AsyncEventReq
@@ -869,27 +878,31 @@ impl PciNvme {
                 }
             };
 
-            cqe_permit.push_completion(sub.cid(), comp, ctx);
+            cqe_permit.push_completion(sub.cid(), comp, Some(&mem));
         }
 
         // Notify for any newly added completions
-        cq.fire_interrupt(ctx);
+        cq.fire_interrupt();
 
         Ok(())
+    }
+
+    fn mem_access(&self) -> Option<Guard<MemCtx>> {
+        self.pci_state.acc_mem.access()
     }
 }
 
 impl pci::Device for PciNvme {
-    fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp) {
         assert_eq!(bar, pci::BarN::BAR0);
         let f = |id: &CtrlrReg, mut rwo: RWOp<'_, '_>| {
             let res = match &mut rwo {
-                RWOp::Read(ro) => self.reg_ctrl_read(id, ro, ctx),
-                RWOp::Write(wo) => self.reg_ctrl_write(id, wo, ctx),
+                RWOp::Read(ro) => self.reg_ctrl_read(id, ro),
+                RWOp::Write(wo) => self.reg_ctrl_write(id, wo),
             };
             // TODO: is there a better way to report errors
             if let Err(err) = res {
-                slog::error!(ctx.log, "nvme reg r/w failure";
+                slog::error!(self.log, "nvme reg r/w failure";
                     "offset" => rwo.offset(),
                     "register" => ?id,
                     "error" => %err
@@ -922,13 +935,13 @@ impl Entity for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
     }
-    fn reset(&self, _ctx: &DispCtx) {
+    fn reset(&self) {
         let mut ctrl = self.state.lock().unwrap();
         ctrl.reset();
         self.pci_state.reset(self);
     }
 
-    fn pause(&self, _ctx: &DispCtx) {
+    fn pause(&self) {
         let mut ctrl = self.state.lock().unwrap();
 
         // Stop responding to any requests
@@ -951,7 +964,7 @@ impl Entity for PciNvme {
     }
 }
 impl Migrate for PciNvme {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let ctrl = self.state.lock().unwrap();
         Box::new(migrate::PciNvmeStateV1 {
             pci: self.pci_state.export(),
@@ -963,7 +976,7 @@ impl Migrate for PciNvme {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        ctx: &DispCtx,
+        ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::PciNvmeStateV1 =
             erased_serde::deserialize(deserializer)?;
@@ -971,7 +984,7 @@ impl Migrate for PciNvme {
         self.pci_state.import(deserialized.pci)?;
 
         let mut ctrl = self.state.lock().unwrap();
-        ctrl.import(deserialized.ctrl, ctx)?;
+        ctrl.import(deserialized.ctrl, &ctx.mem)?;
 
         Ok(())
     }

@@ -10,10 +10,10 @@ pub extern crate usdt;
 #[macro_use]
 extern crate bitflags;
 
+pub mod accessors;
 pub mod block;
 pub mod chardev;
 pub mod common;
-pub mod dispatch;
 pub mod exits;
 pub mod hw;
 pub mod instance;
@@ -22,12 +22,15 @@ pub mod inventory;
 pub mod migrate;
 pub mod mmio;
 pub mod pio;
+pub mod tasks;
 pub mod util;
 pub mod vcpu;
 pub mod vmm;
 
+pub use crate::exits::{VmEntry, VmExit};
+pub use crate::instance::Instance;
+
 use bhyve_api::vm_reg_name;
-use dispatch::*;
 use exits::*;
 use vcpu::Vcpu;
 
@@ -37,130 +40,96 @@ mod probes {
     fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
 }
 
-pub fn vcpu_run_loop(vcpu: &Vcpu, sctx: &mut SyncCtx) {
-    let mut next_entry = VmEntry::Run;
-    loop {
-        if sctx.check_yield() {
-            break;
+pub enum VmError {
+    Unhandled(VmExit),
+    Suspended(Suspend),
+    Io(std::io::Error),
+}
+impl From<std::io::Error> for VmError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+pub fn vcpu_process(
+    vcpu: &Vcpu,
+    entry: &VmEntry,
+    log: &slog::Logger,
+) -> Result<VmEntry, VmError> {
+    probes::vm_entry!(|| (vcpu.cpuid() as u32));
+    let exit = vcpu.run(&entry)?;
+    probes::vm_exit!(|| (
+        vcpu.cpuid() as u32,
+        exit.rip,
+        exit.kind.code() as u32
+    ));
+
+    match exit.kind {
+        VmExitKind::Bogus => Ok(VmEntry::Run),
+        VmExitKind::ReqIdle => {
+            // another thread came in to use this vCPU it is likely to push
+            // us out for a barrier
+            Ok(VmEntry::Run)
         }
-        let ctx = sctx.dispctx();
-        let mctx = &ctx.mctx;
-
-        probes::vm_entry!(|| (vcpu.cpuid() as u32));
-        let exit = vcpu.run(&next_entry).unwrap();
-        probes::vm_exit!(|| (
-            vcpu.cpuid() as u32,
-            exit.rip,
-            exit.kind.code() as u32
-        ));
-
-        next_entry = match exit.kind {
-            VmExitKind::Bogus => VmEntry::Run,
-            VmExitKind::ReqIdle => {
-                // another thread came in to use this vCPU it is likely to push
-                // us out for a barrier
-                VmEntry::Run
-            }
-            VmExitKind::Inout(io) => match io {
-                InoutReq::Out(io, val) => {
-                    mctx.pio().handle_out(io.port, io.bytes, val, &ctx);
-                    VmEntry::InoutFulfill(InoutRes::Out(io))
-                }
-                InoutReq::In(io) => {
-                    let val = mctx.pio().handle_in(io.port, io.bytes, &ctx);
-                    VmEntry::InoutFulfill(InoutRes::In(io, val))
-                }
-            },
-            VmExitKind::Mmio(mmio) => match mmio {
-                MmioReq::Read(read) => {
-                    let val = mctx.mmio().handle_read(
-                        read.addr as usize,
-                        read.bytes,
-                        &ctx,
-                    );
-                    VmEntry::MmioFulFill(MmioRes::Read(MmioReadRes {
+        VmExitKind::Inout(io) => match io {
+            InoutReq::Out(io, val) => vcpu
+                .bus_pio
+                .handle_out(io.port, io.bytes, val)
+                .map(|_| VmEntry::InoutFulfill(InoutRes::Out(io)))
+                .map_err(|_| VmError::Unhandled(exit)),
+            InoutReq::In(io) => vcpu
+                .bus_pio
+                .handle_in(io.port, io.bytes)
+                .map(|val| VmEntry::InoutFulfill(InoutRes::In(io, val)))
+                .map_err(|_| VmError::Unhandled(exit)),
+        },
+        VmExitKind::Mmio(mmio) => match mmio {
+            MmioReq::Read(read) => vcpu
+                .bus_mmio
+                .handle_read(read.addr as usize, read.bytes)
+                .map(|val| {
+                    VmEntry::MmioFulfill(MmioRes::Read(MmioReadRes {
                         addr: read.addr,
                         bytes: read.bytes,
                         data: val,
                     }))
-                }
-                MmioReq::Write(write) => {
-                    mctx.mmio().handle_write(
-                        write.addr as usize,
-                        write.bytes,
-                        write.data,
-                        &ctx,
-                    );
-                    VmEntry::MmioFulFill(MmioRes::Write(MmioWriteRes {
+                })
+                .map_err(|_| VmError::Unhandled(exit)),
+            MmioReq::Write(write) => vcpu
+                .bus_mmio
+                .handle_write(write.addr as usize, write.bytes, write.data)
+                .map(|_| {
+                    VmEntry::MmioFulfill(MmioRes::Write(MmioWriteRes {
                         addr: write.addr,
                         bytes: write.bytes,
                     }))
-                }
-            },
-            VmExitKind::Rdmsr(msr) => {
-                slog::info!(ctx.log, "rdmsr"; "msr" => msr);
-                // XXX just emulate with 0 for now
-                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
-                vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
-                VmEntry::Run
-            }
-            VmExitKind::Wrmsr(msr, val) => {
-                slog::info!(ctx.log, "wrmsr"; "msr" => msr, "value" => val);
-                VmEntry::Run
-            }
-            VmExitKind::Debug => {
-                // Until there is an interface to delay until a vCPU is no
-                // longer under control of the debugger, we have no choice but
-                // attempt reentry (and probably spin until the debugger is
-                // detached from this vCPU).
-                VmEntry::Run
-            }
-            VmExitKind::InstEmul(inst) => {
-                panic!(
-                    "unemulated instruction {:x?} as rip:{:x}",
-                    inst.bytes(),
-                    exit.rip
-                );
-            }
-            VmExitKind::Paging(gpa, ftype) => {
-                panic!("unhandled paging gpa:{:x} type:{:x}", gpa, ftype);
-            }
-            VmExitKind::VmxError(detail) => {
-                panic!("VMX error: {:?}", detail);
-            }
-            VmExitKind::SvmError(detail) => {
-                panic!("SVM error: {:?}", detail);
-            }
-            VmExitKind::Suspended(detail) => {
-                let (kind, source) = match detail {
-                    Suspend::TripleFault => (
-                        instance::SuspendKind::Reset,
-                        instance::SuspendSource::TripleFault(
-                            vcpu.cpuid() as i32
-                        ),
-                    ),
-                    // Attempt to trigger non-triple-fault suspensions, despite
-                    // the fact that such exits are likely due in-process
-                    // suspend operations triggered operation by a device or
-                    // external request.  This is harmless as redundant
-                    // suspension requests are ignored.
-                    Suspend::Reset => (
-                        instance::SuspendKind::Reset,
-                        instance::SuspendSource::Device("cpu"),
-                    ),
-                    Suspend::Halt => (
-                        instance::SuspendKind::Halt,
-                        instance::SuspendSource::Device("cpu"),
-                    ),
-                };
-                ctx.trigger_suspend(kind, source);
-
-                // We expect the dispatch machinery to at least cause us to
-                // yield, but we still want to attempt to run for the normal
-                // reset case.
-                VmEntry::Run
-            }
-            _ => panic!("unrecognized exit: {:?}", exit.kind),
+                })
+                .map_err(|_| VmError::Unhandled(exit)),
+        },
+        VmExitKind::Rdmsr(msr) => {
+            slog::info!(log, "rdmsr"; "msr" => msr);
+            // XXX just emulate with 0 for now
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
+            Ok(VmEntry::Run)
         }
+        VmExitKind::Wrmsr(msr, val) => {
+            slog::info!(log, "wrmsr"; "msr" => msr, "value" => val);
+            Ok(VmEntry::Run)
+        }
+        VmExitKind::Debug => {
+            // Until there is an interface to delay until a vCPU is no
+            // longer under control of the debugger, we have no choice but
+            // attempt reentry (and probably spin until the debugger is
+            // detached from this vCPU).
+            Ok(VmEntry::Run)
+        }
+        VmExitKind::Suspended(detail) => Err(VmError::Suspended(detail)),
+
+        VmExitKind::InstEmul(_)
+        | VmExitKind::Paging(_, _)
+        | VmExitKind::VmxError(_)
+        | VmExitKind::SvmError(_) => Err(VmError::Unhandled(exit)),
+        _ => Err(VmError::Unhandled(exit)),
     }
 }

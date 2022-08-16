@@ -6,7 +6,6 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::intr_pins::IntrPin;
 
 use num_enum::TryFromPrimitive;
@@ -205,8 +204,8 @@ pub type LintrCfg = (INTxPinID, Arc<dyn IntrPin>);
 
 pub trait Endpoint: Send + Sync {
     fn attach(&self, attachment: bus::Attachment);
-    fn cfg_rw(&self, op: RWOp<'_, '_>, ctx: &DispCtx);
-    fn bar_rw(&self, bar: BarN, rwo: RWOp, ctx: &DispCtx);
+    fn cfg_rw(&self, op: RWOp<'_, '_>);
+    fn bar_rw(&self, bar: BarN, rwo: RWOp);
 }
 
 fn cfg_addr_parse(addr: u32) -> Option<(Bdf, u8)> {

@@ -1,4 +1,4 @@
-use crate::dispatch::DispCtx;
+use crate::vmm::MemCtx;
 
 use erased_serde::{Deserializer, Serialize};
 use thiserror::Error;
@@ -49,16 +49,21 @@ pub enum Migrator<'a> {
     Custom(&'a dyn Migrate),
 }
 
+pub struct MigrateCtx {
+    pub mem: MemCtx,
+}
+
 pub trait Migrate: Send + Sync + 'static {
     /// Return a serialization of the current device state.
-    fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize>;
+    fn export(&self, ctx: &MigrateCtx) -> Box<dyn Serialize>;
 
+    #[allow(unused_variables)]
     /// Update the current device state by using the given deserializer.
     fn import(
         &self,
         dev: &str,
-        _deserializer: &mut dyn Deserializer,
-        _ctx: &DispCtx,
+        deserializer: &mut dyn Deserializer,
+        ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         Err(MigrateStateError::ImportUnimplmented(dev.to_string()))
     }

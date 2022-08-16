@@ -5,12 +5,12 @@ mod ioapic;
 mod pmtimer;
 mod rtc;
 
-pub use atpic::*;
-pub use atpit::*;
-pub use hpet::*;
-pub use ioapic::*;
-pub use pmtimer::*;
-pub use rtc::*;
+pub use atpic::BhyveAtPic;
+pub use atpit::BhyveAtPit;
+pub use hpet::BhyveHpet;
+pub use ioapic::BhyveIoApic;
+pub use pmtimer::BhyvePmTimer;
+pub use rtc::BhyveRtc;
 
 use std::sync::Arc;
 
@@ -21,14 +21,3 @@ pub type KernelDefaults = (
     Arc<BhyveIoApic>,
     Arc<BhyveRtc>,
 );
-
-/// Create cohort of devices emulated by bhyve kernel component
-pub fn defaults() -> KernelDefaults {
-    (
-        BhyveAtPic::create(),
-        BhyveAtPit::create(),
-        BhyveHpet::create(),
-        BhyveIoApic::create(),
-        BhyveRtc::create(),
-    )
-}

@@ -2,24 +2,25 @@ use std::io;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
 
-pub struct BhyveRtc {}
+pub struct BhyveRtc {
+    hdl: Arc<VmmHdl>,
+}
 impl BhyveRtc {
-    pub fn create() -> Arc<Self> {
-        Arc::new(Self {})
+    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
+        Arc::new(Self { hdl })
     }
 
     /// Synchronizes the time within the virtual machine
     /// represented by `hdl` with the current system clock,
     /// accurate to the second.
-    pub fn set_time(&self, time: SystemTime, hdl: &VmmHdl) -> io::Result<()> {
-        hdl.rtc_settime(
+    pub fn set_time(&self, time: SystemTime) -> io::Result<()> {
+        self.hdl.rtc_settime(
             time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
         )
     }
@@ -36,7 +37,6 @@ impl BhyveRtc {
         &self,
         low_mem_bytes: u32,
         high_mem_bytes: u64,
-        hdl: &VmmHdl,
     ) -> io::Result<()> {
         assert_ne!(low_mem_bytes, 0, "low-mem must not be zero");
         assert_eq!(low_mem_bytes & 0xfff, 0, "low-mem must be 4KiB aligned");
@@ -67,6 +67,7 @@ impl BhyveRtc {
 
         // First 1MiB, less 384KiB
         let base = u16::min((low_mem / KIB) as u16, 640).to_le_bytes();
+        let hdl = &self.hdl;
         hdl.rtc_write(CMOS_OFF_MEM_BASE, base[0])?;
         hdl.rtc_write(CMOS_OFF_MEM_BASE + 1, base[1])?;
 
@@ -112,20 +113,19 @@ impl Entity for BhyveRtc {
     }
 }
 impl Migrate for BhyveRtc {
-    fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize> {
-        let hdl = ctx.mctx.hdl();
-        Box::new(migrate::BhyveRtcV1::read(hdl))
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+        Box::new(migrate::BhyveRtcV1::read(&self.hdl))
     }
 
     fn import(
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::BhyveRtcV1 =
             erased_serde::deserialize(deserializer)?;
-        deserialized.write(ctx.mctx.hdl())?;
+        deserialized.write(&self.hdl)?;
         Ok(())
     }
 }

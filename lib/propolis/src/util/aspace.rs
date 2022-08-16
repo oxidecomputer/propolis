@@ -1,8 +1,11 @@
 //! Utilities to construct and manipulate an address space.
 
 use std::collections::{btree_map, BTreeMap};
+use std::io::{Error as IoError, ErrorKind};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
+
+use thiserror::Error;
 
 /// Generic container storing items in a region representing an address space.
 ///
@@ -15,12 +18,21 @@ pub struct ASpace<T> {
     map: BTreeMap<usize, (usize, T)>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Error)]
 pub enum Error {
+    #[error("address outside acceptable range")]
     OutOfRange,
+    #[error("zero or overflowing length")]
     BadLength,
+    #[error("would conflict with existing entry")]
     Conflict,
+    #[error("entry not found")]
     NotFound,
+}
+impl From<Error> for IoError {
+    fn from(e: Error) -> Self {
+        IoError::new(ErrorKind::Other, e)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

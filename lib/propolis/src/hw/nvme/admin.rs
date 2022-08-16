@@ -1,11 +1,12 @@
 use std::cmp::min;
 use std::mem::size_of;
 
-use super::bits::{self, *};
-use super::queue::{QueueId, ADMIN_QUEUE_ID};
 use crate::common::GuestAddr;
-use crate::{common::PAGE_SIZE, dispatch::DispCtx};
+use crate::common::PAGE_SIZE;
+use crate::vmm::MemCtx;
 
+use super::bits::*;
+use super::queue::{QueueId, ADMIN_QUEUE_ID};
 use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES};
 
 impl NvmeCtrl {
@@ -15,7 +16,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_create_io_cq(
         &mut self,
         cmd: &cmds::CreateIOCQCmd,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOCQES, fail this request
         if self.ctrl.cc.iocqes() == 0 {
@@ -34,7 +35,7 @@ impl NvmeCtrl {
 
         // We only support physical contiguous queues
         if !cmd.phys_contig {
-            return cmds::Completion::generic_err(bits::STS_INVAL_FIELD);
+            return cmds::Completion::generic_err(STS_INVAL_FIELD);
         }
 
         // Finally, create the Completion Queue
@@ -43,7 +44,7 @@ impl NvmeCtrl {
             cmd.intr_vector,
             GuestAddr(cmd.prp),
             cmd.qsize,
-            ctx,
+            mem,
         ) {
             Ok(_) => cmds::Completion::success(),
             Err(
@@ -64,7 +65,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_create_io_sq(
         &mut self,
         cmd: &cmds::CreateIOSQCmd,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOSQES, fail this request
         if self.ctrl.cc.iosqes() == 0 {
@@ -76,7 +77,7 @@ impl NvmeCtrl {
 
         // We only support physical contiguous queues
         if !cmd.phys_contig {
-            return cmds::Completion::generic_err(bits::STS_INVAL_FIELD);
+            return cmds::Completion::generic_err(STS_INVAL_FIELD);
         }
 
         // Finally, create the Submission Queue
@@ -85,7 +86,7 @@ impl NvmeCtrl {
             cmd.cqid,
             GuestAddr(cmd.prp),
             cmd.qsize,
-            ctx,
+            mem,
         ) {
             Ok(_) => cmds::Completion::success(),
             Err(NvmeError::InvalidCompQueue(_)) => {
@@ -112,7 +113,6 @@ impl NvmeCtrl {
     pub(super) fn acmd_delete_io_cq(
         &mut self,
         cqid: QueueId,
-        _ctx: &DispCtx,
     ) -> cmds::Completion {
         // Not allowed to delete the Admin Completion Queue
         if cqid == ADMIN_QUEUE_ID {
@@ -149,7 +149,6 @@ impl NvmeCtrl {
     pub(super) fn acmd_delete_io_sq(
         &mut self,
         sqid: QueueId,
-        _ctx: &DispCtx,
     ) -> cmds::Completion {
         // Not allowed to delete the Admin Submission Queue
         if sqid == ADMIN_QUEUE_ID {
@@ -185,15 +184,15 @@ impl NvmeCtrl {
     pub(super) fn acmd_get_log_page(
         &self,
         cmd: &cmds::GetLogPageCmd,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> cmds::Completion {
         assert!((cmd.len as usize) < PAGE_SIZE);
         let buf = cmd
-            .data(ctx.mctx.memctx())
+            .data(mem)
             .next()
             .expect("missing prp entry for log page response");
         // TODO: actually keep a log that we can write back instead of all zeros
-        assert!(ctx.mctx.memctx().write_byte(buf.0, 0, cmd.len as usize));
+        assert!(mem.write_byte(buf.0, 0, cmd.len as usize));
         cmds::Completion::success()
     }
 
@@ -203,17 +202,17 @@ impl NvmeCtrl {
     pub(super) fn acmd_identify(
         &self,
         cmd: &cmds::IdentifyCmd,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> cmds::Completion {
         match cmd.cns {
             IDENT_CNS_NAMESPACE => match cmd.nsid {
                 1 => {
-                    assert!(size_of::<bits::IdentifyNamespace>() <= PAGE_SIZE);
+                    assert!(size_of::<IdentifyNamespace>() <= PAGE_SIZE);
                     let buf = cmd
-                        .data(ctx.mctx.memctx())
+                        .data(mem)
                         .next()
                         .expect("missing prp entry for ident response");
-                    assert!(ctx.mctx.memctx().write(buf.0, &self.ns_ident));
+                    assert!(mem.write(buf.0, &self.ns_ident));
                     cmds::Completion::success()
                 }
                 // 0 is not a valid NSID (See NVMe 1.0e, Section 6.1 Namespaces)
@@ -224,17 +223,17 @@ impl NvmeCtrl {
                 _ => cmds::Completion::generic_err(STS_INVALID_NS),
             },
             IDENT_CNS_CONTROLLER => {
-                assert!(size_of::<bits::IdentifyController>() <= PAGE_SIZE);
+                assert!(size_of::<IdentifyController>() <= PAGE_SIZE);
                 let buf = cmd
-                    .data(ctx.mctx.memctx())
+                    .data(mem)
                     .next()
                     .expect("missing prp entry for ident response");
-                assert!(ctx.mctx.memctx().write(buf.0, &self.ctrl_ident));
+                assert!(mem.write(buf.0, &self.ctrl_ident));
                 cmds::Completion::success()
             }
             // We currently present NVMe version 1.0 in which CNS is a 1-bit field
             // and hence only need to support the NAMESPACE and CONTROLLER cases
-            _ => cmds::Completion::generic_err(bits::STS_INVAL_FIELD),
+            _ => cmds::Completion::generic_err(STS_INVAL_FIELD),
         }
     }
 
@@ -244,7 +243,6 @@ impl NvmeCtrl {
     pub(super) fn acmd_set_features(
         &self,
         cmd: &cmds::SetFeaturesCmd,
-        _ctx: &DispCtx,
     ) -> cmds::Completion {
         match cmd.fid {
             cmds::FeatureIdent::NumberOfQueues { ncqr, nsqr } => {

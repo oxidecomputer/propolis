@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::accessors::MemAccessor;
 use crate::common::*;
-use crate::dispatch::DispCtx;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
+use crate::vmm::MemCtx;
 use bits::*;
 
 use byteorder::{ByteOrder, BE, LE};
@@ -83,7 +84,7 @@ pub enum LegacyX86Id {
 }
 
 pub trait Item: Send + Sync + 'static {
-    fn fwcfg_rw(&self, rwo: RWOp, ctx: &DispCtx) -> Result;
+    fn fwcfg_rw(&self, rwo: RWOp) -> Result;
     fn size(&self) -> u32;
 }
 
@@ -106,7 +107,7 @@ impl Item for FixedItem {
         self.data.len() as u32
     }
 
-    fn fwcfg_rw(&self, rwo: RWOp, _ctx: &DispCtx) -> Result {
+    fn fwcfg_rw(&self, rwo: RWOp) -> Result {
         match rwo {
             RWOp::Read(ro) => {
                 let off = ro.offset();
@@ -125,7 +126,7 @@ impl Item for FixedItem {
 
 struct PlaceholderItem {}
 impl Item for PlaceholderItem {
-    fn fwcfg_rw(&self, _rwo: RWOp, _ctx: &DispCtx) -> Result {
+    fn fwcfg_rw(&self, _rwo: RWOp) -> Result {
         panic!("should never be accessed");
     }
     fn size(&self) -> u32 {
@@ -372,13 +373,19 @@ impl AccessState {
 pub struct FwCfg {
     dir: ItemDir,
     state: Mutex<AccessState>,
+    acc_mem: MemAccessor,
 }
 impl FwCfg {
     fn new(dir: ItemDir) -> Self {
-        Self { dir, state: Mutex::new(Default::default()) }
+        Self {
+            dir,
+            state: Mutex::new(Default::default()),
+            acc_mem: MemAccessor::new_orphan(),
+        }
     }
 
-    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
+    pub fn attach(self: &Arc<Self>, pio: &PioBus, acc_mem: &MemAccessor) {
+        self.acc_mem.set_parent(acc_mem);
         let ports = [
             (FW_CFG_IOP_SELECTOR, 1),
             (FW_CFG_IOP_DATA, 1),
@@ -386,15 +393,14 @@ impl FwCfg {
             (FW_CFG_IOP_DMA_LO, 4),
         ];
         let this = self.clone();
-        let piofn = Arc::new(move |port: u16, rwo: RWOp, ctx: &DispCtx| {
-            this.pio_rw(port, rwo, ctx)
-        }) as Arc<PioFn>;
+        let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
+            as Arc<PioFn>;
         for (port, len) in ports.iter() {
             pio.register(*port, *len, piofn.clone()).unwrap()
         }
     }
 
-    fn pio_rw(&self, port: u16, rwo: RWOp, ctx: &DispCtx) {
+    fn pio_rw(&self, port: u16, rwo: RWOp) {
         let mut state = self.state.lock().unwrap();
         match port {
             FW_CFG_IOP_SELECTOR => match rwo {
@@ -427,7 +433,6 @@ impl FwCfg {
                                 &mut ro,
                                 0..1,
                             )),
-                            ctx,
                         );
                         if res.is_err() {
                             ro.write_u8(0);
@@ -464,7 +469,7 @@ impl FwCfg {
                 RWOp::Write(wo) => {
                     if wo.len() == 4 {
                         state.addr_low = u32::from_be(wo.read_u32());
-                        let _ = self.dma_initiate(state, ctx);
+                        let _ = self.dma_initiate(state);
                     }
                 }
             },
@@ -474,7 +479,7 @@ impl FwCfg {
         }
     }
 
-    fn xfer(&self, selector: u16, rwo: RWOp, ctx: &DispCtx) -> Result {
+    fn xfer(&self, selector: u16, rwo: RWOp) -> Result {
         if selector == LegacyId::FileDir as u16 {
             if let RWOp::Read(ro) = rwo {
                 self.dir.read(ro)
@@ -482,7 +487,7 @@ impl FwCfg {
                 Err("filedir not writable")
             }
         } else if let Some(item) = self.dir.entries.get(&selector) {
-            item.content.fwcfg_rw(rwo, ctx)
+            item.content.fwcfg_rw(rwo)
         } else {
             Err("entry not found")
         }
@@ -498,18 +503,14 @@ impl FwCfg {
         }
     }
 
-    fn dma_initiate(
-        &self,
-        mut state: MutexGuard<AccessState>,
-        ctx: &DispCtx,
-    ) -> Result {
+    fn dma_initiate(&self, mut state: MutexGuard<AccessState>) -> Result {
         let req_addr = state.dma_addr();
         // initiating a DMA transfer clears the addr contents
         state.addr_high = 0;
         state.addr_low = 0;
 
         let mut desc_buf = [0u8; FwCfgDmaReq::sizeof()];
-        let mem = ctx.mctx.memctx();
+        let mem = self.acc_mem.access().expect("usable mem accessor");
         mem.read_into(
             GuestAddr(req_addr),
             &mut desc_buf,
@@ -519,7 +520,7 @@ impl FwCfg {
 
         let dma_req = FwCfgDmaReq::from_bytes(&desc_buf);
 
-        let res = self.dma_operation(state, &dma_req, ctx);
+        let res = self.dma_operation(state, &dma_req, &mem);
 
         if !mem.write(
             GuestAddr(req_addr),
@@ -536,7 +537,7 @@ impl FwCfg {
         &self,
         mut state: MutexGuard<AccessState>,
         dma_req: &FwCfgDmaReq,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result {
         let mut ctrl = FwCfgDmaCtrl::from_bits_truncate(dma_req.ctrl);
         if ctrl.contains(FwCfgDmaCtrl::ERROR) {
@@ -568,7 +569,7 @@ impl FwCfg {
                 dma_req.addr,
                 state.offset,
                 dma_req.len,
-                ctx,
+                mem,
             );
             if res.is_err() {
                 return res;
@@ -579,7 +580,7 @@ impl FwCfg {
                 dma_req.addr,
                 state.offset,
                 dma_req.len,
-                ctx,
+                mem,
             );
             if res.is_err() {
                 return res;
@@ -594,9 +595,8 @@ impl FwCfg {
         addr: u64,
         offset: u32,
         len: u32,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result {
-        let mem = ctx.mctx.memctx();
         let valid_remain = self.size(selector).saturating_sub(offset);
 
         let written = if valid_remain > 0 {
@@ -609,7 +609,7 @@ impl FwCfg {
                 .ok_or("bad GPA")?;
 
             let mut ro = ReadOp::from_mapping(offset as usize, mapping);
-            self.xfer(selector, RWOp::Read(&mut ro), ctx)?;
+            self.xfer(selector, RWOp::Read(&mut ro))?;
             to_write
         } else {
             0
@@ -631,9 +631,8 @@ impl FwCfg {
         addr: u64,
         offset: u32,
         len: u32,
-        ctx: &DispCtx,
+        mem: &MemCtx,
     ) -> Result {
-        let mem = ctx.mctx.memctx();
         let valid_remain = self.size(selector).saturating_sub(offset);
 
         if valid_remain > 0 {
@@ -645,7 +644,7 @@ impl FwCfg {
                 ))
                 .ok_or("bad GPA")?;
             let mut wo = WriteOp::from_mapping(offset as usize, mapping);
-            self.xfer(selector, RWOp::Write(&mut wo), ctx)?;
+            self.xfer(selector, RWOp::Write(&mut wo))?;
         }
         Ok(())
     }
@@ -660,7 +659,7 @@ impl Entity for FwCfg {
     }
 }
 impl Migrate for FwCfg {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let state = self.state.lock().unwrap();
         Box::new(migrate::FwCfgV1 {
             dma_addr: state.dma_addr(),
@@ -673,7 +672,7 @@ impl Migrate for FwCfg {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> std::result::Result<(), MigrateStateError> {
         let deserialized: migrate::FwCfgV1 =
             erased_serde::deserialize(deserializer)?;

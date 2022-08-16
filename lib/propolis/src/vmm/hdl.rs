@@ -9,7 +9,6 @@
 
 use erased_serde::{Deserializer, Serialize};
 
-use super::mapping::*;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result, Write};
 use std::os::raw::c_void;
@@ -21,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::common::PAGE_SIZE;
 use crate::migrate::MigrateStateError;
 use crate::util::sys::{ioctl, ioctl_usize};
+use crate::vmm::mem::Prot;
 
 #[derive(Default, Copy, Clone)]
 /// Configurable options for VMM instance creation
@@ -215,7 +215,7 @@ impl VmmHdl {
         Ok(())
     }
 
-    /// Creates and sends a request to allocate a memory segment within the VM.
+    /// Allocate a memory segment within the VM.
     ///
     /// # Arguments
     /// - `segid`: The segment ID of the requested memory.
@@ -280,34 +280,6 @@ impl VmmHdl {
 
         assert!(devoff.offset >= 0);
         Ok(devoff.offset as usize)
-    }
-
-    /// Maps a memory segment into propolis' address space.
-    ///
-    /// Returns a pointer to the mapped segment, if successful.
-    pub fn mmap_seg(&self, segid: i32, size: usize) -> Result<Mapping> {
-        let devoff = self.devmem_offset(segid)?;
-
-        Mapping::new(size, Prot::READ | Prot::WRITE, &self.inner, devoff as i64)
-    }
-
-    /// Maps a portion of the guest's virtual address space into propolis'
-    /// address space.
-    ///
-    /// # Arguments:
-    /// - `offset`: Offset within the guests's address space to be mapped.
-    /// - `size`: Size of the mapping.
-    /// - `prot`: Memory protections to be applied to the mapping.
-    ///
-    /// Return the mapped segment if successful.
-    pub fn mmap_guest_mem(
-        &self,
-        guard_space: &mut GuardSpace,
-        offset: usize,
-        size: usize,
-        prot: Prot,
-    ) -> Result<Mapping> {
-        guard_space.mapping(size, prot, &self.inner, offset as i64)
     }
 
     /// Tracks dirty pages in the guest's physical address space.
@@ -485,11 +457,10 @@ impl VmmHdl {
 impl VmmHdl {
     /// Build a VmmHdl instance suitable for unit tests, but nothing else, since
     /// it will not be backed by any real vmm reousrces.
-    pub(crate) fn new_test() -> Result<Self> {
+    pub(crate) fn new_test(mem_size: usize) -> Result<Self> {
         use tempfile::tempfile;
-        // Create a 2M temp file to use as our VM "memory"
         let fp = tempfile()?;
-        fp.set_len(2 * 1024 * 1024).unwrap();
+        fp.set_len(mem_size as u64).unwrap();
         Ok(Self {
             inner: VmmFile(fp),
             destroyed: AtomicBool::new(false),

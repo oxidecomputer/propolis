@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
+use crate::accessors::MemAccessor;
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::hw::qemu::fwcfg::{self, FwCfgBuilder, Item};
-use crate::migrate::{Migrate, Migrator};
+use crate::migrate::*;
 use crate::util::regmap::RegMap;
+use crate::vmm::MemCtx;
 
 use erased_serde::Serialize;
 use lazy_static::lazy_static;
@@ -52,14 +53,13 @@ pub struct Config {
     stride: u32,
 }
 impl Config {
-    fn verify(&self, ctx: &DispCtx) -> Option<()> {
+    fn verify(&self, mem: &MemCtx) -> Option<()> {
         if self.height == 0 || self.width == 0 {
             return None;
         }
 
         let bypp = fourcc_bytepp(self.fourcc)?;
 
-        let mem = ctx.mctx.memctx();
         let line_sz = if self.stride == 0 { self.width } else { self.stride };
         let total_sz = u32::checked_mul(self.height - 1, line_sz)?
             .checked_add(self.width)?
@@ -92,16 +92,27 @@ pub struct FramebufferSpec {
 
 type NotifyFn = Box<dyn Fn(&Config, bool) + Send + Sync + 'static>;
 
-#[derive(Default)]
 pub struct RamFb {
     config: Mutex<Config>,
     notify: Mutex<Option<NotifyFn>>,
+    acc_mem: MemAccessor,
+    log: slog::Logger,
 }
 impl RamFb {
-    pub fn create() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub fn create(log: slog::Logger) -> Arc<Self> {
+        Arc::new(Self {
+            config: Mutex::new(Config::default()),
+            notify: Mutex::new(None),
+            acc_mem: MemAccessor::new_orphan(),
+            log,
+        })
     }
-    pub fn attach(self: &Arc<Self>, builder: &mut FwCfgBuilder) {
+    pub fn attach(
+        self: &Arc<Self>,
+        builder: &mut FwCfgBuilder,
+        acc_mem: &MemAccessor,
+    ) {
+        self.acc_mem.set_parent(acc_mem);
         builder
             .add_named("etc/ramfb", Arc::clone(self) as Arc<dyn Item>)
             .unwrap();
@@ -118,10 +129,11 @@ impl Item for RamFb {
     fn size(&self) -> u32 {
         CFG_REGS_LEN as u32
     }
-    fn fwcfg_rw(&self, mut rwo: RWOp, ctx: &DispCtx) -> fwcfg::Result {
+    fn fwcfg_rw(&self, mut rwo: RWOp) -> fwcfg::Result {
+        let mem = self.acc_mem.access().expect("usable mem accessor");
         let mut config = self.config.lock().unwrap();
         let valid_before =
-            if rwo.is_write() { config.verify(ctx).is_some() } else { false };
+            if rwo.is_write() { config.verify(&mem).is_some() } else { false };
 
         CFG_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
@@ -142,21 +154,21 @@ impl Item for RamFb {
             },
         });
         if rwo.is_write() {
-            let valid_after = config.verify(ctx).is_some();
+            let valid_after = config.verify(&mem).is_some();
 
             if valid_after {
-                slog::info!(ctx.log, "ramfb change"; "state" => "valid", "config" => ?config);
+                slog::info!(self.log, "ramfb change"; "state" => "valid", "config" => ?config);
             } else if valid_before {
-                slog::info!(ctx.log, "ramfb change"; "state" => "invalid");
+                slog::info!(self.log, "ramfb change"; "state" => "invalid");
             }
             match (valid_before, valid_after) {
                 (true, _) | (false, true) => {
                     let notify = self.notify.lock().unwrap();
                     if let Some(func) = notify.as_ref() {
-                        slog::info!(ctx.log, "notifying");
+                        slog::info!(self.log, "notifying");
                         func(&config, valid_after);
                     } else {
-                        slog::info!(ctx.log, "no notify fn set");
+                        slog::info!(self.log, "no notify fn set");
                     }
                 }
                 _ => {}
@@ -174,7 +186,7 @@ impl Entity for RamFb {
     }
 }
 impl Migrate for RamFb {
-    fn export(&self, _ctx: &DispCtx) -> Box<dyn Serialize> {
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
         let state = self.config.lock().unwrap();
         Box::new(migrate::RamFbV1 {
             addr: state.addr,
@@ -190,7 +202,7 @@ impl Migrate for RamFb {
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), crate::migrate::MigrateStateError> {
         let deserialized: migrate::RamFbV1 =
             erased_serde::deserialize(deserializer)?;

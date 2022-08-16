@@ -7,7 +7,6 @@ use super::probes;
 use super::queue::VirtQueues;
 use super::{VirtioDevice, VirtioIntr, VqChange, VqIntr};
 use crate::common::*;
-use crate::dispatch::DispCtx;
 use crate::hw::ids::pci::VENDOR_VIRTIO;
 use crate::hw::pci;
 use crate::intr_pins::IntrPin;
@@ -132,7 +131,7 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
     fn device_state(&self) -> &pci::DeviceState {
         self.pci_state()
     }
-    fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp, ctx: &DispCtx) {
+    fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp) {
         let vs = self.virtio_state();
 
         assert_eq!(bar, pci::BarN::BAR0);
@@ -143,9 +142,9 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
         map.process(&mut rwo, |id, mut rwo| match id {
             VirtioTop::LegacyConfig => {
                 LEGACY_REGS.process(&mut rwo, |id, rwo| match rwo {
-                    RWOp::Read(ro) => vs.legacy_read(self, id, ro, ctx),
+                    RWOp::Read(ro) => vs.legacy_read(self, id, ro),
                     RWOp::Write(wo) => {
-                        vs.legacy_write(self.pci_state(), self, id, wo, ctx)
+                        vs.legacy_write(self.pci_state(), self, id, wo)
                     }
                 })
             }
@@ -166,7 +165,7 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
         // Make sure the correct legacy register map is used
         vs.map_which.store(mode == pci::IntrMode::Msix, Ordering::SeqCst);
     }
-    fn msi_update(&self, info: pci::MsiUpdate, ctx: &DispCtx) {
+    fn msi_update(&self, info: pci::MsiUpdate) {
         let vs = self.virtio_state();
         let mut state = vs.state.lock().unwrap();
         if state.intr_mode != IntrMode::Msi {
@@ -186,10 +185,10 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
                 pci::MsiUpdate::MaskAll | pci::MsiUpdate::UnmaskAll
                     if val != VIRTIO_MSI_NO_VECTOR =>
                 {
-                    self.queue_change(vq, VqChange::IntrCfg, ctx);
+                    self.queue_change(vq, VqChange::IntrCfg);
                 }
                 pci::MsiUpdate::Modify(idx) if val == idx => {
-                    self.queue_change(vq, VqChange::IntrCfg, ctx);
+                    self.queue_change(vq, VqChange::IntrCfg);
                 }
                 _ => {}
             }
@@ -250,6 +249,8 @@ impl PciVirtioState {
             (VirtioTop::DeviceConfig, cfg_sz),
         ];
 
+        // Allow VQs to access memory through the PCI state
+
         let queue_count = queues.count().get();
         let this = Self {
             queues,
@@ -271,6 +272,7 @@ impl PciVirtioState {
 
         for queue in this.queues.iter() {
             queue.set_intr(IsrIntr::new(&this.isr_state));
+            queue.acc_mem.set_parent(&pci_state.acc_mem);
         }
 
         (this, pci_state)
@@ -281,7 +283,6 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         id: &LegacyReg,
         ro: &mut ReadOp,
-        _ctx: &DispCtx,
     ) {
         match id {
             LegacyReg::FeatDevice => {
@@ -339,7 +340,6 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         id: &LegacyReg,
         wo: &mut WriteOp,
-        ctx: &DispCtx,
     ) {
         match id {
             LegacyReg::FeatDriver => {
@@ -354,7 +354,7 @@ impl PciVirtioState {
                 let pfn = wo.read_u32();
                 if let Some(queue) = self.queues.get(state.queue_sel) {
                     success = queue.map_legacy((pfn as u64) << PAGE_SHIFT);
-                    dev.queue_change(queue, VqChange::Address, ctx);
+                    dev.queue_change(queue, VqChange::Address);
                 }
                 if !success {
                     // XXX: interrupt needed?
@@ -366,10 +366,10 @@ impl PciVirtioState {
                 state.queue_sel = wo.read_u16();
             }
             LegacyReg::QueueNotify => {
-                self.queue_notify(dev, wo.read_u16(), ctx);
+                self.queue_notify(dev, wo.read_u16());
             }
             LegacyReg::DeviceStatus => {
-                self.set_status(dev, wo.read_u8(), ctx);
+                self.set_status(dev, wo.read_u8());
             }
             LegacyReg::MsixVectorConfig => {
                 let mut state = self.state.lock().unwrap();
@@ -401,7 +401,7 @@ impl PciVirtioState {
 
                         // With the MSI configuration updated for the virtqueue,
                         // notify the device of the change
-                        dev.queue_change(queue, VqChange::IntrCfg, ctx);
+                        dev.queue_change(queue, VqChange::IntrCfg);
 
                         state.intr_mode_updating = false;
                         self.state_cv.notify_all();
@@ -420,24 +420,24 @@ impl PciVirtioState {
     fn features_supported(&self, dev: &dyn VirtioDevice) -> u32 {
         dev.get_features() | VIRTIO_F_RING_INDIRECT_DESC as u32
     }
-    fn set_status(&self, dev: &dyn VirtioDevice, status: u8, ctx: &DispCtx) {
+    fn set_status(&self, dev: &dyn VirtioDevice, status: u8) {
         let mut state = self.state.lock().unwrap();
         let val = Status::from_bits_truncate(status);
         if val == Status::RESET && state.status != Status::RESET {
-            self.virtio_reset(dev, state, ctx)
+            self.virtio_reset(dev, state)
         } else {
             // XXX: better device status FSM
             state.status = val;
         }
     }
-    fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16, ctx: &DispCtx) {
+    fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16) {
         probes::virtio_vq_notify!(|| (
             dev as *const dyn VirtioDevice as *const c_void as u64,
             queue
         ));
         if let Some(vq) = self.queues.get(queue) {
             vq.live.store(true, Ordering::Release);
-            dev.queue_notify(vq, ctx);
+            dev.queue_notify(vq);
         }
     }
 
@@ -448,18 +448,16 @@ impl PciVirtioState {
         &self,
         dev: &dyn VirtioDevice,
         mut state: MutexGuard<VirtioState>,
-        ctx: &DispCtx,
     ) {
         for queue in self.queues.iter() {
             queue.reset();
-            dev.queue_change(queue, VqChange::Reset, ctx);
+            dev.queue_change(queue, VqChange::Reset);
         }
         state.reset();
         let _ = self.isr_state.read_clear();
-        VirtioDevice::reset(dev, ctx);
     }
 
-    pub fn reset<D>(&self, dev: &D, ctx: &DispCtx)
+    pub fn reset<D>(&self, dev: &D)
     where
         D: pci::Device + PciVirtio,
     {
@@ -467,7 +465,7 @@ impl PciVirtioState {
         let ps = dev.pci_state();
 
         let state = vs.state.lock().unwrap();
-        vs.virtio_reset(dev, state, ctx);
+        vs.virtio_reset(dev, state);
         ps.reset(dev);
     }
 
@@ -683,7 +681,7 @@ impl IsrIntr {
     }
 }
 impl VirtioIntr for IsrIntr {
-    fn notify(&self, _ctx: &DispCtx) {
+    fn notify(&self) {
         if let Some(state) = Weak::upgrade(&self.state) {
             state.raise_queue()
         }
@@ -703,9 +701,9 @@ impl MsiIntr {
     }
 }
 impl VirtioIntr for MsiIntr {
-    fn notify(&self, ctx: &DispCtx) {
+    fn notify(&self) {
         if self.index < self.hdl.count() {
-            self.hdl.fire(self.index, ctx);
+            self.hdl.fire(self.index);
         }
     }
     fn read(&self) -> VqIntr {

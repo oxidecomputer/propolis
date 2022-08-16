@@ -14,6 +14,7 @@ pub use shared::Config;
 pub fn block_backend(
     config: &shared::Config,
     dev: &shared::Device,
+    log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
     let be = config.block_devs.get(backend_name).unwrap();
@@ -35,6 +36,7 @@ pub fn block_backend(
                 path,
                 readonly,
                 NonZeroUsize::new(8).unwrap(),
+                log.clone(),
             )
             .unwrap();
 

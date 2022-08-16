@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
-use crate::dispatch::DispCtx;
 use crate::inventory::Entity;
-use crate::migrate::{Migrate, MigrateStateError, Migrator};
+use crate::migrate::*;
+use crate::vmm::VmmHdl;
 
 use erased_serde::Serialize;
 
-pub struct BhyveHpet {}
+pub struct BhyveHpet {
+    hdl: Arc<VmmHdl>,
+}
 impl BhyveHpet {
-    pub fn create() -> Arc<Self> {
-        Arc::new(Self {})
+    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
+        Arc::new(Self { hdl })
     }
 }
 
@@ -22,20 +24,19 @@ impl Entity for BhyveHpet {
     }
 }
 impl Migrate for BhyveHpet {
-    fn export(&self, ctx: &DispCtx) -> Box<dyn Serialize> {
-        let hdl = ctx.mctx.hdl();
-        Box::new(migrate::BhyveHpetV1::read(hdl))
+    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+        Box::new(migrate::BhyveHpetV1::read(&self.hdl))
     }
 
     fn import(
         &self,
         _dev: &str,
         deserializer: &mut dyn erased_serde::Deserializer,
-        ctx: &DispCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let deserialized: migrate::BhyveHpetV1 =
             erased_serde::deserialize(deserializer)?;
-        deserialized.write(ctx.mctx.hdl())?;
+        deserialized.write(&self.hdl)?;
         Ok(())
     }
 }
