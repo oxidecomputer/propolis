@@ -33,12 +33,12 @@ uuid = "1.0.0"
 
 [dependencies.crucible-client-types]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "1d67a53042f19ff7ca30dd20a04da94b7715ed7c"
+rev = "bacffd142fc38a01fe255407b0c8d5d0aacfe778"
 optional = true
 
 [dependencies.crucible]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "1d67a53042f19ff7ca30dd20a04da94b7715ed7c"
+rev = "bacffd142fc38a01fe255407b0c8d5d0aacfe778"
 optional = true
 
 [dependencies.oximeter]
