@@ -13,5 +13,6 @@ phd-framework = { path = "../framework" }
 phd-tests = { path = "../tests" }
 tracing = "0.1.35"
 tracing-appender = "0.2.2"
+tracing-bunyan-formatter = "0.3.3"
 tracing-subscriber = { version = "0.3.14", features = ["env-filter"] }
 uuid = "1.1.2"

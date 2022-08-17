@@ -19,6 +19,7 @@ default-members = [
 exclude = [
   "crates/bhyve-api/header-check",
   "crates/viona-api/header-check",
+  "phd-tests/buildomat",
 ]
 
 [profile.dev]

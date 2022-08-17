@@ -26,6 +26,16 @@ banner 'BuildTests'
 ptime -m cargo build --verbose --tests \
     --message-format json-render-diagnostics >/tmp/output.tests.json
 
+# For each entry in the supplied Cargo build log:
+# - Select all those entries with a reason of "compiler-artifact"
+# - Filter those entries as follows:
+#   - Look at the values in the target kind map
+#   - Map each value to true/false by comparing it to $2
+#   - Keep the entry only if at least one value matched the desired kind
+# - Get an array of the entries that passed the filter, preserving only their
+#   filename fields
+# - Flatten the array into an array of filenames
+# - Print the array entries unadorned, one to a line
 function artifacts_from {
 	/opt/ooce/bin/jq -r -s "
 		map(

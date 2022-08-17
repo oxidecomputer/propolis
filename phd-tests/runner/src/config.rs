@@ -15,6 +15,25 @@ pub enum Command {
 pub struct ProcessArgs {
     #[clap(subcommand)]
     pub command: Command,
+
+    /// If true, suppress the emission of terminal control codes in the runner's
+    /// log output.
+    #[clap(
+        long,
+        value_parser,
+        default_value = "false",
+        conflicts_with = "emit-bunyan"
+    )]
+    pub disable_ansi: bool,
+
+    /// If true, emit Bunyan-formatted logs.
+    #[clap(
+        long,
+        value_parser,
+        default_value = "false",
+        conflicts_with = "disable-ansi"
+    )]
+    pub emit_bunyan: bool,
 }
 
 #[derive(Args, Debug)]
