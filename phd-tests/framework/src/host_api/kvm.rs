@@ -29,11 +29,11 @@ impl Default for nlist {
     fn default() -> Self {
         Self {
             name: std::ptr::null(),
-            n_value: 0x77777777_77777777,
-            n_scnum: 0x6666 as i16,
-            n_type: 0x5555 as u16,
-            n_sclass: 0x44 as i8,
-            n_numaux: 0x33 as i8,
+            n_value: 0,
+            n_scnum: 0,
+            n_type: 0,
+            n_sclass: 0,
+            n_numaux: 0,
         }
     }
 }
@@ -109,12 +109,11 @@ impl Drop for KvmHdl {
 /// Returns the virtual address of the symbol with the supplied name, suitable
 /// for later use in a call to kvm_kread or kvm_kwrite.
 fn find_symbol_va(kvm_hdl: &KvmHdl, symbol: &str) -> Result<uintptr_t> {
-    // Create a C-compatible representation of the symbol name. Note that this
-    // has to outlive the nlist that refers to it (the nlist stores a raw
-    // pointer to the string's contents).
-    let symbol_str = CString::new(symbol)?;
+    // N.B. This string must be created out-of-line so that it outlives the
+    //      nlist that includes a pointer to its buffer.
+    let symbol = CString::new(symbol)?;
     let nlist = vec![
-        nlist { name: symbol_str.as_ptr(), ..Default::default() },
+        nlist { name: symbol.as_ptr(), ..Default::default() },
         // nlist expects an array of structures terminated by one with a NULL
         // name pointer (or an empty name string).
         nlist::default(),
