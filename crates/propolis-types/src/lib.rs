@@ -5,6 +5,7 @@
 //! can all use those types (and implement their own conversions to/from them)
 //! without any layering oddities.
 
+use std::fmt::Display;
 use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 
@@ -93,13 +94,18 @@ impl FromStr for PciPath {
     }
 }
 
+impl Display for PciPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
 impl Serialize for PciPath {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer
-            .serialize_str(format!("{}.{}.{}", self.0, self.1, self.2).as_str())
+        serializer.serialize_str(format!("{}", self).as_str())
     }
 }
 
