@@ -199,6 +199,25 @@ pub enum TransitionError {
 type TransitionFunc =
     dyn Fn(State, Option<State>, &Inventory, &DispCtx) + Send + Sync + 'static;
 
+type PauseRequestsSentFunc = dyn FnOnce() -> () + Send + Sync;
+
+/// Context used when moving through migration states.
+#[derive(Default)]
+struct MigrateCtx {
+    /// The dispatcher ID of the task that's driving the migration. This task
+    /// must remain unblocked while quiescing for migration to proceed.
+    task_id: Option<CtxId>,
+
+    /// A callback to invoke when all device pause requests have been sent (but
+    /// not necessarily completed; that is, an entity's `paused()` routine may
+    /// return an as-yet uncompleted future).
+    pause_requests_sent: Option<Box<PauseRequestsSentFunc>>,
+
+    /// The migration task writes to this channel to commit a transition to the
+    /// migrate-paused state.
+    pause_chan: Option<std::sync::mpsc::Receiver<()>>,
+}
+
 struct Inner {
     state_current: State,
     state_target: Option<State>,
@@ -207,8 +226,7 @@ struct Inner {
     machine: Option<Arc<Machine>>,
     inv: Arc<Inventory>,
     transition_funcs: Vec<Box<TransitionFunc>>,
-    migrate_ctx: Option<CtxId>,
-    pause_chan: Option<std::sync::mpsc::Receiver<()>>,
+    migrate_ctx: MigrateCtx,
 }
 
 /// A single virtual machine.
@@ -243,8 +261,7 @@ impl Instance {
                     machine: Some(machine),
                     inv: Arc::new(Inventory::new()),
                     transition_funcs: Vec::new(),
-                    migrate_ctx: None,
-                    pause_chan: None,
+                    migrate_ctx: Default::default(),
                 }),
                 cv: Condvar::new(),
                 disp: Dispatcher::new(me.clone(), mweak, rt_handle),
@@ -397,6 +414,7 @@ impl Instance {
         &self,
         migrate_ctx_id: CtxId,
         pause_chan: std::sync::mpsc::Receiver<()>,
+        on_pause_reqs_sent: Option<Box<PauseRequestsSentFunc>>,
     ) -> Result<(), TransitionError> {
         let mut inner = self.inner.lock().unwrap();
 
@@ -415,14 +433,15 @@ impl Instance {
         }
 
         // And that another migration wasn't already requested
-        if let Some(_) = inner.migrate_ctx {
+        if let Some(_) = inner.migrate_ctx.task_id {
             return Err(TransitionError::MigrationAlreadyInProgress);
         }
 
         // Stash the migrate context and pause channel so that
         // `drive_state` can access them
-        inner.migrate_ctx = Some(migrate_ctx_id);
-        inner.pause_chan = Some(pause_chan);
+        inner.migrate_ctx.task_id = Some(migrate_ctx_id);
+        inner.migrate_ctx.pause_requests_sent = on_pause_reqs_sent;
+        inner.migrate_ctx.pause_chan = Some(pause_chan);
 
         self.set_target_state_locked(
             &mut inner,
@@ -522,11 +541,16 @@ impl Instance {
 
     fn transition_actions(
         &self,
-        inner: &MutexGuard<Inner>,
+        inner: &mut MutexGuard<Inner>,
         state: State,
         target: Option<State>,
         phase: TransitionPhase,
     ) {
+        let is_device_quiesce = || -> bool {
+            state == State::Migrate(MigrateRole::Source, MigratePhase::Pause)
+                && phase == TransitionPhase::Pre
+        };
+
         self.disp.with_ctx(|ctx| {
             // Allow any entity to act on the new state
             inner.inv.for_each_node(inventory::Order::Pre, |_id, rec| {
@@ -542,10 +566,7 @@ impl Instance {
 
                 // Inform each entity to stop servicing the guest and
                 // complete or cancel any outstanding requests.
-                if state
-                    == State::Migrate(MigrateRole::Source, MigratePhase::Pause)
-                    && phase == TransitionPhase::Pre
-                {
+                if is_device_quiesce() {
                     ent.pause(ctx);
                 }
 
@@ -562,6 +583,12 @@ impl Instance {
                 }
             }
         });
+
+        if is_device_quiesce() {
+            if let Some(f) = inner.migrate_ctx.pause_requests_sent.take() {
+                f();
+            }
+        }
     }
 
     fn drive_state(&self, log: slog::Logger) {
@@ -601,10 +628,11 @@ impl Instance {
             }
 
             // Pre-state-change actions
+            let target = inner.state_target;
             self.transition_actions(
-                &inner,
+                &mut inner,
                 state,
-                inner.state_target,
+                target,
                 TransitionPhase::Pre,
             );
 
@@ -665,8 +693,11 @@ impl Instance {
                     // action before quiescing the instance.
                     // Drop the `inner` lock so that it may access instance
                     // in the meanwhile.
-                    let pause_chan =
-                        inner.pause_chan.take().expect("migrate pause channel");
+                    let pause_chan = inner
+                        .migrate_ctx
+                        .pause_chan
+                        .take()
+                        .expect("migrate pause channel");
                     drop(inner);
                     let pause = pause_chan.recv();
                     inner = self.inner.lock().unwrap();
@@ -681,10 +712,11 @@ impl Instance {
             }
 
             // Post-state-change actions
+            let target = inner.state_target;
             self.transition_actions(
-                &inner,
+                &mut inner,
                 state,
-                inner.state_target,
+                target,
                 TransitionPhase::Post,
             );
 
@@ -699,7 +731,7 @@ impl Instance {
                 }
                 State::Destroy => {}
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
-                    let migrate_ctx = inner.migrate_ctx.unwrap();
+                    let migrate_ctx = inner.migrate_ctx.task_id.unwrap();
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.
                     drop(inner);

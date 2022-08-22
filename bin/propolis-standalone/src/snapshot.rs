@@ -79,7 +79,14 @@ pub async fn save(
     // This will inform each device to pause
     info!(log, "Pausing devices");
     let (pause_tx, pause_rx) = std::sync::mpsc::channel();
-    inst.migrate_pause(async_ctx.context_id(), pause_rx)?;
+    let pause_done = Arc::new(tokio::sync::Notify::new());
+    let cb_pause_done = pause_done.clone();
+    inst.migrate_pause(
+        async_ctx.context_id(),
+        pause_rx,
+        Some(Box::new(move || cb_pause_done.notify_waiters())),
+    )?;
+    pause_done.notified().await;
 
     // Ask each device for a future indicating they've finishing pausing
     let mut migrate_ready_futs = vec![];
