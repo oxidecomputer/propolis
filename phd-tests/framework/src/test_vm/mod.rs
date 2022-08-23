@@ -7,7 +7,6 @@ use crate::guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind};
 use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
-use backoff::backoff::Backoff;
 use core::result::Result as StdResult;
 use propolis_client::{
     api::{
@@ -288,44 +287,35 @@ impl TestVm {
 
                 let span = info_span!("Migrate", ?migration_id);
                 let _guard = span.enter();
+                let watch_migrate =
+                    || -> Result<(), backoff::Error<anyhow::Error>> {
+                        let state = self
+                            .get_migration_state(migration_id)
+                            .map_err(|e| backoff::Error::Permanent(e))?;
+                        match state {
+                            MigrationState::Finish => {
+                                info!("Migration completed successfully");
+                                Ok(())
+                            }
+                            MigrationState::Error => {
+                                info!(
+                                    "Instance reported error during migration"
+                                );
+                                Err(backoff::Error::Permanent(anyhow!(
+                                    "error during migration"
+                                )))
+                            }
+                            _ => Err(backoff::Error::Transient {
+                                err: anyhow!("migration not done yet"),
+                                retry_after: None,
+                            }),
+                        }
+                    };
+
                 let mut backoff = backoff::ExponentialBackoff::default();
                 backoff.max_elapsed_time = Some(timeout_duration);
-                loop {
-                    let state = self.get_migration_state(migration_id)?;
-                    match state {
-                        MigrationState::Finish => {
-                            info!("Migration completed successfully");
-                            break;
-                        }
-                        MigrationState::Error => {
-                            info!(
-                                "Instance encountered error during migration"
-                            );
-                            return Err(anyhow!(
-                                "Instance encountered error during migration"
-                            ));
-                        }
-                        _ => {}
-                    }
-
-                    match backoff.next_backoff() {
-                        Some(to_wait) => {
-                            info!(
-                                "Waiting for migration to finish, \
-                                  in state {:?}, \
-                                  waiting {:#?} before querying again",
-                                state, to_wait
-                            );
-                            std::thread::sleep(to_wait);
-                        }
-                        None => {
-                            info!("Timed out waiting for migration to finish");
-                            return Err(anyhow!(
-                                "Timed out waiting for migration to finish"
-                            ));
-                        }
-                    }
-                }
+                backoff::retry(backoff, watch_migrate)
+                    .map_err(|e| anyhow!("error during migration: {}", e))?;
             }
             VmState::Ensured { .. } => {
                 return Err(VmStateError::InstanceAlreadyEnsured.into());
@@ -356,34 +346,30 @@ impl TestVm {
             timeout_duration, target
         );
 
+        let wait_fn = || -> Result<(), backoff::Error<anyhow::Error>> {
+            let current = self
+                .get()
+                .map_err(|e| backoff::Error::Permanent(e))?
+                .instance
+                .state;
+            if current == target {
+                Ok(())
+            } else {
+                Err(backoff::Error::Transient {
+                    err: anyhow!(
+                        "not in desired state yet: current {:?}, target {:?}",
+                        current,
+                        target
+                    ),
+                    retry_after: None,
+                })
+            }
+        };
+
         let mut backoff = backoff::ExponentialBackoff::default();
         backoff.max_elapsed_time = Some(timeout_duration);
-        loop {
-            let current = self.get()?.instance.state;
-            if current == target {
-                return Ok(());
-            }
-
-            match backoff.next_backoff() {
-                Some(to_wait) => {
-                    info!(
-                        "Waiting for state {:?}, got state {:?}, \
-                          waiting {:#?} before trying again",
-                        target, current, to_wait
-                    );
-                    std::thread::sleep(to_wait);
-                }
-                None => {
-                    info!("Timed out waiting for state {:?}", target);
-                    break;
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "Timed out waiting for instance to reach state {:?}",
-            target
-        ))
+        backoff::retry(backoff, wait_fn)
+            .map_err(|e| anyhow!("error waiting for instance state: {}", e))
     }
 
     /// Waits for the guest to reach a login prompt and then logs in. Note that
