@@ -86,7 +86,7 @@ impl KvmHdl {
             )
         };
 
-        if kvm_hdl == std::ptr::null() {
+        if kvm_hdl.is_null() {
             Err(anyhow!(
                 "kvm_open failed with code {} ({})",
                 errno().0,
@@ -191,9 +191,9 @@ enum VmmStateWritePrevious {
 impl Drop for VmmStateWriteGuard {
     fn drop(&mut self) {
         if let VmmStateWritePrevious::WasDisabled(kvm_hdl) = &self.previous {
-            let va = find_symbol_va(&kvm_hdl, "vmm_allow_state_writes")
+            let va = find_symbol_va(kvm_hdl, "vmm_allow_state_writes")
                 .expect("couldn't find vmm_allow_state_writes");
-            write_u32_to_va(&kvm_hdl, va, 0)
+            write_u32_to_va(kvm_hdl, va, 0)
                 .expect("couldn't clear vmm_allow_state_writes");
         }
     }
@@ -204,10 +204,7 @@ impl Drop for VmmStateWriteGuard {
 pub fn enable_vmm_state_writes() -> Result<VmmStateWriteGuard> {
     let kvm_hdl = KvmHdl::open()?;
     let va = find_symbol_va(&kvm_hdl, "vmm_allow_state_writes")?;
-    let was_enabled = match read_u32_from_va(&kvm_hdl, va)? {
-        0 => false,
-        _ => true,
-    };
+    let was_enabled = read_u32_from_va(&kvm_hdl, va)? != 0;
 
     if was_enabled {
         Ok(VmmStateWriteGuard { previous: VmmStateWritePrevious::WasEnabled })

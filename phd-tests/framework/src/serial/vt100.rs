@@ -211,9 +211,8 @@ impl vte::Perform for VtPerformer {
     }
 
     fn execute(&mut self, b: u8) {
-        match b {
-            b'\n' => self.last_char = Some('\n'),
-            _ => {}
+        if b == b'\n' {
+            self.last_char = Some('\n');
         }
     }
 }
