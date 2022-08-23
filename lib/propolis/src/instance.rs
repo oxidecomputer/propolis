@@ -199,6 +199,22 @@ pub enum TransitionError {
 type TransitionFunc =
     dyn Fn(State, Option<State>, &Inventory, &DispCtx) + Send + Sync + 'static;
 
+/// Context used when moving through migration states.
+#[derive(Default)]
+struct MigrateCtx {
+    /// The dispatcher ID of the task that's driving the migration. This task
+    /// must remain unblocked while quiescing for migration to proceed.
+    task_id: Option<CtxId>,
+
+    /// This event is signaled when the state driver has finished sending pause
+    /// requests to all entities that receive them.
+    pause_requests_sent: Option<Arc<tokio::sync::Notify>>,
+
+    /// The migration task writes to this channel to commit a transition to the
+    /// migrate-paused state.
+    pause_chan: Option<std::sync::mpsc::Receiver<()>>,
+}
+
 struct Inner {
     state_current: State,
     state_target: Option<State>,
@@ -207,8 +223,7 @@ struct Inner {
     machine: Option<Arc<Machine>>,
     inv: Arc<Inventory>,
     transition_funcs: Vec<Box<TransitionFunc>>,
-    migrate_ctx: Option<CtxId>,
-    pause_chan: Option<std::sync::mpsc::Receiver<()>>,
+    migrate_ctx: MigrateCtx,
 }
 
 /// A single virtual machine.
@@ -243,8 +258,7 @@ impl Instance {
                     machine: Some(machine),
                     inv: Arc::new(Inventory::new()),
                     transition_funcs: Vec::new(),
-                    migrate_ctx: None,
-                    pause_chan: None,
+                    migrate_ctx: Default::default(),
                 }),
                 cv: Condvar::new(),
                 disp: Dispatcher::new(me.clone(), mweak, rt_handle),
@@ -384,7 +398,9 @@ impl Instance {
         }
     }
 
-    /// Ask the instance to pause in prepartion for a migration.
+    /// Asks the instance to pause in preparation for a migration. Returns a
+    /// tokio Notify that the state driver signals when all entities have
+    /// been sent a pause request.
     ///
     /// This will ask the instance to transition to the Migrate Pause
     /// state. As part of that, we'll walk through the device inventory
@@ -397,7 +413,7 @@ impl Instance {
         &self,
         migrate_ctx_id: CtxId,
         pause_chan: std::sync::mpsc::Receiver<()>,
-    ) -> Result<(), TransitionError> {
+    ) -> Result<Arc<tokio::sync::Notify>, TransitionError> {
         let mut inner = self.inner.lock().unwrap();
 
         // Make sure the Instance is in the appropriate state
@@ -415,19 +431,23 @@ impl Instance {
         }
 
         // And that another migration wasn't already requested
-        if let Some(_) = inner.migrate_ctx {
+        if let Some(_) = inner.migrate_ctx.task_id {
             return Err(TransitionError::MigrationAlreadyInProgress);
         }
 
         // Stash the migrate context and pause channel so that
         // `drive_state` can access them
-        inner.migrate_ctx = Some(migrate_ctx_id);
-        inner.pause_chan = Some(pause_chan);
+        inner.migrate_ctx.task_id = Some(migrate_ctx_id);
+        inner.migrate_ctx.pause_chan = Some(pause_chan);
+        let notify = Arc::new(tokio::sync::Notify::new());
+        inner.migrate_ctx.pause_requests_sent = Some(notify.clone());
 
         self.set_target_state_locked(
             &mut inner,
             State::Migrate(MigrateRole::Source, MigratePhase::Pause),
-        )
+        )?;
+
+        Ok(notify)
     }
 
     pub(crate) fn trigger_suspend(
@@ -661,12 +681,26 @@ impl Instance {
                     self.disp.release();
                 }
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
+                    // Notify the migration control thread that all entity pause
+                    // requests have been sent.
+                    let notify = inner
+                        .migrate_ctx
+                        .pause_requests_sent
+                        .take()
+                        .expect(
+                        "Entity pause notifier should be set during migration",
+                    );
+                    notify.notify_one();
+
                     // Give an opportunity to migration requestor to take
                     // action before quiescing the instance.
                     // Drop the `inner` lock so that it may access instance
                     // in the meanwhile.
-                    let pause_chan =
-                        inner.pause_chan.take().expect("migrate pause channel");
+                    let pause_chan = inner
+                        .migrate_ctx
+                        .pause_chan
+                        .take()
+                        .expect("migrate pause channel");
                     drop(inner);
                     let pause = pause_chan.recv();
                     inner = self.inner.lock().unwrap();
@@ -699,7 +733,7 @@ impl Instance {
                 }
                 State::Destroy => {}
                 State::Migrate(MigrateRole::Source, MigratePhase::Pause) => {
-                    let migrate_ctx = inner.migrate_ctx.unwrap();
+                    let migrate_ctx = inner.migrate_ctx.task_id.unwrap();
                     // Worker thread quiesce cannot be done with `inner` lock
                     // held without risking a deadlock.
                     drop(inner);

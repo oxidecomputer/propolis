@@ -196,7 +196,9 @@ impl SourceProtocol {
         let (pause_tx, pause_rx) = std::sync::mpsc::channel();
         self.mctx
             .instance
-            .migrate_pause(self.mctx.async_ctx.context_id(), pause_rx)?;
+            .migrate_pause(self.mctx.async_ctx.context_id(), pause_rx)?
+            .notified()
+            .await;
 
         // Ask each device for a future indicating they've finishing pausing
         let mut migrate_ready_futs = vec![];

@@ -79,7 +79,7 @@ pub async fn save(
     // This will inform each device to pause
     info!(log, "Pausing devices");
     let (pause_tx, pause_rx) = std::sync::mpsc::channel();
-    inst.migrate_pause(async_ctx.context_id(), pause_rx)?;
+    inst.migrate_pause(async_ctx.context_id(), pause_rx)?.notified().await;
 
     // Ask each device for a future indicating they've finishing pausing
     let mut migrate_ready_futs = vec![];
