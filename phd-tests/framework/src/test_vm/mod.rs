@@ -256,7 +256,8 @@ impl TestVm {
             .with_context(|| anyhow!("failed to query instance properties"))
     }
 
-    ///
+    /// Starts this instance by issuing an ensure request that specifies a
+    /// migration from `source` and then running the target.
     pub fn migrate_from(
         &mut self,
         source: &Self,
