@@ -79,6 +79,20 @@ fn slot_to_pci_path(
     .map_err(|_| SpecBuilderError::PciSlotInvalid(slot.0, ty))
 }
 
+/// Generates NIC device and backend names from the NIC's PCI path. This is
+/// needed because the `name` field in a propolis-client
+/// `NetworkInterfaceRequest` is actually the name of the host vNIC to bind to,
+/// and that can change between incarnations of an instance. The PCI path is
+/// unique to each NIC but must remain stable over a migration, so it's suitable
+/// for use in this naming scheme.
+///
+/// N.B. Migrating a NIC requires the source and target to agree on these names,
+///      so changing this routine's behavior will prevent Propolis processes
+///      with the old behavior from migrating processes with the new behavior.
+fn pci_path_to_nic_names(path: PciPath) -> (String, String) {
+    (format!("vnic-{}", path), format!("vnic-{}-backend", path))
+}
+
 /// A helper for building instance specs out of component parts.
 pub struct SpecBuilder {
     spec: InstanceSpec,
@@ -138,11 +152,12 @@ impl SpecBuilder {
         let pci_path = slot_to_pci_path(nic.slot, SlotType::NIC)?;
         self.register_pci_device(pci_path)?;
 
+        let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
         if self
             .spec
             .network_backends
             .insert(
-                nic.name.to_string(),
+                backend_name.clone(),
                 NetworkBackend {
                     kind: NetworkBackendKind::Virtio {
                         vnic_name: nic.name.to_string(),
@@ -159,10 +174,7 @@ impl SpecBuilder {
         if self
             .spec
             .network_devices
-            .insert(
-                nic.name.to_string(),
-                NetworkDevice { backend_name: nic.name.to_string(), pci_path },
-            )
+            .insert(device_name, NetworkDevice { backend_name, pci_path })
             .is_some()
         {
             return Err(SpecBuilderError::DeviceNameInUse(
@@ -405,11 +417,12 @@ impl SpecBuilder {
             ))
         })?;
 
+        let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
         if self
             .spec
             .network_backends
             .insert(
-                vnic_name.to_string(),
+                backend_name.clone(),
                 NetworkBackend {
                     kind: NetworkBackendKind::Virtio {
                         vnic_name: vnic_name.to_string(),
@@ -426,10 +439,7 @@ impl SpecBuilder {
         if self
             .spec
             .network_devices
-            .insert(
-                name.to_string(),
-                NetworkDevice { backend_name: vnic_name.to_string(), pci_path },
-            )
+            .insert(device_name, NetworkDevice { backend_name, pci_path })
             .is_some()
         {
             return Err(SpecBuilderError::DeviceNameInUse(name.to_string()));
