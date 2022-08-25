@@ -36,12 +36,13 @@ use propolis::{
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     Instance,
 };
-use propolis_client::{
+use propolis_client::handmade::{
     api::InstanceProperties, api::InstanceState as ApiInstanceState,
     api::InstanceStateMonitorResponse as ApiMonitoredState,
     api::InstanceStateRequested as ApiInstanceStateRequested,
-    api::MigrationState as ApiMigrationState, instance_spec::InstanceSpec,
+    api::MigrationState as ApiMigrationState,
 };
+use propolis_client::instance_spec::InstanceSpec;
 use slog::{error, info, Logger};
 use thiserror::Error;
 use tokio::task::JoinHandle as TaskJoinHandle;

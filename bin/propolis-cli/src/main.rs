@@ -10,7 +10,7 @@ use std::{
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use futures::{future, SinkExt, StreamExt};
-use propolis_client::{
+use propolis_client::handmade::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
         InstanceProperties, InstanceStateRequested, MigrationState,
@@ -19,7 +19,9 @@ use propolis_client::{
 };
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -317,10 +319,14 @@ async fn test_stdin_to_websockets_task() {
 }
 
 async fn serial(addr: SocketAddr) -> anyhow::Result<()> {
-    let path = format!("ws://{}/instance/serial", addr);
-    let (mut ws, _) = tokio_tungstenite::connect_async(path)
+    let upgraded = propolis_client::Client::new(&format!("http://{}", addr))
+        .instance_serial()
+        .send()
         .await
-        .with_context(|| anyhow!("failed to create serial websocket stream"))?;
+        .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
+        .into_inner();
+    let mut ws =
+        WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await;
 
     let _raw_guard = RawTermiosGuard::stdio_guard()
         .with_context(|| anyhow!("failed to set raw mode"))?;
