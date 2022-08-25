@@ -217,6 +217,9 @@ impl Entity for PciVirtioBlock {
     fn pause(&self) {
         self.notifier.pause();
     }
+    fn resume(&self) {
+        self.notifier.resume();
+    }
     fn paused(&self) -> BoxFuture<'static, ()> {
         let block_paused = self.notifier.paused();
         Box::pin(async move { block_paused.await })

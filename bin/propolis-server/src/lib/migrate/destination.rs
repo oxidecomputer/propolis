@@ -2,8 +2,7 @@ use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
-use propolis::instance::MigrateRole;
-use propolis::migrate::{MigrateStateError, Migrator};
+use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info, warn};
 use std::io;
 use std::sync::Arc;
@@ -13,17 +12,26 @@ use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::{
-    Device, MigrateContext, MigrateError, MigrationState, PageIter,
+    Device, MigrateError, MigrateRole, MigrationState, PageIter,
 };
+use crate::vm::{MigrateTargetCommand, VmController};
 
+/// Launches an attempt to migrate into a supplied instance using the supplied
+/// source connection.
 pub async fn migrate(
-    mctx: Arc<MigrateContext>,
+    vm_controller: Arc<VmController>,
+    command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
     conn: Upgraded,
 ) -> Result<(), MigrateError> {
-    let mut proto = DestinationProtocol::new(mctx, conn);
+    let err_tx = command_tx.clone();
+    let mut proto = DestinationProtocol::new(vm_controller, command_tx, conn);
 
     if let Err(err) = proto.run().await {
-        proto.mctx.set_state(MigrationState::Error).await;
+        err_tx
+            .send(MigrateTargetCommand::UpdateState(MigrationState::Error))
+            .await
+            .unwrap();
+
         // We encountered an error, try to inform the remote before bailing
         // Note, we don't use `?` here as this is a best effort and we don't
         // want an error encountered during this send to shadow the run error
@@ -36,24 +44,43 @@ pub async fn migrate(
 }
 
 struct DestinationProtocol {
-    /// The migration context which also contains the `Instance` handle.
-    mctx: Arc<MigrateContext>,
+    /// The VM controller for the instance of interest.
+    vm_controller: Arc<VmController>,
+
+    /// The channel to use to send messages to the state worker coordinating
+    /// this migration.
+    command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
 
     /// Transport to the source Instance.
     conn: Framed<Upgraded, LiveMigrationFramer>,
 }
 
 impl DestinationProtocol {
-    fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
-        let codec_log = mctx.log.new(slog::o!());
+    fn new(
+        vm_controller: Arc<VmController>,
+        command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
+        conn: Upgraded,
+    ) -> Self {
+        let codec_log = vm_controller.log().new(slog::o!());
         Self {
-            mctx,
+            vm_controller,
+            command_tx,
             conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
         }
     }
 
     fn log(&self) -> &slog::Logger {
-        &self.mctx.log
+        self.vm_controller.log()
+    }
+
+    async fn update_state(&mut self, state: MigrationState) {
+        // When migrating into an instance, the VM state worker blocks waiting
+        // for the disposition of the migration attempt, so the channel should
+        // never be closed before the attempt completes.
+        self.command_tx
+            .send(MigrateTargetCommand::UpdateState(state))
+            .await
+            .unwrap();
     }
 
     async fn run(&mut self) -> Result<(), MigrateError> {
@@ -73,7 +100,7 @@ impl DestinationProtocol {
     }
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Sync).await;
+        self.update_state(MigrationState::Sync).await;
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
                 Ok(ron::de::from_str(&s).map_err(codec::ProtocolError::from)?)
@@ -89,7 +116,7 @@ impl DestinationProtocol {
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
         if let Err(e) = preamble
             .instance_spec
-            .is_migration_compatible(&self.mctx.instance_spec)
+            .is_migration_compatible(self.vm_controller.instance_spec())
         {
             error!(
                 self.log(),
@@ -101,7 +128,7 @@ impl DestinationProtocol {
     }
 
     async fn ram_push(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::RamPush).await;
+        self.update_state(MigrationState::RamPush).await;
         let (dirty, highest) = self.query_ram().await?;
         for (k, region) in dirty.as_raw_slice().chunks(4096).enumerate() {
             if region.iter().all(|&b| b == 0) {
@@ -133,7 +160,7 @@ impl DestinationProtocol {
             };
         }
         self.send_msg(codec::Message::MemDone).await?;
-        self.mctx.set_state(MigrationState::Pause).await;
+        self.update_state(MigrationState::Pause).await;
         Ok(())
     }
 
@@ -193,7 +220,7 @@ impl DestinationProtocol {
     }
 
     async fn device_state(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Device).await;
+        self.update_state(MigrationState::Device).await;
 
         let devices: Vec<Device> = match self.read_msg().await? {
             codec::Message::Serialized(encoded) => {
@@ -207,71 +234,77 @@ impl DestinationProtocol {
         };
         self.read_ok().await?;
 
-        let dispctx = self
-            .mctx
-            .async_ctx
-            .dispctx()
-            .await
-            .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
-
         info!(self.log(), "Devices: {devices:#?}");
 
-        let inv = self.mctx.instance.inv();
-        for device in devices {
-            info!(
-                self.log(),
-                "Applying state to device {}", device.instance_name
-            );
+        {
+            let instance_guard = self.vm_controller.instance().lock();
+            let inv = instance_guard.inventory();
+            let migrate_ctx = MigrateCtx {
+                mem: &instance_guard.machine().acc_mem.access().unwrap(),
+            };
+            for device in devices {
+                info!(
+                    self.log(),
+                    "Applying state to device {}", device.instance_name
+                );
 
-            let dev_ent =
-                inv.get_by_name(&device.instance_name).ok_or_else(|| {
-                    MigrateError::UnknownDevice(device.instance_name.clone())
-                })?;
+                let dev_ent = inv
+                    .get_by_name(&device.instance_name)
+                    .ok_or_else(|| {
+                        MigrateError::UnknownDevice(
+                            device.instance_name.clone(),
+                        )
+                    })?;
 
-            match dev_ent.migrate() {
-                Migrator::NonMigratable => {
-                    error!(self.log(), "Can't migrate instance with non-migratable device ({})", device.instance_name);
-                    return Err(MigrateError::DeviceState(
-                        MigrateStateError::NonMigratable,
-                    ));
-                }
-                Migrator::Simple => {
-                    // The source shouldn't be sending devices with empty payloads
-                    warn!(
-                        self.log(),
-                        "received unexpected device state for device {}",
-                        device.instance_name
-                    );
-                }
-                Migrator::Custom(migrate) => {
-                    let mut deserializer =
-                        ron::Deserializer::from_str(&device.payload)
-                            .map_err(codec::ProtocolError::from)?;
-                    let deserializer =
-                        &mut <dyn erased_serde::Deserializer>::erase(
-                            &mut deserializer,
+                match dev_ent.migrate() {
+                    Migrator::NonMigratable => {
+                        error!(
+                            self.log(),
+                            "Can't migrate instance with non-migratable \
+                               device ({})",
+                            device.instance_name
                         );
-                    migrate.import(
-                        dev_ent.type_name(),
-                        deserializer,
-                        &dispctx,
-                    )?;
+                        return Err(MigrateError::DeviceState(
+                            MigrateStateError::NonMigratable,
+                        ));
+                    }
+                    Migrator::Simple => {
+                        // The source shouldn't be sending devices with empty payloads
+                        warn!(
+                            self.log(),
+                            "received unexpected device state for device {}",
+                            device.instance_name
+                        );
+                    }
+                    Migrator::Custom(migrate) => {
+                        let mut deserializer =
+                            ron::Deserializer::from_str(&device.payload)
+                                .map_err(codec::ProtocolError::from)?;
+                        let deserializer =
+                            &mut <dyn erased_serde::Deserializer>::erase(
+                                &mut deserializer,
+                            );
+                        migrate.import(
+                            dev_ent.type_name(),
+                            deserializer,
+                            &migrate_ctx,
+                        )?;
+                    }
                 }
             }
         }
-        drop(dispctx);
 
         self.send_msg(codec::Message::Okay).await
     }
 
     async fn arch_state(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Arch).await;
+        self.update_state(MigrationState::Arch).await;
         self.send_msg(codec::Message::Okay).await?;
         self.read_ok().await
     }
 
     async fn ram_pull(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::RamPull).await;
+        self.update_state(MigrationState::RamPull).await;
         self.send_msg(codec::Message::MemQuery(0, !0)).await?;
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got end {:?}", m);
@@ -279,13 +312,7 @@ impl DestinationProtocol {
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Finish).await;
-
-        // Allow the destination to be resumed now that the migration is
-        // complete.
-        self.mctx
-            .instance
-            .set_target_state(propolis::instance::ReqState::MigrateResume)?;
+        self.update_state(MigrationState::Finish).await;
         self.send_msg(codec::Message::Okay).await?;
         let _ = self.read_ok().await; // A failure here is ok.
         Ok(())
@@ -346,14 +373,8 @@ impl DestinationProtocol {
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let memctx = self
-            .mctx
-            .async_ctx
-            .dispctx()
-            .await
-            .ok_or(MigrateError::InstanceNotInitialized)?
-            .mctx
-            .memctx();
+        let instance_guard = self.vm_controller.instance().lock();
+        let memctx = instance_guard.machine().acc_mem.access().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
         Ok(())

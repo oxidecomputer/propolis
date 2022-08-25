@@ -192,7 +192,7 @@ impl Instance {
                 |_eid, record| -> std::result::Result<(), ()> {
                     let ent = record.entity();
                     match state {
-                        State::Run => ent.run(),
+                        State::Run => ent.start(),
                         State::Quiesce => ent.pause(),
                         State::Halt => ent.halt(),
                         State::Reset => ent.reset(),

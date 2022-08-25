@@ -254,6 +254,25 @@ impl OutstandingReqs {
         }
     }
 
+    /// Removes the `Notify` object associated with this counter.
+    ///
+    /// # Panics
+    ///
+    /// This routine panics if no notification was set or if there were
+    /// outstanding notifications on this counter. See [`Notifier::resume`].
+    fn remove_notifier(&self) {
+        let mut notifier = self.notifier.lock().unwrap();
+        assert!(notifier.is_some(), "notifier must exist to be removed");
+
+        // Users of the counter create a notifier when pausing a backend, wait
+        // for its outstanding count to hit 0, and then resume it only
+        // afterward. The pause-and-wait logic has barriers sufficient to ensure
+        // that the count has observably reached 0 before any thread will
+        // observe that the no-requests condition is fulfilled.
+        assert_eq!(self.count.load(Ordering::Relaxed), 0);
+        notifier.take();
+    }
+
     /// Returns a future indicating when all outstanding requests have been completed.
     fn all_completed(&self) -> Option<BoxFuture<'static, ()>> {
         match &*self.notifier.lock().unwrap() {
@@ -363,6 +382,23 @@ impl Notifier {
             .all_completed()
             .expect("missing outstanding requests notifier")
     }
+
+    /// Resume accepting requests from the block device.
+    ///
+    /// # Panics
+    ///
+    /// This routine assumes that on entry, this notifier was previously asked
+    /// to pause and that the pause requestor waited for the notifier to pause
+    /// fully before resuming. To that end, this routine asserts that
+    ///
+    /// - this object has an active notification channel, and
+    /// - this object is not tracking any outstanding requests.
+    pub fn resume(&self) {
+        assert_eq!(self.outstanding.count.load(Ordering::Relaxed), 0);
+        self.outstanding.remove_notifier();
+        let paused = self.paused.swap(false, Ordering::Release);
+        assert!(paused);
+    }
 }
 
 /// Driver used to service requests from a block device with a specific backend.
@@ -448,7 +484,12 @@ impl Driver {
         })
     }
 
-    pub fn run(&self) {
+    pub fn start(&self) {
+        // The driver boots up in a paused state, so the start transition is
+        // equivalent to resuming.
+        self.resume();
+    }
+    pub fn resume(&self) {
         let mut ctrls = self.inner.task_ctrl.lock().unwrap();
         let _ = ctrls.sched.as_mut().unwrap().run();
         for worker in ctrls.workers.iter_mut() {

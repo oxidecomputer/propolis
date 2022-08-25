@@ -134,11 +134,14 @@ impl Entity for FileBackend {
     fn type_name(&self) -> &'static str {
         "block-file"
     }
-    fn run(&self) {
-        self.driver.run();
+    fn start(&self) {
+        self.driver.start();
     }
     fn pause(&self) {
         self.driver.pause();
+    }
+    fn resume(&self) {
+        self.driver.resume();
     }
     fn halt(&self) {
         self.driver.halt();

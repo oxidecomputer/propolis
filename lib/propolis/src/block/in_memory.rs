@@ -133,8 +133,8 @@ impl Entity for InMemoryBackend {
     fn type_name(&self) -> &'static str {
         "block-in-memory"
     }
-    fn run(&self) {
-        self.driver.run();
+    fn start(&self) {
+        self.driver.start();
     }
 }
 

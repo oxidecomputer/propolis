@@ -1,232 +1,276 @@
 //! HTTP server callback functions.
+//!
+//! Functions in this module verify parameters and convert between types (API
+//! request types to Propolis-native types and Propolis-native error types to
+//! HTTP error codes) before sending operations to other components (e.g. the VM
+//! controller) for processing.
 
-use anyhow::Result;
+use std::sync::Arc;
+use std::{collections::BTreeMap, net::SocketAddr};
+
 use dropshot::{
     endpoint, ApiDescription, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, RequestContext, TypedBody,
 };
-use futures::future::Fuse;
-use futures::stream::{SplitSink, SplitStream};
-use futures::{FutureExt, SinkExt, StreamExt};
-use hyper::upgrade::{self, Upgraded};
-use hyper::{header, Body, Response, StatusCode};
-use propolis::hw::qemu::ramfb::RamFb;
+use hyper::StatusCode;
+use hyper::{http::header, upgrade, Body, Response};
+use oximeter::types::ProducerRegistry;
+use propolis_client::instance_spec;
+use propolis_client::{api, instance_spec::InstanceSpec};
+use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
-use slog::{error, info, o, Logger};
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::ops::Range;
-use std::sync::Arc;
+use slog::{error, o, Logger};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, watch, MappedMutexGuard, Mutex, MutexGuard};
-use tokio::task::JoinHandle;
+use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
+use tokio_tungstenite::tungstenite::handshake;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
-use tokio_tungstenite::tungstenite::{self, handshake, Message};
 use tokio_tungstenite::WebSocketStream;
 
-use propolis::dispatch::AsyncCtx;
-use propolis::hw::uart::LpcUart;
-use propolis::instance::Instance;
-use propolis_client::{api, instance_spec};
-
-use crate::config::Config as VmConfig;
-use crate::initializer::{build_instance, MachineInitializer};
-use crate::serial::Serial;
-use crate::spec::SpecBuilder;
-use crate::stats::{prop_oximeter, PropCountStat, PropStatOuter};
+use crate::spec::{SpecBuilder, SpecBuilderError};
+use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
-use crate::{migrate, vnc};
-use uuid::Uuid;
-
-// TODO(error) Do a pass of HTTP codes (error and ok)
-// TODO(idempotency) Idempotency mechanisms?
-
-/// Errors which may occur during the course of a serial connection
-#[derive(Error, Debug)]
-enum SerialTaskError {
-    #[error("Cannot upgrade HTTP request to WebSockets: {0}")]
-    Upgrade(#[from] hyper::Error),
-
-    #[error("WebSocket Error: {0}")]
-    WebSocket(#[from] tungstenite::Error),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-struct SerialTask {
-    /// Handle to attached serial session
-    task: JoinHandle<()>,
-    /// Oneshot channel used to signal the task to terminate gracefully
-    close_ch: Option<oneshot::Sender<()>>,
-    /// Channel used to send new client connections to the streaming task
-    websocks_ch: mpsc::Sender<WebSocketStream<Upgraded>>,
-}
-
-impl Drop for SerialTask {
-    fn drop(&mut self) {
-        if let Some(ch) = self.close_ch.take() {
-            let _ = ch.send(());
-        } else {
-            self.task.abort();
-        }
-    }
-}
-
-#[derive(Clone)]
-struct StateChange {
-    gen: u64,
-    state: propolis::instance::State,
-}
 
 pub(crate) type CrucibleBackendMap =
-    BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>;
+    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
 
-// All context for a single propolis instance.
-pub(crate) struct InstanceContext {
-    // The instance, which may or may not be instantiated.
-    pub instance: Arc<Instance>,
-    pub properties: api::InstanceProperties,
-    pub spec: instance_spec::InstanceSpec,
-    serial: Arc<Serial<LpcUart>>,
-    state_watcher: watch::Receiver<StateChange>,
-    serial_task: Option<SerialTask>,
-
-    /// A map of disk names to CrucibleBackend
-    pub(crate) crucible_backends: Mutex<CrucibleBackendMap>,
-}
-
+/// Configuration used to set this server up to provide Oximeter metrics.
 #[derive(Debug, Clone)]
-pub struct InstanceMetricsConfig {
+pub struct MetricsEndpointConfig {
+    /// The address at which the Oximeter endpoint will be hosted (i.e., this
+    /// server's address).
     pub propolis_addr: SocketAddr,
+
+    /// The address of the Oximeter instance that should be told that this
+    /// endpoint is available.
     pub metric_addr: SocketAddr,
 }
-impl InstanceMetricsConfig {
+
+impl MetricsEndpointConfig {
     pub fn new(propolis_addr: SocketAddr, metric_addr: SocketAddr) -> Self {
-        InstanceMetricsConfig { propolis_addr, metric_addr }
+        Self { propolis_addr, metric_addr }
     }
-}
-
-/// Objects that this server creates, owns, and manipulates in response to API
-/// calls.
-pub(crate) struct ServerObjects {
-    /// The server's Propolis instance, if one has been created via
-    /// `instance_ensure`.
-    pub instance: Mutex<Option<InstanceContext>>,
-
-    /// The currently active live migration task, if a migration is in progress.
-    pub migrate_task: Mutex<Option<migrate::MigrateTask>>,
-
-    /// The VNC server hosted in this process. Note that this server exists even
-    /// when no instance has been created yet (it serves a white screen);
-    /// creating an instance with `instance_ensure` hooks the inner
-    /// `PropolisVncServer` up to the new instance's framebuffer.
-    vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
-
-    /// The Oximeter metrics provider for this server's instance, created when
-    /// the instance is created. This is used to record "server-level" metrics
-    /// only. Propolis components that want to log their own metrics must be
-    /// given access to the Oximeter producer registry (from which this stats
-    /// endpoint is also derived).
-    metrics: Mutex<Option<PropStatOuter>>,
 }
 
 /// Static configuration for objects owned by this server. The server obtains
 /// this configuration at startup time and refers to it when manipulating its
 /// objects.
-struct StaticConfig {
-    /// The TOML-driven VM configuration for this server's instances.
-    vm: VmConfig,
+pub struct StaticConfig {
+    /// The TOML-driven configuration for this server's instances.
+    pub vm: VmTomlConfig,
 
     /// Whether to use the host's guest memory reservoir to back guest memory.
-    use_reservoir: bool,
+    pub use_reservoir: bool,
 
     /// The configuration to use when setting up this server's Oximeter
     /// endpoint.
-    metrics: Option<InstanceMetricsConfig>,
+    metrics: Option<MetricsEndpointConfig>,
 }
 
-/// Contextual information accessible from HTTP callbacks.
+/// The state of the current VM controller in this server, if there is one, or
+/// the most recently created one, if one ever existed.
+pub enum VmControllerState {
+    /// No VM controller has ever been constructed in this server.
+    NotCreated,
+
+    /// A VM controller exists.
+    Created(Arc<VmController>),
+
+    /// No VM controller exists. The attached value describes that instance's
+    /// properties.
+    Destroyed(propolis_client::api::Instance),
+}
+
+impl VmControllerState {
+    pub fn controller_mut(&mut self) -> Option<&mut Arc<VmController>> {
+        match self {
+            VmControllerState::NotCreated => None,
+            VmControllerState::Created(c) => Some(c),
+            VmControllerState::Destroyed(_) => None,
+        }
+    }
+
+    pub fn take_vm(&mut self) -> Option<Arc<VmController>> {
+        if let VmControllerState::Created(vm) = self {
+            let inst = propolis_client::api::Instance {
+                properties: vm.properties().clone(),
+                state: propolis_client::api::InstanceState::Destroyed,
+                disks: vec![],
+                nics: vec![],
+            };
+
+            if let VmControllerState::Created(vm) =
+                std::mem::replace(self, VmControllerState::Destroyed(inst))
+            {
+                Some(vm)
+            } else {
+                unreachable!()
+            }
+        } else {
+            None
+        }
+    }
+}
+
+/// Objects that this server creates, owns, and manipulates in response to API
+/// calls.
+pub struct ServiceProviders {
+    /// The VM controller that manages this server's Propolis instance. This is
+    /// `None` until a guest is created via `instance_ensure`.
+    pub vm: Mutex<VmControllerState>,
+
+    serial_task: Mutex<Option<super::serial::SerialTask>>,
+
+    oximeter_server_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    oximeter_stats: Mutex<Option<crate::stats::ServerStatsOuter>>,
+
+    vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+}
+
+impl ServiceProviders {
+    /// Directs the current set of per-instance service providers to stop in an
+    /// orderly fashion, then drops them all.
+    async fn stop(&self, log: &Logger) {
+        if let Some(vm) = self.vm.lock().await.take_vm() {
+            slog::info!(log, "Dropping instance";
+                        "strong_refs" => Arc::strong_count(&vm),
+                        "weak_refs" => Arc::weak_count(&vm));
+        }
+        if let Some(mut serial_task) = self.serial_task.lock().await.take() {
+            if let Some(close) = serial_task.close_ch.take() {
+                let _ = close.send(());
+            }
+        }
+        if let Some(server) = self.oximeter_server_task.lock().await.take() {
+            server.abort();
+        }
+        let _ = self.oximeter_stats.lock().await.take();
+    }
+}
+
+/// Context accessible from HTTP callbacks.
 pub struct DropshotEndpointContext {
     static_config: StaticConfig,
-    pub(crate) objects: ServerObjects,
+    pub services: ServiceProviders,
     log: Logger,
 }
 
 impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
-        vm_config: VmConfig,
+        config: VmTomlConfig,
         vnc_server: VncServer<PropolisVncServer>,
         use_reservoir: bool,
-        log: Logger,
-        metric_config: Option<InstanceMetricsConfig>,
+        log: slog::Logger,
+        metric_config: Option<MetricsEndpointConfig>,
     ) -> Self {
-        DropshotEndpointContext {
+        Self {
             static_config: StaticConfig {
-                vm: vm_config,
+                vm: config,
                 use_reservoir,
                 metrics: metric_config,
             },
-            objects: ServerObjects {
-                instance: Mutex::new(None),
-                migrate_task: Mutex::new(None),
+            services: ServiceProviders {
+                vm: Mutex::new(VmControllerState::NotCreated),
+                serial_task: Mutex::new(None),
+                oximeter_server_task: Mutex::new(None),
+                oximeter_stats: Mutex::new(None),
                 vnc_server: Arc::new(Mutex::new(vnc_server)),
-                metrics: Mutex::new(None),
             },
             log,
         }
     }
 
-    /// Get access to the instance portion of the `Context`, emitting a
-    /// consistent error if it is absent.
-    pub(crate) async fn instance(
+    /// Get access to the VM controller for this context, emitting a consistent
+    /// error if it is absent.
+    pub(crate) async fn vm(
         &self,
-    ) -> Result<MappedMutexGuard<InstanceContext>, HttpError> {
-        MutexGuard::try_map(self.objects.instance.lock().await, Option::as_mut)
-            .map_err(|_| {
-                HttpError::for_internal_error(
-                    "Server not initialized (no instance)".to_string(),
-                )
-            })
+    ) -> Result<MappedMutexGuard<Arc<VmController>>, HttpError> {
+        MutexGuard::try_map(
+            self.services.vm.lock().await,
+            VmControllerState::controller_mut,
+        )
+        .map_err(|_| {
+            HttpError::for_internal_error(
+                "Server not initialized (no instance)".to_string(),
+            )
+        })
     }
 }
 
-fn api_to_propolis_state(
-    state: api::InstanceStateRequested,
-) -> propolis::instance::ReqState {
-    use api::InstanceStateRequested as ApiState;
-    use propolis::instance::ReqState as PropolisState;
+#[derive(Debug, Error)]
+enum SpecCreationError {
+    #[error(transparent)]
+    SpecBuilderError(#[from] SpecBuilderError),
 
-    match state {
-        ApiState::Run => PropolisState::Run,
-        ApiState::Stop => PropolisState::Halt,
-        ApiState::Reboot => PropolisState::Reset,
-        ApiState::MigrateStart => PropolisState::MigrateStart,
-    }
+    #[error(transparent)]
+    Base64DecodeError(#[from] base64::DecodeError),
 }
 
-fn propolis_to_api_state(
-    state: propolis::instance::State,
-) -> api::InstanceState {
-    use api::InstanceState as ApiState;
-    use propolis::instance::State as PropolisState;
-
-    match state {
-        PropolisState::Initialize => ApiState::Creating,
-        PropolisState::Boot => ApiState::Starting,
-        PropolisState::Run => ApiState::Running,
-        PropolisState::Quiesce => ApiState::Stopping,
-        PropolisState::Migrate(_, _) => ApiState::Migrating,
-        PropolisState::Halt => ApiState::Stopped,
-        PropolisState::Reset => ApiState::Rebooting,
-        PropolisState::Destroy => ApiState::Destroyed,
+/// Creates an instance spec from an ensure request. (Both types are foreign to
+/// this crate, so implementing TryFrom for them is not allowed.)
+fn instance_spec_from_request(
+    request: &propolis_client::api::InstanceEnsureRequest,
+    toml_config: &VmTomlConfig,
+) -> Result<(InstanceSpec, BTreeMap<String, Vec<u8>>), SpecCreationError> {
+    let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
+        BTreeMap::new();
+    let mut spec_builder = SpecBuilder::new(&request.properties, toml_config)?;
+    for nic in &request.nics {
+        spec_builder.add_nic_from_request(nic)?;
     }
+
+    for disk in &request.disks {
+        spec_builder.add_disk_from_request(disk)?;
+    }
+
+    if let Some(as_base64) = &request.cloud_init_bytes {
+        let bytes = base64::decode(as_base64)?;
+        spec_builder.add_cloud_init_from_request()?;
+        in_memory_disk_contents.insert("cloud-init".to_string(), bytes);
+    }
+
+    spec_builder.add_devices_from_config(toml_config)?;
+    for port in [
+        instance_spec::SerialPortNumber::Com1,
+        instance_spec::SerialPortNumber::Com2,
+        instance_spec::SerialPortNumber::Com3,
+        instance_spec::SerialPortNumber::Com4,
+    ] {
+        spec_builder.add_serial_port(port)?;
+    }
+
+    Ok((spec_builder.finish(), in_memory_disk_contents))
 }
 
-/*
- * Instances: CRUD API
- */
+/// Attempts to register an Oximeter server reporting metrics from a new
+/// instance, returning the producer registry from that server on success.
+async fn register_oximeter(
+    server_context: &DropshotEndpointContext,
+    cfg: &MetricsEndpointConfig,
+    vm_id: uuid::Uuid,
+    log: Logger,
+) -> anyhow::Result<ProducerRegistry> {
+    assert!(server_context.services.oximeter_stats.lock().await.is_none());
+    assert!(server_context
+        .services
+        .oximeter_server_task
+        .lock()
+        .await
+        .is_none());
+
+    let server = crate::stats::start_oximeter_server(vm_id, cfg, log).await?;
+    let stats = crate::stats::register_server_metrics(vm_id, &server)?;
+    *server_context.services.oximeter_stats.lock().await = Some(stats);
+    let registry = server.registry().clone();
+    let server_task = tokio::spawn(async move {
+        server.serve_forever().await.unwrap();
+    });
+
+    *server_context.services.oximeter_server_task.lock().await =
+        Some(server_task);
+
+    Ok(registry)
+}
 
 #[endpoint {
     method = PUT,
@@ -234,38 +278,32 @@ fn propolis_to_api_state(
 }]
 async fn instance_ensure(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequest>,
-) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
+    request: TypedBody<propolis_client::api::InstanceEnsureRequest>,
+) -> Result<
+    HttpResponseCreated<propolis_client::api::InstanceEnsureResponse>,
+    HttpError,
+> {
     let server_context = rqctx.context();
-
     let request = request.into_inner();
-    let (properties, nics, disks, cloud_init_bytes) = (
-        request.properties,
-        request.nics,
-        request.disks,
-        request.cloud_init_bytes,
-    );
 
-    // Handle requests to an instance that has already been initialized.
-    let mut instance_context = server_context.objects.instance.lock().await;
-    if let Some(ctx) = instance_context.as_ref() {
-        if ctx.properties.id != properties.id {
+    // Handle requests to an instance that has already been initialized. Treat
+    // the instances as compatible (and return Ok) if they have the same
+    // properties and return an appropriate error otherwise.
+    //
+    // TODO(#205): Consider whether to use this interface to change an
+    // instance's devices and backends at runtime.
+    if let VmControllerState::Created(existing) =
+        &*server_context.services.vm.lock().await
+    {
+        let existing_properties = existing.properties();
+        if existing_properties.id != request.properties.id {
             return Err(HttpError::for_internal_error(format!(
                 "Server already initialized with ID {}",
-                ctx.properties.id
+                existing_properties.id
             )));
         }
 
-        // If properties match, we return Ok. Otherwise, we could attempt to
-        // update the instance.
-        //
-        // TODO: The initial implementation does not modify any properties,
-        // but we plausibly could do so - need to work out which properties
-        // can be changed without rebooting.
-        //
-        // TODO: We presumably would want to alter network interfaces here too.
-        // Might require the instance to be powered off.
-        if ctx.properties != properties {
+        if *existing_properties != request.properties {
             return Err(HttpError::for_internal_error(
                 "Cannot update running server".to_string(),
             ));
@@ -276,261 +314,105 @@ async fn instance_ensure(
         }));
     }
 
-    // If anyone outside Propolis wishes to register for metrics, this
-    // will hold the producer registry they can use.
-    let mut producer_registry = None;
-
-    // Determine if we need to setup the metrics endpoint or not.
-    // If we do, we will then populate producer_registry with something.
-    if server_context.static_config.metrics.is_some() {
-        // Create some propolis level metrics.
-        let prop_count_stat = PropCountStat::new(properties.id);
-        let pso = PropStatOuter {
-            prop_stat_wrap: Arc::new(std::sync::Mutex::new(prop_count_stat)),
-        };
-
-        // This is the address where stats will be collected.
-        let propolis_addr = server_context
-            .static_config
-            .metrics
-            .as_ref()
-            .unwrap()
-            .propolis_addr
-            .ip();
-        let listen_addr = SocketAddr::new(propolis_addr, 0);
-        let register_addr =
-            server_context.static_config.metrics.as_ref().unwrap().metric_addr;
-
-        match prop_oximeter(
-            properties.id,
-            listen_addr,
-            register_addr,
-            rqctx.log.clone(),
-        )
-        .await
-        {
-            Err(e) => {
-                error!(rqctx.log, "Failed to register with Oximeter {:?}", e);
-            }
-            Ok(server) => {
-                info!(
-                    rqctx.log,
-                    "registering metrics with instance uuid: {}", properties.id,
-                );
-                // Register the propolis level instance metrics.
-                server.registry().register_producer(pso.clone()).unwrap();
-
-                // Now that our metrics are registered, attach them to
-                // the server context so they can be updated.
-                let mut im = server_context.objects.metrics.lock().await;
-                *im = Some(pso.clone());
-                drop(im);
-
-                // Clone the producer_registry that we can pass to any
-                // other library that may want to register their own
-                // metrics.  Doing it this way means propolis does not have
-                // to know what metrics they register.
-                producer_registry = Some(server.registry().clone());
-
-                // Spawn the metric endpoint.
-                tokio::spawn(async move {
-                    server.serve_forever().await.unwrap();
-                });
-            }
-        }
-    } else {
-        info!(rqctx.log, "No metrics registration was requested");
-    }
-
-    let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
-        BTreeMap::new();
-    let mut spec_builder =
-        SpecBuilder::new(&properties, &server_context.static_config.vm)
+    let (instance_spec, in_memory_disk_contents) =
+        instance_spec_from_request(&request, &server_context.static_config.vm)
             .map_err(|e| {
                 HttpError::for_bad_request(
                     None,
-                    format!("failed to build instance spec: {}", e),
+                    format!(
+                        "failed to generate instance spec from request: {}",
+                        e
+                    ),
                 )
             })?;
-    for nic in &nics {
-        spec_builder.add_nic_from_request(nic).map_err(|e| {
-            HttpError::for_bad_request(
-                None,
-                format!("failed to add requested NIC: {}", e),
-            )
-        })?;
-    }
-    for disk in &disks {
-        spec_builder.add_disk_from_request(disk).map_err(|e| {
-            HttpError::for_bad_request(
-                None,
-                format!("failed to add requested disk: {}", e),
-            )
-        })?;
-    }
-    if let Some(as_base64) = cloud_init_bytes {
-        let bytes = base64::decode(&as_base64).map_err(|e| {
-            HttpError::for_bad_request(
-                None,
-                format!("failed to decode cloud-init bytes: {}", e),
-            )
-        })?;
-        spec_builder.add_cloud_init_from_request().map_err(|e| {
-            HttpError::for_bad_request(
-                None,
-                format!("failed to add requested cloud-init bytes: {}", e),
-            )
-        })?;
-        in_memory_disk_contents.insert("cloud-init".to_string(), bytes);
-    }
-    spec_builder
-        .add_devices_from_config(&server_context.static_config.vm)
-        .map_err(|e| {
-            HttpError::for_internal_error(format!(
-                "failed to add static devices from config: {}",
-                e
-            ))
-        })?;
-    for port in [
-        instance_spec::SerialPortNumber::Com1,
-        instance_spec::SerialPortNumber::Com2,
-        instance_spec::SerialPortNumber::Com3,
-        instance_spec::SerialPortNumber::Com4,
-    ] {
-        spec_builder.add_serial_port(port).map_err(|e| {
-            HttpError::for_internal_error(format!(
-                "failed to add serial port {:?} to spec: {}",
-                port, e
-            ))
-        })?;
-    }
-    let spec = spec_builder.finish();
 
-    // Create child logger for instance-related messages
-    let vmm_log = server_context.log.new(o!("component" => "vmm"));
+    let producer_registry =
+        if let Some(cfg) = server_context.static_config.metrics.as_ref() {
+            Some(
+                register_oximeter(
+                    server_context,
+                    cfg,
+                    request.properties.id,
+                    rqctx.log.clone(),
+                )
+                .await
+                .map_err(|e| {
+                    HttpError::for_internal_error(format!(
+                        "failed to register to produce metrics: {}",
+                        e
+                    ))
+                })?,
+            )
+        } else {
+            None
+        };
 
-    // Create the instance.
-    //
-    // The VM is named after the UUID, ensuring that it is unique.
-    let instance = build_instance(
-        &properties.id.to_string(),
-        &spec,
-        server_context.static_config.use_reservoir,
-        vmm_log,
+    let vm = VmController::new(
+        instance_spec,
+        request.properties,
+        &server_context.static_config,
+        in_memory_disk_contents,
+        producer_registry,
+        server_context.log.clone(),
+        tokio::runtime::Handle::current(),
     )
-    .map_err(|err| {
-        HttpError::for_internal_error(format!("Cannot build instance: {}", err))
+    .map_err(|e| {
+        HttpError::for_internal_error(format!(
+            "failed to create instance: {}",
+            e
+        ))
     })?;
 
-    let (tx, rx) = watch::channel(StateChange {
-        gen: 0,
-        state: propolis::instance::State::Initialize,
-    });
+    if let Some(ramfb) = vm.framebuffer() {
+        // Get a framebuffer description from the wrapped instance.
+        let fb_spec = ramfb.get_framebuffer_spec();
+        let vnc_fb = crate::vnc::RamFb::new(fb_spec);
 
-    instance.on_transition(Box::new(move |next_state, _, _inv, _ctx| {
-        let last = (*tx.borrow()).clone();
-        let _ = tx.send(StateChange { gen: last.gen + 1, state: next_state });
-    }));
+        // Get a reference to the outward-facing VNC server in this process.
+        let vnc_server_ref = server_context.services.vnc_server.clone();
+        let vnc_server = vnc_server_ref.lock().await;
 
-    let mut com1 = None;
-    let mut ramfb: Option<Arc<RamFb>> = None;
-    let mut rt_handle = None;
-    let mut crucible_backends = BTreeMap::new();
+        // Give the Propolis VNC adapter a back pointer to the VNC server to
+        // allow it to update pixel formats.
+        //
+        // N.B. Cloning `vnc_server` (the server guarded by the mutex) is
+        //      correct here because the `rfb::VncServer` type is just a wrapper
+        //      around the set of `Arc`s to the objecst needed to implement the
+        //      server. In other words, creating a deep copy of `vnc_server`
+        //      doesn't create a second server--it just creates a second set of
+        //      references to the set of objects that the `rfb` crate uses to
+        //      implement its behavior.
+        vnc_server
+            .server
+            .initialize(vnc_fb, vm.instance().clone(), vnc_server.clone())
+            .await;
 
-    // Initialize (some) of the instance's hardware.
-    //
-    // This initialization may be refactored to be client-controlled,
-    // but it is currently hard-coded for simplicity.
-    instance
-        .initialize(|machine, mctx, disp, inv| {
-            let init = MachineInitializer::new(
-                rqctx.log.clone(),
-                machine,
-                mctx,
-                disp,
-                inv,
-                &spec,
-                producer_registry.clone(),
-            );
-            init.initialize_rom(&server_context.static_config.vm.bootrom)?;
-            init.initialize_kernel_devs()?;
+        let notifier_server_ref = vnc_server_ref.clone();
+        let rt = tokio::runtime::Handle::current();
+        ramfb.set_notifier(Box::new(move |config, is_valid| {
+            let h = notifier_server_ref.clone();
+            rt.block_on(async move {
+                let vnc = h.lock().await;
+                vnc.server.update(config, is_valid).await;
+            });
+        }));
+    }
 
-            let chipset = init.initialize_chipset()?;
-            com1 = Some(Arc::new(init.initialize_uart(&chipset)?));
-            init.initialize_ps2(&chipset)?;
-            init.initialize_qemu_debug_port()?;
-            init.initialize_network_devices(&chipset)?;
-            crucible_backends = init.initialize_storage_devices(
-                &chipset,
-                in_memory_disk_contents,
-            )?;
-            info!(
-                server_context.log,
-                "Initialized {} Crucible backends: {:?}",
-                crucible_backends.len(),
-                crucible_backends.keys()
-            );
-            let ramfb_id = init.initialize_fwcfg(properties.vcpus)?;
-            ramfb = inv.get_concrete(ramfb_id);
-            rt_handle = disp.handle();
-            init.initialize_cpus()?;
-            Ok(())
-        })
-        .map_err(|err| {
-            HttpError::for_internal_error(format!(
-                "Failed to initialize machine: {}",
-                err
-            ))
-        })?;
+    *server_context.services.vm.lock().await =
+        VmControllerState::Created(vm.clone());
 
-    // Initialize framebuffer data for the VNC server.
-    let vnc_hdl = Arc::clone(&server_context.objects.vnc_server);
-    let fb_spec = ramfb.as_ref().unwrap().get_framebuffer_spec();
-    let fb = vnc::RamFb::new(fb_spec);
-    let actx = instance.async_ctx();
-    let vnc_server = vnc_hdl.lock().await;
-    vnc_server.server.initialize(fb, actx, vnc_server.clone()).await;
-
-    let rt = rt_handle.unwrap();
-    let hdl = Arc::clone(&vnc_hdl);
-    ramfb.unwrap().set_notifier(Box::new(move |config, is_valid| {
-        let h = Arc::clone(&hdl);
-        rt.block_on(async move {
-            let vnc = h.lock().await;
-            vnc.server.update(config, is_valid).await;
-        });
-    }));
-
-    // Save the newly created instance in the server's context.
-    *instance_context = Some(InstanceContext {
-        instance: instance.clone(),
-        properties,
-        spec,
-        serial: com1.unwrap(),
-        state_watcher: rx,
-        serial_task: None,
-        crucible_backends: Mutex::new(crucible_backends),
-    });
-
-    // Is this part of a migration?
     let migrate = if let Some(migrate_request) = request.migrate {
-        // This is a migrate request and so we should try to establish a
-        // connection with the source instance.
-        let res = migrate::dest_initiate(
-            &rqctx,
-            instance_context.as_ref().unwrap(),
-            migrate_request,
-        )
-        .await
-        .map_err(<_ as Into<HttpError>>::into)?;
+        let res = crate::migrate::dest_initiate(&rqctx, vm, migrate_request)
+            .await
+            .map_err(<_ as Into<HttpError>>::into)?;
         Some(res)
     } else {
         None
     };
 
-    instance.print();
-
-    Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))
+    Ok(HttpResponseCreated(propolis_client::api::InstanceEnsureResponse {
+        migrate,
+    }))
 }
 
 #[endpoint {
@@ -539,27 +421,37 @@ async fn instance_ensure(
 }]
 async fn instance_get(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    let inst = rqctx.context().instance().await?;
-
-    let instance_info = api::Instance {
-        properties: inst.properties.clone(),
-        state: propolis_to_api_state(inst.instance.current_state()),
-        disks: vec![],
-        // TODO: Fix this; we need a way to enumerate attached NICs.
-        // Possibly using the inventory of the instance?
-        //
-        // We *could* record whatever information about the NIC we want
-        // when they're requested (adding fields to the server), but that
-        // would make it difficult for Propolis to update any dynamic info
-        // (i.e., has the device faulted, etc).
-        nics: vec![],
+) -> Result<HttpResponseOk<propolis_client::api::InstanceGetResponse>, HttpError>
+{
+    let ctx = rqctx.context();
+    let instance_info = match &*ctx.services.vm.lock().await {
+        VmControllerState::NotCreated => {
+            return Err(HttpError::for_internal_error(
+                "Server not initialized (no instance)".to_string(),
+            ));
+        }
+        VmControllerState::Created(vm) => {
+            propolis_client::api::Instance {
+                properties: vm.properties().clone(),
+                state: vm.external_instance_state(),
+                disks: vec![],
+                // TODO: Fix this; we need a way to enumerate attached NICs.
+                // Possibly using the inventory of the instance?
+                //
+                // We *could* record whatever information about the NIC we want
+                // when they're requested (adding fields to the server), but that
+                // would make it difficult for Propolis to update any dynamic info
+                // (i.e., has the device faulted, etc).
+                nics: vec![],
+            }
+        }
+        VmControllerState::Destroyed(inst) => inst.clone(),
     };
 
-    Ok(HttpResponseOk(api::InstanceGetResponse { instance: instance_info }))
+    Ok(HttpResponseOk(propolis_client::api::InstanceGetResponse {
+        instance: instance_info,
+    }))
 }
-
-// TODO: Instance delete. What happens to the server? Does it shut down?
 
 #[endpoint {
     method = GET,
@@ -570,17 +462,12 @@ async fn instance_state_monitor(
     request: TypedBody<api::InstanceStateMonitorRequest>,
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
     let gen = request.into_inner().gen;
-    let mut state_watcher =
-        rqctx.context().instance().await?.state_watcher.clone();
+    let mut state_watcher = rqctx.context().vm().await?.state_watcher().clone();
 
     loop {
         let last = state_watcher.borrow().clone();
         if gen <= last.gen {
-            let response = api::InstanceStateMonitorResponse {
-                gen: last.gen,
-                state: propolis_to_api_state(last.state),
-            };
-            return Ok(HttpResponseOk(response));
+            return Ok(HttpResponseOk(last));
         }
         state_watcher.changed().await.unwrap();
     }
@@ -594,167 +481,31 @@ async fn instance_state_put(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceStateRequested>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
-    let inst = rqctx.context().instance().await?;
+    let ctx = rqctx.context();
+    let requested_state = request.into_inner();
+    let vm = ctx.vm().await?;
+    let result = vm
+        .put_state(requested_state)
+        .map(|_| HttpResponseUpdatedNoContent {})
+        .map_err(|e| e.into());
 
-    let state = api_to_propolis_state(request.into_inner());
-    inst.instance.set_target_state(state).map_err(|err| {
-        HttpError::for_internal_error(format!("Failed to set state: {:?}", err))
-    })?;
-
-    // Update the metrics counter when we apply a reset
-    if state == propolis::instance::ReqState::Reset {
-        let server_context = rqctx.context();
-        let instance_metrics = server_context.objects.metrics.lock().await;
-        if let Some(im) = &*instance_metrics {
-            im.count_reset();
+    drop(vm);
+    if result.is_ok() {
+        match requested_state {
+            api::InstanceStateRequested::Reboot => {
+                let stats = ctx.services.oximeter_stats.lock().await;
+                if let Some(stats) = stats.as_ref() {
+                    stats.count_reset();
+                }
+            }
+            api::InstanceStateRequested::Stop => {
+                ctx.services.stop(&rqctx.log).await;
+            }
+            _ => {}
         }
     }
 
-    Ok(HttpResponseUpdatedNoContent {})
-}
-
-async fn instance_serial_task(
-    mut websocks_recv: mpsc::Receiver<WebSocketStream<Upgraded>>,
-    mut close_recv: oneshot::Receiver<()>,
-    serial: Arc<Serial<LpcUart>>,
-    log: Logger,
-    actx: &AsyncCtx,
-) -> Result<(), SerialTaskError> {
-    let mut output = [0u8; 1024];
-    let mut cur_output: Option<Range<usize>> = None;
-    let mut cur_input: Option<(Vec<u8>, usize)> = None;
-
-    let mut ws_sinks: Vec<SplitSink<WebSocketStream<Upgraded>, Message>> =
-        Vec::new();
-    let mut ws_streams: Vec<SplitStream<WebSocketStream<Upgraded>>> =
-        Vec::new();
-
-    let (send_ch, mut recv_ch) = mpsc::channel(4);
-
-    loop {
-        let (uart_read, ws_send) =
-            match &cur_output {
-                None => (
-                    serial.read_source(&mut output, actx).fuse(),
-                    Fuse::terminated(),
-                ),
-                Some(r) => (
-                    Fuse::terminated(),
-                    if !ws_sinks.is_empty() {
-                        futures::stream::iter(ws_sinks.iter_mut().zip(
-                            std::iter::repeat(Vec::from(&output[r.clone()])),
-                        ))
-                        .for_each_concurrent(4, |(ws, bin)| {
-                            ws.send(Message::binary(bin)).map(|_| ())
-                        })
-                        .fuse()
-                    } else {
-                        Fuse::terminated()
-                    },
-                ),
-            };
-
-        let (ws_recv, uart_write) = match &cur_input {
-            None => (
-                if !ws_streams.is_empty() {
-                    futures::stream::iter(ws_streams.iter_mut().enumerate())
-                        .for_each_concurrent(4, |(i, ws)| {
-                            // if we don't `move` below, rustc says that `i`
-                            // (which is usize: Copy (!)) is borrowed. but if we
-                            // move without making this explicit reference here,
-                            // it moves send_ch into the closure.
-                            let ch = &send_ch;
-                            ws.next()
-                                .then(move |msg| ch.send((i, msg)))
-                                .map(|_| ())
-                        })
-                        .fuse()
-                } else {
-                    Fuse::terminated()
-                },
-                Fuse::terminated(),
-            ),
-            Some((data, consumed)) => (
-                Fuse::terminated(),
-                serial.write_sink(&data[*consumed..], actx).fuse(),
-            ),
-        };
-
-        let recv_ch_fut = recv_ch.recv().fuse();
-
-        tokio::select! {
-            // Poll in the order written
-            biased;
-
-            // It's important we always poll the close channel first
-            // so that a constant stream of incoming/outgoing messages
-            // don't cause us to ignore it
-            _ = &mut close_recv => {
-                info!(log, "Terminating serial task");
-                break;
-            }
-
-            new_ws = websocks_recv.recv() => {
-                if let Some(ws) = new_ws {
-                    let (ws_sink, ws_stream) = ws.split();
-                    ws_sinks.push(ws_sink);
-                    ws_streams.push(ws_stream);
-                }
-            }
-
-            // Write bytes into the UART from the WS
-            written = uart_write => {
-                match written {
-                    Some(0) | None => break,
-                    Some(n) => {
-                        let (data, consumed) = cur_input.as_mut().unwrap();
-                        *consumed += n;
-                        if *consumed == data.len() {
-                            cur_input = None;
-                        }
-                    }
-                }
-            }
-
-            // Transmit bytes from the UART through the WS
-            _ = ws_send => {
-                cur_output = None;
-            }
-
-            // Read bytes from the UART to be transmitted out the WS
-            nread = uart_read => {
-                match nread {
-                    Some(0) | None => break,
-                    Some(n) => { cur_output = Some(0..n) }
-                }
-            }
-
-            // Receive bytes from the intermediate channel to be injected into
-            // the UART. This needs to be checked before `ws_recv` so that
-            // "close" messages can be processed and their indicated
-            // sinks/streams removed before they are polled again.
-            pair = recv_ch_fut => {
-                if let Some((i, msg)) = pair {
-                    match msg {
-                        Some(Ok(Message::Binary(input))) => {
-                            cur_input = Some((input, 0));
-                        }
-                        Some(Ok(Message::Close(..))) | None => {
-                            info!(log, "Removed a closed serial connection.");
-                            let _ = ws_sinks.remove(i).close().await;
-                            let _ = ws_streams.remove(i);
-                        },
-                        _ => continue,
-                    }
-                }
-            }
-
-            // Receive bytes from connected WS clients to feed to the
-            // intermediate recv_ch
-            _ = ws_recv => {}
-        }
-    }
-    Ok(())
+    result
 }
 
 #[endpoint {
@@ -764,9 +515,9 @@ async fn instance_serial_task(
 async fn instance_serial(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
 ) -> Result<Response<Body>, HttpError> {
-    let mut inst = rqctx.context().instance().await?;
-
-    let serial = inst.serial.clone();
+    let ctx = rqctx.context();
+    let vm = ctx.vm().await?;
+    let serial = vm.com1().clone();
     let request = &mut *rqctx.request.lock().await;
 
     if !request
@@ -822,22 +573,19 @@ async fn instance_serial(
             )
         })?;
 
-    let actx = inst.instance.async_ctx();
     let ws_log = rqctx.log.new(o!());
     let err_log = ws_log.clone();
-
-    // Create or get active serial task handle and channels
-    let serial_task = inst.serial_task.get_or_insert_with(move || {
+    let mut serial_task = ctx.services.serial_task.lock().await;
+    let serial_task = serial_task.get_or_insert_with(move || {
         let (websocks_ch, websocks_recv) = mpsc::channel(1);
         let (close_ch, close_recv) = oneshot::channel();
 
         let task = tokio::spawn(async move {
-            if let Err(e) = instance_serial_task(
+            if let Err(e) = super::serial::instance_serial_task(
                 websocks_recv,
                 close_recv,
                 serial,
                 ws_log.clone(),
-                &actx,
             )
             .await
             {
@@ -845,7 +593,11 @@ async fn instance_serial(
             }
         });
 
-        SerialTask { task, close_ch: Some(close_ch), websocks_ch }
+        super::serial::SerialTask {
+            task,
+            close_ch: Some(close_ch),
+            websocks_ch,
+        }
     });
 
     let upgrade_fut = upgrade::on(request);
@@ -895,7 +647,7 @@ async fn instance_migrate_start(
     request: TypedBody<api::InstanceMigrateStartRequest>,
 ) -> Result<Response<Body>, HttpError> {
     let migration_id = request.into_inner().migration_id;
-    migrate::source_start(rqctx, migration_id).await.map_err(Into::into)
+    crate::migrate::source_start(rqctx, migration_id).await.map_err(Into::into)
 }
 
 #[endpoint {
@@ -907,13 +659,13 @@ async fn instance_migrate_status(
     request: TypedBody<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
     let migration_id = request.into_inner().migration_id;
-    migrate::migrate_status(rqctx, migration_id)
-        .await
-        .map_err(Into::into)
-        .map(HttpResponseOk)
+    let vm = rqctx.context().vm().await?;
+    vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
+        HttpResponseOk(api::InstanceMigrateStatusResponse { state })
+    })
 }
 
-/// Issue a snapshot request to a crucible backend
+/// Issues a snapshot request to a crucible backend.
 #[endpoint {
     method = POST,
     path = "/instance/disk/{id}/snapshot/{snapshot_id}",
@@ -922,10 +674,10 @@ async fn instance_issue_crucible_snapshot_request(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let inst = rqctx.context().instance().await?;
+    let inst = rqctx.context().vm().await?;
+    let crucible_backends = inst.crucible_backends();
     let path_params = path_params.into_inner();
 
-    let crucible_backends = inst.crucible_backends.lock().await;
     let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
         let s = format!("no disk with id {}!", path_params.id);
         HttpError::for_not_found(Some(s.clone()), s)

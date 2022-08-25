@@ -539,32 +539,43 @@ pub trait Entity: Send + Sync + 'static {
         Box::pin(future::ready(()))
     }
 
-    /// Called to indicate the device should start servicing the guest.
+    /// Called when first servicing the guest after initializing an instance.
+    /// After this returns, the callee entity should be ready to do work on the
+    /// guest's behalf.
     ///
-    /// This occurs during first boot, as well as after any `pause()` call due
-    /// to a reboot or migration.  It can be used to restore device state in the
-    /// kernel VMM which was reset during reboot-initiated reinitialization.
-    fn run(&self) {}
+    /// Note that this is only called the first time an instance begins running.
+    /// If it reboots, the entity will observe a paused -> reset -> resumed
+    /// transition instead.
+    fn start(&self) {}
 
-    /// Called to indicate the device should stop servicing the guest
-    /// and attempt to cancel or complete any pending operations.
+    /// Directs this entity to pause. A paused entity must stop producing work
+    /// for other entities, but must accept (and hold onto) new work from other
+    /// entities while in the paused state.
     ///
-    /// The device isn't necessarily expected to complete the pause
-    /// operation within the scope of this call but should return a
-    /// future indicating such via the [`Entity::paused`] method.
+    /// The entity is not required to finish pausing inline. Instead, its
+    /// implementation of [`Entity::paused`] should return a future that
+    /// completes only when the entity is paused.
     fn pause(&self) {}
 
-    /// XXX: Reword
-    /// Function dedicated to `State::Reset` event delivery so implementers do
-    /// not need to create a more verbose `state_transition` implementation for
-    /// emulating device reset.
+    /// Directs this entity to resume servicing the guest after pausing.
     ///
-    /// This is called as part of `TransitionPhase::Pre`.  Entities which
-    /// require logic in the `Post` phase should do so via the
-    /// `state_transition` hook.
+    /// N.B. It is legal to interpose a `reset` between a pause and resume.
+    ///      If one occurs, the state driver ensures that the entire VM will be
+    ///      reset and reinitialized before any entities are resumed.
+    fn resume(&self) {}
+
+    /// Directs this entity to reset itself to the state it would have on a cold
+    /// start.
+    ///
+    /// N.B. The state driver ensures this is called only on paused entities.
+    ///      It also ensures that the entire VM will be reset and reinitialized
+    ///      before resuming any entities.
     fn reset(&self) {}
 
-    /// XXX: more detail
+    /// Indicates that the entity's instance is stopping and will soon be
+    /// discarded. The entity should complete any in-flight requests and release
+    /// any references or resources it needs to release to ensure the instance
+    /// is fully destroyed.
     fn halt(&self) {}
 
     /// Return the Migrator object that will be used to export/import

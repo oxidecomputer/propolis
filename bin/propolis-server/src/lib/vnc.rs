@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use propolis::common::GuestAddr;
-use propolis::dispatch::AsyncCtx;
 use propolis::hw::qemu::ramfb::{Config, FramebufferSpec};
+use propolis::Instance;
 use rfb::encodings::RawEncoding;
 use rfb::pixel_formats::fourcc;
 use rfb::rfb::{
@@ -44,8 +44,8 @@ enum Framebuffer {
 
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
-    actx: Option<AsyncCtx>,
     vnc_server: Option<VncServer<PropolisVncServer>>,
+    instance: Option<Arc<Instance>>,
 }
 
 #[derive(Clone)]
@@ -62,8 +62,8 @@ impl PropolisVncServer {
                     width: initial_width,
                     height: initial_height,
                 }),
-                actx: None,
                 vnc_server: None,
+                instance: None,
             })),
             log,
         }
@@ -72,13 +72,13 @@ impl PropolisVncServer {
     pub async fn initialize(
         &self,
         fb: RamFb,
-        actx: AsyncCtx,
+        instance: Arc<Instance>,
         vnc_server: VncServer<Self>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
-        inner.actx = Some(actx);
         inner.vnc_server = Some(vnc_server);
+        inner.instance = Some(instance);
     }
 
     pub async fn update(&self, config: &Config, is_valid: bool) {
@@ -145,17 +145,11 @@ impl Server for PropolisVncServer {
                 let len = fb.height as usize * fb.width as usize * 4;
                 let mut buf = vec![0u8; len];
 
-                let memctx = inner
-                    .actx
-                    .as_ref()
-                    .unwrap()
-                    .dispctx()
-                    .await
-                    .unwrap()
-                    .mctx
-                    .memctx();
+                let instance_guard = inner.instance.as_ref().unwrap().lock();
+                let memctx = instance_guard.machine().acc_mem.access().unwrap();
                 let read = memctx.read_into(GuestAddr(fb.addr), &mut buf, len);
                 drop(memctx);
+                drop(instance_guard);
 
                 assert!(read.is_some());
                 debug!(self.log, "read {} bytes from guest", read.unwrap());
