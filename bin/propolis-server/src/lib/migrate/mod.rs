@@ -3,41 +3,36 @@ use std::sync::Arc;
 use bit_field::BitField;
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
-use propolis::{
-    dispatch::AsyncCtx,
-    instance::{Instance, MigratePhase, MigrateRole, State, TransitionError},
-    migrate::MigrateStateError,
-};
-use propolis_client::{
-    api::{self, MigrationState},
-    instance_spec::InstanceSpec,
-};
+use propolis::migrate::MigrateStateError;
+use propolis_client::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use thiserror::Error;
-use tokio::{sync::RwLock, task::JoinHandle};
 use uuid::Uuid;
 
-use crate::server::DropshotEndpointContext;
+use crate::{
+    server::{DropshotEndpointContext, VmControllerState},
+    vm::{VmController, VmControllerError},
+};
 
 mod codec;
-mod destination;
+pub mod destination;
 mod memx;
 mod preamble;
-mod source;
+pub mod source;
 
 /// Our migration protocol version
-const MIGRATION_PROTOCOL_VERION: usize = 0;
+const MIGRATION_PROTOCOL_VERSION: usize = 0;
 
 /// Our migration protocol encoding
 const MIGRATION_PROTOCOL_ENCODING: ProtocolEncoding = ProtocolEncoding::Ron;
 
 /// The concatenated migration protocol-encoding-version string
-const MIGRATION_PROTOCOL_STR: &'static str = const_format::concatcp!(
+const MIGRATION_PROTOCOL_STR: &str = const_format::concatcp!(
     "propolis-migrate-",
     encoding_str(MIGRATION_PROTOCOL_ENCODING),
     "/",
-    MIGRATION_PROTOCOL_VERION
+    MIGRATION_PROTOCOL_VERSION
 );
 
 /// Supported encoding formats
@@ -52,59 +47,10 @@ const fn encoding_str(e: ProtocolEncoding) -> &'static str {
     }
 }
 
-/// Context created as part of a migration.
-pub struct MigrateContext {
-    /// The external ID used to identify a migration across both the source and destination.
-    migration_id: Uuid,
-
-    /// The current state of the migration process on this Instance.
-    state: RwLock<MigrationState>,
-
-    /// A handle to the underlying propolis [`Instance`].
-    instance: Arc<Instance>,
-
-    /// A copy of this instance's spec.
-    instance_spec: InstanceSpec,
-
-    /// Async descriptor context for the migrate task to access machine state in async context.
-    async_ctx: AsyncCtx,
-
-    /// Logger for migration created from initial migration request.
-    log: slog::Logger,
-}
-
-impl MigrateContext {
-    fn new(
-        migration_id: Uuid,
-        instance: Arc<Instance>,
-        instance_spec: InstanceSpec,
-        log: slog::Logger,
-    ) -> MigrateContext {
-        MigrateContext {
-            migration_id,
-            state: RwLock::new(MigrationState::Sync),
-            async_ctx: instance.async_ctx(),
-            instance,
-            instance_spec,
-            log,
-        }
-    }
-
-    async fn get_state(&self) -> MigrationState {
-        let state = self.state.read().await;
-        *state
-    }
-
-    async fn set_state(&self, new: MigrationState) {
-        let mut state = self.state.write().await;
-        *state = new;
-    }
-}
-
-pub struct MigrateTask {
-    #[allow(dead_code)]
-    task: JoinHandle<()>,
-    context: Arc<MigrateContext>,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MigrateRole {
+    Source,
+    Destination,
 }
 
 /// Errors which may occur during the course of a migration
@@ -143,6 +89,10 @@ pub enum MigrateError {
     #[error("no migration is currently in progress")]
     NoMigrationInProgress,
 
+    /// A VM controller function returned an error
+    #[error("VM state machine error: {0}")]
+    StateMachine(String),
+
     /// Encountered an error as part of encoding/decoding migration messages
     #[error("codec error: {0}")]
     Codec(String),
@@ -172,7 +122,7 @@ pub enum MigrateError {
     UnknownDevice(String),
 
     /// The other end of the migration ran into an error
-    #[error("{0} migration instance encountered error: {1}")]
+    #[error("{0:?} migration instance encountered error: {1}")]
     RemoteError(MigrateRole, String),
 }
 
@@ -188,29 +138,27 @@ impl From<hyper::Error> for MigrateError {
     }
 }
 
-impl From<TransitionError> for MigrateError {
-    fn from(err: TransitionError) -> Self {
-        match err {
-            TransitionError::ResetWhileHalted
-            | TransitionError::InvalidTarget { .. }
-            | TransitionError::Terminal => MigrateError::InvalidInstanceState,
-            TransitionError::MigrationAlreadyInProgress => {
-                MigrateError::MigrationAlreadyInProgress
-            }
-        }
-    }
-}
-
 impl From<codec::ProtocolError> for MigrateError {
     fn from(err: codec::ProtocolError) -> Self {
         MigrateError::Codec(err.to_string())
     }
 }
 
-impl Into<HttpError> for MigrateError {
-    fn into(self) -> HttpError {
-        let msg = format!("migration failed: {}", self);
-        match &self {
+impl From<VmControllerError> for MigrateError {
+    fn from(err: VmControllerError) -> Self {
+        match err {
+            VmControllerError::AlreadyMigrationSource => {
+                MigrateError::MigrationAlreadyInProgress
+            }
+            _ => MigrateError::StateMachine(err.to_string()),
+        }
+    }
+}
+
+impl From<MigrateError> for HttpError {
+    fn from(err: MigrateError) -> Self {
+        let msg = format!("migration failed: {}", err);
+        match &err {
             MigrateError::Http(_)
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
@@ -221,7 +169,8 @@ impl Into<HttpError> for MigrateError {
             | MigrateError::SourcePause
             | MigrateError::Phase
             | MigrateError::DeviceState(_)
-            | MigrateError::RemoteError(_, _) => {
+            | MigrateError::RemoteError(_, _)
+            | MigrateError::StateMachine(_) => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
@@ -261,91 +210,48 @@ pub async fn source_start(
     ));
     info!(log, "Migration Source");
 
-    let inst_context = tokio::sync::MutexGuard::try_map(
-        rqctx.context().objects.instance.lock().await,
-        Option::as_mut,
+    let controller = tokio::sync::MutexGuard::try_map(
+        rqctx.context().services.vm.lock().await,
+        VmControllerState::as_controller,
     )
     .map_err(|_| MigrateError::InstanceNotInitialized)?;
 
-    // Bail if the instance hasn't been preset to Migrate Start state.
-    if !matches!(
-        inst_context.instance.current_state(),
-        State::Migrate(MigrateRole::Source, MigratePhase::Start)
-    ) {
-        return Err(MigrateError::InvalidInstanceState);
-    }
-
-    // Bail if there's already one in progress
-    // TODO: Should we just instead hold the context lock during the whole process?
-    let mut migrate_task = rqctx.context().objects.migrate_task.lock().await;
-    if migrate_task.is_some() {
-        return Err(MigrateError::MigrationAlreadyInProgress);
-    }
-
-    let mut request = rqctx.request.lock().await;
-
-    // Check this is a valid migration request
-    if !request
-        .headers()
-        .get(header::CONNECTION)
-        .and_then(|hv| hv.to_str().ok())
-        .map(|hv| hv.eq_ignore_ascii_case("upgrade"))
-        .unwrap_or(false)
-    {
-        return Err(MigrateError::UpgradeExpected);
-    }
-
     let src_protocol = MIGRATION_PROTOCOL_STR;
-    let dst_protocol = request
-        .headers()
-        .get(header::UPGRADE)
-        .ok_or_else(|| MigrateError::UpgradeExpected)
-        .map(|hv| hv.to_str().ok())?
-        .ok_or_else(|| MigrateError::incompatible(src_protocol, "<unknown>"))?;
-
-    // TODO: improve "negotiation"
-    if !dst_protocol.eq_ignore_ascii_case(MIGRATION_PROTOCOL_STR) {
-        error!(
-            log,
-            "incompatible with destination instance provided protocol ({})",
-            dst_protocol
-        );
-        return Err(MigrateError::incompatible(src_protocol, dst_protocol));
-    }
-
-    // Grab the future for plucking out the upgraded socket
-    let upgrade = hyper::upgrade::on(&mut *request);
-
-    // We've successfully negotiated a migration protocol w/ the destination.
-    // Now, we spawn a new task to handle the actual migration over the upgraded socket
-    let migrate_context = Arc::new(MigrateContext::new(
-        migration_id,
-        inst_context.instance.clone(),
-        inst_context.spec.clone(),
-        log.clone(),
-    ));
-    let mctx = migrate_context.clone();
-    let task = tokio::spawn(async move {
-        // We have to await on the HTTP upgrade future in a new
-        // task because it won't complete until the response is
-        // sent, i.e., the outer function returns the 101 Resposne.
-        let conn = match upgrade.await {
-            Ok(upgraded) => upgraded,
-            Err(e) => {
-                error!(log, "Migrate Task Failed: {}", e);
-                return;
-            }
-        };
-
-        // Good to go, ready to migrate to the dest via `conn`
-        if let Err(e) = source::migrate(mctx, conn).await {
-            error!(log, "Migrate Task Failed: {}", e);
-            return;
+    let mut request = rqctx.request.lock().await;
+    controller.request_migration_from(migration_id, || {
+        // Check this is a valid migration request
+        if !request
+            .headers()
+            .get(header::CONNECTION)
+            .and_then(|hv| hv.to_str().ok())
+            .map(|hv| hv.eq_ignore_ascii_case("upgrade"))
+            .unwrap_or(false)
+        {
+            return Err(MigrateError::UpgradeExpected);
         }
-    });
 
-    // Save active migration task handle
-    *migrate_task = Some(MigrateTask { task, context: migrate_context });
+        let dst_protocol = request
+            .headers()
+            .get(header::UPGRADE)
+            .ok_or(MigrateError::UpgradeExpected)
+            .map(|hv| hv.to_str().ok())?
+            .ok_or_else(|| {
+                MigrateError::incompatible(src_protocol, "<unknown>")
+            })?;
+
+        // TODO: improve "negotiation"
+        if !dst_protocol.eq_ignore_ascii_case(MIGRATION_PROTOCOL_STR) {
+            error!(
+                log,
+                "incompatible with destination instance provided protocol ({})",
+                dst_protocol
+            );
+            return Err(MigrateError::incompatible(src_protocol, dst_protocol));
+        }
+
+        // Grab the future for plucking out the upgraded socket
+        Ok(hyper::upgrade::on(&mut *request))
+    })?;
 
     // Complete the request with an HTTP 101 response so that the
     // destination knows we're ready
@@ -365,7 +271,7 @@ pub async fn source_start(
 /// process (destination-side).
 pub(crate) async fn dest_initiate(
     rqctx: &Arc<RequestContext<DropshotEndpointContext>>,
-    instance_context: &crate::server::InstanceContext,
+    controller: Arc<VmController>,
     migrate_info: api::InstanceMigrateInitiateRequest,
 ) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -378,104 +284,81 @@ pub(crate) async fn dest_initiate(
     ));
     info!(log, "Migration Destination");
 
-    let mut migrate_task = rqctx.context().objects.migrate_task.lock().await;
+    let runtime_hdl = tokio::runtime::Handle::current();
+    tokio::runtime::Handle::current()
+        .spawn_blocking(move || -> Result<(), MigrateError> {
+            controller.request_migration_into(migration_id, || {
+                // TODO(#165): https
+                // TODO: We need to make sure the src_addr is a valid target
+                let src_migrate_url = format!(
+                    "http://{}/instance/migrate/start",
+                    migrate_info.src_addr
+                );
+                info!(log, "Begin migration";
+                      "src_migrate_url" => &src_migrate_url);
 
-    // This should be a fresh propolis-server
-    assert!(migrate_task.is_none());
+                let body = Body::from(
+                    serde_json::to_string(&api::InstanceMigrateStartRequest {
+                        migration_id,
+                    })
+                    .unwrap(),
+                );
 
-    // TODO(#165): https
-    // TODO: We need to make sure the src_addr is a valid target
-    let src_migrate_url =
-        format!("http://{}/instance/migrate/start", migrate_info.src_addr);
-    info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
+                // Build upgrade request to the source instance
+                let dst_protocol = MIGRATION_PROTOCOL_STR;
+                let req = hyper::Request::builder()
+                    .method(Method::PUT)
+                    .uri(src_migrate_url)
+                    .header(header::CONNECTION, "upgrade")
+                    // TODO: move to constant
+                    .header(header::UPGRADE, dst_protocol)
+                    .body(body)
+                    .unwrap();
 
-    let body = Body::from(
-        serde_json::to_string(&api::InstanceMigrateStartRequest {
-            migration_id,
+                // Kick off the request
+                let res = runtime_hdl.block_on(async move {
+                    hyper::Client::new().request(req).await
+                })?;
+
+                if res.status() != StatusCode::SWITCHING_PROTOCOLS {
+                    error!(
+                        log,
+                        "source instance failed to switch protocols: {}",
+                        res.status()
+                    );
+                    return Err(MigrateError::Initiate);
+                }
+                let src_protocol = res
+                    .headers()
+                    .get(header::UPGRADE)
+                    .ok_or(MigrateError::UpgradeExpected)
+                    .map(|hv| hv.to_str().ok())?
+                    .ok_or_else(|| {
+                        MigrateError::incompatible("<unknown>", dst_protocol)
+                    })?;
+
+                // TODO: improve "negotiation"
+                if !src_protocol.eq_ignore_ascii_case(dst_protocol) {
+                    error!(
+                        log,
+                        "incompatible with source's provided protocol ({})",
+                        src_protocol
+                    );
+                    return Err(MigrateError::incompatible(
+                        src_protocol,
+                        dst_protocol,
+                    ));
+                }
+
+                // Now co-opt the socket for the migration protocol
+                Ok(hyper::upgrade::on(res))
+            })?;
+            Ok(())
         })
-        .unwrap(),
-    );
-
-    // Build upgrade request to the source instance
-    let dst_protocol = MIGRATION_PROTOCOL_STR;
-    let req = hyper::Request::builder()
-        .method(Method::PUT)
-        .uri(src_migrate_url)
-        .header(header::CONNECTION, "upgrade")
-        // TODO: move to constant
-        .header(header::UPGRADE, dst_protocol)
-        .body(body)
-        .unwrap();
-
-    // Kick off the request
-    let res = hyper::Client::new().request(req).await?;
-    if res.status() != StatusCode::SWITCHING_PROTOCOLS {
-        error!(
-            log,
-            "source instance failed to switch protocols: {}",
-            res.status()
-        );
-        return Err(MigrateError::Initiate);
-    }
-    let src_protocol = res
-        .headers()
-        .get(header::UPGRADE)
-        .ok_or_else(|| MigrateError::UpgradeExpected)
-        .map(|hv| hv.to_str().ok())?
-        .ok_or_else(|| MigrateError::incompatible("<unknown>", dst_protocol))?;
-
-    // TODO: improve "negotiation"
-    if !src_protocol.eq_ignore_ascii_case(dst_protocol) {
-        error!(
-            log,
-            "incompatible with source instance provided protocol ({})",
-            src_protocol
-        );
-        return Err(MigrateError::incompatible(src_protocol, dst_protocol));
-    }
-
-    // Now co-opt the socket for the migration protocol
-    let conn = hyper::upgrade::on(res).await?;
-
-    // We've successfully negotiated a migration protocol w/ the source. Now, we
-    // spawn a new task to handle the actual migration over the upgraded socket
-    let migrate_context = Arc::new(MigrateContext::new(
-        migration_id,
-        instance_context.instance.clone(),
-        instance_context.spec.clone(),
-        log.clone(),
-    ));
-    let mctx = migrate_context.clone();
-    let task = tokio::spawn(async move {
-        if let Err(e) = destination::migrate(mctx, conn).await {
-            error!(log, "Migrate Task Failed: {}", e);
-            return;
-        }
-    });
-
-    // Save active migration task handle
-    *migrate_task = Some(MigrateTask { task, context: migrate_context });
+        .await
+        .unwrap()?;
 
     Ok(api::InstanceMigrateInitiateResponse { migration_id })
-}
-
-/// Return the current status of an ongoing migration
-pub async fn migrate_status(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    migration_id: Uuid,
-) -> Result<api::InstanceMigrateStatusResponse, MigrateError> {
-    let migrate_task = rqctx.context().objects.migrate_task.lock().await;
-    let migrate_task = migrate_task
-        .as_ref()
-        .ok_or_else(|| MigrateError::NoMigrationInProgress)?;
-
-    if migration_id != migrate_task.context.migration_id {
-        return Err(MigrateError::UuidMismatch);
-    }
-
-    Ok(api::InstanceMigrateStatusResponse {
-        state: migrate_task.context.get_state().await,
-    })
 }
 
 // We should probably turn this into some kind of ValidatedBitmap

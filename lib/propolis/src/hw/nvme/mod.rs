@@ -935,6 +935,7 @@ impl Entity for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
     }
+
     fn reset(&self) {
         let mut ctrl = self.state.lock().unwrap();
         ctrl.reset();
@@ -949,6 +950,15 @@ impl Entity for PciNvme {
         ctrl.paused = true;
 
         self.notifier.pause();
+    }
+
+    fn resume(&self) {
+        let mut ctrl = self.state.lock().unwrap();
+
+        assert!(ctrl.paused);
+        ctrl.paused = false;
+
+        self.notifier.resume();
     }
 
     fn paused(&self) -> BoxFuture<'static, ()> {

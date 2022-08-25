@@ -56,7 +56,7 @@ pub enum SpecBuilderError {
 /// function.
 #[derive(Clone, Copy, Debug)]
 pub enum SlotType {
-    NIC,
+    Nic,
     Disk,
     CloudInit,
 }
@@ -69,7 +69,7 @@ fn slot_to_pci_path(
 ) -> Result<PciPath, SpecBuilderError> {
     match ty {
         // Slots for NICS: 0x08 -> 0x0F
-        SlotType::NIC if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x8, 0),
+        SlotType::Nic if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x8, 0),
         // Slots for Disks: 0x10 -> 0x17
         SlotType::Disk if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x10, 0),
         // Slot for CloudInit
@@ -149,7 +149,7 @@ impl SpecBuilder {
         &mut self,
         nic: &NetworkInterfaceRequest,
     ) -> Result<(), SpecBuilderError> {
-        let pci_path = slot_to_pci_path(nic.slot, SlotType::NIC)?;
+        let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
         self.register_pci_device(pci_path)?;
 
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);

@@ -723,9 +723,21 @@ impl PMRegs {
     }
 }
 
+struct Piix3PMInner {
+    regs: PMRegs,
+    pmtmr_located: bool,
+}
+
+impl Piix3PMInner {
+    fn reset(&mut self) {
+        self.regs.reset();
+        self.pmtmr_located = false;
+    }
+}
+
 pub struct Piix3PM {
     pci_state: pci::DeviceState,
-    regs: Mutex<PMRegs>,
+    inner: Mutex<Piix3PMInner>,
     power_pin: Arc<dyn IntrPin>,
     hdl: Arc<VmmHdl>,
     log: slog::Logger,
@@ -752,7 +764,10 @@ impl Piix3PM {
 
         Arc::new(Self {
             pci_state,
-            regs: Mutex::new(PMRegs::default()),
+            inner: Mutex::new(Piix3PMInner {
+                regs: PMRegs::default(),
+                pmtmr_located: false,
+            }),
             power_pin,
             hdl,
             log,
@@ -782,7 +797,7 @@ impl Piix3PM {
                 ro.write_u8(0x1);
             }
             PmCfg::PmBase => {
-                let regs = self.regs.lock().unwrap();
+                let regs = &self.inner.lock().unwrap().regs;
 
                 // LSB hardwired to 1 to indicate PMBase in IO space
                 ro.write_u32(regs.pm_base as u32 | 0x1);
@@ -801,7 +816,7 @@ impl Piix3PM {
             "offset" => _wo.offset(), "register" => ?id);
     }
     fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp) {
-        let regs = self.regs.lock().unwrap();
+        let regs = &self.inner.lock().unwrap().regs;
         match id {
             PmReg::PmSts => {
                 ro.write_u16(regs.pm_status.bits());
@@ -827,7 +842,7 @@ impl Piix3PM {
             | PmReg::GpiReg
             | PmReg::GpoReg => {
                 // TODO: flesh out the rest of PM emulation
-                slog::info!(self.log, "piix3pm unhandled read";
+                slog::debug!(self.log, "piix3pm unhandled read";
                     "offset" => ro.offset(), "register" => ?id);
                 ro.fill(0);
             }
@@ -837,7 +852,7 @@ impl Piix3PM {
         }
     }
     fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp) {
-        let mut regs = self.regs.lock().unwrap();
+        let regs = &mut self.inner.lock().unwrap().regs;
         match id {
             PmReg::PmSts => {
                 let val = PmSts::from_bits_truncate(wo.read_u16());
@@ -879,6 +894,19 @@ impl Piix3PM {
             PmReg::Reserved => {}
         }
     }
+
+    /// Ensures that the PM timer's I/O port registration is set if it is
+    /// invalid (either because the PM timer device hasn't started yet or
+    /// because it was reset).
+    fn ensure_pmtmr_located(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.pmtmr_located {
+            // Make sure PM timer is attached to the right IO port
+            // TODO: error handling?
+            self.hdl.pmtmr_locate(inner.regs.pm_base + PM_TMR_OFFSET).unwrap();
+            inner.pmtmr_located = true;
+        }
+    }
 }
 impl pci::Device for Piix3PM {
     fn device_state(&self) -> &pci::DeviceState {
@@ -900,17 +928,19 @@ impl Entity for Piix3PM {
     fn reset(&self) {
         self.pci_state.reset(self);
 
-        // The `run` hook in `Entity` is used to establish the proper IO port
-        // registration of the PM timer, since it might be relocated as part of
-        // a reboot.
-        let mut regs = self.regs.lock().unwrap();
-        regs.reset();
+        // Denote that the PM timer I/O port may have moved. The `resume`
+        // callout will establish its new location. (That can't be done here
+        // because the state driver may not have reinitialized the machine yet,
+        // but it is guaranteed to have done so by the time `resume` is called.)
+        let mut inner = self.inner.lock().unwrap();
+        inner.reset();
     }
-    fn run(&self) {
-        // Make sure PM timer is attached to the right IO port
-        // TODO: error handling?
-        let regs = self.regs.lock().unwrap();
-        self.hdl.pmtmr_locate(regs.pm_base + PM_TMR_OFFSET).unwrap();
+    fn resume(&self) {
+        // If the machine was reset
+        self.ensure_pmtmr_located();
+    }
+    fn start(&self) {
+        self.ensure_pmtmr_located();
     }
     fn migrate(&self) -> Migrator {
         Migrator::Custom(self)
@@ -918,7 +948,7 @@ impl Entity for Piix3PM {
 }
 impl Migrate for Piix3PM {
     fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        let regs = self.regs.lock().unwrap();
+        let regs = &self.inner.lock().unwrap().regs;
         Box::new(migrate::Piix3PmV1 {
             pci_state: self.pci_state.export(),
             pm_base: regs.pm_base,
@@ -937,7 +967,7 @@ impl Migrate for Piix3PM {
         let deserialized: migrate::Piix3PmV1 =
             erased_serde::deserialize(deserializer)?;
 
-        let mut regs = self.regs.lock().unwrap();
+        let regs = &mut self.inner.lock().unwrap().regs;
         regs.pm_base = deserialized.pm_base;
         regs.pm_status =
             PmSts::from_bits(deserialized.pm_status).ok_or_else(|| {

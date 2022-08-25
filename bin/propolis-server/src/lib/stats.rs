@@ -1,4 +1,7 @@
+//! Methods for starting an Oximeter endpoint and gathering server-level stats.
+
 // Copyright 2022 Oxide Computer Company
+
 use anyhow::anyhow;
 use dropshot::{ConfigDropshot, ConfigLogging, ConfigLoggingLevel};
 use omicron_common::api::internal::nexus::ProducerEndpoint;
@@ -13,93 +16,95 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-// How frequently Oximeter will collect metrics.
-const OXIMETER_STAT_INTERVAL: u64 = 30;
+use crate::server::MetricsEndpointConfig;
 
-// These structs are used to construct the desired metrics for Oximeter.
+const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
+    tokio::time::Duration::from_secs(30);
+
+/// The Oximeter `Target` for server-level stats. Contains the identifiers that
+/// are used to identify a specific incarnation of an instance as a source of
+/// metric data.
 #[derive(Debug, Copy, Clone, Target)]
 struct InstanceUuid {
     pub uuid: Uuid,
 }
+
+/// An Oximeter `Metric` that specifies the number of times an instance was
+/// reset via the server API.
 #[derive(Debug, Default, Copy, Clone, Metric)]
-pub struct Reset {
-    /// Count of times instance was rebooted
+struct Reset {
+    /// The number of times this instance was reset via the API.
     #[datum]
     pub count: Cumulative<i64>,
 }
 
-// All the counter metrics in one struct.
-// To create additional metrics that Oximeter will collect, add fields to this
-// structure.  See Oximeter for details, but each fields should be
-// constructed similar to "run_count". A new method should be added to the
-// PropStatOuter impl that will be called when the new field has changed.
-// The produce method should be updated as well.
+/// The full set of server-level metrics, collated by
+/// [`ServerStatsOuter::produce`] into the types needed to relay these
+/// statistics to Oximeter.
 #[derive(Clone, Debug)]
-pub struct PropCountStat {
+struct ServerStats {
+    /// The name to use as the Oximeter target, i.e. the identifier of the
+    /// source of these metrics.
     stat_name: InstanceUuid,
+
+    /// The reset count for the relevant instance.
     run_count: Reset,
 }
 
-impl PropCountStat {
+impl ServerStats {
     pub fn new(uuid: Uuid) -> Self {
-        PropCountStat {
-            stat_name: InstanceUuid { uuid: uuid },
+        ServerStats {
+            stat_name: InstanceUuid { uuid },
             run_count: Default::default(),
         }
     }
-    pub fn uuid(&self) -> Uuid {
-        return self.stat_name.uuid;
-    }
 }
 
-// This struct wraps the stat struct in an Arc/Mutex so the worker tasks can
-// share it with the producer trait.
+/// The public wrapper for server-level metrics.
 #[derive(Clone, Debug)]
-pub struct PropStatOuter {
-    pub prop_stat_wrap: Arc<Mutex<PropCountStat>>,
+pub struct ServerStatsOuter {
+    server_stats_wrapped: Arc<Mutex<ServerStats>>,
 }
 
-impl PropStatOuter {
-    // When an operation happens that we wish to record in Oximeter,
-    // one of these methods will be called.  Each method will get the
-    // correct field of PropCountStat to record the update.
+impl ServerStatsOuter {
+    /// Increments the number of times the instance was reset.
     pub fn count_reset(&self) {
-        let mut pso = self.prop_stat_wrap.lock().unwrap();
-        let datum = pso.run_count.datum_mut();
+        let mut inner = self.server_stats_wrapped.lock().unwrap();
+        let datum = inner.run_count.datum_mut();
         *datum += 1;
     }
 }
 
-// This trait is what is called to update the data that is collected
-// by Oximeter every OXIMETER_STAT_INTERVAL seconds.
-impl Producer for PropStatOuter {
+impl Producer for ServerStatsOuter {
     fn produce(
         &mut self,
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
-        let pso = self.prop_stat_wrap.lock().unwrap();
-
         let mut data = Vec::with_capacity(1);
-        let name = pso.stat_name;
-
-        data.push(Sample::new(&name, &pso.run_count));
-
-        // Yield the available samples.
+        let inner = self.server_stats_wrapped.lock().unwrap();
+        let name = inner.stat_name;
+        data.push(Sample::new(&name, &inner.run_count));
         Ok(Box::new(data.into_iter()))
     }
 }
 
-/// Setup Oximeter
-/// This starts a dropshot server, and then registers the PropStatOuter
-/// producer with Oximeter.
-/// Once registered, we return the server to the caller.
-/// By returning the server to the caller, we allow the ProducerRegister
-/// to be cloned and passed to any library that wishes to record metrics.
-pub async fn prop_oximeter(
+/// Launches and returns an Oximeter metrics server.
+///
+/// # Parameters
+///
+/// - `id`: The ID of the instance for whom this server is being started.
+/// - `my_address`: The address of this Propolis process. Oximeter will connect
+///   to this to query metrics.
+/// - `registration_address`: The address of the Oximeter server that will be
+///   told how to connect to the metric server this routine starts.
+/// - `plog`: A logger to use when logging from this routine.
+pub async fn start_oximeter_server(
     id: Uuid,
-    my_address: SocketAddr,
-    registration_address: SocketAddr,
+    config: &MetricsEndpointConfig,
     plog: Logger,
 ) -> anyhow::Result<Server> {
+    // Request an ephemeral port on which to serve metrics.
+    let my_address = SocketAddr::new(config.propolis_addr.ip(), 0);
+    let registration_address = config.metric_addr;
     info!(
         plog,
         "Attempt to register {:?} with Nexus/Oximeter at {:?}",
@@ -123,7 +128,7 @@ pub async fn prop_oximeter(
         id,
         address: my_address,
         base_route: "/collect".to_string(),
-        interval: tokio::time::Duration::from_secs(OXIMETER_STAT_INTERVAL),
+        interval: OXIMETER_STAT_INTERVAL,
     };
 
     let config = Config {
@@ -157,4 +162,18 @@ pub async fn prop_oximeter(
             }
         }
     }
+}
+
+/// Creates and registers a set of server-level metrics for an instance.
+pub fn register_server_metrics(
+    id: Uuid,
+    server: &Server,
+) -> anyhow::Result<ServerStatsOuter> {
+    let stats = ServerStats::new(id);
+    let stats_outer =
+        ServerStatsOuter { server_stats_wrapped: Arc::new(Mutex::new(stats)) };
+
+    server.registry().register_producer(stats_outer.clone())?;
+
+    Ok(stats_outer)
 }

@@ -15,7 +15,7 @@ use slog::info;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
-use propolis_server::server::InstanceMetricsConfig;
+use propolis_server::server::MetricsEndpointConfig;
 use propolis_server::vnc::setup_vnc;
 use propolis_server::{config, server};
 
@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             let use_reservoir = config::reservoir_decide(&log);
 
             let metric_config = metric_addr.map(|addr| {
-                let imc = InstanceMetricsConfig::new(propolis_addr, addr);
+                let imc = MetricsEndpointConfig::new(propolis_addr, addr);
                 info!(log, "Metrics server will use {:?}", imc);
                 imc
             });
@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|error| anyhow!("Failed to start server: {}", error))?
             .start();
 
-            let (server_res, _) = join!(server, vnc_server_hdl.start());
+            let server_res = join!(server, vnc_server_hdl.start()).0;
             server_res
                 .map_err(|e| anyhow!("Server exited with an error: {}", e))
         }

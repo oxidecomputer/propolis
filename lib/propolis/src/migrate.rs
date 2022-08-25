@@ -49,8 +49,8 @@ pub enum Migrator<'a> {
     Custom(&'a dyn Migrate),
 }
 
-pub struct MigrateCtx {
-    pub mem: MemCtx,
+pub struct MigrateCtx<'a> {
+    pub mem: &'a MemCtx,
 }
 
 pub trait Migrate: Send + Sync + 'static {

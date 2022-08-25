@@ -182,8 +182,11 @@ impl Entity for CrucibleBackend {
     fn type_name(&self) -> &'static str {
         "block-crucible"
     }
-    fn run(&self) {
-        self.driver.run();
+    // TODO(#155): Move Crucible activation here. Also, this entity probably
+    // needs its own pause/resume routines akin to those in the other block
+    // backends.
+    fn start(&self) {
+        self.driver.start();
     }
 }
 

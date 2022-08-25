@@ -1,32 +1,38 @@
-use futures::{future, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
-use propolis::instance::{MigrateRole, ReqState};
 use propolis::inventory::Order;
-use propolis::migrate::{MigrateStateError, Migrator};
+use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info};
 use std::io;
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::{task, time};
 use tokio_util::codec::Framed;
 
 use crate::migrate::codec::{self, LiveMigrationFramer};
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::{
-    Device, MigrateContext, MigrateError, MigrationState, PageIter,
+    Device, MigrateError, MigrateRole, MigrationState, PageIter,
 };
+use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
 pub async fn migrate(
-    mctx: Arc<MigrateContext>,
+    vm_controller: Arc<VmController>,
+    command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
+    response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
     conn: Upgraded,
 ) -> Result<(), MigrateError> {
-    let mut proto = SourceProtocol::new(mctx, conn);
+    let err_tx = command_tx.clone();
+    let mut proto =
+        SourceProtocol::new(vm_controller, command_tx, response_rx, conn);
 
     if let Err(err) = proto.run().await {
-        proto.mctx.set_state(MigrationState::Error).await;
+        err_tx
+            .send(MigrateSourceCommand::UpdateState(MigrationState::Error))
+            .await
+            .unwrap();
+
         // We encountered an error, try to inform the remote before bailing
         // Note, we don't use `?` here as this is a best effort and we don't
         // want an error encountered during this send to shadow the run error
@@ -39,24 +45,49 @@ pub async fn migrate(
 }
 
 struct SourceProtocol {
-    /// The migration context which also contains the Instance handle.
-    mctx: Arc<MigrateContext>,
+    /// The VM controller for the instance of interest.
+    vm_controller: Arc<VmController>,
+
+    /// The channel to use to send messages to the state worker coordinating
+    /// this migration.
+    command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
+
+    /// The channel to use to receive messages from the state worker
+    /// coordinating this migration.
+    response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
 
     /// Transport to the destination Instance.
     conn: Framed<Upgraded, LiveMigrationFramer>,
 }
 
 impl SourceProtocol {
-    fn new(mctx: Arc<MigrateContext>, conn: Upgraded) -> Self {
-        let codec_log = mctx.log.new(slog::o!());
+    fn new(
+        vm_controller: Arc<VmController>,
+        command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
+        response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
+        conn: Upgraded,
+    ) -> Self {
+        let codec_log = vm_controller.log().new(slog::o!());
         Self {
-            mctx,
+            vm_controller,
+            command_tx,
+            response_rx,
             conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
         }
     }
 
     fn log(&self) -> &slog::Logger {
-        &self.mctx.log
+        self.vm_controller.log()
+    }
+
+    async fn update_state(&mut self, state: MigrationState) {
+        // When migrating into an instance, the VM state worker blocks waiting
+        // for the disposition of the migration attempt, so the channel should
+        // never be closed before the attempt completes.
+        self.command_tx
+            .send(MigrateSourceCommand::UpdateState(state))
+            .await
+            .unwrap();
     }
 
     async fn run(&mut self) -> Result<(), MigrateError> {
@@ -71,7 +102,7 @@ impl SourceProtocol {
         self.arch_state().await?;
         self.ram_pull().await?;
         self.finish().await?;
-        self.end()?;
+        self.end();
         Ok(())
     }
 
@@ -80,8 +111,9 @@ impl SourceProtocol {
     }
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Sync).await;
-        let preamble = Preamble::new(self.mctx.instance_spec.clone());
+        self.update_state(MigrationState::Sync).await;
+        let preamble =
+            Preamble::new(self.vm_controller.instance_spec().clone());
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;
@@ -89,7 +121,7 @@ impl SourceProtocol {
     }
 
     async fn ram_push(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::RamPush).await;
+        self.update_state(MigrationState::RamPush).await;
         let vmm_ram_range = self.vmm_ram_bounds().await?;
         let req_ram_range = self.read_mem_query().await?;
         info!(
@@ -121,7 +153,7 @@ impl SourceProtocol {
             };
         }
         info!(self.log(), "ram_push: done sending ram");
-        self.mctx.set_state(MigrationState::Pause).await;
+        self.update_state(MigrationState::Pause).await;
         Ok(())
     }
 
@@ -180,114 +212,55 @@ impl SourceProtocol {
     }
 
     async fn pause(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Pause).await;
-
-        // Grab a reference to all the devices that are a part of this Instance
-        let mut devices = vec![];
-        let _ =
-            self.mctx.instance.inv().for_each_node(Order::Post, |_, rec| {
-                devices.push((rec.name().to_owned(), Arc::clone(rec.entity())));
-                Ok::<_, ()>(())
-            });
-
+        self.update_state(MigrationState::Pause).await;
         // Ask the instance to begin transitioning to the paused state
         // This will inform each device to pause.
         info!(self.log(), "Pausing devices");
-        let (pause_tx, pause_rx) = std::sync::mpsc::channel();
-        self.mctx
-            .instance
-            .migrate_pause(self.mctx.async_ctx.context_id(), pause_rx)?
-            .notified()
-            .await;
-
-        // Ask each device for a future indicating they've finishing pausing
-        let mut migrate_ready_futs = vec![];
-        for (name, device) in &devices {
-            let log = self.log().new(slog::o!("device" => name.clone()));
-            let device = Arc::clone(device);
-            let pause_fut = device.paused();
-            migrate_ready_futs.push(task::spawn(async move {
-                if let Err(_) =
-                    time::timeout(Duration::from_secs(2), pause_fut).await
-                {
-                    error!(log, "Timed out pausing device");
-                    return Err(device);
-                }
-                info!(log, "Paused device");
-                Ok(())
-            }));
-        }
-
-        // Now we wait for all the devices to have paused
-        let pause = future::join_all(migrate_ready_futs)
-            .await
-            // Hoist out the JoinError's
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>();
-        let timed_out = match pause {
-            Ok(future_res) => {
-                // Grab just the ones that failed
-                future_res
-                    .into_iter()
-                    .filter(Result::is_err)
-                    .map(Result::unwrap_err)
-                    .collect::<Vec<_>>()
-            }
-            Err(err) => {
-                error!(
+        self.command_tx.send(MigrateSourceCommand::Pause).await.unwrap();
+        let resp = self.response_rx.recv().await.unwrap();
+        match resp {
+            MigrateSourceResponse::Pause(Ok(())) => Ok(()),
+            _ => {
+                info!(
                     self.log(),
-                    "joining paused devices future failed: {err}"
+                    "Unexpected pause response from state worker: {:?}", resp
                 );
-                return Err(MigrateError::SourcePause);
+                Err(MigrateError::SourcePause)
             }
-        };
-
-        // Bail out if any devices timed out
-        // TODO: rollback already paused devices
-        if !timed_out.is_empty() {
-            error!(self.log(), "Failed to pause all devices: {timed_out:?}");
-            return Err(MigrateError::SourcePause);
         }
-
-        // Inform the instance state machine we're done pausing
-        pause_tx.send(()).unwrap();
-
-        Ok(())
     }
 
     async fn device_state(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Device).await;
-
-        let dispctx = self
-            .mctx
-            .async_ctx
-            .dispctx()
-            .await
-            .ok_or_else(|| MigrateError::InstanceNotInitialized)?;
-
-        // Collect together the serialized state for all the devices
+        self.update_state(MigrationState::Device).await;
         let mut device_states = vec![];
-        self.mctx.instance.inv().for_each_node(Order::Pre, |_, rec| {
-            let entity = rec.entity();
-            match entity.migrate() {
-                Migrator::NonMigratable => {
-                    error!(self.log(), "Can't migrate instance with non-migratable device ({})", rec.name());
-                    return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable));
-                },
-                // No device state needs to be trasmitted for 'Simple' devices
-                Migrator::Simple => {},
-                Migrator::Custom(migrate) => {
-                    let payload = migrate.export(&dispctx);
-                    device_states.push(Device {
-                        instance_name: rec.name().to_owned(),
-                        payload: ron::ser::to_string(&payload)
-                            .map_err(codec::ProtocolError::from)?,
-                    });
-                },
-            }
-            Ok(())
-        })?;
-        drop(dispctx);
+        {
+            let instance_guard = self.vm_controller.instance().lock();
+            let migrate_ctx = MigrateCtx {
+                mem: &instance_guard.machine().acc_mem.access().unwrap(),
+            };
+
+            // Collect together the serialized state for all the devices
+            instance_guard.inventory().for_each_node(Order::Pre, |_, rec| {
+                let entity = rec.entity();
+                match entity.migrate() {
+                    Migrator::NonMigratable => {
+                        error!(self.log(), "Can't migrate instance with non-migratable device ({})", rec.name());
+                        return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable));
+                    },
+                    // No device state needs to be trasmitted for 'Simple' devices
+                    Migrator::Simple => {},
+                    Migrator::Custom(migrate) => {
+                        let payload = migrate.export(&migrate_ctx);
+                        device_states.push(Device {
+                            instance_name: rec.name().to_owned(),
+                            payload: ron::ser::to_string(&payload)
+                                .map_err(codec::ProtocolError::from)?,
+                        });
+                    },
+                }
+                Ok(())
+            })?;
+        }
 
         info!(self.log(), "Device States: {device_states:#?}");
 
@@ -302,17 +275,17 @@ impl SourceProtocol {
     }
 
     async fn arch_state(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Arch).await;
+        self.update_state(MigrationState::Arch).await;
         self.read_ok().await?;
         self.send_msg(codec::Message::Okay).await
     }
 
     async fn ram_pull(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::RamPush).await;
+        self.update_state(MigrationState::RamPush).await;
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got query {:?}", m);
-        self.mctx.set_state(MigrationState::Pause).await;
-        self.mctx.set_state(MigrationState::RamPushDirty).await;
+        self.update_state(MigrationState::Pause).await;
+        self.update_state(MigrationState::RamPushDirty).await;
         self.send_msg(codec::Message::MemEnd(0, !0)).await?;
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got done {:?}", m);
@@ -320,7 +293,7 @@ impl SourceProtocol {
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
-        self.mctx.set_state(MigrationState::Finish).await;
+        self.update_state(MigrationState::Finish).await;
         self.read_ok().await?;
         let _ = self.send_msg(codec::Message::Okay).await; // A failure here is ok.
 
@@ -337,10 +310,8 @@ impl SourceProtocol {
         Ok(())
     }
 
-    fn end(&mut self) -> Result<(), MigrateError> {
-        self.mctx.instance.set_target_state(ReqState::Halt)?;
+    fn end(&mut self) {
         info!(self.log(), "Source Migration Successful");
-        Ok(())
     }
 
     async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
@@ -400,14 +371,8 @@ impl SourceProtocol {
     async fn vmm_ram_bounds(
         &mut self,
     ) -> Result<RangeInclusive<GuestAddr>, MigrateError> {
-        let memctx = self
-            .mctx
-            .async_ctx
-            .dispctx()
-            .await
-            .ok_or(MigrateError::InstanceNotInitialized)?
-            .mctx
-            .memctx();
+        let instance_guard = self.vm_controller.instance().lock();
+        let memctx = instance_guard.machine().acc_mem.access().unwrap();
         memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
     }
 
@@ -416,15 +381,10 @@ impl SourceProtocol {
         start_gpa: GuestAddr,
         bits: &mut [u8],
     ) -> Result<(), MigrateError> {
-        let handle = self
-            .mctx
-            .async_ctx
-            .dispctx()
-            .await
-            .ok_or(MigrateError::InstanceNotInitialized)?
-            .mctx
-            .hdl();
-        handle
+        let instance_guard = self.vm_controller.instance().lock();
+        instance_guard
+            .machine()
+            .hdl
             .track_dirty_pages(start_gpa.0, bits)
             .map_err(|_| MigrateError::InvalidInstanceState)
     }
@@ -434,14 +394,8 @@ impl SourceProtocol {
         addr: GuestAddr,
         buf: &mut [u8],
     ) -> Result<(), MigrateError> {
-        let memctx = self
-            .mctx
-            .async_ctx
-            .dispctx()
-            .await
-            .ok_or(MigrateError::InstanceNotInitialized)?
-            .mctx
-            .memctx();
+        let instance_guard = self.vm_controller.instance().lock();
+        let memctx = instance_guard.machine().acc_mem.access().unwrap();
         let len = buf.len();
         memctx.direct_read_into(addr, buf, len);
         Ok(())

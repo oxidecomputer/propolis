@@ -1,11 +1,10 @@
-#![allow(clippy::style)]
-#![allow(clippy::drop_non_drop)]
-
 pub mod config;
 mod initializer;
 mod migrate;
 mod serial;
 pub mod server;
 mod spec;
-pub mod stats;
+mod stats;
+mod vcpu_tasks;
+mod vm;
 pub mod vnc;
