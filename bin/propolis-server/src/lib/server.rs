@@ -15,8 +15,10 @@ use dropshot::{
 };
 use hyper::{Body, Response};
 use oximeter::types::ProducerRegistry;
-use propolis_client::instance_spec;
-use propolis_client::{api, instance_spec::InstanceSpec};
+use propolis_client::{
+    handmade::api,
+    instance_spec::{self, InstanceSpec},
+};
 use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
 use slog::{error, o, Logger};
@@ -111,9 +113,9 @@ impl VmControllerState {
     /// `VmControllerState::Destroyed`.
     pub fn take_controller(&mut self) -> Option<Arc<VmController>> {
         if let VmControllerState::Created(vm) = self {
-            let last_instance = propolis_client::api::Instance {
+            let last_instance = api::Instance {
                 properties: vm.properties().clone(),
-                state: propolis_client::api::InstanceState::Destroyed,
+                state: api::InstanceState::Destroyed,
                 disks: vec![],
                 nics: vec![],
             };
@@ -244,7 +246,7 @@ enum SpecCreationError {
 /// Creates an instance spec from an ensure request. (Both types are foreign to
 /// this crate, so implementing TryFrom for them is not allowed.)
 fn instance_spec_from_request(
-    request: &propolis_client::api::InstanceEnsureRequest,
+    request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
 ) -> Result<(InstanceSpec, BTreeMap<String, Vec<u8>>), SpecCreationError> {
     let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
@@ -313,11 +315,8 @@ async fn register_oximeter(
 }]
 async fn instance_ensure(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<propolis_client::api::InstanceEnsureRequest>,
-) -> Result<
-    HttpResponseCreated<propolis_client::api::InstanceEnsureResponse>,
-    HttpError,
-> {
+    request: TypedBody<api::InstanceEnsureRequest>,
+) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
     let request = request.into_inner();
 
@@ -477,9 +476,7 @@ async fn instance_ensure(
         None
     };
 
-    Ok(HttpResponseCreated(propolis_client::api::InstanceEnsureResponse {
-        migrate,
-    }))
+    Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))
 }
 
 #[endpoint {
@@ -488,8 +485,7 @@ async fn instance_ensure(
 }]
 async fn instance_get(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<propolis_client::api::InstanceGetResponse>, HttpError>
-{
+) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
     let ctx = rqctx.context();
     let instance_info = match &*ctx.services.vm.lock().await {
         VmControllerState::NotCreated => {
@@ -498,7 +494,7 @@ async fn instance_get(
             ));
         }
         VmControllerState::Created(vm) => {
-            propolis_client::api::Instance {
+            api::Instance {
                 properties: vm.properties().clone(),
                 state: vm.external_instance_state(),
                 disks: vec![],
@@ -517,9 +513,7 @@ async fn instance_get(
         }
     };
 
-    Ok(HttpResponseOk(propolis_client::api::InstanceGetResponse {
-        instance: instance_info,
-    }))
+    Ok(HttpResponseOk(api::InstanceGetResponse { instance: instance_info }))
 }
 
 #[endpoint {
@@ -729,4 +723,26 @@ pub fn api() -> ApiDescription<DropshotEndpointContext> {
     api.register(instance_issue_crucible_snapshot_request).unwrap();
 
     api
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_propolis_server_openapi() {
+        let mut buf: Vec<u8> = vec![];
+        super::api()
+            .openapi("Oxide Propolis Server API", "0.0.1")
+            .description(
+                "API for interacting with the Propolis hypervisor frontend.",
+            )
+            .contact_url("https://oxide.computer")
+            .contact_email("api@oxide.computer")
+            .write(&mut buf)
+            .unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        expectorate::assert_contents(
+            "../../openapi/propolis-server.json",
+            &output,
+        );
+    }
 }

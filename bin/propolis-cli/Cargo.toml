@@ -11,7 +11,7 @@ anyhow = "1.0"
 clap = { version = "3.2", features = ["derive"] }
 futures = "0.3"
 libc = "0.2"
-propolis-client = { path = "../../lib/propolis-client" }
+propolis-client = { path = "../../lib/propolis-client", features = ["generated"] }
 slog = "2.7"
 slog-async = "2.7"
 slog-term = "2.8"

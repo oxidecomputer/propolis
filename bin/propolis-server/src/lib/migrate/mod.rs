@@ -4,7 +4,7 @@ use bit_field::BitField;
 use dropshot::{HttpError, RequestContext};
 use hyper::{header, Body, Method, Response, StatusCode};
 use propolis::migrate::MigrateStateError;
-use propolis_client::api::{self, MigrationState};
+use propolis_client::handmade::api::{self, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use thiserror::Error;

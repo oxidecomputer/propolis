@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::convert::TryInto;
 use std::str::FromStr;
 
-use propolis_client::api::{
+use propolis_client::handmade::api::{
     self, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use propolis_client::instance_spec::*;
@@ -567,7 +567,7 @@ impl SpecBuilder {
 mod test {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use propolis_client::api::Slot;
+    use propolis_client::handmade::api::Slot;
     use uuid::Uuid;
 
     use crate::config::{self, Config};

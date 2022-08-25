@@ -18,7 +18,7 @@ libc = "0.2.129"
 propolis-client = { path = "../../lib/propolis-client" }
 propolis-server-config = { path = "../../crates/propolis-server-config" }
 propolis_types = { path = "../../crates/propolis-types" }
-reqwest = { version = "0.11.11", features = ["blocking"] }
+reqwest = { version = "0.11.12", features = ["blocking"] }
 ring = "0.16.20"
 serde = { version = "1.0.139", features = ["derive"] }
 serde_derive = "1.0.139"

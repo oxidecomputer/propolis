@@ -45,7 +45,7 @@ serde_derive = "1.0"
 serde_json = "1.0"
 slog = "2.7"
 propolis = { path = "../../lib/propolis", features = ["crucible-full", "oximeter"], default-features = false }
-propolis-client = { path = "../../lib/propolis-client" }
+propolis-client = { path = "../../lib/propolis-client", features = ["generated"] }
 propolis-server-config = { path = "../../crates/propolis-server-config" }
 rfb = { git = "https://github.com/oxidecomputer/rfb" }
 uuid = "1.0.0"
@@ -57,9 +57,10 @@ features = [ "chrono", "uuid1" ]
 
 [dev-dependencies]
 hex = "0.4.3"
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.11.12", default-features = false, features = ["rustls-tls"] }
 ring = "0.16"
 slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_debug" ] }
+expectorate = "1.0.5"
 
 [features]
 default = ["dtrace-probes"]
