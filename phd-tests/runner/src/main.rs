@@ -7,7 +7,7 @@ use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_framework::artifacts::ArtifactStore;
 use phd_tests::phd_testcase::TestContext;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Registry};
@@ -18,6 +18,14 @@ use crate::fixtures::TestFixtures;
 fn main() {
     let runner_args = ProcessArgs::parse();
     set_tracing_subscriber(&runner_args);
+
+    let state_write_guard = phd_framework::host_api::enable_vmm_state_writes();
+    if let Err(e) = state_write_guard {
+        warn!(
+            error = ?e,
+            "Failed to enable VMM state writes, migration tests may not work",
+        );
+    }
 
     info!(?runner_args);
 

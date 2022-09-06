@@ -1,41 +1,45 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, net::SocketAddrV4, process::Stdio, time::Duration};
+use std::{fmt::Debug, process::Stdio, time::Duration};
 
 use crate::guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind};
 use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
-use backoff::backoff::Backoff;
 use core::result::Result as StdResult;
-use propolis_client::api::InstanceState;
 use propolis_client::{
     api::{
-        InstanceEnsureRequest, InstanceGetResponse, InstanceProperties,
-        InstanceStateRequested,
+        InstanceEnsureRequest, InstanceGetResponse,
+        InstanceMigrateInitiateRequest, InstanceProperties, InstanceState,
+        InstanceStateRequested, MigrationState,
     },
     Client, Error as PropolisClientError,
 };
 use slog::Drain;
+use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, info_span, instrument, Instrument};
 use uuid::Uuid;
 
 pub mod factory;
+pub mod server;
 pub mod vm_config;
 
-struct ServerWrapper {
-    server: std::process::Child,
+#[derive(Debug, Error)]
+pub enum VmStateError {
+    #[error("Operation can only be performed on a VM that has been ensured")]
+    InstanceNotEnsured,
+
+    #[error(
+        "Operation can only be performed on a new VM that has not been ensured"
+    )]
+    InstanceAlreadyEnsured,
 }
 
-impl Drop for ServerWrapper {
-    fn drop(&mut self) {
-        std::process::Command::new("pfexec")
-            .args(["kill", self.server.id().to_string().as_str()])
-            .spawn()
-            .unwrap();
-    }
+enum VmState {
+    New { vcpus: u8, memory_mib: u64 },
+    Ensured { serial: SerialConsole },
 }
 
 /// A virtual machine running in a Propolis server. Test cases create these VMs
@@ -47,38 +51,12 @@ impl Drop for ServerWrapper {
 pub struct TestVm {
     rt: tokio::runtime::Runtime,
     client: Client,
-    _server: ServerWrapper,
-    serial: SerialConsole,
+    server: server::PropolisServer,
     guest_os: Box<dyn GuestOs>,
     guest_os_kind: GuestOsKind,
     tracing_span: tracing::Span,
-}
 
-/// Parameters used to launch and configure the Propolis server process. These
-/// are distinct from the parameters used to configure the VM that that process
-/// will host.
-#[derive(Debug)]
-pub struct ServerProcessParameters<'a, T: Into<Stdio> + Debug> {
-    /// The path to the server binary to launch.
-    pub server_path: &'a str,
-
-    /// The path to the configuration TOML that should be placed on the server's
-    /// command line.
-    pub config_toml_path: &'a str,
-
-    /// The address at which the server should serve.
-    pub server_addr: SocketAddrV4,
-
-    /// The address at which the server should offer its VNC server.
-    pub vnc_addr: SocketAddrV4,
-
-    /// The [`Stdio`] descriptor to which the server's stdout should be
-    /// directed.
-    pub server_stdout: T,
-
-    /// The [`Stdio`] descriptor to which the server's stderr should be
-    /// directed.
-    pub server_stderr: T,
+    state: VmState,
 }
 
 impl TestVm {
@@ -103,48 +81,17 @@ impl TestVm {
     #[instrument(skip_all)]
     pub(crate) fn new<T: Into<Stdio> + Debug>(
         vm_name: &str,
-        process_params: ServerProcessParameters<T>,
+        process_params: server::ServerProcessParameters<T>,
         vm_config: &vm_config::VmConfig,
         guest_os_kind: GuestOsKind,
     ) -> Result<Self> {
         info!(?process_params, ?vm_config, ?guest_os_kind);
-        let vm_id = Uuid::new_v4();
         let span = info_span!(parent: None, "VM", vm = ?vm_name);
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
-        let ServerProcessParameters {
-            server_path,
-            config_toml_path,
-            server_addr,
-            vnc_addr,
-            server_stdout,
-            server_stderr,
-        } = process_params;
-
-        info!(
-            ?server_path,
-            ?config_toml_path,
-            ?server_addr,
-            ?vm_config,
-            "Launching Propolis server"
-        );
-
-        let server = ServerWrapper {
-            server: std::process::Command::new("pfexec")
-                .args([
-                    server_path,
-                    "run",
-                    config_toml_path,
-                    server_addr.to_string().as_str(),
-                    vnc_addr.to_string().as_str(),
-                ])
-                .stdout(server_stdout)
-                .stderr(server_stderr)
-                .spawn()?,
-        };
-
-        info!("Launched server with pid {}", server.server.id());
+        let server_addr = process_params.server_addr.clone();
+        let server = server::PropolisServer::new(process_params)?;
 
         let client_decorator = slog_term::TermDecorator::new().stdout().build();
         let client_drain =
@@ -156,58 +103,72 @@ impl TestVm {
             slog::Logger::root(client_async_drain, slog::o!()),
         );
 
-        let console: SerialConsole = rt.block_on(
-            async {
-                let properties = InstanceProperties {
-                    id: vm_id,
-                    name: "phd-vm".to_string(),
-                    description: "Pheidippides-managed VM".to_string(),
-                    image_id: Uuid::default(),
-                    bootrom_id: Uuid::default(),
-                    memory: vm_config.memory_mib(),
-                    vcpus: vm_config.cpus(),
-                };
-                let ensure_req = InstanceEnsureRequest {
-                    properties,
-                    nics: vec![],
-                    disks: vec![],
-                    migrate: None,
-                    cloud_init_bytes: None,
-                };
-
-                if let Err(e) = client.instance_ensure(&ensure_req).await {
-                    info!("Error {} while creating instance, will retry", e);
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    client.instance_ensure(&ensure_req).await?;
-                }
-
-                let serial_uri = client.instance_serial_console_ws_uri();
-                let console = SerialConsole::new(serial_uri).await?;
-
-                let instance_description =
-                    client.instance_get().await.with_context(|| {
-                        anyhow!("failed to get instance properties")
-                    })?;
-
-                info!(
-                    ?instance_description.instance,
-                    "Started instance"
-                );
-
-                anyhow::Ok(console)
-            }
-            .instrument(span.clone()),
-        )?;
-
         Ok(Self {
             rt,
             client,
-            _server: server,
-            serial: console,
+            server,
             guest_os: guest_os::get_guest_os_adapter(guest_os_kind),
             guest_os_kind,
             tracing_span: span,
+            state: VmState::New {
+                vcpus: vm_config.cpus(),
+                memory_mib: vm_config.memory_mib(),
+            },
         })
+    }
+
+    /// Sends an instance ensure request to this VM's server, allowing it to
+    /// transition into the running state.
+    async fn instance_ensure_async(
+        &self,
+        migrate: Option<InstanceMigrateInitiateRequest>,
+    ) -> Result<SerialConsole> {
+        let _span = self.tracing_span.enter();
+        let (vcpus, memory_mib) = match self.state {
+            VmState::New { vcpus, memory_mib } => (vcpus, memory_mib),
+            VmState::Ensured { .. } => {
+                return Err(VmStateError::InstanceAlreadyEnsured.into())
+            }
+        };
+
+        let vm_id = Uuid::new_v4();
+        let properties = InstanceProperties {
+            id: vm_id,
+            name: format!("phd-vm-{}", vm_id),
+            description: "Pheidippides-managed VM".to_string(),
+            image_id: Uuid::default(),
+            bootrom_id: Uuid::default(),
+            memory: memory_mib,
+            vcpus,
+        };
+        let ensure_req = InstanceEnsureRequest {
+            properties,
+            nics: vec![],
+            disks: vec![],
+            migrate,
+            cloud_init_bytes: None,
+        };
+
+        if let Err(e) = self.client.instance_ensure(&ensure_req).await {
+            info!("Error {} while creating instance, will retry", e);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            self.client.instance_ensure(&ensure_req).await?;
+        }
+
+        let serial_uri = self.client.instance_serial_console_ws_uri();
+        let console = SerialConsole::new(serial_uri).await?;
+
+        let instance_description =
+            self.client.instance_get().await.with_context(|| {
+                anyhow!("failed to get instance properties")
+            })?;
+
+        info!(
+            ?instance_description.instance,
+            "Started instance"
+        );
+
+        Ok(console)
     }
 
     /// Returns the kind of guest OS running in this VM.
@@ -215,7 +176,33 @@ impl TestVm {
         self.guest_os_kind
     }
 
-    /// Starts the VM.
+    /// Sets the VM to the running state. If the VM has not yet been launched
+    /// (by sending a Propolis instance-ensure request to it), send that request
+    /// first.
+    pub fn launch(&mut self) -> Result<()> {
+        self.instance_ensure()?;
+        self.run()?;
+        Ok(())
+    }
+
+    /// Sends an instance ensure request to this VM's server, but does not run
+    /// the VM.
+    pub fn instance_ensure(&mut self) -> Result<()> {
+        match self.state {
+            VmState::New { .. } => {
+                let console = self.rt.block_on(async {
+                    self.instance_ensure_async(None).await
+                })?;
+                self.state = VmState::Ensured { serial: console };
+            }
+            VmState::Ensured { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    /// Sets the VM to the running state without first sending an instance
+    /// ensure request.
     pub fn run(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Run).await
@@ -234,6 +221,14 @@ impl TestVm {
     pub fn reset(&self) -> StdResult<(), PropolisClientError> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Reboot).await
+        })
+    }
+
+    /// Moves this VM into the migrate-start state.
+    fn start_migrate(&self) -> StdResult<(), PropolisClientError> {
+        self.rt.block_on(async {
+            self.put_instance_state_async(InstanceStateRequested::MigrateStart)
+                .await
         })
     }
 
@@ -260,6 +255,86 @@ impl TestVm {
             .with_context(|| anyhow!("failed to query instance properties"))
     }
 
+    /// Starts this instance by issuing an ensure request that specifies a
+    /// migration from `source` and then running the target.
+    pub fn migrate_from(
+        &mut self,
+        source: &Self,
+        timeout_duration: Duration,
+    ) -> Result<()> {
+        let _vm_guard = self.tracing_span.enter();
+        match self.state {
+            VmState::New { .. } => {
+                let migration_id = Uuid::new_v4();
+                info!(
+                    ?migration_id,
+                    "Migrating from source at address {}",
+                    source.server.server_addr()
+                );
+
+                source.start_migrate()?;
+                let console = self.rt.block_on(async {
+                    self.instance_ensure_async(Some(
+                        InstanceMigrateInitiateRequest {
+                            migration_id,
+                            src_addr: source.server.server_addr().into(),
+                            src_uuid: Uuid::default(),
+                        },
+                    ))
+                    .await
+                })?;
+                self.state = VmState::Ensured { serial: console };
+
+                let span = info_span!("Migrate", ?migration_id);
+                let _guard = span.enter();
+                let watch_migrate =
+                    || -> Result<(), backoff::Error<anyhow::Error>> {
+                        let state = self
+                            .get_migration_state(migration_id)
+                            .map_err(|e| backoff::Error::Permanent(e))?;
+                        match state {
+                            MigrationState::Finish => {
+                                info!("Migration completed successfully");
+                                Ok(())
+                            }
+                            MigrationState::Error => {
+                                info!(
+                                    "Instance reported error during migration"
+                                );
+                                Err(backoff::Error::Permanent(anyhow!(
+                                    "error during migration"
+                                )))
+                            }
+                            _ => Err(backoff::Error::Transient {
+                                err: anyhow!("migration not done yet"),
+                                retry_after: None,
+                            }),
+                        }
+                    };
+
+                let mut backoff = backoff::ExponentialBackoff::default();
+                backoff.max_elapsed_time = Some(timeout_duration);
+                backoff::retry(backoff, watch_migrate)
+                    .map_err(|e| anyhow!("error during migration: {}", e))?;
+            }
+            VmState::Ensured { .. } => {
+                return Err(VmStateError::InstanceAlreadyEnsured.into());
+            }
+        }
+
+        self.run()?;
+        Ok(())
+    }
+
+    fn get_migration_state(
+        &self,
+        migration_id: Uuid,
+    ) -> Result<MigrationState> {
+        self.rt.block_on(async {
+            Ok(self.client.instance_migrate_status(migration_id).await?.state)
+        })
+    }
+
     pub fn wait_for_state(
         &self,
         target: InstanceState,
@@ -271,34 +346,30 @@ impl TestVm {
             timeout_duration, target
         );
 
+        let wait_fn = || -> Result<(), backoff::Error<anyhow::Error>> {
+            let current = self
+                .get()
+                .map_err(|e| backoff::Error::Permanent(e))?
+                .instance
+                .state;
+            if current == target {
+                Ok(())
+            } else {
+                Err(backoff::Error::Transient {
+                    err: anyhow!(
+                        "not in desired state yet: current {:?}, target {:?}",
+                        current,
+                        target
+                    ),
+                    retry_after: None,
+                })
+            }
+        };
+
         let mut backoff = backoff::ExponentialBackoff::default();
         backoff.max_elapsed_time = Some(timeout_duration);
-        loop {
-            let current = self.get()?.instance.state;
-            if current == target {
-                return Ok(());
-            }
-
-            match backoff.next_backoff() {
-                Some(to_wait) => {
-                    info!(
-                        "Waiting for state {:?}, got state {:?}, \
-                          waiting {:#?} before trying again",
-                        target, current, to_wait
-                    );
-                    std::thread::sleep(to_wait);
-                }
-                None => {
-                    info!("Timed out waiting for state {:?}", target);
-                    break;
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "Timed out waiting for instance to reach state {:?}",
-            target
-        ))
+        backoff::retry(backoff, wait_fn)
+            .map_err(|e| anyhow!("error waiting for instance state: {}", e))
     }
 
     /// Waits for the guest to reach a login prompt and then logs in. Note that
@@ -378,16 +449,21 @@ impl TestVm {
     ) -> Result<Option<String>> {
         let line = line.to_string();
         let (preceding_tx, mut preceding_rx) = mpsc::channel(1);
-        self.serial
-            .register_wait_for_string(line.clone(), preceding_tx)
-            .await?;
-        let t = timeout(timeout_duration, preceding_rx.recv()).await;
-        match t {
-            Err(timeout_elapsed) => {
-                self.serial.cancel_wait_for_string().await;
-                Err(anyhow!(timeout_elapsed))
+        match &self.state {
+            VmState::Ensured { serial } => {
+                serial
+                    .register_wait_for_string(line.clone(), preceding_tx)
+                    .await?;
+                let t = timeout(timeout_duration, preceding_rx.recv()).await;
+                match t {
+                    Err(timeout_elapsed) => {
+                        serial.cancel_wait_for_string().await;
+                        Err(anyhow!(timeout_elapsed))
+                    }
+                    Ok(received_string) => Ok(received_string),
+                }
             }
-            Ok(received_string) => Ok(received_string),
+            VmState::New { .. } => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 
@@ -422,6 +498,9 @@ impl TestVm {
     }
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
-        self.serial.send_bytes(bytes).await
+        match &self.state {
+            VmState::Ensured { serial } => serial.send_bytes(bytes).await,
+            VmState::New { .. } => Err(VmStateError::InstanceNotEnsured.into()),
+        }
     }
 }

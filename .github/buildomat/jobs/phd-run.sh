@@ -54,7 +54,7 @@ ls $runner
 ls $artifacts
 ls $propolis
 
-(RUST_BACKTRACE=1 ptime -m $runner \
+(RUST_BACKTRACE=1 ptime -m pfexec $runner \
 	--emit-bunyan \
 	run \
 	--propolis-server-cmd $propolis \
