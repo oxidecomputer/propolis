@@ -375,7 +375,13 @@ impl VionaHdl {
 
         let mut vna_create =
             viona_api::vioc_create { c_linkid: link_id, c_vmfd: vm_fd };
-        sys::ioctl(fp.as_raw_fd(), viona_api::VNA_IOC_CREATE, &mut vna_create)?;
+        unsafe {
+            sys::ioctl(
+                fp.as_raw_fd(),
+                viona_api::VNA_IOC_CREATE,
+                &mut vna_create,
+            )?;
+        }
         Ok(Self { fp })
     }
     fn delete(&self) -> io::Result<()> {
@@ -387,12 +393,16 @@ impl VionaHdl {
     }
     fn get_avail_features(&self) -> io::Result<u32> {
         let mut value = 0;
-        sys::ioctl(self.fd(), viona_api::VNA_IOC_GET_FEATURES, &mut value)?;
+        unsafe {
+            sys::ioctl(self.fd(), viona_api::VNA_IOC_GET_FEATURES, &mut value)?;
+        }
         Ok(value)
     }
     fn set_features(&self, feat: u32) -> io::Result<()> {
         let mut value = feat;
-        sys::ioctl(self.fd(), viona_api::VNA_IOC_SET_FEATURES, &mut value)?;
+        unsafe {
+            sys::ioctl(self.fd(), viona_api::VNA_IOC_SET_FEATURES, &mut value)?;
+        }
         Ok(())
     }
     fn ring_init(&self, idx: u16, size: u16, addr: u64) -> io::Result<()> {
@@ -402,11 +412,13 @@ impl VionaHdl {
             _pad: [0; 2],
             ri_qaddr: addr,
         };
-        sys::ioctl(
-            self.fd(),
-            viona_api::VNA_IOC_RING_INIT,
-            &mut vna_ring_init,
-        )?;
+        unsafe {
+            sys::ioctl(
+                self.fd(),
+                viona_api::VNA_IOC_RING_INIT,
+                &mut vna_ring_init,
+            )?;
+        }
         Ok(())
     }
     fn ring_reset(&self, idx: u16) -> io::Result<()> {
@@ -446,13 +458,17 @@ impl VionaHdl {
             vrs_qsize: size,
             vrs_qaddr: info.mapping.desc_addr,
         };
-        sys::ioctl(self.fd(), viona_api::VNA_IOC_RING_SET_STATE, &mut cfg)?;
+        unsafe {
+            sys::ioctl(self.fd(), viona_api::VNA_IOC_RING_SET_STATE, &mut cfg)?;
+        }
         Ok(())
     }
     fn ring_get_state(&self, idx: u16) -> io::Result<queue::Info> {
         let mut cfg =
             viona_api::vioc_ring_state { vrs_index: idx, ..Default::default() };
-        sys::ioctl(self.fd(), viona_api::VNA_IOC_RING_GET_STATE, &mut cfg)?;
+        unsafe {
+            sys::ioctl(self.fd(), viona_api::VNA_IOC_RING_GET_STATE, &mut cfg)?;
+        }
         Ok(queue::Info {
             mapping: queue::MapInfo {
                 desc_addr: cfg.vrs_qaddr,
@@ -479,18 +495,22 @@ impl VionaHdl {
             rm_addr: addr,
             rm_msg: msg as u64,
         };
-        sys::ioctl(
-            self.fd(),
-            viona_api::VNA_IOC_RING_SET_MSI,
-            &mut vna_ring_msi,
-        )?;
+        unsafe {
+            sys::ioctl(
+                self.fd(),
+                viona_api::VNA_IOC_RING_SET_MSI,
+                &mut vna_ring_msi,
+            )?;
+        }
         Ok(())
     }
     fn intr_poll(&self, mut f: impl FnMut(u16)) -> io::Result<()> {
         let mut vna_ip = viona_api::vioc_intr_poll {
             vip_status: [0; viona_api::VIONA_VQ_MAX as usize],
         };
-        sys::ioctl(self.fd(), viona_api::VNA_IOC_INTR_POLL, &mut vna_ip)?;
+        unsafe {
+            sys::ioctl(self.fd(), viona_api::VNA_IOC_INTR_POLL, &mut vna_ip)?;
+        }
         for i in 0..viona_api::VIONA_VQ_MAX {
             if vna_ip.vip_status[i as usize] != 0 {
                 f(i)

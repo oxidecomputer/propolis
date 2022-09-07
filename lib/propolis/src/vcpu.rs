@@ -51,7 +51,7 @@ impl Vcpu {
             capval: 1,
             allcpus: 0,
         };
-        self.hdl.ioctl(bhyve_api::VM_SET_CAPABILITY, &mut cap)
+        unsafe { self.hdl.ioctl(bhyve_api::VM_SET_CAPABILITY, &mut cap) }
     }
 
     /// Sets the value of a register within the CPU.
@@ -62,7 +62,9 @@ impl Vcpu {
             regval: val,
         };
 
-        self.hdl.ioctl(bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_SET_REGISTER, &mut regcmd)?;
+        }
         Ok(())
     }
 
@@ -74,7 +76,9 @@ impl Vcpu {
             regval: 0,
         };
 
-        self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+        }
         Ok(regcmd.regval)
     }
 
@@ -93,7 +97,9 @@ impl Vcpu {
             desc: *seg,
         };
 
-        self.hdl.ioctl(bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut req)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_SET_SEGMENT_DESCRIPTOR, &mut req)?;
+        }
         Ok(())
     }
 
@@ -111,7 +117,9 @@ impl Vcpu {
             desc: bhyve_api::seg_desc::default(),
         };
 
-        self.hdl.ioctl(bhyve_api::VM_GET_SEGMENT_DESCRIPTOR, &mut req)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_GET_SEGMENT_DESCRIPTOR, &mut req)?;
+        }
         Ok(req.desc)
     }
 
@@ -123,7 +131,9 @@ impl Vcpu {
             kind: bhyve_api::vcpu_reset_kind::VRK_RESET as u32,
         };
 
-        self.hdl.ioctl(bhyve_api::VM_RESET_CPU, &mut vvr)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_RESET_CPU, &mut vvr)?;
+        }
 
         Ok(())
     }
@@ -133,7 +143,9 @@ impl Vcpu {
     pub fn activate(&self) -> Result<()> {
         let mut cpu = self.id;
 
-        self.hdl.ioctl(bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_ACTIVATE_CPU, &mut cpu)?;
+        }
         Ok(())
     }
 
@@ -149,7 +161,9 @@ impl Vcpu {
             sipi_vector: sipi_vector.unwrap_or(0),
             ..Default::default()
         };
-        self.hdl.ioctl(bhyve_api::VM_SET_RUN_STATE, &mut state)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_SET_RUN_STATE, &mut state)?;
+        }
         Ok(())
     }
 
@@ -157,7 +171,9 @@ impl Vcpu {
     pub fn get_run_state(&self) -> Result<bhyve_api::vm_run_state> {
         let mut state =
             bhyve_api::vm_run_state { vcpuid: self.id, ..Default::default() };
-        self.hdl.ioctl(bhyve_api::VM_GET_RUN_STATE, &mut state)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_GET_RUN_STATE, &mut state)?;
+        }
         Ok(state)
     }
 
@@ -168,7 +184,7 @@ impl Vcpu {
     pub fn run(&self, entry: &VmEntry) -> Result<VmExit> {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);
-        let _res = self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)?;
+        let _res = unsafe { self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)? };
         Ok(VmExit::from(&exit))
     }
 
@@ -181,7 +197,9 @@ impl Vcpu {
             regnum: bhyve_api::vm_reg_name::VM_REG_GUEST_RAX as i32,
             regval: 0,
         };
-        self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+        }
         Ok(())
     }
 
@@ -547,7 +565,10 @@ pub mod migrate {
         pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
             let mut fpu_area_desc = bhyve_api::vm_fpu_desc::default();
 
-            vcpu.hdl.ioctl(bhyve_api::VM_DESC_FPU_AREA, &mut fpu_area_desc)?;
+            unsafe {
+                vcpu.hdl
+                    .ioctl(bhyve_api::VM_DESC_FPU_AREA, &mut fpu_area_desc)?;
+            }
             let len = fpu_area_desc.vfd_req_size as usize;
             let mut fpu = Vec::with_capacity(len);
             fpu.resize_with(len, u8::default);
@@ -557,7 +578,9 @@ pub mod migrate {
                 buf: fpu.as_mut_ptr() as *mut libc::c_void,
                 len: fpu_area_desc.vfd_req_size,
             };
-            vcpu.hdl.ioctl(bhyve_api::VM_GET_FPU, &mut fpu_req)?;
+            unsafe {
+                vcpu.hdl.ioctl(bhyve_api::VM_GET_FPU, &mut fpu_req)?;
+            }
 
             Ok(Self { blob: fpu })
         }
@@ -573,7 +596,9 @@ pub mod migrate {
                     )
                 })?,
             };
-            vcpu.hdl.ioctl(bhyve_api::VM_SET_FPU, &mut fpu_req)?;
+            unsafe {
+                vcpu.hdl.ioctl(bhyve_api::VM_SET_FPU, &mut fpu_req)?;
+            }
             Ok(())
         }
     }
