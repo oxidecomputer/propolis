@@ -185,7 +185,7 @@ impl Instance {
         state: State,
         iguard: &propolis::instance::InstanceGuard,
     ) {
-        let _ = iguard
+        iguard
             .inventory()
             .for_each_node(
                 propolis::inventory::Order::Pre,
@@ -339,7 +339,7 @@ impl Instance {
                 }
                 None => {}
             }
-            entry = match propolis::vcpu_process(&vcpu, &entry, &log) {
+            entry = match propolis::vcpu_process(vcpu, &entry, &log) {
                 Ok(ent) => ent,
                 Err(e) => match e {
                     VmError::Unhandled(exit) => match exit.kind {
@@ -432,9 +432,7 @@ impl Instance {
 
     fn lock(&self) -> Option<InnerGuard> {
         let guard = self.state.lock().unwrap();
-        if guard.instance.is_none() {
-            return None;
-        }
+        guard.instance.as_ref()?;
         Some(InnerGuard(guard))
     }
 }
@@ -568,7 +566,7 @@ fn setup_instance(
 
     let (power_pin, reset_pin) = inst.generate_pins();
     let pci_topo =
-        propolis::hw::pci::topology::Builder::new().finish(inv, &machine)?;
+        propolis::hw::pci::topology::Builder::new().finish(inv, machine)?;
     let chipset = i440fx::I440Fx::create(
         machine,
         pci_topo,
@@ -630,7 +628,7 @@ fn setup_instance(
         };
         match driver {
             "pci-virtio-block" => {
-                let (backend, creg) = config::block_backend(&config, dev, &log);
+                let (backend, creg) = config::block_backend(config, dev, log);
                 let bdf = bdf.unwrap();
 
                 let info = backend.info();
@@ -653,7 +651,7 @@ fn setup_instance(
                 chipset.pci_attach(bdf, viona);
             }
             "pci-nvme" => {
-                let (backend, creg) = config::block_backend(&config, dev, &log);
+                let (backend, creg) = config::block_backend(config, dev, log);
                 let bdf = bdf.unwrap();
 
                 let dev_serial = dev
