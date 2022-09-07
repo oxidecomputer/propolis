@@ -538,7 +538,7 @@ impl VmController {
             .spawn(move || {
                 ctrl_for_worker.state_worker(vcpu_tasks, log_for_worker)
             })
-            .map_err(|e| VmControllerError::StateWorkerCreationFailed(e))?;
+            .map_err(VmControllerError::StateWorkerCreationFailed)?;
 
         *controller.worker_thread.lock().unwrap() = Some(worker_thread);
         Ok(controller)
@@ -1054,19 +1054,19 @@ impl VmController {
         // First, pause the vCPUs and all entities so no
         // partially-completed work is present.
         vcpu_tasks.pause_all();
-        self.pause_entities(&log);
-        self.wait_for_entities_to_pause(&log);
+        self.pause_entities(log);
+        self.wait_for_entities_to_pause(log);
 
         // Reset all the entities, then reset the VM's bhyve state,
         // then reset the vCPUs. The vCPU reset must come after the
         // bhyve reset.
-        self.reset_entities(&log);
+        self.reset_entities(log);
         self.vm_objects.instance.lock().machine().reinitialize().unwrap();
-        self.reset_vcpus(&vcpu_tasks, &log);
+        self.reset_vcpus(vcpu_tasks, log);
 
         // Resume entities so they're ready to do more work, then
         // resume vCPUs.
-        self.resume_entities(&log);
+        self.resume_entities(log);
         vcpu_tasks.resume_all();
 
         next_external
@@ -1085,7 +1085,7 @@ impl VmController {
         let next_lifecycle = Some(LifecycleStage::NoLongerActive);
         drop(inner);
         vcpu_tasks.exit_all();
-        self.halt_entities(&log);
+        self.halt_entities(log);
         (next_external, next_lifecycle)
     }
 
@@ -1206,7 +1206,7 @@ impl VmController {
                 // is allowed to resume, so resume its components here.
                 MigrateTaskEvent::TaskExited(res) => {
                     if res.is_err() && paused {
-                        self.resume_entities(&log);
+                        self.resume_entities(log);
                         vcpu_tasks.resume_all();
                         let mut inner = self.worker_state.inner.lock().unwrap();
                         inner.migration_state =
@@ -1221,8 +1221,8 @@ impl VmController {
                     }
                     MigrateSourceCommand::Pause => {
                         vcpu_tasks.pause_all();
-                        self.pause_entities(&log);
-                        self.wait_for_entities_to_pause(&log);
+                        self.pause_entities(log);
+                        self.wait_for_entities_to_pause(log);
                         paused = true;
                         response_tx
                             .blocking_send(MigrateSourceResponse::Pause(Ok(())))
@@ -1337,7 +1337,7 @@ impl VmController {
         F: FnMut(
             &Arc<dyn propolis::inventory::Entity>,
             &propolis::inventory::Record,
-        ) -> (),
+        ),
     {
         self.vm_objects
             .instance

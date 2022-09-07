@@ -28,7 +28,7 @@ const MIGRATION_PROTOCOL_VERSION: usize = 0;
 const MIGRATION_PROTOCOL_ENCODING: ProtocolEncoding = ProtocolEncoding::Ron;
 
 /// The concatenated migration protocol-encoding-version string
-const MIGRATION_PROTOCOL_STR: &'static str = const_format::concatcp!(
+const MIGRATION_PROTOCOL_STR: &str = const_format::concatcp!(
     "propolis-migrate-",
     encoding_str(MIGRATION_PROTOCOL_ENCODING),
     "/",
@@ -155,10 +155,10 @@ impl From<VmControllerError> for MigrateError {
     }
 }
 
-impl Into<HttpError> for MigrateError {
-    fn into(self) -> HttpError {
-        let msg = format!("migration failed: {}", self);
-        match &self {
+impl From<MigrateError> for HttpError {
+    fn from(err: MigrateError) -> Self {
+        let msg = format!("migration failed: {}", err);
+        match &err {
             MigrateError::Http(_)
             | MigrateError::Initiate
             | MigrateError::Incompatible(_, _)
@@ -233,7 +233,7 @@ pub async fn source_start(
         let dst_protocol = request
             .headers()
             .get(header::UPGRADE)
-            .ok_or_else(|| MigrateError::UpgradeExpected)
+            .ok_or(MigrateError::UpgradeExpected)
             .map(|hv| hv.to_str().ok())?
             .ok_or_else(|| {
                 MigrateError::incompatible(src_protocol, "<unknown>")
@@ -331,7 +331,7 @@ pub(crate) async fn dest_initiate(
                 let src_protocol = res
                     .headers()
                     .get(header::UPGRADE)
-                    .ok_or_else(|| MigrateError::UpgradeExpected)
+                    .ok_or(MigrateError::UpgradeExpected)
                     .map(|hv| hv.to_str().ok())?
                     .ok_or_else(|| {
                         MigrateError::incompatible("<unknown>", dst_protocol)

@@ -565,7 +565,7 @@ async fn instance_serial(
         .headers()
         .get(header::SEC_WEBSOCKET_KEY)
         .map(|hv| hv.as_bytes())
-        .map(|key| handshake::derive_accept_key(key))
+        .map(handshake::derive_accept_key)
         .ok_or_else(|| {
             HttpError::for_bad_request(
                 None,

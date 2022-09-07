@@ -18,9 +18,6 @@ use thiserror::Error;
 pub enum VcpuTaskError {
     #[error("Failed to spawn a vCPU backing thread: {0}")]
     BackingThreadSpawnFailed(std::io::Error),
-
-    #[error("Failed to create a tokio runtime: {0}")]
-    TokioRuntimeCreationFailed(std::io::Error),
 }
 
 pub struct VcpuTasks {
@@ -63,7 +60,7 @@ impl VcpuTasks {
                         task_log,
                     )
                 })
-                .map_err(|e| VcpuTaskError::BackingThreadSpawnFailed(e))?;
+                .map_err(VcpuTaskError::BackingThreadSpawnFailed)?;
             tasks.push((ctrl, thread));
         }
 
@@ -136,7 +133,7 @@ impl VcpuTasks {
                 None => {}
             }
 
-            entry = match propolis::vcpu_process(&vcpu, &entry, &log) {
+            entry = match propolis::vcpu_process(vcpu, &entry, &log) {
                 Ok(next_entry) => next_entry,
                 Err(e) => match e {
                     VmError::Unhandled(exit) => match exit.kind {

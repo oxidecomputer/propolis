@@ -168,7 +168,7 @@ impl<'a> MachineInitializer<'a> {
             );
             pci_builder.add_bridge(desc)?;
         }
-        let pci_topology = pci_builder.finish(&self.inv, &self.machine)?;
+        let pci_topology = pci_builder.finish(self.inv, self.machine)?;
 
         match self.spec.board.chipset {
             instance_spec::Chipset::I440Fx { enable_pcie } => {
@@ -377,8 +377,9 @@ impl<'a> MachineInitializer<'a> {
             let StorageBackendInstance { be: backend, child, crucible } =
                 match &backend_spec.kind {
                     StorageBackendKind::Crucible { .. }
-                    | StorageBackendKind::File { .. } => self
-                        .initialize_persistent_storage_backend(&backend_spec),
+                    | StorageBackendKind::File { .. } => {
+                        self.initialize_persistent_storage_backend(backend_spec)
+                    }
                     StorageBackendKind::InMemory => {
                         let contents = in_memory_contents
                             .get(&device_spec.backend_name)
@@ -394,7 +395,7 @@ impl<'a> MachineInitializer<'a> {
                             })?;
                         self.initialize_volatile_storage_backend(
                             &device_spec.backend_name,
-                            &backend_spec,
+                            backend_spec,
                             contents.clone(),
                         )
                     }
