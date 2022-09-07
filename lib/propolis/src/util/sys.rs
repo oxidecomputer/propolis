@@ -7,8 +7,8 @@ use std::io::ErrorKind;
 // Deal with libc bits which vary enough between OSes to make cargo-check a pain
 
 #[cfg(target_os = "illumos")]
-pub fn ioctl<T>(fd: RawFd, cmd: i32, data: *mut T) -> Result<i32> {
-    let res = unsafe { libc::ioctl(fd, cmd, data) };
+pub unsafe fn ioctl<T>(fd: RawFd, cmd: i32, data: *mut T) -> Result<i32> {
+    let res = libc::ioctl(fd, cmd, data);
     if res == -1 {
         Err(Error::last_os_error())
     } else {
@@ -16,7 +16,7 @@ pub fn ioctl<T>(fd: RawFd, cmd: i32, data: *mut T) -> Result<i32> {
     }
 }
 #[cfg(not(target_os = "illumos"))]
-pub fn ioctl<T>(_fd: RawFd, _cmd: i32, _data: *mut T) -> Result<i32> {
+pub unsafe fn ioctl<T>(_fd: RawFd, _cmd: i32, _data: *mut T) -> Result<i32> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
 }
 

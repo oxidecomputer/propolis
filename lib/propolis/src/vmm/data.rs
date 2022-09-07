@@ -36,7 +36,7 @@ fn ioctl_xlate(
     op: i32,
     xfer: &mut bhyve_api::vm_data_xfer,
 ) -> Result<u32, VmmDataError> {
-    match hdl.ioctl(op, xfer) {
+    match unsafe { hdl.ioctl(op, xfer) } {
         Err(e) => match e.raw_os_error() {
             Some(errno) if errno == libc::ENOSPC => {
                 Err(VmmDataError::SpaceNeeded(xfer.vdx_result_len))
