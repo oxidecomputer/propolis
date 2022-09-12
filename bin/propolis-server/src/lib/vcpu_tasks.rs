@@ -23,7 +23,6 @@ pub enum VcpuTaskError {
 pub struct VcpuTasks {
     tasks: Vec<(propolis::tasks::TaskCtrl, std::thread::JoinHandle<()>)>,
     generation: Arc<AtomicUsize>,
-    rt: tokio::runtime::Handle,
 }
 
 pub trait VcpuEventHandler: Send + Sync {
@@ -38,7 +37,6 @@ impl VcpuTasks {
     pub(crate) fn new(
         instance: propolis::instance::InstanceGuard,
         event_handler: Arc<super::vm::WorkerState>,
-        runtime: tokio::runtime::Handle,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
         let generation = Arc::new(AtomicUsize::new(0));
@@ -64,23 +62,12 @@ impl VcpuTasks {
             tasks.push((ctrl, thread));
         }
 
-        Ok(Self { tasks, generation, rt: runtime })
+        Ok(Self { tasks, generation })
     }
 
     pub fn pause_all(&mut self) {
         for task in self.tasks.iter_mut().map(|t| &mut t.0) {
             task.hold().unwrap();
-        }
-
-        let task_futures: futures::stream::FuturesUnordered<_> =
-            self.tasks.iter_mut().map(|t| t.0.held()).collect();
-        let results: Vec<Result<_, _>> = self.rt.block_on(async {
-            use futures::StreamExt;
-            task_futures.collect().await
-        });
-
-        if let Some(e) = results.iter().find(|r| r.is_err()) {
-            panic!("Failed to pause all vCPU tasks: {:?}", e);
         }
     }
 

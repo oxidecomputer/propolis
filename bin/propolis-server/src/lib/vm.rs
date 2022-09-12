@@ -517,7 +517,6 @@ impl VmController {
         let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
             instance_inner,
             worker_state.clone(),
-            runtime_hdl.clone(),
             log.new(slog::o!("component" => "vcpu_tasks")),
         )?;
 
