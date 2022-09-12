@@ -4,15 +4,17 @@
     feature(asm_sym)
 )]
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use anyhow::Context;
 use clap::Parser;
+use futures::future::BoxFuture;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -22,6 +24,7 @@ use propolis::intr_pins::FuncPin;
 use propolis::vcpu::Vcpu;
 use propolis::vmm::{Builder, Machine};
 use propolis::*;
+use tokio::runtime;
 
 use propolis::usdt::register_probes;
 
@@ -35,12 +38,92 @@ const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
+#[derive(Copy, Clone, Debug)]
+enum InstEvent {
+    Halt,
+    ReqHalt,
+
+    Reset,
+    TripleFault,
+
+    ReqSave,
+
+    ReqStart,
+}
+impl InstEvent {
+    fn priority(&self) -> u8 {
+        match self {
+            InstEvent::Halt | InstEvent::ReqHalt => 3,
+
+            InstEvent::Reset | InstEvent::TripleFault => 2,
+
+            InstEvent::ReqSave => 1,
+
+            InstEvent::ReqStart => 0,
+        }
+    }
+    fn supersedes(&self, comp: &Self) -> bool {
+        self.priority() >= comp.priority()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum EventCtx {
+    Vcpu(i32),
+    Pin(String),
+    User(String),
+    Other(String),
+}
+
+#[derive(Default)]
+struct EQInner {
+    events: VecDeque<(InstEvent, EventCtx)>,
+}
+#[derive(Default)]
+struct EventQueue {
+    inner: Mutex<EQInner>,
+    cv: Condvar,
+}
+impl EventQueue {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+    fn push(&self, ev: InstEvent, ctx: EventCtx) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.events.push_back((ev, ctx));
+        self.cv.notify_one();
+    }
+    fn pop_superseding(
+        &self,
+        cur: Option<&InstEvent>,
+    ) -> Option<(InstEvent, EventCtx)> {
+        let mut inner = self.inner.lock().unwrap();
+        while let Some((ev, ctx)) = inner.events.pop_front() {
+            match cur {
+                Some(cur_ev) => {
+                    if cur_ev.supersedes(&ev) {
+                        // queued event is superseded by current one, so discard
+                        // it and look for another which may be relevant.
+                        continue;
+                    } else {
+                        return Some((ev, ctx));
+                    }
+                }
+                None => return Some((ev, ctx)),
+            }
+        }
+        None
+    }
+    fn wait(&self) {
+        let guard = self.inner.lock().unwrap();
+        let _guard = self.cv.wait_while(guard, |g| g.events.is_empty());
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum State {
     /// Initial state.
     Initialize,
-    /// The instance is booting.
-    Boot,
     /// The instance is actively running.
     Run,
     /// The instance is in a paused state such that it may
@@ -49,65 +132,51 @@ pub enum State {
     /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
-    /// to the "Boot" state.
+    /// to the "Run" state.
     Reset,
     /// Terminal state in which the instance is torn down.
     Destroy,
 }
 impl State {
-    fn valid_target(from: &Self, to: &Self) -> bool {
-        if from == to {
-            return true;
-        }
-        match (from, to) {
-            // Anything can set us on the road to destruction
-            (_, State::Destroy) => true,
-            // State begins at initialize, but never returns to it
-            (_, State::Initialize) => false,
-            // State ends at Destroy and cannot leave
-            (State::Destroy, _) => false,
-            // Halt can only go to destroy (covered above), nothing else
-            (State::Halt, _) => false,
-
-            // XXX: more exclusions?
-            (_, _) => true,
-        }
-    }
-    fn next_transition(&self, target: Option<Self>) -> Option<Self> {
-        if let Some(t) = &target {
-            assert!(Self::valid_target(self, t));
-        }
-        let next = match self {
-            State::Initialize => match target {
-                Some(State::Halt) | Some(State::Destroy) => State::Quiesce,
-                None => State::Initialize,
-                _ => State::Boot,
+    fn next(&self, ev: InstEvent) -> (Self, Option<InstEvent>) {
+        match self {
+            State::Initialize => {
+                if matches!(ev, InstEvent::ReqStart) {
+                    (State::Run, None)
+                } else {
+                    // All other events require a quiesce first
+                    (State::Quiesce, Some(ev))
+                }
+            }
+            State::Run => {
+                if matches!(ev, InstEvent::ReqStart) {
+                    // Discard any duplicate start requests when running
+                    (State::Run, None)
+                } else {
+                    // All other events require a quiesce first
+                    (State::Quiesce, Some(ev))
+                }
+            }
+            State::Quiesce => match ev {
+                InstEvent::Halt | InstEvent::ReqHalt => (State::Halt, Some(ev)),
+                InstEvent::Reset | InstEvent::TripleFault => {
+                    (State::Reset, Some(ev))
+                }
+                InstEvent::ReqSave => {
+                    todo!("wire up save/restore")
+                }
+                InstEvent::ReqStart => {
+                    // Reaching quiesce with a "start" event would be odd
+                    panic!("unexpected ReqStart");
+                }
             },
-            State::Boot => match target {
-                None => State::Boot,
-                Some(State::Run) => State::Run,
-                _ => State::Quiesce,
+            State::Halt => (State::Destroy, None),
+            State::Reset => match ev {
+                InstEvent::Halt | InstEvent::ReqHalt => (State::Halt, Some(ev)),
+                InstEvent::Reset | InstEvent::TripleFault => (State::Run, None),
+                _ => (State::Run, Some(ev)),
             },
-            State::Run => match target {
-                None | Some(State::Run) => State::Run,
-                Some(_) => State::Quiesce,
-            },
-            State::Quiesce => match target {
-                Some(State::Halt) | Some(State::Destroy) => State::Halt,
-                Some(State::Reset) => State::Reset,
-                // Machine must go through reset before it can be booted
-                Some(State::Boot) => State::Reset,
-                _ => State::Quiesce,
-            },
-            State::Halt => State::Destroy,
-            State::Reset => State::Boot,
-            State::Destroy => State::Destroy,
-        };
-
-        if next == *self {
-            None
-        } else {
-            Some(next)
+            State::Destroy => (State::Destroy, None),
         }
     }
 }
@@ -115,47 +184,45 @@ impl State {
 struct InstState {
     instance: Option<propolis::Instance>,
     state: State,
-    target: Option<State>,
     vcpu_tasks: Vec<propolis::tasks::TaskCtrl>,
 }
 
-struct Instance {
+struct InstInner {
     state: Mutex<InstState>,
-    boot_generation: AtomicUsize,
+    boot_gen: AtomicUsize,
+    eq: Arc<EventQueue>,
     cv: Condvar,
 }
+
+struct Instance(Arc<InstInner>);
 impl Instance {
-    fn new(pinst: propolis::Instance, log: slog::Logger) -> Arc<Self> {
-        let this = Arc::new(Self {
+    fn new(pinst: propolis::Instance, log: slog::Logger) -> Self {
+        let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
                 instance: Some(pinst),
                 state: State::Initialize,
-                target: None,
                 vcpu_tasks: Vec::new(),
             }),
-            boot_generation: AtomicUsize::new(0),
+            boot_gen: AtomicUsize::new(0),
+            eq: EventQueue::new(),
             cv: Condvar::new(),
-        });
+        }));
 
         // Some gymnastics required for the split borrow through the MutexGuard
-        let mut state_guard = this.state.lock().unwrap();
+        let mut state_guard = this.0.state.lock().unwrap();
         let state = &mut *state_guard;
         let guard = state.instance.as_ref().unwrap().lock();
 
         for vcpu in guard.machine().vcpus.iter().map(Arc::clone) {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
-            let inst_ref = Arc::downgrade(&this);
+
+            let inner = this.0.clone();
             let task_log = log.new(slog::o!("vcpu" => vcpu.id));
             let _ = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
-                    Instance::vcpu_loop(
-                        &inst_ref,
-                        vcpu.as_ref(),
-                        &task,
-                        task_log,
-                    )
+                    Instance::vcpu_loop(inner, vcpu.as_ref(), &task, task_log)
                 })
                 .unwrap();
             state.vcpu_tasks.push(ctrl);
@@ -163,61 +230,90 @@ impl Instance {
         drop(guard);
         drop(state_guard);
 
-        let state_ref = this.clone();
+        let rt_hdl = runtime::Handle::current();
+        let inner = this.0.clone();
         let state_log = log.clone();
         let _ = std::thread::Builder::new()
             .name("state loop".to_string())
-            .spawn(move || Instance::state_loop(state_ref.as_ref(), state_log))
+            .spawn(move || {
+                // Make sure the instance state driver has access to tokio
+                let _rt_guard = rt_hdl.enter();
+                Instance::state_loop(inner, state_log)
+            })
             .unwrap();
 
         this
     }
 
-    fn set_target(&self, target: State) {
-        let mut guard = self.state.lock().unwrap();
-        if State::valid_target(&guard.state, &target) {
-            guard.target = Some(target);
-        }
-        self.cv.notify_all();
-    }
-
     fn device_state_transition(
         state: State,
-        iguard: &propolis::instance::InstanceGuard,
+        inst_guard: &propolis::instance::InstanceGuard,
+        first_boot: bool,
     ) {
-        let _ = iguard
-            .inventory()
-            .for_each_node(
-                propolis::inventory::Order::Pre,
-                |_eid, record| -> std::result::Result<(), ()> {
-                    let ent = record.entity();
-                    match state {
-                        State::Run => ent.start(),
-                        State::Quiesce => ent.pause(),
-                        State::Halt => ent.halt(),
-                        State::Reset => ent.reset(),
-                        _ => panic!(
-                            "invalid device state transition {:?}",
-                            state
-                        ),
+        let inv_guard = inst_guard.inventory().lock();
+
+        for (_eid, record) in inv_guard.iter(propolis::inventory::Order::Pre) {
+            let ent = record.entity();
+            match state {
+                State::Run => {
+                    if first_boot {
+                        ent.start();
+                    } else {
+                        ent.resume();
                     }
-                    Ok(())
-                },
-            )
-            .unwrap();
+                }
+                State::Quiesce => ent.pause(),
+                State::Halt => ent.halt(),
+                State::Reset => ent.reset(),
+                _ => panic!("invalid device state transition {:?}", state),
+            }
+        }
+        if matches!(state, State::Quiesce) {
+            let tasks: futures::stream::FuturesUnordered<
+                BoxFuture<'static, ()>,
+            > = inv_guard
+                .iter(propolis::inventory::Order::Pre)
+                .map(|(_eid, record)| record.entity().paused())
+                .collect();
+            drop(inv_guard);
+
+            // Wait for all of the pause futures to complete
+            tokio::runtime::Handle::current().block_on(async move {
+                use futures::stream::StreamExt;
+                let _: Vec<()> = tasks.collect().await;
+            });
+        }
     }
 
-    fn state_loop(&self, log: slog::Logger) {
-        let mut guard = self.state.lock().unwrap();
+    fn state_loop(inner: Arc<InstInner>, log: slog::Logger) {
+        let mut guard = inner.state.lock().unwrap();
+        let mut cur_ev = None;
+
+        let inst = guard.instance.as_ref().unwrap().lock();
+        inst.machine().vcpu_x86_setup().unwrap();
+        drop(inst);
+
         assert!(matches!(guard.state, State::Initialize));
         loop {
-            guard = self
-                .cv
-                .wait_while(guard, |g| {
-                    g.state.next_transition(g.target).is_none()
-                })
-                .unwrap();
-            let next_state = guard.state.next_transition(guard.target).unwrap();
+            if let Some((next_ev, ctx)) =
+                inner.eq.pop_superseding(cur_ev.as_ref())
+            {
+                slog::info!(&log, "Instance event {:?} ({:?})", next_ev, ctx);
+                cur_ev = Some(next_ev);
+            }
+
+            if cur_ev.is_none() {
+                drop(guard);
+                inner.eq.wait();
+                guard = inner.state.lock().unwrap();
+                continue;
+            }
+
+            let (next_state, resid_ev) = guard.state.next(cur_ev.unwrap());
+            if guard.state == next_state {
+                continue;
+            }
+
             slog::info!(
                 &log,
                 "State transition {:?} -> {:?}",
@@ -228,26 +324,14 @@ impl Instance {
                 State::Initialize => {
                     panic!("initialize state should not be visited again")
                 }
-                State::Boot => {
-                    let inst = guard.instance.as_ref().unwrap().lock();
-                    for vcpu in inst.machine().vcpus.iter() {
-                        vcpu.activate().unwrap();
-                        vcpu.reboot_state().unwrap();
-                        if vcpu.is_bsp() {
-                            vcpu.set_run_state(bhyve_api::VRS_RUN, None)
-                                .unwrap();
-                            vcpu.set_reg(
-                                bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                                0xfff0,
-                            )
-                            .unwrap()
-                        }
-                    }
-                }
                 State::Run => {
                     // start device emulation and vCPUs
                     let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Run, &inst);
+                    Self::device_state_transition(
+                        State::Run,
+                        &inst,
+                        inner.boot_gen.load(Ordering::Acquire) == 0,
+                    );
                     drop(inst);
 
                     // TODO: bail if any vCPU tasks have exited already
@@ -261,21 +345,22 @@ impl Instance {
                         let _ = vcpu_task.hold();
                     }
                     let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Quiesce, &inst);
+                    Self::device_state_transition(State::Quiesce, &inst, false);
                 }
                 State::Halt => {
                     let guard = &mut *guard;
                     let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Halt, &inst);
+                    Self::device_state_transition(State::Halt, &inst, false);
                     for mut vcpu_ctrl in guard.vcpu_tasks.drain(..) {
                         vcpu_ctrl.exit();
                     }
                 }
                 State::Reset => {
                     let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Reset, &inst);
+                    Self::device_state_transition(State::Reset, &inst, false);
                     inst.machine().reinitialize().unwrap();
-                    self.boot_generation.fetch_add(1, Ordering::Release);
+                    inst.machine().vcpu_x86_setup().unwrap();
+                    inner.boot_gen.fetch_add(1, Ordering::Release);
                 }
                 State::Destroy => {
                     // Drop the instance
@@ -287,24 +372,26 @@ impl Instance {
                     // Communicate that destruction is complete
                     slog::info!(&log, "Instance destroyed");
                     guard.state = State::Destroy;
-                    self.cv.notify_all();
+                    inner.cv.notify_all();
                     return;
                 }
             }
             guard.state = next_state;
+            cur_ev = resid_ev;
         }
     }
 
     fn wait_destroyed(&self) {
-        let guard = self.state.lock().unwrap();
+        let guard = self.0.state.lock().unwrap();
         let _guard = self
+            .0
             .cv
             .wait_while(guard, |g| !matches!(g.state, State::Destroy))
             .unwrap();
     }
 
     fn vcpu_loop(
-        this: &Weak<Self>,
+        inner: Arc<InstInner>,
         vcpu: &Vcpu,
         task: &propolis::tasks::TaskHdl,
         log: slog::Logger,
@@ -320,17 +407,11 @@ impl Instance {
                     task.hold();
 
                     // Check if the instance was reinitialized while task was held.
-                    if let Some(inst) = this.upgrade() {
-                        let cur_gen =
-                            inst.boot_generation.load(Ordering::Acquire);
-                        if local_gen != cur_gen {
-                            // Reset occurred, discard any existing entry details.
-                            entry = VmEntry::Run;
-                            local_gen = cur_gen;
-                        }
-                    } else {
-                        // Instance is gone, so bail.
-                        return;
+                    let cur_gen = inner.boot_gen.load(Ordering::Acquire);
+                    if local_gen != cur_gen {
+                        // Reset occurred, discard any existing entry details.
+                        entry = VmEntry::Run;
+                        local_gen = cur_gen;
                     }
                     continue;
                 }
@@ -339,7 +420,7 @@ impl Instance {
                 }
                 None => {}
             }
-            entry = match propolis::vcpu_process(&vcpu, &entry, &log) {
+            entry = match propolis::vcpu_process(vcpu, &entry, &log) {
                 Ok(ent) => ent,
                 Err(e) => match e {
                     VmError::Unhandled(exit) => match exit.kind {
@@ -394,48 +475,74 @@ impl Instance {
                             todo!()
                         }
                     },
-                    VmError::Suspended(suspend) => match suspend {
-                        exits::Suspend::Halt => todo!(),
-                        exits::Suspend::Reset => todo!(),
-                        exits::Suspend::TripleFault => todo!(),
-                    },
+                    VmError::Suspended(suspend) => {
+                        let ctx = EventCtx::Vcpu(vcpu.id);
+                        let ev = match suspend {
+                            exits::Suspend::Halt => InstEvent::Halt,
+                            exits::Suspend::Reset => InstEvent::Reset,
+                            exits::Suspend::TripleFault => {
+                                InstEvent::TripleFault
+                            }
+                        };
+                        inner.eq.push(ev, ctx);
+                        task.force_hold();
+
+                        // The next entry is unimportant as we have queued a
+                        // significant event and halted this vCPU task with the
+                        // expectation that it will be acted upon soon.
+                        VmEntry::Run
+                    }
                     VmError::Io(e) => {
                         slog::error!(&log, "VM entry error {:?}", e,);
-                        todo!()
+
+                        inner.eq.push(
+                            InstEvent::Halt,
+                            EventCtx::Other(format!(
+                                "error {:?} on vcpu {}",
+                                e.raw_os_error().unwrap_or(0),
+                                vcpu.id
+                            )),
+                        );
+                        task.force_hold();
+
+                        VmEntry::Run
                     }
                 },
             };
         }
     }
 
-    fn generate_pins(self: &Arc<Self>) -> (Arc<FuncPin>, Arc<FuncPin>) {
-        let power_ref = Arc::downgrade(self);
+    fn generate_pins(&self) -> (Arc<FuncPin>, Arc<FuncPin>) {
+        let power_eq = self.0.eq.clone();
         let power_pin =
             propolis::intr_pins::FuncPin::new(Box::new(move |rising| {
                 if rising {
-                    if let Some(_inst) = power_ref.upgrade() {
-                        todo!("impl power signal")
-                    }
+                    power_eq.push(
+                        InstEvent::Halt,
+                        EventCtx::Pin("power pin".to_string()),
+                    );
                 }
             }));
-        let reset_ref = Arc::downgrade(self);
+        let reset_eq = self.0.eq.clone();
         let reset_pin =
             propolis::intr_pins::FuncPin::new(Box::new(move |rising| {
                 if rising {
-                    if let Some(_inst) = reset_ref.upgrade() {
-                        todo!("impl reset signal")
-                    }
+                    reset_eq.push(
+                        InstEvent::Reset,
+                        EventCtx::Pin("reset pin".to_string()),
+                    );
                 }
             }));
         (Arc::new(power_pin), Arc::new(reset_pin))
     }
 
     fn lock(&self) -> Option<InnerGuard> {
-        let guard = self.state.lock().unwrap();
-        if guard.instance.is_none() {
-            return None;
-        }
+        let guard = self.0.state.lock().unwrap();
+        guard.instance.as_ref()?;
         Some(InnerGuard(guard))
+    }
+    fn eq(&self) -> Arc<EventQueue> {
+        self.0.eq.clone()
     }
 }
 
@@ -530,7 +637,7 @@ fn populate_rom(
 fn setup_instance(
     config: &config::Config,
     log: &slog::Logger,
-) -> anyhow::Result<(Arc<Instance>, Arc<UDSock>)> {
+) -> anyhow::Result<(Instance, Arc<UDSock>)> {
     let vm_name = &config.main.name;
     let cpus = config.main.cpus;
 
@@ -568,7 +675,7 @@ fn setup_instance(
 
     let (power_pin, reset_pin) = inst.generate_pins();
     let pci_topo =
-        propolis::hw::pci::topology::Builder::new().finish(inv, &machine)?;
+        propolis::hw::pci::topology::Builder::new().finish(inv, machine)?;
     let chipset = i440fx::I440Fx::create(
         machine,
         pci_topo,
@@ -630,7 +737,7 @@ fn setup_instance(
         };
         match driver {
             "pci-virtio-block" => {
-                let (backend, creg) = config::block_backend(&config, dev, &log);
+                let (backend, creg) = config::block_backend(config, dev, log);
                 let bdf = bdf.unwrap();
 
                 let info = backend.info();
@@ -653,7 +760,7 @@ fn setup_instance(
                 chipset.pci_attach(bdf, viona);
             }
             "pci-nvme" => {
-                let (backend, creg) = config::block_backend(&config, dev, &log);
+                let (backend, creg) = config::block_backend(config, dev, log);
                 let bdf = bdf.unwrap();
 
                 let dev_serial = dev
@@ -753,7 +860,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
-    let inst_weak = Arc::downgrade(&inst);
+    let ctrlc_eq = inst.eq();
     let signal_log = log.clone();
     // let signal_rt_handle = rt_handle.clone();
     let mut ctrlc_fired = false;
@@ -764,35 +871,35 @@ fn main() -> anyhow::Result<()> {
         } else {
             ctrlc_fired = true;
         }
-        if let Some(inst) = inst_weak.upgrade() {
-            if snapshot {
-                // if SNAPSHOT.is_completed() {
-                //     slog::warn!(signal_log, "snapshot already in progress");
-                // } else {
-                //     let snap_log = signal_log.new(o!("task" => "snapshot"));
-                //     let snap_rt_handle = signal_rt_handle.clone();
-                //     let config = config.clone();
-                //     SNAPSHOT.call_once(move || {
-                //         snap_rt_handle.spawn(async move {
-                //             if let Err(err) = snapshot::save(
-                //                 snap_log.clone(),
-                //                 inst.clone(),
-                //                 config,
-                //             )
-                //             .await
-                //             .context("Failed to save snapshot of VM")
-                //             {
-                //                 slog::error!(snap_log, "{:?}", err);
-                //                 let _ = inst.set_target_state(ReqState::Halt);
-                //             }
-                //         });
-                //     });
-                // }
-                slog::error!(signal_log, "TODO: wire up snapshot");
-            } else {
-                slog::info!(signal_log, "Destroying instance...");
-                inst.set_target(State::Destroy);
-            }
+        if snapshot {
+            // if SNAPSHOT.is_completed() {
+            //     slog::warn!(signal_log, "snapshot already in progress");
+            // } else {
+            //     let snap_log = signal_log.new(o!("task" => "snapshot"));
+            //     let snap_rt_handle = signal_rt_handle.clone();
+            //     let config = config.clone();
+            //     SNAPSHOT.call_once(move || {
+            //         snap_rt_handle.spawn(async move {
+            //             if let Err(err) = snapshot::save(
+            //                 snap_log.clone(),
+            //                 inst.clone(),
+            //                 config,
+            //             )
+            //             .await
+            //             .context("Failed to save snapshot of VM")
+            //             {
+            //                 slog::error!(snap_log, "{:?}", err);
+            //                 let _ = inst.set_target_state(ReqState::Halt);
+            //             }
+            //         });
+            //     });
+            // }
+            ctrlc_eq
+                .push(InstEvent::ReqSave, EventCtx::User("Ctrl+C".to_string()));
+        } else {
+            slog::info!(signal_log, "Destroying instance...");
+            ctrlc_eq
+                .push(InstEvent::ReqHalt, EventCtx::User("Ctrl+C".to_string()));
         }
     })
     .context("Failed to register Ctrl-C signal handler.")?;
@@ -803,7 +910,10 @@ fn main() -> anyhow::Result<()> {
 
     // Let the VM start and we're off to the races
     slog::info!(log, "Starting instance...");
-    inst.set_target(State::Run);
+    inst.eq().push(
+        InstEvent::ReqStart,
+        EventCtx::User("UDS connection".to_string()),
+    );
 
     // wait for instance to be destroyed
     inst.wait_destroyed();
