@@ -51,7 +51,7 @@ use crate::{
     migrate::MigrateError,
     serial::Serial,
     server::StaticConfig,
-    vcpu_tasks::{VcpuEventHandler, VcpuTasks},
+    vcpu_tasks::VcpuTasks,
 };
 
 #[derive(Debug, Error)]
@@ -362,7 +362,7 @@ impl WorkerStateInner {
 }
 
 #[derive(Debug)]
-struct WorkerState {
+pub(crate) struct WorkerState {
     inner: Mutex<WorkerStateInner>,
     cv: Condvar,
 }
@@ -396,14 +396,14 @@ pub struct VmController {
     this: Weak<Self>,
 }
 
-impl super::vcpu_tasks::VcpuEventHandler for WorkerState {
-    fn suspend_halt_event(&self, vcpu_id: i32) {
+impl WorkerState {
+    pub(crate) fn suspend_halt_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner.guest_event_queue.push_back(GuestEvent::VcpuSuspendHalt(vcpu_id));
         self.cv.notify_one();
     }
 
-    fn suspend_reset_event(&self, vcpu_id: i32) {
+    pub(crate) fn suspend_reset_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner
             .guest_event_queue
@@ -411,7 +411,7 @@ impl super::vcpu_tasks::VcpuEventHandler for WorkerState {
         self.cv.notify_one();
     }
 
-    fn suspend_triple_fault_event(&self, vcpu_id: i32) {
+    pub(crate) fn suspend_triple_fault_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner
             .guest_event_queue
@@ -419,7 +419,7 @@ impl super::vcpu_tasks::VcpuEventHandler for WorkerState {
         self.cv.notify_one();
     }
 
-    fn unhandled_vm_exit(
+    pub(crate) fn unhandled_vm_exit(
         &self,
         vcpu_id: i32,
         exit: propolis::exits::VmExitKind,
@@ -427,7 +427,7 @@ impl super::vcpu_tasks::VcpuEventHandler for WorkerState {
         panic!("vCPU {}: Unhandled VM exit: {:?}", vcpu_id, exit);
     }
 
-    fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
+    pub(crate) fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
         panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
     }
 }
@@ -516,7 +516,7 @@ impl VmController {
         init.initialize_cpus()?;
         let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
             instance_inner,
-            worker_state.clone() as Arc<dyn VcpuEventHandler>,
+            worker_state.clone(),
             runtime_hdl.clone(),
             log.new(slog::o!("component" => "vcpu_tasks")),
         )?;

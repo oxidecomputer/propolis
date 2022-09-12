@@ -35,9 +35,9 @@ pub trait VcpuEventHandler: Send + Sync {
 }
 
 impl VcpuTasks {
-    pub fn new(
+    pub(crate) fn new(
         instance: propolis::instance::InstanceGuard,
-        event_handler: Arc<dyn VcpuEventHandler>,
+        event_handler: Arc<super::vm::WorkerState>,
         runtime: tokio::runtime::Handle,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
@@ -107,7 +107,7 @@ impl VcpuTasks {
     fn vcpu_loop(
         vcpu: &Vcpu,
         task: &propolis::tasks::TaskHdl,
-        event_handler: Arc<dyn VcpuEventHandler>,
+        event_handler: Arc<super::vm::WorkerState>,
         generation: Arc<AtomicUsize>,
         log: slog::Logger,
     ) {
