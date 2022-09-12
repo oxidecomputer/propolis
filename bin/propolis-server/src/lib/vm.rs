@@ -156,7 +156,8 @@ pub(crate) struct VmObjects {
     /// A map of the instance's active Crucible backends.
     crucible_backends: BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>,
 
-    /// The receiver side of a single-producer notification channel driven
+    /// A notification receiver to which the state worker publishes the most
+    /// recent instance state and state generation.
     monitor_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
 }
 
@@ -270,7 +271,8 @@ enum ExternalRequest {
     /// graceful reboot and does not coordinate with guest software.
     Reboot,
 
-    /// Halts the VM.
+    /// Halts the VM. Note that this is not a graceful shutdown and does not
+    /// coordinate with guest software.
     Stop,
 }
 
@@ -462,6 +464,9 @@ impl VmController {
         runtime_hdl: tokio::runtime::Handle,
     ) -> anyhow::Result<Arc<Self>> {
         let vmm_log = log.new(slog::o!("component" => "vmm"));
+
+        // Set up the 'shell' instance into which the rest of this routine will
+        // add components.
         let instance = build_instance(
             &properties.id.to_string(),
             &instance_spec,
@@ -469,6 +474,9 @@ impl VmController {
             vmm_log,
         )?;
 
+        // Create the state monitor channel and the worker state struct that
+        // depends on it. The state struct can then be passed to device
+        // initialization as an event sink.
         let (monitor_tx, monitor_rx) =
             tokio::sync::watch::channel(ApiMonitoredState {
                 gen: 0,
@@ -479,7 +487,7 @@ impl VmController {
             cv: Condvar::new(),
         });
 
-        // Set up a machine initializer for the rest of the routine to use.
+        // Create and initialize devices in the new instance.
         let instance_inner = instance.lock();
         let inv = instance_inner.inventory();
         let machine = instance_inner.machine();
@@ -496,6 +504,7 @@ impl VmController {
         let chipset = init.initialize_chipset(
             &(worker_state.clone() as Arc<dyn ChipsetEventHandler>),
         )?;
+
         let com1 = Arc::new(init.initialize_uart(&chipset)?);
         init.initialize_ps2(&chipset)?;
         init.initialize_qemu_debug_port()?;
@@ -505,7 +514,6 @@ impl VmController {
         let framebuffer_id = init.initialize_fwcfg(instance_spec.board.cpus)?;
         let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);
         init.initialize_cpus()?;
-
         let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
             instance_inner,
             worker_state.clone() as Arc<dyn VcpuEventHandler>,
@@ -513,6 +521,7 @@ impl VmController {
             log.new(slog::o!("component" => "vcpu_tasks")),
         )?;
 
+        // The instance is fully set up; pass it to the new controller.
         let controller = Arc::new_cyclic(|this| Self {
             vm_objects: VmObjects {
                 instance,
@@ -530,6 +539,8 @@ impl VmController {
             this: this.clone(),
         });
 
+        // Now that the controller exists, clone a reference to it and launch
+        // the state worker.
         let ctrl_for_worker = controller.clone();
         let log_for_worker =
             log.new(slog::o!("component" => "vm_state_worker"));
@@ -895,6 +906,13 @@ impl VmController {
                         ApiInstanceState::Migrating,
                     );
 
+                    // The controller API should have updated the lifecycle
+                    // stage prior to queuing this work, and neither it nor the
+                    // worker should have allowed any other stage to be written
+                    // at this point. (Specifically, the API shouldn't allow a
+                    // migration in to start after the VM enters the "running"
+                    // portion of its lifecycle, from which the worker may need
+                    // to tweak lifecycle stages itself.)
                     assert!(matches!(
                         inner.lifecycle_stage,
                         LifecycleStage::NotStarted(
@@ -904,9 +922,10 @@ impl VmController {
 
                     drop(inner);
 
-                    // Ensure the vCPUs are activated properly before importing
-                    // their state so that they can enter the guest
-                    // post-migration.
+                    // Ensure the vCPUs are activated properly so that they can
+                    // enter the guest after migration. Do this before launching
+                    // the migration task so that reset doesn't overwrite the
+                    // state written by migration.
                     self.reset_vcpus(&vcpu_tasks, &log);
                     next_lifecycle = Some(
                         match self.migrate_as_target(
@@ -956,6 +975,7 @@ impl VmController {
                         &mut gen,
                         ApiInstanceState::Migrating,
                     );
+
                     drop(inner);
 
                     match self.migrate_as_source(
@@ -1137,6 +1157,15 @@ impl VmController {
                         let mut inner = self.worker_state.inner.lock().unwrap();
                         inner.migration_state =
                             Some((migration_id, ApiMigrationState::Error));
+                    } else {
+                        assert!(matches!(
+                            self.worker_state
+                                .inner
+                                .lock()
+                                .unwrap()
+                                .migration_state,
+                            Some((_, ApiMigrationState::Finish))
+                        ));
                     }
                     return res;
                 }
@@ -1190,7 +1219,7 @@ impl VmController {
             Ok(())
         });
 
-        // Wait either for the migration task to exit it or for it to ask the
+        // Wait either for the migration task to exit or for it to ask the
         // worker to pause or resume the instance's entities.
         let mut paused = false;
         loop {
@@ -1206,12 +1235,24 @@ impl VmController {
                 // If migration failed while entities were paused, this instance
                 // is allowed to resume, so resume its components here.
                 MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_err() && paused {
-                        self.resume_entities(log);
-                        vcpu_tasks.resume_all();
-                        let mut inner = self.worker_state.inner.lock().unwrap();
-                        inner.migration_state =
-                            Some((migration_id, ApiMigrationState::Error));
+                    if res.is_err() {
+                        if paused {
+                            self.resume_entities(log);
+                            vcpu_tasks.resume_all();
+                            let mut inner =
+                                self.worker_state.inner.lock().unwrap();
+                            inner.migration_state =
+                                Some((migration_id, ApiMigrationState::Error));
+                        }
+                    } else {
+                        assert!(matches!(
+                            self.worker_state
+                                .inner
+                                .lock()
+                                .unwrap()
+                                .migration_state,
+                            Some((_, ApiMigrationState::Finish))
+                        ));
                     }
                     return res;
                 }
