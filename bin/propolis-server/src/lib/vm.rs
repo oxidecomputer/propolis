@@ -650,10 +650,11 @@ impl VmController {
     /// its connection to the source by calling `upgrade_fn` to obtain a future
     /// that yields the necessary connection.
     ///
-    /// This routine fails if the VM has already been started or if a previous
+    /// This routine fails if the VM has already begun to run or if a previous
     /// migration in was attempted (regardless of its outcome). Note that this
     /// routine does not fail if the future returned from `upgrade_fn`
-    /// subsequently fails to produce a connection to the destination.
+    /// subsequently fails to produce a connection to the destination (though
+    /// the migration attempt will then fail).
     ///
     /// On success, clients may query the instance's migration status to
     /// determine how the migration has progressed.
