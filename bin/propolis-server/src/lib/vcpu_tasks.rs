@@ -72,11 +72,12 @@ impl VcpuTasks {
             task.hold().unwrap();
         }
 
-        let task_futures: Vec<_> =
+        let task_futures: futures::stream::FuturesUnordered<_> =
             self.tasks.iter_mut().map(|t| t.0.held()).collect();
-        let results = self
-            .rt
-            .block_on(async { futures::future::join_all(task_futures).await });
+        let results: Vec<Result<_, _>> = self.rt.block_on(async {
+            use futures::StreamExt;
+            task_futures.collect().await
+        });
 
         if let Some(e) = results.iter().find(|r| r.is_err()) {
             panic!("Failed to pause all vCPU tasks: {:?}", e);
@@ -176,13 +177,6 @@ impl VcpuTasks {
                         }
                     },
                     VmError::Suspended(suspend) => {
-                        // This vCPU will not successfully re-enter the guest
-                        // until the state worker does something about the
-                        // suspend condition, so hold the task until it does so.
-                        //
-                        // N.B. This usage assumes that it is safe for the VM
-                        //      controller to ask the task to hold again.
-                        task.force_hold();
                         match suspend {
                             exits::Suspend::Halt => {
                                 event_handler.suspend_halt_event(vcpu.id);
@@ -195,6 +189,17 @@ impl VcpuTasks {
                                     .suspend_triple_fault_event(vcpu.id);
                             }
                         }
+
+                        // This vCPU will not successfully re-enter the guest
+                        // until the state worker does something about the
+                        // suspend condition, so hold the task until it does so.
+                        // Note that this blocks the task immediately.
+                        //
+                        // N.B. This usage assumes that it is safe for the VM
+                        //      controller to ask the task to hold again (which
+                        //      may occur if a separate pausing event is
+                        //      serviced in parallel on the state worker).
+                        task.force_hold();
                         VmEntry::Run
                     }
                     VmError::Io(e) => {
