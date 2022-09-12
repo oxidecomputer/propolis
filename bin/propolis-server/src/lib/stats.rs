@@ -1,6 +1,6 @@
 //! Methods for starting an Oximeter endpoint and gathering server-level stats.
 
-// Copyirght 2022 Oxide Computer Company
+// Copyright 2022 Oxide Computer Company
 
 use anyhow::anyhow;
 use dropshot::{ConfigDropshot, ConfigLogging, ConfigLoggingLevel};
