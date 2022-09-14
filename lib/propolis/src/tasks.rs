@@ -9,9 +9,9 @@ pub type NotifyFn = dyn Fn() + Send + Sync + 'static;
 
 #[derive(Default)]
 struct Control {
-    /// Waker for a future polling on events via [`TaskHdl`]
+    /// Waker for a future polling on events via [TaskHdl]
     waker_task: Option<Waker>,
-    /// Waker for a future polling on events via [`TaskCtrl`]
+    /// Waker for a future polling on events via [TaskCtrl]
     waker_ctrl: Option<Waker>,
     should_exit: bool,
     should_hold: bool,
@@ -117,6 +117,8 @@ pub enum Event {
     Exit,
 }
 
+/// Handle held by a task, used to heed requests (via its corresponding
+/// [TaskCtrl]) to hold or exit execution.
 pub struct TaskHdl(Arc<Inner>);
 impl TaskHdl {
     pub fn new(notify_fn: Option<Box<NotifyFn>>) -> (Self, TaskCtrl) {
@@ -141,6 +143,7 @@ impl TaskHdl {
         (Self(inner), ctrl)
     }
 
+    /// Check for a pending control event for this task.
     pub fn pending_event(&self) -> Option<Event> {
         let ctrl = self.0.ctrl.lock().unwrap();
         if ctrl.should_exit {
@@ -151,6 +154,9 @@ impl TaskHdl {
             None
         }
     }
+
+    /// Enter this task into a `held` state.  It will return when the task has
+    /// been requested to exit or when no request for a hold remains.
     pub fn hold(&self) {
         let mut guard = self.0.ctrl.lock().unwrap();
         if guard.should_exit || !guard.should_hold {
@@ -164,6 +170,10 @@ impl TaskHdl {
             cv.wait_while(guard, |g| g.should_hold && !g.should_exit).unwrap();
         guard.is_held = false;
     }
+
+    /// Immediately force the task into a `held` state, as if the [TaskCtrl] had
+    /// requested such a hold.  Like [TaskHdl::hold], it will return when an
+    /// exit is requested, or the requested hold is cleared.
     pub fn force_hold(&self) {
         let mut guard = self.0.ctrl.lock().unwrap();
         if guard.should_exit {
@@ -180,9 +190,19 @@ impl TaskHdl {
         guard.is_held = false;
     }
 
+    /// Async interface equivalent to [TaskHdl::hold]
+    ///
+    /// Places the task in the `held` state while the future is pending.
+    ///
+    /// The future will become [ready](Poll::ready) when the task is requested
+    /// to exit, or the hold request is cleared.
     pub async fn wait_held(&mut self) {
         Held::new(self).await
     }
+
+    /// Async interface equivalent to [TaskHdl::pending_event]
+    ///
+    /// Emits a result when a `hold` or `exit` request is made on this task.
     pub async fn get_event(&mut self) -> Event {
         GetEvent::new(self).await
     }
@@ -277,8 +297,11 @@ pub enum Error {
     HoldInterrupted,
 }
 
+/// Exercise control of a task via requests through its [TaskHdl]
 pub struct TaskCtrl(Weak<Inner>);
 impl TaskCtrl {
+    /// Clear any requested hold on the task.  It will fail if the task has been
+    /// requested to exit (via [TaskCtrl::exit]) or has exited on its own.
     pub fn run(&mut self) -> Result<(), Error> {
         let inner = self.0.upgrade().ok_or_else(|| Error::Exited)?;
         let mut guard = inner.ctrl.lock().unwrap();
@@ -289,6 +312,9 @@ impl TaskCtrl {
             Ok(())
         }
     }
+
+    /// Request that the task enter the `held` state.  This will return when the
+    /// task enters such a state, or (for whatever reason) has exited.
     pub fn hold(&mut self) -> Result<(), Error> {
         let inner = self.0.upgrade().ok_or_else(|| Error::Exited)?;
         let mut guard = inner.ctrl.lock().unwrap();
@@ -312,12 +338,19 @@ impl TaskCtrl {
             }
         }
     }
+    /// Request that the task exit.  Returns immediately, without waiting for
+    /// said exit to actually occur.
     pub fn exit(&mut self) {
         if let Some(inner) = self.0.upgrade() {
             let guard = inner.ctrl.lock().unwrap();
             inner.request_exit(guard);
         }
     }
+
+    /// Async interface equivalent to [TaskCtrl::hold]
+    ///
+    /// Requests that the task enter the `held` state.  The future becomes
+    /// [ready](Poll::Ready) when the task enters `held` state or exits.
     pub async fn held(&mut self) -> Result<(), Error> {
         CtrlHeld::new(self).await
     }
