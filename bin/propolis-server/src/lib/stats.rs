@@ -12,6 +12,7 @@ use oximeter::{
 use oximeter_producer::{Config, Server};
 use slog::{error, info, Logger};
 
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -101,7 +102,8 @@ pub async fn start_oximeter_server(
     config: &MetricsEndpointConfig,
     plog: Logger,
 ) -> anyhow::Result<Server> {
-    let my_address = config.propolis_addr;
+    // Request an ephemeral port on which to serve metrics.
+    let my_address = SocketAddr::new(config.propolis_addr.ip(), 0);
     let registration_address = config.metric_addr;
     info!(
         plog,
