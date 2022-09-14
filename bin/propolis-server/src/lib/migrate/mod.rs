@@ -212,7 +212,7 @@ pub async fn source_start(
 
     let controller = tokio::sync::MutexGuard::try_map(
         rqctx.context().services.vm.lock().await,
-        VmControllerState::controller_mut,
+        VmControllerState::as_controller,
     )
     .map_err(|_| MigrateError::InstanceNotInitialized)?;
 

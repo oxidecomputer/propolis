@@ -77,11 +77,19 @@ pub enum VmControllerState {
 
     /// No VM controller exists. The attached value describes that instance's
     /// properties.
+    ///
+    /// Distinguishing this state from `NotCreated` allows the server to discard
+    /// the active `VmController` on instance stop while still being able to
+    /// service get requests for the instance. (If this were not needed, or the
+    /// server were willing to preserve the `VmController` after halt, this enum
+    /// could be replaced with an `Option`.)
     Destroyed(propolis_client::api::Instance),
 }
 
 impl VmControllerState {
-    pub fn controller_mut(&mut self) -> Option<&mut Arc<VmController>> {
+    /// Maps this `VmControllerState` into a mutable reference to its internal
+    /// `VmController` if a controller is active.
+    pub fn as_controller(&mut self) -> Option<&mut Arc<VmController>> {
         match self {
             VmControllerState::NotCreated => None,
             VmControllerState::Created(c) => Some(c),
@@ -89,7 +97,9 @@ impl VmControllerState {
         }
     }
 
-    pub fn take_vm(&mut self) -> Option<Arc<VmController>> {
+    /// Takes the active `VmController` if one is present and replaces it with
+    /// `VmControllerState::Destroyed`.
+    pub fn take_controller(&mut self) -> Option<Arc<VmController>> {
         if let VmControllerState::Created(vm) = self {
             let inst = propolis_client::api::Instance {
                 properties: vm.properties().clone(),
@@ -118,11 +128,20 @@ pub struct ServiceProviders {
     /// `None` until a guest is created via `instance_ensure`.
     pub vm: Mutex<VmControllerState>,
 
+    /// The currently active serial console handling task, if present.
     serial_task: Mutex<Option<super::serial::SerialTask>>,
 
+    /// The host task for this Propolis server's Oximeter server.
     oximeter_server_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// The metrics wrapper for "server-level" metrics, i.e., metrics that are
+    /// tracked by the server itself (as opposed to being tracked by a component
+    /// within an instance).
     oximeter_stats: Mutex<Option<crate::stats::ServerStatsOuter>>,
 
+    /// The VNC server hosted within this process. Note that this server always
+    /// exists irrespective of whether there is an instance. Creating an
+    /// instance hooks this server up to the instance's framebuffer.
     vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
 }
 
@@ -130,7 +149,7 @@ impl ServiceProviders {
     /// Directs the current set of per-instance service providers to stop in an
     /// orderly fashion, then drops them all.
     async fn stop(&self, log: &Logger) {
-        if let Some(vm) = self.vm.lock().await.take_vm() {
+        if let Some(vm) = self.vm.lock().await.take_controller() {
             slog::info!(log, "Dropping instance";
                         "strong_refs" => Arc::strong_count(&vm),
                         "weak_refs" => Arc::weak_count(&vm));
@@ -187,7 +206,7 @@ impl DropshotEndpointContext {
     ) -> Result<MappedMutexGuard<Arc<VmController>>, HttpError> {
         MutexGuard::try_map(
             self.services.vm.lock().await,
-            VmControllerState::controller_mut,
+            VmControllerState::as_controller,
         )
         .map_err(|_| {
             HttpError::for_internal_error(
@@ -373,7 +392,10 @@ async fn instance_ensure(
         let vnc_server = vnc_server_ref.lock().await;
 
         // Give the Propolis VNC adapter a back pointer to the VNC server to
-        // allow it to update pixel formats.
+        // allow them to communicate bidirectionally: the VNC server pulls data
+        // from the Propolis adapter using the adapter's `rfb::server` impl, and
+        // the Propolis adapter pushes data (e.g. pixel format and resolution
+        // changes) to the VNC server using the adapter's public interface.
         //
         // N.B. Cloning `vnc_server` (the server guarded by the mutex) is
         //      correct here because the `rfb::VncServer` type is just a wrapper
