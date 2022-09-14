@@ -52,7 +52,7 @@ impl VcpuTasks {
                 .spawn(move || {
                     Self::vcpu_loop(
                         vcpu.as_ref(),
-                        &task,
+                        task,
                         task_event_handler,
                         task_gen,
                         task_log,
@@ -93,7 +93,7 @@ impl VcpuTasks {
 
     fn vcpu_loop(
         vcpu: &Vcpu,
-        task: &propolis::tasks::TaskHdl,
+        task: propolis::tasks::TaskHdl,
         event_handler: Arc<super::vm::WorkerState>,
         generation: Arc<AtomicUsize>,
         log: slog::Logger,
