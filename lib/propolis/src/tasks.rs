@@ -9,7 +9,9 @@ pub type NotifyFn = dyn Fn() + Send + Sync + 'static;
 
 #[derive(Default)]
 struct Control {
+    /// Waker for a future polling on events via [`TaskHdl`]
     waker_task: Option<Waker>,
+    /// Waker for a future polling on events via [`TaskCtrl`]
     waker_ctrl: Option<Waker>,
     should_exit: bool,
     should_hold: bool,
@@ -28,6 +30,9 @@ impl Control {
     }
 }
 struct Inner {
+    /// The `Control` of a task can be manipulated from both sync and async
+    /// contexts.  Care should be taken not to otherwise block while holding the
+    /// mutex guard, as it could cause an undue stall for any async pollers.
     ctrl: Mutex<Control>,
     cv: Condvar,
     notify_fn: Option<Box<NotifyFn>>,
@@ -66,7 +71,7 @@ impl Inner {
 
     /// Call notifier function (if one exists) for task.
     ///
-    /// This notification may access synchronously access resources which would
+    /// This notification may synchronously access resources which would
     /// otherwise be exclusive of the `MutexGuard` held on the [`Control`], so
     /// the said guard _must_ be dropped while calling the notifier.
     fn notify_task<'a>(
