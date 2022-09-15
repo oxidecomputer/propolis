@@ -346,6 +346,20 @@ impl WorkerStateInner {
     }
 }
 
+impl Drop for WorkerStateInner {
+    fn drop(&mut self) {
+        // Send a final state monitor message indicating that the instance is
+        // destroyed. Normally, the existence of this structure implies the
+        // instance of at least one receiver, but at this point everything is
+        // being dropped, so this call to `send` is not safe to unwrap.
+        let gen = self.api_state.borrow().gen + 1;
+        let _ = self.api_state.send(ApiMonitoredState {
+            gen,
+            state: ApiInstanceState::Destroyed,
+        });
+    }
+}
+
 impl WorkerStateInner {
     fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
         Self {

@@ -75,15 +75,26 @@ pub enum VmControllerState {
     /// A VM controller exists.
     Created(Arc<VmController>),
 
-    /// No VM controller exists. The attached value describes that instance's
-    /// properties.
+    /// No VM controller exists.
     ///
     /// Distinguishing this state from `NotCreated` allows the server to discard
     /// the active `VmController` on instance stop while still being able to
     /// service get requests for the instance. (If this were not needed, or the
     /// server were willing to preserve the `VmController` after halt, this enum
     /// could be replaced with an `Option`.)
-    Destroyed(propolis_client::api::Instance),
+    Destroyed {
+        /// A copy of the instance properties recorded at the time the instance
+        /// was destroyed, used to serve subsequent `instance_get` requests.
+        last_instance: api::Instance,
+
+        /// A clone of the receiver side of the server's state watcher, used to
+        /// serve subsequent `instance_state_monitor` requests. Note that an
+        /// outgoing controller can publish new state changes even after the
+        /// server has dropped its reference to it (its state worker may
+        /// continue running for a time).
+        watcher:
+            tokio::sync::watch::Receiver<api::InstanceStateMonitorResponse>,
+    },
 }
 
 impl VmControllerState {
@@ -93,7 +104,7 @@ impl VmControllerState {
         match self {
             VmControllerState::NotCreated => None,
             VmControllerState::Created(c) => Some(c),
-            VmControllerState::Destroyed(_) => None,
+            VmControllerState::Destroyed { .. } => None,
         }
     }
 
@@ -101,16 +112,22 @@ impl VmControllerState {
     /// `VmControllerState::Destroyed`.
     pub fn take_controller(&mut self) -> Option<Arc<VmController>> {
         if let VmControllerState::Created(vm) = self {
-            let inst = propolis_client::api::Instance {
+            let last_instance = propolis_client::api::Instance {
                 properties: vm.properties().clone(),
                 state: propolis_client::api::InstanceState::Destroyed,
                 disks: vec![],
                 nics: vec![],
             };
 
-            if let VmControllerState::Created(vm) =
-                std::mem::replace(self, VmControllerState::Destroyed(inst))
-            {
+            // The server is about to drop its reference to the controller, but
+            // the controller may continue changing state while it tears itself
+            // down. Grab a clone of the state watcher channel for subsequent
+            // calls to `instance_state_monitor` to use.
+            let watcher = vm.state_watcher().clone();
+            if let VmControllerState::Created(vm) = std::mem::replace(
+                self,
+                VmControllerState::Destroyed { last_instance, watcher },
+            ) {
                 Some(vm)
             } else {
                 unreachable!()
@@ -467,7 +484,9 @@ async fn instance_get(
                 nics: vec![],
             }
         }
-        VmControllerState::Destroyed(inst) => inst.clone(),
+        VmControllerState::Destroyed { last_instance, .. } => {
+            last_instance.clone()
+        }
     };
 
     Ok(HttpResponseOk(propolis_client::api::InstanceGetResponse {
@@ -483,15 +502,41 @@ async fn instance_state_monitor(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceStateMonitorRequest>,
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
+    let ctx = rqctx.context();
     let gen = request.into_inner().gen;
-    let mut state_watcher = rqctx.context().vm().await?.state_watcher().clone();
+    let mut state_watcher = {
+        // N.B. This lock must be dropped before entering the loop below.
+        let vm_state = ctx.services.vm.lock().await;
+        match &*vm_state {
+            VmControllerState::NotCreated => {
+                return Err(HttpError::for_internal_error(
+                    "Server not initialized (no instance)".to_string(),
+                ));
+            }
+            VmControllerState::Created(vm) => vm.state_watcher().clone(),
+            VmControllerState::Destroyed { watcher, .. } => watcher.clone(),
+        }
+    };
 
     loop {
         let last = state_watcher.borrow().clone();
         if gen <= last.gen {
             return Ok(HttpResponseOk(last));
         }
-        state_watcher.changed().await.unwrap();
+
+        // An error from `changed` indicates that the sender was destroyed,
+        // which means that the generation number will never change again, which
+        // means it will never reach the number the client wants it to reach.
+        // Inform the client of this condition so it doesn't wait forever.
+        state_watcher.changed().await.map_err(|_| {
+            HttpError::for_unavail(
+                None,
+                format!(
+                    "No instance present; will never reach generation {}",
+                    gen
+                ),
+            )
+        })?;
     }
 }
 
