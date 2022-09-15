@@ -1,14 +1,16 @@
 use async_trait::async_trait;
 use propolis::common::GuestAddr;
+use propolis::hw::ps2ctrl::PS2Ctrl;
 use propolis::hw::qemu::ramfb::{Config, FramebufferSpec};
 use propolis::Instance;
 use rfb::encodings::RawEncoding;
 use rfb::pixel_formats::fourcc;
 use rfb::rfb::{
-    FramebufferUpdate, ProtoVersion, Rectangle, SecurityType, SecurityTypes,
+    FramebufferUpdate, KeyEvent, ProtoVersion, Rectangle, SecurityType,
+    SecurityTypes,
 };
 use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
-use slog::{debug, error, info, o, Logger};
+use slog::{debug, error, info, o, trace, Logger};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -44,6 +46,7 @@ enum Framebuffer {
 
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
+    ps2ctrl: Option<Arc<PS2Ctrl>>,
     vnc_server: Option<VncServer<PropolisVncServer>>,
     instance: Option<Arc<Instance>>,
 }
@@ -62,6 +65,7 @@ impl PropolisVncServer {
                     width: initial_width,
                     height: initial_height,
                 }),
+                ps2ctrl: None,
                 vnc_server: None,
                 instance: None,
             })),
@@ -72,11 +76,13 @@ impl PropolisVncServer {
     pub async fn initialize(
         &self,
         fb: RamFb,
+        ps2ctrl: Arc<PS2Ctrl>,
         instance: Arc<Instance>,
         vnc_server: VncServer<Self>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
+        inner.ps2ctrl = Some(ps2ctrl);
         inner.vnc_server = Some(vnc_server);
         inner.instance = Some(instance);
     }
@@ -166,6 +172,18 @@ impl Server for PropolisVncServer {
         };
 
         fb
+    }
+
+    async fn keyevent(&self, ke: KeyEvent) {
+        let inner = self.inner.lock().await;
+        let ps2 = inner.ps2ctrl.as_ref();
+
+        if ps2.is_some() {
+            trace!(self.log, "keyevent: {:?}", ke);
+            ps2.unwrap().keyevent(ke);
+        } else {
+            trace!(self.log, "guest not initialized; dropping keyevent");
+        }
     }
 }
 

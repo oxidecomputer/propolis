@@ -404,6 +404,9 @@ async fn instance_ensure(
         let fb_spec = ramfb.get_framebuffer_spec();
         let vnc_fb = crate::vnc::RamFb::new(fb_spec);
 
+        // Get a reference to the PS2 controller so that we can pass keyboard input.
+        let ps2ctrl = vm.ps2ctrl().unwrap();
+
         // Get a reference to the outward-facing VNC server in this process.
         let vnc_server_ref = server_context.services.vnc_server.clone();
         let vnc_server = vnc_server_ref.lock().await;
@@ -423,7 +426,12 @@ async fn instance_ensure(
         //      implement its behavior.
         vnc_server
             .server
-            .initialize(vnc_fb, vm.instance().clone(), vnc_server.clone())
+            .initialize(
+                vnc_fb,
+                Arc::clone(ps2ctrl),
+                vm.instance().clone(),
+                vnc_server.clone(),
+            )
             .await;
 
         let notifier_server_ref = vnc_server_ref.clone();

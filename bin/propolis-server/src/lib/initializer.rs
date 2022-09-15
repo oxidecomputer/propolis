@@ -240,11 +240,11 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_ps2(
         &self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    ) -> Result<EntityID, Error> {
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(&self.machine.bus_pio, chipset.device().as_ref());
-        self.inv.register(&ps2_ctrl)?;
-        Ok(())
+        let id = self.inv.register(&ps2_ctrl)?;
+        Ok(id)
     }
 
     pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
