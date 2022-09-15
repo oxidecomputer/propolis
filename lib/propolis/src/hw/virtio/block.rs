@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
@@ -192,7 +191,7 @@ impl block::Device for PciVirtioBlock {
         &self,
         _op: block::Operation,
         res: block::Result,
-        payload: Box<dyn Any>,
+        payload: Box<block::BlockPayload>,
     ) {
         let mut chain: Box<Chain> =
             payload.downcast().expect("payload must be correct type");

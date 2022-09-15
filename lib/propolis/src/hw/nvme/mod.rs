@@ -628,10 +628,7 @@ impl PciNvme {
         let cur = state.ctrl.cc;
         if new.enabled() && !cur.enabled() {
             let mem = self.mem_access();
-            if mem.is_none() {
-                return Err(NvmeError::MemoryInaccessible);
-            }
-            let mem = mem.unwrap();
+            let mem = mem.ok_or(NvmeError::MemoryInaccessible)?;
 
             // Get the controller ready to service requests
             if let Err(e) = state.enable(&mem) {

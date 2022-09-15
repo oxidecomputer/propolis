@@ -176,7 +176,7 @@ pub trait Device: Send + Sync + 'static {
     fn next(&self) -> Option<Request>;
 
     /// Complete processing of result
-    fn complete(&self, op: Operation, res: Result, payload: Box<dyn Any>);
+    fn complete(&self, op: Operation, res: Result, payload: Box<BlockPayload>);
 
     /// Get an accessor to guest memory via the underlying device
     fn accessor_mem(&self) -> MemAccessor;
@@ -394,7 +394,6 @@ impl Notifier {
     /// - this object has an active notification channel, and
     /// - this object is not tracking any outstanding requests.
     pub fn resume(&self) {
-        assert_eq!(self.outstanding.count.load(Ordering::Relaxed), 0);
         self.outstanding.remove_notifier();
         let paused = self.paused.swap(false, Ordering::Release);
         assert!(paused);
@@ -451,7 +450,7 @@ impl Driver {
             let worker_self = Arc::clone(&self.inner);
             let worker_be = be.clone();
             let _join = std::thread::Builder::new()
-                .name(format!("{} {i}", &self.name))
+                .name(format!("{} {i}", self.name))
                 .spawn(move || {
                     worker_self.process_requests(&mut task, worker_be);
                 })?;

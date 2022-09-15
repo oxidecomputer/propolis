@@ -238,9 +238,9 @@ impl VirtQueue {
     pub fn pop_avail(&self, chain: &mut Chain, mem: &MemCtx) -> Option<u32> {
         assert!(chain.idx.is_none());
         let mut avail = self.avail.lock().unwrap();
-        let id = avail.read_next_avail(self.size, &mem)?;
+        let id = avail.read_next_avail(self.size, mem)?;
 
-        let mut desc = avail.read_ring_descr(id, self.size, &mem)?;
+        let mut desc = avail.read_ring_descr(id, self.size, mem)?;
         let mut flags = DescFlag::from_bits_truncate(desc.flags);
         let mut count = 0;
         let mut len = 0;
@@ -264,7 +264,7 @@ impl VirtQueue {
                     return None;
                 }
                 if let Some(next) =
-                    avail.read_ring_descr(desc.next, self.size, &mem)
+                    avail.read_ring_descr(desc.next, self.size, mem)
                 {
                     desc = next;
                     flags = DescFlag::from_bits_truncate(desc.flags);
@@ -318,8 +318,8 @@ impl VirtQueue {
         // XXX: for now, just go off of the write stats
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         probes::virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
-        used.write_used(id, len, self.size, &mem);
-        if !used.intr_supressed(&mem) {
+        used.write_used(id, len, self.size, mem);
+        if !used.intr_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
                 intr.notify();
             }
@@ -342,7 +342,7 @@ impl VirtQueue {
     /// Send an interrupt for VQ
     pub(super) fn send_intr(&self, mem: &MemCtx) {
         let used = self.used.lock().unwrap();
-        if !used.intr_supressed(&mem) {
+        if !used.intr_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
                 intr.notify();
             }

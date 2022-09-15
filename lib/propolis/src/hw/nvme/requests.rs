@@ -1,8 +1,6 @@
-use std::any::Any;
-
 use crate::{
     accessors::{opt_guard, MemAccessor},
-    block::{self, Operation, Request, Result as BlockResult},
+    block::{self, BlockPayload, Operation, Request, Result as BlockResult},
     hw::nvme::{bits, cmds::Completion},
 };
 
@@ -22,7 +20,12 @@ impl block::Device for PciNvme {
         self.notifier.next_arming(|| self.next_req())
     }
 
-    fn complete(&self, op: Operation, res: BlockResult, payload: Box<dyn Any>) {
+    fn complete(
+        &self,
+        op: Operation,
+        res: BlockResult,
+        payload: Box<BlockPayload>,
+    ) {
         let mut payload: Box<CompletionPayload> =
             payload.downcast().expect("payload must be correct type");
         self.complete_req(op, res, &mut payload);

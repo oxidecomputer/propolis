@@ -136,6 +136,15 @@ impl Entity for InMemoryBackend {
     fn start(&self) {
         self.driver.start();
     }
+    fn pause(&self) {
+        self.driver.pause();
+    }
+    fn resume(&self) {
+        self.driver.resume();
+    }
+    fn halt(&self) {
+        self.driver.halt();
+    }
 }
 
 /// Read from bytes into guest memory
