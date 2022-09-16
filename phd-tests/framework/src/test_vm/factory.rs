@@ -123,15 +123,19 @@ impl VmFactory {
         info!(?opts, "Building VM factory");
         let (guest_path, kind) = store
             .get_guest_image_by_name(&opts.default_guest_image_artifact)
-            .ok_or(FactoryConstructionError::DefaultGuestImageMissing(
-                opts.default_guest_image_artifact.clone(),
-            ))?;
+            .ok_or_else(|| {
+                FactoryConstructionError::DefaultGuestImageMissing(
+                    opts.default_guest_image_artifact.clone(),
+                )
+            })?;
 
         let bootrom_path = store
             .get_bootrom_by_name(&opts.default_bootrom_artifact)
-            .ok_or(FactoryConstructionError::DefaultBootromMissing(
-                opts.default_bootrom_artifact.clone(),
-            ))?;
+            .ok_or_else(|| {
+                FactoryConstructionError::DefaultBootromMissing(
+                    opts.default_bootrom_artifact.clone(),
+                )
+            })?;
 
         let first_port = opts.server_port_range.start;
         Ok(Self {

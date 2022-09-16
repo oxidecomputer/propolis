@@ -52,7 +52,7 @@ thread_local! {
 }
 
 /// Executes a set of tests using the supplied test context.
-pub fn run_tests_with_ctx<'fix>(
+pub fn run_tests_with_ctx(
     ctx: &TestContext,
     mut fixtures: TestFixtures,
     run_opts: &RunOptions,
@@ -75,7 +75,7 @@ pub fn run_tests_with_ctx<'fix>(
         failed_test_cases: Vec::new(),
     };
 
-    if executions.len() == 0 {
+    if executions.is_empty() {
         info!("No tests selected for execution");
         return stats;
     }
@@ -105,7 +105,7 @@ pub fn run_tests_with_ctx<'fix>(
         }
 
         stats.tests_not_run -= 1;
-        let test_outcome = std::panic::catch_unwind(|| execution.tc.run(&ctx))
+        let test_outcome = std::panic::catch_unwind(|| execution.tc.run(ctx))
             .unwrap_or_else(|_| {
                 PANIC_MSG.with(|val| TestOutcome::Failed(val.take()))
             });

@@ -33,7 +33,7 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
     // `return Ok(())` to allow a test to pass early.
     let fn_vis = item_fn.vis.clone();
     let fn_sig = item_fn.sig.clone();
-    let fn_block = item_fn.block.clone();
+    let fn_block = item_fn.block;
     let remade_fn = quote! {
         #fn_vis #fn_sig -> TestOutcome {
             match || -> phd_testcase::Result<()> {

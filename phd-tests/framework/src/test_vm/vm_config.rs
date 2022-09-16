@@ -58,15 +58,14 @@ impl VmConfig {
     ) -> Result<()> {
         // TODO: Change this to use instance specs when Propolis has an API that
         // accepts those.
-        let bootrom: PathBuf = self.bootrom_path.clone().into();
+        let bootrom: PathBuf = self.bootrom_path.clone();
         let chipset = config::Chipset { options: BTreeMap::default() };
 
         let mut device_map: BTreeMap<String, config::Device> = BTreeMap::new();
         let mut backend_map: BTreeMap<String, config::BlockDevice> =
             BTreeMap::new();
 
-        let mut disk_idx = 0;
-        for disk in &self.disks {
+        for (disk_idx, disk) in self.disks.iter().enumerate() {
             let backend_name = format!("block{}", disk_idx);
             let backend = config::BlockDevice {
                 bdtype: "file".to_string(),
@@ -96,11 +95,9 @@ impl VmConfig {
 
             device_map.insert(device_name, device);
             backend_map.insert(backend_name, backend);
-            disk_idx += 1;
         }
 
-        let mut vnic_idx = 0;
-        for vnic in &self.nics {
+        for (vnic_idx, vnic) in self.nics.iter().enumerate() {
             let device_name = format!("viona{}", vnic_idx);
             let device = config::Device {
                 driver: "pci-virtio-viona".to_string(),
@@ -114,7 +111,6 @@ impl VmConfig {
             };
 
             device_map.insert(device_name, device);
-            vnic_idx += 1;
         }
 
         let config = config::Config::new(

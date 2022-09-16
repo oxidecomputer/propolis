@@ -287,7 +287,7 @@ impl ArtifactStore {
             let _guard = span.enter();
             if let Err(e) = metadata.check_local_artifact(
                 &self.local_root,
-                self.remote_root.as_ref().map(|s| s.as_str()),
+                self.remote_root.as_deref(),
             ) {
                 error!(?e, "Metadata check failed");
                 all_ok = false;
@@ -296,7 +296,7 @@ impl ArtifactStore {
 
         all_ok
             .then(|| ())
-            .ok_or(ArtifactStoreError::ArtifactContentsInvalid().into())
+            .ok_or_else(|| ArtifactStoreError::ArtifactContentsInvalid().into())
     }
 }
 

@@ -90,7 +90,7 @@ impl TestVm {
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
-        let server_addr = process_params.server_addr.clone();
+        let server_addr = process_params.server_addr;
         let server = server::PropolisServer::new(process_params)?;
 
         let client_decorator = slog_term::TermDecorator::new().stdout().build();
@@ -291,7 +291,7 @@ impl TestVm {
                     || -> Result<(), backoff::Error<anyhow::Error>> {
                         let state = self
                             .get_migration_state(migration_id)
-                            .map_err(|e| backoff::Error::Permanent(e))?;
+                            .map_err(backoff::Error::Permanent)?;
                         match state {
                             MigrationState::Finish => {
                                 info!("Migration completed successfully");
@@ -312,8 +312,10 @@ impl TestVm {
                         }
                     };
 
-                let mut backoff = backoff::ExponentialBackoff::default();
-                backoff.max_elapsed_time = Some(timeout_duration);
+                let backoff = backoff::ExponentialBackoff {
+                    max_elapsed_time: Some(timeout_duration),
+                    ..Default::default()
+                };
                 backoff::retry(backoff, watch_migrate)
                     .map_err(|e| anyhow!("error during migration: {}", e))?;
             }
@@ -347,11 +349,8 @@ impl TestVm {
         );
 
         let wait_fn = || -> Result<(), backoff::Error<anyhow::Error>> {
-            let current = self
-                .get()
-                .map_err(|e| backoff::Error::Permanent(e))?
-                .instance
-                .state;
+            let current =
+                self.get().map_err(backoff::Error::Permanent)?.instance.state;
             if current == target {
                 Ok(())
             } else {
@@ -366,8 +365,10 @@ impl TestVm {
             }
         };
 
-        let mut backoff = backoff::ExponentialBackoff::default();
-        backoff.max_elapsed_time = Some(timeout_duration);
+        let backoff = backoff::ExponentialBackoff {
+            max_elapsed_time: Some(timeout_duration),
+            ..Default::default()
+        };
         backoff::retry(backoff, wait_fn)
             .map_err(|e| anyhow!("error waiting for instance state: {}", e))
     }
@@ -433,13 +434,13 @@ impl TestVm {
             self.wait_for_serial_output_async(line, timeout_duration).await
         })?;
 
-        received.ok_or(
+        received.ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "Channel unexpectedly closed while waiting for string",
             )
-            .into(),
-        )
+            .into()
+        })
     }
 
     async fn wait_for_serial_output_async(
@@ -475,7 +476,7 @@ impl TestVm {
         self.send_serial_str(cmd)?;
 
         let mut echo_cmd = cmd.to_string();
-        echo_cmd.push_str("\n");
+        echo_cmd.push('\n');
 
         self.wait_for_serial_output(&echo_cmd, Duration::from_secs(15))?;
         let mut out = self.wait_for_serial_output(
