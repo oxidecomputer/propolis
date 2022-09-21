@@ -32,7 +32,7 @@ use std::{
 
 use oximeter::types::ProducerRegistry;
 use propolis::{
-    hw::{ps2ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
+    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     Instance,
 };
 use propolis_client::{

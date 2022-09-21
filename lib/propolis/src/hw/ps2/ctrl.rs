@@ -23,20 +23,22 @@ use super::keyboard::KeyEventRep;
 ///
 ///     I/O PORTS
 ///
-///     There are two I/O ports: a control port (0x64) and a data port (0x60). These ports may
-///     be used by are the OS to send commands to the controller and PS/2 devices; the controller can
-///     respond to commands; and the controller can send device data such as keyboard data to the OS.
+///     There are two I/O ports: a control port (0x64) and a data port (0x60).
+///     These ports may be used by are the OS to send commands to the controller
+///     and PS/2 devices; the controller can respond to commands; and the
+///     controller can send device data such as keyboard data to the OS.
 ///
 ///     Control Port:
 ///     - Reads will read from the Controller Status Register ([CtrlStatus]).
-///     - Writes will be interpreted as commands to the controller. See `PS2C_CMD_*` for example
-///     commands. Some commands require an additional byte, which should be written to the data
-///     port.
+///     - Writes will be interpreted as commands to the controller. See
+///     `PS2C_CMD_*` for example commands. Some commands require an additional
+///     byte, which should be written to the data port.
 ///
 ///     Data Port:
-///     - Reads may return responses to commands, or device data, depending on the state of the
-///     controller.
-///     - Writes are interpreted as command data for outstanding commands, or as commands to devices.
+///     - Reads may return responses to commands, or device data, depending on
+///     the state of the controller.
+///     - Writes are interpreted as command data for outstanding commands, or as
+///     commands to devices.
 ///
 ///     REGISTERS
 ///
@@ -45,30 +47,33 @@ use super::keyboard::KeyEventRep;
 ///     - output buffer: can be read by the CPU by reading the data port
 ///     - controller status register ([CtrlStatus])
 ///
-///     The input buffer is not directly represented, as our hardware is virtual as well. See
-///     [CtrlOutPort] for the output buffer representation.
+///     The input buffer is not directly represented, as our hardware is virtual
+///     as well. See [CtrlOutPort] for the output buffer representation.
 ///
 ///     CONFIGURATION
 ///
-///     The OS may read and write from the Controller Configuration Byte, which lives at byte 0 in
-///     the PS/2 internal RAM. See [CtrlCfg].
+///     The OS may read and write from the Controller Configuration Byte, which
+///     lives at byte 0 in the PS/2 internal RAM. See [CtrlCfg].
 ///
 /// INTERRUPTS
 ///
-/// Interrupts are edge-triggered, so we pulse the interrupt to notify the guest of outgoing data.
+/// Interrupts are edge-triggered, so we pulse the interrupt to notify the guest
+/// of outgoing data.
 ///
 /// INTERACTION WITH VNC
 ///
-/// Instead of reacting to an input buffer, the controller is notified of input keyboard data via
-/// the VNC server. VNC uses keysyms to represent keys; internally, we must convert these to scan
+/// Instead of reacting to an input buffer, the controller is notified of input
+/// keyboard data via the VNC server. VNC uses keysyms to represent keys;
+/// internally, we must convert these to scan
 /// codes from a keyboard.
 ///
-/// The flow looks like this. An end user interacting with a guest over VNC presses a key. The
-/// local VNC client sends its associated keysym and whether the key is pressed in a VNC key event
-/// message. The propolis VNC server for the guest receives the message, and will pass the key
-/// event to the controller, which translates the keysym into a scan code representation, then
-/// places the scan code in the output buffer. The controller also notifies the guest via a
-/// keyboard interrupt.
+/// The flow looks like this. An end user interacting with a guest over VNC
+/// presses a key. The local VNC client sends its associated keysym and whether
+/// the key is pressed in a VNC key event message. The propolis VNC server for
+/// the guest receives the message, and will pass the key event to the
+/// controller, which translates the keysym into a scan code representation,
+/// then places the scan code in the output buffer. The controller also notifies
+/// the guest via a keyboard interrupt.
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -93,29 +98,29 @@ mod probes {
 bitflags! {
     /// Controller Status Register
     ///
-    /// An 8-bit register indicating the status of the controller, accessed by reading from the
-    /// Control Port.
+    /// An 8-bit register indicating the status of the controller, accessed by
+    /// reading from the Control Port.
     #[derive(Default)]
     pub struct CtrlStatus: u8 {
         /// Output Buffer Status
-        /// This bit must be set to 1 (indicating the buffer is full) before the OS attempts to
-        /// read data from the data port.
+        /// This bit must be set to 1 (indicating the buffer is full) before the
+        /// OS attempts to read data from the data port.
         const OUT_FULL = 1 << 0;
 
         /// Input Buffer Status
-        /// 0 if the input buffer is empty; 1 if the input buffer is full and shouldn't be written
-        ///   to by the OS.
+        /// 0 if the input buffer is empty; 1 if the input buffer is full and
+        /// shouldn't be written to by the OS.
         /// XXX(JPH): Not sure if this should be used somewhere.
         const IN_FULL = 1 << 1;
 
         /// System Flag
-        /// This bit should be cleared to 0 by the controller on reset, and set to 1 if the system
-        /// passes self tests.
+        /// This bit should be cleared to 0 by the controller on reset, and set
+        /// to 1 if the system passes self tests.
         const SYS_FLAG = 1 << 2;
 
         /// Command/Data
-        /// 1 if the last write to the input buffer (data port) was a command; 0 if the last write to the input
-        ///   buffer was data.
+        /// 1 if the last write to the input buffer (data port) was a command; 0
+        ///   if the last write to the input buffer was data.
         const CMD_DATA = 1 << 3;
 
         /// Keyboard Locked
@@ -155,7 +160,8 @@ bitflags! {
         const AUX_CLOCK_DIS = 1 << 5;
 
         /// Primary Port Translation (1 = enabled, 0 = disabled)
-        /// If enabled, the controller should translate keyboard data to scan code set 1.
+        /// If enabled, the controller should translate keyboard data to scan
+        /// code set 1.
         const PRI_XLATE_EN = 1 << 6;
 
         // bit 7: must be 0
@@ -287,7 +293,7 @@ impl PS2Ctrl {
         state.reset_pin = Some(chipset.reset_pin());
     }
 
-    pub fn keyevent(&self, ke: KeyEvent) {
+    pub fn key_event(&self, ke: KeyEvent) {
         let mut state = self.state.lock().unwrap();
         let translate = state.ctrl_cfg.contains(CtrlCfg::PRI_XLATE_EN);
         let key_rep;
@@ -660,7 +666,6 @@ const PS2K_R_SELF_TEST_PASS: u8 = 0xaa;
 
 const PS2K_TYPEMATIC_MASK: u8 = 0x7f;
 
-// XXX(JPH): Is there a reason this needs to be this size?
 const PS2_KBD_BUFSZ: usize = 16;
 
 pub(crate) enum PS2ScanCodeSet {

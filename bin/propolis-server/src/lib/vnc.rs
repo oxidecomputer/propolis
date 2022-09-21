@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use propolis::common::GuestAddr;
-use propolis::hw::ps2ctrl::PS2Ctrl;
+use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::ramfb::{Config, FramebufferSpec};
 use propolis::Instance;
 use rfb::encodings::RawEncoding;
@@ -174,13 +174,13 @@ impl Server for PropolisVncServer {
         fb
     }
 
-    async fn keyevent(&self, ke: KeyEvent) {
+    async fn key_event(&self, ke: KeyEvent) {
         let inner = self.inner.lock().await;
         let ps2 = inner.ps2ctrl.as_ref();
 
-        if ps2.is_some() {
+        if let Some(ps2) = ps2 {
             trace!(self.log, "keyevent: {:?}", ke);
-            ps2.unwrap().keyevent(ke);
+            ps2.key_event(ke);
         } else {
             trace!(self.log, "guest not initialized; dropping keyevent");
         }

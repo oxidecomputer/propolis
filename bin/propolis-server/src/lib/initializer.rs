@@ -15,7 +15,7 @@ use propolis::hw::chipset::i440fx::I440Fx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
-use propolis::hw::ps2ctrl::PS2Ctrl;
+use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};

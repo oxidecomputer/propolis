@@ -91,22 +91,22 @@ pub const SC1_F11: u8 = 0x57;
 pub const SC1_F12: u8 = 0x58;
 
 pub const SC1_KP_ENTER: u8 = 0x1c;
-pub const SC1_KP_DEL_PERIOD: u8 = 0x71;
+pub const SC1_KP_DEL_PERIOD: u8 = 0x53;
 
 // Gray keys
 pub const SC1_KP_SLASH: u8 = 0x35;
 pub const SC1_KP_ASTERISK: u8 = 0x37;
 pub const SC1_KP_MINUS: u8 = 0x4a;
 pub const SC1_KP_PLUS: u8 = 0x4e;
-pub const SC1_DOWN: u8 = 0x72;
-pub const SC1_LEFT: u8 = 0x6b;
-pub const SC1_RIGHT: u8 = 0x74;
-pub const SC1_UP: u8 = 0x75;
+pub const SC1_DOWN: u8 = 0x50;
+pub const SC1_LEFT: u8 = 0x4b;
+pub const SC1_RIGHT: u8 = 0x4d;
+pub const SC1_UP: u8 = 0x48;
 pub const SC1_HOME: u8 = 0x47;
 pub const SC1_INSERT: u8 = 0x52;
 pub const SC1_END: u8 = 0x4f;
-pub const SC1_PGUP: u8 = 0x7d;
-pub const SC1_PGDN: u8 = 0xf1;
+pub const SC1_PGUP: u8 = 0x49;
+pub const SC1_PGDN: u8 = 0x51;
 
 pub const SC1_CTRL_LEFT: u8 = 0x1d;
 pub const SC1_CTRL_RIGHT: u8 = 0x1d;

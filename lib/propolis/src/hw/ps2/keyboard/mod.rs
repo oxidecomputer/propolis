@@ -4,33 +4,36 @@ mod scan_code_2;
 use std::convert::TryFrom;
 
 use anyhow::{anyhow, Result};
-use ascii::AsciiChar;
-use rfb::keysym::Keysym::{self, *};
+use rfb::keysym::AsciiChar;
+use rfb::keysym::KeySym::{self, *};
 use rfb::rfb::KeyEvent;
 
-use super::ps2ctrl::PS2ScanCodeSet;
 use scan_code_1::*;
 use scan_code_2::*;
 
-/// A struct that contains all information necessary to construct a scan code for multiple scan
-/// code sets, as scan codes from all sets have a similar structure.
+use super::ctrl::PS2ScanCodeSet;
+
+/// A struct that contains all information necessary to construct a scan code
+/// for multiple scan code sets, as scan codes from all sets have a similar
+/// structure.
 ///
-/// Keyboards send a "make" code when a key is pressed, and a "break" code when a key is
-/// released.
+/// Keyboards send a "make" code when a key is pressed, and a "break" code when
+/// a key is released.
 ///
-/// A key's make code is generally 1 byte, which here is referred to as the "base value" of the
-/// scan code. Some keys are represented by the "extended" set of codes, which have a prefix code
-/// indicating to the controller that the next byte is also relevant. A handful of keys, for
-/// backwards compatibility reasons, are represented by multiple scan codes.
+/// A key's make code is generally 1 byte, which here is referred to as the
+/// "base value" of the scan code. Some keys are represented by the "extended"
+/// set of codes, which have a prefix code indicating to the controller that the
+/// next byte is also relevant. A handful of keys, for backwards compatibility
+/// reasons, are represented by multiple scan codes.
 ///
 /// So possible make codes are:
 /// - 1 byte: [base value]
 /// - 2 bytes: [extended prefix] + [base value]
 /// - multibyte sequences composed of 2 or more make codes
 ///
-/// A key's break code varies by scan code set. For Set 1, the highest bit of the make code base
-/// value is set. For Set 2, an additional release code is sent ahead of the make code, but after
-/// the extended prefix if one is used.
+/// A key's break code varies by scan code set. For Set 1, the highest bit of
+/// the make code base value is set. For Set 2, an additional release code is
+/// sent ahead of the make code, but after the extended prefix if one is used.
 ///
 /// So possible break codes for Scan Code Set 1 are:
 /// - 1 byte: [base value | release flag]
@@ -51,12 +54,13 @@ pub struct ScanCodeBase {
     prefix: Option<Vec<u8>>,
 }
 
-// A representation of a key event that allows us to map keysyms, which are a much richer
-// diversity of keys, to representation in scan codes, the set of which is more limited.
+// A representation of a key event that allows us to map keysyms, which are a
+// much richer diversity of keys, to representation in scan codes, the set of
+// which is more limited.
 #[derive(Debug)]
 pub struct KeyEventRep {
     pub keysym_val: u32,
-    pub keysym: Keysym,
+    pub keysym: KeySym,
     pub is_pressed: bool,
     pub scan_code_1: ScanCodeBase,
     pub scan_code_2: ScanCodeBase,
@@ -71,8 +75,8 @@ impl KeyEventRep {
             PS2ScanCodeSet::Set2 => &self.scan_code_2,
         };
 
-        if sc.prefix.is_some() {
-            bytes.append(&mut sc.prefix.as_ref().unwrap().clone());
+        if let Some(prefix) = &sc.prefix {
+            bytes.extend(prefix);
         }
 
         if self.is_pressed {
@@ -281,7 +285,7 @@ impl TryFrom<KeyEvent> for KeyEventRep {
             Keypad9 | KeypadPgUp => (SC1_9_PGUP, SC2_9_PGUP),
 
             // Keys we're choosing to drop explicitly for now
-            FunctionKey(_) | Pause | Menu | Unknown(_) => (0x0, 0x0),
+            FunctionKey(_) | Pause | Menu => (0x0, 0x0),
         };
 
         if matches!((base_val_1, base_val_2), (0x0, 0x0)) {
@@ -293,17 +297,15 @@ impl TryFrom<KeyEvent> for KeyEventRep {
 
         let prefix_1 = match keyevent.keysym {
             AltRight | ControlRight | Home | Insert | End | PageUp
-            | PageDown | KeypadSlash | KeypadEnter | SuperLeft | SuperRight => {
-                Some(vec![SC1_EXTENDED_PREFIX_0])
-            }
+            | PageDown | KeypadSlash | KeypadEnter | SuperLeft | SuperRight
+            | Left | Right | Up | Down => Some(vec![SC1_EXTENDED_PREFIX_0]),
             _ => None,
         };
 
         let prefix_2 = match keyevent.keysym {
             AltRight | ControlRight | Home | Insert | End | PageUp
-            | PageDown | KeypadSlash | KeypadEnter | SuperLeft | SuperRight => {
-                Some(vec![SC2_EXTENDED_PREFIX_0])
-            }
+            | PageDown | KeypadSlash | KeypadEnter | SuperLeft | SuperRight
+            | Left | Right | Up | Down => Some(vec![SC2_EXTENDED_PREFIX_0]),
             _ => None,
         };
 
