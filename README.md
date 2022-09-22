@@ -143,10 +143,13 @@ are some options to get up-and-running quickly:
 
 #### OVMF
 
-Using a bootrom from Linux works here - you can either build
-your own [OVMF](https://wiki.ubuntu.com/UEFI/OVMF), or you
-can use a pre-built, which you can get [here](https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE.fd)
- or by running:
+The recommended prebuilt bootrom is available
+[here](https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE_20220922.fd).
+Rename this file to `OVMF_CODE.fd` to use it with the example configuration
+below.
+
+You can also [build your own OVMF image](https://wiki.ubuntu.com/UEFI/OVMF) or
+obtain one from a Linux installation by running:
 
 ```bash
 $ sudo apt-get install ovmf && dpkg -L ovmf | grep OVMF_CODE.fd

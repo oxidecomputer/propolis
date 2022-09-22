@@ -3,7 +3,7 @@ rust.binary_names = ["propolis-server"]
 rust.release = true
 service_name = "propolis-server"
 zone = true
-blobs = [ "alpine.iso", "OVMF_CODE.fd" ]
+blobs = [ "alpine.iso", "OVMF_CODE_20220922.fd" ]
 [[package.propolis-server.paths]]
 from = "packaging/smf/propolis-server"
 to = "/var/svc/manifest/site/propolis-server"
