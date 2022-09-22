@@ -23,7 +23,7 @@ usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 anyhow = "1"
-rfb = { git = "https://github.com/oxidecomputer/rfb", branch = "main" }
+rfb = { git = "https://github.com/oxidecomputer/rfb" }
 slog = "2.7"
 serde = { version = "1" }
 serde_arrays = "0.1"

@@ -4,7 +4,7 @@ pub mod ibmpc;
 pub mod ids;
 pub mod nvme;
 pub mod pci;
-pub mod ps2ctrl;
+pub mod ps2;
 pub mod qemu;
 pub mod uart;
 pub mod virtio;

@@ -32,7 +32,7 @@ use std::{
 
 use oximeter::types::ProducerRegistry;
 use propolis::{
-    hw::{qemu::ramfb::RamFb, uart::LpcUart},
+    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     Instance,
 };
 use propolis_client::{
@@ -152,6 +152,9 @@ pub(crate) struct VmObjects {
 
     /// An optional reference to the guest's virtual framebuffer.
     framebuffer: Option<Arc<RamFb>>,
+
+    /// An optional reference to the guest's virtual ps2 controller.
+    ps2ctrl: Option<Arc<PS2Ctrl>>,
 
     /// A map of the instance's active Crucible backends.
     crucible_backends: BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>,
@@ -520,7 +523,8 @@ impl VmController {
         )?;
 
         let com1 = Arc::new(init.initialize_uart(&chipset)?);
-        init.initialize_ps2(&chipset)?;
+        let ps2ctrl_id = init.initialize_ps2(&chipset)?;
+        let ps2ctrl: Option<Arc<PS2Ctrl>> = inv.get_concrete(ps2ctrl_id);
         init.initialize_qemu_debug_port()?;
         init.initialize_network_devices(&chipset)?;
         let crucible_backends =
@@ -542,6 +546,7 @@ impl VmController {
                 spec: instance_spec,
                 com1,
                 framebuffer,
+                ps2ctrl,
                 crucible_backends,
                 monitor_rx,
             },
@@ -586,6 +591,10 @@ impl VmController {
 
     pub fn framebuffer(&self) -> Option<&Arc<RamFb>> {
         self.vm_objects.framebuffer.as_ref()
+    }
+
+    pub fn ps2ctrl(&self) -> Option<&Arc<PS2Ctrl>> {
+        self.vm_objects.ps2ctrl.as_ref()
     }
 
     pub fn crucible_backends(

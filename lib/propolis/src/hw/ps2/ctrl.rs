@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::convert::TryFrom;
 use std::mem::replace;
 use std::sync::{Arc, Mutex};
 
@@ -10,42 +11,189 @@ use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
+use rfb::rfb::KeyEvent;
+
+use super::keyboard::KeyEventRep;
+
+/// PS/2 Controller (Intel 8042) Emulation
+///
+/// Here we emulate both the PS/2 controller and a virtual keyboard device.
+///
+/// CONTROLLER OVERVIEW
+///
+///     I/O PORTS
+///
+///     There are two I/O ports: a control port (0x64) and a data port (0x60).
+///     These ports may be used by are the OS to send commands to the controller
+///     and PS/2 devices; the controller can respond to commands; and the
+///     controller can send device data such as keyboard data to the OS.
+///
+///     Control Port:
+///     - Reads will read from the Controller Status Register ([CtrlStatus]).
+///     - Writes will be interpreted as commands to the controller. See
+///     `PS2C_CMD_*` for example commands. Some commands require an additional
+///     byte, which should be written to the data port.
+///
+///     Data Port:
+///     - Reads may return responses to commands, or device data, depending on
+///     the state of the controller.
+///     - Writes are interpreted as command data for outstanding commands, or as
+///     commands to devices.
+///
+///     REGISTERS
+///
+///     There are 3 8-bit registers involved in communicating with the CPU:
+///     - input buffer: can be written by the CPU by writing to either port
+///     - output buffer: can be read by the CPU by reading the data port
+///     - controller status register ([CtrlStatus])
+///
+///     The input buffer is not directly represented, as our hardware is virtual
+///     as well. See [CtrlOutPort] for the output buffer representation.
+///
+///     CONFIGURATION
+///
+///     The OS may read and write from the Controller Configuration Byte, which
+///     lives at byte 0 in the PS/2 internal RAM. See [CtrlCfg].
+///
+/// INTERRUPTS
+///
+/// Interrupts are edge-triggered, so we pulse the interrupt to notify the guest
+/// of outgoing data.
+///
+/// INTERACTION WITH VNC
+///
+/// Instead of reacting to an input buffer, the controller is notified of input
+/// keyboard data via the VNC server. VNC uses keysyms to represent keys;
+/// internally, we must convert these to scan codes from a keyboard.
+///
+/// The flow looks like this. An end user interacting with a guest over VNC
+/// presses a key. The local VNC client sends its associated keysym and whether
+/// the key is pressed in a VNC key event message. The propolis VNC server for
+/// the guest receives the message, and will pass the key event to the
+/// controller, which translates the keysym into a scan code representation,
+/// then places the scan code in the output buffer. The controller also notifies
+/// the guest via a keyboard interrupt.
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn ps2ctrl_keyevent(
+        keysym_raw: u32,
+        scan_code_set: u8,
+        s0: u8,
+        s1: u8,
+        s2: u8,
+        s3: u8,
+    ) {
+    }
+
+    fn ps2ctrl_keyevent_dropped(
+        keysym_raw: u32,
+        is_pressed: u8,
+        scan_code_set: u8,
+    ) {
+    }
+}
 
 bitflags! {
+    /// Controller Status Register
+    ///
+    /// An 8-bit register indicating the status of the controller, accessed by
+    /// reading from the Control Port.
     #[derive(Default)]
     pub struct CtrlStatus: u8 {
+        /// Output Buffer Status
+        /// This bit must be set to 1 (indicating the buffer is full) before the
+        /// OS attempts to read data from the data port.
         const OUT_FULL = 1 << 0;
+
+        /// Input Buffer Status
+        /// 0 if the input buffer is empty; 1 if the input buffer is full and
+        /// shouldn't be written to by the OS.
+        /// XXX(JPH): Not sure if this should be used somewhere.
         const IN_FULL = 1 << 1;
+
+        /// System Flag
+        /// This bit should be cleared to 0 by the controller on reset, and set
+        /// to 1 if the system passes self tests.
         const SYS_FLAG = 1 << 2;
+
+        /// Command/Data
+        /// 1 if the last write to the input buffer (data port) was a command; 0
+        ///   if the last write to the input buffer was data.
         const CMD_DATA = 1 << 3;
+
+        /// Keyboard Locked
         const UNLOCKED = 1 << 4;
+
+        /// Auxiliary Output Buffer contains data
         const AUX_FULL = 1 << 5;
+
+        /// Timeout Error (0 = no error, 1 = timeout error)
         const TMO = 1 << 6;
+
+        /// Parity Error with last byte (0 = no error, 1 = timeout error)
         const PARITY = 1 << 7;
     }
 }
 
 bitflags! {
+    /// Controller Configuration Byte
+    /// The OS can read and write this byte to configure the controller.
     #[derive(Default)]
     pub struct CtrlCfg: u8 {
+        /// Primary Port Interrupt (1 = enabled, 0 = disabled)
         const PRI_INTR_EN = 1 << 0;
+
+        /// Auxiliary Port Interrupt (1 = enabled, 0 = disabled)
         const AUX_INTR_EN = 1 << 1;
+
+        /// System Flag (1 = system tests passed)
         const SYS_FLAG = 1 << 2;
+
+        // bit 3: must be 0
+
+        /// Primary Port Clock (1 = disabled, 0 = enabled)
         const PRI_CLOCK_DIS = 1 << 4;
+
+        /// Auxiliary Port Clock (1 = disabled, 0 = enabled)
         const AUX_CLOCK_DIS = 1 << 5;
+
+        /// Primary Port Translation (1 = enabled, 0 = disabled)
+        /// If enabled, the controller should translate keyboard data to scan
+        /// code set 1.
         const PRI_XLATE_EN = 1 << 6;
+
+        // bit 7: must be 0
     }
 }
 
 bitflags! {
+    /// Controller Output Port
     #[derive(Default)]
     pub struct CtrlOutPort: u8 {
+        // bit 0: system reset
+        // should always be set to 1
+        // XXX(JPH): why does this work
+
+        /// A20 Gate
         const A20 = 1 << 1;
+
+        /// Auxiliary Port Clock
         const AUX_CLOCK = 1 << 2;
+
+        /// Auxiliary Port Data
         const AUX_DATA = 1 << 3;
+
+        /// Primary Port Output Buffer Full
         const PRI_FULL = 1 << 4;
+
+        /// Auxiliary Port Output Buffer Full
         const AUX_FULL = 1 << 5;
+
+        /// Primary Port Clock
         const PRI_CLOCK = 1 << 6;
+
+        /// Primary Port Data
         const PRI_DATA = 1 << 7;
 
         // PRI_FULL and AUX_FULL are dynamic
@@ -53,29 +201,55 @@ bitflags! {
     }
 }
 
+// Controller Commands
+
+// Read/write Controller Configuration Byte (byte 0 of controller internal RAM)
 const PS2C_CMD_READ_CTRL_CFG: u8 = 0x20;
 const PS2C_CMD_WRITE_CTRL_CFG: u8 = 0x60;
+
+// Read byte N from controller internal RAM, where N is in the range: 0x21-0x3f
 const PS2C_CMD_READ_RAM_START: u8 = 0x21;
 const PS2C_CMD_READ_RAM_END: u8 = 0x3f;
+
+// Write byte N from controller internal RAM, where N is in the range: 0x21-0x3f
 const PS2C_CMD_WRITE_RAM_START: u8 = 0x61;
 const PS2C_CMD_WRITE_RAM_END: u8 = 0x7f;
+
+// Disable/enable auxiliary port
 const PS2C_CMD_AUX_PORT_DIS: u8 = 0xa7;
 const PS2C_CMD_AUX_PORT_ENA: u8 = 0xa8;
+
+// Test auxiliary port
 const PS2C_CMD_AUX_PORT_TEST: u8 = 0xa9;
+
+// Test controller (and response, if test passes)
 const PS2C_CMD_CTRL_TEST: u8 = 0xaa;
+const PS2C_R_CTRL_TEST_PASS: u8 = 0x55;
+
+// Test primary port (and response, if test passes)
 const PS2C_CMD_PRI_PORT_TEST: u8 = 0xab;
+const PS2C_R_PORT_TEST_PASS: u8 = 0x00;
+
+// Disable/enable primary port
 const PS2C_CMD_PRI_PORT_DIS: u8 = 0xad;
 const PS2C_CMD_PRI_PORT_ENA: u8 = 0xae;
+
+// Read/write next byte to the Controller Output Port
 const PS2C_CMD_READ_CTLR_OUT: u8 = 0xd0;
 const PS2C_CMD_WRITE_CTLR_OUT: u8 = 0xd1;
+
+// Write next byte to the primary port output
 const PS2C_CMD_WRITE_PRI_OUT: u8 = 0xd2;
+
+// Write next byte to the auxiliary port output
 const PS2C_CMD_WRITE_AUX_OUT: u8 = 0xd3;
+
+// Write next byte to the auxiliary port input
 const PS2C_CMD_WRITE_AUX_IN: u8 = 0xd4;
+
+// Pulse output line low
 const PS2C_CMD_PULSE_START: u8 = 0xf0;
 const PS2C_CMD_PULSE_END: u8 = 0xff;
-
-const PS2C_R_CTRL_TEST_PASS: u8 = 0x55;
-const PS2C_R_PORT_TEST_PASS: u8 = 0x00;
 
 const PS2C_RAM_LEN: usize =
     (PS2C_CMD_WRITE_RAM_END - PS2C_CMD_WRITE_RAM_START) as usize;
@@ -99,6 +273,7 @@ struct PS2State {
 pub struct PS2Ctrl {
     state: Mutex<PS2State>,
 }
+
 impl PS2Ctrl {
     pub fn create() -> Arc<Self> {
         Arc::new(Self { state: Mutex::new(PS2State::default()) })
@@ -117,6 +292,66 @@ impl PS2Ctrl {
         state.reset_pin = Some(chipset.reset_pin());
     }
 
+    pub fn key_event(&self, ke: KeyEvent) {
+        let mut state = self.state.lock().unwrap();
+        let translate = state.ctrl_cfg.contains(CtrlCfg::PRI_XLATE_EN);
+        let key_rep;
+
+        match KeyEventRep::try_from(ke) {
+            Ok(kr) => {
+                key_rep = kr;
+            }
+            Err(_) => {
+                // ignore any unrecognized keys
+                probes::ps2ctrl_keyevent_dropped!(|| {
+                    let set = if translate { 1 } else { 2 };
+                    let is_pressed = if ke.is_pressed() { 1 } else { 0 };
+                    (ke.keysym_raw(), is_pressed, set)
+                });
+                return;
+            }
+        };
+
+        // If the translation bit is set, the guest expects Scan Code Set 1; otherwise, the general
+        // default is set 2.
+        let scan_code = if translate {
+            key_rep.to_scan_code(PS2ScanCodeSet::Set1)
+        } else {
+            key_rep.to_scan_code(PS2ScanCodeSet::Set2)
+        };
+
+        // In the event that we need to debug why a specific key isn't behaving as expected, it
+        // might be nice to have access to the underlying keysym value that was sent and what scan
+        // code was produced.
+        probes::ps2ctrl_keyevent!(|| {
+            let set = if translate { 1 } else { 2 };
+            let sc_len = scan_code.len();
+
+            let (mut s0, mut s1, mut s2, mut s3) = (0, 0, 0, 0);
+
+            if sc_len > 0 {
+                s0 = scan_code[0];
+            }
+
+            if sc_len > 1 {
+                s1 = scan_code[1];
+            }
+
+            if sc_len > 2 {
+                s2 = scan_code[2];
+            }
+
+            if sc_len > 3 {
+                s3 = scan_code[3];
+            }
+
+            (key_rep.keysym_raw, set, s0, s1, s2, s3)
+        });
+
+        state.pri_port.recv_scancode(scan_code);
+        self.update_intr(&mut state);
+    }
+
     fn pio_rw(&self, port: u16, rwo: RWOp) {
         assert_eq!(rwo.len(), 1);
         match port {
@@ -124,6 +359,7 @@ impl PS2Ctrl {
                 RWOp::Read(ro) => ro.write_u8(self.data_read()),
                 RWOp::Write(wo) => self.data_write(wo.read_u8()),
             },
+
             ibmpc::PORT_PS2_CMD_STATUS => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.status_read()),
                 RWOp::Write(wo) => self.cmd_write(wo.read_u8()),
@@ -137,6 +373,11 @@ impl PS2Ctrl {
     fn data_write(&self, v: u8) {
         let mut state = self.state.lock().unwrap();
         let cmd_prefix = replace(&mut state.cmd_prefix, None);
+
+        // If there's an outstanding command (written to the Control Port), then the remaining part
+        // of the command will be on the data port.
+        //
+        // Otherwise, assume the value is a command for the keyboard.
         if let Some(prefix) = cmd_prefix {
             match prefix {
                 PS2C_CMD_WRITE_CTRL_CFG => {
@@ -269,16 +510,19 @@ impl PS2Ctrl {
         // We currently choose to mimic qemu, which gates the keyboard interrupt
         // with the keyboard-clock-disable in addition to the interrupt enable.
         let pri_pin = state.pri_pin.as_ref().unwrap();
-        pri_pin.set_state(
-            state.ctrl_cfg.contains(CtrlCfg::PRI_INTR_EN)
-                && !state.ctrl_cfg.contains(CtrlCfg::PRI_CLOCK_DIS)
-                && state.pri_port.has_output(),
-        );
+        if state.ctrl_cfg.contains(CtrlCfg::PRI_INTR_EN)
+            && !state.ctrl_cfg.contains(CtrlCfg::PRI_CLOCK_DIS)
+            && state.pri_port.has_output()
+        {
+            pri_pin.pulse();
+        }
+
         let aux_pin = state.aux_pin.as_ref().unwrap();
-        aux_pin.set_state(
-            state.ctrl_cfg.contains(CtrlCfg::AUX_INTR_EN)
-                && state.aux_port.has_output(),
-        );
+        if state.ctrl_cfg.contains(CtrlCfg::AUX_INTR_EN)
+            && state.aux_port.has_output()
+        {
+            aux_pin.pulse();
+        }
     }
     fn reset(&self) {
         let mut state = self.state.lock().unwrap();
@@ -399,7 +643,11 @@ impl Migrate for PS2Ctrl {
     }
 }
 
+// Keyboard-specific commands
+
+// Set LEDs: bit 0 is ScrollLock, bit 1 is NumberLock, bit 2 is CapsLock
 const PS2K_CMD_SET_LEDS: u8 = 0xed;
+
 const PS2K_CMD_SCAN_CODE: u8 = 0xf0;
 const PS2K_CMD_TYPEMATIC: u8 = 0xf3;
 
@@ -419,7 +667,7 @@ const PS2K_TYPEMATIC_MASK: u8 = 0x7f;
 
 const PS2_KBD_BUFSZ: usize = 16;
 
-enum PS2ScanCodeSet {
+pub(crate) enum PS2ScanCodeSet {
     Set1,
     Set2,
     // ignoring fancy set3
@@ -573,6 +821,12 @@ impl PS2Kbd {
     }
     fn loopback(&mut self, v: u8) {
         self.resp(v);
+    }
+
+    fn recv_scancode(&mut self, scan_code: Vec<u8>) {
+        for s in scan_code.into_iter() {
+            self.resp(s);
+        }
     }
 }
 impl Default for PS2Kbd {

@@ -18,7 +18,7 @@ use futures::future::BoxFuture;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
-use propolis::hw::ps2ctrl::PS2Ctrl;
+use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::intr_pins::FuncPin;
 use propolis::vcpu::Vcpu;

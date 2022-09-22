@@ -15,7 +15,7 @@ use propolis::hw::chipset::i440fx::I440Fx;
 use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
-use propolis::hw::ps2ctrl::PS2Ctrl;
+use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
@@ -240,11 +240,11 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_ps2(
         &self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    ) -> Result<EntityID, Error> {
         let ps2_ctrl = PS2Ctrl::create();
         ps2_ctrl.attach(&self.machine.bus_pio, chipset.device().as_ref());
-        self.inv.register(&ps2_ctrl)?;
-        Ok(())
+        let id = self.inv.register(&ps2_ctrl)?;
+        Ok(id)
     }
 
     pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
