@@ -64,8 +64,7 @@ use super::keyboard::KeyEventRep;
 ///
 /// Instead of reacting to an input buffer, the controller is notified of input
 /// keyboard data via the VNC server. VNC uses keysyms to represent keys;
-/// internally, we must convert these to scan
-/// codes from a keyboard.
+/// internally, we must convert these to scan codes from a keyboard.
 ///
 /// The flow looks like this. An end user interacting with a guest over VNC
 /// presses a key. The local VNC client sends its associated keysym and whether
@@ -78,7 +77,7 @@ use super::keyboard::KeyEventRep;
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn ps2ctrl_keyevent(
-        keysym_val: u32,
+        keysym_raw: u32,
         scan_code_set: u8,
         s0: u8,
         s1: u8,
@@ -88,7 +87,7 @@ mod probes {
     }
 
     fn ps2ctrl_keyevent_dropped(
-        keysym_val: u32,
+        keysym_raw: u32,
         is_pressed: u8,
         scan_code_set: u8,
     ) {
@@ -306,8 +305,8 @@ impl PS2Ctrl {
                 // ignore any unrecognized keys
                 probes::ps2ctrl_keyevent_dropped!(|| {
                     let set = if translate { 1 } else { 2 };
-                    let is_pressed = if ke.is_pressed { 1 } else { 0 };
-                    (ke.keysym_val, is_pressed, set)
+                    let is_pressed = if ke.is_pressed() { 1 } else { 0 };
+                    (ke.keysym_raw(), is_pressed, set)
                 });
                 return;
             }
@@ -346,7 +345,7 @@ impl PS2Ctrl {
                 s3 = scan_code[3];
             }
 
-            (key_rep.keysym_val, set, s0, s1, s2, s3)
+            (key_rep.keysym_raw, set, s0, s1, s2, s3)
         });
 
         state.pri_port.recv_scancode(scan_code);
