@@ -54,6 +54,7 @@ impl ZfsFixture {
             ));
         }
 
+        info!("ZFS initialization succeeded, will try using snapshots");
         Ok(Self { fs_name, snapshot_name: Default::default() })
     }
 

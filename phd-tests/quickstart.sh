@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PHD_QUICKSTART_DIR=/tmp/phd-quickstart
+PHD_QUICKSTART_DIR=/tmp/propolis-phd
 if [ -f "$PHD_QUICKSTART_DIR" ]; then
 	echo "$PHD_QUICKSTART_DIR exists and is not a directory"
 	exit 1

@@ -63,8 +63,9 @@ In `run` mode, the following sub-arguments are required:
   tests.
 - `--artifact-toml-path` supplies the path to a TOML file defining the set of
   artifacts--guest OS and firmware images--to use for the current run. This
-  file's format is described below; [`sample_artifacts.toml`] contains a small
-  example to get you started.
+  file's format is described below. The `artifacts.toml` file in the repo
+  contains the list of artifacts that are currently used in regular PHD test
+  runs and that are meant to be compatible with PHD's guest adapters.
 
 Other options are described in the runner's help text (`cargo run -- --help`).
 

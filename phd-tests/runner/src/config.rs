@@ -83,7 +83,7 @@ pub struct RunOptions {
 
     /// The default artifact store key to use to load a guest bootrom in tests
     /// that do not explicitly specify one.
-    #[clap(long, value_parser, default_value = "ovmf")]
+    #[clap(long, value_parser, default_value = "ovmf_20220922")]
     pub default_bootrom_artifact: String,
 
     /// Optional. The name of a ZFS filesystem object whose mountpoint is the
