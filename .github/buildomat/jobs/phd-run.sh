@@ -45,7 +45,7 @@ fi
 banner 'Tests'
 
 runner="$phddir/phd-runner"
-artifacts="$phddir/buildomat_artifacts.toml"
+artifacts="$phddir/artifacts.toml"
 propolis="$phddir/propolis-server"
 
 # TODO: Leverage ZFS artifact support in PHD.

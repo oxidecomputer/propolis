@@ -136,21 +136,22 @@ which acts as a serial port. One such tool for accessing this serial port is
 ### Quickstart to Alpine
 
 In the aforementioned config files, there are three major components
-that need to be supplied: The OVMF file, the ISO, and the VNIC.
+that need to be supplied: The guest firmware (bootrom) image, the ISO, and the
+VNIC.
 
 Since this is a configuration file, you can supply whatever you'd like, but here
 are some options to get up-and-running quickly:
 
-#### OVMF
+#### Guest bootrom
 
-Using a bootrom from Linux works here - you can either build
-your own [OVMF](https://wiki.ubuntu.com/UEFI/OVMF), or you
-can use a pre-built, which you can get [here](https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE.fd)
- or by running:
+The current recommended and tested guest bootrom is available
+[here](https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE_20220922.fd).
+Rename this file to `OVMF_CODE.fd` to use it with the example configuration
+below.
 
-```bash
-$ sudo apt-get install ovmf && dpkg -L ovmf | grep OVMF_CODE.fd
-```
+Other UEFI firmware images built from the [Open Virtual Machine Firmware
+project](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) may also
+work, but these aren't regularly tested and your mileage may vary.
 
 #### ISO
 

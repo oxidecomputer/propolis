@@ -33,7 +33,7 @@ tar -czvf target/debug/propolis-server-debug.tar.gz \
 
 tar -czvf target/phd/phd-runner.tar.gz \
 	-C target/phd phd-runner \
-	-C phd-tests/buildomat buildomat_artifacts.toml
+	-C phd-tests artifacts.toml
 
 banner copy
 pfexec mkdir -p $outdir

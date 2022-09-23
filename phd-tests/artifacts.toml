@@ -7,8 +7,8 @@ metadata.relative_local_path = "alpine.iso"
 metadata.expected_digest = "ba8007f74f9b54fbae3b2520da577831b4834778a498d732f091260c61aa7ca1"
 metadata.relative_remote_path = "alpine.iso"
 
-[bootroms.ovmf]
-relative_local_path = "OVMF_CODE.fd"
-expected_digest = "32b4ba73f302e6c1c1ebd7ed0fecab9fa1fcedac77765454aa91e66604c10d27"
-relative_remote_path = "OVMF_CODE.fd"
+[bootroms.ovmf_20220922]
+relative_local_path = "OVMF_CODE_20220922.fd"
+expected_digest = "319d678f093c43502ca360911d52b475dea7fa6dcd962150c84fff18f5b32221"
+relative_remote_path = "OVMF_CODE_20220922.fd"
 
