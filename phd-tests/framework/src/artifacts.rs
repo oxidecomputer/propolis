@@ -4,8 +4,6 @@
 //! The runner requires a path to a TOML file defining a set of artifacts. This
 //! file defines
 //!
-//! - a local directory (on the runner's host machine) where these resources can
-//! be found,
 //! - an optional remote URI from which to download resources that are missing,
 //! - a table of guest OS images, specifying the
 //! [`crate::guest_os::GuestOsKind`] of each image and its metadata, and
@@ -168,10 +166,7 @@ struct GuestOsArtifact {
 
 /// A collection of artifacts that can be loaded by test VMs.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ArtifactStore {
-    /// The root directory from which to construct paths to local artifacts.
-    local_root: PathBuf,
-
+pub struct ArtifactStoreConfig {
     /// An optional remote file server from which to download artifacts whose
     /// digests do not match when the store is refreshed.
     remote_root: Option<String>,
@@ -183,22 +178,43 @@ pub struct ArtifactStore {
     bootroms: BTreeMap<String, ArtifactMetadata>,
 }
 
+impl ArtifactStoreConfig {
+    fn from_toml(raw_toml: &str) -> Result<Self> {
+        let config = toml::de::from_str(raw_toml)?;
+        info!(?config, "Parsed artifact store configuration");
+        Ok(config)
+    }
+}
+
+#[derive(Debug)]
+pub struct ArtifactStore {
+    /// The local directory into which to save artifacts.
+    local_root: PathBuf,
+    config: ArtifactStoreConfig,
+}
+
 impl ArtifactStore {
     /// Opens the supplied file, reads its contents, and uses
     /// [`ArtifactStore::from_toml`] to try to interpret those contents as TOML
     /// describing an artifact store.
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        info!(path = ?path.as_ref(), "Reading artifact store from file");
-        let contents = std::fs::read_to_string(path.as_ref())?;
-        Self::from_toml(&contents)
+    pub fn from_file(
+        config_path: impl AsRef<Path>,
+        local_root: PathBuf,
+    ) -> Result<Self> {
+        info!(path = ?config_path.as_ref(),
+              "Reading artifact store configuration from file");
+        let contents = std::fs::read_to_string(config_path.as_ref())?;
+        Self::from_toml(&contents, local_root)
     }
 
     /// Interprets the supplied string as TOML and attempts to deserialize it as
     /// an artifact store.
-    pub fn from_toml(raw_toml: &str) -> Result<Self> {
-        let store: Self = toml::de::from_str(raw_toml)?;
-        info!(?store, "Parsed artifact store");
-        store.verify().map(|_| store)
+    pub fn from_toml(raw_toml: &str, local_root: PathBuf) -> Result<Self> {
+        info!(?local_root, "Initializing artifact store");
+        let config = ArtifactStoreConfig::from_toml(raw_toml)?;
+        let store = Self { local_root, config };
+        store.verify()?;
+        Ok(store)
     }
 
     /// Retrieves this store's local root directory.
@@ -214,7 +230,7 @@ impl ArtifactStore {
         &self,
         artifact: &str,
     ) -> Option<(PathBuf, GuestOsKind)> {
-        self.guest_images.get(artifact).map(|a| {
+        self.config.guest_images.get(artifact).map(|a| {
             (
                 self.construct_full_path(&a.metadata.relative_local_path),
                 a.guest_os_kind,
@@ -225,7 +241,8 @@ impl ArtifactStore {
     /// Given an artifact name, attempts to retrieve the guest firmware artifact
     /// with that name and returns the local path to that artifact.
     pub fn get_bootrom_by_name(&self, artifact: &str) -> Option<PathBuf> {
-        self.bootroms
+        self.config
+            .bootroms
             .get(artifact)
             .map(|a| self.construct_full_path(&a.relative_local_path))
     }
@@ -276,10 +293,11 @@ impl ArtifactStore {
         let mut all_ok = true;
 
         let iter = self
+            .config
             .guest_images
             .iter()
             .map(|(k, v)| (k, &v.metadata))
-            .chain(self.bootroms.iter());
+            .chain(self.config.bootroms.iter());
 
         for (name, metadata) in iter {
             info!(?name, ?metadata, "Checking artifact");
@@ -287,7 +305,7 @@ impl ArtifactStore {
             let _guard = span.enter();
             if let Err(e) = metadata.check_local_artifact(
                 &self.local_root,
-                self.remote_root.as_deref(),
+                self.config.remote_root.as_deref(),
             ) {
                 error!(?e, "Metadata check failed");
                 all_ok = false;
@@ -352,8 +370,7 @@ mod test {
             relative_remote_path: Some("OVMF_CODE.fd".to_string()),
         };
 
-        let store = ArtifactStore {
-            local_root: "/var/tmp/propolis-phd-images".into(),
+        let config = ArtifactStoreConfig {
             remote_root: Some("https://10.0.0.255".to_string()),
             guest_images: BTreeMap::from([(
                 "alpine".to_string(),
@@ -365,15 +382,14 @@ mod test {
             )]),
         };
 
-        let out = toml::ser::to_string(&store).unwrap();
+        let out = toml::ser::to_string(&config).unwrap();
         println!("TOML serialization output: {}", out);
-        let _: ArtifactStore = toml::de::from_str(&out).unwrap();
+        let _: ArtifactStoreConfig = toml::de::from_str(&out).unwrap();
     }
 
     #[test]
     fn verify_raw_toml() {
         let raw = r#"
-            local_root = "/"
             remote_root = "https://10.0.0.255"
 
             [guest_images.alpine]
@@ -387,7 +403,7 @@ mod test {
             relative_remote_path = "OVMF_CODE.fd"
         "#;
 
-        let store = ArtifactStore::from_toml(raw).unwrap();
+        let store = ArtifactStoreConfig::from_toml(raw).unwrap();
         println!("Generated store: {:#?}", store);
     }
 }

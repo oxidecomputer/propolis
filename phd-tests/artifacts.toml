@@ -1,4 +1,3 @@
-local_root = "/tmp/propolis-phd"
 remote_root = "https://oxide-omicron-build.s3.amazonaws.com"
 
 [guest_images.alpine]

@@ -40,8 +40,11 @@ fn main() {
 }
 
 fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
-    let artifact_store =
-        ArtifactStore::from_file(&run_opts.artifact_toml_path).unwrap();
+    let artifact_store = ArtifactStore::from_file(
+        &run_opts.artifact_toml_path,
+        run_opts.artifact_directory.clone(),
+    )
+    .unwrap();
 
     // Convert the command-line config and artifact store into a VM factory
     // definition.

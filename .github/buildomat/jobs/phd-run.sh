@@ -59,7 +59,8 @@ ls $propolis
 	run \
 	--propolis-server-cmd $propolis \
 	--artifact-toml-path $artifacts \
-	--tmp-directory $tmpdir | \
+	--tmp-directory $tmpdir \
+    --artifact-directory $tmpdir | \
 	tee /tmp/phd-runner.log)
 
 failcount=$?
