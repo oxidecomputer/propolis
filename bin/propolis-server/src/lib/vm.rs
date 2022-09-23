@@ -26,6 +26,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
+    path::PathBuf,
     sync::{Arc, Condvar, Mutex, Weak},
     thread::JoinHandle,
 };
@@ -50,7 +51,6 @@ use crate::{
     initializer::{build_instance, MachineInitializer},
     migrate::MigrateError,
     serial::Serial,
-    server::StaticConfig,
     vcpu_tasks::VcpuTasks,
 };
 
@@ -474,7 +474,8 @@ impl VmController {
     pub fn new(
         instance_spec: InstanceSpec,
         properties: InstanceProperties,
-        static_config: &StaticConfig,
+        use_reservoir: bool,
+        bootrom: PathBuf,
         in_memory_disk_contents: BTreeMap<String, Vec<u8>>,
         oximeter_registry: Option<ProducerRegistry>,
         log: Logger,
@@ -487,7 +488,7 @@ impl VmController {
         let instance = build_instance(
             &properties.id.to_string(),
             &instance_spec,
-            static_config.use_reservoir,
+            use_reservoir,
             vmm_log,
         )?;
 
@@ -516,7 +517,7 @@ impl VmController {
             oximeter_registry,
         );
 
-        init.initialize_rom(&static_config.vm.bootrom)?;
+        init.initialize_rom(&bootrom)?;
         init.initialize_kernel_devs()?;
         let chipset = init.initialize_chipset(
             &(worker_state.clone() as Arc<dyn ChipsetEventHandler>),

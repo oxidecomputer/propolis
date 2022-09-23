@@ -266,21 +266,21 @@ impl<'a> MachineInitializer<'a> {
                     self.log,
                     "Creating Crucible disk from request {:?}", req
                 );
+                let creq = req.try_into().map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        format!(
+                            "Failed to deserialize Crucible volume \
+                                   construction request: {}",
+                            e
+                        ),
+                    )
+                })?;
                 let be = propolis::block::CrucibleBackend::create(
                     *gen,
-                    req.try_into().map_err(|e| {
-                        Error::new(
-                            ErrorKind::InvalidData,
-                            format!(
-                                "Failed to deserialize Crucible volume \
-                                   construction request: {}",
-                                e
-                            ),
-                        )
-                    })?,
+                    creq,
                     backend_spec.readonly,
                     self.producer_registry.clone(),
-                    self.log.new(slog::o!("component" => "crucible")),
                 )?;
                 let child = inventory::ChildRegister::new(
                     &be,

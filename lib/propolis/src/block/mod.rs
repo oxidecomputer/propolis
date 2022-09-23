@@ -3,17 +3,17 @@
 use std::any::Any;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 
-use crate::accessors::MemAccessor;
+use crate::accessors::{Guard as AccessorGuard, MemAccessor};
 use crate::common::*;
 use crate::tasks::*;
 use crate::vmm::{MemCtx, SubMapping};
 
 use futures::future::BoxFuture;
 use once_cell::sync::OnceCell;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Mutex as TokioMutex, Notify, Semaphore};
 
 mod file;
 pub use file::FileBackend;
@@ -47,7 +47,7 @@ pub enum Result {
     Unsupported,
 }
 
-pub type BlockPayload = dyn Any + Send + 'static;
+pub type BlockPayload = dyn Any + Send + Sync + 'static;
 
 /// Block device operation request
 pub struct Request {
@@ -58,7 +58,7 @@ pub struct Request {
     regions: Vec<GuestRegion>,
 
     /// Block device specific completion payload for this I/O request
-    payload: Option<Box<dyn Any + Send>>,
+    payload: Option<Box<BlockPayload>>,
 
     /// Book-keeping for tracking outstanding requests from the block device
     ///
@@ -645,6 +645,265 @@ impl DriverInner {
                     queue.push_back(req);
                     drop(queue);
                     self.cv.notify_one();
+                }
+            }
+        }
+    }
+}
+
+/// Scheduler for block backends which process requests asynchronously, rather
+/// than in worker threads.
+pub struct Scheduler(Arc<Inner>);
+impl Scheduler {
+    pub fn new() -> Self {
+        Self(Inner::new())
+    }
+    pub fn attach(&self, bdev: Arc<dyn Device>) {
+        self.0.attach(bdev);
+    }
+    pub fn worker(&self) -> WorkerHdl {
+        self.0.worker()
+    }
+
+    pub fn start(&self) {
+        self.0.start();
+    }
+    pub fn pause(&self) {
+        self.0.pause();
+    }
+    pub fn resume(&self) {
+        self.0.resume();
+    }
+    pub fn halt(&self) {
+        self.0.halt();
+    }
+}
+
+/// Worker (associated with a [Scheduler]) to accept and process [Request]s
+/// asynchronously.
+pub struct WorkerHdl {
+    parent: Arc<Inner>,
+    active_req: Option<Request>,
+}
+impl WorkerHdl {
+    fn new(parent: Arc<Inner>) -> Self {
+        Self { parent, active_req: None }
+    }
+
+    /// Fetch the next request from the [Scheduler].  Only one [Request] may be
+    /// processed per worker at any given time.
+    ///
+    /// Returns `None` if the backend is being halted
+    pub async fn next(&mut self) -> Option<(&Request, AccessorGuard<MemCtx>)> {
+        assert!(self.active_req.is_none(), "only one active request at a time");
+
+        self.parent.worker_idle.add_permits(1);
+        match self.parent.worker_activate.acquire().await {
+            Ok(permit) => permit.forget(),
+            Err(_) => {
+                // Tasks were signaled to bail out
+                return None;
+            }
+        }
+
+        // A valid task activation permit means there should be a request
+        // waiting for us in the queue.
+        let mut queue = self.parent.queue.lock().await;
+        let req = queue.pop_front().unwrap();
+        drop(queue);
+        self.active_req = Some(req);
+
+        let acc_mem = self.parent.acc_mem.get().expect("bdev is attached");
+        if let Some(guard) = acc_mem.access() {
+            Some((self.active_req.as_ref().unwrap(), guard))
+        } else {
+            let req = self.active_req.take().unwrap();
+            self.parent.complete_req(req, Result::Failure);
+            None
+        }
+    }
+
+    /// After processing a [Request], submit the result to the block frontend,
+    /// making this worker ready to poll for another request via
+    /// [WorkerHdl::next].
+    pub fn complete(&mut self, res: Result) {
+        let req = self.active_req.take().expect("request should be active");
+        self.parent.complete_req(req, res);
+    }
+}
+
+struct Inner {
+    /// The block device providing the requests to be serviced
+    bdev: OnceCell<Arc<dyn Device>>,
+
+    /// Task control for work-scheduling task
+    sched_ctrl: Mutex<Option<TaskCtrl>>,
+
+    /// Memory accessor through the underlying device
+    acc_mem: OnceCell<MemAccessor>,
+
+    /// Notifier used to both respond to the block frontend when it has requests
+    /// available for processing, as well as internally when waiting for workers
+    /// to complete pending processing.
+    wake: Arc<Notify>,
+
+    /// Queue of I/O requests from the device ready to be serviced by the backend
+    queue: TokioMutex<VecDeque<Request>>,
+
+    /// Semaphore to gate polling of frontend on availability of idle workers
+    worker_idle: Semaphore,
+
+    /// Semaphore to activate idle worker to pull request from the queue
+    worker_activate: Semaphore,
+
+    /// Number of requests being actively serviced
+    active_req_count: AtomicUsize,
+}
+
+impl Inner {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            bdev: OnceCell::new(),
+            acc_mem: OnceCell::new(),
+            sched_ctrl: Mutex::new(None),
+
+            queue: TokioMutex::new(VecDeque::new()),
+
+            wake: Arc::new(Notify::new()),
+            worker_idle: Semaphore::new(0),
+            worker_activate: Semaphore::new(0),
+
+            active_req_count: AtomicUsize::new(0),
+        })
+    }
+
+    fn attach(self: &Arc<Self>, bdev: Arc<dyn Device>) {
+        let _old_bdev = self.bdev.set(bdev.clone());
+        assert!(_old_bdev.is_ok(), "driver already attached");
+        let _old_acc = self.acc_mem.set(bdev.accessor_mem());
+        assert!(_old_acc.is_ok(), "driver already attached");
+
+        let sched_wake = self.wake.clone();
+        let (mut thdl, tctrl) =
+            TaskHdl::new_held(Some(Box::new(move || sched_wake.notify_one())));
+        let sched_self = Arc::clone(self);
+        tokio::spawn(async move {
+            sched_self.schedule_requests(&mut thdl).await;
+        });
+        let _old_ctrl = self.sched_ctrl.lock().unwrap().replace(tctrl);
+        assert!(_old_ctrl.is_none(), "driver already attached");
+
+        let wake_self = Arc::clone(self);
+        bdev.set_notifier(Some(Box::new(move |_bdev| {
+            wake_self.wake.notify_one()
+        })));
+    }
+
+    fn with_ctrl(&self, f: impl FnOnce(&mut TaskCtrl)) {
+        f(self.sched_ctrl.lock().unwrap().as_mut().expect("scheduler started"))
+    }
+
+    fn start(&self) {
+        self.with_ctrl(|ctrl| {
+            let _ = ctrl.run();
+        });
+    }
+    fn pause(&self) {
+        self.with_ctrl(|ctrl| {
+            let _ = ctrl.hold();
+        });
+    }
+    fn resume(&self) {
+        self.with_ctrl(|ctrl| {
+            let _ = ctrl.run();
+        });
+    }
+    fn halt(&self) {
+        self.with_ctrl(|ctrl| {
+            let _ = ctrl.exit();
+        });
+    }
+
+    fn worker(self: &Arc<Self>) -> WorkerHdl {
+        WorkerHdl::new(self.clone())
+    }
+
+    /// Attempt to grab a request from the block device (if one's available)
+    async fn next_req(&self) -> Request {
+        let bdev = self.bdev.get().expect("attached block device");
+        loop {
+            if let Some(req) = bdev.next() {
+                return req;
+            }
+
+            // Don't busy-loop on the device but just wait for it to wake us
+            // when the next request is available
+            self.wake.notified().await;
+        }
+    }
+
+    fn complete_req(&self, req: Request, res: Result) {
+        let bdev = self.bdev.get().expect("attached bdev");
+        req.complete(res, bdev.as_ref());
+        match self.active_req_count.fetch_sub(1, Ordering::AcqRel) {
+            0 => panic!("request completion count mismatch"),
+            1 => self.wake.notify_one(),
+            _ => {}
+        }
+    }
+
+    /// Scheduling task body: feed worker threads with requests from block device.
+    async fn schedule_requests(&self, task: &mut TaskHdl) {
+        loop {
+            let avail = tokio::select! {
+                event = task.get_event() => {
+                    match event {
+                        Event::Hold => {
+                            // Wait for all pending requests to complete
+                            let areq = &self.active_req_count;
+                            while areq.load(Ordering::Acquire) != 0 {
+                                self.wake.notified().await;
+                            }
+
+                            // ... then enter held state
+                            task.wait_held().await;
+                            continue;
+                        }
+                        Event::Exit => {
+                            // Close the semaphore to indicate to the workers
+                            // that they should bail out too
+                            self.worker_activate.close();
+                            return;
+                        }
+                    }
+                },
+                avail = self.worker_idle.acquire() => {
+                    // We found an idle thread!
+                    avail.unwrap()
+                }
+            };
+
+            tokio::select! {
+                _event = task.get_event() => {
+                    // Take another lap if an event arrives while we are waiting
+                    // for a request to schedule to the worker.  Since task
+                    // events are level-triggered, we can leave the processing
+                    // to the get_event() call at the top of the loop.
+                    continue;
+                },
+                req = self.next_req() => {
+                    // With a request in hand, we can discard the permit for the
+                    // idle thread which is about to pick up the work.
+                    avail.forget();
+
+                    // Track pending number of requests
+                    self.active_req_count.fetch_add(1, Ordering::AcqRel);
+
+                    // Put the request on the queue for processing
+                    let mut queue = self.queue.lock().await;
+                    queue.push_back(req);
+                    drop(queue);
+                    self.worker_activate.add_permits(1);
                 }
             }
         }

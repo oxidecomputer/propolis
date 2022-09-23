@@ -383,15 +383,36 @@ async fn instance_ensure(
             None
         };
 
-    let vm = VmController::new(
-        instance_spec,
-        request.properties,
-        &server_context.static_config,
-        in_memory_disk_contents,
-        producer_registry,
-        server_context.log.clone(),
-        tokio::runtime::Handle::current(),
-    )
+    // Parts of VM initialization (namely Crucible volume attachment) make use
+    // of async processing, which itself is turned synchronous with `block_on`
+    // calls to the Tokio runtime.
+    //
+    // Since `block_on` will panic if called from an async context, as we are in
+    // now, the whole process is wrapped up in `spawn_blocking`.  It is
+    // admittedly a big kludge until this can be better refactored.
+    let vm = {
+        let properties = request.properties.clone();
+        let use_reservoir = server_context.static_config.use_reservoir;
+        let bootrom = server_context.static_config.vm.bootrom.clone();
+        let log = server_context.log.clone();
+        let hdl = tokio::runtime::Handle::current();
+        let ctrl_hdl = hdl.clone();
+
+        let vm_hdl = hdl.spawn_blocking(move || {
+            VmController::new(
+                instance_spec,
+                properties,
+                use_reservoir,
+                bootrom,
+                in_memory_disk_contents,
+                producer_registry,
+                log,
+                ctrl_hdl,
+            )
+        });
+
+        vm_hdl.await.unwrap()
+    }
     .map_err(|e| {
         HttpError::for_internal_error(format!(
             "failed to create instance: {}",

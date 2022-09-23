@@ -652,6 +652,11 @@ impl<'a> SubMapping<'a> {
     }
 }
 
+// Safety: `SubMapping`'s API does not provide raw access to the underlying
+// pointer, nor any mechanism to create references to the underlying data.
+unsafe impl Send for SubMapping<'_> {}
+unsafe impl Sync for SubMapping<'_> {}
+
 pub trait MappingExt {
     /// preadv from `file` into multiple mappings
     fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize>;

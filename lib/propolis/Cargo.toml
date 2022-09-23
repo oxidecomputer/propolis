@@ -34,12 +34,12 @@ once_cell = "1.13"
 
 [dependencies.crucible-client-types]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "bacffd142fc38a01fe255407b0c8d5d0aacfe778"
+rev = "144d8dafa41715e00b08a5929cc62140ff0eb561"
 optional = true
 
 [dependencies.crucible]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "bacffd142fc38a01fe255407b0c8d5d0aacfe778"
+rev = "144d8dafa41715e00b08a5929cc62140ff0eb561"
 optional = true
 
 [dependencies.oximeter]
@@ -57,4 +57,4 @@ rand = "0.8"
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["usdt/asm"]
-crucible-full = ["crucible", "crucible-client-types"]
+crucible-full = ["crucible", "crucible-client-types", "oximeter"]
