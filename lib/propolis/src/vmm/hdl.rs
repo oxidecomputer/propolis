@@ -117,12 +117,8 @@ fn create_vm_impl(_name: &str, _opts: CreateOpts) -> Result<VmmHdl> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
 }
 
-/// Destroys the virtual machine matching the provided `name`.
-pub fn destroy_vm(name: impl AsRef<str>) -> Result<()> {
-    destroy_vm_impl(name.as_ref())
-}
-
 #[cfg(target_os = "illumos")]
+/// Destroys the virtual machine matching the provided `name`.
 fn destroy_vm_impl(name: &str) -> Result<()> {
     let ctl = OpenOptions::new()
         .write(true)
@@ -142,6 +138,7 @@ fn destroy_vm_impl(name: &str) -> Result<()> {
     Ok(())
 }
 #[cfg(not(target_os = "illumos"))]
+/// Destroys the virtual machine matching the provided `name`.
 fn destroy_vm_impl(_name: &str) -> Result<()> {
     Ok(())
 }
@@ -426,10 +423,21 @@ impl VmmHdl {
     // TODO: Should this take "mut self", to consume the object?
     pub fn destroy(&self) -> Result<()> {
         if self.destroyed.swap(true, Ordering::SeqCst) {
-            Err(Error::new(ErrorKind::NotFound, "already destroyed"))
-        } else {
-            destroy_vm(&self.name)
+            return Err(Error::new(ErrorKind::NotFound, "already destroyed"));
         }
+
+        // Attempt destruction via the handle (rather than going through vmmctl)
+        // This is done through the [ioctl_usize] helper rather than
+        // [Self::ioctl_usize], since the latter rejects attempted operations
+        // after `destroyed` is set.
+        if let Ok(_) = ioctl_usize(self.fd(), bhyve_api::VM_DESTROY_SELF, 0) {
+            return Ok(());
+        }
+
+        // If that failed (which may occur on older platforms without
+        // self-destruction), then fall back to performing the destroy through
+        // the vmmctl device.
+        destroy_vm_impl(&self.name)
     }
 
     /// Export the global VMM state.
