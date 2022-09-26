@@ -126,7 +126,10 @@ impl SpecBuilder {
         };
 
         Ok(Self {
-            spec: InstanceSpec { board, ..Default::default() },
+            spec: InstanceSpec {
+                devices: DeviceSpec { board, ..Default::default() },
+                ..Default::default()
+            },
             pci_paths: Default::default(),
         })
     }
@@ -155,6 +158,7 @@ impl SpecBuilder {
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
         if self
             .spec
+            .backends
             .network_backends
             .insert(
                 backend_name.clone(),
@@ -173,6 +177,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .devices
             .network_devices
             .insert(device_name, NetworkDevice { backend_name, pci_path })
             .is_some()
@@ -196,6 +201,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .backends
             .storage_backends
             .insert(
                 disk.name.to_string(),
@@ -223,6 +229,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .devices
             .storage_devices
             .insert(
                 disk.name.to_string(),
@@ -263,6 +270,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .backends
             .storage_backends
             .insert(
                 name.to_string(),
@@ -278,6 +286,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .devices
             .storage_devices
             .insert(
                 name.to_string(),
@@ -336,6 +345,7 @@ impl SpecBuilder {
         };
         if self
             .spec
+            .backends
             .storage_backends
             .insert(name.to_string(), backend_spec)
             .is_some()
@@ -368,7 +378,7 @@ impl SpecBuilder {
                 ))
             })?;
 
-        if !self.spec.storage_backends.contains_key(backend_name) {
+        if !self.spec.backends.storage_backends.contains_key(backend_name) {
             return Err(SpecBuilderError::ConfigTomlError(format!(
                 "Couldn't find backend {} for storage device {}",
                 backend_name, name
@@ -390,6 +400,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .devices
             .storage_devices
             .insert(name.to_string(), device_spec)
             .is_some()
@@ -420,6 +431,7 @@ impl SpecBuilder {
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
         if self
             .spec
+            .backends
             .network_backends
             .insert(
                 backend_name.clone(),
@@ -438,6 +450,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .devices
             .network_devices
             .insert(device_name, NetworkDevice { backend_name, pci_path })
             .is_some()
@@ -459,6 +472,7 @@ impl SpecBuilder {
 
         if self
             .spec
+            .devices
             .pci_pci_bridges
             .insert(
                 name,
@@ -525,6 +539,7 @@ impl SpecBuilder {
     ) -> Result<(), SpecBuilderError> {
         if self
             .spec
+            .devices
             .serial_ports
             .insert(
                 match port {
