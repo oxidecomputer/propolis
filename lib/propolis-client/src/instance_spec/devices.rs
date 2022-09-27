@@ -1,9 +1,32 @@
 //! The "device" portions of an instance spec: the parts of the spec that define
 //! VM properties that are visible to guest software.
+//!
+//! # Foreign types & versioning
+//!
+//! Propolis expects to be able to send [`DeviceSpec`] structures between
+//! instances to ensure that they describe the same guest-visible components.
+//! (This is part of the live migration protocol described in RFD 71.) This
+//! applies to Propolis version changes in both directions:
+//!
+//! - Propolis upgrade: Newer versions of Propolis must be able to deserialize
+//!   and interpret device specs constructed by earlier versions.
+//! - Propolis downgrade: Older versions of Propolis must be able to deserialize
+//!   and interpret device specs constructed by newer versions, even if the
+//!   newer versions contain fields not known to the older versions. This can be
+//!   done by explicitly versioning the device spec structure using enum
+//!   variants or by using optional/default-able fields that can be skipped with
+//!   the `skip_serializing_if` attribute.
+//!
+//! Because types defined outside this crate can change without heeding these
+//! requirements, device specs should use only types defined in the crate or
+//! built-in Rust types.
 
 use std::collections::BTreeMap;
 
-use super::{MigrationCompatible, PciPath, SpecKey, SpecMismatchDetails};
+use super::{
+    ElementCompatibilityError, MigrationCollection,
+    MigrationCompatibilityError, MigrationElement, PciPath, SpecKey,
+};
 use serde::{Deserialize, Serialize};
 
 //
@@ -48,16 +71,18 @@ impl Default for Board {
     }
 }
 
-impl MigrationCompatible for Board {
+impl MigrationElement for Board {
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails> {
+    ) -> Result<(), ElementCompatibilityError> {
         if self.cpus != other.cpus {
-            return Err(SpecMismatchDetails::CpuCount(self.cpus, other.cpus));
+            return Err(ElementCompatibilityError::CpuCount(
+                self.cpus, other.cpus,
+            ));
         }
         if self.memory_mb != other.memory_mb {
-            return Err(SpecMismatchDetails::MemorySize(
+            return Err(ElementCompatibilityError::MemorySize(
                 self.memory_mb,
                 other.memory_mb,
             ));
@@ -68,7 +93,7 @@ impl MigrationCompatible for Board {
                 Chipset::I440Fx { enable_pcie: other_enable },
             ) => {
                 if this_enable != other_enable {
-                    return Err(SpecMismatchDetails::PcieEnablement(
+                    return Err(ElementCompatibilityError::PcieEnablement(
                         this_enable,
                         other_enable,
                     ));
@@ -107,24 +132,24 @@ pub struct StorageDevice {
     pub pci_path: PciPath,
 }
 
-impl MigrationCompatible for StorageDevice {
+impl MigrationElement for StorageDevice {
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails> {
+    ) -> Result<(), ElementCompatibilityError> {
         if self.kind != other.kind {
-            return Err(SpecMismatchDetails::StorageDeviceKind(
+            return Err(ElementCompatibilityError::StorageDeviceKind(
                 self.kind, other.kind,
             ));
         }
         if self.backend_name != other.backend_name {
-            return Err(SpecMismatchDetails::StorageDeviceBackend(
+            return Err(ElementCompatibilityError::StorageDeviceBackend(
                 self.backend_name.clone(),
                 other.backend_name.clone(),
             ));
         }
         if self.pci_path != other.pci_path {
-            return Err(SpecMismatchDetails::PciPath(
+            return Err(ElementCompatibilityError::PciPath(
                 self.pci_path,
                 other.pci_path,
             ));
@@ -148,19 +173,19 @@ pub struct NetworkDevice {
     pub pci_path: PciPath,
 }
 
-impl MigrationCompatible for NetworkDevice {
+impl MigrationElement for NetworkDevice {
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails> {
+    ) -> Result<(), ElementCompatibilityError> {
         if self.backend_name != other.backend_name {
-            return Err(SpecMismatchDetails::NetworkDeviceBackend(
+            return Err(ElementCompatibilityError::NetworkDeviceBackend(
                 self.backend_name.clone(),
                 other.backend_name.clone(),
             ));
         }
         if self.pci_path != other.pci_path {
-            return Err(SpecMismatchDetails::PciPath(
+            return Err(ElementCompatibilityError::PciPath(
                 self.pci_path,
                 other.pci_path,
             ));
@@ -193,13 +218,13 @@ pub struct SerialPort {
     pub num: SerialPortNumber,
 }
 
-impl MigrationCompatible for SerialPort {
+impl MigrationElement for SerialPort {
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails> {
+    ) -> Result<(), ElementCompatibilityError> {
         if self.num != other.num {
-            return Err(SpecMismatchDetails::SerialPortNumber(
+            return Err(ElementCompatibilityError::SerialPortNumber(
                 self.num, other.num,
             ));
         }
@@ -221,19 +246,19 @@ pub struct PciPciBridge {
     pub pci_path: PciPath,
 }
 
-impl MigrationCompatible for PciPciBridge {
+impl MigrationElement for PciPciBridge {
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails> {
+    ) -> Result<(), ElementCompatibilityError> {
         if self.downstream_bus != other.downstream_bus {
-            return Err(SpecMismatchDetails::PciBridgeDownstreamBus(
+            return Err(ElementCompatibilityError::PciBridgeDownstreamBus(
                 self.downstream_bus,
                 other.downstream_bus,
             ));
         }
         if self.pci_path != other.pci_path {
-            return Err(SpecMismatchDetails::PciPath(
+            return Err(ElementCompatibilityError::PciPath(
                 self.pci_path,
                 other.pci_path,
             ));
@@ -257,26 +282,46 @@ impl DeviceSpec {
     pub fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), (String, SpecMismatchDetails)> {
-        self.board
-            .is_migration_compatible(&other.board)
-            .map_err(|e| ("board".to_string(), e))?;
+    ) -> Result<(), MigrationCompatibilityError> {
+        self.board.is_migration_compatible(&other.board).map_err(|e| {
+            MigrationCompatibilityError::ElementMismatch("board".to_string(), e)
+        })?;
 
         self.storage_devices
             .is_migration_compatible(&other.storage_devices)
-            .map_err(|e| ("storage devices".to_string(), e))?;
+            .map_err(|e| {
+                MigrationCompatibilityError::CollectionMismatch(
+                    "storage devices".to_string(),
+                    e,
+                )
+            })?;
 
         self.network_devices
             .is_migration_compatible(&other.network_devices)
-            .map_err(|e| ("network devices".to_string(), e))?;
+            .map_err(|e| {
+                MigrationCompatibilityError::CollectionMismatch(
+                    "network devices".to_string(),
+                    e,
+                )
+            })?;
 
         self.serial_ports
             .is_migration_compatible(&other.serial_ports)
-            .map_err(|e| ("serial ports".to_string(), e))?;
+            .map_err(|e| {
+                MigrationCompatibilityError::CollectionMismatch(
+                    "serial ports".to_string(),
+                    e,
+                )
+            })?;
 
         self.pci_pci_bridges
             .is_migration_compatible(&other.pci_pci_bridges)
-            .map_err(|e| ("PCI bridges".to_string(), e))?;
+            .map_err(|e| {
+                MigrationCompatibilityError::CollectionMismatch(
+                    "PCI bridges".to_string(),
+                    e,
+                )
+            })?;
 
         Ok(())
     }

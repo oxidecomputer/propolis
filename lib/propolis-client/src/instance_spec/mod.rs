@@ -56,7 +56,7 @@
 //! accept a v1 spec despite not being able to supply a default value for a new
 //! field.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -73,18 +73,10 @@ pub use devices::*;
 /// Type alias for keys in the instance spec's maps.
 type SpecKey = String;
 
-/// An error type describing possible mismatches between two instance specs that
-/// render them migration-incompatible.
+/// An error type describing mismatches between two spec elements--i.e.,
+/// descriptions of individual devices or components--that block migration.
 #[derive(Debug, Error)]
-pub enum SpecMismatchDetails {
-    #[error(
-        "Specs have collections with different lengths (self: {0}, other: {1})"
-    )]
-    CollectionSize(usize, usize),
-
-    #[error("Collection key {0} present in self but absent from other")]
-    CollectionKeyAbsent(SpecKey),
-
+pub enum ElementCompatibilityError {
     #[error(
         "Spec elements have different PCI paths (self: {0:?}, other: {1:?})"
     )]
@@ -148,40 +140,66 @@ pub enum SpecMismatchDetails {
     TestComponents(),
 }
 
+/// An error type describing a mismatch between collections of elements that
+/// blocks migration.
 #[derive(Debug, Error)]
-pub enum MigrationCompatibilityError {
-    #[error("Migration of {0} not compatible: {1}")]
-    SpecMismatch(String, SpecMismatchDetails),
+pub enum CollectionCompatibilityError {
+    #[error(
+        "Specs have collections with different lengths (self: {0}, other: {1})"
+    )]
+    CollectionSize(usize, usize),
+
+    #[error("Collection key {0} present in self but absent from other")]
+    CollectionKeyAbsent(SpecKey),
+
+    #[error("Spec element {0} mismatched: {1:?}")]
+    SpecElementMismatch(String, ElementCompatibilityError),
 }
 
-/// Routines used to check whether two components are migration-compatible.
-trait MigrationCompatible {
+/// The top-level migration compatibility error type.
+#[derive(Debug, Error)]
+pub enum MigrationCompatibilityError {
+    #[error("Collection {0} not compatible: {1}")]
+    CollectionMismatch(String, CollectionCompatibilityError),
+
+    #[error("Spec element {0} not compatible: {1}")]
+    ElementMismatch(String, ElementCompatibilityError),
+}
+
+/// Implementors of this trait are individual devices or VMM components who can
+/// describe inconsistencies using a [`SpecElementMismatchDetails`] enumerant.
+trait MigrationElement {
     /// Returns true if `self` and `other` describe spec elements that are
     /// similar enough to permit migration of this element from one VMM to
     /// another.
-    ///
-    /// Note that this can be, but isn't always, a simple check for equality.
-    /// Backends, in particular, may be migration-compatible but have different
-    /// configuration payloads. The migration protocol allows components like
-    /// this to augment this check with their own compatibility checks.
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails>;
+    ) -> Result<(), ElementCompatibilityError>;
 }
 
-impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
+/// This trait implements migration compatibility checks for collection types,
+/// which can be incompatible either because of a problem with the collection
+/// itself or because of problems with one of the collection's members.
+trait MigrationCollection {
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), CollectionCompatibilityError>;
+}
+
+impl<T: MigrationElement> MigrationCollection for BTreeMap<SpecKey, T> {
     // Two keyed maps of components are compatible if they contain all the same
     // keys and if, for each key, the corresponding values are
     // migration-compatible.
     fn is_migration_compatible(
         &self,
         other: &Self,
-    ) -> Result<(), SpecMismatchDetails> {
+    ) -> Result<(), CollectionCompatibilityError> {
         // If the two maps have different sizes, then they have different key
         // sets.
         if self.len() != other.len() {
-            return Err(SpecMismatchDetails::CollectionSize(
+            return Err(CollectionCompatibilityError::CollectionSize(
                 self.len(),
                 other.len(),
             ));
@@ -191,10 +209,40 @@ impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
         // corresponding values must be compatible with one another.
         for (key, this_val) in self.iter() {
             let other_val = other.get(key).ok_or_else(|| {
-                SpecMismatchDetails::CollectionKeyAbsent(key.clone())
+                CollectionCompatibilityError::CollectionKeyAbsent(key.clone())
             })?;
 
-            this_val.is_migration_compatible(other_val)?;
+            this_val.is_migration_compatible(other_val).map_err(|e| {
+                CollectionCompatibilityError::SpecElementMismatch(
+                    key.clone(),
+                    e,
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+}
+
+impl MigrationCollection for BTreeSet<SpecKey> {
+    // Two sets of spec keys are compatible if they have all the same members.
+    fn is_migration_compatible(
+        &self,
+        other: &Self,
+    ) -> Result<(), CollectionCompatibilityError> {
+        if self.len() != other.len() {
+            return Err(CollectionCompatibilityError::CollectionSize(
+                self.len(),
+                other.len(),
+            ));
+        }
+
+        for key in self.iter() {
+            if !other.contains(key) {
+                return Err(CollectionCompatibilityError::CollectionKeyAbsent(
+                    key.clone(),
+                ));
+            }
         }
 
         Ok(())
@@ -203,31 +251,11 @@ impl<T: MigrationCompatible> MigrationCompatible for BTreeMap<SpecKey, T> {
 
 /// A full instance specification. See the documentation for individual
 /// elements for more information about the fields in this structure.
-///
-/// Named devices and backends are stored in maps with object names as keys
-/// and devices/backends as values.
 #[derive(Default, Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceSpec {
     pub devices: DeviceSpec,
     pub backends: BackendSpec,
-}
-
-impl InstanceSpec {
-    pub fn is_migration_compatible(
-        &self,
-        other: &Self,
-    ) -> Result<(), MigrationCompatibilityError> {
-        self.devices
-            .is_migration_compatible(&other.devices)
-            .map_err(|e| MigrationCompatibilityError::SpecMismatch(e.0, e.1))?;
-
-        self.backends
-            .is_migration_compatible(&other.backends)
-            .map_err(|e| MigrationCompatibilityError::SpecMismatch(e.0, e.1))?;
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -241,13 +269,13 @@ mod test {
         Contraption,
     }
 
-    impl MigrationCompatible for TestComponent {
+    impl MigrationElement for TestComponent {
         fn is_migration_compatible(
             &self,
             other: &Self,
-        ) -> Result<(), SpecMismatchDetails> {
+        ) -> Result<(), ElementCompatibilityError> {
             if self != other {
-                Err(SpecMismatchDetails::TestComponents())
+                Err(ElementCompatibilityError::TestComponents())
             } else {
                 Ok(())
             }
@@ -308,112 +336,21 @@ mod test {
         b2.cpus = 8;
         assert!(matches!(
             b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::CpuCount(4, 8))
+            Err(ElementCompatibilityError::CpuCount(4, 8))
         ));
         b2.cpus = b1.cpus;
 
         b2.memory_mb = b1.memory_mb * 2;
         assert!(matches!(
             b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::MemorySize(4096, 8192))
+            Err(ElementCompatibilityError::MemorySize(4096, 8192))
         ));
         b2.memory_mb = b1.memory_mb;
 
         b2.chipset = Chipset::I440Fx { enable_pcie: false };
         assert!(matches!(
             b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::PcieEnablement(true, false))
-        ));
-    }
-
-    #[test]
-    fn compatible_storage_backends() {
-        let b1: BTreeMap<SpecKey, StorageBackend> = BTreeMap::from([
-            (
-                "crucible".to_string(),
-                StorageBackend {
-                    kind: StorageBackendKind::Crucible {
-                        gen: 1,
-                        req: CrucibleRequestContents {
-                            json: "this_crucible_config".to_string(),
-                        },
-                    },
-                    readonly: true,
-                },
-            ),
-            (
-                "file".to_string(),
-                StorageBackend {
-                    kind: StorageBackendKind::File {
-                        path: "this_path".to_string(),
-                    },
-                    readonly: false,
-                },
-            ),
-            (
-                "memory".to_string(),
-                StorageBackend {
-                    kind: StorageBackendKind::InMemory,
-                    readonly: true,
-                },
-            ),
-        ]);
-
-        let mut b2 = b1.clone();
-        match &mut b2.get_mut("crucible").unwrap().kind {
-            StorageBackendKind::Crucible { gen, req } => {
-                *gen += 1;
-                *req = CrucibleRequestContents {
-                    json: "that_crucible_config".to_string(),
-                };
-            }
-            _ => panic!("Crucible backend not present in cloned map"),
-        }
-        assert!(b1.is_migration_compatible(&b2).is_ok());
-
-        match &mut b2.get_mut("file").unwrap().kind {
-            StorageBackendKind::File { path } => {
-                *path = "that_path".to_string()
-            }
-            _ => panic!("File backend not present in cloned map"),
-        }
-        assert!(b1.is_migration_compatible(&b2).is_ok());
-    }
-
-    #[test]
-    fn incompatible_storage_backends() {
-        let b1 = StorageBackend {
-            kind: StorageBackendKind::Crucible {
-                gen: 1,
-                req: CrucibleRequestContents { json: "config".to_string() },
-            },
-            readonly: true,
-        };
-
-        let mut b2 = b1.clone();
-        b2.readonly = !b2.readonly;
-        assert!(matches!(
-            b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::StorageBackendReadonly(true, false))
-        ));
-        b2.readonly = b1.readonly;
-
-        b2.kind = StorageBackendKind::File { path: "path".to_string() };
-        assert!(matches!(
-            b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::StorageBackendKind(
-                StorageBackendKind::Crucible { .. },
-                StorageBackendKind::File { .. }
-            ))
-        ));
-
-        b2.kind = StorageBackendKind::InMemory;
-        assert!(matches!(
-            b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::StorageBackendKind(
-                StorageBackendKind::Crucible { .. },
-                StorageBackendKind::InMemory { .. }
-            ))
+            Err(ElementCompatibilityError::PcieEnablement(true, false))
         ));
     }
 
@@ -440,7 +377,7 @@ mod test {
         d2.kind = StorageDeviceKind::Nvme;
         assert!(matches!(
             d1.is_migration_compatible(&d2),
-            Err(SpecMismatchDetails::StorageDeviceKind(
+            Err(ElementCompatibilityError::StorageDeviceKind(
                 StorageDeviceKind::Virtio,
                 StorageDeviceKind::Nvme
             ))
@@ -450,14 +387,14 @@ mod test {
         d2.backend_name = "other_storage_backend".to_string();
         assert!(matches!(
             d1.is_migration_compatible(&d2),
-            Err(SpecMismatchDetails::StorageDeviceBackend(_, _))
+            Err(ElementCompatibilityError::StorageDeviceBackend(_, _))
         ));
         d2.backend_name = d1.backend_name.clone();
 
         d2.pci_path = PciPath::new(0, 6, 0).unwrap();
         assert!(matches!(
             d1.is_migration_compatible(&d2),
-            Err(SpecMismatchDetails::PciPath(_, _))
+            Err(ElementCompatibilityError::PciPath(_, _))
         ));
     }
 
@@ -482,28 +419,15 @@ mod test {
         n2.backend_name = "other_net_backend".to_string();
         assert!(matches!(
             n1.is_migration_compatible(&n2),
-            Err(SpecMismatchDetails::NetworkDeviceBackend(_, _))
+            Err(ElementCompatibilityError::NetworkDeviceBackend(_, _))
         ));
         n2.backend_name = n1.backend_name.clone();
 
         n2.pci_path = PciPath::new(0, 8, 1).unwrap();
         assert!(matches!(
             n1.is_migration_compatible(&n2),
-            Err(SpecMismatchDetails::PciPath(_, _))
+            Err(ElementCompatibilityError::PciPath(_, _))
         ));
-    }
-
-    #[test]
-    fn compatible_network_backends() {
-        let n1 = NetworkBackend {
-            kind: NetworkBackendKind::Virtio { vnic_name: "vnic".to_string() },
-        };
-        let n2 = NetworkBackend {
-            kind: NetworkBackendKind::Virtio {
-                vnic_name: "other_vnic".to_string(),
-            },
-        };
-        assert!(n1.is_migration_compatible(&n2).is_ok());
     }
 
     #[test]
@@ -518,7 +442,7 @@ mod test {
                 .is_migration_compatible(&SerialPort {
                     num: SerialPortNumber::Com3
                 }),
-            Err(SpecMismatchDetails::SerialPortNumber(
+            Err(ElementCompatibilityError::SerialPortNumber(
                 SerialPortNumber::Com2,
                 SerialPortNumber::Com3
             ))
@@ -538,14 +462,14 @@ mod test {
         b2.downstream_bus += 1;
         assert!(matches!(
             b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::PciBridgeDownstreamBus(1, 2))
+            Err(ElementCompatibilityError::PciBridgeDownstreamBus(1, 2))
         ));
         b2.downstream_bus = b1.downstream_bus;
 
         b2.pci_path = PciPath::new(4, 5, 6).unwrap();
         assert!(matches!(
             b1.is_migration_compatible(&b2),
-            Err(SpecMismatchDetails::PciPath(_, _))
+            Err(ElementCompatibilityError::PciPath(_, _))
         ));
     }
 }
