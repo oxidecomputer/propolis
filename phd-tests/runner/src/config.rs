@@ -48,6 +48,11 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     pub tmp_directory: PathBuf,
 
+    /// The directory in which artifacts (guest OS images, bootroms, etc.)
+    /// are to be stored.
+    #[clap(long, value_parser)]
+    pub artifact_directory: PathBuf,
+
     /// If true, direct Propolis servers created by the runner to log to
     /// stdout/stderr handles inherited from the runner.
     ///

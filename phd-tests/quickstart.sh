@@ -14,4 +14,5 @@ pfexec cargo run --profile=phd -p phd-runner -- \
 	run \
 	--artifact-toml-path ./sample_artifacts.toml \
 	--tmp-directory $PHD_QUICKSTART_DIR \
+	--artifact-directory $PHD_QUICKSTART_DIR \
 	--propolis-server-cmd $1

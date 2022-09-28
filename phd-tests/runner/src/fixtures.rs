@@ -26,11 +26,10 @@ impl<'a> TestFixtures<'a> {
             .zfs_fs_name
             .as_ref()
             .map(|zfs_name| {
-                let local_root = artifact_store
-                    .get_local_root()
-                    .to_string_lossy()
-                    .to_string();
-                ZfsFixture::new(zfs_name.clone(), &local_root)
+                ZfsFixture::new(
+                    zfs_name.clone(),
+                    run_opts.artifact_directory.to_string_lossy().as_ref(),
+                )
             })
             .transpose()?;
 
