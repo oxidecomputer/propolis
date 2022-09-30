@@ -55,7 +55,7 @@ fn open_bootrom<P: AsRef<std::path::Path>>(path: P) -> Result<(File, usize)> {
 fn get_spec_guest_ram_limits(spec: &InstanceSpec) -> (usize, usize) {
     const MB: usize = 1024 * 1024;
     const GB: usize = 1024 * 1024 * 1024;
-    let memsize = spec.board.memory_mb as usize * MB;
+    let memsize = spec.devices.board.memory_mb as usize * MB;
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
     (lowmem, highmem)
@@ -70,7 +70,7 @@ pub fn build_instance(
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
     let create_opts = propolis::vmm::CreateOpts { force: true, use_reservoir };
     let mut builder = Builder::new(name, create_opts)?
-        .max_cpus(spec.board.cpus)?
+        .max_cpus(spec.devices.board.cpus)?
         .add_mem_region(0, lowmem, "lowmem")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
         .add_mmio_region(0xc000_0000_usize, 0x2000_0000_usize, "dev32")?
@@ -153,7 +153,7 @@ impl<'a> MachineInitializer<'a> {
         event_handler: &Arc<dyn super::vm::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
-        for (name, bridge) in &self.spec.pci_pci_bridges {
+        for (name, bridge) in &self.spec.devices.pci_pci_bridges {
             let desc = pci::topology::BridgeDescription::new(
                 pci::topology::LogicalBusId(bridge.downstream_bus),
                 bridge.pci_path.try_into().map_err(|e| {
@@ -170,7 +170,7 @@ impl<'a> MachineInitializer<'a> {
         }
         let pci_topology = pci_builder.finish(self.inv, self.machine)?;
 
-        match self.spec.board.chipset {
+        match self.spec.devices.board.chipset {
             instance_spec::Chipset::I440Fx { enable_pcie } => {
                 let power_ref = Arc::downgrade(event_handler);
                 let reset_ref = Arc::downgrade(event_handler);
@@ -214,7 +214,7 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
         let mut com1 = None;
-        for (name, serial_spec) in &self.spec.serial_ports {
+        for (name, serial_spec) in &self.spec.devices.serial_ports {
             let (irq, port) = match serial_spec.num {
                 SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
                 SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
@@ -264,7 +264,7 @@ impl<'a> MachineInitializer<'a> {
             StorageBackendKind::Crucible { gen, req } => {
                 info!(
                     self.log,
-                    "Creating Crucible disk from request {}", req.json
+                    "Creating Crucible disk from request {:?}", req
                 );
                 let be = propolis::block::CrucibleBackend::create(
                     *gen,
@@ -354,7 +354,7 @@ impl<'a> MachineInitializer<'a> {
         in_memory_contents: BTreeMap<String, Vec<u8>>,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
-        for (name, device_spec) in &self.spec.storage_devices {
+        for (name, device_spec) in &self.spec.devices.storage_devices {
             info!(
                 self.log,
                 "Creating storage device {} of kind {:?}",
@@ -363,6 +363,7 @@ impl<'a> MachineInitializer<'a> {
             );
             let backend_spec = self
                 .spec
+                .backends
                 .storage_backends
                 .get(&device_spec.backend_name)
                 .ok_or_else(|| {
@@ -453,10 +454,11 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
-        for (name, vnic_spec) in &self.spec.network_devices {
+        for (name, vnic_spec) in &self.spec.devices.network_devices {
             info!(self.log, "Creating vNIC {}", name);
             let backend_spec = self
                 .spec
+                .backends
                 .network_backends
                 .get(&vnic_spec.backend_name)
                 .ok_or_else(|| {

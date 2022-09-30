@@ -529,7 +529,8 @@ impl VmController {
         init.initialize_network_devices(&chipset)?;
         let crucible_backends =
             init.initialize_storage_devices(&chipset, in_memory_disk_contents)?;
-        let framebuffer_id = init.initialize_fwcfg(instance_spec.board.cpus)?;
+        let framebuffer_id =
+            init.initialize_fwcfg(instance_spec.devices.board.cpus)?;
         let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);
         init.initialize_cpus()?;
         let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
