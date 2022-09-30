@@ -248,9 +248,7 @@ enum SpecCreationError {
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<(InstanceSpec, BTreeMap<String, Vec<u8>>), SpecCreationError> {
-    let mut in_memory_disk_contents: BTreeMap<String, Vec<u8>> =
-        BTreeMap::new();
+) -> Result<InstanceSpec, SpecCreationError> {
     let mut spec_builder = SpecBuilder::new(&request.properties, toml_config)?;
     for nic in &request.nics {
         spec_builder.add_nic_from_request(nic)?;
@@ -262,8 +260,7 @@ fn instance_spec_from_request(
 
     if let Some(as_base64) = &request.cloud_init_bytes {
         let bytes = base64::decode(as_base64)?;
-        spec_builder.add_cloud_init_from_request()?;
-        in_memory_disk_contents.insert("cloud-init".to_string(), bytes);
+        spec_builder.add_cloud_init_from_request(bytes)?;
     }
 
     spec_builder.add_devices_from_config(toml_config)?;
@@ -276,7 +273,7 @@ fn instance_spec_from_request(
         spec_builder.add_serial_port(port)?;
     }
 
-    Ok((spec_builder.finish(), in_memory_disk_contents))
+    Ok(spec_builder.finish())
 }
 
 /// Attempts to register an Oximeter server reporting metrics from a new
@@ -348,7 +345,7 @@ async fn instance_ensure(
         }));
     }
 
-    let (instance_spec, in_memory_disk_contents) =
+    let instance_spec =
         instance_spec_from_request(&request, &server_context.static_config.vm)
             .map_err(|e| {
                 HttpError::for_bad_request(
@@ -402,7 +399,6 @@ async fn instance_ensure(
                 properties,
                 use_reservoir,
                 bootrom,
-                in_memory_disk_contents,
                 producer_registry,
                 log,
                 ctrl_hdl,
@@ -411,6 +407,7 @@ async fn instance_ensure(
 
         vm_hdl.await.unwrap()
     }
+
     .map_err(|e| {
         HttpError::for_internal_error(format!(
             "failed to create instance: {}",

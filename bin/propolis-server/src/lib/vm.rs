@@ -477,7 +477,6 @@ impl VmController {
         properties: InstanceProperties,
         use_reservoir: bool,
         bootrom: PathBuf,
-        in_memory_disk_contents: BTreeMap<String, Vec<u8>>,
         oximeter_registry: Option<ProducerRegistry>,
         log: Logger,
         runtime_hdl: tokio::runtime::Handle,
@@ -529,8 +528,7 @@ impl VmController {
         let ps2ctrl: Option<Arc<PS2Ctrl>> = inv.get_concrete(ps2ctrl_id);
         init.initialize_qemu_debug_port()?;
         init.initialize_network_devices(&chipset)?;
-        let crucible_backends =
-            init.initialize_storage_devices(&chipset, in_memory_disk_contents)?;
+        let crucible_backends = init.initialize_storage_devices(&chipset)?;
         let framebuffer_id =
             init.initialize_fwcfg(instance_spec.devices.board.cpus)?;
         let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);

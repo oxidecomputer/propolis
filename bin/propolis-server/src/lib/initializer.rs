@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
@@ -296,40 +295,11 @@ impl<'a> MachineInitializer<'a> {
                     inventory::ChildRegister::new(&be, Some(path.to_string()));
                 StorageBackendInstance { be, child, crucible: None }
             }
-            StorageBackendKind::InMemory => {
+            StorageBackendKind::InMemory { .. } => {
                 panic!(
                     "Passed an in-memory backend spec as a persistent backend"
                 );
             }
-        })
-    }
-
-    fn initialize_volatile_storage_backend(
-        &self,
-        name: &str,
-        backend_spec: &StorageBackend,
-        contents: Vec<u8>,
-    ) -> Result<StorageBackendInstance, Error> {
-        Ok(match &backend_spec.kind {
-            StorageBackendKind::InMemory => {
-                info!(
-                    self.log,
-                    "Creating in-memory disk backend from {} bytes",
-                    contents.len()
-                );
-                let be = propolis::block::InMemoryBackend::create(
-                    contents,
-                    backend_spec.readonly,
-                    512,
-                )?;
-                let child =
-                    inventory::ChildRegister::new(&be, Some(name.to_string()));
-                StorageBackendInstance { be, child, crucible: None }
-            }
-            _ => panic!(
-                "Passed a persistent storage backend spec as \
-                        a volatile backend"
-            ),
         })
     }
 
@@ -341,7 +311,6 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
-        in_memory_contents: BTreeMap<String, Vec<u8>>,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
@@ -371,24 +340,22 @@ impl<'a> MachineInitializer<'a> {
                     | StorageBackendKind::File { .. } => {
                         self.initialize_persistent_storage_backend(backend_spec)
                     }
-                    StorageBackendKind::InMemory => {
-                        let contents = in_memory_contents
-                            .get(&device_spec.backend_name)
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidInput,
-                                    format!(
-                                        "In-memory storage backend {} has no \
-                                        contents",
-                                        device_spec.backend_name
-                                    ),
-                                )
-                            })?;
-                        self.initialize_volatile_storage_backend(
-                            &device_spec.backend_name,
-                            backend_spec,
-                            contents.clone(),
-                        )
+                    StorageBackendKind::InMemory { bytes } => {
+                        info!(
+                            self.log,
+                            "Creating in-memory disk backend from {} bytes",
+                            bytes.len()
+                        );
+                        let be = propolis::block::InMemoryBackend::create(
+                            bytes.clone(),
+                            backend_spec.readonly,
+                            512,
+                        )?;
+                        let child = inventory::ChildRegister::new(
+                            &be,
+                            Some(name.to_string()),
+                        );
+                        Ok(StorageBackendInstance { be, child, crucible: None })
                     }
                 }?;
 
