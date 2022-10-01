@@ -255,54 +255,6 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn initialize_persistent_storage_backend(
-        &self,
-        backend_spec: &StorageBackend,
-    ) -> Result<StorageBackendInstance, Error> {
-        Ok(match &backend_spec.kind {
-            StorageBackendKind::Crucible { gen, req } => {
-                info!(
-                    self.log,
-                    "Creating Crucible disk from request {:?}", req
-                );
-                let be = propolis::block::CrucibleBackend::create(
-                    *gen,
-                    req.clone(),
-                    backend_spec.readonly,
-                    self.producer_registry.clone(),
-                )?;
-                let child = inventory::ChildRegister::new(
-                    &be,
-                    Some(be.get_uuid()?.to_string()),
-                );
-                let crucible = Some((be.get_uuid()?, be.clone()));
-                StorageBackendInstance { be, child, crucible }
-            }
-            StorageBackendKind::File { path } => {
-                info!(
-                    self.log,
-                    "Creating file disk backend using path {}", path
-                );
-                let nworkers = NonZeroUsize::new(8).unwrap();
-                let be = propolis::block::FileBackend::create(
-                    path,
-                    backend_spec.readonly,
-                    nworkers,
-                    self.log
-                        .new(slog::o!("component" => format!("file-{}", path))),
-                )?;
-                let child =
-                    inventory::ChildRegister::new(&be, Some(path.to_string()));
-                StorageBackendInstance { be, child, crucible: None }
-            }
-            StorageBackendKind::InMemory { .. } => {
-                panic!(
-                    "Passed an in-memory backend spec as a persistent backend"
-                );
-            }
-        })
-    }
-
     /// Initializes the storage devices and backends listed in this
     /// initializer's instance spec.
     ///
@@ -336,9 +288,43 @@ impl<'a> MachineInitializer<'a> {
                 })?;
             let StorageBackendInstance { be: backend, child, crucible } =
                 match &backend_spec.kind {
-                    StorageBackendKind::Crucible { .. }
-                    | StorageBackendKind::File { .. } => {
-                        self.initialize_persistent_storage_backend(backend_spec)
+                    StorageBackendKind::Crucible { gen, req } => {
+                        info!(
+                            self.log,
+                            "Creating Crucible disk from request {:?}", req
+                        );
+                        let be = propolis::block::CrucibleBackend::create(
+                            *gen,
+                            req.clone(),
+                            backend_spec.readonly,
+                            self.producer_registry.clone(),
+                            self.log.new(slog::o!("component" => "crucible")),
+                        )?;
+                        let child = inventory::ChildRegister::new(
+                            &be,
+                            Some(be.get_uuid()?.to_string()),
+                        );
+                        let crucible = Some((be.get_uuid()?, be.clone()));
+                        StorageBackendInstance { be, child, crucible }
+                    }
+                    StorageBackendKind::File { path } => {
+                        info!(
+                            self.log,
+                            "Creating file disk backend using path {}", path
+                        );
+                        let nworkers = NonZeroUsize::new(8).unwrap();
+                        let be = propolis::block::FileBackend::create(
+                            path,
+                            backend_spec.readonly,
+                            nworkers,
+                            self.log.new(slog::o!("component" =>
+                                              format!("file-{}", path))),
+                        )?;
+                        let child = inventory::ChildRegister::new(
+                            &be,
+                            Some(path.to_string()),
+                        );
+                        StorageBackendInstance { be, child, crucible: None }
                     }
                     StorageBackendKind::InMemory { bytes } => {
                         info!(
@@ -355,9 +341,9 @@ impl<'a> MachineInitializer<'a> {
                             &be,
                             Some(name.to_string()),
                         );
-                        Ok(StorageBackendInstance { be, child, crucible: None })
+                        StorageBackendInstance { be, child, crucible: None }
                     }
-                }?;
+                };
 
             let bdf: pci::Bdf =
                 device_spec.pci_path.try_into().map_err(|e| {
