@@ -167,7 +167,7 @@ pub enum MigrationCompatibilityError {
 }
 
 /// Implementors of this trait are individual devices or VMM components who can
-/// describe inconsistencies using a [`SpecElementMismatchDetails`] enumerant.
+/// describe inconsistencies using a [`SpecElementMismatchDetails`] variant.
 trait MigrationElement {
     /// Returns true if `self` and `other` describe spec elements that are
     /// similar enough to permit migration of this element from one VMM to
