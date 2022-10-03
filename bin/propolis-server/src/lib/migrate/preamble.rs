@@ -23,9 +23,9 @@ impl Preamble {
         &self,
         other_spec: &InstanceSpec,
     ) -> Result<(), MigrationCompatibilityError> {
-        self.device_spec.is_migration_compatible(&other_spec.devices)?;
+        self.device_spec.can_migrate_devices_from(&other_spec.devices)?;
         let other_keys = BackendNames::from(&other_spec.backends);
-        self.backend_keys.is_migration_compatible(&other_keys)?;
+        self.backend_keys.can_migrate_backends_from(&other_keys)?;
 
         // TODO: Compare opaque blobs.
 

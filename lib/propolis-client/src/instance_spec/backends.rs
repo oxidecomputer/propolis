@@ -126,23 +126,27 @@ impl From<&BackendSpec> for BackendNames {
 impl BackendNames {
     /// Indicates whether two backend specs with the supplied named backends are
     /// migration-compatible with each other.
-    pub fn is_migration_compatible(
+    pub fn can_migrate_backends_from(
         &self,
         other: &Self,
     ) -> Result<(), MigrationCompatibilityError> {
-        self.storage.is_migration_compatible(&other.storage).map_err(|e| {
-            MigrationCompatibilityError::CollectionMismatch(
-                "storage backends".to_string(),
-                e,
-            )
-        })?;
+        self.storage.can_migrate_from_collection(&other.storage).map_err(
+            |e| {
+                MigrationCompatibilityError::CollectionMismatch(
+                    "storage backends".to_string(),
+                    e,
+                )
+            },
+        )?;
 
-        self.network.is_migration_compatible(&other.network).map_err(|e| {
-            MigrationCompatibilityError::CollectionMismatch(
-                "network backends".to_string(),
-                e,
-            )
-        })?;
+        self.network.can_migrate_from_collection(&other.network).map_err(
+            |e| {
+                MigrationCompatibilityError::CollectionMismatch(
+                    "network backends".to_string(),
+                    e,
+                )
+            },
+        )?;
 
         Ok(())
     }

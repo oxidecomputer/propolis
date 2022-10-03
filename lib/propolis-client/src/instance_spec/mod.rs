@@ -172,7 +172,7 @@ trait MigrationElement {
     /// Returns true if `self` and `other` describe spec elements that are
     /// similar enough to permit migration of this element from one VMM to
     /// another.
-    fn is_migration_compatible(
+    fn can_migrate_from_element(
         &self,
         other: &Self,
     ) -> Result<(), ElementCompatibilityError>;
@@ -182,7 +182,7 @@ trait MigrationElement {
 /// which can be incompatible either because of a problem with the collection
 /// itself or because of problems with one of the collection's members.
 trait MigrationCollection {
-    fn is_migration_compatible(
+    fn can_migrate_from_collection(
         &self,
         other: &Self,
     ) -> Result<(), CollectionCompatibilityError>;
@@ -192,7 +192,7 @@ impl<T: MigrationElement> MigrationCollection for BTreeMap<SpecKey, T> {
     // Two keyed maps of components are compatible if they contain all the same
     // keys and if, for each key, the corresponding values are
     // migration-compatible.
-    fn is_migration_compatible(
+    fn can_migrate_from_collection(
         &self,
         other: &Self,
     ) -> Result<(), CollectionCompatibilityError> {
@@ -212,7 +212,7 @@ impl<T: MigrationElement> MigrationCollection for BTreeMap<SpecKey, T> {
                 CollectionCompatibilityError::CollectionKeyAbsent(key.clone())
             })?;
 
-            this_val.is_migration_compatible(other_val).map_err(|e| {
+            this_val.can_migrate_from_element(other_val).map_err(|e| {
                 CollectionCompatibilityError::SpecElementMismatch(
                     key.clone(),
                     e,
@@ -226,7 +226,7 @@ impl<T: MigrationElement> MigrationCollection for BTreeMap<SpecKey, T> {
 
 impl MigrationCollection for BTreeSet<SpecKey> {
     // Two sets of spec keys are compatible if they have all the same members.
-    fn is_migration_compatible(
+    fn can_migrate_from_collection(
         &self,
         other: &Self,
     ) -> Result<(), CollectionCompatibilityError> {
@@ -270,7 +270,7 @@ mod test {
     }
 
     impl MigrationElement for TestComponent {
-        fn is_migration_compatible(
+        fn can_migrate_from_element(
             &self,
             other: &Self,
         ) -> Result<(), ElementCompatibilityError> {
@@ -293,24 +293,24 @@ mod test {
         ]);
 
         let mut m2 = m1.clone();
-        assert!(m1.is_migration_compatible(&m2).is_ok());
+        assert!(m1.can_migrate_from_collection(&m2).is_ok());
 
         // Mismatched key counts make two maps incompatible.
         m2.insert("second_widget".to_string(), TestComponent::Widget);
-        assert!(m1.is_migration_compatible(&m2).is_err());
+        assert!(m1.can_migrate_from_collection(&m2).is_err());
         m2.remove("second_widget");
 
         // Two maps are incompatible if their keys refer to components that are
         // not compatible with each other.
         *m2.get_mut("gizmo").unwrap() = TestComponent::Contraption;
-        assert!(m1.is_migration_compatible(&m2).is_err());
+        assert!(m1.can_migrate_from_collection(&m2).is_err());
         *m2.get_mut("gizmo").unwrap() = TestComponent::Gizmo;
 
         // Two maps are incompatible if they have the same number of keys and
         // values, but different sets of key names.
         m2.remove("gizmo");
         m2.insert("other_gizmo".to_string(), TestComponent::Gizmo);
-        assert!(m1.is_migration_compatible(&m2).is_err());
+        assert!(m1.can_migrate_from_collection(&m2).is_err());
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod test {
             chipset: Chipset::I440Fx { enable_pcie: false },
         };
         let b2 = b1.clone();
-        assert!(b1.is_migration_compatible(&b2).is_ok());
+        assert!(b1.can_migrate_from_element(&b2).is_ok());
     }
 
     #[test]
@@ -335,21 +335,21 @@ mod test {
         let mut b2 = b1.clone();
         b2.cpus = 8;
         assert!(matches!(
-            b1.is_migration_compatible(&b2),
+            b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::CpuCount(4, 8))
         ));
         b2.cpus = b1.cpus;
 
         b2.memory_mb = b1.memory_mb * 2;
         assert!(matches!(
-            b1.is_migration_compatible(&b2),
+            b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::MemorySize(4096, 8192))
         ));
         b2.memory_mb = b1.memory_mb;
 
         b2.chipset = Chipset::I440Fx { enable_pcie: false };
         assert!(matches!(
-            b1.is_migration_compatible(&b2),
+            b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::PcieEnablement(true, false))
         ));
     }
@@ -362,7 +362,7 @@ mod test {
             pci_path: PciPath::new(0, 5, 0).unwrap(),
         };
         let d2 = d1.clone();
-        assert!(d1.is_migration_compatible(&d2).is_ok());
+        assert!(d1.can_migrate_from_element(&d2).is_ok());
     }
 
     #[test]
@@ -376,7 +376,7 @@ mod test {
         let mut d2 = d1.clone();
         d2.kind = StorageDeviceKind::Nvme;
         assert!(matches!(
-            d1.is_migration_compatible(&d2),
+            d1.can_migrate_from_element(&d2),
             Err(ElementCompatibilityError::StorageDeviceKind(
                 StorageDeviceKind::Virtio,
                 StorageDeviceKind::Nvme
@@ -386,14 +386,14 @@ mod test {
 
         d2.backend_name = "other_storage_backend".to_string();
         assert!(matches!(
-            d1.is_migration_compatible(&d2),
+            d1.can_migrate_from_element(&d2),
             Err(ElementCompatibilityError::StorageDeviceBackend(_, _))
         ));
         d2.backend_name = d1.backend_name.clone();
 
         d2.pci_path = PciPath::new(0, 6, 0).unwrap();
         assert!(matches!(
-            d1.is_migration_compatible(&d2),
+            d1.can_migrate_from_element(&d2),
             Err(ElementCompatibilityError::PciPath(_, _))
         ));
     }
@@ -405,7 +405,7 @@ mod test {
             pci_path: PciPath::new(0, 7, 0).unwrap(),
         };
         let n2 = n1.clone();
-        assert!(n1.is_migration_compatible(&n2).is_ok());
+        assert!(n1.can_migrate_from_element(&n2).is_ok());
     }
 
     #[test]
@@ -418,14 +418,14 @@ mod test {
 
         n2.backend_name = "other_net_backend".to_string();
         assert!(matches!(
-            n1.is_migration_compatible(&n2),
+            n1.can_migrate_from_element(&n2),
             Err(ElementCompatibilityError::NetworkDeviceBackend(_, _))
         ));
         n2.backend_name = n1.backend_name.clone();
 
         n2.pci_path = PciPath::new(0, 8, 1).unwrap();
         assert!(matches!(
-            n1.is_migration_compatible(&n2),
+            n1.can_migrate_from_element(&n2),
             Err(ElementCompatibilityError::PciPath(_, _))
         ));
     }
@@ -433,13 +433,13 @@ mod test {
     #[test]
     fn serial_port_compatibility() {
         assert!((SerialPort { num: SerialPortNumber::Com1 })
-            .is_migration_compatible(&SerialPort {
+            .can_migrate_from_element(&SerialPort {
                 num: SerialPortNumber::Com1
             })
             .is_ok());
         assert!(matches!(
             (SerialPort { num: SerialPortNumber::Com2 })
-                .is_migration_compatible(&SerialPort {
+                .can_migrate_from_element(&SerialPort {
                     num: SerialPortNumber::Com3
                 }),
             Err(ElementCompatibilityError::SerialPortNumber(
@@ -457,18 +457,18 @@ mod test {
         };
 
         let mut b2 = b1.clone();
-        assert!(b1.is_migration_compatible(&b2).is_ok());
+        assert!(b1.can_migrate_from_element(&b2).is_ok());
 
         b2.downstream_bus += 1;
         assert!(matches!(
-            b1.is_migration_compatible(&b2),
+            b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::PciBridgeDownstreamBus(1, 2))
         ));
         b2.downstream_bus = b1.downstream_bus;
 
         b2.pci_path = PciPath::new(4, 5, 6).unwrap();
         assert!(matches!(
-            b1.is_migration_compatible(&b2),
+            b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::PciPath(_, _))
         ));
     }

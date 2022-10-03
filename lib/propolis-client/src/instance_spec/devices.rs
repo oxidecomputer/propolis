@@ -72,7 +72,7 @@ impl Default for Board {
 }
 
 impl MigrationElement for Board {
-    fn is_migration_compatible(
+    fn can_migrate_from_element(
         &self,
         other: &Self,
     ) -> Result<(), ElementCompatibilityError> {
@@ -133,7 +133,7 @@ pub struct StorageDevice {
 }
 
 impl MigrationElement for StorageDevice {
-    fn is_migration_compatible(
+    fn can_migrate_from_element(
         &self,
         other: &Self,
     ) -> Result<(), ElementCompatibilityError> {
@@ -174,7 +174,7 @@ pub struct NetworkDevice {
 }
 
 impl MigrationElement for NetworkDevice {
-    fn is_migration_compatible(
+    fn can_migrate_from_element(
         &self,
         other: &Self,
     ) -> Result<(), ElementCompatibilityError> {
@@ -219,7 +219,7 @@ pub struct SerialPort {
 }
 
 impl MigrationElement for SerialPort {
-    fn is_migration_compatible(
+    fn can_migrate_from_element(
         &self,
         other: &Self,
     ) -> Result<(), ElementCompatibilityError> {
@@ -247,7 +247,7 @@ pub struct PciPciBridge {
 }
 
 impl MigrationElement for PciPciBridge {
-    fn is_migration_compatible(
+    fn can_migrate_from_element(
         &self,
         other: &Self,
     ) -> Result<(), ElementCompatibilityError> {
@@ -279,16 +279,16 @@ pub struct DeviceSpec {
 }
 
 impl DeviceSpec {
-    pub fn is_migration_compatible(
+    pub fn can_migrate_devices_from(
         &self,
         other: &Self,
     ) -> Result<(), MigrationCompatibilityError> {
-        self.board.is_migration_compatible(&other.board).map_err(|e| {
+        self.board.can_migrate_from_element(&other.board).map_err(|e| {
             MigrationCompatibilityError::ElementMismatch("board".to_string(), e)
         })?;
 
         self.storage_devices
-            .is_migration_compatible(&other.storage_devices)
+            .can_migrate_from_collection(&other.storage_devices)
             .map_err(|e| {
                 MigrationCompatibilityError::CollectionMismatch(
                     "storage devices".to_string(),
@@ -297,7 +297,7 @@ impl DeviceSpec {
             })?;
 
         self.network_devices
-            .is_migration_compatible(&other.network_devices)
+            .can_migrate_from_collection(&other.network_devices)
             .map_err(|e| {
                 MigrationCompatibilityError::CollectionMismatch(
                     "network devices".to_string(),
@@ -306,7 +306,7 @@ impl DeviceSpec {
             })?;
 
         self.serial_ports
-            .is_migration_compatible(&other.serial_ports)
+            .can_migrate_from_collection(&other.serial_ports)
             .map_err(|e| {
                 MigrationCompatibilityError::CollectionMismatch(
                     "serial ports".to_string(),
@@ -315,7 +315,7 @@ impl DeviceSpec {
             })?;
 
         self.pci_pci_bridges
-            .is_migration_compatible(&other.pci_pci_bridges)
+            .can_migrate_from_collection(&other.pci_pci_bridges)
             .map_err(|e| {
                 MigrationCompatibilityError::CollectionMismatch(
                     "PCI bridges".to_string(),
