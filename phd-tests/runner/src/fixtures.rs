@@ -10,7 +10,7 @@ use super::zfs::ZfsFixture;
 /// A wrapper containing the objects needed to run the executor's test fixtures.
 pub struct TestFixtures<'a> {
     artifact_store: &'a ArtifactStore,
-    test_context: &'a TestContext,
+    test_context: &'a TestContext<'a>,
     zfs: Option<ZfsFixture>,
 }
 
@@ -66,7 +66,7 @@ impl<'a> TestFixtures<'a> {
     /// Calls fixture routines that run before each test case is invoked.
     #[instrument(skip_all)]
     pub fn test_setup(&mut self) -> Result<()> {
-        self.artifact_store.check_local_copies()
+        Ok(())
     }
 
     /// Calls fixture routines that run after each test case is invoked.

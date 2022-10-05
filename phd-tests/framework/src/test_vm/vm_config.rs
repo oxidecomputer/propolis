@@ -4,60 +4,169 @@ use std::{
     collections::BTreeMap,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use anyhow::Result;
+use propolis_client::instance_spec::{
+    InstanceSpec, StorageBackendKind, StorageDeviceKind,
+};
 use propolis_server_config as config;
+use propolis_types::PciPath;
+use thiserror::Error;
 
-#[derive(Debug)]
-enum DiskInterface {
+use crate::{disk, guest_os::GuestOsKind};
+
+/// Errors raised when configuring a VM or realizing a requested configuration.
+#[derive(Debug, Error)]
+pub enum VmConfigError {
+    #[error("No boot disk specified")]
+    NoBootDisk,
+
+    #[error("Boot disk does not have an associated guest OS")]
+    BootDiskNotGuestImage,
+
+    #[error("Could not find artifact {0} when populating disks")]
+    ArtifactNotFound(String),
+}
+
+/// The disk interface to use for a given guest disk.
+#[derive(Clone, Copy, Debug)]
+pub enum DiskInterface {
     Virtio,
     Nvme,
 }
 
+impl From<DiskInterface> for StorageDeviceKind {
+    fn from(interface: DiskInterface) -> Self {
+        match interface {
+            DiskInterface::Virtio => StorageDeviceKind::Virtio,
+            DiskInterface::Nvme => StorageDeviceKind::Nvme,
+        }
+    }
+}
+
+/// Parameters used to initialize a guest disk.
 #[derive(Debug)]
-struct Disk {
-    image_path: String,
+struct DiskRequest {
+    /// A reference to the resources needed to create this disk's backend. VMs
+    /// created from this configuration also get a reference to these resources.
+    disk: Arc<disk::GuestDisk>,
+
+    /// The PCI device number to assign to this disk. The disk's BDF will be
+    /// 0/this value/0.
     pci_device_num: u8,
+
+    /// The PCI device interface to present to the guest.
     interface: DiskInterface,
 }
 
-#[derive(Debug)]
-struct Nic {
-    vnic_device_name: String,
-    pci_device_num: u8,
-}
-
-/// An abstract description of a VM's configuration: its CPUs, memory, and
-/// devices.
-#[derive(Debug, Default)]
-pub struct VmConfig {
+/// An abstract description of a test VM's configuration and any objects needed
+/// to launch the VM with that configuration.
+#[derive(Default, Debug)]
+pub struct ConfigRequest {
     cpus: u8,
     memory_mib: u64,
     bootrom_path: PathBuf,
-    disks: Vec<Disk>,
-    nics: Vec<Nic>,
+    boot_disk: Option<DiskRequest>,
+    data_disks: Vec<DiskRequest>,
 }
 
-impl VmConfig {
-    /// Returns the number of CPUs in this config.
-    pub fn cpus(&self) -> u8 {
-        self.cpus
+impl ConfigRequest {
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
 
-    /// Returns the amount of memory in this config.
-    pub fn memory_mib(&self) -> u64 {
-        self.memory_mib
+    pub fn set_cpus(mut self, cpus: u8) -> Self {
+        self.cpus = cpus;
+        self
     }
 
-    // Writes those portions of the config that are specified to Propolis
-    // servers via the config TOML into a file containing said TOML.
-    pub fn write_config_toml(
+    pub fn set_memory_mib(mut self, mem: u64) -> Self {
+        self.memory_mib = mem;
+        self
+    }
+
+    pub fn set_bootrom_path(mut self, path: PathBuf) -> Self {
+        self.bootrom_path = path;
+        self
+    }
+
+    pub fn set_boot_disk(
+        mut self,
+        disk: Arc<disk::GuestDisk>,
+        pci_device_num: u8,
+        interface: DiskInterface,
+    ) -> Self {
+        self.boot_disk = Some(DiskRequest { disk, pci_device_num, interface });
+        self
+    }
+
+    fn all_disks(&self) -> impl Iterator<Item = &DiskRequest> {
+        self.boot_disk.iter().chain(self.data_disks.iter())
+    }
+
+    pub fn finish(
+        self,
+        object_dir: &impl AsRef<Path>,
+        toml_filename: &impl AsRef<Path>,
+    ) -> anyhow::Result<VmConfig> {
+        let guest_os_kind = if let Some(disk_request) = &self.boot_disk {
+            disk_request
+                .disk
+                .guest_os()
+                .ok_or_else(|| VmConfigError::BootDiskNotGuestImage)?
+        } else {
+            return Err(VmConfigError::NoBootDisk.into());
+        };
+
+        let mut spec_builder = propolis_client::instance_spec::SpecBuilder::new(
+            self.cpus,
+            self.memory_mib,
+            false,
+        );
+
+        let mut disk_handles = Vec::new();
+        for (disk_idx, disk_req) in self.all_disks().enumerate() {
+            let device_name = format!("disk-device{}", disk_idx);
+            let backend_name = format!("storage-backend{}", disk_idx);
+            let device_spec = propolis_client::instance_spec::StorageDevice {
+                kind: disk_req.interface.into(),
+                backend_name: backend_name.clone(),
+                pci_path: PciPath::new(0, disk_req.pci_device_num, 0)?,
+            };
+            let backend_spec = disk_req.disk.backend_spec();
+
+            spec_builder.add_storage_device(
+                device_name,
+                device_spec,
+                backend_name,
+                backend_spec,
+            )?;
+
+            disk_handles.push(disk_req.disk.clone());
+        }
+
+        let instance_spec = spec_builder.finish();
+
+        // TODO: Remove this once propolis-server has an endpoint that accepts
+        // an instance spec as a parameter.
+        let mut server_toml_path = object_dir.as_ref().to_owned();
+        server_toml_path.push(toml_filename);
+        self.write_config_toml(&instance_spec, &server_toml_path)?;
+
+        Ok(VmConfig {
+            instance_spec,
+            _disk_handles: disk_handles,
+            guest_os_kind,
+            server_toml_path,
+        })
+    }
+
+    fn write_config_toml(
         &self,
-        toml_path: &impl AsRef<Path>,
-    ) -> Result<()> {
-        // TODO: Change this to use instance specs when Propolis has an API that
-        // accepts those.
+        instance_spec: &InstanceSpec,
+        toml_path: &Path,
+    ) -> anyhow::Result<()> {
         let bootrom: PathBuf = self.bootrom_path.clone();
         let chipset = config::Chipset { options: BTreeMap::default() };
 
@@ -65,52 +174,58 @@ impl VmConfig {
         let mut backend_map: BTreeMap<String, config::BlockDevice> =
             BTreeMap::new();
 
-        for (disk_idx, disk) in self.disks.iter().enumerate() {
-            let backend_name = format!("block{}", disk_idx);
-            let backend = config::BlockDevice {
+        for (device_name, spec_device) in
+            instance_spec.devices.storage_devices.iter()
+        {
+            let config_device = config::Device {
+                driver: match spec_device.kind {
+                    StorageDeviceKind::Virtio => "pci-virtio-block",
+                    StorageDeviceKind::Nvme => "pci-nvme",
+                }
+                .to_string(),
+                options: BTreeMap::from([
+                    (
+                        "block_dev".to_string(),
+                        spec_device.backend_name.clone().into(),
+                    ),
+                    (
+                        "pci-path".to_string(),
+                        spec_device.pci_path.to_string().into(),
+                    ),
+                ]),
+            };
+
+            // This impl is the one that created the spec, and it ensures
+            // devices and backends are appropriately paired, so this backend
+            // must exist.
+            let spec_backend = instance_spec
+                .backends
+                .storage_backends
+                .get(&spec_device.backend_name)
+                .unwrap();
+
+            // Only write this device/backend to the config if the backend is of
+            // the sort that can be specified in a config TOML.
+            let disk_path =
+                if let StorageBackendKind::File { path: disk_file_path } =
+                    &spec_backend.kind
+                {
+                    disk_file_path.clone()
+                } else {
+                    continue;
+                };
+
+            let config_backend = config::BlockDevice {
                 bdtype: "file".to_string(),
                 options: BTreeMap::from([
-                    ("path".to_string(), disk.image_path.clone().into()),
-                    ("readonly".to_string(), false.into()),
+                    ("path".to_string(), disk_path.into()),
+                    ("readonly".to_string(), spec_backend.readonly.into()),
                 ]),
             };
 
-            let device_name = match disk.interface {
-                DiskInterface::Virtio => format!("vioblk{}", disk_idx),
-                DiskInterface::Nvme => format!("nvme{}", disk_idx),
-            };
-            let device = config::Device {
-                driver: match disk.interface {
-                    DiskInterface::Virtio => "pci-virtio-block".to_string(),
-                    DiskInterface::Nvme => "pci-nvme".to_string(),
-                },
-                options: BTreeMap::from([
-                    ("block_dev".to_string(), backend_name.clone().into()),
-                    (
-                        "pci-path".to_string(),
-                        format!("0.{}.0", disk.pci_device_num).into(),
-                    ),
-                ]),
-            };
-
-            device_map.insert(device_name, device);
-            backend_map.insert(backend_name, backend);
-        }
-
-        for (vnic_idx, vnic) in self.nics.iter().enumerate() {
-            let device_name = format!("viona{}", vnic_idx);
-            let device = config::Device {
-                driver: "pci-virtio-viona".to_string(),
-                options: BTreeMap::from([
-                    ("vnic".to_string(), vnic.vnic_device_name.clone().into()),
-                    (
-                        "pci-path".to_string(),
-                        format!("0.{}.0", vnic.pci_device_num).into(),
-                    ),
-                ]),
-            };
-
-            device_map.insert(device_name, device);
+            device_map.insert(device_name.clone(), config_device);
+            backend_map
+                .insert(spec_device.backend_name.clone(), config_backend);
         }
 
         let config = config::Config::new(
@@ -134,76 +249,24 @@ impl VmConfig {
     }
 }
 
-/// A builder for [`VmConfig`] structures.
-pub struct VmConfigBuilder {
-    config: VmConfig,
+#[derive(Clone, Debug)]
+pub struct VmConfig {
+    instance_spec: InstanceSpec,
+    _disk_handles: Vec<Arc<disk::GuestDisk>>,
+    guest_os_kind: GuestOsKind,
+    server_toml_path: PathBuf,
 }
 
-impl VmConfigBuilder {
-    /// Creates a new, empty builder.
-    pub(crate) fn new() -> Self {
-        Self { config: Default::default() }
+impl VmConfig {
+    pub fn instance_spec(&self) -> &InstanceSpec {
+        &self.instance_spec
     }
 
-    /// Sets the number of CPUs in the config.
-    pub fn set_cpus(mut self, cpus: u8) -> Self {
-        self.config.cpus = cpus;
-        self
+    pub fn guest_os_kind(&self) -> GuestOsKind {
+        self.guest_os_kind
     }
 
-    /// Sets the amount of memory in the config.
-    pub fn set_memory_mib(mut self, mem: u64) -> Self {
-        self.config.memory_mib = mem;
-        self
-    }
-
-    /// Sets the config's bootrom path.
-    pub fn set_bootrom_path(mut self, path: PathBuf) -> Self {
-        self.config.bootrom_path = path;
-        self
-    }
-
-    /// Adds a disk descriptor for a virtio-block disk device backed by the file
-    /// at `image_path`, which will manifest to the guest at PCI BDF
-    /// 0/`pci_slot`/0.
-    pub fn add_virtio_block_disk(
-        mut self,
-        image_path: &str,
-        pci_slot: u8,
-    ) -> Self {
-        self.config.disks.push(Disk {
-            image_path: image_path.to_string(),
-            pci_device_num: pci_slot,
-            interface: DiskInterface::Virtio,
-        });
-        self
-    }
-
-    /// Adds a disk descriptor for an NVMe device backed by the file at
-    /// `image_path`, which will manifest to the guest at PCI BDF
-    /// 0/`pci_slot`/0.
-    pub fn add_nvme_disk(mut self, image_path: &str, pci_slot: u8) -> Self {
-        self.config.disks.push(Disk {
-            image_path: image_path.to_string(),
-            pci_device_num: pci_slot,
-            interface: DiskInterface::Nvme,
-        });
-        self
-    }
-
-    /// Adds a NIC descriptor for a virtio network device backed by the vNIC
-    /// with the supplied name, which will manifest to the guest at PCI BDF
-    /// 0/`pci_slot`/0.
-    pub fn add_vnic(mut self, host_vnic_name: &str, pci_slot: u8) -> Self {
-        self.config.nics.push(Nic {
-            vnic_device_name: host_vnic_name.to_string(),
-            pci_device_num: pci_slot,
-        });
-        self
-    }
-
-    /// Creates the configuration described by this builder.
-    pub fn finish(self) -> VmConfig {
-        self.config
+    pub fn server_toml_path(&self) -> &PathBuf {
+        &self.server_toml_path
     }
 }

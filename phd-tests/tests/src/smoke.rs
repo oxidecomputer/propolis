@@ -4,7 +4,7 @@ use phd_testcase::*;
 fn nproc_test(ctx: &TestContext) {
     let mut vm = ctx
         .vm_factory
-        .new_vm("nproc_test", ctx.vm_factory.default_vm_config().set_cpus(6))?;
+        .new_vm("nproc_test", ctx.default_vm_config().set_cpus(6))?;
     vm.launch()?;
     vm.wait_to_boot()?;
 
@@ -18,7 +18,7 @@ fn multiple_vms_test(ctx: &TestContext) {
         .into_iter()
         .map(|i| {
             let name = format!("multiple_vms_test_vm{}", i);
-            ctx.vm_factory.new_vm(&name, ctx.vm_factory.default_vm_config())
+            ctx.vm_factory.new_vm(&name, ctx.default_vm_config())
         })
         .collect::<Result<Vec<_>, _>>()?;
 
