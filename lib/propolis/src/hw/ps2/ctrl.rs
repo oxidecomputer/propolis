@@ -38,7 +38,9 @@ use super::keyboard::KeyEventRep;
 ///     - Reads may return responses to commands, or device data, depending on
 ///     the state of the controller.
 ///     - Writes are interpreted as command data for outstanding commands, or as
-///     commands to devices.
+///     commands to devices. Commands to specific devices are issued by the OS
+///     writing a `PS2_CMD_WRITE_{PRI_AUX}_OUT` command to the Control port,
+///     then writing the device-specific command on the Data port.
 ///
 ///     REGISTERS
 ///
@@ -76,6 +78,24 @@ use super::keyboard::KeyEventRep;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
+    // Controller Configuration updates from OS
+    fn ps2ctrl_ctrlcfg_update(ctrl_cfg: u8) {}
+
+    // reads/writes on control/data ports
+    fn ps2ctrl_data_read(val: u8) {}
+    fn ps2ctrl_data_read_empty() {}
+    fn ps2ctrl_data_write(v: u8) {}
+    fn ps2ctrl_cmd_write(v: u8) {}
+    fn ps2ctrl_unknown_cmd(v: u8) {}
+
+    // reads of Controller Status register
+    fn ps2ctrl_status_read(status: u8) {}
+
+    // interrupts: fire when the controller issues pri/aux interrupts
+    fn ps2ctrl_pulse_pri() {}
+    fn ps2ctrl_pulse_aux() {}
+
+    // keyboard event probes
     fn ps2ctrl_keyevent(
         keysym_raw: u32,
         scan_code_set: u8,
@@ -85,13 +105,28 @@ mod probes {
         s3: u8,
     ) {
     }
-
     fn ps2ctrl_keyevent_dropped(
         keysym_raw: u32,
         is_pressed: u8,
         scan_code_set: u8,
     ) {
     }
+
+    // internal device buffer writes
+    fn ps2ctrl_keyboard_data(v: u8) {}
+    fn ps2ctrl_mouse_data(v: u8) {}
+    fn ps2ctrl_keyboard_overflow(v: u8) {}
+    fn ps2ctrl_mouse_overflow(v: u8) {}
+
+    // internal device buffer reads
+    fn ps2ctrl_keyboard_data_read(v: u8) {}
+    fn ps2ctrl_mouse_data_read(v: u8) {}
+
+    // device commands
+    fn ps2ctrl_keyboard_cmd(v: u8) {}
+    fn ps2ctrl_mouse_cmd(v: u8) {}
+    fn ps2ctrl_unknown_keyboard_cmd(v: u8) {}
+    fn ps2ctrl_unknown_mouse_cmd(v: u8) {}
 }
 
 bitflags! {
@@ -374,6 +409,8 @@ impl PS2Ctrl {
         let mut state = self.state.lock().unwrap();
         let cmd_prefix = replace(&mut state.cmd_prefix, None);
 
+        probes::ps2ctrl_data_write!(|| v);
+
         // If there's an outstanding command (written to the Control Port), then the remaining part
         // of the command will be on the data port.
         //
@@ -382,6 +419,7 @@ impl PS2Ctrl {
             match prefix {
                 PS2C_CMD_WRITE_CTRL_CFG => {
                     state.ctrl_cfg = CtrlCfg::from_bits_truncate(v);
+                    probes::ps2ctrl_ctrlcfg_update!(|| state.ctrl_cfg.bits());
                 }
                 PS2C_CMD_WRITE_RAM_START..=PS2C_CMD_WRITE_RAM_END => {
                     let off = v - PS2C_CMD_WRITE_RAM_START;
@@ -413,21 +451,26 @@ impl PS2Ctrl {
         let mut state = self.state.lock().unwrap();
         if let Some(rval) = state.resp {
             state.resp = None;
+            probes::ps2ctrl_data_read!(|| rval);
             rval
         } else if state.pri_port.has_output() {
             let rval = state.pri_port.read_output().unwrap();
+            probes::ps2ctrl_keyboard_data_read!(|| rval);
             self.update_intr(&mut state);
             rval
         } else if state.aux_port.has_output() {
             let rval = state.aux_port.read_output().unwrap();
+            probes::ps2ctrl_mouse_data_read!(|| rval);
             self.update_intr(&mut state);
             rval
         } else {
+            probes::ps2ctrl_data_read_empty!(|| {});
             0
         }
     }
     fn cmd_write(&self, v: u8) {
         let mut state = self.state.lock().unwrap();
+        probes::ps2ctrl_cmd_write!(|| v);
         match v {
             PS2C_CMD_READ_CTRL_CFG => {
                 state.resp = Some(state.ctrl_cfg.bits());
@@ -483,6 +526,7 @@ impl PS2Ctrl {
 
             _ => {
                 // ignore all other unrecognized commands
+                probes::ps2ctrl_unknown_cmd!(|| v);
             }
         }
     }
@@ -504,6 +548,8 @@ impl PS2Ctrl {
             state.ctrl_cfg.contains(CtrlCfg::SYS_FLAG),
         );
 
+        probes::ps2ctrl_status_read!(|| val.bits());
+
         val.bits()
     }
     fn update_intr(&self, state: &mut PS2State) {
@@ -514,6 +560,7 @@ impl PS2Ctrl {
             && !state.ctrl_cfg.contains(CtrlCfg::PRI_CLOCK_DIS)
             && state.pri_port.has_output()
         {
+            probes::ps2ctrl_pulse_pri!(|| {});
             pri_pin.pulse();
         }
 
@@ -521,6 +568,7 @@ impl PS2Ctrl {
         if state.ctrl_cfg.contains(CtrlCfg::AUX_INTR_EN)
             && state.aux_port.has_output()
         {
+            probes::ps2ctrl_pulse_aux!(|| {});
             aux_pin.pulse();
         }
     }
@@ -711,6 +759,7 @@ impl PS2Kbd {
         }
     }
     fn cmd_input(&mut self, v: u8) {
+        probes::ps2ctrl_keyboard_cmd!(|| v);
         if let Some(cmd) = self.cur_cmd {
             self.cur_cmd = None;
             match cmd {
@@ -785,6 +834,7 @@ impl PS2Kbd {
                 }
                 _ => {
                     // ignore unrecognized cmds
+                    probes::ps2ctrl_unknown_keyboard_cmd!(|| v);
                 }
             }
         }
@@ -794,12 +844,15 @@ impl PS2Kbd {
         match remain {
             0 => {
                 // overrun already in progress, do nothing
+                probes::ps2ctrl_keyboard_overflow!(|| v);
             }
             1 => {
                 // indicate overflow instead
+                probes::ps2ctrl_keyboard_overflow!(|| v);
                 self.buf.push_back(0xff)
             }
             _ => {
+                probes::ps2ctrl_keyboard_data!(|| v);
                 self.buf.push_back(v);
             }
         }
@@ -835,6 +888,7 @@ impl Default for PS2Kbd {
     }
 }
 
+// Mouse-specific commands
 const PS2M_CMD_RESET: u8 = 0xff;
 const PS2M_CMD_RESEND: u8 = 0xfe;
 const PS2M_CMD_SET_DEFAULTS: u8 = 0xf6;
@@ -888,6 +942,7 @@ impl PS2Mouse {
         }
     }
     fn cmd_input(&mut self, v: u8) {
+        probes::ps2ctrl_mouse_cmd!(|| v);
         if let Some(cmd) = self.cur_cmd {
             self.cur_cmd = None;
             match cmd {
@@ -967,6 +1022,7 @@ impl PS2Mouse {
 
                 _ => {
                     // ignore unrecognized cmds
+                    probes::ps2ctrl_unknown_mouse_cmd!(|| v);
                 }
             }
         }
@@ -975,13 +1031,16 @@ impl PS2Mouse {
         let remain = PS2_KBD_BUFSZ - self.buf.len();
         match remain {
             0 => {
+                probes::ps2ctrl_mouse_overflow!(|| v);
                 // overrun already in progress, do nothing
             }
             1 => {
                 // indicate overflow instead
+                probes::ps2ctrl_mouse_overflow!(|| v);
                 self.buf.push_back(0xff)
             }
             _ => {
+                probes::ps2ctrl_mouse_data!(|| v);
                 self.buf.push_back(v);
             }
         }
