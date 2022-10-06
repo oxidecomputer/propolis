@@ -128,6 +128,15 @@ impl Client {
         self.put(path, Some(body)).await
     }
 
+    pub async fn instance_ensure_v2(
+        &self,
+        request: &api::InstanceEnsureRequestV2,
+    ) -> Result<api::InstanceEnsureResponse, Error> {
+        let path = format!("http://{}/instance/ensure_v2", self.address,);
+        let body = Body::from(serde_json::to_string(&request).unwrap());
+        self.put(path, Some(body)).await
+    }
+
     /// Returns information about an instance, by UUID.
     pub async fn instance_get(
         &self,

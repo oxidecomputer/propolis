@@ -7,9 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use propolis_client::instance_spec::{
-    InstanceSpec, StorageBackendKind, StorageDeviceKind,
-};
+use propolis_client::instance_spec::{InstanceSpec, StorageDeviceKind};
 use propolis_server_config as config;
 use propolis_types::PciPath;
 use thiserror::Error;
@@ -146,13 +144,18 @@ impl ConfigRequest {
             disk_handles.push(disk_req.disk.clone());
         }
 
+        spec_builder.add_serial_port(
+            propolis_client::instance_spec::SerialPortNumber::Com1,
+        )?;
+
         let instance_spec = spec_builder.finish();
 
-        // TODO: Remove this once propolis-server has an endpoint that accepts
-        // an instance spec as a parameter.
+        // Propolis selects its bootrom via the config TOML, so write a shell
+        // TOML that specifies this. All other VM configuration comes from the
+        // instance spec.
         let mut server_toml_path = object_dir.as_ref().to_owned();
         server_toml_path.push(toml_filename);
-        self.write_config_toml(&instance_spec, &server_toml_path)?;
+        self.write_config_toml(&server_toml_path)?;
 
         Ok(VmConfig {
             instance_spec,
@@ -162,77 +165,12 @@ impl ConfigRequest {
         })
     }
 
-    fn write_config_toml(
-        &self,
-        instance_spec: &InstanceSpec,
-        toml_path: &Path,
-    ) -> anyhow::Result<()> {
-        let bootrom: PathBuf = self.bootrom_path.clone();
-        let chipset = config::Chipset { options: BTreeMap::default() };
-
-        let mut device_map: BTreeMap<String, config::Device> = BTreeMap::new();
-        let mut backend_map: BTreeMap<String, config::BlockDevice> =
-            BTreeMap::new();
-
-        for (device_name, spec_device) in
-            instance_spec.devices.storage_devices.iter()
-        {
-            let config_device = config::Device {
-                driver: match spec_device.kind {
-                    StorageDeviceKind::Virtio => "pci-virtio-block",
-                    StorageDeviceKind::Nvme => "pci-nvme",
-                }
-                .to_string(),
-                options: BTreeMap::from([
-                    (
-                        "block_dev".to_string(),
-                        spec_device.backend_name.clone().into(),
-                    ),
-                    (
-                        "pci-path".to_string(),
-                        spec_device.pci_path.to_string().into(),
-                    ),
-                ]),
-            };
-
-            // This impl is the one that created the spec, and it ensures
-            // devices and backends are appropriately paired, so this backend
-            // must exist.
-            let spec_backend = instance_spec
-                .backends
-                .storage_backends
-                .get(&spec_device.backend_name)
-                .unwrap();
-
-            // Only write this device/backend to the config if the backend is of
-            // the sort that can be specified in a config TOML.
-            let disk_path =
-                if let StorageBackendKind::File { path: disk_file_path } =
-                    &spec_backend.kind
-                {
-                    disk_file_path.clone()
-                } else {
-                    continue;
-                };
-
-            let config_backend = config::BlockDevice {
-                bdtype: "file".to_string(),
-                options: BTreeMap::from([
-                    ("path".to_string(), disk_path.into()),
-                    ("readonly".to_string(), spec_backend.readonly.into()),
-                ]),
-            };
-
-            device_map.insert(device_name.clone(), config_device);
-            backend_map
-                .insert(spec_device.backend_name.clone(), config_backend);
-        }
-
+    fn write_config_toml(&self, toml_path: &Path) -> anyhow::Result<()> {
         let config = config::Config::new(
-            bootrom,
-            chipset,
-            device_map,
-            backend_map,
+            self.bootrom_path.clone(),
+            config::Chipset { options: BTreeMap::default() },
+            BTreeMap::new(),
+            BTreeMap::new(),
             Vec::new(),
         );
 

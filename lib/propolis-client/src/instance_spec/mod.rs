@@ -58,6 +58,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -253,7 +254,7 @@ impl MigrationCollection for BTreeSet<SpecKey> {
 
 /// A full instance specification. See the documentation for individual
 /// elements for more information about the fields in this structure.
-#[derive(Default, Clone, Deserialize, Serialize, Debug)]
+#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceSpec {
     pub devices: DeviceSpec,

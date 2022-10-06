@@ -311,16 +311,13 @@ async fn register_oximeter(
     Ok(registry)
 }
 
-#[endpoint {
-    method = PUT,
-    path = "/instance",
-}]
-async fn instance_ensure(
+async fn instance_ensure_common(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequest>,
+    request: api::InstanceEnsureRequestV2,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
-    let request = request.into_inner();
+    let api::InstanceEnsureRequestV2 { properties, instance_spec, migrate } =
+        request;
 
     // Handle requests to an instance that has already been initialized. Treat
     // the instances as compatible (and return Ok) if they have the same
@@ -332,14 +329,14 @@ async fn instance_ensure(
         &*server_context.services.vm.lock().await
     {
         let existing_properties = existing.properties();
-        if existing_properties.id != request.properties.id {
+        if existing_properties.id != properties.id {
             return Err(HttpError::for_internal_error(format!(
                 "Server already initialized with ID {}",
                 existing_properties.id
             )));
         }
 
-        if *existing_properties != request.properties {
+        if *existing_properties != properties {
             return Err(HttpError::for_internal_error(
                 "Cannot update running server".to_string(),
             ));
@@ -350,25 +347,13 @@ async fn instance_ensure(
         }));
     }
 
-    let instance_spec =
-        instance_spec_from_request(&request, &server_context.static_config.vm)
-            .map_err(|e| {
-                HttpError::for_bad_request(
-                    None,
-                    format!(
-                        "failed to generate instance spec from request: {}",
-                        e
-                    ),
-                )
-            })?;
-
     let producer_registry =
         if let Some(cfg) = server_context.static_config.metrics.as_ref() {
             Some(
                 register_oximeter(
                     server_context,
                     cfg,
-                    request.properties.id,
+                    properties.id,
                     rqctx.log.clone(),
                 )
                 .await
@@ -393,7 +378,7 @@ async fn instance_ensure(
     // now, the whole process is wrapped up in `spawn_blocking`.  It is
     // admittedly a big kludge until this can be better refactored.
     let vm = {
-        let properties = request.properties.clone();
+        let properties = properties.clone();
         let use_reservoir = server_context.static_config.use_reservoir;
         let bootrom = server_context.static_config.vm.bootrom.clone();
         let log = server_context.log.clone();
@@ -461,7 +446,7 @@ async fn instance_ensure(
     *server_context.services.vm.lock().await =
         VmControllerState::Created(vm.clone());
 
-    let migrate = if let Some(migrate_request) = request.migrate {
+    let migrate = if let Some(migrate_request) = migrate {
         let res = crate::migrate::dest_initiate(&rqctx, vm, migrate_request)
             .await
             .map_err(<_ as Into<HttpError>>::into)?;
@@ -471,6 +456,50 @@ async fn instance_ensure(
     };
 
     Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/instance",
+}]
+async fn instance_ensure(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    request: TypedBody<api::InstanceEnsureRequest>,
+) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
+    let server_context = rqctx.context();
+    let request = request.into_inner();
+    let instance_spec =
+        instance_spec_from_request(&request, &server_context.static_config.vm)
+            .map_err(|e| {
+                HttpError::for_bad_request(
+                    None,
+                    format!(
+                        "failed to generate instance spec from request: {}",
+                        e
+                    ),
+                )
+            })?;
+
+    instance_ensure_common(
+        rqctx,
+        api::InstanceEnsureRequestV2 {
+            properties: request.properties,
+            instance_spec,
+            migrate: request.migrate,
+        },
+    )
+    .await
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/instance/ensure_v2",
+}]
+async fn instance_ensure_v2(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    request: TypedBody<api::InstanceEnsureRequestV2>,
+) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
+    instance_ensure_common(rqctx, request.into_inner()).await
 }
 
 #[endpoint {
@@ -701,6 +730,7 @@ async fn instance_issue_crucible_snapshot_request(
 pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
+    api.register(instance_ensure_v2).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();

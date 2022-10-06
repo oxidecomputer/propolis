@@ -33,12 +33,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{MigrationCollection, MigrationCompatibilityError, SpecKey};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A kind of storage backend: a connection to on-sled resources or other
 /// services that provide the functions storage devices need to implement their
 /// contracts.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub enum StorageBackendKind {
     /// A Crucible-backed device, containing a construction request.
@@ -54,7 +55,7 @@ pub enum StorageBackendKind {
 }
 
 /// A storage backend.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StorageBackend {
     /// The kind of storage backend this is.
@@ -67,7 +68,7 @@ pub struct StorageBackend {
 /// A kind of network backend: a connection to an on-sled networking resource
 /// that provides the functions needed for guest network adapters to implement
 /// their contracts.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub enum NetworkBackendKind {
     /// A virtio-net (viona) backend associated with the supplied named vNIC on
@@ -79,14 +80,14 @@ pub enum NetworkBackendKind {
 }
 
 /// A network backend.
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkBackend {
     pub kind: NetworkBackendKind,
 }
 
 /// A wrapper type for all the backends in an instance spec.
-#[derive(Default, Clone, Deserialize, Serialize, Debug)]
+#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
 pub struct BackendSpec {
     pub storage_backends: BTreeMap<SpecKey, StorageBackend>,
     pub network_backends: BTreeMap<SpecKey, NetworkBackend>,

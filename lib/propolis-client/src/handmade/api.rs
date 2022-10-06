@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 
 // Re-export types that are of a public struct
+pub use crate::instance_spec::InstanceSpec;
 pub use crucible_client_types::VolumeConstructionRequest;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -36,6 +37,13 @@ pub struct InstanceEnsureRequest {
 
     // base64 encoded cloud-init ISO
     pub cloud_init_bytes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceEnsureRequestV2 {
+    pub properties: InstanceProperties,
+    pub instance_spec: InstanceSpec,
+    pub migrate: Option<InstanceMigrateInitiateRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

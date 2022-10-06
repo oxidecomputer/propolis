@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
 use propolis_client::handmade::{
     api::{
-        InstanceEnsureRequest, InstanceGetResponse,
+        InstanceEnsureRequestV2, InstanceGetResponse,
         InstanceMigrateInitiateRequest, InstanceProperties, InstanceState,
         InstanceStateRequested, MigrationState,
     },
@@ -153,16 +153,14 @@ impl TestVm {
             memory: memory_mib,
             vcpus,
         };
-        let ensure_req = InstanceEnsureRequest {
+        let ensure_req = InstanceEnsureRequestV2 {
             properties,
-            nics: vec![],
-            disks: vec![],
+            instance_spec: self.config.instance_spec().clone(),
             migrate,
-            cloud_init_bytes: None,
         };
 
         let mut retries = 3;
-        while let Err(e) = self.client.instance_ensure(&ensure_req).await {
+        while let Err(e) = self.client.instance_ensure_v2(&ensure_req).await {
             info!("Error {} while creating instance, will retry", e);
             tokio::time::sleep(Duration::from_millis(500)).await;
             retries -= 1;
@@ -180,8 +178,10 @@ impl TestVm {
                 anyhow!("failed to get instance properties")
             })?;
 
+        let instance_spec = self.config.instance_spec();
         info!(
             ?instance_description.instance,
+            ?instance_spec,
             "Started instance"
         );
 
