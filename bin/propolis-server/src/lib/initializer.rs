@@ -298,7 +298,6 @@ impl<'a> MachineInitializer<'a> {
                             req.clone(),
                             backend_spec.readonly,
                             self.producer_registry.clone(),
-                            self.log.new(slog::o!("component" => "crucible")),
                         )?;
                         let child = inventory::ChildRegister::new(
                             &be,
