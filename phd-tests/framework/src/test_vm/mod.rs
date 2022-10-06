@@ -8,7 +8,7 @@ use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
-use propolis_client::{
+use propolis_client::handmade::{
     api::{
         InstanceEnsureRequest, InstanceGetResponse,
         InstanceMigrateInitiateRequest, InstanceProperties, InstanceState,

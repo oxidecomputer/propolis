@@ -6,5 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-propolis-client = { path = "../../lib/propolis-client" }
+propolis-client = { path = "../../lib/propolis-client", features = ["generated"] }
 phd-testcase = { path = "../testcase" }
