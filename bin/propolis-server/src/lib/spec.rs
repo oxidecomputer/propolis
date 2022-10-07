@@ -1,7 +1,6 @@
 //! Helper functions for building instance specs from server parameters.
 
 use std::collections::BTreeSet;
-use std::convert::TryInto;
 use std::str::FromStr;
 
 use propolis_client::handmade::api::{
@@ -21,9 +20,6 @@ pub enum SpecBuilderError {
 
     #[error("A backend with name {0} already exists")]
     BackendNameInUse(String),
-
-    #[error("The opaque description of backend {0} was not serializable: {1}")]
-    BackendSpecNotSerializable(String, serde_json::error::Error),
 
     #[error("A PCI device is already attached at {0:?}")]
     PciPathInUse(PciPath),
@@ -208,14 +204,7 @@ impl SpecBuilder {
                 StorageBackend {
                     kind: StorageBackendKind::Crucible {
                         gen: disk.gen,
-                        req: (&disk.volume_construction_request)
-                            .try_into()
-                            .map_err(|e| {
-                                SpecBuilderError::BackendSpecNotSerializable(
-                                    disk.name.to_string(),
-                                    e,
-                                )
-                            })?,
+                        req: disk.volume_construction_request.clone(),
                     },
                     readonly: disk.read_only,
                 },

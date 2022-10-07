@@ -114,9 +114,8 @@ impl DestinationProtocol {
             }
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
-        if let Err(e) = preamble
-            .instance_spec
-            .is_migration_compatible(self.vm_controller.instance_spec())
+        if let Err(e) =
+            preamble.is_migration_compatible(self.vm_controller.instance_spec())
         {
             error!(
                 self.log(),
