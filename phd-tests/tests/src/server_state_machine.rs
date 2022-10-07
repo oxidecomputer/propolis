@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use phd_testcase::*;
-use propolis_client::{api::InstanceState, Error as ClientError};
+use propolis_client::handmade::{api::InstanceState, Error as ClientError};
 
 #[phd_testcase]
 fn instance_start_stop_test(ctx: &TestContext) {
