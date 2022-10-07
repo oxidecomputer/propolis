@@ -325,7 +325,17 @@ impl<'a> MachineInitializer<'a> {
                         );
                         StorageBackendInstance { be, child, crucible: None }
                     }
-                    StorageBackendKind::InMemory { bytes } => {
+                    StorageBackendKind::InMemory { base64 } => {
+                        let bytes = base64::decode(base64).map_err(|e| {
+                            Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "failed to decode base64 contents of \
+                                     in-memory disk: {}",
+                                    e
+                                ),
+                            )
+                        })?;
                         info!(
                             self.log,
                             "Creating in-memory disk backend from {} bytes",

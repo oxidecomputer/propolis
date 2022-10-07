@@ -49,8 +49,9 @@ pub enum StorageBackendKind {
     /// this file.
     File { path: String },
 
-    /// A device backed by an in-memory buffer in the VMM process.
-    InMemory { bytes: Vec<u8> },
+    /// A device backed by an in-memory buffer in the VMM process. The initial
+    /// contents of the disk are a base64-encoded string.
+    InMemory { base64: String },
 }
 
 /// A storage backend.

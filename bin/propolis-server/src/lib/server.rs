@@ -238,9 +238,6 @@ impl DropshotEndpointContext {
 enum SpecCreationError {
     #[error(transparent)]
     SpecBuilderError(#[from] SpecBuilderError),
-
-    #[error(transparent)]
-    Base64DecodeError(#[from] base64::DecodeError),
 }
 
 /// Creates an instance spec from an ensure request. (Both types are foreign to
@@ -258,9 +255,8 @@ fn instance_spec_from_request(
         spec_builder.add_disk_from_request(disk)?;
     }
 
-    if let Some(as_base64) = &request.cloud_init_bytes {
-        let bytes = base64::decode(as_base64)?;
-        spec_builder.add_cloud_init_from_request(bytes)?;
+    if let Some(base64) = &request.cloud_init_bytes {
+        spec_builder.add_cloud_init_from_request(base64.clone())?;
     }
 
     spec_builder.add_devices_from_config(toml_config)?;
@@ -407,7 +403,6 @@ async fn instance_ensure(
 
         vm_hdl.await.unwrap()
     }
-
     .map_err(|e| {
         HttpError::for_internal_error(format!(
             "failed to create instance: {}",
