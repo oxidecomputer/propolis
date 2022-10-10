@@ -17,7 +17,6 @@ pub enum ServerSpecBuilderError {
     #[error("Interior spec builder returned an error: {0}")]
     InnerBuilderError(#[from] SpecBuilderError),
 
-
     #[error("The string {0} could not be converted to a PCI path")]
     PciPathNotParseable(String),
 
@@ -265,51 +264,10 @@ impl ServerSpecBuilder {
     ) -> Result<(), ServerSpecBuilderError> {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
-        self.register_pci_device(pci_path)?;
+        let backend_name = name.to_string();
 
-        if self
-            .spec
-            .backends
-            .storage_backends
-            .insert(
-                name.to_string(),
-                StorageBackend {
-                    kind: StorageBackendKind::InMemory { base64 },
-                    readonly: true,
-                },
-            )
-            .is_some()
-        {
-            return Err(SpecBuilderError::BackendNameInUse(name.to_string()));
-        }
-
-        if self
-            .spec
-            .devices
-            .storage_devices
-            .insert(
-                name.to_string(),
-                StorageDevice {
-                    kind: StorageDeviceKind::Virtio,
-                    backend_name: name.to_string(),
-                    pci_path,
-                },
-            )
-            .is_some()
-        {
-            return Err(SpecBuilderError::DeviceNameInUse(name.to_string()));
-        }
-
-        Ok(())
-    }
-
-    fn add_storage_backend_from_config(
-        &mut self,
-        name: &str,
-        backend: &config::BlockDevice,
-    ) -> Result<(), SpecBuilderError> {
         let backend_spec = StorageBackend {
-            kind: StorageBackendKind::InMemory { bytes },
+            kind: StorageBackendKind::InMemory { base64 },
             readonly: true,
         };
 
