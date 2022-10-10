@@ -1,7 +1,6 @@
 mod config;
 mod execute;
 mod fixtures;
-pub(crate) mod zfs;
 
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
@@ -77,7 +76,7 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
             &artifact_store,
         ),
     };
-    let fixtures = TestFixtures::new(run_opts, &artifact_store, &ctx).unwrap();
+    let fixtures = TestFixtures::new(&artifact_store, &ctx).unwrap();
 
     // Run the tests and print results.
     let execution_stats = execute::run_tests_with_ctx(&ctx, fixtures, run_opts);

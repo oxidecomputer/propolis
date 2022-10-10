@@ -91,17 +91,6 @@ pub struct RunOptions {
     #[clap(long, value_parser, default_value = "ovmf_20220922")]
     pub default_bootrom_artifact: String,
 
-    /// Optional. The name of a ZFS filesystem object whose mountpoint is the
-    /// local artifact root given in the artifact TOML. If specified, this
-    /// allows the runner to use ZFS snapshots to restore artifacts between
-    /// tests instead of possibly having to re-download them.
-    ///
-    /// NOTE: To use this option, the user running the test must have delegated
-    /// permissions for the following ZFS operations: snapshot, rollback,
-    /// create, destroy, mount.
-    #[clap(long, value_parser)]
-    pub zfs_fs_name: Option<String>,
-
     /// Only run tests whose fully-qualified names contain this string.
     /// Can be specified multiple times.
     #[clap(long, value_parser)]
