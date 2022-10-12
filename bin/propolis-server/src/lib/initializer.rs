@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
@@ -256,83 +255,6 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn initialize_persistent_storage_backend(
-        &self,
-        backend_spec: &StorageBackend,
-    ) -> Result<StorageBackendInstance, Error> {
-        Ok(match &backend_spec.kind {
-            StorageBackendKind::Crucible { gen, req } => {
-                info!(
-                    self.log,
-                    "Creating Crucible disk from request {:?}", req
-                );
-                let be = propolis::block::CrucibleBackend::create(
-                    *gen,
-                    req.clone(),
-                    backend_spec.readonly,
-                    self.producer_registry.clone(),
-                )?;
-                let child = inventory::ChildRegister::new(
-                    &be,
-                    Some(be.get_uuid()?.to_string()),
-                );
-                let crucible = Some((be.get_uuid()?, be.clone()));
-                StorageBackendInstance { be, child, crucible }
-            }
-            StorageBackendKind::File { path } => {
-                info!(
-                    self.log,
-                    "Creating file disk backend using path {}", path
-                );
-                let nworkers = NonZeroUsize::new(8).unwrap();
-                let be = propolis::block::FileBackend::create(
-                    path,
-                    backend_spec.readonly,
-                    nworkers,
-                    self.log
-                        .new(slog::o!("component" => format!("file-{}", path))),
-                )?;
-                let child =
-                    inventory::ChildRegister::new(&be, Some(path.to_string()));
-                StorageBackendInstance { be, child, crucible: None }
-            }
-            StorageBackendKind::InMemory => {
-                panic!(
-                    "Passed an in-memory backend spec as a persistent backend"
-                );
-            }
-        })
-    }
-
-    fn initialize_volatile_storage_backend(
-        &self,
-        name: &str,
-        backend_spec: &StorageBackend,
-        contents: Vec<u8>,
-    ) -> Result<StorageBackendInstance, Error> {
-        Ok(match &backend_spec.kind {
-            StorageBackendKind::InMemory => {
-                info!(
-                    self.log,
-                    "Creating in-memory disk backend from {} bytes",
-                    contents.len()
-                );
-                let be = propolis::block::InMemoryBackend::create(
-                    contents,
-                    backend_spec.readonly,
-                    512,
-                )?;
-                let child =
-                    inventory::ChildRegister::new(&be, Some(name.to_string()));
-                StorageBackendInstance { be, child, crucible: None }
-            }
-            _ => panic!(
-                "Passed a persistent storage backend spec as \
-                        a volatile backend"
-            ),
-        })
-    }
-
     /// Initializes the storage devices and backends listed in this
     /// initializer's instance spec.
     ///
@@ -341,7 +263,6 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
-        in_memory_contents: BTreeMap<String, Vec<u8>>,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
@@ -367,30 +288,71 @@ impl<'a> MachineInitializer<'a> {
                 })?;
             let StorageBackendInstance { be: backend, child, crucible } =
                 match &backend_spec.kind {
-                    StorageBackendKind::Crucible { .. }
-                    | StorageBackendKind::File { .. } => {
-                        self.initialize_persistent_storage_backend(backend_spec)
+                    StorageBackendKind::Crucible { gen, req } => {
+                        info!(
+                            self.log,
+                            "Creating Crucible disk from request {:?}", req
+                        );
+                        let be = propolis::block::CrucibleBackend::create(
+                            *gen,
+                            req.clone(),
+                            backend_spec.readonly,
+                            self.producer_registry.clone(),
+                        )?;
+                        let child = inventory::ChildRegister::new(
+                            &be,
+                            Some(be.get_uuid()?.to_string()),
+                        );
+                        let crucible = Some((be.get_uuid()?, be.clone()));
+                        StorageBackendInstance { be, child, crucible }
                     }
-                    StorageBackendKind::InMemory => {
-                        let contents = in_memory_contents
-                            .get(&device_spec.backend_name)
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::InvalidInput,
-                                    format!(
-                                        "In-memory storage backend {} has no \
-                                        contents",
-                                        device_spec.backend_name
-                                    ),
-                                )
-                            })?;
-                        self.initialize_volatile_storage_backend(
-                            &device_spec.backend_name,
-                            backend_spec,
-                            contents.clone(),
-                        )
+                    StorageBackendKind::File { path } => {
+                        info!(
+                            self.log,
+                            "Creating file disk backend using path {}", path
+                        );
+                        let nworkers = NonZeroUsize::new(8).unwrap();
+                        let be = propolis::block::FileBackend::create(
+                            path,
+                            backend_spec.readonly,
+                            nworkers,
+                            self.log.new(slog::o!("component" =>
+                                              format!("file-{}", path))),
+                        )?;
+                        let child = inventory::ChildRegister::new(
+                            &be,
+                            Some(path.to_string()),
+                        );
+                        StorageBackendInstance { be, child, crucible: None }
                     }
-                }?;
+                    StorageBackendKind::InMemory { base64 } => {
+                        let bytes = base64::decode(base64).map_err(|e| {
+                            Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "failed to decode base64 contents of \
+                                     in-memory disk: {}",
+                                    e
+                                ),
+                            )
+                        })?;
+                        info!(
+                            self.log,
+                            "Creating in-memory disk backend from {} bytes",
+                            bytes.len()
+                        );
+                        let be = propolis::block::InMemoryBackend::create(
+                            bytes.clone(),
+                            backend_spec.readonly,
+                            512,
+                        )?;
+                        let child = inventory::ChildRegister::new(
+                            &be,
+                            Some(name.to_string()),
+                        );
+                        StorageBackendInstance { be, child, crucible: None }
+                    }
+                };
 
             let bdf: pci::Bdf =
                 device_spec.pci_path.try_into().map_err(|e| {

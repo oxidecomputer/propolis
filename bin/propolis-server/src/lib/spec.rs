@@ -252,6 +252,7 @@ impl SpecBuilder {
     /// into device/backend entries in the spec under construction.
     pub fn add_cloud_init_from_request(
         &mut self,
+        base64: String,
     ) -> Result<(), SpecBuilderError> {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
@@ -264,7 +265,7 @@ impl SpecBuilder {
             .insert(
                 name.to_string(),
                 StorageBackend {
-                    kind: StorageBackendKind::InMemory,
+                    kind: StorageBackendKind::InMemory { base64 },
                     readonly: true,
                 },
             )
