@@ -77,12 +77,14 @@ impl SpecBuilder {
         self.register_pci_device(device_spec.pci_path)?;
         let _old =
             self.spec.devices.storage_devices.insert(device_name, device_spec);
+
         assert!(_old.is_none());
         let _old = self
             .spec
             .backends
             .storage_backends
             .insert(backend_name, backend_spec);
+
         assert!(_old.is_none());
         Ok(self)
     }
@@ -106,12 +108,14 @@ impl SpecBuilder {
         self.register_pci_device(device_spec.pci_path)?;
         let _old =
             self.spec.devices.network_devices.insert(device_name, device_spec);
+
         assert!(_old.is_none());
         let _old = self
             .spec
             .backends
             .network_backends
             .insert(backend_name, backend_spec);
+
         assert!(_old.is_none());
         Ok(self)
     }
@@ -129,6 +133,7 @@ impl SpecBuilder {
         self.register_pci_device(bridge_spec.pci_path)?;
         let _old =
             self.spec.devices.pci_pci_bridges.insert(bridge_name, bridge_spec);
+
         assert!(_old.is_none());
         Ok(self)
     }

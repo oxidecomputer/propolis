@@ -94,7 +94,7 @@ fn make_storage_backend_from_config(
                     .get("path")
                     .ok_or_else(|| {
                         ServerSpecBuilderError::ConfigTomlError(format!(
-                            "Invalid path for file backend {}",
+                            "Couldn't get path for file backend {}",
                             name
                         ))
                     })?
@@ -134,14 +134,14 @@ fn make_storage_device_from_config(
         .get("block_dev")
         .ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
-                "No block_dev key for {}",
+                "Couldn't get block_dev for storage device {}",
                 name
             ))
         })?
         .as_str()
         .ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
-                "Couldn't parse block_dev for {}",
+                "Couldn't parse block_dev for storage device {}",
                 name
             ))
         })?;
@@ -197,6 +197,7 @@ impl ServerSpecBuilder {
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
         let device_spec =
             NetworkDevice { backend_name: backend_name.clone(), pci_path };
+
         let backend_spec = NetworkBackend {
             kind: NetworkBackendKind::Virtio {
                 vnic_name: nic.name.to_string(),
@@ -265,7 +266,6 @@ impl ServerSpecBuilder {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         let backend_name = name.to_string();
-
         let backend_spec = StorageBackend {
             kind: StorageBackendKind::InMemory { base64 },
             readonly: true,
@@ -295,7 +295,7 @@ impl ServerSpecBuilder {
     ) -> Result<(), ServerSpecBuilderError> {
         let vnic_name = device.get_string("vnic").ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to parse vNIC name for device {}",
+                "Failed to get vNIC name for device {}",
                 name
             ))
         })?;
@@ -344,8 +344,8 @@ impl ServerSpecBuilder {
         Ok(())
     }
 
-    /// Adds to the spec under construction all the devices and backends
-    /// specified in the supplied configuration TOML.
+    /// Adds all the devices and backends specified in the supplied
+    /// configuration TOML to the spec under construction.
     pub fn add_devices_from_config(
         &mut self,
         config: &config::Config,
@@ -356,51 +356,39 @@ impl ServerSpecBuilder {
                 // If this is a storage device, parse its "block_dev" property
                 // to get the name of its corresponding backend.
                 "pci-virtio-block" | "pci-nvme" => {
-                    let backend_name = device
-                        .options
-                        .get("block_dev")
-                        .ok_or_else(|| {
-                            ServerSpecBuilderError::ConfigTomlError(format!(
-                                "No block_dev key for {}",
-                                device_name
-                            ))
-                        })?
-                        .as_str()
-                        .ok_or_else(|| {
-                            ServerSpecBuilderError::ConfigTomlError(format!(
-                                "Couldn't parse block_dev for {}",
-                                device_name
-                            ))
-                        })?;
-
-                    let backend_config = config
-                        .block_devs
-                        .get(backend_name)
-                        .ok_or_else(|| {
-                            ServerSpecBuilderError::DeviceMissingBackend(
-                                device_name.clone(),
-                                backend_name.to_owned(),
-                            )
-                        })?;
-
                     let device_kind = match driver {
                         "pci-virtio-block" => StorageDeviceKind::Virtio,
                         "pci-nvme" => StorageDeviceKind::Nvme,
                         _ => unreachable!(),
                     };
 
+                    let device_spec = make_storage_device_from_config(
+                        device_name,
+                        device_kind,
+                        device,
+                    )?;
+
+                    let backend_config = config
+                        .block_devs
+                        .get(&device_spec.backend_name)
+                        .ok_or_else(|| {
+                            ServerSpecBuilderError::DeviceMissingBackend(
+                                device_name.clone(),
+                                device_spec.backend_name.clone(),
+                            )
+                        })?;
+
+                    let backend_spec = make_storage_backend_from_config(
+                        &device_spec.backend_name,
+                        backend_config,
+                    )?;
+
+                    let backend_name = device_spec.backend_name.clone();
                     self.builder.add_storage_device(
                         device_name.clone(),
-                        make_storage_device_from_config(
-                            device_name,
-                            device_kind,
-                            device,
-                        )?,
-                        backend_name.to_owned(),
-                        make_storage_backend_from_config(
-                            backend_name,
-                            backend_config,
-                        )?,
+                        device_spec,
+                        backend_name,
+                        backend_spec,
                     )?;
                 }
                 "pci-virtio-viona" => {
@@ -421,7 +409,7 @@ impl ServerSpecBuilder {
         Ok(())
     }
 
-    /// Adds to the spec under construction a serial port specification.
+    /// Adds a serial port specification to the spec under construction.
     pub fn add_serial_port(
         &mut self,
         port: SerialPortNumber,
