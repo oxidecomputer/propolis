@@ -42,10 +42,18 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
             }(){
                 Ok(()) => phd_testcase::TestOutcome::Passed,
                 Err(e) => {
-                    let msg = format!("{}\n    error backtrace: {}",
-                                      e.to_string(),
-                                      e.backtrace());
-                    phd_testcase::TestOutcome::Failed(Some(msg))
+                    // Treat the test as skipped if the error downcasts to the
+                    // phd_testcase "skipped" error type; otherwise, treat
+                    // errors as failures.
+                    if let Some(skipped) = e.downcast_ref::<phd_testcase::TestSkippedError>() {
+                        let phd_testcase::TestSkippedError::TestSkipped(msg) = skipped;
+                        phd_testcase::TestOutcome::Skipped(msg.clone())
+                    } else {
+                        let msg = format!("{}\n    error backtrace: {}",
+                                          e.to_string(),
+                                          e.backtrace());
+                        phd_testcase::TestOutcome::Failed(Some(msg))
+                    }
                 }
             }
         }
@@ -57,4 +65,31 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
         #submit
     }
     .into()
+}
+
+/// Marks a test as skipped. The macro can take as an argument any expression
+/// that has a `to_string` method.
+#[proc_macro]
+pub fn phd_skip(args: TokenStream) -> TokenStream {
+    let args = if args.is_empty() {
+        None
+    } else {
+        let lit = parse_macro_input!(args as syn::Lit);
+        Some(lit)
+    };
+
+    let err_inner = match args {
+        None => quote! { None },
+        Some(_) => {
+            let stringified = quote! { (#args).to_string() };
+            quote! { Some(#stringified) }
+        }
+    };
+
+    // Emit an early return that returns a `phd_testcase::TestSkippedError`.
+    // The `phd_testcase` macro will try to downcast any errors returned from
+    // the test body into this specific error type and will mark the test as
+    // skipped if the downcast succeeds.
+    quote! { return Err(phd_testcase::TestSkippedError::TestSkipped(#err_inner).into()); }
+        .into()
 }

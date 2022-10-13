@@ -1,9 +1,16 @@
 pub use anyhow::Result;
 pub use inventory::submit as inventory_submit;
 pub use phd_framework;
-pub use phd_testcase_macros::phd_testcase;
+pub use phd_testcase_macros::*;
+use thiserror::Error;
 
 use phd_framework::test_vm::factory::VmFactory;
+
+#[derive(Debug, Error)]
+pub enum TestSkippedError {
+    #[error("Test skipped: {0:?}")]
+    TestSkipped(Option<String>),
+}
 
 /// The outcome from executing a specific test case.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
