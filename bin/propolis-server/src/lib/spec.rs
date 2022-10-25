@@ -14,7 +14,7 @@ use crate::config;
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub enum ServerSpecBuilderError {
-    #[error("Interior spec builder returned an error: {0}")]
+    #[error(transparent)]
     InnerBuilderError(#[from] SpecBuilderError),
 
     #[error("The string {0} could not be converted to a PCI path")]
