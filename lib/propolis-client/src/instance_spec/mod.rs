@@ -65,9 +65,11 @@ pub use crucible_client_types::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
 mod backends;
+mod builder;
 mod devices;
 
 pub use backends::*;
+pub use builder::*;
 pub use devices::*;
 
 /// Type alias for keys in the instance spec's maps.

@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
-use crate::spec::{SpecBuilder, SpecBuilderError};
+use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
 
@@ -237,7 +237,7 @@ impl DropshotEndpointContext {
 #[derive(Debug, Error)]
 enum SpecCreationError {
     #[error(transparent)]
-    SpecBuilderError(#[from] SpecBuilderError),
+    SpecBuilderError(#[from] ServerSpecBuilderError),
 }
 
 /// Creates an instance spec from an ensure request. (Both types are foreign to
@@ -246,7 +246,9 @@ fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
 ) -> Result<InstanceSpec, SpecCreationError> {
-    let mut spec_builder = SpecBuilder::new(&request.properties, toml_config)?;
+    let mut spec_builder =
+        ServerSpecBuilder::new(&request.properties, toml_config)?;
+
     for nic in &request.nics {
         spec_builder.add_nic_from_request(nic)?;
     }
