@@ -4,7 +4,10 @@ pub use phd_framework;
 pub use phd_testcase_macros::*;
 use thiserror::Error;
 
-use phd_framework::test_vm::factory::VmFactory;
+use phd_framework::{
+    disk::{DiskBackend, DiskFactory, DiskSource},
+    test_vm::{factory::VmFactory, vm_config::ConfigRequest},
+};
 
 #[derive(Debug, Error)]
 pub enum TestSkippedError {
@@ -28,8 +31,36 @@ pub enum TestOutcome {
 }
 
 /// The test context structure passed to every PHD test case.
-pub struct TestContext {
+pub struct TestContext<'a> {
+    pub default_guest_image_artifact: String,
     pub vm_factory: VmFactory,
+    pub disk_factory: DiskFactory<'a>,
+}
+
+impl TestContext<'_> {
+    /// Yields a VM configuration builder that uses the default CPU count and
+    /// memory size and has a file-backed boot disk attached that supplies the
+    /// default guest OS image.
+    pub fn default_vm_config(&self) -> ConfigRequest {
+        let boot_disk = self
+            .disk_factory
+            .create_disk(
+                DiskSource::Artifact(&self.default_guest_image_artifact),
+                DiskBackend::File,
+            )
+            .unwrap();
+        self.vm_factory.deviceless_vm_config().set_boot_disk(
+            boot_disk,
+            4,
+            phd_framework::test_vm::vm_config::DiskInterface::Nvme,
+        )
+    }
+
+    /// Yields a VM configuration builder with the default CPU count and memory
+    /// size, but with no devices attached.
+    pub fn deviceless_vm_config(&self) -> ConfigRequest {
+        self.vm_factory.deviceless_vm_config()
+    }
 }
 
 /// A wrapper for test functions. This is needed to allow [`TestCase`] to have a

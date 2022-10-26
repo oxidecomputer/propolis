@@ -1,6 +1,6 @@
 //! Routines and data structures for working with Propolis server processes.
 
-use std::{fmt::Debug, net::SocketAddrV4, process::Stdio};
+use std::{fmt::Debug, net::SocketAddrV4, path::PathBuf, process::Stdio};
 
 use anyhow::Result;
 use tracing::info;
@@ -15,7 +15,7 @@ pub struct ServerProcessParameters<'a, T: Into<Stdio>> {
 
     /// The path to the configuration TOML that should be placed on the server's
     /// command line.
-    pub config_toml_path: &'a str,
+    pub config_toml_path: PathBuf,
 
     /// The address at which the server should serve.
     pub server_addr: SocketAddrV4,
@@ -62,7 +62,7 @@ impl PropolisServer {
                 .args([
                     server_path,
                     "run",
-                    config_toml_path,
+                    config_toml_path.as_os_str().to_string_lossy().as_ref(),
                     server_addr.to_string().as_str(),
                     vnc_addr.to_string().as_str(),
                 ])

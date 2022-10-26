@@ -22,6 +22,8 @@ use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, info_span, instrument, Instrument};
 use uuid::Uuid;
 
+use self::vm_config::VmConfig;
+
 pub mod factory;
 pub mod server;
 pub mod vm_config;
@@ -38,7 +40,7 @@ pub enum VmStateError {
 }
 
 enum VmState {
-    New { vcpus: u8, memory_mib: u64 },
+    New,
     Ensured { serial: SerialConsole },
 }
 
@@ -52,8 +54,8 @@ pub struct TestVm {
     rt: tokio::runtime::Runtime,
     client: Client,
     server: server::PropolisServer,
+    config: VmConfig,
     guest_os: Box<dyn GuestOs>,
-    guest_os_kind: GuestOsKind,
     tracing_span: tracing::Span,
 
     state: VmState,
@@ -82,9 +84,9 @@ impl TestVm {
     pub(crate) fn new<T: Into<Stdio> + Debug>(
         vm_name: &str,
         process_params: server::ServerProcessParameters<T>,
-        vm_config: &vm_config::VmConfig,
-        guest_os_kind: GuestOsKind,
+        vm_config: vm_config::VmConfig,
     ) -> Result<Self> {
+        let guest_os_kind = vm_config.guest_os_kind();
         info!(?process_params, ?vm_config, ?guest_os_kind);
         let span = info_span!(parent: None, "VM", vm = ?vm_name);
         let rt =
@@ -107,14 +109,19 @@ impl TestVm {
             rt,
             client,
             server,
+            config: vm_config,
             guest_os: guest_os::get_guest_os_adapter(guest_os_kind),
-            guest_os_kind,
             tracing_span: span,
-            state: VmState::New {
-                vcpus: vm_config.cpus(),
-                memory_mib: vm_config.memory_mib(),
-            },
+            state: VmState::New,
         })
+    }
+
+    /// Obtains a clone of the configuration parameters that were supplied when
+    /// this VM was created so that a new VM can be created from them.
+    ///
+    /// N.B. This also clones handles to the backend objects this VM is using.
+    pub(crate) fn clone_config(&self) -> vm_config::VmConfig {
+        self.config.clone()
     }
 
     /// Sends an instance ensure request to this VM's server, allowing it to
@@ -125,7 +132,10 @@ impl TestVm {
     ) -> Result<SerialConsole> {
         let _span = self.tracing_span.enter();
         let (vcpus, memory_mib) = match self.state {
-            VmState::New { vcpus, memory_mib } => (vcpus, memory_mib),
+            VmState::New => (
+                self.config.instance_spec().devices.board.cpus,
+                self.config.instance_spec().devices.board.memory_mb,
+            ),
             VmState::Ensured { .. } => {
                 return Err(VmStateError::InstanceAlreadyEnsured.into())
             }
@@ -173,7 +183,7 @@ impl TestVm {
 
     /// Returns the kind of guest OS running in this VM.
     pub fn guest_os_kind(&self) -> GuestOsKind {
-        self.guest_os_kind
+        self.config.guest_os_kind()
     }
 
     /// Sets the VM to the running state. If the VM has not yet been launched
@@ -189,7 +199,7 @@ impl TestVm {
     /// the VM.
     pub fn instance_ensure(&mut self) -> Result<()> {
         match self.state {
-            VmState::New { .. } => {
+            VmState::New => {
                 let console = self.rt.block_on(async {
                     self.instance_ensure_async(None).await
                 })?;
@@ -264,7 +274,7 @@ impl TestVm {
     ) -> Result<()> {
         let _vm_guard = self.tracing_span.enter();
         match self.state {
-            VmState::New { .. } => {
+            VmState::New => {
                 let migration_id = Uuid::new_v4();
                 info!(
                     ?migration_id,
@@ -464,7 +474,7 @@ impl TestVm {
                     Ok(received_string) => Ok(received_string),
                 }
             }
-            VmState::New { .. } => Err(VmStateError::InstanceNotEnsured.into()),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 
@@ -501,7 +511,7 @@ impl TestVm {
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
         match &self.state {
             VmState::Ensured { serial } => serial.send_bytes(bytes).await,
-            VmState::New { .. } => Err(VmStateError::InstanceNotEnsured.into()),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 }

@@ -2,6 +2,7 @@
 //! VMs.
 
 pub mod artifacts;
+pub mod disk;
 pub mod guest_os;
 pub mod host_api;
 mod serial;

@@ -123,20 +123,6 @@ entries:
   `relative_remote_path`, with the same semantics as for guest images (just
   without the `metadata.` prefix).
 
-### ZFS snapshot support
-
-The runner can use ZFS snapshots to restore artifacts to a pristine state
-between tests, avoiding the need to redownload them.
-
-To use this functionality, pass the `--zfs-fs-name` parameter to the runner. The
-runner will verify that the ZFS filesystem object with the specified name has a
-mountpoint that matches the `local_root` specified in the artifact TOML. If it
-does, the runner will take a ZFS snapshot after initially verifying its
-artifacts, then roll back to that snapshot between tests.
-
-Note: This requires the user executing the runner to have snapshot, rollback,
-create, destroy, and mount privileges on the ZFS filesystem.
-
 ## Authoring tests
 
 PHD's test cases live in the `tests` crate. To write a new test, add a function

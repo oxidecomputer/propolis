@@ -1,7 +1,6 @@
 mod config;
 mod execute;
 mod fixtures;
-pub(crate) mod zfs;
 
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
@@ -57,7 +56,6 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
             .to_string(),
         tmp_directory: run_opts.tmp_directory.clone(),
         server_log_mode: run_opts.server_logging_mode,
-        default_guest_image_artifact: run_opts.default_guest_artifact.clone(),
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         default_guest_cpus: run_opts.default_guest_cpus,
         default_guest_memory_mib: run_opts.default_guest_memory_mib,
@@ -67,13 +65,18 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
     // The VM factory config and artifact store are enough to create a test
     // context to pass to test cases and a set of fixtures.
     let ctx = TestContext {
+        default_guest_image_artifact: run_opts.default_guest_artifact.clone(),
         vm_factory: phd_framework::test_vm::factory::VmFactory::new(
             factory_config,
             &artifact_store,
         )
         .unwrap(),
+        disk_factory: phd_framework::disk::DiskFactory::new(
+            &run_opts.tmp_directory,
+            &artifact_store,
+        ),
     };
-    let fixtures = TestFixtures::new(run_opts, &artifact_store, &ctx).unwrap();
+    let fixtures = TestFixtures::new(&artifact_store, &ctx).unwrap();
 
     // Run the tests and print results.
     let execution_stats = execute::run_tests_with_ctx(&ctx, fixtures, run_opts);

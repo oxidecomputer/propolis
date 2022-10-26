@@ -153,6 +153,12 @@ impl ArtifactMetadata {
             hash_equals(&local_path, digest)?;
         }
 
+        // Make the artifact read-only to try to ensure tests can't change it.
+        // Disks copied from this artifact will be edited to be writable.
+        let mut permissions = new_file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        new_file.set_permissions(permissions)?;
+
         Ok(())
     }
 }
@@ -223,19 +229,24 @@ impl ArtifactStore {
     }
 
     /// Given an artifact name, attempts to retrieve the guest OS artifact with
-    /// that name and returns a tuple containing (1) the path to the artifact in
-    /// the local store, and (2) the kind of guest OS this artifact bears in the
-    /// store.
-    pub fn get_guest_image_by_name(
+    /// that name and returns the path to the artifact in the local store.
+    pub fn get_guest_image_path_by_name(
         &self,
         artifact: &str,
-    ) -> Option<(PathBuf, GuestOsKind)> {
-        self.config.guest_images.get(artifact).map(|a| {
-            (
-                self.construct_full_path(&a.metadata.relative_local_path),
-                a.guest_os_kind,
-            )
-        })
+    ) -> Option<PathBuf> {
+        self.config
+            .guest_images
+            .get(artifact)
+            .map(|a| self.construct_full_path(&a.metadata.relative_local_path))
+    }
+
+    /// Given an artifact name, attempts to retrieve the guest OS artifact with
+    /// that name and returns the artifact's guest OS kind.
+    pub fn get_guest_os_kind_by_name(
+        &self,
+        artifact: &str,
+    ) -> Option<GuestOsKind> {
+        self.config.guest_images.get(artifact).map(|a| a.guest_os_kind)
     }
 
     /// Given an artifact name, attempts to retrieve the guest firmware artifact
