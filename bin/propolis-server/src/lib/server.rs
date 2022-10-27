@@ -8,11 +8,13 @@
 use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
+use crate::serial::history_buffer::SerialHistoryOffset;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
-    HttpResponseOk, HttpResponseUpdatedNoContent, Path, RequestContext,
+    HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
     TypedBody, WebsocketConnection,
 };
+use futures::SinkExt;
 use hyper::{Body, Response};
 use oximeter::types::ProducerRegistry;
 use propolis_client::{
@@ -448,6 +450,30 @@ async fn instance_ensure_common(
         }));
     }
 
+    let mut serial_task = server_context.services.serial_task.lock().await;
+    if serial_task.is_none() {
+        let (websocks_ch, websocks_recv) = mpsc::channel(1);
+        let (close_ch, close_recv) = oneshot::channel();
+
+        let serial = vm.com1().clone();
+        let err_log = rqctx.log.new(o!("component" => "serial task"));
+        let task = tokio::spawn(async move {
+            if let Err(e) = super::serial::instance_serial_task(
+                websocks_recv,
+                close_recv,
+                serial,
+                err_log.clone(),
+            )
+            .await
+            {
+                error!(err_log, "Failure in serial task: {}", e);
+            }
+        });
+
+        *serial_task =
+            Some(super::serial::SerialTask { task, close_ch, websocks_ch });
+    }
+
     let log = server_context.log.clone();
     let services = Arc::clone(&server_context.services);
     tokio::task::spawn(async move {
@@ -656,6 +682,50 @@ async fn instance_state_put(
     result
 }
 
+#[endpoint {
+    method = GET,
+    path = "/instance/serial/history",
+}]
+async fn instance_serial_history_get(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    query: Query<api::InstanceSerialConsoleHistoryRequest>,
+) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
+{
+    let ctx = rqctx.context();
+    let vm = ctx.vm().await?;
+    let serial = vm.com1().clone();
+    let query_params = query.into_inner();
+
+    let byte_offset = match query_params {
+        api::InstanceSerialConsoleHistoryRequest {
+            from_start: Some(offset),
+            most_recent: None,
+            ..
+        } => SerialHistoryOffset::FromStart(offset as usize),
+        api::InstanceSerialConsoleHistoryRequest {
+            from_start: None,
+            most_recent: Some(offset),
+            ..
+        } => SerialHistoryOffset::MostRecent(offset as usize),
+        _ => return Err(HttpError::for_bad_request(
+            None,
+            "Exactly one of 'from_start' or 'most_recent' must be specified."
+                .to_string(),
+        )),
+    };
+
+    let max_bytes = query_params.max_bytes.map(|x| x as usize);
+    let (data, end) = serial
+        .history_vec(byte_offset, max_bytes)
+        .await
+        .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?;
+
+    Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
+        data,
+        last_byte_offset: end as u64,
+    }))
+}
+
 #[channel {
     protocol = WEBSOCKETS,
     path = "/instance/serial",
@@ -663,47 +733,54 @@ async fn instance_state_put(
 async fn instance_serial(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     websock: WebsocketConnection,
+    query: Query<api::InstanceSerialConsoleStreamRequest>,
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
     let vm = ctx.vm().await?;
     let serial = vm.com1().clone();
 
-    let err_log = rqctx.log.new(o!());
-
-    // Create or get active serial task handle and channels
-    let mut serial_task = ctx.services.serial_task.lock().await;
-    let serial_task = serial_task.get_or_insert_with(move || {
-        let (websocks_ch, websocks_recv) = mpsc::channel(1);
-        let (close_ch, close_recv) = oneshot::channel();
-
-        let task = tokio::spawn(async move {
-            if let Err(e) = super::serial::instance_serial_task(
-                websocks_recv,
-                close_recv,
-                serial,
-                err_log.clone(),
-            )
-            .await
-            {
-                error!(err_log, "Serial task failed: {}", e);
-            }
-        });
-
-        super::serial::SerialTask { task, close_ch, websocks_ch }
-    });
+    let byte_offset = match query.into_inner() {
+        api::InstanceSerialConsoleStreamRequest {
+            from_start: Some(offset),
+            most_recent: None,
+        } => Some(SerialHistoryOffset::FromStart(offset as usize)),
+        api::InstanceSerialConsoleStreamRequest {
+            from_start: None,
+            most_recent: Some(offset),
+        } => Some(SerialHistoryOffset::MostRecent(offset as usize)),
+        _ => None,
+    };
 
     let config =
         WebSocketConfig { max_send_queue: Some(4096), ..Default::default() };
-    let websocks_send = serial_task.websocks_ch.clone();
-
-    let ws_stream = WebSocketStream::from_raw_socket(
+    let mut ws_stream = WebSocketStream::from_raw_socket(
         websock.into_inner(),
         Role::Server,
         Some(config),
     )
     .await;
 
-    websocks_send
+    if let Some(mut byte_offset) = byte_offset {
+        loop {
+            let (data, offset) = serial.history_vec(byte_offset, None).await?;
+            if data.is_empty() {
+                break;
+            }
+            ws_stream
+                .send(tokio_tungstenite::tungstenite::Message::Binary(data))
+                .await?;
+            byte_offset = SerialHistoryOffset::FromStart(offset);
+        }
+    }
+
+    // Get serial task's handle and send it the websocket stream
+    ctx.services
+        .serial_task
+        .lock()
+        .await
+        .as_ref()
+        .ok_or("Instance has no serial task")?
+        .websocks_ch
         .send(ws_stream)
         .await
         .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
@@ -775,6 +852,7 @@ pub fn api() -> ApiDescription<DropshotEndpointContext> {
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
+    api.register(instance_serial_history_get).unwrap();
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
     api.register(instance_issue_crucible_snapshot_request).unwrap();
