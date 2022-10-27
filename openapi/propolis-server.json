@@ -1,8 +1,8 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Oxide Propolis API",
-    "description": "Api for interacting with Propolis agent",
+    "title": "Oxide Propolis Server API",
+    "description": "API for interacting with the Propolis hypervisor frontend.",
     "contact": {
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"

@@ -48,8 +48,10 @@ enum Args {
 
 pub fn run_openapi() -> Result<(), String> {
     server::api()
-        .openapi("Oxide Propolis API", "0.0.1")
-        .description("Api for interacting with Propolis agent")
+        .openapi("Oxide Propolis Server API", "0.0.1")
+        .description(
+            "API for interacting with the Propolis hypervisor frontend.",
+        )
         .contact_url("https://oxide.computer")
         .contact_email("api@oxide.computer")
         .write(&mut std::io::stdout())
