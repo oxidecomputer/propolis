@@ -84,7 +84,13 @@ enum Command {
     },
 
     /// Drop to a Serial console connected to the instance
-    Serial,
+    Serial {
+        /// The offset since boot (or if negative, the current end of the
+        /// buffered data) from which to retrieve output history.
+        /// Defaults to the most recent 16 KiB of console output (-16384).
+        #[clap(long, short)]
+        byte_offset: Option<i64>,
+    },
 
     /// Migrate instance to new propolis-server
     Migrate {
@@ -321,9 +327,19 @@ async fn test_stdin_to_websockets_task() {
     assert!(wsrx.recv().await.is_none());
 }
 
-async fn serial(addr: SocketAddr) -> anyhow::Result<()> {
-    let upgraded = propolis_client::Client::new(&format!("http://{}", addr))
-        .instance_serial()
+async fn serial(
+    addr: SocketAddr,
+    byte_offset: Option<i64>,
+) -> anyhow::Result<()> {
+    let client = propolis_client::Client::new(&format!("http://{}", addr));
+    let mut req = client.instance_serial();
+
+    match byte_offset {
+        Some(x) if x >= 0 => req = req.from_start(x as u64),
+        Some(x) => req = req.most_recent(-x as u64),
+        None => req = req.most_recent(16384),
+    }
+    let upgraded = req
         .send()
         .await
         .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
@@ -540,7 +556,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Get => get_instance(&client).await?,
         Command::State { state } => put_instance(&client, state).await?,
-        Command::Serial => serial(addr).await?,
+        Command::Serial { byte_offset } => serial(addr, byte_offset).await?,
         Command::Migrate { dst_server, dst_port, dst_uuid } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
             let dst_client = Client::new(dst_addr, log.clone());

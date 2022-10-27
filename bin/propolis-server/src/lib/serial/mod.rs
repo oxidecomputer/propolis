@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::serial::history_buffer::{HistoryBuffer, SerialHistoryOffset};
 use futures::future::Fuse;
 use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -13,13 +14,15 @@ use propolis::chardev::{pollers, Sink, Source};
 use propolis::hw::uart::LpcUart;
 use slog::{info, Logger};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, RwLock as AsyncRwLock};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::{
     frame::coding::CloseCode, CloseFrame,
 };
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
+
+pub(crate) mod history_buffer;
 
 /// Errors which may occur during the course of a serial connection.
 #[derive(Error, Debug)]
@@ -63,16 +66,18 @@ pub async fn instance_serial_task(
 
     loop {
         let (uart_read, ws_send) =
-            match &cur_output {
-                None => {
-                    (serial.read_source(&mut output).fuse(), Fuse::terminated())
-                }
-                Some(r) => (
+            if ws_sinks.is_empty() || cur_output.is_none() {
+                (serial.read_source(&mut output).fuse(), Fuse::terminated())
+            } else {
+                let range = cur_output.clone().unwrap();
+                (
                     Fuse::terminated(),
                     if !ws_sinks.is_empty() {
-                        futures::stream::iter(ws_sinks.iter_mut().zip(
-                            std::iter::repeat(Vec::from(&output[r.clone()])),
-                        ))
+                        futures::stream::iter(
+                            ws_sinks.iter_mut().zip(std::iter::repeat(
+                                Vec::from(&output[range]),
+                            )),
+                        )
                         .for_each_concurrent(4, |(ws, bin)| {
                             ws.send(Message::binary(bin)).map(|_| ())
                         })
@@ -80,7 +85,7 @@ pub async fn instance_serial_task(
                     } else {
                         Fuse::terminated()
                     },
-                ),
+                )
             };
 
         let (ws_recv, uart_write) = match &cur_input {
@@ -110,6 +115,7 @@ pub async fn instance_serial_task(
         };
 
         let recv_ch_fut = recv_ch.recv().fuse();
+        let new_ws_recv = websocks_recv.recv().fuse();
 
         tokio::select! {
             // Poll in the order written
@@ -131,7 +137,7 @@ pub async fn instance_serial_task(
                 break;
             }
 
-            new_ws = websocks_recv.recv() => {
+            new_ws = new_ws_recv => {
                 if let Some(ws) = new_ws {
                     let (ws_sink, ws_stream) = ws.split();
                     ws_sinks.push(ws_sink);
@@ -200,6 +206,7 @@ pub struct Serial<Device: Sink + Source> {
 
     sink_poller: Arc<pollers::SinkBuffer>,
     source_poller: Arc<pollers::SourceBuffer>,
+    history: AsyncRwLock<HistoryBuffer>,
 }
 
 impl<Device: Sink + Source> Serial<Device> {
@@ -224,19 +231,31 @@ impl<Device: Sink + Source> Serial<Device> {
             poll_interval: Duration::from_millis(10),
             poll_miss_thresh: 5,
         });
+        let history = Default::default();
         sink_poller.attach(uart.as_ref());
         source_poller.attach(uart.as_ref());
         uart.set_autodiscard(false);
 
-        Serial { uart, sink_poller, source_poller }
+        Serial { uart, sink_poller, source_poller, history }
     }
 
     pub async fn read_source(&self, buf: &mut [u8]) -> Option<usize> {
-        self.source_poller.read(buf, self.uart.as_ref()).await
+        let bytes_read =
+            self.source_poller.read(buf, self.uart.as_ref()).await?;
+        self.history.write().await.consume(&buf[..bytes_read]);
+        Some(bytes_read)
     }
 
     pub async fn write_sink(&self, buf: &[u8]) -> Option<usize> {
         self.sink_poller.write(buf, self.uart.as_ref()).await
+    }
+
+    pub(crate) async fn history_vec(
+        &self,
+        byte_offset: SerialHistoryOffset,
+        max_bytes: Option<usize>,
+    ) -> Result<(Vec<u8>, usize), history_buffer::Error> {
+        self.history.read().await.contents_vec(byte_offset, max_bytes)
     }
 }
 
