@@ -128,11 +128,11 @@ impl Client {
         self.put(path, Some(body)).await
     }
 
-    pub async fn instance_ensure_v2(
+    pub async fn instance_ensure_from_spec(
         &self,
-        request: &api::InstanceEnsureRequestV2,
+        request: &api::InstanceEnsureFromSpecRequest,
     ) -> Result<api::InstanceEnsureResponse, Error> {
-        let path = format!("http://{}/instance/ensure_v2", self.address,);
+        let path = format!("http://{}/instance/spec", self.address,);
         let body = Body::from(serde_json::to_string(&request).unwrap());
         self.put(path, Some(body)).await
     }

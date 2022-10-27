@@ -1,8 +1,8 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Oxide Propolis Server API",
-    "description": "API for interacting with the Propolis hypervisor frontend.",
+    "title": "Oxide Propolis API",
+    "description": "Api for interacting with Propolis agent",
     "contact": {
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
@@ -114,39 +114,6 @@
         }
       }
     },
-    "/instance/ensure_v2": {
-      "put": {
-        "operationId": "instance_ensure_v2",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InstanceEnsureRequestV2"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "successful creation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InstanceEnsureResponse"
-                }
-              }
-            }
-          },
-          "4XX": {
-            "$ref": "#/components/responses/Error"
-          },
-          "5XX": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
     "/instance/migrate/status": {
       "get": {
         "operationId": "instance_migrate_status",
@@ -194,6 +161,39 @@
           }
         },
         "x-dropshot-websocket": {}
+      }
+    },
+    "/instance/spec": {
+      "put": {
+        "operationId": "instance_ensure_from_spec",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceEnsureFromSpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "successful creation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceEnsureResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     },
     "/instance/state": {
@@ -567,6 +567,29 @@
           "state"
         ]
       },
+      "InstanceEnsureFromSpecRequest": {
+        "type": "object",
+        "properties": {
+          "instance_spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
+          },
+          "migrate": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
+              }
+            ]
+          },
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          }
+        },
+        "required": [
+          "instance_spec",
+          "properties"
+        ]
+      },
       "InstanceEnsureRequest": {
         "type": "object",
         "properties": {
@@ -601,29 +624,6 @@
           }
         },
         "required": [
-          "properties"
-        ]
-      },
-      "InstanceEnsureRequestV2": {
-        "type": "object",
-        "properties": {
-          "instance_spec": {
-            "$ref": "#/components/schemas/InstanceSpec"
-          },
-          "migrate": {
-            "nullable": true,
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
-              }
-            ]
-          },
-          "properties": {
-            "$ref": "#/components/schemas/InstanceProperties"
-          }
-        },
-        "required": [
-          "instance_spec",
           "properties"
         ]
       },
@@ -1121,23 +1121,18 @@
             "additionalProperties": false
           },
           {
-            "description": "A device backed by an in-memory buffer in the VMM process.",
+            "description": "A device backed by an in-memory buffer in the VMM process. The initial contents of the disk are a base64-encoded string.",
             "type": "object",
             "properties": {
               "InMemory": {
                 "type": "object",
                 "properties": {
-                  "bytes": {
-                    "type": "array",
-                    "items": {
-                      "type": "integer",
-                      "format": "uint8",
-                      "minimum": 0
-                    }
+                  "base64": {
+                    "type": "string"
                   }
                 },
                 "required": [
-                  "bytes"
+                  "base64"
                 ],
                 "additionalProperties": false
               }

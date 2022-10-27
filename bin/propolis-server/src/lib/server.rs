@@ -313,11 +313,14 @@ async fn register_oximeter(
 
 async fn instance_ensure_common(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: api::InstanceEnsureRequestV2,
+    request: api::InstanceEnsureFromSpecRequest,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
-    let api::InstanceEnsureRequestV2 { properties, instance_spec, migrate } =
-        request;
+    let api::InstanceEnsureFromSpecRequest {
+        properties,
+        instance_spec,
+        migrate,
+    } = request;
 
     // Handle requests to an instance that has already been initialized. Treat
     // the instances as compatible (and return Ok) if they have the same
@@ -482,7 +485,7 @@ async fn instance_ensure(
 
     instance_ensure_common(
         rqctx,
-        api::InstanceEnsureRequestV2 {
+        api::InstanceEnsureFromSpecRequest {
             properties: request.properties,
             instance_spec,
             migrate: request.migrate,
@@ -493,11 +496,11 @@ async fn instance_ensure(
 
 #[endpoint {
     method = PUT,
-    path = "/instance/ensure_v2",
+    path = "/instance/spec",
 }]
-async fn instance_ensure_v2(
+async fn instance_ensure_from_spec(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequestV2>,
+    request: TypedBody<api::InstanceEnsureFromSpecRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     instance_ensure_common(rqctx, request.into_inner()).await
 }
@@ -730,7 +733,7 @@ async fn instance_issue_crucible_snapshot_request(
 pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
-    api.register(instance_ensure_v2).unwrap();
+    api.register(instance_ensure_from_spec).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
