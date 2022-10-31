@@ -100,6 +100,9 @@ enum Command {
         #[clap(short = 'u', action)]
         dst_uuid: Option<Uuid>,
     },
+
+    /// Monitor an instance's state in real time
+    Monitor,
 }
 
 fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
@@ -466,6 +469,37 @@ async fn migrate_instance(
     Ok(())
 }
 
+async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
+    // We use a custom client builder here because the default progenitor
+    // one has a timeout of 15s but we want to be able to wait indefinitely.
+    let client = reqwest::ClientBuilder::new().build().unwrap();
+    let client = propolis_client::Client::new_with_client(
+        &format!("http://{addr}"),
+        client,
+    );
+    let mut gen = 0;
+    loop {
+        // State monitoring always returns the most recent state/gen pair
+        // known to Propolis.
+        let response = client
+            .instance_state_monitor()
+            .body(propolis_client::types::InstanceStateMonitorRequest { gen })
+            .send()
+            .await
+            .with_context(|| anyhow!("failed to get new instance state"))?;
+
+        println!("InstanceState: {:?}", response.state);
+
+        if response.state == propolis_client::types::InstanceState::Destroyed {
+            return Ok(());
+        }
+
+        // Update the generation number we're asking for, to ensure the
+        // Propolis will only return more recent values.
+        gen = response.gen + 1;
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
@@ -513,6 +547,7 @@ async fn main() -> anyhow::Result<()> {
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
             migrate_instance(client, dst_client, addr, dst_uuid).await?
         }
+        Command::Monitor => monitor(addr).await?,
     }
 
     Ok(())
