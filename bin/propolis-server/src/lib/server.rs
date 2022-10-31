@@ -187,7 +187,7 @@ impl ServiceProviders {
 /// Context accessible from HTTP callbacks.
 pub struct DropshotEndpointContext {
     static_config: StaticConfig,
-    pub services: ServiceProviders,
+    pub services: Arc<ServiceProviders>,
     log: Logger,
 }
 
@@ -206,13 +206,13 @@ impl DropshotEndpointContext {
                 use_reservoir,
                 metrics: metric_config,
             },
-            services: ServiceProviders {
+            services: Arc::new(ServiceProviders {
                 vm: Mutex::new(VmControllerState::NotCreated),
                 serial_task: Mutex::new(None),
                 oximeter_server_task: Mutex::new(None),
                 oximeter_stats: Mutex::new(None),
                 vnc_server: Arc::new(Mutex::new(vnc_server)),
-            },
+            }),
             log,
         }
     }
@@ -376,6 +376,8 @@ async fn instance_ensure(
             None
         };
 
+    let (stop_ch, stop_recv) = oneshot::channel();
+
     // Parts of VM initialization (namely Crucible volume attachment) make use
     // of async processing, which itself is turned synchronous with `block_on`
     // calls to the Tokio runtime.
@@ -400,6 +402,7 @@ async fn instance_ensure(
                 producer_registry,
                 log,
                 ctrl_hdl,
+                stop_ch,
             )
         });
 
@@ -457,6 +460,15 @@ async fn instance_ensure(
             });
         }));
     }
+
+    let log = server_context.log.clone();
+    let services = Arc::clone(&server_context.services);
+    tokio::task::spawn(async move {
+        // Once the VmController has signaled that it is shutting down,
+        // we'll clean up the per-instance service providers as well.
+        let _ = stop_recv.await;
+        services.stop(&log).await;
+    });
 
     *server_context.services.vm.lock().await =
         VmControllerState::Created(vm.clone());
@@ -580,9 +592,6 @@ async fn instance_state_put(
                 if let Some(stats) = stats.as_ref() {
                     stats.count_reset();
                 }
-            }
-            api::InstanceStateRequested::Stop => {
-                ctx.services.stop(&rqctx.log).await;
             }
             _ => {}
         }

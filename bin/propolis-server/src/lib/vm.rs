@@ -45,7 +45,7 @@ use propolis_client::handmade::{
 use propolis_client::instance_spec::InstanceSpec;
 use slog::{error, info, Logger};
 use thiserror::Error;
-use tokio::task::JoinHandle as TaskJoinHandle;
+use tokio::{sync::oneshot, task::JoinHandle as TaskJoinHandle};
 use uuid::Uuid;
 
 use crate::{
@@ -480,6 +480,7 @@ impl VmController {
         oximeter_registry: Option<ProducerRegistry>,
         log: Logger,
         runtime_hdl: tokio::runtime::Handle,
+        stop_ch: oneshot::Sender<()>,
     ) -> anyhow::Result<Arc<Self>> {
         let vmm_log = log.new(slog::o!("component" => "vmm"));
 
@@ -566,7 +567,10 @@ impl VmController {
         let worker_thread = std::thread::Builder::new()
             .name("vm_state_worker".to_string())
             .spawn(move || {
-                ctrl_for_worker.state_worker(vcpu_tasks, log_for_worker)
+                ctrl_for_worker.state_worker(vcpu_tasks, log_for_worker);
+
+                // Signal back to the server state once the worker has exited.
+                let _ = stop_ch.send(());
             })
             .map_err(VmControllerError::StateWorkerCreationFailed)?;
 
