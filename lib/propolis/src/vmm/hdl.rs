@@ -423,6 +423,17 @@ impl VmmHdl {
         unsafe { self.ioctl(bhyve_api::VM_REINIT, &mut data) }
     }
 
+    /// Pause device emulation logic for the instance (such as timers, etc).
+    /// This allows a consistent snapshot to be taken or loaded.
+    pub fn pause(&self) -> Result<()> {
+        self.ioctl_usize(bhyve_api::VM_PAUSE, 0)
+    }
+
+    /// Resume device emulation logic from a prior [VmmHdl::pause] call.
+    pub fn resume(&self) -> Result<()> {
+        self.ioctl_usize(bhyve_api::VM_RESUME, 0)
+    }
+
     /// Destroys the VMM.
     // TODO: Should this take "mut self", to consume the object?
     pub fn destroy(&self) -> Result<()> {
