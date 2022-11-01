@@ -172,10 +172,10 @@ impl ServiceProviders {
                         "strong_refs" => Arc::strong_count(&vm),
                         "weak_refs" => Arc::weak_count(&vm));
         }
-        if let Some(mut serial_task) = self.serial_task.lock().await.take() {
-            if let Some(close) = serial_task.close_ch.take() {
-                let _ = close.send(());
-            }
+        if let Some(serial_task) = self.serial_task.lock().await.take() {
+            let _ = serial_task.close_ch.send(());
+            // Wait for the serial task to exit
+            let _ = serial_task.task.await;
         }
         if let Some(server) = self.oximeter_server_task.lock().await.take() {
             server.abort();
@@ -629,15 +629,11 @@ async fn instance_serial(
             )
             .await
             {
-                error!(err_log, "Failed to spawn instance serial task: {}", e);
+                error!(err_log, "Serial task failed: {}", e);
             }
         });
 
-        super::serial::SerialTask {
-            task,
-            close_ch: Some(close_ch),
-            websocks_ch,
-        }
+        super::serial::SerialTask { task, close_ch: close_ch, websocks_ch }
     });
 
     let config =

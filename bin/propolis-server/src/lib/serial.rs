@@ -15,6 +15,9 @@ use slog::{info, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::protocol::{
+    frame::coding::CloseCode, CloseFrame,
+};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 
@@ -35,19 +38,9 @@ pub struct SerialTask {
     /// Handle to attached serial session
     pub task: JoinHandle<()>,
     /// Oneshot channel used to signal the task to terminate gracefully
-    pub close_ch: Option<oneshot::Sender<()>>,
+    pub close_ch: oneshot::Sender<()>,
     /// Channel used to send new client connections to the streaming task
     pub websocks_ch: mpsc::Sender<WebSocketStream<Upgraded>>,
-}
-
-impl Drop for SerialTask {
-    fn drop(&mut self) {
-        if let Some(ch) = self.close_ch.take() {
-            let _ = ch.send(());
-        } else {
-            self.task.abort();
-        }
-    }
 }
 
 pub async fn instance_serial_task(
@@ -126,6 +119,14 @@ pub async fn instance_serial_task(
             // so that a constant stream of incoming/outgoing messages
             // don't cause us to ignore it
             _ = &mut close_recv => {
+                // Gracefully close the connections to any clients
+                for ws in ws_sinks.into_iter().zip(ws_streams) {
+                    let mut ws = ws.0.reunite(ws.1).unwrap();
+                    let _ = ws.close(Some(CloseFrame {
+                        code: CloseCode::Away,
+                        reason: "VM stopped".into(),
+                    })).await;
+                }
                 info!(log, "Terminating serial task");
                 break;
             }
