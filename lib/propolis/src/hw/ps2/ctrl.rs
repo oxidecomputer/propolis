@@ -418,8 +418,9 @@ impl PS2Ctrl {
         if let Some(prefix) = cmd_prefix {
             match prefix {
                 PS2C_CMD_WRITE_CTRL_CFG => {
-                    state.ctrl_cfg = CtrlCfg::from_bits_truncate(v);
-                    probes::ps2ctrl_ctrlcfg_update!(|| state.ctrl_cfg.bits());
+                    let cfg = CtrlCfg::from_bits_truncate(v);
+                    probes::ps2ctrl_ctrlcfg_update!(|| cfg.bits());
+                    state.ctrl_cfg = cfg;
                 }
                 PS2C_CMD_WRITE_RAM_START..=PS2C_CMD_WRITE_RAM_END => {
                     let off = v - PS2C_CMD_WRITE_RAM_START;
