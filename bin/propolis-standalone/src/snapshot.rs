@@ -203,6 +203,10 @@ pub(crate) async fn restore(
     let hdl = machine.hdl.clone();
     let memctx = machine.acc_mem.access().unwrap();
 
+    // Set the kernel VMM state to paused, so that devices can be consistently
+    // loaded without timers and such attempting to fire.
+    hdl.pause()?;
+
     // Ensure vCPUs are in the active state
     for vcpu in machine.vcpus.iter() {
         vcpu.activate().context("Failed to activate vCPU")?;

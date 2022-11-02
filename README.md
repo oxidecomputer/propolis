@@ -9,8 +9,8 @@ interface presented by the bhyve kernel component, running on recent illumos
 bits is required.
 
 To exercise the snapshot/restore or live migration functionality a build
-including [14755](https://www.illumos.org/issues/14755)
-([a26f9c1](https://github.com/illumos/illumos-gate/commit/a26f9c149bc8e4c9206303674cdef16edec1ca70))
+including [15236](https://www.illumos.org/issues/15236)
+([f2357d9](https://github.com/illumos/illumos-gate/commit/a26f9c149bc8e4c9206303674cdef16edec1ca70))
 is required.
 
 ### Minimum Supported Rust Version (MSRV)

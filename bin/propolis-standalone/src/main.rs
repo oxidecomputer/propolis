@@ -311,6 +311,11 @@ impl Instance {
             drop(inst);
         }
 
+        // If instance was restored from previously-saved state, the kernel VMM
+        // portion will be paused so it could be consistently loaded.  Issue the
+        // necessary resume before attempting to run.
+        let mut needs_resume = from_restore;
+
         assert!(matches!(guard.state, State::Initialize));
         loop {
             if let Some((next_ev, ctx)) =
@@ -350,6 +355,13 @@ impl Instance {
                         &inst,
                         inner.boot_gen.load(Ordering::Acquire) == 0,
                     );
+                    if needs_resume {
+                        inst.machine()
+                            .hdl
+                            .resume()
+                            .expect("restored instance can resume running");
+                        needs_resume = false;
+                    }
                     drop(inst);
 
                     // TODO: bail if any vCPU tasks have exited already
@@ -364,6 +376,7 @@ impl Instance {
                     }
                     let inst = guard.instance.as_ref().unwrap().lock();
                     Self::device_state_transition(State::Quiesce, &inst, false);
+                    inst.machine().hdl.pause().expect("pause should complete");
                 }
                 State::Save => {
                     let guard = &mut *guard;
@@ -390,6 +403,10 @@ impl Instance {
                     inst.machine().reinitialize().unwrap();
                     inst.machine().vcpu_x86_setup().unwrap();
                     inner.boot_gen.fetch_add(1, Ordering::Release);
+                    inst.machine()
+                        .hdl
+                        .resume()
+                        .expect("resume should complete");
                 }
                 State::Destroy => {
                     // Drop the instance
