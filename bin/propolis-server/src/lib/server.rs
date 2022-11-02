@@ -633,7 +633,7 @@ async fn instance_serial(
             }
         });
 
-        super::serial::SerialTask { task, close_ch: close_ch, websocks_ch }
+        super::serial::SerialTask { task, close_ch, websocks_ch }
     });
 
     let config =
