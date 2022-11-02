@@ -31,8 +31,7 @@ use propolis::usdt::register_probes;
 use slog::{o, Drain};
 
 mod config;
-// set aside for now
-//mod snapshot;
+mod snapshot;
 
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
@@ -129,6 +128,8 @@ pub enum State {
     /// The instance is in a paused state such that it may
     /// later be booted or maintained.
     Quiesce,
+    /// The instance state is being exported
+    Save,
     /// The instance is no longer running
     Halt,
     /// The instance is rebooting, and should transition back
@@ -162,14 +163,13 @@ impl State {
                 InstEvent::Reset | InstEvent::TripleFault => {
                     (State::Reset, Some(ev))
                 }
-                InstEvent::ReqSave => {
-                    todo!("wire up save/restore")
-                }
+                InstEvent::ReqSave => (State::Save, Some(ev)),
                 InstEvent::ReqStart => {
                     // Reaching quiesce with a "start" event would be odd
                     panic!("unexpected ReqStart");
                 }
             },
+            State::Save => (State::Halt, Some(ev)),
             State::Halt => (State::Destroy, None),
             State::Reset => match ev {
                 InstEvent::Halt | InstEvent::ReqHalt => (State::Halt, Some(ev)),
@@ -192,11 +192,17 @@ struct InstInner {
     boot_gen: AtomicUsize,
     eq: Arc<EventQueue>,
     cv: Condvar,
+    config: config::Config,
 }
 
 struct Instance(Arc<InstInner>);
 impl Instance {
-    fn new(pinst: propolis::Instance, log: slog::Logger) -> Self {
+    fn new(
+        pinst: propolis::Instance,
+        config: config::Config,
+        from_restore: bool,
+        log: slog::Logger,
+    ) -> Self {
         let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
                 instance: Some(pinst),
@@ -206,6 +212,7 @@ impl Instance {
             boot_gen: AtomicUsize::new(0),
             eq: EventQueue::new(),
             cv: Condvar::new(),
+            config,
         }));
 
         // Some gymnastics required for the split borrow through the MutexGuard
@@ -238,7 +245,7 @@ impl Instance {
             .spawn(move || {
                 // Make sure the instance state driver has access to tokio
                 let _rt_guard = rt_hdl.enter();
-                Instance::state_loop(inner, state_log)
+                Instance::state_loop(inner, from_restore, state_log)
             })
             .unwrap();
 
@@ -285,13 +292,22 @@ impl Instance {
         }
     }
 
-    fn state_loop(inner: Arc<InstInner>, log: slog::Logger) {
+    fn state_loop(
+        inner: Arc<InstInner>,
+        from_restore: bool,
+        log: slog::Logger,
+    ) {
         let mut guard = inner.state.lock().unwrap();
         let mut cur_ev = None;
 
-        let inst = guard.instance.as_ref().unwrap().lock();
-        inst.machine().vcpu_x86_setup().unwrap();
-        drop(inst);
+        if !from_restore {
+            // Initialized vCPUs to standard x86 state, unless this instance is
+            // being restored from a snapshot, in which case the snapshot state
+            // will be injected prior to start-up.
+            let inst = guard.instance.as_ref().unwrap().lock();
+            inst.machine().vcpu_x86_setup().unwrap();
+            drop(inst);
+        }
 
         assert!(matches!(guard.state, State::Initialize));
         loop {
@@ -346,6 +362,17 @@ impl Instance {
                     }
                     let inst = guard.instance.as_ref().unwrap().lock();
                     Self::device_state_transition(State::Quiesce, &inst, false);
+                }
+                State::Save => {
+                    let guard = &mut *guard;
+                    let inst = guard.instance.as_ref().unwrap();
+                    let save_res =
+                        tokio::runtime::Handle::current().block_on(async {
+                            snapshot::save(inst, &inner.config, &log).await
+                        });
+                    if let Err(err) = save_res {
+                        slog::error!(log, "Snapshot error {:?}", err);
+                    }
                 }
                 State::Halt => {
                     let guard = &mut *guard;
@@ -635,7 +662,8 @@ fn populate_rom(
 }
 
 fn setup_instance(
-    config: &config::Config,
+    config: config::Config,
+    from_restore: bool,
     log: &slog::Logger,
 ) -> anyhow::Result<(Instance, Arc<UDSock>)> {
     let vm_name = &config.main.name;
@@ -651,7 +679,7 @@ fn setup_instance(
         cpus, lowmem, highmem;);
     let pinst = build_instance(vm_name, cpus, lowmem, highmem)
         .context("Failed to create VM Instance")?;
-    let inst = Instance::new(pinst, log.clone());
+    let inst = Instance::new(pinst, config.clone(), from_restore, log.clone());
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
@@ -737,7 +765,7 @@ fn setup_instance(
         };
         match driver {
             "pci-virtio-block" => {
-                let (backend, creg) = config::block_backend(config, dev, log);
+                let (backend, creg) = config::block_backend(&config, dev, log);
                 let bdf = bdf.unwrap();
 
                 let info = backend.info();
@@ -760,7 +788,7 @@ fn setup_instance(
                 chipset.pci_attach(bdf, viona);
             }
             "pci-nvme" => {
-                let (backend, creg) = config::block_backend(config, dev, log);
+                let (backend, creg) = config::block_backend(&config, dev, log);
                 let bdf = bdf.unwrap();
 
                 let dev_serial = dev
@@ -850,50 +878,27 @@ fn main() -> anyhow::Result<()> {
     let _rt_guard = rt.enter();
 
     // Create the VM afresh or restore it from a snapshot
-    let (_config, inst, com1_sock) = if restore {
-        // tokio::task::block_in_place(|| { snapshot::restore(log.clone(), &target) })?;
-        todo!("wire up save/restore again")
+    let (inst, com1_sock) = if restore {
+        let (inst, com1_sock) =
+            rt.block_on(async { snapshot::restore(&target, &log).await })?;
+        (inst, com1_sock)
     } else {
         let config = config::parse(&target)?;
-        let (inst, com1_sock) = setup_instance(&config, &log)?;
-        (config, inst, com1_sock)
+        let (inst, com1_sock) = setup_instance(config, false, &log)?;
+        (inst, com1_sock)
     };
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
     let ctrlc_eq = inst.eq();
     let signal_log = log.clone();
-    // let signal_rt_handle = rt_handle.clone();
     let mut ctrlc_fired = false;
     ctrlc::set_handler(move || {
-        // static SNAPSHOT: Once = Once::new();
         if ctrlc_fired {
             return;
         } else {
             ctrlc_fired = true;
         }
         if snapshot {
-            // if SNAPSHOT.is_completed() {
-            //     slog::warn!(signal_log, "snapshot already in progress");
-            // } else {
-            //     let snap_log = signal_log.new(o!("task" => "snapshot"));
-            //     let snap_rt_handle = signal_rt_handle.clone();
-            //     let config = config.clone();
-            //     SNAPSHOT.call_once(move || {
-            //         snap_rt_handle.spawn(async move {
-            //             if let Err(err) = snapshot::save(
-            //                 snap_log.clone(),
-            //                 inst.clone(),
-            //                 config,
-            //             )
-            //             .await
-            //             .context("Failed to save snapshot of VM")
-            //             {
-            //                 slog::error!(snap_log, "{:?}", err);
-            //                 let _ = inst.set_target_state(ReqState::Halt);
-            //             }
-            //         });
-            //     });
-            // }
             ctrlc_eq
                 .push(InstEvent::ReqSave, EventCtx::User("Ctrl+C".to_string()));
         } else {
