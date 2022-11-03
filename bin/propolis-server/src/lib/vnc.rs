@@ -189,7 +189,7 @@ impl Server for PropolisVncServer {
 pub fn setup_vnc(
     log: &Logger,
     addr: SocketAddr,
-) -> VncServer<PropolisVncServer> {
+) -> Arc<VncServer<PropolisVncServer>> {
     let initial_width = 1024;
     let initial_height = 768;
 

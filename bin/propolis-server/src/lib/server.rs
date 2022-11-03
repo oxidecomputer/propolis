@@ -195,7 +195,7 @@ impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
         config: VmTomlConfig,
-        vnc_server: VncServer<PropolisVncServer>,
+        vnc_server: Arc<VncServer<PropolisVncServer>>,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
@@ -211,7 +211,7 @@ impl DropshotEndpointContext {
                 serial_task: Mutex::new(None),
                 oximeter_server_task: Mutex::new(None),
                 oximeter_stats: Mutex::new(None),
-                vnc_server: Arc::new(vnc_server),
+                vnc_server,
             }),
             log,
         }
