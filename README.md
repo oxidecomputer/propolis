@@ -2,9 +2,7 @@
 
 Propolis is a rust-based userspace for illumos bhyve.
 
-## Building
-
-### Prerequisites
+## Prerequisites
 
 Given the current tight coupling of the `bhyve-api` component to the ioctl
 interface presented by the bhyve kernel component, running on recent illumos
@@ -15,15 +13,36 @@ including [14755](https://www.illumos.org/issues/14755)
 ([a26f9c1](https://github.com/illumos/illumos-gate/commit/a26f9c149bc8e4c9206303674cdef16edec1ca70))
 is required.
 
+### Minimum Supported Rust Version (MSRV)
+
+- Rust 1.62.0
+
+### System Configuration
+
+Simply running a VM requires no special host system configuration.
+
+Live migration and the propolis-standalone save/restore functionality require
+extra kernel switches to be enabled:
+
+```bash
+# Allow LM destinations to write VM state.
+pfexec mdb -kw -e "vmm_allow_state_writes ::write -l 1 1"
+
+# Ensure that all modified pages are tracked so that they can be transferred
+# during live migration.
+pfexec mdb -kw -e "gpt_track_dirty ::write -l 1 1"
+```
+
+Propolis is compatible in principle with both Intel and AMD host systems, but is
+tested most heavily on AMD hosts.
+
+## Building
+
 To build, run:
 
 ```bash
 $ cargo build
 ```
-
-### Minimum Supported Rust Version (MSRV)
-
-- Rust 1.62.0
 
 ## propolis crate
 
