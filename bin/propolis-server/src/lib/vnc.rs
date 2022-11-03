@@ -147,11 +147,13 @@ impl Server for PropolisVncServer {
                 let len = fb.height as usize * fb.width as usize * 4;
                 let mut buf = vec![0u8; len];
 
-                let instance_guard = inner.instance.as_ref().unwrap().lock();
-                let memctx = instance_guard.machine().acc_mem.access().unwrap();
-                let read = memctx.read_into(GuestAddr(fb.addr), &mut buf, len);
-                drop(memctx);
-                drop(instance_guard);
+                let read = tokio::task::block_in_place(|| {
+                    let instance_guard =
+                        inner.instance.as_ref().unwrap().lock();
+                    let memctx =
+                        instance_guard.machine().acc_mem.access().unwrap();
+                    memctx.read_into(GuestAddr(fb.addr), &mut buf, len)
+                });
 
                 assert!(read.is_some());
                 debug!(self.log, "read {} bytes from guest", read.unwrap());
