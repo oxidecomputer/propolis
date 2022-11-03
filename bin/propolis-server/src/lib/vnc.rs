@@ -47,7 +47,6 @@ enum Framebuffer {
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
     ps2ctrl: Option<Arc<PS2Ctrl>>,
-    vnc_server: Option<VncServer<PropolisVncServer>>,
     instance: Option<Arc<Instance>>,
 }
 
@@ -66,7 +65,6 @@ impl PropolisVncServer {
                     height: initial_height,
                 }),
                 ps2ctrl: None,
-                vnc_server: None,
                 instance: None,
             })),
             log,
@@ -78,16 +76,19 @@ impl PropolisVncServer {
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,
         instance: Arc<Instance>,
-        vnc_server: VncServer<Self>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
         inner.ps2ctrl = Some(ps2ctrl);
-        inner.vnc_server = Some(vnc_server);
         inner.instance = Some(instance);
     }
 
-    pub async fn update(&self, config: &Config, is_valid: bool) {
+    pub async fn update(
+        &self,
+        config: &Config,
+        is_valid: bool,
+        rfb_server: &VncServer<Self>,
+    ) {
         if is_valid {
             debug!(self.log, "updating framebuffer");
 
@@ -102,12 +103,7 @@ impl PropolisVncServer {
 
             match fourcc::fourcc_to_pixel_format(fb.fourcc) {
                 Ok(pf) => {
-                    inner
-                        .vnc_server
-                        .as_ref()
-                        .unwrap()
-                        .set_pixel_format(pf)
-                        .await;
+                    rfb_server.set_pixel_format(pf).await;
                     info!(
                         self.log,
                         "pixel format set to fourcc={:#04x}", fb.fourcc

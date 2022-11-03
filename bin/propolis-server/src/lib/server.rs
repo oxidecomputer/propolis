@@ -160,7 +160,7 @@ pub struct ServiceProviders {
     /// The VNC server hosted within this process. Note that this server always
     /// exists irrespective of whether there is an instance. Creating an
     /// instance hooks this server up to the instance's framebuffer.
-    vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+    vnc_server: Arc<VncServer<PropolisVncServer>>,
 }
 
 impl ServiceProviders {
@@ -211,7 +211,7 @@ impl DropshotEndpointContext {
                 serial_task: Mutex::new(None),
                 oximeter_server_task: Mutex::new(None),
                 oximeter_stats: Mutex::new(None),
-                vnc_server: Arc::new(Mutex::new(vnc_server)),
+                vnc_server: Arc::new(vnc_server),
             }),
             log,
         }
@@ -424,40 +424,21 @@ async fn instance_ensure(
         let ps2ctrl = vm.ps2ctrl().unwrap();
 
         // Get a reference to the outward-facing VNC server in this process.
-        let vnc_server_ref = server_context.services.vnc_server.clone();
-        let vnc_server = vnc_server_ref.lock().await;
+        let vnc_server = server_context.services.vnc_server.clone();
 
-        // Give the Propolis VNC adapter a back pointer to the VNC server to
-        // allow them to communicate bidirectionally: the VNC server pulls data
-        // from the Propolis adapter using the adapter's `rfb::server` impl, and
-        // the Propolis adapter pushes data (e.g. pixel format and resolution
-        // changes) to the VNC server using the adapter's public interface.
-        //
-        // N.B. Cloning `vnc_server` (the server guarded by the mutex) is
-        //      correct here because the `rfb::VncServer` type is just a wrapper
-        //      around the set of `Arc`s to the objecst needed to implement the
-        //      server. In other words, creating a deep copy of `vnc_server`
-        //      doesn't create a second server--it just creates a second set of
-        //      references to the set of objects that the `rfb` crate uses to
-        //      implement its behavior.
+        // Initialize the Propolis VNC adapter with references to the VM's Instance,
+        // framebuffer, and PS2 controller.
         vnc_server
             .server
-            .initialize(
-                vnc_fb,
-                Arc::clone(ps2ctrl),
-                vm.instance().clone(),
-                vnc_server.clone(),
-            )
+            .initialize(vnc_fb, Arc::clone(ps2ctrl), Arc::clone(vm.instance()))
             .await;
 
-        let notifier_server_ref = vnc_server_ref.clone();
+        // Hook up the framebuffer notifier to update the Propolis VNC adapter
+        let notifier_server_ref = vnc_server.clone();
         let rt = tokio::runtime::Handle::current();
         ramfb.set_notifier(Box::new(move |config, is_valid| {
-            let h = notifier_server_ref.clone();
-            rt.block_on(async move {
-                let vnc = h.lock().await;
-                vnc.server.update(config, is_valid).await;
-            });
+            let vnc = notifier_server_ref.clone();
+            rt.block_on(vnc.server.update(config, is_valid, &vnc));
         }));
     }
 
