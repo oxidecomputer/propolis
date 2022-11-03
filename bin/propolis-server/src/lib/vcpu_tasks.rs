@@ -107,6 +107,7 @@ impl VcpuTasks {
                 Some(Event::Hold) => {
                     info!(log, "vCPU paused");
                     task.hold();
+                    info!(log, "vCPU released from hold");
 
                     // If the VM was reset while the CPU was paused, clear out
                     // any re-entry reasons from the exit that occurred prior to
@@ -116,6 +117,11 @@ impl VcpuTasks {
                         entry = VmEntry::Run;
                         local_gen = current_gen;
                     }
+
+                    // This hold might have been satisfied by a request for the
+                    // CPU to exit. Check for other pending events before
+                    // re-entering the guest.
+                    continue;
                 }
                 Some(Event::Exit) => break,
                 None => {}
