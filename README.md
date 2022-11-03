@@ -33,8 +33,8 @@ pfexec mdb -kw -e "vmm_allow_state_writes ::write -l 1 1"
 pfexec mdb -kw -e "gpt_track_dirty ::write -l 1 1"
 ```
 
-Propolis is compatible in principle with both Intel and AMD host systems, but is
-tested most heavily on AMD hosts.
+Propolis works best (and its CI tests run) on AMD hosts, but it can also be used
+to run VMs on Intel hosts. Live migration is only supported on AMD hosts.
 
 ## Building
 
