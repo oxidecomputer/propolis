@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::{ffi::CString, fmt::Display};
 
 use anyhow::{anyhow, Result};
 use errno::errno;
@@ -133,85 +133,170 @@ fn find_symbol_va(kvm_hdl: &KvmHdl, symbol: &str) -> Result<uintptr_t> {
     Ok(slice[0].n_value as uintptr_t)
 }
 
-/// Reads a u32-sized value from the supplied kernel VA.
-fn read_u32_from_va(kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<u32> {
-    let mut buf = [0u8; 4];
+/// Fills the supplied `buf` from the supplied kernel VA.
+fn read_from_va(kvm_hdl: &KvmHdl, va: uintptr_t, buf: &mut [u8]) -> Result<()> {
     let bytes_read = unsafe {
-        kvm_kread(kvm_hdl.hdl, va, buf.as_mut_ptr() as *mut c_void, 4)
+        kvm_kread(kvm_hdl.hdl, va, buf.as_mut_ptr() as *mut c_void, buf.len())
     };
 
-    match bytes_read {
-        isize::MIN..=-1 => Err(anyhow!(
-            "kvm_kread returned {}, errno {} ({})",
+    if bytes_read < 0 {
+        Err(anyhow!(
+            "kvm_kread for VA {:x} returned {}, errno {} ({})",
+            va,
             bytes_read,
             errno().0,
             errno()
-        )),
-        4 => Ok(u32::from_le_bytes(buf)),
-        _ => Err(anyhow!("kvm_kread read {} bytes, expected 4", bytes_read)),
+        ))
+    } else if bytes_read as usize == buf.len() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "kvm_kread for VA {:x} read {} bytes, expected {}",
+            va,
+            bytes_read,
+            buf.len()
+        ))
     }
+}
+
+/// Writes the supplied `buf` to the supplied kernel VA.
+fn write_to_va(kvm_hdl: &KvmHdl, va: uintptr_t, buf: &mut [u8]) -> Result<()> {
+    let bytes_written = unsafe {
+        kvm_kwrite(kvm_hdl.hdl, va, buf.as_mut_ptr() as *mut c_void, buf.len())
+    };
+
+    if bytes_written < 0 {
+        Err(anyhow!(
+            "kvm_kwrite of {} bytes for VA {:x} returned {}, errno {} ({})",
+            buf.len(),
+            va,
+            bytes_written,
+            errno().0,
+            errno()
+        ))
+    } else if bytes_written as usize == buf.len() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "kvm_kwrite of {} bytes for VA {:x} wrote {} bytes, expected {}",
+            buf.len(),
+            va,
+            bytes_written,
+            buf.len()
+        ))
+    }
+}
+
+/// Reads a u8-sized value from the supplied kernel VA.
+fn read_u8_from_va(kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<u8> {
+    let mut buf = [0u8; 1];
+    read_from_va(kvm_hdl, va, &mut buf).map(|_| u8::from_le_bytes(buf))
+}
+
+/// Reads a u32-sized value from the supplied kernel VA.
+fn read_u32_from_va(kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<u32> {
+    let mut buf = [0u8; 4];
+    read_from_va(kvm_hdl, va, &mut buf).map(|_| u32::from_le_bytes(buf))
+}
+
+/// Writes a u8-sized value to the supplied kernel VA.
+fn write_u8_to_va(kvm_hdl: &KvmHdl, va: uintptr_t, value: u8) -> Result<()> {
+    let mut buf = value.to_le_bytes();
+    write_to_va(kvm_hdl, va, &mut buf)
 }
 
 /// Writes a u32-sized value to the supplied kernel VA.
 fn write_u32_to_va(kvm_hdl: &KvmHdl, va: uintptr_t, value: u32) -> Result<()> {
-    let bytes_written = unsafe {
-        kvm_kwrite(
-            kvm_hdl.hdl,
-            va,
-            value.to_le_bytes().as_mut_ptr() as *mut c_void,
-            4,
-        )
-    };
+    let mut buf = value.to_le_bytes();
+    write_to_va(kvm_hdl, va, &mut buf)
+}
 
-    match bytes_written {
-        isize::MIN..=-1 => Err(anyhow!(
-            "kvm_kwrite returned {}, errno {} ({})",
-            bytes_written,
-            errno().0,
-            errno()
-        )),
-        4 => Ok(()),
-        _ => {
-            Err(anyhow!("kvm_kwrite wrote {} bytes, expected 4", bytes_written))
-        }
+/// A wrapper trait that allows fixed-size values to be read from and written
+/// to a given VA while abstracting away their actual sizes.
+trait SizedKernelGlobal: Sized + Default + Display {
+    /// Populates `self` by reading from the supplied kernel VA.
+    fn read_from_va(&mut self, kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<()>;
+
+    /// Writes the data wrapped in `self` to the supplied kernel VA.
+    fn write_to_va(&self, kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<()>;
+}
+
+impl SizedKernelGlobal for u8 {
+    fn write_to_va(&self, kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<()> {
+        write_u8_to_va(kvm_hdl, va, *self)
+    }
+
+    fn read_from_va(&mut self, kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<()> {
+        *self = read_u8_from_va(kvm_hdl, va)?;
+        Ok(())
     }
 }
 
-/// RAII guard for enabling VMM state writes. On drop, restores the state of the
-/// `vmm_allow_state_writes` flag observed when the guard was created.
-pub struct VmmStateWriteGuard {
-    previous: VmmStateWritePrevious,
+impl SizedKernelGlobal for u32 {
+    fn write_to_va(&self, kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<()> {
+        write_u32_to_va(kvm_hdl, va, *self)
+    }
+
+    fn read_from_va(&mut self, kvm_hdl: &KvmHdl, va: uintptr_t) -> Result<()> {
+        *self = read_u32_from_va(kvm_hdl, va)?;
+        Ok(())
+    }
 }
 
-enum VmmStateWritePrevious {
-    WasDisabled(KvmHdl),
-    WasEnabled,
+/// An RAII wrapper that undoes changes to kernel globals.
+struct KernelValueGuard<T: SizedKernelGlobal> {
+    /// The name of the modified symbol.
+    symbol: &'static str,
+
+    /// The kernel VM handle used to access kernel memory.
+    kvm_hdl: KvmHdl,
+
+    /// The value to restore to this symbol when this wrapper is dropped.
+    old_value: T,
 }
 
-impl Drop for VmmStateWriteGuard {
+impl<T: SizedKernelGlobal> KernelValueGuard<T> {
+    /// Sets the supplied `symbol` to `value` and returns an RAII guard that
+    /// restores `symbol`'s prior value when dropped.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `value` can safely be written to the kernel
+    /// VA described by `symbol`. For example, if `symbol` refers to a 2-byte
+    /// value, the caller must ensure that `value` is of a type that will write
+    /// no more than 2 bytes to kernel memory.
+    fn new(symbol: &'static str, value: T) -> Result<Self> {
+        let kvm_hdl = KvmHdl::open()?;
+        let va = find_symbol_va(&kvm_hdl, symbol)?;
+        let mut old_value = T::default();
+        old_value.read_from_va(&kvm_hdl, va)?;
+
+        tracing::info!(symbol, va, %old_value, %value, "Setting kernel global");
+
+        value.write_to_va(&kvm_hdl, va)?;
+        Ok(Self { symbol, kvm_hdl, old_value })
+    }
+}
+
+impl<T: SizedKernelGlobal> Drop for KernelValueGuard<T> {
     fn drop(&mut self) {
-        if let VmmStateWritePrevious::WasDisabled(kvm_hdl) = &self.previous {
-            let va = find_symbol_va(kvm_hdl, "vmm_allow_state_writes")
-                .expect("couldn't find vmm_allow_state_writes");
-            write_u32_to_va(kvm_hdl, va, 0)
-                .expect("couldn't clear vmm_allow_state_writes");
-        }
+        // It was possible to write this value before using the handle stored in
+        // this guard, so unless something has gone terribly wrong, it should be
+        // possible to look up the same symbol and restore its old value.
+        let va = find_symbol_va(&self.kvm_hdl, self.symbol)
+            .expect(format!("couldn't find symbol {}", self.symbol).as_str());
+        self.old_value.write_to_va(&self.kvm_hdl, va).expect(
+            format!("couldn't reset value of {}", self.symbol).as_str(),
+        );
     }
 }
 
-/// Ensures that VMM state writes are enabled on the runner's system, which is
-/// required for live migration.
-pub fn enable_vmm_state_writes() -> Result<VmmStateWriteGuard> {
-    let kvm_hdl = KvmHdl::open()?;
-    let va = find_symbol_va(&kvm_hdl, "vmm_allow_state_writes")?;
-    let was_enabled = read_u32_from_va(&kvm_hdl, va)? != 0;
-
-    if was_enabled {
-        Ok(VmmStateWriteGuard { previous: VmmStateWritePrevious::WasEnabled })
-    } else {
-        write_u32_to_va(&kvm_hdl, va, 1)?;
-        Ok(VmmStateWriteGuard {
-            previous: VmmStateWritePrevious::WasDisabled(kvm_hdl),
-        })
-    }
+/// Sets all of the kernel globals needed to run PHD tests. Returns a vector of
+/// RAII guards that reset these values to their pre-test values when dropped.
+pub fn set_vmm_globals() -> Result<Vec<Box<dyn std::any::Any>>> {
+    let allow_state_writes =
+        Box::new(KernelValueGuard::new("vmm_allow_state_writes", 1u32)?);
+    let gpt_track_dirty =
+        Box::new(KernelValueGuard::new("gpt_track_dirty", 1u8)?);
+    Ok(vec![allow_state_writes, gpt_track_dirty])
 }

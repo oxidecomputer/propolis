@@ -18,11 +18,11 @@ fn main() {
     let runner_args = ProcessArgs::parse();
     set_tracing_subscriber(&runner_args);
 
-    let state_write_guard = phd_framework::host_api::enable_vmm_state_writes();
+    let state_write_guard = phd_framework::host_api::set_vmm_globals();
     if let Err(e) = state_write_guard {
         warn!(
             error = ?e,
-            "Failed to enable VMM state writes, migration tests may not work",
+            "Failed to enable one or more kernel options, some tests may not work",
         );
     }
 
