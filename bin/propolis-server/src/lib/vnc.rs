@@ -15,6 +15,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+const INITIAL_WIDTH: u16 = 1024;
+const INITIAL_HEIGHT: u16 = 768;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RamFb {
     addr: u64,
@@ -183,6 +186,18 @@ impl Server for PropolisVncServer {
             trace!(self.log, "guest not initialized; dropping keyevent");
         }
     }
+
+    async fn stop(&self) {
+        info!(self.log, "stopping VNC server");
+
+        let mut inner = self.inner.lock().await;
+        inner.framebuffer = Framebuffer::Uninitialized(DefaultFb {
+            width: INITIAL_WIDTH,
+            height: INITIAL_HEIGHT,
+        });
+        inner.ps2ctrl = None;
+        inner.instance = None;
+    }
 }
 
 // Default VNC server configuration.
@@ -190,9 +205,6 @@ pub fn setup_vnc(
     log: &Logger,
     addr: SocketAddr,
 ) -> Arc<VncServer<PropolisVncServer>> {
-    let initial_width = 1024;
-    let initial_height = 768;
-
     let config = VncServerConfig {
         addr,
         version: ProtoVersion::Rfb38,
@@ -207,13 +219,13 @@ pub fn setup_vnc(
 
     let pf = fourcc::fourcc_to_pixel_format(fourcc::FOURCC_XR24).unwrap();
     let data = VncServerData {
-        width: initial_width,
-        height: initial_height,
+        width: INITIAL_WIDTH,
+        height: INITIAL_HEIGHT,
         input_pixel_format: pf,
     };
     let pvnc = PropolisVncServer::new(
-        initial_width,
-        initial_height,
+        INITIAL_WIDTH,
+        INITIAL_HEIGHT,
         log.new(o!("component" => "vnc-server")),
     );
 
