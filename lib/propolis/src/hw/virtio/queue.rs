@@ -595,6 +595,7 @@ impl Chain {
         self.read_stat.bytes_remain as usize
     }
 
+    pub(crate)
     fn for_remaining_type<F>(&mut self, is_read: bool, mut f: F) -> usize
     where
         F: FnMut(GuestAddr, usize) -> (usize, bool),

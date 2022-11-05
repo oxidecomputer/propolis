@@ -276,6 +276,9 @@ pub struct DeviceSpec {
     pub network_devices: BTreeMap<SpecKey, NetworkDevice>,
     pub serial_ports: BTreeMap<SpecKey, SerialPort>,
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+    pub tfport0: Option<TfPort0>,
+    pub softnpu_ports: BTreeMap<SpecKey, SoftNpuPort>,
+    pub softnpu_p9: Option<SoftNpuP9>,
 }
 
 impl DeviceSpec {
@@ -325,4 +328,28 @@ impl DeviceSpec {
 
         Ok(())
     }
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TfPort0 {
+    /// The PCI path at which to attach the guest to this port.
+    pub pci_path: PciPath,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuPort {
+    /// The name of the SoftNPU port.
+    pub name: String,
+
+    /// The name of the associated VNIC.
+    pub vnic: String,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuP9 {
+    /// The PCI path at which to attach the guest to this port.
+    pub pci_path: PciPath,
 }

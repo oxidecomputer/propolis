@@ -29,3 +29,4 @@ rev = "00c1de9b165e8abff1eed6e26a5755465785fc07"
 default = []
 generated = ["progenitor", "tokio"]
 generated-migration = ["generated"]
+falcon = []

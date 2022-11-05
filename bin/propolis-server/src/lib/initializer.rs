@@ -441,6 +441,134 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
+    #[cfg(feature = "falcon")]
+    pub fn initialize_softnpu_ports(
+        &self,
+        chipset: &RegisteredChipset,
+    ) -> Result<(), Error> {
+        let tfport0 = match &self.spec.devices.tfport0 {
+            Some(tfp) => tfp,
+            None => return Ok(()),
+        };
+
+        let ports: Vec<&SoftNpuPort> =
+            self.spec.devices.softnpu_ports.values().collect();
+
+        let data_links: Vec<String> =
+            ports.iter().map(|x| x.vnic.clone()).collect();
+
+        if ports.is_empty() {
+            return Ok(());
+        }
+
+        let queue_size = 0x8000;
+
+        // TODO squatting on com4???
+        let pio = &self.machine.bus_pio;
+        let port = ibmpc::PORT_COM4;
+        let uart =
+            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap());
+        uart.set_autodiscard(true);
+        LpcUart::attach(&uart, pio, port);
+        self.inv.register_instance(&uart, "softnpu-uart")?;
+
+        let pipeline = Arc::new(tokio::sync::Mutex::new(None));
+
+        let p9_handler = virtio::SoftNPUP9Handler::new(
+            "/dev/softnpufs".to_owned(),
+            "/dev/softnpufs".to_owned(),
+            pipeline.clone(),
+            self.log.clone(),
+        );
+        let vio9p = virtio::PciVirtio9pfs::new(0x40, p9_handler);
+        self.inv.register_instance(&vio9p, "softnpu-p9fs")?;
+        let bdf: pci::Bdf = self
+            .spec
+            .devices
+            .softnpu_p9
+            .as_ref()
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "SoftNPU p9 device missing".to_owned(),
+                )
+            })?
+            .pci_path
+            .try_into()
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "Couldn't get PCI BDF for SoftNPU p9 device: {}",
+                        e
+                    ),
+                )
+            })?;
+        chipset.device().pci_attach(bdf, vio9p.clone());
+
+        let softnpu = virtio::SoftNPU::new(
+            data_links,
+            queue_size,
+            uart,
+            vio9p,
+            pipeline,
+            self.log.clone(),
+        )
+        .map_err(|e| -> std::io::Error {
+            let io_err: std::io::Error = e.into();
+            std::io::Error::new(
+                io_err.kind(),
+                format!("register softnpu: {}", io_err),
+            )
+        })?;
+
+        self.inv
+            .register(&softnpu)
+            .map_err(|e| -> std::io::Error { e.into() })?;
+
+        let bdf: pci::Bdf = tfport0.pci_path.try_into().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("Couldn't get PCI BDF for SoftNPU tfport0: {}", e),
+            )
+        })?;
+        self.inv.register_instance(&softnpu.tfport0, bdf.to_string()).map_err(
+            |e| -> std::io::Error {
+                let io_err: std::io::Error = e.into();
+                std::io::Error::new(
+                    io_err.kind(),
+                    format!("register softnpu port: {}", io_err),
+                )
+            },
+        )?;
+        chipset.device().pci_attach(bdf, softnpu.tfport0.clone());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn initialize_9pfs(
+        &self,
+        chipset: &RegisteredChipset,
+        source: &str,
+        target: &str,
+        chunk_size: u32,
+        bdf: pci::Bdf,
+    ) -> Result<(), Error> {
+        let handler = virtio::HostFSHandler::new(
+            source.to_owned(),
+            target.to_owned(),
+            chunk_size,
+        );
+        let vio9p = virtio::PciVirtio9pfs::new(0x40, handler);
+        self.inv
+            .register(&vio9p)
+            .map_err(|e| -> std::io::Error { e.into() })?;
+
+        chipset.device().pci_attach(bdf, vio9p);
+        Ok(())
+    }
+
     pub fn initialize_fwcfg(&self, cpus: u8) -> Result<EntityID, Error> {
         let mut fwcfg = fwcfg::FwCfgBuilder::new();
         fwcfg

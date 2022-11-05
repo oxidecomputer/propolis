@@ -394,6 +394,22 @@ impl ServerSpecBuilder {
                 "pci-virtio-viona" => {
                     self.add_network_device_from_config(device_name, device)?
                 }
+                #[cfg(feature = "falcon")]
+                "tfport0" => {
+                    self.add_softnpu_tfport0_from_config(device_name, device)?
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-port" => {
+                    self.add_softnpu_device_from_config(device_name, device)?
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-p9" => {
+                    self.add_softnpu_p9_from_config(device_name, device)?
+                }
+                #[cfg(feature = "falcon")]
+                "pci-virtio-9p" => {
+                    //TODO legacy config
+                }
                 _ => {
                     return Err(ServerSpecBuilderError::ConfigTomlError(
                         format!("Unrecognized device type {}", driver),
@@ -405,6 +421,65 @@ impl ServerSpecBuilder {
         for bridge in config.pci_bridges.iter() {
             self.add_pci_bridge_from_config(bridge)?;
         }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_softnpu_p9_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get PCI path for storage device {}",
+                name
+            ))
+        })?;
+
+        self.builder.set_softnpu_p9(SoftNpuP9{pci_path})?;
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_softnpu_tfport0_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get PCI path for network device {}",
+                name
+            ))
+        })?;
+
+        self.builder.set_softnpu_tfport0(TfPort0{pci_path})?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_softnpu_device_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let vnic_name = device.get_string("vnic").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to parse vNIC name for device {}",
+                name
+            ))
+        })?;
+
+        self.builder.add_softnpu_port(
+            name.to_string(),
+            SoftNpuPort {
+                name: name.to_string(),
+                vnic: vnic_name.to_string(),
+            }
+        )?;
 
         Ok(())
     }

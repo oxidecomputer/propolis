@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use propolis_types::PciPath;
 use thiserror::Error;
 
-use super::{Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber};
+use super::{ Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber };
+#[cfg(feature = "falcon")]
+use super::{ SoftNpuPort, SoftNpuP9, TfPort0 };
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -163,6 +165,35 @@ impl SpecBuilder {
         } else {
             Ok(self)
         }
+    }
+
+    #[cfg(feature = "falcon")]
+    /// Sets softnpu tfport0
+    pub fn set_softnpu_tfport0(
+        &mut self,
+        tfport0: TfPort0,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.spec.devices.tfport0 = Some(tfport0);
+        Ok(self)
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn add_softnpu_port(
+        &mut self,
+        key: String,
+        port: SoftNpuPort,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.spec.devices.softnpu_ports.insert(key, port);
+        Ok(self)
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn set_softnpu_p9(
+        &mut self,
+        p9: SoftNpuP9,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.spec.devices.softnpu_p9= Some(p9);
+        Ok(self)
     }
 
     /// Yields the completed spec, consuming the builder.

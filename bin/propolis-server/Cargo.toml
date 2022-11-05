@@ -65,3 +65,4 @@ expectorate = "1.0.5"
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["propolis/dtrace-probes", "dropshot/usdt-probes"]
+falcon = []
