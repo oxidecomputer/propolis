@@ -550,15 +550,30 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_9pfs(
         &self,
         chipset: &RegisteredChipset,
-        source: &str,
-        target: &str,
-        chunk_size: u32,
-        bdf: pci::Bdf,
     ) -> Result<(), Error> {
+
+        let p9fs = match &self.spec.devices.p9fs {
+            Some(p9fs) => p9fs,
+            None => return Ok(()),
+        };
+
+        let bdf: pci::Bdf = p9fs
+            .pci_path
+            .try_into()
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "Couldn't get PCI BDF for p9fs device: {}",
+                        e
+                    ),
+                )
+            })?;
+
         let handler = virtio::HostFSHandler::new(
-            source.to_owned(),
-            target.to_owned(),
-            chunk_size,
+            p9fs.source.to_owned(),
+            p9fs.target.to_owned(),
+            p9fs.chunk_size,
         );
         let vio9p = virtio::PciVirtio9pfs::new(0x40, handler);
         self.inv

@@ -268,6 +268,43 @@ impl MigrationElement for PciPciBridge {
     }
 }
 
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TfPort0 {
+    /// The PCI path at which to attach the guest to this port.
+    pub pci_path: PciPath,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuPort {
+    /// The name of the SoftNPU port.
+    pub name: String,
+
+    /// The name of the associated VNIC.
+    pub vnic: String,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuP9 {
+    /// The PCI path at which to attach the guest to this port.
+    pub pci_path: PciPath,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct P9fs {
+    pub source: String,
+    pub target: String,
+    pub chunk_size: u32,
+    pub pci_path: PciPath,
+}
+
 #[derive(Default, Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceSpec {
@@ -276,9 +313,14 @@ pub struct DeviceSpec {
     pub network_devices: BTreeMap<SpecKey, NetworkDevice>,
     pub serial_ports: BTreeMap<SpecKey, SerialPort>,
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+    #[cfg(feature = "falcon")]
     pub tfport0: Option<TfPort0>,
+    #[cfg(feature = "falcon")]
     pub softnpu_ports: BTreeMap<SpecKey, SoftNpuPort>,
+    #[cfg(feature = "falcon")]
     pub softnpu_p9: Option<SoftNpuP9>,
+    #[cfg(feature = "falcon")]
+    pub p9fs: Option<P9fs>,
 }
 
 impl DeviceSpec {
@@ -328,28 +370,4 @@ impl DeviceSpec {
 
         Ok(())
     }
-}
-
-#[derive(Clone, Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct TfPort0 {
-    /// The PCI path at which to attach the guest to this port.
-    pub pci_path: PciPath,
-}
-
-#[derive(Clone, Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct SoftNpuPort {
-    /// The name of the SoftNPU port.
-    pub name: String,
-
-    /// The name of the associated VNIC.
-    pub vnic: String,
-}
-
-#[derive(Clone, Deserialize, Serialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct SoftNpuP9 {
-    /// The PCI path at which to attach the guest to this port.
-    pub pci_path: PciPath,
 }

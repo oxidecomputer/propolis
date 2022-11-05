@@ -408,7 +408,7 @@ impl ServerSpecBuilder {
                 }
                 #[cfg(feature = "falcon")]
                 "pci-virtio-9p" => {
-                    //TODO legacy config
+                    self.add_p9fs_from_config(device_name, device)?
                 }
                 _ => {
                     return Err(ServerSpecBuilderError::ConfigTomlError(
@@ -482,6 +482,45 @@ impl ServerSpecBuilder {
         )?;
 
         Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_p9fs_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+
+        let source: String = device.get("source").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get source for p9 device {}",
+                name
+            ))
+        })?;
+
+        let target: String = device.get("target").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get target for p9 device {}",
+                name
+            ))
+        })?;
+
+        let chunk_size: u32 = match device.get("chunk_size") {
+            Some(s) => s,
+            None => 65536,
+        };
+
+        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get PCI path for p9 device {}",
+                name
+            ))
+        })?;
+
+        self.builder.set_p9fs(P9fs{source, target, chunk_size, pci_path})?;
+
+        Ok(())
+
     }
 
     /// Adds a serial port specification to the spec under construction.

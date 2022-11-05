@@ -531,6 +531,8 @@ impl VmController {
         init.initialize_network_devices(&chipset)?;
         #[cfg(feature = "falcon")]
         init.initialize_softnpu_ports(&chipset)?;
+        #[cfg(feature = "falcon")]
+        init.initialize_9pfs(&chipset)?;
         let crucible_backends = init.initialize_storage_devices(&chipset)?;
         let framebuffer_id =
             init.initialize_fwcfg(instance_spec.devices.board.cpus)?;
