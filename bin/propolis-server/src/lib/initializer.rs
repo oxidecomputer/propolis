@@ -472,7 +472,7 @@ impl<'a> MachineInitializer<'a> {
         LpcUart::attach(&uart, pio, port);
         self.inv.register_instance(&uart, "softnpu-uart")?;
 
-        let pipeline = Arc::new(tokio::sync::Mutex::new(None));
+        let pipeline = Arc::new(std::sync::Mutex::new(None));
 
         let p9_handler = virtio::SoftNPUP9Handler::new(
             "/dev/softnpufs".to_owned(),

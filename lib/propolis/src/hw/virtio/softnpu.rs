@@ -2,13 +2,14 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{Result, Write},
-    num::{NonZeroU16, NonZeroUsize},
+    num::NonZeroU16,
     sync::{Arc, Mutex},
     time::Duration,
+    thread::{spawn, sleep},
 };
 
 use crate::{
-    chardev::{pollers, Source},
+    chardev::{Source, Sink},
     common::*,
     hw::{pci, uart::LpcUart},
     util::regmap::RegMap,
@@ -61,7 +62,7 @@ pub struct SoftNPU {
     pub p9fs: Arc<PciVirtio9pfs<SoftNPUP9Handler>>,
 
     //TODO should be able to do this as a RwLock
-    pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
 
     booted: Mutex<bool>,
 
@@ -87,7 +88,7 @@ pub struct PciVirtioSoftNPUPort {
     mac: [u8; 6],
 
     //TODO should be able to do this as a RwLock
-    pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
 }
 
 pub struct PortVirtioState {
@@ -133,7 +134,7 @@ impl SoftNPU {
         queue_size: u16,
         uart: Arc<LpcUart>,
         p9fs: Arc<PciVirtio9pfs<SoftNPUP9Handler>>,
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Result<Arc<Self>> {
         info!(log, "softnpu: data links {:#?}", data_links);
@@ -181,16 +182,6 @@ impl SoftNPU {
 
     fn run_management_handler_thread(&self) {
         info!(self.log, "softnpu: running management handler");
-        let sink_size = NonZeroUsize::new(10240).unwrap();
-        let source_size = NonZeroUsize::new(8).unwrap();
-        let sink_poller = pollers::SinkBuffer::new(sink_size);
-        let source_poller = pollers::SourceBuffer::new(pollers::Params {
-            buf_size: source_size,
-            poll_interval: Duration::from_millis(10),
-            poll_miss_thresh: 5,
-        });
-        sink_poller.attach(self.uart.as_ref());
-        source_poller.attach(self.uart.as_ref());
         self.uart.set_autodiscard(false);
 
         let log = self.log.clone();
@@ -198,24 +189,19 @@ impl SoftNPU {
         let pipeline = self.pipeline.clone();
         let radix = self.data_links.len();
 
-        tokio::spawn(async move {
+        spawn(move || {
             Self::management_handler(
-                source_poller,
-                sink_poller,
                 uart,
                 pipeline,
                 radix,
                 log,
             )
-            .await;
         });
     }
 
-    async fn management_handler(
-        source_poller: Arc<pollers::SourceBuffer>,
-        sink_poller: Arc<pollers::SinkBuffer>,
+    fn management_handler(
         uart: Arc<LpcUart>,
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         radix: usize,
         log: Logger,
     ) {
@@ -223,25 +209,21 @@ impl SoftNPU {
         loop {
             let r = ManagementMessageReader::new(
                 uart.clone(),
-                source_poller.clone(),
                 log.clone(),
             );
-            let msg = r.read().await;
+            let msg = r.read();
             info!(log, "received management message: {:#?}", msg);
 
             let pipeline = pipeline.clone();
-            let sink_poller = sink_poller.clone();
             let uart = uart.clone();
             let log = log.clone();
             handle_management_message(
                 msg,
                 pipeline,
-                sink_poller,
                 uart,
                 radix,
                 log.clone(),
-            )
-            .await;
+            );
             info!(log, "handled management message");
         }
     }
@@ -281,7 +263,7 @@ impl PciVirtioSoftNPUPort {
         mac: [u8; 6],
         data_handles: Vec<dlpi::DlpiHandle>,
         virtio: Arc<PortVirtioState>,
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Arc<Self> {
         Arc::new(PciVirtioSoftNPUPort {
@@ -293,7 +275,7 @@ impl PciVirtioSoftNPUPort {
         })
     }
 
-    async fn handle_guest_virtio_request(
+    fn handle_guest_virtio_request(
         &self,
         vq: &Arc<VirtQueue>,
     ) {
@@ -327,7 +309,7 @@ impl PciVirtioSoftNPUPort {
 
             let pkt = packet_in::new(&frame[..n]);
 
-            let mut pipeline = self.pipeline.lock().await;
+            let mut pipeline = self.pipeline.lock().unwrap();
             let pl: &mut Box<dyn Pipeline> = match &mut *pipeline {
                 Some(ref mut x) => &mut x.1,
                 None => break,
@@ -356,10 +338,10 @@ impl PciVirtioSoftNPUPort {
         index: usize,
         data_handles: Vec<dlpi::DlpiHandle>,
         virtio: Arc<PortVirtioState>,
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) {
-        tokio::spawn(async move {
+        spawn(move || {
             info!(log, "ingress packet handler is running for port {}", index,);
             Self::run_ingress_packet_handler(
                 index,
@@ -368,15 +350,14 @@ impl PciVirtioSoftNPUPort {
                 pipeline.clone(),
                 log,
             )
-            .await;
         });
     }
 
-    async fn run_ingress_packet_handler(
+    fn run_ingress_packet_handler(
         index: usize,
         data_handles: Vec<dlpi::DlpiHandle>,
         virtio: Arc<PortVirtioState>,
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) {
         let dh = data_handles[index];
@@ -384,13 +365,13 @@ impl PciVirtioSoftNPUPort {
             let mut src = [0u8; dlpi::sys::DLPI_PHYSADDR_MAX];
             let mut msg = [0u8; MTU];
             let mut recvinfo = dlpi_recvinfo_t::default();
-            let n = match dlpi::recv_async(
+            let n = match dlpi::recv(
                 dh,
                 &mut src,
                 &mut msg,
+                -1,
                 Some(&mut recvinfo),
             )
-            .await
             {
                 Ok((_, n)) => {
                     //info!(log, "dlpi rx at index {}: {}", index, n);
@@ -404,7 +385,7 @@ impl PciVirtioSoftNPUPort {
 
             // TODO pipeline should not need to be mutable for packet handling?
             let pkt = packet_in::new(&msg[..n]);
-            let mut p = pipeline.lock().await;
+            let mut p = pipeline.lock().unwrap();
             let pl = match &mut *p {
                 Some(ref mut pl) => &mut pl.1,
                 None => continue,
@@ -418,11 +399,10 @@ impl PciVirtioSoftNPUPort {
                 pl,
                 &log,
             )
-            .await;
         }
     }
 
-    async fn handle_external_packet<'a>(
+    fn handle_external_packet<'a>(
         index: usize,
         mut pkt: packet_in<'a>,
         data_handles: &Vec<dlpi::DlpiHandle>,
@@ -434,8 +414,7 @@ impl PciVirtioSoftNPUPort {
             Some((mut out_pkt, port)) => {
                 // packet is going to CPU port
                 if port == 0 {
-                    Self::handle_packet_to_cpu_port(&mut out_pkt, virtio, &log)
-                        .await;
+                    Self::handle_packet_to_cpu_port(&mut out_pkt, virtio, &log);
                 }
                 // packet is passing through
                 else {
@@ -494,7 +473,7 @@ impl PciVirtioSoftNPUPort {
         }
     }
 
-    async fn handle_packet_to_cpu_port<'a>(
+    fn handle_packet_to_cpu_port<'a>(
         pkt: &mut packet_out<'a>,
         virtio: Arc<PortVirtioState>,
         _log: &Logger,
@@ -573,9 +552,7 @@ impl VirtioDevice for PciVirtioSoftNPUPort {
     fn set_features(&self, _feat: u32) {}
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>) {
-        let handle = tokio::runtime::Handle::current();
-        let _guard = handle.enter();
-        futures::executor::block_on(self.handle_guest_virtio_request(vq));
+        self.handle_guest_virtio_request(vq);
     }
 }
 
@@ -650,15 +627,14 @@ pub struct TableRemove {
     pub keyset_data: Vec<u8>,
 }
 
-async fn handle_management_message(
+fn handle_management_message(
     msg: ManagementMessage,
-    pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
-    sink_poller: Arc<pollers::SinkBuffer>,
+    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
     uart: Arc<LpcUart>,
     radix: usize,
     log: Logger,
 ) {
-    let mut pl_opt = pipeline.lock().await;
+    let mut pl_opt = pipeline.lock().unwrap();
 
     match msg {
         ManagementMessage::TableAdd(tm) => {
@@ -691,11 +667,12 @@ async fn handle_management_message(
             let mut buf: Vec<u8> = Vec::new();
             buf.extend_from_slice(radix.to_string().as_bytes());
             buf.push('\n' as u8);
-            sink_poller.wait_empty().await;
-            info!(log, "writing: {}", buf.len());
-            let n = sink_poller.write(&buf, uart.as_ref()).await;
-            sink_poller.wait_empty().await;
-            info!(log, "wrote: {:?}", n);
+            for b in &buf {
+                while !uart.write(*b) {
+                    std::thread::yield_now();
+                }
+            }
+            info!(log, "wrote: {:?}", buf.len());
         }
         ManagementMessage::DumpRequest => {
             info!(log, "dumping state");
@@ -727,17 +704,13 @@ async fn handle_management_message(
                 }
             };
 
-            sink_poller.wait_empty().await;
-            let mut n = 0;
-            while n < buf.len() {
-                if let Some(written) =
-                    sink_poller.write(&buf[n..], uart.as_ref()).await
-                {
-                    n += written;
+            for b in &buf {
+                while !uart.write(*b) {
+                    std::thread::yield_now();
                 }
             }
-            sink_poller.wait_empty().await;
-            info!(log, "management wrote: {}/{}", n, buf.len());
+
+            info!(log, "management wrote: {}", buf.len());
         }
     }
 }
@@ -749,40 +722,41 @@ pub struct TableDump {
 
 struct ManagementMessageReader {
     uart: Arc<LpcUart>,
-    source_poller: Arc<pollers::SourceBuffer>,
     log: Logger,
 }
 
 impl ManagementMessageReader {
     fn new(
         uart: Arc<LpcUart>,
-        source_poller: Arc<pollers::SourceBuffer>,
         log: Logger,
     ) -> Self {
-        Self { uart, source_poller, log }
+        Self { uart, log }
     }
 
-    async fn read(&self) -> ManagementMessage {
+    fn read(&self) -> ManagementMessage {
         loop {
             let mut buf = Vec::new();
             buf.resize(10240, 0u8);
             let mut i = 0;
+            let mut in_message = false;
             loop {
-                match self
-                    .source_poller
-                    .read(&mut buf[i..i + 1], self.uart.as_ref())
-                    .await
-                {
-                    None => continue,
-                    Some(0) => continue,
-                    Some(x) => {
-                        i += x;
-                        if buf[i - 1] == b'\n' {
-                            i -= 1;
-                            break;
+                let x = match self.uart.read() {
+                    Some(b) => b,
+                    None => {
+                        if in_message {
+                            std::thread::yield_now();
+                        } else {
+                            sleep(Duration::from_millis(10));
                         }
+                        continue;
                     }
+                };
+                if x == b'\n' {
+                    break;
                 }
+                in_message = true;
+                buf[i] = x;
+                i += 1;
             }
             buf.resize(i, 0);
             //ttys do cruel and unsual things to our messages
@@ -814,7 +788,7 @@ pub struct SoftNPUP9Handler {
     source: String,
     target: String,
     log: Logger,
-    pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
 }
 
 fn p4_temp_file() -> String {
@@ -828,7 +802,7 @@ impl SoftNPUP9Handler {
     pub fn new(
         source: String,
         target: String,
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Self {
         Self { source, target, pipeline, log }
@@ -865,11 +839,11 @@ impl SoftNPUP9Handler {
         }
     }
 
-    async fn load_program(
-        pipeline: Arc<tokio::sync::Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    fn load_program(
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) {
-        let mut pl = pipeline.lock().await;
+        let mut pl = pipeline.lock().unwrap();
         // drop anything that may already be loaded before attempting a dlopen
         if let Some((lib, pipe)) = pl.take() {
             // This order is very important, if the lib gets dropped before the
@@ -986,8 +960,8 @@ impl P9Handler for SoftNPUP9Handler {
         let pipe = self.pipeline.clone();
         let log = self.log.clone();
 
-        tokio::spawn(async move {
-            Self::load_program(pipe, log).await;
+        spawn(move || {
+            Self::load_program(pipe, log)
         });
 
         let response = Rclunk::new();
