@@ -7,7 +7,9 @@
 #: output_rules = [
 #:   "/out/*",
 #: ]
-#:
+#: access_repos = [
+#:   "oxidecomputer/p4",
+#: ]
 #: [[publish]]
 #: series = "image"
 #: name = "propolis-server.tar.gz"

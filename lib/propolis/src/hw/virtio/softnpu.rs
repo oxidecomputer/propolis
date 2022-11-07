@@ -42,6 +42,51 @@ const MTU: usize = 1600;
 pub const MANAGEMENT_MESSAGE_PREAMBLE: u8 = 0b11100101;
 pub const SOFTNPU_TTY: &str = "/dev/tty03";
 
+/// A software network processing unit (SoftNPU) is an ASIC emulator. It's meant
+/// to represent a P4 programmable ASIC such as those found in programmable
+/// switches and NICs.
+///
+/// A SoftNPU instance can support a variable number of ports. These ports are
+/// specified by the user as data link names through propolis configuration.
+/// SoftNPU establishes a DLPI handle on each configured data link to perform
+/// packet i/o.
+///
+/// When a SoftNPU device is instantiated there is no P4 program that runs by
+/// default. A program must be loaded onto the emulated ASIC just like a real
+/// ASIC. This is accomplished through the P9 filesystem device exposed by
+/// SoftNPU. This P9 implementation exports a specific version string 9P2000.P4
+/// and only implements file writes to allow a consumer to upload a P4 program.
+///
+/// SoftNPU takes precompiled P4 programs in the form of shared libraries. These
+/// shared libraries must export a [pipeline constructor](
+/// https://oxidecomputer.github.io/p4/p4rs/trait.Pipeline.html) under the symbol
+/// `_main_pipeline_create`. Programs compiled with the `x4c` compile export
+/// this symbol automatically.
+///
+/// Once pre-compiled P4 program is loaded, the Pipeline object from that
+/// program is used to process packets. The SoftNPU device uses the illumos DLPI
+/// interface to send and receive raw Ethernet frames from the data link devices
+/// it has configured with. Each frame recieved is submitted to the loaded
+/// pipeline. If the pipeline invocation returns an egress port, then the egress
+/// packet returned by the pipeline will be sent to that port using DLPI. If no
+/// egress port is returned, the packet is dropped.
+///
+/// In addition to forwarding packets between ports, SoftNPU also supports
+/// forwarding packets to and from the guest. This is accomplished through a
+/// special `tfport0` device. This is a viona device that shows up in the guest
+/// as a virtio network device. When a pipeline invocation returns an egress
+/// port of `0`, packets are sent to this port.
+///
+/// Most P4 programs require a corresponding control plane program to manage
+/// table state. For example a program to add routing entries onto the ASIC. P4
+/// programs themselves only handle packets, they are not capable of managing
+/// table state. SoftNPU provides a uart-based management interface so that
+/// programs running in the guest can modify the tables of the P4 program loaded
+/// onto the ASIC. This is uart plumbed into the guest as `tty03`. What tables
+/// exist and how they can be modified is up to the particular program that is
+/// loaded. SoftNPU just provdes a generic interface for table management and a
+/// few other generic ASIC housekeeping items like determining the number of
+/// ports.
 pub struct SoftNPU {
     /// Data links SoftNPU will hook into.
     pub data_links: Vec<String>,
@@ -118,17 +163,13 @@ impl PortVirtioState {
     }
 }
 
-/// SoftNPU is a network processing unit that represents a P4 programmable ASIC
-/// as an emulated propolis device. A PciVirtioSoftNPU port is created for each
-/// ASIC port. How traffic is handled depends on the P4 program running on the
-/// emulated ASIC. For the moment we are assuming a sidecar-like setup and will
-/// decap and deliver regular frames to all ports except the first "CPU" port.
-/// The first CPU port will recieve sidecar encapsulated frames. When a
-/// sidecar/softnpu driver is written for illumos we can make this emulated
-/// device more general (as the kernel of the host machine attached to the asic
-/// is actually the one duing the sidecar encap/decap and multiplexing for
-/// traffic that is actually destined to a a sidecar).
 impl SoftNPU {
+    /// Create a new SoftNPU device for the specified data links. The
+    /// `queue_size` is used for the viona device that underpins the tfport0
+    /// going to the guest. The `uart` is used to provide a P4 management
+    /// interface to the guest. The pipeline object is used to process packets.
+    /// In most cases the value in the mutex should be initialized to `None` as
+    /// users will dynamically load a P4 program from inside the guest.
     pub fn new(
         data_links: Vec<String>,
         queue_size: u16,
@@ -166,6 +207,7 @@ impl SoftNPU {
         }))
     }
 
+    /// Set up a DLPI handle for each data link.
     fn data_handles(data_links: &Vec<String>) -> Result<Vec<dlpi::DlpiHandle>> {
         let mut handles = Vec::new();
         for x in data_links {
@@ -180,6 +222,8 @@ impl SoftNPU {
         Ok(handles)
     }
 
+    /// Start the management handler for servicing requests from the guest over
+    /// the provided uart device.
     fn run_management_handler_thread(&self) {
         info!(self.log, "softnpu: running management handler");
         self.uart.set_autodiscard(false);
@@ -257,7 +301,6 @@ impl Entity for SoftNPU {
     }
 }
 
-/// PciVirtioSoftNPUPort ...
 impl PciVirtioSoftNPUPort {
     pub fn new(
         mac: [u8; 6],
@@ -373,10 +416,7 @@ impl PciVirtioSoftNPUPort {
                 Some(&mut recvinfo),
             )
             {
-                Ok((_, n)) => {
-                    //info!(log, "dlpi rx at index {}: {}", index, n);
-                    n
-                }
+                Ok((_, n)) => n,
                 Err(e) => {
                     error!(log, "rx error at index {}: {}", index, e);
                     continue;
@@ -808,6 +848,10 @@ impl SoftNPUP9Handler {
         Self { source, target, pipeline, log }
     }
 
+    /// This function is called while the program is being streamed in from the
+    /// guest. The program is incrementally written to a temporary file while
+    /// the program is being loaded. A temporary file is used to prevent the
+    /// active program's file from being written to while it is being run.
     fn write_program(buf: &[u8], offset: u64, log: &Logger) {
         info!(log, "loading {} byte program", buf.len());
         let path = p4_temp_file();
@@ -839,6 +883,10 @@ impl SoftNPUP9Handler {
         }
     }
 
+    /// This function is called after a program has been completely copied from
+    /// the guest. The current pipeline is dropped. Then the temporary program
+    /// file is copied to the active program file. Then the pipeline is loaded
+    /// from the active program file.
     fn load_program(
         pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
@@ -883,6 +931,8 @@ impl SoftNPUP9Handler {
     }
 }
 
+/// Implement a very specific P9 handler that only implements file writes in
+/// order to load P4 programs.
 impl P9Handler for SoftNPUP9Handler {
     fn source(&self) -> &str {
         &self.source
@@ -900,7 +950,13 @@ impl P9Handler for SoftNPUP9Handler {
         let mut msg: p9ds::proto::Version =
             ispf::from_bytes_le(&msg_buf).unwrap();
         msg.typ = p9ds::proto::MessageType::Rversion;
+
+        // This is a version of our own making. It's meant to deter clients that
+        // may discover us from trying to use us as some sort of normal P9
+        // filesystem. It also helps clients that are actually looking for the
+        // SoftNPU P9 device to identify us as such.
         msg.version = "9P2000.P4".to_owned();
+
         let mut out = ispf::to_bytes_le(&msg).unwrap();
         let buf = out.as_mut_slice();
         Self::write_buf(buf, chain, mem);

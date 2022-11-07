@@ -37,6 +37,18 @@ mod probes {
     fn p9fs_cfg_read() {}
 }
 
+
+/// This is a work-in-progres P9 filesystem device. It's a minimum viable
+/// implementation provide a P9 filesystem to guest. It's been tested with
+/// illumos and Linux guests. There are many capabilities that are not yet
+/// implemented.
+///
+/// The design centers around a P9Handler trait that allows various different
+/// types of P9 devices to be implemented. This file includes a `HostFSHandler`
+/// implementation that allows mounting host filesystems in the guest.
+/// Currently filesystems can only be mounted as read-only. Another
+/// implementation is in the SoftNPU device that supports P4 program transfer
+/// via p9fs.
 pub struct PciVirtio9pfs<Handler: P9Handler> {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
