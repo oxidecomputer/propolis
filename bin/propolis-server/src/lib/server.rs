@@ -702,7 +702,7 @@ async fn instance_issue_crucible_snapshot_request(
         let s = format!("no disk with id {}!", path_params.id);
         HttpError::for_not_found(Some(s.clone()), s)
     })?;
-    backend.snapshot(path_params.snapshot_id).map_err(|e| {
+    backend.snapshot(path_params.snapshot_id).await.map_err(|e| {
         HttpError::for_bad_request(Some(e.to_string()), e.to_string())
     })?;
 
