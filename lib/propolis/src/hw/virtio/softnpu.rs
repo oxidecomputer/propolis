@@ -4,12 +4,12 @@ use std::{
     io::{Result, Write},
     num::NonZeroU16,
     sync::{Arc, Mutex},
+    thread::{sleep, spawn},
     time::Duration,
-    thread::{spawn, sleep},
 };
 
 use crate::{
-    chardev::{Source, Sink},
+    chardev::{Sink, Source},
     common::*,
     hw::{pci, uart::LpcUart},
     util::regmap::RegMap,
@@ -233,14 +233,7 @@ impl SoftNPU {
         let pipeline = self.pipeline.clone();
         let radix = self.data_links.len();
 
-        spawn(move || {
-            Self::management_handler(
-                uart,
-                pipeline,
-                radix,
-                log,
-            )
-        });
+        spawn(move || Self::management_handler(uart, pipeline, radix, log));
     }
 
     fn management_handler(
@@ -251,23 +244,14 @@ impl SoftNPU {
     ) {
         info!(log, "management handler thread started");
         loop {
-            let r = ManagementMessageReader::new(
-                uart.clone(),
-                log.clone(),
-            );
+            let r = ManagementMessageReader::new(uart.clone(), log.clone());
             let msg = r.read();
             info!(log, "received management message: {:#?}", msg);
 
             let pipeline = pipeline.clone();
             let uart = uart.clone();
             let log = log.clone();
-            handle_management_message(
-                msg,
-                pipeline,
-                uart,
-                radix,
-                log.clone(),
-            );
+            handle_management_message(msg, pipeline, uart, radix, log.clone());
             info!(log, "handled management message");
         }
     }
@@ -285,10 +269,7 @@ impl Entity for SoftNPU {
             *booted = true
         }
         for i in 0..self.data_handles.len() {
-            info!(
-                self.log,
-                "starting ingress packet handler for port {}", i
-            );
+            info!(self.log, "starting ingress packet handler for port {}", i);
 
             PciVirtioSoftNPUPort::run_ingress_packet_handler_thread(
                 i,
@@ -318,10 +299,7 @@ impl PciVirtioSoftNPUPort {
         })
     }
 
-    fn handle_guest_virtio_request(
-        &self,
-        vq: &Arc<VirtQueue>,
-    ) {
+    fn handle_guest_virtio_request(&self, vq: &Arc<VirtQueue>) {
         if vq.id == 0 {
             return self.handle_q0_req(vq);
         }
@@ -414,8 +392,7 @@ impl PciVirtioSoftNPUPort {
                 &mut msg,
                 -1,
                 Some(&mut recvinfo),
-            )
-            {
+            ) {
                 Ok((_, n)) => n,
                 Err(e) => {
                     error!(log, "rx error at index {}: {}", index, e);
@@ -518,7 +495,6 @@ impl PciVirtioSoftNPUPort {
         virtio: Arc<PortVirtioState>,
         _log: &Logger,
     ) {
-
         let mem = virtio.pci_state.acc_mem.access().unwrap();
         let mut chain = Chain::with_capacity(1);
         let vq = &virtio.pci_virtio_state.queues[0];
@@ -766,10 +742,7 @@ struct ManagementMessageReader {
 }
 
 impl ManagementMessageReader {
-    fn new(
-        uart: Arc<LpcUart>,
-        log: Logger,
-    ) -> Self {
+    fn new(uart: Arc<LpcUart>, log: Logger) -> Self {
         Self { uart, log }
     }
 
@@ -1016,9 +989,7 @@ impl P9Handler for SoftNPUP9Handler {
         let pipe = self.pipeline.clone();
         let log = self.log.clone();
 
-        spawn(move || {
-            Self::load_program(pipe, log)
-        });
+        spawn(move || Self::load_program(pipe, log));
 
         let response = Rclunk::new();
         let mut out = ispf::to_bytes_le(&response).unwrap();

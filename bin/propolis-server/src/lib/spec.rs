@@ -438,7 +438,7 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_p9(SoftNpuP9{pci_path})?;
+        self.builder.set_softnpu_p9(SoftNpuP9 { pci_path })?;
         Ok(())
     }
 
@@ -455,7 +455,7 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_tfport0(TfPort0{pci_path})?;
+        self.builder.set_softnpu_tfport0(TfPort0 { pci_path })?;
 
         Ok(())
     }
@@ -475,10 +475,7 @@ impl ServerSpecBuilder {
 
         self.builder.add_softnpu_port(
             name.to_string(),
-            SoftNpuPort {
-                name: name.to_string(),
-                vnic: vnic_name.to_string(),
-            }
+            SoftNpuPort { name: name.to_string(), vnic: vnic_name.to_string() },
         )?;
 
         Ok(())
@@ -490,7 +487,6 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-
         let source: String = device.get("source").ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
                 "Failed to get source for p9 device {}",
@@ -517,10 +513,9 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_p9fs(P9fs{source, target, chunk_size, pci_path})?;
+        self.builder.set_p9fs(P9fs { source, target, chunk_size, pci_path })?;
 
         Ok(())
-
     }
 
     /// Adds a serial port specification to the spec under construction.

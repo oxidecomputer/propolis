@@ -4,19 +4,18 @@ use std::sync::Arc;
 mod bits;
 
 pub mod block;
-pub mod pci;
-mod queue;
-pub mod viona;
-#[cfg(feature = "falcon")]
-pub mod softnpu;
 #[cfg(feature = "falcon")]
 pub mod p9fs;
+pub mod pci;
+mod queue;
+#[cfg(feature = "falcon")]
+pub mod softnpu;
+pub mod viona;
 
 use crate::common::*;
 use queue::VirtQueue;
 
 pub use block::PciVirtioBlock;
-pub use viona::PciVirtioViona;
 #[cfg(feature = "falcon")]
 pub use p9fs::HostFSHandler;
 #[cfg(feature = "falcon")]
@@ -25,6 +24,7 @@ pub use p9fs::PciVirtio9pfs;
 pub use softnpu::SoftNPU;
 #[cfg(feature = "falcon")]
 pub use softnpu::SoftNPUP9Handler;
+pub use viona::PciVirtioViona;
 
 pub trait VirtioDevice: Send + Sync + 'static + Entity {
     /// Read/write device-specific virtio configuration space

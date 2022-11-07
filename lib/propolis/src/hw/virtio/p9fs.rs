@@ -37,7 +37,6 @@ mod probes {
     fn p9fs_cfg_read() {}
 }
 
-
 /// This is a work-in-progres P9 filesystem device. It's a minimum viable
 /// implementation provide a P9 filesystem to guest. It's been tested with
 /// illumos and Linux guests. There are many capabilities that are not yet
@@ -311,11 +310,7 @@ pub struct HostFSHandler {
 }
 
 impl HostFSHandler {
-    pub fn new(
-        source: String,
-        target: String,
-        max_chunk_size: u32,
-    ) -> Self {
+    pub fn new(source: String, target: String, max_chunk_size: u32) -> Self {
         let fileserver =
             Mutex::new(Box::new(Fileserver { fids: HashMap::new() }));
         Self {

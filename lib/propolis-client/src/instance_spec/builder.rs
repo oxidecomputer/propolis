@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use propolis_types::PciPath;
 use thiserror::Error;
 
-use super::{ Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber };
+use super::{Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber};
 #[cfg(feature = "falcon")]
-use super::{ SoftNpuPort, SoftNpuP9, TfPort0, P9fs };
+use super::{P9fs, SoftNpuP9, SoftNpuPort, TfPort0};
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -192,15 +192,12 @@ impl SpecBuilder {
         &mut self,
         p9: SoftNpuP9,
     ) -> Result<&Self, SpecBuilderError> {
-        self.spec.devices.softnpu_p9= Some(p9);
+        self.spec.devices.softnpu_p9 = Some(p9);
         Ok(self)
     }
 
     #[cfg(feature = "falcon")]
-    pub fn set_p9fs(
-        &mut self,
-        p9fs: P9fs,
-    ) -> Result<&Self, SpecBuilderError> {
+    pub fn set_p9fs(&mut self, p9fs: P9fs) -> Result<&Self, SpecBuilderError> {
         self.spec.devices.p9fs = Some(p9fs);
         Ok(self)
     }
