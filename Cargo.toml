@@ -33,8 +33,7 @@ panic = "abort"
 inherits = "dev"
 panic = "unwind"
 
-[patch."http://github.com/oxidecomputer/rfb"]
+#[patch."http://github.com/oxidecomputer/rfb"]
 # Double / here is intentional to defeat cargo's git canonicalization and allow us to
 # patch a crate using the same source.
-# Temp until https://github.com/oxidecomputer/rfb/pull/9 lands
-rfb = { git = "http://github.com/oxidecomputer//rfb", branch = "luqmana/vnc-stop" }
+#rfb = { git = "http://github.com/oxidecomputer//rfb", rev = "" }
