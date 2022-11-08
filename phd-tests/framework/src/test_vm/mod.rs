@@ -159,10 +159,15 @@ impl TestVm {
             cloud_init_bytes: None,
         };
 
-        if let Err(e) = self.client.instance_ensure(&ensure_req).await {
+        let mut retries = 3;
+        while let Err(e) = self.client.instance_ensure(&ensure_req).await {
             info!("Error {} while creating instance, will retry", e);
             tokio::time::sleep(Duration::from_millis(500)).await;
-            self.client.instance_ensure(&ensure_req).await?;
+            retries -= 1;
+            if retries == 0 {
+                tracing::error!("Failed to create instance after 3 retries");
+                anyhow::bail!(e);
+            }
         }
 
         let serial_uri = self.client.instance_serial_console_ws_uri();
