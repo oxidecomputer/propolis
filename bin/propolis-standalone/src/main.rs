@@ -391,10 +391,7 @@ impl Instance {
                 }
                 State::Destroy => {
                     // Drop the instance
-                    let inst = guard.instance.take().unwrap();
-                    let machine = inst.destroy();
-                    let hdl = machine.destroy();
-                    hdl.destroy().unwrap();
+                    let _ = guard.instance.take().unwrap();
 
                     // Communicate that destruction is complete
                     slog::info!(&log, "Instance destroyed");

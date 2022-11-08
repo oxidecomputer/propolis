@@ -38,7 +38,7 @@ impl Instance {
 
     pub fn destroy(self) -> Machine {
         let mut guard = self.0.lock().unwrap();
-        // Clear the contets of the inventory and emit the underlying machine
+        // Clear the contents of the inventory and emit the underlying machine
         guard.inventory.clear();
         guard.machine.take().unwrap()
     }
@@ -47,7 +47,14 @@ impl Drop for Instance {
     fn drop(&mut self) {
         // Make sure the inventory is cleared, even if the consumer chose not to
         // call Instance::destroy().
-        self.0.get_mut().unwrap().inventory.clear()
+        self.0.get_mut().unwrap().inventory.clear();
+
+        // If Instance::destroy() was not called prior to drop, let's cleanup
+        // the underlying VMM resource.
+        if let Some(machine) = self.0.get_mut().unwrap().machine.take() {
+            let hdl = machine.destroy();
+            let _ = hdl.destroy();
+        }
     }
 }
 
