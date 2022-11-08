@@ -395,8 +395,8 @@ impl ServerSpecBuilder {
                     self.add_network_device_from_config(device_name, device)?
                 }
                 #[cfg(feature = "falcon")]
-                "tfport0" => {
-                    self.add_softnpu_tfport0_from_config(device_name, device)?
+                "softnpu-pci-port" => {
+                    self.add_softnpu_pci_port_from_config(device_name, device)?
                 }
                 #[cfg(feature = "falcon")]
                 "softnpu-port" => {
@@ -443,7 +443,7 @@ impl ServerSpecBuilder {
     }
 
     #[cfg(feature = "falcon")]
-    fn add_softnpu_tfport0_from_config(
+    fn add_softnpu_pci_port_from_config(
         &mut self,
         name: &str,
         device: &config::Device,
@@ -455,7 +455,7 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_tfport0(TfPort0 { pci_path })?;
+        self.builder.set_softnpu_pci_port(SoftNpuPciPort{ pci_path })?;
 
         Ok(())
     }

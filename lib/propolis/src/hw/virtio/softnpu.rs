@@ -73,7 +73,7 @@ pub const SOFTNPU_TTY: &str = "/dev/tty03";
 ///
 /// In addition to forwarding packets between ports, SoftNPU also supports
 /// forwarding packets to and from the guest. This is accomplished through a
-/// special `tfport0` device. This is a viona device that shows up in the guest
+/// special `pci_port` device. This is a viona device that shows up in the guest
 /// as a virtio network device. When a pipeline invocation returns an egress
 /// port of `0`, packets are sent to this port.
 ///
@@ -94,8 +94,8 @@ pub struct SoftNPU {
     /// DLPI handles for data links.
     pub data_handles: Vec<dlpi::DlpiHandle>,
 
-    /// The "CPU" port.
-    pub tfport0: Arc<PciVirtioSoftNPUPort>,
+    /// The PCI port.
+    pub pci_port: Arc<PciVirtioSoftNPUPort>,
 
     /// Virtio state for CPU port.
     virtio: Arc<PortVirtioState>,
@@ -165,7 +165,7 @@ impl PortVirtioState {
 
 impl SoftNPU {
     /// Create a new SoftNPU device for the specified data links. The
-    /// `queue_size` is used for the viona device that underpins the tfport0
+    /// `queue_size` is used for the viona device that underpins the PCI port
     /// going to the guest. The `uart` is used to provide a P4 management
     /// interface to the guest. The pipeline object is used to process packets.
     /// In most cases the value in the mutex should be initialized to `None` as
@@ -186,7 +186,7 @@ impl SoftNPU {
 
         let data_handles = Self::data_handles(&data_links)?;
         let virtio = Arc::new(PortVirtioState::new(queue_size));
-        let tfport0 = PciVirtioSoftNPUPort::new(
+        let pci_port = PciVirtioSoftNPUPort::new(
             mac,
             data_handles.clone(),
             virtio.clone(),
@@ -198,7 +198,7 @@ impl SoftNPU {
             data_links,
             data_handles,
             virtio,
-            tfport0,
+            pci_port,
             uart,
             p9fs,
             pipeline,

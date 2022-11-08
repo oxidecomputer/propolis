@@ -446,7 +446,7 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
-        let tfport0 = match &self.spec.devices.tfport0 {
+        let pci_port = match &self.spec.devices.softnpu_pci_port {
             Some(tfp) => tfp,
             None => return Ok(()),
         };
@@ -526,13 +526,13 @@ impl<'a> MachineInitializer<'a> {
             .register(&softnpu)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
-        let bdf: pci::Bdf = tfport0.pci_path.try_into().map_err(|e| {
+        let bdf: pci::Bdf = pci_port.pci_path.try_into().map_err(|e| {
             Error::new(
                 ErrorKind::InvalidInput,
-                format!("Couldn't get PCI BDF for SoftNPU tfport0: {}", e),
+                format!("Couldn't get PCI BDF for SoftNPU pci port: {}", e),
             )
         })?;
-        self.inv.register_instance(&softnpu.tfport0, bdf.to_string()).map_err(
+        self.inv.register_instance(&softnpu.pci_port, bdf.to_string()).map_err(
             |e| -> std::io::Error {
                 let io_err: std::io::Error = e.into();
                 std::io::Error::new(
@@ -541,7 +541,7 @@ impl<'a> MachineInitializer<'a> {
                 )
             },
         )?;
-        chipset.device().pci_attach(bdf, softnpu.tfport0.clone());
+        chipset.device().pci_attach(bdf, softnpu.pci_port.clone());
 
         Ok(())
     }

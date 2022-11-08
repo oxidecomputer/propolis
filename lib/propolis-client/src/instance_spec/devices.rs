@@ -271,7 +271,7 @@ impl MigrationElement for PciPciBridge {
 #[cfg(feature = "falcon")]
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct TfPort0 {
+pub struct SoftNpuPciPort {
     /// The PCI path at which to attach the guest to this port.
     pub pci_path: PciPath,
 }
@@ -314,7 +314,7 @@ pub struct DeviceSpec {
     pub serial_ports: BTreeMap<SpecKey, SerialPort>,
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
     #[cfg(feature = "falcon")]
-    pub tfport0: Option<TfPort0>,
+    pub softnpu_pci_port: Option<SoftNpuPciPort>,
     #[cfg(feature = "falcon")]
     pub softnpu_ports: BTreeMap<SpecKey, SoftNpuPort>,
     #[cfg(feature = "falcon")]

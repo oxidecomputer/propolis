@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::{Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber};
 #[cfg(feature = "falcon")]
-use super::{P9fs, SoftNpuP9, SoftNpuPort, TfPort0};
+use super::{P9fs, SoftNpuP9, SoftNpuPort, SoftNpuPciPort};
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -168,12 +168,12 @@ impl SpecBuilder {
     }
 
     #[cfg(feature = "falcon")]
-    /// Sets softnpu tfport0
-    pub fn set_softnpu_tfport0(
+    /// Sets softnpu pci port
+    pub fn set_softnpu_pci_port(
         &mut self,
-        tfport0: TfPort0,
+        pci_port: SoftNpuPciPort,
     ) -> Result<&Self, SpecBuilderError> {
-        self.spec.devices.tfport0 = Some(tfport0);
+        self.spec.devices.softnpu_pci_port = Some(pci_port);
         Ok(self)
     }
 
