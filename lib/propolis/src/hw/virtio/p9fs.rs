@@ -31,6 +31,7 @@ use p9ds::proto::{
     Tgetattr, Tlopen, Tread, Treaddir, Tstatfs, Twalk, Version,
     P9_GETATTR_BASIC,
 };
+use slog::{warn, Logger};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -65,7 +66,7 @@ impl<Handler: P9Handler> PciVirtio9pfs<Handler> {
             queues,
             msix_count,
             VIRTIO_DEV_9P,
-            0x9,
+            VIRTIO_SUB_DEV_9P_TRANSPORT,
             pci::bits::CLASS_STORAGE,
             VIRTIO_9P_CFG_SIZE,
         );
@@ -291,7 +292,9 @@ pub trait P9Handler: Sync + Send + 'static {
                 self.handle_statfs(&data[..len], &mut chain, &mem)
             }
 
-            //TODO
+            //TODO: There are many p9fs operations that are not implemented. If
+            //      you hit an ENOTSUP, this is the place to start for adding a
+            //      new message type handler.
             _ => {
                 Self::write_error(ENOTSUP as u32, &mut chain, &mem);
             }
@@ -307,10 +310,16 @@ pub struct HostFSHandler {
     source: String,
     target: String,
     fileserver: Mutex<Box<Fileserver>>,
+    log: Logger,
 }
 
 impl HostFSHandler {
-    pub fn new(source: String, target: String, max_chunk_size: u32) -> Self {
+    pub fn new(
+        source: String,
+        target: String,
+        max_chunk_size: u32,
+        log: Logger,
+    ) -> Self {
         let fileserver =
             Mutex::new(Box::new(Fileserver { fids: HashMap::new() }));
         Self {
@@ -319,6 +328,7 @@ impl HostFSHandler {
             max_chunk_size,
             msize: Mutex::new(max_chunk_size),
             fileserver,
+            log,
         }
     }
 
@@ -344,7 +354,10 @@ impl HostFSHandler {
                     Some(ecode) => ecode,
                     None => 0,
                 };
-                println!("read: metadata: notathing: {:?}", &fid.pathbuf);
+                warn!(
+                    self.log,
+                    "read: metadata for {:?}: {:?}", &fid.pathbuf, e,
+                );
                 return Self::write_error(ecode as u32, chain, mem);
             }
         };
@@ -363,7 +376,7 @@ impl HostFSHandler {
                     Some(ecode) => ecode,
                     None => 0,
                 };
-                println!("read: seek: {:?}", &fid.pathbuf);
+                warn!(self.log, "read: seek: {:?}: {:?}", &fid.pathbuf, e,);
                 return Self::write_error(ecode as u32, chain, mem);
             }
             Ok(_) => {}
@@ -387,7 +400,7 @@ impl HostFSHandler {
                     Some(ecode) => ecode,
                     None => 0,
                 };
-                println!("read: exact: {:?}", &fid.pathbuf);
+                warn!(self.log, "read: exact: {:?}: {:?}", &fid.pathbuf, e,);
                 return Self::write_error(ecode as u32, chain, mem);
             }
             Ok(()) => {}
@@ -555,7 +568,7 @@ impl P9Handler for HostFSHandler {
         match self.msize.lock() {
             Ok(msize) => *msize,
             Err(e) => {
-                println!("handle_req: failed to get msize lock: {}", e);
+                warn!(self.log, "handle_req: failed to get msize lock: {}", e);
                 self.max_chunk_size
             }
         }
@@ -563,13 +576,14 @@ impl P9Handler for HostFSHandler {
 
     fn handle_version(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
         let mut msg: Version = ispf::from_bytes_le(&msg_buf).unwrap();
-        //println!("← {:#?}", msg);
         msg.version = P9Version::V2000L.to_string();
         msg.typ = MessageType::Rversion;
         if msg.msize > self.max_chunk_size {
-            println!(
+            warn!(
+                self.log,
                 "request exceeds max chunk size {} > {}",
-                msg.msize, self.max_chunk_size
+                msg.msize,
+                self.max_chunk_size
             );
             return Self::write_error(EOVERFLOW as u32, chain, mem);
         }
@@ -578,7 +592,10 @@ impl P9Handler for HostFSHandler {
         match self.msize.lock() {
             Ok(mut msize) => *msize = msg.msize,
             Err(e) => {
-                println!("handle_version: failed to get msize lock: {}", e);
+                warn!(
+                    self.log,
+                    "handle_version: failed to get msize lock: {}", e
+                );
             }
         }
         let mut out = ispf::to_bytes_le(&msg).unwrap();
@@ -594,9 +611,6 @@ impl P9Handler for HostFSHandler {
 
         // deserialize message
         let msg: Tattach = ispf::from_bytes_le(&msg_buf).unwrap();
-        //println!("← {:#?}", msg);
-
-        println!("attach: fid={}", msg.fid);
 
         // grab inode number for qid uniqe file id
         let qpath = match fs::metadata(&self.source) {
@@ -615,7 +629,7 @@ impl P9Handler for HostFSHandler {
                 // check to see if fid is in use
                 match fs.fids.get(&msg.fid) {
                     Some(_) => {
-                        println!("attach fid in use");
+                        warn!(self.log, "attach fid in use: {}", msg.fid);
                         // The spec says to throw an error here, but in an
                         // effort to support clients who don't explicitly cluck
                         // fids, and considering the fact that we do not support
@@ -649,8 +663,6 @@ impl P9Handler for HostFSHandler {
 
     fn handle_walk(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
         let msg: Twalk = ispf::from_bytes_le(&msg_buf).unwrap();
-        //println!("← {:#?}", msg);
-        println!("walk: {} {:?}", msg.fid, msg.wname);
 
         match self.fileserver.lock() {
             Ok(mut fs) => {
@@ -658,7 +670,7 @@ impl P9Handler for HostFSHandler {
                 let fid = match fs.fids.get(&msg.fid) {
                     Some(p) => p,
                     None => {
-                        println!("walk: fid {} not found", msg.fid);
+                        warn!(self.log, "walk: fid {} not found", msg.fid);
                         return Self::write_error(ENOENT as u32, chain, mem);
                     }
                 };
@@ -679,7 +691,10 @@ impl P9Handler for HostFSHandler {
                                 Some(ecode) => ecode,
                                 None => 0,
                             };
-                            println!("walk: notathing: {:?}", newpath);
+                            warn!(
+                                self.log,
+                                "walk: no metadata: {:?}: {:?}", newpath, e
+                            );
                             return Self::write_error(ecode as u32, chain, mem);
                         }
                         Ok(m) => {
@@ -710,10 +725,7 @@ impl P9Handler for HostFSHandler {
                 fs.fids
                     .insert(msg.newfid, Fid { pathbuf: newpath, file: None });
 
-                println!("new fid for path: {}", msg.newfid);
-
                 let response = Rwalk::new(qids);
-                println!("walk response: {:?}", &response);
                 let mut out = ispf::to_bytes_le(&response).unwrap();
                 let buf = out.as_mut_slice();
                 Self::write_buf(buf, chain, mem);
@@ -726,7 +738,6 @@ impl P9Handler for HostFSHandler {
 
     fn handle_open(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
         let msg: Tlopen = ispf::from_bytes_le(&msg_buf).unwrap();
-        //println!("← {:#?}", msg);
 
         match self.fileserver.lock() {
             Ok(mut fs) => {
@@ -734,7 +745,7 @@ impl P9Handler for HostFSHandler {
                 let fid = match fs.fids.get_mut(&msg.fid) {
                     Some(p) => p,
                     None => {
-                        println!("open: fid {} not found", msg.fid);
+                        warn!(self.log, "open: fid {} not found", msg.fid);
                         return Self::write_error(ENOENT as u32, chain, mem);
                     }
                 };
@@ -746,7 +757,10 @@ impl P9Handler for HostFSHandler {
                             Some(ecode) => ecode,
                             None => 0,
                         };
-                        println!("open: notathing: {:?}", &fid.pathbuf);
+                        warn!(
+                            self.log,
+                            "open: no metadata: {:?}: {:?}", &fid.pathbuf, e
+                        );
                         return Self::write_error(ecode as u32, chain, mem);
                     }
                     Ok(m) => {
@@ -771,7 +785,10 @@ impl P9Handler for HostFSHandler {
                                 Some(ecode) => ecode,
                                 None => 0,
                             };
-                            println!("open: notathing: {:?}", &fid.pathbuf);
+                            warn!(
+                                self.log,
+                                "open: {:?}: {:?}", &fid.pathbuf, e
+                            );
                             return Self::write_error(ecode as u32, chain, mem);
                         }
                     },
@@ -798,14 +815,13 @@ impl P9Handler for HostFSHandler {
         msize: u32,
     ) {
         let msg: Treaddir = ispf::from_bytes_le(&msg_buf).unwrap();
-        //println!("← {:#?}", msg);
 
         // get the path for the requested fid
         let pathbuf = match self.fileserver.lock() {
             Ok(fs) => match fs.fids.get(&msg.fid) {
                 Some(f) => f.pathbuf.clone(),
                 None => {
-                    println!("readdir: fid {} not found", msg.fid);
+                    warn!(self.log, "readdir: fid {} not found", msg.fid);
                     return Self::write_error(ENOENT as u32, chain, mem);
                 }
             },
@@ -823,7 +839,10 @@ impl P9Handler for HostFSHandler {
                         Some(ecode) => ecode,
                         None => 0,
                     };
-                    println!("readdir: collect: notathing: {:?}", &pathbuf);
+                    warn!(
+                        self.log,
+                        "readdir: collect: {:?}: {:?}", &pathbuf, e
+                    );
                     return Self::write_error(ecode as u32, chain, mem);
                 }
             },
@@ -832,16 +851,10 @@ impl P9Handler for HostFSHandler {
                     Some(ecode) => ecode,
                     None => 0,
                 };
-                println!("readdir: notathing: {:?}", &pathbuf);
+                warn!(self.log, "readdir: {:?}: {:?}", &pathbuf, e);
                 return Self::write_error(ecode as u32, chain, mem);
             }
         };
-
-        println!(
-            "{} dir entries under {}",
-            dir.len(),
-            pathbuf.as_path().display()
-        );
 
         // bail with out of range error if offset is greater than entries
         if (dir.len() as u64) < msg.offset {
@@ -868,7 +881,12 @@ impl P9Handler for HostFSHandler {
                         Some(ecode) => ecode,
                         None => 0,
                     };
-                    println!("readdir: metadata: notathing: {:?}", &de.path());
+                    warn!(
+                        self.log,
+                        "readdir: metadata: {:?}: {:?}",
+                        &de.path(),
+                        e
+                    );
                     return Self::write_error(ecode as u32, chain, mem);
                 }
             };
@@ -900,10 +918,7 @@ impl P9Handler for HostFSHandler {
             offset += 1;
         }
 
-        println!("sending {} entries", entries.len());
-
         let response = Rreaddir::new(entries);
-        println!("RREADDIR → {:#?}", &response);
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
         Self::write_buf(buf, chain, mem);
@@ -917,14 +932,13 @@ impl P9Handler for HostFSHandler {
         msize: u32,
     ) {
         let msg: Tread = ispf::from_bytes_le(&msg_buf).unwrap();
-        //println!("← {:#?}", msg);
 
         // get  the requested fid
         match self.fileserver.lock() {
             Ok(ref mut fs) => match fs.fids.get_mut(&msg.fid) {
                 Some(ref mut fid) => self.do_read(&msg, fid, chain, mem, msize),
                 None => {
-                    println!("read: fid {} not found", msg.fid);
+                    warn!(self.log, "read: fid {} not found", msg.fid);
                     return Self::write_error(ENOENT as u32, chain, mem);
                 }
             },
@@ -958,7 +972,7 @@ impl P9Handler for HostFSHandler {
             Ok(ref mut fs) => match fs.fids.get_mut(&msg.fid) {
                 Some(ref mut fid) => self.do_getattr(fid, chain, mem),
                 None => {
-                    println!("getattr: fid {} not found", msg.fid);
+                    warn!(self.log, "getattr: fid {} not found", msg.fid);
                     return Self::write_error(ENOENT as u32, chain, mem);
                 }
             },
@@ -974,7 +988,7 @@ impl P9Handler for HostFSHandler {
             Ok(ref mut fs) => match fs.fids.get_mut(&msg.fid) {
                 Some(ref mut fid) => self.do_statfs(fid, chain, mem),
                 None => {
-                    println!("statfs: fid {} not found", msg.fid);
+                    warn!(self.log, "statfs: fid {} not found", msg.fid);
                     return Self::write_error(ENOENT as u32, chain, mem);
                 }
             },

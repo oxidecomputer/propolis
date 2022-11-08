@@ -271,6 +271,7 @@ fn instance_spec_from_request(
         instance_spec::SerialPortNumber::Com1,
         instance_spec::SerialPortNumber::Com2,
         instance_spec::SerialPortNumber::Com3,
+        // SoftNpu uses this port for ASIC management.
         #[cfg(not(feature = "falcon"))]
         instance_spec::SerialPortNumber::Com4,
     ] {

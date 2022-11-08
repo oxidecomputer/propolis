@@ -21,6 +21,9 @@ pub enum SpecBuilderError {
 
     #[error("Serial port {0:?} is already specified")]
     SerialPortInUse(SerialPortNumber),
+
+    #[error("SoftNpu port {0:?} is already specified")]
+    SoftNpuPortInUse(String),
 }
 
 /// A builder that constructs instance specs incrementally and catches basic
@@ -183,8 +186,11 @@ impl SpecBuilder {
         key: String,
         port: SoftNpuPort,
     ) -> Result<&Self, SpecBuilderError> {
-        self.spec.devices.softnpu_ports.insert(key, port);
-        Ok(self)
+        if self.spec.devices.softnpu_ports.insert(key, port.clone()).is_some() {
+            Err(SpecBuilderError::SoftNpuPortInUse(port.name.clone()))
+        } else {
+            Ok(self)
+        }
     }
 
     #[cfg(feature = "falcon")]

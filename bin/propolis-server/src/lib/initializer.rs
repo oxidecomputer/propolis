@@ -446,10 +446,15 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
+        // Check to make sure we actually have both a pci port and at least one
+        // regular SoftNpu port, otherwise just return.
         let pci_port = match &self.spec.devices.softnpu_pci_port {
             Some(tfp) => tfp,
             None => return Ok(()),
         };
+        if self.spec.devices.softnpu_ports.is_empty() {
+            return Ok(());
+        }
 
         let ports: Vec<&SoftNpuPort> =
             self.spec.devices.softnpu_ports.values().collect();
@@ -457,13 +462,9 @@ impl<'a> MachineInitializer<'a> {
         let data_links: Vec<String> =
             ports.iter().map(|x| x.vnic.clone()).collect();
 
-        if ports.is_empty() {
-            return Ok(());
-        }
-
-        let queue_size = 0x8000;
-
-        // TODO squatting on com4???
+        // Set up an LPC uart for ASIC management comms from the guest.
+        //
+        // NOTE: SoftNpu squats on com4.
         let pio = &self.machine.bus_pio;
         let port = ibmpc::PORT_COM4;
         let uart =
@@ -472,8 +473,11 @@ impl<'a> MachineInitializer<'a> {
         LpcUart::attach(&uart, pio, port);
         self.inv.register_instance(&uart, "softnpu-uart")?;
 
+        // Start with no pipeline. The guest must load the initial P4 program.
         let pipeline = Arc::new(std::sync::Mutex::new(None));
 
+        // Set up the p9fs device for guest programs to load P4 programs
+        // through.
         let p9_handler = virtio::SoftNpuP9Handler::new(
             "/dev/softnpufs".to_owned(),
             "/dev/softnpufs".to_owned(),
@@ -506,6 +510,8 @@ impl<'a> MachineInitializer<'a> {
             })?;
         chipset.device().pci_attach(bdf, vio9p.clone());
 
+        // Create the SoftNpu device.
+        let queue_size = 0x8000;
         let softnpu = virtio::SoftNpu::new(
             data_links,
             queue_size,
@@ -521,11 +527,11 @@ impl<'a> MachineInitializer<'a> {
                 format!("register softnpu: {}", io_err),
             )
         })?;
-
         self.inv
             .register(&softnpu)
             .map_err(|e| -> std::io::Error { e.into() })?;
 
+        // Create the SoftNpu PCI port.
         let bdf: pci::Bdf = pci_port.pci_path.try_into().map_err(|e| {
             Error::new(
                 ErrorKind::InvalidInput,
@@ -551,6 +557,8 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
+        // Check that there is actually a p9fs device to register, if not bail
+        // early.
         let p9fs = match &self.spec.devices.p9fs {
             Some(p9fs) => p9fs,
             None => return Ok(()),
@@ -567,6 +575,7 @@ impl<'a> MachineInitializer<'a> {
             p9fs.source.to_owned(),
             p9fs.target.to_owned(),
             p9fs.chunk_size,
+            self.log.clone(),
         );
         let vio9p = virtio::PciVirtio9pfs::new(0x40, handler);
         self.inv
