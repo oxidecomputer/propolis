@@ -48,28 +48,28 @@ pub const SOFTNPU_TTY: &str = "/dev/tty03";
 ///
 /// A SoftNpu instance can support a variable number of ports. These ports are
 /// specified by the user as data link names through propolis configuration.
-/// SoftNpu establishes a DLPI handle on each configured data link to perform
+/// SoftNpu establishes a dlpi handle on each configured data link to perform
 /// packet i/o.
 ///
 /// When a SoftNpu device is instantiated there is no P4 program that runs by
 /// default. A program must be loaded onto the emulated ASIC just like a real
-/// ASIC. This is accomplished through the P9 filesystem device exposed by
+/// ASIC. This is accomplished through the P9 file system device exposed by
 /// SoftNpu. This P9 implementation exports a specific version string 9P2000.P4
 /// and only implements file writes to allow a consumer to upload a P4 program.
 ///
-/// SoftNpu takes precompiled P4 programs in the form of shared libraries. These
-/// shared libraries must export a [pipeline constructor](
-/// https://oxidecomputer.github.io/p4/p4rs/trait.Pipeline.html) under the symbol
-/// `_main_pipeline_create`. Programs compiled with the `x4c` compile export
-/// this symbol automatically.
+/// SoftNpu takes pre-compiled P4 programs in the form of shared libraries.
+/// These shared libraries must export a [pipeline constructor](
+/// https://oxidecomputer.github.io/p4/p4rs/trait.Pipeline.html) under the
+/// symbol `_main_pipeline_create`. Programs compiled with the `x4c` compiler
+/// export this symbol automatically.
 ///
-/// Once pre-compiled P4 program is loaded, the Pipeline object from that
-/// program is used to process packets. The SoftNpu device uses the illumos DLPI
-/// interface to send and receive raw Ethernet frames from the data link devices
-/// it has configured with. Each frame recieved is submitted to the loaded
+/// Once a pre-compiled P4 program is loaded, the Pipeline object from that
+/// program is used to process packets. SoftNpu uses the illumos dlpi interface
+/// to send and receive raw Ethernet frames from the data link devices it has
+/// been configured with. Each frame received is processed with the loaded
 /// pipeline. If the pipeline invocation returns an egress port, then the egress
-/// packet returned by the pipeline will be sent to that port using DLPI. If no
-/// egress port is returned, the packet is dropped.
+/// packet returned by the pipeline will be sent out that port. If no egress
+/// port is returned, the packet is dropped.
 ///
 /// In addition to forwarding packets between ports, SoftNpu also supports
 /// forwarding packets to and from the guest. This is accomplished through a
@@ -78,20 +78,19 @@ pub const SOFTNPU_TTY: &str = "/dev/tty03";
 /// port of `0`, packets are sent to this port.
 ///
 /// Most P4 programs require a corresponding control plane program to manage
-/// table state. For example a program to add routing entries onto the ASIC. P4
+/// table state. For example, a program to add routing entries onto the ASIC. P4
 /// programs themselves only handle packets, they are not capable of managing
 /// table state. SoftNpu provides a uart-based management interface so that
 /// programs running in the guest can modify the tables of the P4 program loaded
 /// onto the ASIC. This is uart plumbed into the guest as `tty03`. What tables
 /// exist and how they can be modified is up to the particular program that is
-/// loaded. SoftNpu just provdes a generic interface for table management and a
-/// few other generic ASIC housekeeping items like determining the number of
-/// ports.
+/// loaded. SoftNpu just provides a generic interface for table management and a
+/// few other ASIC housekeeping items like determining the number of ports.
 pub struct SoftNpu {
     /// Data links SoftNpu will hook into.
     pub data_links: Vec<String>,
 
-    /// DLPI handles for data links.
+    /// dlpi handles for data links.
     pub data_handles: Vec<dlpi::DlpiHandle>,
 
     /// The PCI port.
@@ -103,7 +102,7 @@ pub struct SoftNpu {
     /// UART for management from guest
     uart: Arc<LpcUart>,
 
-    /// P9 filesystem endpoint for precompiled program transfer
+    /// P9 file system endpoint for pre-compiled program transfer
     pub p9fs: Arc<PciVirtio9pfs<SoftNpuP9Handler>>,
 
     //TODO should be able to do this as a RwLock
@@ -127,7 +126,7 @@ pub struct PciVirtioSoftNpuPort {
     /// Virtio state to guest
     virtio_state: Arc<PortVirtioState>,
 
-    /// DLPI handle for external i/o
+    /// dlpi handle for external i/o
     data_handles: Vec<dlpi::DlpiHandle>,
 
     mac: [u8; 6],
@@ -180,14 +179,10 @@ impl SoftNpu {
     ) -> Result<Arc<Self>> {
         info!(log, "softnpu: data links {:#?}", data_links);
 
-        let mut rng = rand::thread_rng();
-        let m = rng.gen_range::<u32, _>(0xf00000..0xffffff).to_le_bytes();
-        let mac = [0xa8, 0x40, 0x25, m[0], m[1], m[2]];
-
         let data_handles = Self::data_handles(&data_links)?;
         let virtio = Arc::new(PortVirtioState::new(queue_size));
         let pci_port = PciVirtioSoftNpuPort::new(
-            mac,
+            Self::generate_mac(),
             data_handles.clone(),
             virtio.clone(),
             pipeline.clone(),
@@ -207,11 +202,23 @@ impl SoftNpu {
         }))
     }
 
-    /// Set up a DLPI handle for each data link.
+    /// Generate a mac address with the Oxide OUI for the leading bits and then
+    /// something random in the range of 0xf00000 - 0xf00000 per RFD 174.
+    fn generate_mac() -> [u8; 6] {
+        let mut rng = rand::thread_rng();
+        let m = rng.gen_range::<u32, _>(0xf00000..0xffffff).to_le_bytes();
+        [0xa8, 0x40, 0x25, m[0], m[1], m[2]]
+    }
+
+    /// Set up a dlpi handle for each data link.
     fn data_handles(data_links: &Vec<String>) -> Result<Vec<dlpi::DlpiHandle>> {
         let mut handles = Vec::new();
         for x in data_links {
             let h = dlpi::open(x, dlpi::sys::DLPI_RAW)?;
+
+            // Although we bind to the IPv6 SAP (Ethertype), the DL_PROMISC_SAP
+            // allows us to pick up everything. Binding to *something* to start
+            // with appears to be required to get packets.
             dlpi::bind(h, 0x86dd)?;
             dlpi::promisc_on(h, dlpi::sys::DL_PROMISC_MULTI)?;
             dlpi::promisc_on(h, dlpi::sys::DL_PROMISC_SAP)?;
@@ -264,14 +271,14 @@ impl Entity for SoftNpu {
 
     fn start(&self) {
         let mut booted = self.booted.lock().unwrap();
-        if !*booted {
-            self.run_management_handler_thread();
-            *booted = true
+        if *booted {
+            return;
         }
+        self.run_management_handler_thread();
         for i in 0..self.data_handles.len() {
             info!(self.log, "starting ingress packet handler for port {}", i);
 
-            PciVirtioSoftNpuPort::run_ingress_packet_handler_thread(
+            PacketHandler::run_ingress_packet_handler_thread(
                 i,
                 self.data_handles.clone(),
                 self.virtio.clone(),
@@ -279,6 +286,7 @@ impl Entity for SoftNpu {
                 self.log.clone(),
             );
         }
+        *booted = true
     }
 }
 
@@ -304,7 +312,13 @@ impl PciVirtioSoftNpuPort {
             return self.handle_q0_req(vq);
         }
 
-        let mem = self.virtio_state.pci_state.acc_mem.access().unwrap();
+        let mem = match self.virtio_state.pci_state.acc_mem.access() {
+            Some(mem) => mem,
+            None => {
+                warn!(self.log, "failed to access virtio memory");
+                return;
+            }
+        };
         let mut chain = Chain::with_capacity(1);
         match vq.pop_avail(&mut chain, &mem) {
             Some(val) => val as usize,
@@ -314,14 +328,21 @@ impl PciVirtioSoftNpuPort {
         // only vq.push_used if we actually read something
         let mut push_used = false;
 
-        // read as many ethernet frames from the guest as we can
+        // read as many Ethernet frames from the guest as we can
         loop {
             let mut virtio_bytes = [0u8; 10];
             // read in virtio mystery bytes
-            read_buf(&mem, &mut chain, &mut virtio_bytes);
+            let n = read_buf(&mem, &mut chain, &mut virtio_bytes);
+            if n != 10 {
+                if n > 0 {
+                    push_used = true;
+                }
+                error!(self.log, "failed to read virtio mystery bytes");
+                break;
+            }
 
             let mut frame = [0u8; MTU];
-            // read in ethernet header
+            // read in Ethernet header
             let n = read_buf(&mem, &mut chain, &mut frame);
             if n == 0 {
                 break;
@@ -330,13 +351,27 @@ impl PciVirtioSoftNpuPort {
 
             let pkt = packet_in::new(&frame[..n]);
 
-            let mut pipeline = self.pipeline.lock().unwrap();
+            let mut pipeline = match self.pipeline.lock() {
+                Ok(pipe) => pipe,
+                Err(e) => {
+                    error!(self.log, "failed to lock pipeline: {}", e);
+                    break;
+                }
+            };
             let pl: &mut Box<dyn Pipeline> = match &mut *pipeline {
                 Some(ref mut x) => &mut x.1,
-                None => break,
+                None => {
+                    // This just means no P4 program has been set by the guest.
+                    break;
+                }
             };
 
-            Self::handle_guest_packet(pkt, &self.data_handles, pl, &self.log);
+            PacketHandler::process_guest_packet(
+                pkt,
+                &self.data_handles,
+                pl,
+                &self.log,
+            );
         }
 
         if push_used {
@@ -353,165 +388,6 @@ impl PciVirtioSoftNpuPort {
         // writes, even if we do the corresponding push_used.
 
         return;
-    }
-
-    fn run_ingress_packet_handler_thread(
-        index: usize,
-        data_handles: Vec<dlpi::DlpiHandle>,
-        virtio: Arc<PortVirtioState>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
-        log: Logger,
-    ) {
-        spawn(move || {
-            info!(log, "ingress packet handler is running for port {}", index,);
-            Self::run_ingress_packet_handler(
-                index,
-                data_handles,
-                virtio.clone(),
-                pipeline.clone(),
-                log,
-            )
-        });
-    }
-
-    fn run_ingress_packet_handler(
-        index: usize,
-        data_handles: Vec<dlpi::DlpiHandle>,
-        virtio: Arc<PortVirtioState>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
-        log: Logger,
-    ) {
-        let dh = data_handles[index];
-        loop {
-            let mut src = [0u8; dlpi::sys::DLPI_PHYSADDR_MAX];
-            let mut msg = [0u8; MTU];
-            let mut recvinfo = dlpi_recvinfo_t::default();
-            let n = match dlpi::recv(
-                dh,
-                &mut src,
-                &mut msg,
-                -1,
-                Some(&mut recvinfo),
-            ) {
-                Ok((_, n)) => n,
-                Err(e) => {
-                    error!(log, "rx error at index {}: {}", index, e);
-                    continue;
-                }
-            };
-
-            // TODO pipeline should not need to be mutable for packet handling?
-            let pkt = packet_in::new(&msg[..n]);
-            let mut p = pipeline.lock().unwrap();
-            let pl = match &mut *p {
-                Some(ref mut pl) => &mut pl.1,
-                None => continue,
-            };
-
-            Self::handle_external_packet(
-                index + 1,
-                pkt,
-                &data_handles,
-                virtio.clone(),
-                pl,
-                &log,
-            )
-        }
-    }
-
-    fn handle_external_packet<'a>(
-        index: usize,
-        mut pkt: packet_in<'a>,
-        data_handles: &Vec<dlpi::DlpiHandle>,
-        virtio: Arc<PortVirtioState>,
-        pipeline: &mut Box<dyn Pipeline>,
-        log: &Logger,
-    ) {
-        match pipeline.process_packet(index as u16, &mut pkt) {
-            Some((mut out_pkt, port)) => {
-                // packet is going to CPU port
-                if port == 0 {
-                    Self::handle_packet_to_cpu_port(&mut out_pkt, virtio, &log);
-                }
-                // packet is passing through
-                else {
-                    Self::handle_packet_to_ext_port(
-                        &mut out_pkt,
-                        data_handles,
-                        port - 1,
-                        &log,
-                    );
-                }
-            }
-            None => {}
-        };
-    }
-
-    fn handle_guest_packet<'a>(
-        mut pkt: packet_in<'a>,
-        data_handles: &Vec<dlpi::DlpiHandle>,
-        pipeline: &mut Box<dyn Pipeline>,
-        log: &Logger,
-    ) {
-        match pipeline.process_packet(0, &mut pkt) {
-            Some((mut out_pkt, port)) => {
-                if port == 0 {
-                    return;
-                }
-                Self::handle_packet_to_ext_port(
-                    &mut out_pkt,
-                    data_handles,
-                    port - 1,
-                    &log,
-                );
-            }
-            None => {}
-        };
-    }
-
-    fn handle_packet_to_ext_port<'a>(
-        pkt: &mut packet_out<'a>,
-        data_handles: &Vec<dlpi::DlpiHandle>,
-        port: u16,
-        log: &Logger,
-    ) {
-        // get the dlpi handle for this port
-        let dh = data_handles[port as usize];
-
-        //TODO avoid copying the whole packet
-        let mut out = pkt.header_data.clone();
-        out.extend_from_slice(pkt.payload_data);
-
-        match dlpi::send(dh, &[], out.as_slice(), None) {
-            Ok(_) => {}
-            Err(e) => {
-                error!(log, "tx (ext,0): {}", e);
-            }
-        }
-    }
-
-    fn handle_packet_to_cpu_port<'a>(
-        pkt: &mut packet_out<'a>,
-        virtio: Arc<PortVirtioState>,
-        _log: &Logger,
-    ) {
-        let mem = virtio.pci_state.acc_mem.access().unwrap();
-        let mut chain = Chain::with_capacity(1);
-        let vq = &virtio.pci_virtio_state.queues[0];
-        match vq.pop_avail(&mut chain, &mem) {
-            Some(_) => {}
-            None => {
-                //warn!(log, "[tx] pop_avail is none");
-                return;
-            }
-        }
-
-        // write the virtio mystery bytes
-        write_buf(&[0u8; 10], &mut chain, &mem);
-        write_buf(pkt.header_data.as_mut_slice(), &mut chain, &mem);
-        write_buf(pkt.payload_data, &mut chain, &mem);
-
-        vq.push_used(&mut chain, &mem);
     }
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
@@ -569,6 +445,177 @@ impl VirtioDevice for PciVirtioSoftNpuPort {
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>) {
         self.handle_guest_virtio_request(vq);
+    }
+}
+
+struct PacketHandler {}
+
+impl PacketHandler {
+    /// Spawn a thread that handles packets coming into the emulated ASIC for
+    /// the specified interface index.
+    fn run_ingress_packet_handler_thread(
+        index: usize,
+        data_handles: Vec<dlpi::DlpiHandle>,
+        virtio: Arc<PortVirtioState>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        log: Logger,
+    ) {
+        spawn(move || {
+            info!(log, "ingress packet handler is running for port {}", index,);
+            Self::run_ingress_packet_handler(
+                index,
+                data_handles,
+                virtio.clone(),
+                pipeline.clone(),
+                log,
+            )
+        });
+    }
+
+    /// Handle packets coming into the emulated ASIC for the specified interface
+    /// index.
+    fn run_ingress_packet_handler(
+        index: usize,
+        data_handles: Vec<dlpi::DlpiHandle>,
+        virtio: Arc<PortVirtioState>,
+        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        log: Logger,
+    ) {
+        let dh = data_handles[index];
+        loop {
+            //
+            // wait for a packet from dlpi
+            //
+            let mut src = [0u8; dlpi::sys::DLPI_PHYSADDR_MAX];
+            let mut msg = [0u8; MTU];
+            let mut recvinfo = dlpi_recvinfo_t::default();
+            let n = match dlpi::recv(
+                dh,
+                &mut src,
+                &mut msg,
+                -1, // block until we get something
+                Some(&mut recvinfo),
+            ) {
+                Ok((_, n)) => n,
+                Err(e) => {
+                    error!(log, "rx error at index {}: {}", index, e);
+                    continue;
+                }
+            };
+
+            //
+            // process packet with loaded P4 program
+            //
+
+            // TODO pipeline should not need to be mutable for packet handling?
+            let pkt = packet_in::new(&msg[..n]);
+            let mut p = pipeline.lock().unwrap();
+            let pl = match &mut *p {
+                Some(ref mut pl) => &mut pl.1,
+                None => continue, // no program is loaded
+            };
+
+            Self::process_external_packet(
+                index + 1,
+                pkt,
+                &data_handles,
+                virtio.clone(),
+                pl,
+                &log,
+            )
+        }
+    }
+
+    /// Run a packet coming into the ASIC from an external port through the
+    /// loaded pipeline and forward it on to its destination.
+    fn process_external_packet<'a>(
+        index: usize,
+        mut pkt: packet_in<'a>,
+        data_handles: &Vec<dlpi::DlpiHandle>,
+        virtio: Arc<PortVirtioState>,
+        pipeline: &mut Box<dyn Pipeline>,
+        log: &Logger,
+    ) {
+        if let Some((mut out_pkt, port)) =
+            pipeline.process_packet(index as u16, &mut pkt)
+        {
+            // packet is going to CPU port
+            if port == 0 {
+                Self::send_packet_to_cpu_port(&mut out_pkt, virtio, &log);
+            }
+            // packet is passing through
+            else {
+                Self::send_packet_to_ext_port(
+                    &mut out_pkt,
+                    data_handles,
+                    port - 1,
+                    &log,
+                );
+            }
+        }
+    }
+
+    /// Run a packet coming into the ASIC from the guest pci port through the
+    /// loaded pipeline and forward it on to its destination.
+    fn process_guest_packet<'a>(
+        mut pkt: packet_in<'a>,
+        data_handles: &Vec<dlpi::DlpiHandle>,
+        pipeline: &mut Box<dyn Pipeline>,
+        log: &Logger,
+    ) {
+        if let Some((mut out_pkt, port)) = pipeline.process_packet(0, &mut pkt)
+        {
+            if port == 0 {
+                // no looping packets back to the guest
+                return;
+            }
+            Self::send_packet_to_ext_port(
+                &mut out_pkt,
+                data_handles,
+                port - 1,
+                &log,
+            );
+        }
+    }
+
+    /// Send a packet out an external port using dlpi.
+    fn send_packet_to_ext_port<'a>(
+        pkt: &mut packet_out<'a>,
+        data_handles: &Vec<dlpi::DlpiHandle>,
+        port: u16,
+        log: &Logger,
+    ) {
+        // get the dlpi handle for this port
+        let dh = data_handles[port as usize];
+
+        //TODO avoid copying the whole packet
+        let mut out = pkt.header_data.clone();
+        out.extend_from_slice(pkt.payload_data);
+
+        if let Err(e) = dlpi::send(dh, &[], out.as_slice(), None) {
+            error!(log, "tx (ext,0): {}", e);
+        }
+    }
+
+    /// Send a packet out the guest pci port using virtio.
+    fn send_packet_to_cpu_port<'a>(
+        pkt: &mut packet_out<'a>,
+        virtio: Arc<PortVirtioState>,
+        _log: &Logger,
+    ) {
+        let mem = virtio.pci_state.acc_mem.access().unwrap();
+        let mut chain = Chain::with_capacity(1);
+        let vq = &virtio.pci_virtio_state.queues[0];
+        if let None = vq.pop_avail(&mut chain, &mem) {
+            return;
+        }
+
+        // write the virtio mystery bytes
+        write_buf(&[0u8; 10], &mut chain, &mem);
+        write_buf(pkt.header_data.as_mut_slice(), &mut chain, &mem);
+        write_buf(pkt.payload_data, &mut chain, &mem);
+
+        vq.push_used(&mut chain, &mem);
     }
 }
 
@@ -643,6 +690,7 @@ pub struct TableRemove {
     pub keyset_data: Vec<u8>,
 }
 
+/// Handle ASIC management messages from the guest using the loaded program.
 fn handle_management_message(
     msg: ManagementMessage,
     pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
@@ -698,6 +746,8 @@ fn handle_management_message(
                     None => return,
                 };
 
+                // Create a response where a vector of table entries for each
+                // table is indexed by the table id.
                 let mut result = BTreeMap::new();
 
                 for id in pl.get_table_ids() {
@@ -711,6 +761,7 @@ fn handle_management_message(
                 Ok(j) => {
                     let mut buf = j.as_bytes().to_vec();
                     info!(log, "writing: {}", j);
+                    // Add trailing newline for proper tty handling.
                     buf.push('\n' as u8);
                     buf
                 }
@@ -722,6 +773,8 @@ fn handle_management_message(
 
             for b in &buf {
                 while !uart.write(*b) {
+                    // If we cannot write to the uart, yield and come back once
+                    // scheduled again.
                     std::thread::yield_now();
                 }
             }
@@ -756,10 +809,13 @@ impl ManagementMessageReader {
                 let x = match self.uart.read() {
                     Some(b) => b,
                     None => {
+                        // If we are in the middle of reading a message come
+                        // back in a tight loop. Otherwise check back less
+                        // regularly.
                         if in_message {
                             std::thread::yield_now();
                         } else {
-                            sleep(Duration::from_millis(10));
+                            sleep(Duration::from_millis(100));
                         }
                         continue;
                     }
@@ -772,9 +828,13 @@ impl ManagementMessageReader {
                 i += 1;
             }
             buf.resize(i, 0);
-            //ttys do cruel and unsual things to our messages
+            // Ttys do cruel and unusual things to our messages.
             buf.retain(|x| *x != b'\r' && *x != b'\0');
-            let msgbuf = match buf.iter().position(|b| *b == 0b11100101) {
+            // Find the premable and push the buffer beyond that point.
+            let msgbuf = match buf
+                .iter()
+                .position(|b| *b == MANAGEMENT_MESSAGE_PREAMBLE)
+            {
                 Some(p) => {
                     if p + 1 < buf.len() {
                         &buf[p + 1..]
@@ -804,9 +864,12 @@ pub struct SoftNpuP9Handler {
     pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
 }
 
+/// The file that a P4 program is written to while being streamed by the guest.
 fn p4_temp_file() -> String {
     format!("/tmp/p4_tmp_{}.so", std::process::id())
 }
+
+/// The file that is dynamically loaded onto the ASIC.
 fn p4_active_file() -> String {
     format!("/tmp/p4_active_{}.p4", std::process::id())
 }
@@ -825,10 +888,12 @@ impl SoftNpuP9Handler {
     /// guest. The program is incrementally written to a temporary file while
     /// the program is being loaded. A temporary file is used to prevent the
     /// active program's file from being written to while it is being run.
+    /// Writing to a file that is mapped by `dlopen` causes explosions.
     fn write_program(buf: &[u8], offset: u64, log: &Logger) {
         info!(log, "loading {} byte program", buf.len());
         let path = p4_temp_file();
         let mut file = match offset {
+            // This is the first write, so open the file in create mode.
             0 => match File::create(&path) {
                 Ok(f) => f,
                 Err(e) => {
@@ -836,6 +901,7 @@ impl SoftNpuP9Handler {
                     return;
                 }
             },
+            // This is a subsequent write, so open the file win append mode.
             _ => {
                 match OpenOptions::new().create(true).append(true).open(&path) {
                     Ok(f) => f,
@@ -878,6 +944,7 @@ impl SoftNpuP9Handler {
 
         if let Err(e) = fs::copy(&temp_path, &active_path) {
             warn!(log, "copying p4 program file failed: {}", e);
+            return;
         }
 
         let lib = match unsafe { Library::open(Some(&active_path), RTLD_NOW) } {
@@ -920,13 +987,19 @@ impl P9Handler for SoftNpuP9Handler {
     }
 
     fn handle_version(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        let mut msg: p9ds::proto::Version =
-            ispf::from_bytes_le(&msg_buf).unwrap();
+        let mut msg: p9ds::proto::Version = match ispf::from_bytes_le(&msg_buf)
+        {
+            Err(e) => {
+                error!(self.log, "could not parse p9fs version message: {}", e);
+                return;
+            }
+            Ok(m) => m,
+        };
         msg.typ = p9ds::proto::MessageType::Rversion;
 
         // This is a version of our own making. It's meant to deter clients that
         // may discover us from trying to use us as some sort of normal P9
-        // filesystem. It also helps clients that are actually looking for the
+        // file system. It also helps clients that are actually looking for the
         // SoftNpu P9 device to identify us as such.
         msg.version = "9P2000.P4".to_owned();
 
