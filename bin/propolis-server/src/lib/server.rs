@@ -172,10 +172,10 @@ impl ServiceProviders {
 
         if let Some(vm) = self.vm.lock().await.take_controller() {
             slog::info!(log, "Dropping instance";
-                        "strong_refs" => Arc::strong_count(&vm),
-                        "weak_refs" => Arc::weak_count(&vm),
-                        "instance_refs" => Arc::strong_count(vm.instance()),
-                    );
+                "strong_refs" => Arc::strong_count(&vm),
+                "weak_refs" => Arc::weak_count(&vm),
+                "instance_refs" => Arc::strong_count(vm.instance()),
+            );
         }
         if let Some(serial_task) = self.serial_task.lock().await.take() {
             let _ = serial_task.close_ch.send(());
