@@ -474,7 +474,7 @@ impl<'a> MachineInitializer<'a> {
 
         let pipeline = Arc::new(std::sync::Mutex::new(None));
 
-        let p9_handler = virtio::SoftNPUP9Handler::new(
+        let p9_handler = virtio::SoftNpuP9Handler::new(
             "/dev/softnpufs".to_owned(),
             "/dev/softnpufs".to_owned(),
             pipeline.clone(),
@@ -490,7 +490,7 @@ impl<'a> MachineInitializer<'a> {
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::InvalidInput,
-                    "SoftNPU p9 device missing".to_owned(),
+                    "SoftNpu p9 device missing".to_owned(),
                 )
             })?
             .pci_path
@@ -499,14 +499,14 @@ impl<'a> MachineInitializer<'a> {
                 Error::new(
                     ErrorKind::InvalidInput,
                     format!(
-                        "Couldn't get PCI BDF for SoftNPU p9 device: {}",
+                        "Couldn't get PCI BDF for SoftNpu p9 device: {}",
                         e
                     ),
                 )
             })?;
         chipset.device().pci_attach(bdf, vio9p.clone());
 
-        let softnpu = virtio::SoftNPU::new(
+        let softnpu = virtio::SoftNpu::new(
             data_links,
             queue_size,
             uart,
@@ -529,18 +529,18 @@ impl<'a> MachineInitializer<'a> {
         let bdf: pci::Bdf = pci_port.pci_path.try_into().map_err(|e| {
             Error::new(
                 ErrorKind::InvalidInput,
-                format!("Couldn't get PCI BDF for SoftNPU pci port: {}", e),
+                format!("Couldn't get PCI BDF for SoftNpu pci port: {}", e),
             )
         })?;
-        self.inv.register_instance(&softnpu.pci_port, bdf.to_string()).map_err(
-            |e| -> std::io::Error {
+        self.inv
+            .register_instance(&softnpu.pci_port, bdf.to_string())
+            .map_err(|e| -> std::io::Error {
                 let io_err: std::io::Error = e.into();
                 std::io::Error::new(
                     io_err.kind(),
                     format!("register softnpu port: {}", io_err),
                 )
-            },
-        )?;
+            })?;
         chipset.device().pci_attach(bdf, softnpu.pci_port.clone());
 
         Ok(())

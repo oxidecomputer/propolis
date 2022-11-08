@@ -46,7 +46,7 @@ mod probes {
 /// types of P9 devices to be implemented. This file includes a `HostFSHandler`
 /// implementation that allows mounting host filesystems in the guest.
 /// Currently filesystems can only be mounted as read-only. Another
-/// implementation is in the SoftNPU device that supports P4 program transfer
+/// implementation is in the SoftNpu device that supports P4 program transfer
 /// via p9fs.
 pub struct PciVirtio9pfs<Handler: P9Handler> {
     virtio_state: PciVirtioState,

@@ -42,36 +42,36 @@ const MTU: usize = 1600;
 pub const MANAGEMENT_MESSAGE_PREAMBLE: u8 = 0b11100101;
 pub const SOFTNPU_TTY: &str = "/dev/tty03";
 
-/// A software network processing unit (SoftNPU) is an ASIC emulator. It's meant
+/// A software network processing unit (SoftNpu) is an ASIC emulator. It's meant
 /// to represent a P4 programmable ASIC such as those found in programmable
 /// switches and NICs.
 ///
-/// A SoftNPU instance can support a variable number of ports. These ports are
+/// A SoftNpu instance can support a variable number of ports. These ports are
 /// specified by the user as data link names through propolis configuration.
-/// SoftNPU establishes a DLPI handle on each configured data link to perform
+/// SoftNpu establishes a DLPI handle on each configured data link to perform
 /// packet i/o.
 ///
-/// When a SoftNPU device is instantiated there is no P4 program that runs by
+/// When a SoftNpu device is instantiated there is no P4 program that runs by
 /// default. A program must be loaded onto the emulated ASIC just like a real
 /// ASIC. This is accomplished through the P9 filesystem device exposed by
-/// SoftNPU. This P9 implementation exports a specific version string 9P2000.P4
+/// SoftNpu. This P9 implementation exports a specific version string 9P2000.P4
 /// and only implements file writes to allow a consumer to upload a P4 program.
 ///
-/// SoftNPU takes precompiled P4 programs in the form of shared libraries. These
+/// SoftNpu takes precompiled P4 programs in the form of shared libraries. These
 /// shared libraries must export a [pipeline constructor](
 /// https://oxidecomputer.github.io/p4/p4rs/trait.Pipeline.html) under the symbol
 /// `_main_pipeline_create`. Programs compiled with the `x4c` compile export
 /// this symbol automatically.
 ///
 /// Once pre-compiled P4 program is loaded, the Pipeline object from that
-/// program is used to process packets. The SoftNPU device uses the illumos DLPI
+/// program is used to process packets. The SoftNpu device uses the illumos DLPI
 /// interface to send and receive raw Ethernet frames from the data link devices
 /// it has configured with. Each frame recieved is submitted to the loaded
 /// pipeline. If the pipeline invocation returns an egress port, then the egress
 /// packet returned by the pipeline will be sent to that port using DLPI. If no
 /// egress port is returned, the packet is dropped.
 ///
-/// In addition to forwarding packets between ports, SoftNPU also supports
+/// In addition to forwarding packets between ports, SoftNpu also supports
 /// forwarding packets to and from the guest. This is accomplished through a
 /// special `pci_port` device. This is a viona device that shows up in the guest
 /// as a virtio network device. When a pipeline invocation returns an egress
@@ -80,22 +80,22 @@ pub const SOFTNPU_TTY: &str = "/dev/tty03";
 /// Most P4 programs require a corresponding control plane program to manage
 /// table state. For example a program to add routing entries onto the ASIC. P4
 /// programs themselves only handle packets, they are not capable of managing
-/// table state. SoftNPU provides a uart-based management interface so that
+/// table state. SoftNpu provides a uart-based management interface so that
 /// programs running in the guest can modify the tables of the P4 program loaded
 /// onto the ASIC. This is uart plumbed into the guest as `tty03`. What tables
 /// exist and how they can be modified is up to the particular program that is
-/// loaded. SoftNPU just provdes a generic interface for table management and a
+/// loaded. SoftNpu just provdes a generic interface for table management and a
 /// few other generic ASIC housekeeping items like determining the number of
 /// ports.
-pub struct SoftNPU {
-    /// Data links SoftNPU will hook into.
+pub struct SoftNpu {
+    /// Data links SoftNpu will hook into.
     pub data_links: Vec<String>,
 
     /// DLPI handles for data links.
     pub data_handles: Vec<dlpi::DlpiHandle>,
 
     /// The PCI port.
-    pub pci_port: Arc<PciVirtioSoftNPUPort>,
+    pub pci_port: Arc<PciVirtioSoftNpuPort>,
 
     /// Virtio state for CPU port.
     virtio: Arc<PortVirtioState>,
@@ -104,7 +104,7 @@ pub struct SoftNPU {
     uart: Arc<LpcUart>,
 
     /// P9 filesystem endpoint for precompiled program transfer
-    pub p9fs: Arc<PciVirtio9pfs<SoftNPUP9Handler>>,
+    pub p9fs: Arc<PciVirtio9pfs<SoftNpuP9Handler>>,
 
     //TODO should be able to do this as a RwLock
     pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
@@ -115,12 +115,12 @@ pub struct SoftNPU {
     log: Logger,
 }
 
-unsafe impl Send for SoftNPU {}
-unsafe impl Sync for SoftNPU {}
+unsafe impl Send for SoftNpu {}
+unsafe impl Sync for SoftNpu {}
 
-/// PciVirtioSoftNPUPort is a PCI device exposed to the guest as a virtio-net
+/// PciVirtioSoftNpuPort is a PCI device exposed to the guest as a virtio-net
 /// device. This device represents a sidecar CPU port.
-pub struct PciVirtioSoftNPUPort {
+pub struct PciVirtioSoftNpuPort {
     /// Logging instance
     log: Logger,
 
@@ -163,8 +163,8 @@ impl PortVirtioState {
     }
 }
 
-impl SoftNPU {
-    /// Create a new SoftNPU device for the specified data links. The
+impl SoftNpu {
+    /// Create a new SoftNpu device for the specified data links. The
     /// `queue_size` is used for the viona device that underpins the PCI port
     /// going to the guest. The `uart` is used to provide a P4 management
     /// interface to the guest. The pipeline object is used to process packets.
@@ -174,7 +174,7 @@ impl SoftNPU {
         data_links: Vec<String>,
         queue_size: u16,
         uart: Arc<LpcUart>,
-        p9fs: Arc<PciVirtio9pfs<SoftNPUP9Handler>>,
+        p9fs: Arc<PciVirtio9pfs<SoftNpuP9Handler>>,
         pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Result<Arc<Self>> {
@@ -186,7 +186,7 @@ impl SoftNPU {
 
         let data_handles = Self::data_handles(&data_links)?;
         let virtio = Arc::new(PortVirtioState::new(queue_size));
-        let pci_port = PciVirtioSoftNPUPort::new(
+        let pci_port = PciVirtioSoftNpuPort::new(
             mac,
             data_handles.clone(),
             virtio.clone(),
@@ -194,7 +194,7 @@ impl SoftNPU {
             log.clone(),
         );
 
-        Ok(Arc::new(SoftNPU {
+        Ok(Arc::new(SoftNpu {
             data_links,
             data_handles,
             virtio,
@@ -257,7 +257,7 @@ impl SoftNPU {
     }
 }
 
-impl Entity for SoftNPU {
+impl Entity for SoftNpu {
     fn type_name(&self) -> &'static str {
         "softnpu"
     }
@@ -271,7 +271,7 @@ impl Entity for SoftNPU {
         for i in 0..self.data_handles.len() {
             info!(self.log, "starting ingress packet handler for port {}", i);
 
-            PciVirtioSoftNPUPort::run_ingress_packet_handler_thread(
+            PciVirtioSoftNpuPort::run_ingress_packet_handler_thread(
                 i,
                 self.data_handles.clone(),
                 self.virtio.clone(),
@@ -282,7 +282,7 @@ impl Entity for SoftNPU {
     }
 }
 
-impl PciVirtioSoftNPUPort {
+impl PciVirtioSoftNpuPort {
     pub fn new(
         mac: [u8; 6],
         data_handles: Vec<dlpi::DlpiHandle>,
@@ -290,7 +290,7 @@ impl PciVirtioSoftNPUPort {
         pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Arc<Self> {
-        Arc::new(PciVirtioSoftNPUPort {
+        Arc::new(PciVirtioSoftNpuPort {
             mac,
             data_handles,
             pipeline,
@@ -531,7 +531,7 @@ impl PciVirtioSoftNPUPort {
     }
 }
 
-impl Entity for PciVirtioSoftNPUPort {
+impl Entity for PciVirtioSoftNpuPort {
     fn type_name(&self) -> &'static str {
         "pci-virtio-softnpu-port"
     }
@@ -541,7 +541,7 @@ impl Entity for PciVirtioSoftNPUPort {
     }
 }
 
-impl PciVirtio for PciVirtioSoftNPUPort {
+impl PciVirtio for PciVirtioSoftNpuPort {
     fn virtio_state(&self) -> &PciVirtioState {
         &self.virtio_state.pci_virtio_state
     }
@@ -551,7 +551,7 @@ impl PciVirtio for PciVirtioSoftNPUPort {
     }
 }
 
-impl VirtioDevice for PciVirtioSoftNPUPort {
+impl VirtioDevice for PciVirtioSoftNpuPort {
     fn cfg_rw(&self, mut rwo: RWOp) {
         NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
@@ -797,7 +797,7 @@ impl ManagementMessageReader {
     }
 }
 
-pub struct SoftNPUP9Handler {
+pub struct SoftNpuP9Handler {
     source: String,
     target: String,
     log: Logger,
@@ -811,7 +811,7 @@ fn p4_active_file() -> String {
     format!("/tmp/p4_active_{}.p4", std::process::id())
 }
 
-impl SoftNPUP9Handler {
+impl SoftNpuP9Handler {
     pub fn new(
         source: String,
         target: String,
@@ -906,7 +906,7 @@ impl SoftNPUP9Handler {
 
 /// Implement a very specific P9 handler that only implements file writes in
 /// order to load P4 programs.
-impl P9Handler for SoftNPUP9Handler {
+impl P9Handler for SoftNpuP9Handler {
     fn source(&self) -> &str {
         &self.source
     }
@@ -927,7 +927,7 @@ impl P9Handler for SoftNPUP9Handler {
         // This is a version of our own making. It's meant to deter clients that
         // may discover us from trying to use us as some sort of normal P9
         // filesystem. It also helps clients that are actually looking for the
-        // SoftNPU P9 device to identify us as such.
+        // SoftNpu P9 device to identify us as such.
         msg.version = "9P2000.P4".to_owned();
 
         let mut out = ispf::to_bytes_le(&msg).unwrap();

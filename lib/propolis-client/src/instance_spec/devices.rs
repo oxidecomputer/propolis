@@ -280,7 +280,7 @@ pub struct SoftNpuPciPort {
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
-    /// The name of the SoftNPU port.
+    /// The name of the SoftNpu port.
     pub name: String,
 
     /// The name of the associated VNIC.

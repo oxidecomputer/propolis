@@ -21,9 +21,9 @@ pub use p9fs::HostFSHandler;
 #[cfg(feature = "falcon")]
 pub use p9fs::PciVirtio9pfs;
 #[cfg(feature = "falcon")]
-pub use softnpu::SoftNPU;
+pub use softnpu::SoftNpu;
 #[cfg(feature = "falcon")]
-pub use softnpu::SoftNPUP9Handler;
+pub use softnpu::SoftNpuP9Handler;
 pub use viona::PciVirtioViona;
 
 pub trait VirtioDevice: Send + Sync + 'static + Entity {

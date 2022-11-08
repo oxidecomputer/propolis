@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use super::{Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber};
 #[cfg(feature = "falcon")]
-use super::{P9fs, SoftNpuP9, SoftNpuPort, SoftNpuPciPort};
+use super::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort};
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]

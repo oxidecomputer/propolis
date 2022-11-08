@@ -455,7 +455,7 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_pci_port(SoftNpuPciPort{ pci_path })?;
+        self.builder.set_softnpu_pci_port(SoftNpuPciPort { pci_path })?;
 
         Ok(())
     }
