@@ -54,6 +54,8 @@ ls $runner
 ls $artifacts
 ls $propolis
 
+# Disable errexit so that we still upload logs on failure
+set +e
 (RUST_BACKTRACE=1 ptime -m pfexec $runner \
 	--emit-bunyan \
 	run \
@@ -62,8 +64,8 @@ ls $propolis
 	--tmp-directory $tmpdir \
 	--artifact-directory $tmpdir | \
 	tee /tmp/phd-runner.log)
-
 failcount=$?
+set -e
 
 tar -czvf /tmp/phd-tmp-files.tar.gz \
 	-C /tmp/propolis-phd /tmp/propolis-phd/*.log \

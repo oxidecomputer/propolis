@@ -23,7 +23,7 @@ tokio = { version = "1.0", features = [ "net" ], optional = true }
 
 [dependencies.crucible-client-types]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "144d8dafa41715e00b08a5929cc62140ff0eb561"
+rev = "00c1de9b165e8abff1eed6e26a5755465785fc07"
 
 [features]
 default = []

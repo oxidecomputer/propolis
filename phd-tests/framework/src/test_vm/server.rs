@@ -83,9 +83,24 @@ impl PropolisServer {
 
 impl Drop for PropolisServer {
     fn drop(&mut self) {
+        let pid = self.server.id().to_string();
+        info!(
+            pid,
+            %self.address,
+            "Killing Propolis server that was dropped"
+        );
+
         std::process::Command::new("pfexec")
-            .args(["kill", self.server.id().to_string().as_str()])
+            .args(["kill", &pid])
             .spawn()
-            .unwrap();
+            .expect("should be able to kill a phd-spawned propolis");
+
+        self.server
+            .wait()
+            .expect("should be able to wait on a phd-spawned propolis");
+
+        info!(pid,
+              %self.address,
+              "Successfully waited for demise of Propolis server that was dropped");
     }
 }

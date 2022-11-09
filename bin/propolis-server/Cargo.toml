@@ -47,7 +47,7 @@ slog = "2.7"
 propolis = { path = "../../lib/propolis", features = ["crucible-full", "oximeter"], default-features = false }
 propolis-client = { path = "../../lib/propolis-client", features = ["generated"] }
 propolis-server-config = { path = "../../crates/propolis-server-config" }
-rfb = { git = "https://github.com/oxidecomputer/rfb" }
+rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "a8a0034f83ad2695877b9fe7ce0216d33f442e44" }
 uuid = "1.0.0"
 base64 = "0.13"
 

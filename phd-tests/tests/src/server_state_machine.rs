@@ -40,7 +40,7 @@ fn instance_stop_causes_destroy_test(ctx: &TestContext) {
 #[phd_testcase]
 fn instance_reset_returns_to_running_test(ctx: &TestContext) {
     let mut vm = ctx.vm_factory.new_vm(
-        "instance_stop_returns_to_running_test",
+        "instance_reset_returns_to_running_test",
         ctx.default_vm_config(),
     )?;
 
