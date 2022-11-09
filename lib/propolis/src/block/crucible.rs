@@ -71,18 +71,13 @@ impl CrucibleBackend {
     }
 
     /// Issue a snapshot request
-    pub fn snapshot(&self, snapshot_id: Uuid) -> io::Result<()> {
-        let rt = tokio::runtime::Handle::current();
-        let res: Result<(), io::Error> = rt
-            .block_on(async {
-                self.block_io
-                    .flush(Some(SnapshotDetails {
-                        snapshot_name: snapshot_id.to_string(),
-                    }))
-                    .await
-            })
-            .map_err(CrucibleError::into);
-        res
+    pub async fn snapshot(&self, snapshot_id: Uuid) -> io::Result<()> {
+        self.block_io
+            .flush(Some(SnapshotDetails {
+                snapshot_name: snapshot_id.to_string(),
+            }))
+            .await
+            .map_err(CrucibleError::into)
     }
 }
 
