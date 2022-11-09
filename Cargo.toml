@@ -38,6 +38,4 @@ panic = "unwind"
 #crucible-client-types = { path = "../crucible/crucible-client-types" }
 
 #[patch."http://github.com/oxidecomputer/rfb"]
-# Double / here is intentional to defeat cargo's git canonicalization and allow us to
-# patch a crate using the same source.
-#rfb = { git = "http://github.com/oxidecomputer//rfb", rev = "" }
+#rfb = { path = "../rfb" }
