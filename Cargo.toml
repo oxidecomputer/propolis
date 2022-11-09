@@ -32,3 +32,7 @@ panic = "abort"
 [profile.phd]
 inherits = "dev"
 panic = "unwind"
+
+#[patch."https://github.com/oxidecomputer/crucible"]
+#crucible = { path = "../crucible/upstairs" }
+#crucible-client-types = { path = "../crucible/crucible-client-types" }
