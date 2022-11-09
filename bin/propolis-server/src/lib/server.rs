@@ -160,17 +160,22 @@ pub struct ServiceProviders {
     /// The VNC server hosted within this process. Note that this server always
     /// exists irrespective of whether there is an instance. Creating an
     /// instance hooks this server up to the instance's framebuffer.
-    vnc_server: Arc<Mutex<VncServer<PropolisVncServer>>>,
+    vnc_server: Arc<VncServer<PropolisVncServer>>,
 }
 
 impl ServiceProviders {
     /// Directs the current set of per-instance service providers to stop in an
     /// orderly fashion, then drops them all.
     async fn stop(&self, log: &Logger) {
+        // Stop the VNC server
+        self.vnc_server.stop().await;
+
         if let Some(vm) = self.vm.lock().await.take_controller() {
             slog::info!(log, "Dropping instance";
-                        "strong_refs" => Arc::strong_count(&vm),
-                        "weak_refs" => Arc::weak_count(&vm));
+                "strong_refs" => Arc::strong_count(&vm),
+                "weak_refs" => Arc::weak_count(&vm),
+                "instance_refs" => Arc::strong_count(vm.instance()),
+            );
         }
         if let Some(serial_task) = self.serial_task.lock().await.take() {
             let _ = serial_task.close_ch.send(());
@@ -195,7 +200,7 @@ impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
         config: VmTomlConfig,
-        vnc_server: VncServer<PropolisVncServer>,
+        vnc_server: Arc<VncServer<PropolisVncServer>>,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
@@ -211,7 +216,7 @@ impl DropshotEndpointContext {
                 serial_task: Mutex::new(None),
                 oximeter_server_task: Mutex::new(None),
                 oximeter_stats: Mutex::new(None),
-                vnc_server: Arc::new(Mutex::new(vnc_server)),
+                vnc_server,
             }),
             log,
         }
@@ -424,40 +429,21 @@ async fn instance_ensure(
         let ps2ctrl = vm.ps2ctrl().unwrap();
 
         // Get a reference to the outward-facing VNC server in this process.
-        let vnc_server_ref = server_context.services.vnc_server.clone();
-        let vnc_server = vnc_server_ref.lock().await;
+        let vnc_server = server_context.services.vnc_server.clone();
 
-        // Give the Propolis VNC adapter a back pointer to the VNC server to
-        // allow them to communicate bidirectionally: the VNC server pulls data
-        // from the Propolis adapter using the adapter's `rfb::server` impl, and
-        // the Propolis adapter pushes data (e.g. pixel format and resolution
-        // changes) to the VNC server using the adapter's public interface.
-        //
-        // N.B. Cloning `vnc_server` (the server guarded by the mutex) is
-        //      correct here because the `rfb::VncServer` type is just a wrapper
-        //      around the set of `Arc`s to the objecst needed to implement the
-        //      server. In other words, creating a deep copy of `vnc_server`
-        //      doesn't create a second server--it just creates a second set of
-        //      references to the set of objects that the `rfb` crate uses to
-        //      implement its behavior.
+        // Initialize the Propolis VNC adapter with references to the VM's Instance,
+        // framebuffer, and PS2 controller.
         vnc_server
             .server
-            .initialize(
-                vnc_fb,
-                Arc::clone(ps2ctrl),
-                vm.instance().clone(),
-                vnc_server.clone(),
-            )
+            .initialize(vnc_fb, Arc::clone(ps2ctrl), Arc::clone(vm.instance()))
             .await;
 
-        let notifier_server_ref = vnc_server_ref.clone();
+        // Hook up the framebuffer notifier to update the Propolis VNC adapter
+        let notifier_server_ref = vnc_server.clone();
         let rt = tokio::runtime::Handle::current();
         ramfb.set_notifier(Box::new(move |config, is_valid| {
-            let h = notifier_server_ref.clone();
-            rt.block_on(async move {
-                let vnc = h.lock().await;
-                vnc.server.update(config, is_valid).await;
-            });
+            let vnc = notifier_server_ref.clone();
+            rt.block_on(vnc.server.update(config, is_valid, &vnc));
         }));
     }
 

@@ -15,6 +15,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+const INITIAL_WIDTH: u16 = 1024;
+const INITIAL_HEIGHT: u16 = 768;
+
 #[derive(Debug, Clone, Copy)]
 pub struct RamFb {
     addr: u64,
@@ -47,7 +50,6 @@ enum Framebuffer {
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
     ps2ctrl: Option<Arc<PS2Ctrl>>,
-    vnc_server: Option<VncServer<PropolisVncServer>>,
     instance: Option<Arc<Instance>>,
 }
 
@@ -66,7 +68,6 @@ impl PropolisVncServer {
                     height: initial_height,
                 }),
                 ps2ctrl: None,
-                vnc_server: None,
                 instance: None,
             })),
             log,
@@ -78,16 +79,19 @@ impl PropolisVncServer {
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,
         instance: Arc<Instance>,
-        vnc_server: VncServer<Self>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
         inner.ps2ctrl = Some(ps2ctrl);
-        inner.vnc_server = Some(vnc_server);
         inner.instance = Some(instance);
     }
 
-    pub async fn update(&self, config: &Config, is_valid: bool) {
+    pub async fn update(
+        &self,
+        config: &Config,
+        is_valid: bool,
+        rfb_server: &VncServer<Self>,
+    ) {
         if is_valid {
             debug!(self.log, "updating framebuffer");
 
@@ -102,12 +106,7 @@ impl PropolisVncServer {
 
             match fourcc::fourcc_to_pixel_format(fb.fourcc) {
                 Ok(pf) => {
-                    inner
-                        .vnc_server
-                        .as_ref()
-                        .unwrap()
-                        .set_pixel_format(pf)
-                        .await;
+                    rfb_server.set_pixel_format(pf).await;
                     info!(
                         self.log,
                         "pixel format set to fourcc={:#04x}", fb.fourcc
@@ -151,11 +150,13 @@ impl Server for PropolisVncServer {
                 let len = fb.height as usize * fb.width as usize * 4;
                 let mut buf = vec![0u8; len];
 
-                let instance_guard = inner.instance.as_ref().unwrap().lock();
-                let memctx = instance_guard.machine().acc_mem.access().unwrap();
-                let read = memctx.read_into(GuestAddr(fb.addr), &mut buf, len);
-                drop(memctx);
-                drop(instance_guard);
+                let read = tokio::task::block_in_place(|| {
+                    let instance_guard =
+                        inner.instance.as_ref().unwrap().lock();
+                    let memctx =
+                        instance_guard.machine().acc_mem.access().unwrap();
+                    memctx.read_into(GuestAddr(fb.addr), &mut buf, len)
+                });
 
                 assert!(read.is_some());
                 debug!(self.log, "read {} bytes from guest", read.unwrap());
@@ -185,16 +186,25 @@ impl Server for PropolisVncServer {
             trace!(self.log, "guest not initialized; dropping keyevent");
         }
     }
+
+    async fn stop(&self) {
+        info!(self.log, "stopping VNC server");
+
+        let mut inner = self.inner.lock().await;
+        inner.framebuffer = Framebuffer::Uninitialized(DefaultFb {
+            width: INITIAL_WIDTH,
+            height: INITIAL_HEIGHT,
+        });
+        inner.ps2ctrl = None;
+        inner.instance = None;
+    }
 }
 
 // Default VNC server configuration.
 pub fn setup_vnc(
     log: &Logger,
     addr: SocketAddr,
-) -> VncServer<PropolisVncServer> {
-    let initial_width = 1024;
-    let initial_height = 768;
-
+) -> Arc<VncServer<PropolisVncServer>> {
     let config = VncServerConfig {
         addr,
         version: ProtoVersion::Rfb38,
@@ -209,13 +219,13 @@ pub fn setup_vnc(
 
     let pf = fourcc::fourcc_to_pixel_format(fourcc::FOURCC_XR24).unwrap();
     let data = VncServerData {
-        width: initial_width,
-        height: initial_height,
+        width: INITIAL_WIDTH,
+        height: INITIAL_HEIGHT,
         input_pixel_format: pf,
     };
     let pvnc = PropolisVncServer::new(
-        initial_width,
-        initial_height,
+        INITIAL_WIDTH,
+        INITIAL_HEIGHT,
         log.new(o!("component" => "vnc-server")),
     );
 

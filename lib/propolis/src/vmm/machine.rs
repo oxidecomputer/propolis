@@ -285,9 +285,9 @@ impl Builder {
 }
 impl Drop for Builder {
     fn drop(&mut self) {
-        if self.inner_hdl.is_some() {
+        if let Some(hdl) = &self.inner_hdl {
             // Do not allow the vmm device to persist
-            self.inner_hdl.as_mut().unwrap().destroy().unwrap();
+            hdl.destroy().unwrap();
         }
     }
 }

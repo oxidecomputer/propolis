@@ -36,3 +36,6 @@ panic = "unwind"
 #[patch."https://github.com/oxidecomputer/crucible"]
 #crucible = { path = "../crucible/upstairs" }
 #crucible-client-types = { path = "../crucible/crucible-client-types" }
+
+#[patch."http://github.com/oxidecomputer/rfb"]
+#rfb = { path = "../rfb" }
