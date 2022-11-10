@@ -71,14 +71,22 @@ tar -czvf /tmp/phd-tmp-files.tar.gz \
 	-C /tmp/propolis-phd /tmp/propolis-phd/*.log \
 	-C /tmp/propolis-phd /tmp/propolis-phd/*.toml
 
+exitcode=0
 if [ $failcount -eq 0 ]; then
 	echo
 	echo "ALL TESTS PASSED"
 	echo
-	exit 0
 else
 	echo
 	echo "SOME TESTS FAILED"
 	echo
-	exit 1
+	exitcode=1
 fi
+
+if find /dev/vmm -mindepth 1 -maxdepth 1 | read ; then
+	echo "VMM handles leaked:"
+	find /dev/vmm -type c -exec basename {} \;
+	exitcode=2
+fi
+
+exit $exitcode

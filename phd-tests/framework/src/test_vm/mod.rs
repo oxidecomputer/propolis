@@ -19,7 +19,7 @@ use propolis_client::handmade::{
 use slog::Drain;
 use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
-use tracing::{info, info_span, instrument, Instrument};
+use tracing::{info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
 use self::vm_config::VmConfig;
@@ -51,6 +51,7 @@ enum VmState {
 /// and [`TestVm::wait_to_boot`] calls so they can begin interacting with the
 /// serial console.
 pub struct TestVm {
+    id: Uuid,
     rt: tokio::runtime::Runtime,
     client: Client,
     server: server::PropolisServer,
@@ -86,9 +87,10 @@ impl TestVm {
         process_params: server::ServerProcessParameters<T>,
         vm_config: vm_config::VmConfig,
     ) -> Result<Self> {
+        let id = Uuid::new_v4();
         let guest_os_kind = vm_config.guest_os_kind();
         info!(?process_params, ?vm_config, ?guest_os_kind);
-        let span = info_span!(parent: None, "VM", vm = ?vm_name);
+        let span = info_span!(parent: None, "VM", vm = ?vm_name, %id);
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
@@ -106,6 +108,7 @@ impl TestVm {
         );
 
         Ok(Self {
+            id,
             rt,
             client,
             server,
@@ -141,10 +144,9 @@ impl TestVm {
             }
         };
 
-        let vm_id = Uuid::new_v4();
         let properties = InstanceProperties {
-            id: vm_id,
-            name: format!("phd-vm-{}", vm_id),
+            id: self.id,
+            name: format!("phd-vm-{}", self.id),
             description: "Pheidippides-managed VM".to_string(),
             image_id: Uuid::default(),
             bootrom_id: Uuid::default(),
@@ -517,6 +519,41 @@ impl TestVm {
         match &self.state {
             VmState::Ensured { serial } => serial.send_bytes(bytes).await,
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
+        }
+    }
+}
+
+impl Drop for TestVm {
+    fn drop(&mut self) {
+        let _span = self.tracing_span.enter();
+
+        if let VmState::New = self.state {
+            // Instance never ensured, nothing to do.
+            return;
+        }
+
+        match self.get().map(|r| r.instance.state) {
+            Ok(InstanceState::Destroyed) => {
+                // Instance already destroyed, nothing to do.
+            }
+            Ok(_) => {
+                // Instance is up, best-effort attempt to let it clean up gracefully.
+                info!("Cleaning up Test VM on drop");
+                if let Err(err) = self.stop() {
+                    warn!(?err, "Stop request failed for Test VM cleanup");
+                    return;
+                }
+                if let Err(err) = self.wait_for_state(
+                    InstanceState::Destroyed,
+                    Duration::from_secs(5),
+                ) {
+                    warn!(?err, "Test VM failed to clean up");
+                }
+            }
+            Err(err) => {
+                // Instance should've been ensured by this point so an error is unexpected.
+                warn!(?err, "Unexpected error from instance");
+            }
         }
     }
 }
