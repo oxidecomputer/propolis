@@ -19,7 +19,7 @@ use propolis_client::handmade::{
 use slog::Drain;
 use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
-use tracing::{info, info_span, instrument, Instrument};
+use tracing::{info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
 use self::vm_config::VmConfig;
@@ -539,15 +539,20 @@ impl Drop for TestVm {
             Ok(_) => {
                 // Instance is up, best-effort attempt to let it clean up gracefully.
                 info!("Cleaning up Test VM on drop");
-                let _ = self.stop();
-                let _ = self.wait_for_state(
+                if let Err(err) = self.stop() {
+                    warn!(?err, "Stop request failed for Test VM cleanup");
+                    return;
+                }
+                if let Err(err) = self.wait_for_state(
                     InstanceState::Destroyed,
                     Duration::from_secs(5),
-                );
+                ) {
+                    warn!(?err, "Test VM failed to clean up");
+                }
             }
             Err(err) => {
                 // Instance should've been ensured by this point so an error is unexpected.
-                tracing::warn!("Unexpected error from instance: {err}");
+                warn!(?err, "Unexpected error from instance");
             }
         }
     }
