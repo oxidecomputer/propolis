@@ -9,7 +9,7 @@ use clap::Parser;
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
 };
-use futures::join;
+use futures::{try_join, TryFutureExt};
 use propolis::usdt::register_probes;
 use slog::info;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
@@ -109,12 +109,19 @@ async fn main() -> anyhow::Result<()> {
                 context,
                 &log,
             )
-            .map_err(|error| anyhow!("Failed to start server: {}", error))?
-            .start();
+            .map_err(|error| {
+                anyhow!("Failed to start dropshot server: {error}")
+            })?
+            .start()
+            .map_err(|error| {
+                anyhow!("Dropshot server exited with an error: {error}")
+            });
 
-            let server_res = join!(server, vnc_server_hdl.start()).0;
-            server_res
-                .map_err(|e| anyhow!("Server exited with an error: {}", e))
+            let vnc_server = vnc_server_hdl.start().map_err(|error| {
+                anyhow!("Failed to start VNC server: {error}")
+            });
+
+            try_join!(server, vnc_server).map(|_| ())
         }
     }
 }

@@ -47,7 +47,8 @@ slog = "2.7"
 propolis = { path = "../../lib/propolis", features = ["crucible-full", "oximeter"], default-features = false }
 propolis-client = { path = "../../lib/propolis-client", features = ["generated"] }
 propolis-server-config = { path = "../../crates/propolis-server-config" }
-rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0cac8d9c25eb27acfa35df80f3b9d371de98ab3b" }
+# TODO: Update once https://github.com/oxidecomputer/rfb/pull/10 lands
+rfb = { git = "https://github.com/oxidecomputer/rfb", branch = "luqmana/stop-for-real" }
 uuid = "1.0.0"
 base64 = "0.13"
 

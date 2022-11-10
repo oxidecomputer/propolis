@@ -167,8 +167,9 @@ impl ServiceProviders {
     /// Directs the current set of per-instance service providers to stop in an
     /// orderly fashion, then drops them all.
     async fn stop(&self, log: &Logger) {
-        // Stop the VNC server
-        self.vnc_server.stop().await;
+        if let Err(err) = self.vnc_server.stop().await {
+            slog::error!(log, "Failed to stop VNC server"; "err" => ?err);
+        }
 
         if let Some(vm) = self.vm.lock().await.take_controller() {
             slog::info!(log, "Dropping instance";

@@ -23,7 +23,8 @@ usdt = { version = "0.3.2", default-features = false }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 anyhow = "1"
-rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0cac8d9c25eb27acfa35df80f3b9d371de98ab3b" }
+# TODO: Update once https://github.com/oxidecomputer/rfb/pull/10 lands
+rfb = { git = "https://github.com/oxidecomputer/rfb", branch = "luqmana/stop-for-real" }
 slog = "2.7"
 serde = { version = "1" }
 serde_arrays = "0.1"
