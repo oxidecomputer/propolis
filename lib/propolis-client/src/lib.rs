@@ -37,8 +37,6 @@ pub use types as api;
 #[cfg(feature = "generated-migration")]
 mod _compat_impls {
     use super::{generated, handmade};
-    use crucible_client_types::VolumeConstructionRequest as CrucibleVCR;
-    use generated::types::VolumeConstructionRequest as GenVCR;
 
     impl Into<generated::types::DiskRequest> for handmade::api::DiskRequest {
         fn into(self) -> generated::types::DiskRequest {
@@ -62,68 +60,6 @@ mod _compat_impls {
     impl Into<generated::types::Slot> for handmade::api::Slot {
         fn into(self) -> generated::types::Slot {
             generated::types::Slot(self.0)
-        }
-    }
-
-    impl From<CrucibleVCR> for GenVCR {
-        fn from(vcr: CrucibleVCR) -> Self {
-            match vcr {
-                CrucibleVCR::Volume {
-                    id,
-                    block_size,
-                    sub_volumes,
-                    read_only_parent,
-                } => GenVCR::Volume {
-                    id,
-                    block_size,
-                    sub_volumes: sub_volumes
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
-                    read_only_parent: read_only_parent
-                        .map(|rop| Box::new((*rop).into())),
-                },
-                CrucibleVCR::Url { id, block_size, url } => {
-                    GenVCR::Url { id, block_size, url }
-                }
-                CrucibleVCR::Region { block_size, opts, gen } => {
-                    GenVCR::Region { block_size, opts: opts.into(), gen }
-                }
-                CrucibleVCR::File { id, block_size, path } => {
-                    GenVCR::File { id, block_size, path }
-                }
-            }
-        }
-    }
-
-    impl From<crucible_client_types::CrucibleOpts>
-        for generated::types::CrucibleOpts
-    {
-        fn from(opts: crucible_client_types::CrucibleOpts) -> Self {
-            let crucible_client_types::CrucibleOpts {
-                id,
-                target,
-                lossy,
-                flush_timeout,
-                key,
-                cert_pem,
-                key_pem,
-                root_cert_pem,
-                control,
-                read_only,
-            } = opts;
-            generated::types::CrucibleOpts {
-                id,
-                target: target.into_iter().map(|t| t.to_string()).collect(),
-                lossy,
-                flush_timeout,
-                key,
-                cert_pem,
-                key_pem,
-                root_cert_pem,
-                control: control.map(|c| c.to_string()),
-                read_only,
-            }
         }
     }
 }

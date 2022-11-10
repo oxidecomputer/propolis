@@ -56,7 +56,7 @@
 //! accept a v1 spec despite not being able to supply a default value for a new
 //! field.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,9 @@ pub use propolis_types::PciPath;
 mod backends;
 mod builder;
 mod devices;
+
+#[cfg(any(feature = "generated", feature = "generated-migration"))]
+mod to_generated;
 
 pub use backends::*;
 pub use builder::*;
@@ -191,7 +194,7 @@ trait MigrationCollection {
     ) -> Result<(), CollectionCompatibilityError>;
 }
 
-impl<T: MigrationElement> MigrationCollection for BTreeMap<SpecKey, T> {
+impl<T: MigrationElement> MigrationCollection for HashMap<SpecKey, T> {
     // Two keyed maps of components are compatible if they contain all the same
     // keys and if, for each key, the corresponding values are
     // migration-compatible.
@@ -227,7 +230,7 @@ impl<T: MigrationElement> MigrationCollection for BTreeMap<SpecKey, T> {
     }
 }
 
-impl MigrationCollection for BTreeSet<SpecKey> {
+impl MigrationCollection for HashSet<SpecKey> {
     // Two sets of spec keys are compatible if they have all the same members.
     fn can_migrate_from_collection(
         &self,
@@ -289,7 +292,7 @@ mod test {
     // works correctly with a simple test type.
     #[test]
     fn generic_map_compatibility() {
-        let m1: BTreeMap<SpecKey, TestComponent> = BTreeMap::from([
+        let m1: HashMap<SpecKey, TestComponent> = HashMap::from([
             ("widget".to_string(), TestComponent::Widget),
             ("gizmo".to_string(), TestComponent::Gizmo),
             ("contraption".to_string(), TestComponent::Contraption),

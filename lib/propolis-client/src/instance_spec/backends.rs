@@ -30,7 +30,7 @@
 //! protocol and need some care to be versioned correctly. See the struct
 //! comments below for more information.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
 
 use super::{MigrationCollection, MigrationCompatibilityError, SpecKey};
 use schemars::JsonSchema;
@@ -89,8 +89,8 @@ pub struct NetworkBackend {
 /// A wrapper type for all the backends in an instance spec.
 #[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
 pub struct BackendSpec {
-    pub storage_backends: BTreeMap<SpecKey, StorageBackend>,
-    pub network_backends: BTreeMap<SpecKey, NetworkBackend>,
+    pub storage_backends: HashMap<SpecKey, StorageBackend>,
+    pub network_backends: HashMap<SpecKey, NetworkBackend>,
 }
 
 /// A helper type representing just the names of the backends in a particular
@@ -109,11 +109,11 @@ pub struct BackendSpec {
 #[derive(Default, Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct BackendNames {
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    storage: BTreeSet<SpecKey>,
+    #[serde(skip_serializing_if = "HashSet::is_empty")]
+    storage: HashSet<SpecKey>,
 
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    network: BTreeSet<SpecKey>,
+    #[serde(skip_serializing_if = "HashSet::is_empty")]
+    network: HashSet<SpecKey>,
 }
 
 impl From<&BackendSpec> for BackendNames {

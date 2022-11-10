@@ -880,6 +880,28 @@
               "Virtio"
             ],
             "additionalProperties": false
+          },
+          {
+            "description": "A DLPI backend associated with the supplied named vNIC on the host.",
+            "type": "object",
+            "properties": {
+              "Dlpi": {
+                "type": "object",
+                "properties": {
+                  "vnic_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vnic_name"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "Dlpi"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -1071,23 +1093,17 @@
         "description": "A kind of storage backend: a connection to on-sled resources or other services that provide the functions storage devices need to implement their contracts.",
         "oneOf": [
           {
-            "description": "A Crucible-backed device, containing a generation number and a construction request.",
+            "description": "A Crucible-backed device, containing a construction request.",
             "type": "object",
             "properties": {
               "Crucible": {
                 "type": "object",
                 "properties": {
-                  "gen": {
-                    "type": "integer",
-                    "format": "uint64",
-                    "minimum": 0
-                  },
                   "req": {
                     "$ref": "#/components/schemas/VolumeConstructionRequest"
                   }
                 },
                 "required": [
-                  "gen",
                   "req"
                 ],
                 "additionalProperties": false

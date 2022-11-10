@@ -21,7 +21,7 @@
 //! requirements, device specs should use only types defined in the crate or
 //! built-in Rust types.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use super::{
     ElementCompatibilityError, MigrationCollection,
@@ -328,14 +328,14 @@ pub struct P9fs {
 #[serde(deny_unknown_fields)]
 pub struct DeviceSpec {
     pub board: Board,
-    pub storage_devices: BTreeMap<SpecKey, StorageDevice>,
-    pub network_devices: BTreeMap<SpecKey, NetworkDevice>,
-    pub serial_ports: BTreeMap<SpecKey, SerialPort>,
-    pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+    pub storage_devices: HashMap<SpecKey, StorageDevice>,
+    pub network_devices: HashMap<SpecKey, NetworkDevice>,
+    pub serial_ports: HashMap<SpecKey, SerialPort>,
+    pub pci_pci_bridges: HashMap<SpecKey, PciPciBridge>,
     #[cfg(feature = "falcon")]
     pub softnpu_pci_port: Option<SoftNpuPciPort>,
     #[cfg(feature = "falcon")]
-    pub softnpu_ports: BTreeMap<SpecKey, SoftNpuPort>,
+    pub softnpu_ports: HashMap<SpecKey, SoftNpuPort>,
     #[cfg(feature = "falcon")]
     pub softnpu_p9: Option<SoftNpuP9>,
     #[cfg(feature = "falcon")]
