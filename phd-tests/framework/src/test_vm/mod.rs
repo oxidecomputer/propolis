@@ -522,3 +522,33 @@ impl TestVm {
         }
     }
 }
+
+impl Drop for TestVm {
+    fn drop(&mut self) {
+        let _span = self.tracing_span.enter();
+
+        if let VmState::New = self.state {
+            // Instance never ensured, nothing to do.
+            return;
+        }
+
+        match self.get().map(|r| r.instance.state) {
+            Ok(InstanceState::Destroyed) => {
+                // Instance already destroyed, nothing to do.
+            }
+            Ok(_) => {
+                // Instance is up, best-effort attempt to let it clean up gracefully.
+                info!("Cleaning up Test VM on drop");
+                let _ = self.stop();
+                let _ = self.wait_for_state(
+                    InstanceState::Destroyed,
+                    Duration::from_secs(5),
+                );
+            }
+            Err(err) => {
+                // Instance should've been ensured by this point so an error is unexpected.
+                tracing::warn!("Unexpected error from instance: {err}");
+            }
+        }
+    }
+}
