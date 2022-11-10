@@ -51,6 +51,7 @@ enum VmState {
 /// and [`TestVm::wait_to_boot`] calls so they can begin interacting with the
 /// serial console.
 pub struct TestVm {
+    id: Uuid,
     rt: tokio::runtime::Runtime,
     client: Client,
     server: server::PropolisServer,
@@ -86,9 +87,10 @@ impl TestVm {
         process_params: server::ServerProcessParameters<T>,
         vm_config: vm_config::VmConfig,
     ) -> Result<Self> {
+        let id = Uuid::new_v4();
         let guest_os_kind = vm_config.guest_os_kind();
         info!(?process_params, ?vm_config, ?guest_os_kind);
-        let span = info_span!(parent: None, "VM", vm = ?vm_name);
+        let span = info_span!(parent: None, "VM", vm = ?vm_name, %id);
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
@@ -106,6 +108,7 @@ impl TestVm {
         );
 
         Ok(Self {
+            id,
             rt,
             client,
             server,
@@ -141,10 +144,9 @@ impl TestVm {
             }
         };
 
-        let vm_id = Uuid::new_v4();
         let properties = InstanceProperties {
-            id: vm_id,
-            name: format!("phd-vm-{}", vm_id),
+            id: self.id,
+            name: format!("phd-vm-{}", self.id),
             description: "Pheidippides-managed VM".to_string(),
             image_id: Uuid::default(),
             bootrom_id: Uuid::default(),
