@@ -9,6 +9,7 @@
 #: ]
 #: access_repos = [
 #:   "oxidecomputer/p4",
+#:   "oxidecomputer/softnpu",
 #: ]
 #: [[publish]]
 #: series = "image"

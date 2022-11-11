@@ -9,6 +9,7 @@
 #: ]
 #: access_repos = [
 #:   "oxidecomputer/p4",
+#:   "oxidecomputer/softnpu",
 #: ]
 
 set -o errexit

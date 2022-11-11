@@ -25,6 +25,7 @@ use super::{
 };
 
 use p4rs::{packet_in, packet_out, Pipeline};
+use softnpu_lib::mgmt::ManagementRequest;
 
 use crate::hw::virtio::p9fs::{P9Handler, PciVirtio9pfs};
 use dlpi::sys::dlpi_recvinfo_t;
@@ -337,8 +338,8 @@ impl PciVirtioSoftNpuPort {
                 if n > 0 {
                     push_used = true;
                 }
-                error!(self.log, "failed to read virtio mystery bytes");
-                break;
+                warn!(self.log, "failed to read virtio mystery bytes ({})", n);
+                //break;
             }
 
             let mut frame = [0u8; MTU];
@@ -666,33 +667,9 @@ fn write_buf(buf: &[u8], chain: &mut Chain, mem: &MemCtx) -> usize {
     })
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub enum ManagementMessage {
-    #[default]
-    RadixRequest,
-    TableAdd(TableAdd),
-    TableRemove(TableRemove),
-    RadixResponse(u16),
-    DumpRequest,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct TableAdd {
-    pub table: String,
-    pub action: String,
-    pub keyset_data: Vec<u8>,
-    pub parameter_data: Vec<u8>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct TableRemove {
-    pub table: String,
-    pub keyset_data: Vec<u8>,
-}
-
 /// Handle ASIC management messages from the guest using the loaded program.
 fn handle_management_message(
-    msg: ManagementMessage,
+    msg: ManagementRequest,
     pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
     uart: Arc<LpcUart>,
     radix: usize,
@@ -701,7 +678,7 @@ fn handle_management_message(
     let mut pl_opt = pipeline.lock().unwrap();
 
     match msg {
-        ManagementMessage::TableAdd(tm) => {
+        ManagementRequest::TableAdd(tm) => {
             let pl = match &mut *pl_opt {
                 Some(pl) => pl,
                 None => return,
@@ -713,15 +690,14 @@ fn handle_management_message(
                 &tm.parameter_data,
             );
         }
-        ManagementMessage::TableRemove(tm) => {
+        ManagementRequest::TableRemove(tm) => {
             let pl = match &mut *pl_opt {
                 Some(pl) => pl,
                 None => return,
             };
             pl.1.remove_table_entry(&tm.table, &tm.keyset_data);
         }
-        ManagementMessage::RadixResponse(_) => {}
-        ManagementMessage::RadixRequest => {
+        ManagementRequest::RadixRequest => {
             // the data is being sent back as ascii text because this is the
             // simplest way for the guest tty device to handle the data. control
             // characters coming through the pipe are acted on differently and
@@ -738,7 +714,7 @@ fn handle_management_message(
             }
             info!(log, "wrote: {:?}", buf.len());
         }
-        ManagementMessage::DumpRequest => {
+        ManagementRequest::DumpRequest => {
             info!(log, "dumping state");
             let result = {
                 let pl = match &mut *pl_opt {
@@ -799,7 +775,7 @@ impl ManagementMessageReader {
         Self { uart, log }
     }
 
-    fn read(&self) -> ManagementMessage {
+    fn read(&self) -> ManagementRequest {
         loop {
             let mut buf = Vec::new();
             buf.resize(10240, 0u8);

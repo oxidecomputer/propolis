@@ -52,10 +52,17 @@ optional = true
 git = "https://github.com/oxidecomputer/omicron"
 branch = "main"
 optional = true
+
 [dependencies.p4rs]
 git = "https://github.com/oxidecomputer/p4"
 branch = "main"
 optional = true 
+
+[dependencies.softnpu-lib]
+git = "https://github.com/oxidecomputer/softnpu"
+branch = "main"
+optional = true
+package = "softnpu"
 
 #see: https://github.com/oxidecomputer/dlpi-sys/issues/1
 [dependencies.dlpi]
@@ -75,4 +82,4 @@ rand = "0.8"
 default = ["dtrace-probes"]
 dtrace-probes = ["usdt/asm"]
 crucible-full = ["crucible", "crucible-client-types", "oximeter"]
-falcon = ["libloading", "p9ds", "dlpi", "p4rs", "ispf", "rand"]
+falcon = ["libloading", "p9ds", "dlpi", "p4rs", "ispf", "rand", "softnpu-lib"]
