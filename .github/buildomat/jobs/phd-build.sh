@@ -7,10 +7,6 @@
 #: output_rules = [
 #:   "/out/*",
 #: ]
-#: access_repos = [
-#:   "oxidecomputer/p4",
-#:   "oxidecomputer/softnpu",
-#: ]
 
 set -o errexit
 set -o pipefail
