@@ -7,6 +7,7 @@
 #: output_rules = [
 #:   "/out/*",
 #: ]
+#:
 #: [[publish]]
 #: series = "image"
 #: name = "propolis-server.tar.gz"
