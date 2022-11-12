@@ -163,6 +163,11 @@ pub(crate) struct VmObjects {
     /// A notification receiver to which the state worker publishes the most
     /// recent instance state and state generation.
     monitor_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
+
+    /// The sender side of the watcher that records the instance's externally
+    /// visible state, i.e., the state returned when a client invokes the
+    /// server's `get` API.
+    api_state: Arc<tokio::sync::watch::Sender<ApiMonitoredState>>,
 }
 
 /// A message sent from a live migration destination task to update the
@@ -325,7 +330,7 @@ struct WorkerStateInner {
     /// The sender side of the watcher that records the instance's externally
     /// visible state, i.e., the state returned when a client invokes the
     /// server's `get` API.
-    api_state: tokio::sync::watch::Sender<ApiMonitoredState>,
+    api_state: Arc<tokio::sync::watch::Sender<ApiMonitoredState>>,
 
     /// The state of the most recently attempted migration into or out of this
     /// instance, or None if no migration has ever been attempted.
@@ -350,22 +355,8 @@ impl WorkerStateInner {
     }
 }
 
-impl Drop for WorkerStateInner {
-    fn drop(&mut self) {
-        // Send a final state monitor message indicating that the instance is
-        // destroyed. Normally, the existence of this structure implies the
-        // instance of at least one receiver, but at this point everything is
-        // being dropped, so this call to `send` is not safe to unwrap.
-        let gen = self.api_state.borrow().gen + 1;
-        let _ = self.api_state.send(ApiMonitoredState {
-            gen,
-            state: ApiInstanceState::Destroyed,
-        });
-    }
-}
-
 impl WorkerStateInner {
-    fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
+    fn new(watch: Arc<tokio::sync::watch::Sender<ApiMonitoredState>>) -> Self {
         Self {
             lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
             marked_migration_source: false,
@@ -501,8 +492,9 @@ impl VmController {
                 gen: 0,
                 state: ApiInstanceState::Creating,
             });
+        let monitor_tx = Arc::new(monitor_tx);
         let worker_state = Arc::new(WorkerState {
-            inner: Mutex::new(WorkerStateInner::new(monitor_tx)),
+            inner: Mutex::new(WorkerStateInner::new(monitor_tx.clone())),
             cv: Condvar::new(),
         });
 
@@ -551,6 +543,7 @@ impl VmController {
                 ps2ctrl,
                 crucible_backends,
                 monitor_rx,
+                api_state: monitor_tx,
             },
             runtime_hdl,
             worker_state,
@@ -576,6 +569,60 @@ impl VmController {
 
         *controller.worker_thread.lock().unwrap() = Some(worker_thread);
         Ok(controller)
+    }
+
+    pub fn stop(self: Arc<VmController>) {
+        let worker_thread = self.worker_thread.lock().unwrap().take();
+
+        let failed = match worker_thread.map(|t| t.join()) {
+            // Worker thread cleanly exited
+            Some(Ok(_)) => false,
+            Some(Err(err)) => {
+                error!(self.log, "VmController worker thread failed"; "err" => ?err);
+                true
+            }
+            None => {
+                error!(self.log, "Active VmController without a worker thread");
+                true
+            }
+        };
+
+        info!(self.log, "Dropping VmController";
+            "strong_refs" => Arc::strong_count(&self),
+            "weak_refs" => Arc::weak_count(&self),
+            "instance_refs" => Arc::strong_count(self.instance()),
+        );
+
+        let api_state = match Arc::try_unwrap(self) {
+            Ok(vm) => {
+                // We should have the only reference to the instance at this point
+                debug_assert_eq!(Arc::strong_count(vm.instance()), 1);
+
+                // Grab the sender side of the watcher for the instance state
+                vm.vm_objects.api_state.clone()
+
+                // Once the VmController (vm) is dropped here, so too will the last
+                // reference to the instance thus cleaning up its VMM handle.
+            }
+            Err(vm) => {
+                error!(vm.log, "VmController has outstanding references");
+                vm.vm_objects.api_state.clone()
+            }
+        };
+
+        // Send a final state monitor message marking the instance as failed
+        // or destroyed. Normally, the existence of this structure implies the
+        // instance of at least one receiver, but at this point everything is
+        // being dropped, so this call to `send` is not safe to unwrap.
+        let gen = api_state.borrow().gen + 1;
+        let _ = api_state.send(ApiMonitoredState {
+            gen,
+            state: if failed {
+                ApiInstanceState::Failed
+            } else {
+                ApiInstanceState::Destroyed
+            },
+        });
     }
 
     pub fn properties(&self) -> &InstanceProperties {
