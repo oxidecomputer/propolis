@@ -69,8 +69,11 @@ mod backends;
 mod builder;
 mod devices;
 
+// If this module was built with a generated OpenAPI client, also build in some
+// `From` impls that convert from native instance spec types to the generated
+// types.
 #[cfg(any(feature = "generated", feature = "generated-migration"))]
-mod to_generated;
+mod openapi_impls;
 
 pub use backends::*;
 pub use builder::*;
