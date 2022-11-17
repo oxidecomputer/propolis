@@ -130,7 +130,7 @@ impl Client {
 
     pub async fn instance_spec_ensure(
         &self,
-        request: &api::InstanceEnsureFromSpecRequest,
+        request: &api::InstanceSpecEnsureRequest,
     ) -> Result<api::InstanceEnsureResponse, Error> {
         let path = format!("http://{}/instance/spec", self.address,);
         let body = Body::from(serde_json::to_string(&request).unwrap());

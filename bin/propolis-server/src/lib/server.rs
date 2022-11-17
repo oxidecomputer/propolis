@@ -15,7 +15,6 @@ use dropshot::{
 };
 use hyper::{Body, Response};
 use oximeter::types::ProducerRegistry;
-use propolis_client::handmade::api::InstanceSpecGetResponse;
 use propolis_client::{
     handmade::api,
     instance_spec::{self, InstanceSpec},
@@ -125,7 +124,7 @@ impl VmControllerState {
                 nics: vec![],
             };
 
-            let last_spec = vm.instance_spec().clone();
+            let last_instance_spec = vm.instance_spec().clone();
 
             // The server is about to drop its reference to the controller, but
             // the controller may continue changing state while it tears itself
@@ -136,7 +135,7 @@ impl VmControllerState {
                 self,
                 VmControllerState::Destroyed {
                     last_instance,
-                    last_instance_spec: last_spec,
+                    last_instance_spec,
                     watcher,
                 },
             ) {
@@ -324,14 +323,11 @@ async fn register_oximeter(
 
 async fn instance_ensure_common(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: api::InstanceEnsureFromSpecRequest,
+    request: api::InstanceSpecEnsureRequest,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
-    let api::InstanceEnsureFromSpecRequest {
-        properties,
-        instance_spec,
-        migrate,
-    } = request;
+    let api::InstanceSpecEnsureRequest { properties, instance_spec, migrate } =
+        request;
 
     // Handle requests to an instance that has already been initialized. Treat
     // the instances as compatible (and return Ok) if they have the same
@@ -496,7 +492,7 @@ async fn instance_ensure(
 
     instance_ensure_common(
         rqctx,
-        api::InstanceEnsureFromSpecRequest {
+        api::InstanceSpecEnsureRequest {
             properties: request.properties,
             instance_spec,
             migrate: request.migrate,
@@ -511,7 +507,7 @@ async fn instance_ensure(
 }]
 async fn instance_spec_ensure(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureFromSpecRequest>,
+    request: TypedBody<api::InstanceSpecEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     instance_ensure_common(rqctx, request.into_inner()).await
 }
@@ -522,7 +518,7 @@ async fn instance_spec_ensure(
 }]
 async fn instance_spec_get(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<InstanceSpecGetResponse>, HttpError> {
+) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
     let ctx = rqctx.context();
     let (properties, state, spec) = match &*ctx.services.vm.lock().await {
         VmControllerState::NotCreated => {
@@ -778,8 +774,8 @@ pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
     api.register(instance_spec_ensure).unwrap();
-    api.register(instance_spec_get).unwrap();
     api.register(instance_get).unwrap();
+    api.register(instance_spec_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();

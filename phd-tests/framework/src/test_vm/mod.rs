@@ -11,8 +11,8 @@ use core::result::Result as StdResult;
 use propolis_client::handmade::api::InstanceSpecGetResponse;
 use propolis_client::handmade::{
     api::{
-        InstanceEnsureFromSpecRequest, InstanceGetResponse,
-        InstanceMigrateInitiateRequest, InstanceProperties, InstanceState,
+        InstanceGetResponse, InstanceMigrateInitiateRequest,
+        InstanceProperties, InstanceSpecEnsureRequest, InstanceState,
         InstanceStateRequested, MigrationState,
     },
     Client, Error as PropolisClientError,
@@ -154,7 +154,7 @@ impl TestVm {
             memory: memory_mib,
             vcpus,
         };
-        let ensure_req = InstanceEnsureFromSpecRequest {
+        let ensure_req = InstanceSpecEnsureRequest {
             properties,
             instance_spec: self.config.instance_spec().clone(),
             migrate,

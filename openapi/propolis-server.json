@@ -191,7 +191,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InstanceEnsureFromSpecRequest"
+                "$ref": "#/components/schemas/InstanceSpecEnsureRequest"
               }
             }
           },
@@ -588,29 +588,6 @@
           "state"
         ]
       },
-      "InstanceEnsureFromSpecRequest": {
-        "type": "object",
-        "properties": {
-          "instance_spec": {
-            "$ref": "#/components/schemas/InstanceSpec"
-          },
-          "migrate": {
-            "nullable": true,
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
-              }
-            ]
-          },
-          "properties": {
-            "$ref": "#/components/schemas/InstanceProperties"
-          }
-        },
-        "required": [
-          "instance_spec",
-          "properties"
-        ]
-      },
       "InstanceEnsureRequest": {
         "type": "object",
         "properties": {
@@ -793,6 +770,29 @@
           "devices"
         ],
         "additionalProperties": false
+      },
+      "InstanceSpecEnsureRequest": {
+        "type": "object",
+        "properties": {
+          "instance_spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
+          },
+          "migrate": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
+              }
+            ]
+          },
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          }
+        },
+        "required": [
+          "instance_spec",
+          "properties"
+        ]
       },
       "InstanceSpecGetResponse": {
         "type": "object",

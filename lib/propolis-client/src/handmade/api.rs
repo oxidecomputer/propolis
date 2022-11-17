@@ -40,7 +40,7 @@ pub struct InstanceEnsureRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceEnsureFromSpecRequest {
+pub struct InstanceSpecEnsureRequest {
     pub properties: InstanceProperties,
     pub instance_spec: InstanceSpec,
     pub migrate: Option<InstanceMigrateInitiateRequest>,
