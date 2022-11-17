@@ -164,8 +164,29 @@
       }
     },
     "/instance/spec": {
+      "get": {
+        "operationId": "instance_spec_get",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSpecGetResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
       "put": {
-        "operationId": "instance_ensure_from_spec",
+        "operationId": "instance_spec_ensure",
         "requestBody": {
           "content": {
             "application/json": {
@@ -772,6 +793,25 @@
           "devices"
         ],
         "additionalProperties": false
+      },
+      "InstanceSpecGetResponse": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceState"
+          }
+        },
+        "required": [
+          "properties",
+          "spec",
+          "state"
+        ]
       },
       "InstanceState": {
         "description": "Current state of an Instance.",

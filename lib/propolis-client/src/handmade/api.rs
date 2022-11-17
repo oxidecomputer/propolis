@@ -109,6 +109,13 @@ pub struct InstanceGetResponse {
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceSpecGetResponse {
+    pub properties: InstanceProperties,
+    pub state: InstanceState,
+    pub spec: InstanceSpec,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceStateMonitorRequest {
     pub gen: u64,
 }

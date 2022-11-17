@@ -128,7 +128,7 @@ impl Client {
         self.put(path, Some(body)).await
     }
 
-    pub async fn instance_ensure_from_spec(
+    pub async fn instance_spec_ensure(
         &self,
         request: &api::InstanceEnsureFromSpecRequest,
     ) -> Result<api::InstanceEnsureResponse, Error> {
@@ -142,6 +142,14 @@ impl Client {
         &self,
     ) -> Result<api::InstanceGetResponse, Error> {
         let path = format!("http://{}/instance", self.address);
+        self.get(path, None).await
+    }
+
+    /// Returns information about an instance and its spec.
+    pub async fn instance_spec_get(
+        &self,
+    ) -> Result<api::InstanceSpecGetResponse, Error> {
+        let path = format!("http://{}/instance/spec", self.address);
         self.get(path, None).await
     }
 

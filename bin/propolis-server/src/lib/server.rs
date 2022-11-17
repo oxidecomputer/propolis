@@ -15,6 +15,7 @@ use dropshot::{
 };
 use hyper::{Body, Response};
 use oximeter::types::ProducerRegistry;
+use propolis_client::handmade::api::InstanceSpecGetResponse;
 use propolis_client::{
     handmade::api,
     instance_spec::{self, InstanceSpec},
@@ -88,6 +89,10 @@ pub enum VmControllerState {
         /// was destroyed, used to serve subsequent `instance_get` requests.
         last_instance: api::Instance,
 
+        /// A copy of the destroyed instance's spec, used to serve subsequent
+        /// `instance_spec_get` requests.
+        last_instance_spec: InstanceSpec,
+
         /// A clone of the receiver side of the server's state watcher, used to
         /// serve subsequent `instance_state_monitor` requests. Note that an
         /// outgoing controller can publish new state changes even after the
@@ -120,6 +125,8 @@ impl VmControllerState {
                 nics: vec![],
             };
 
+            let last_spec = vm.instance_spec().clone();
+
             // The server is about to drop its reference to the controller, but
             // the controller may continue changing state while it tears itself
             // down. Grab a clone of the state watcher channel for subsequent
@@ -127,7 +134,11 @@ impl VmControllerState {
             let watcher = vm.state_watcher().clone();
             if let VmControllerState::Created(vm) = std::mem::replace(
                 self,
-                VmControllerState::Destroyed { last_instance, watcher },
+                VmControllerState::Destroyed {
+                    last_instance,
+                    last_instance_spec: last_spec,
+                    watcher,
+                },
             ) {
                 Some(vm)
             } else {
@@ -498,11 +509,44 @@ async fn instance_ensure(
     method = PUT,
     path = "/instance/spec",
 }]
-async fn instance_ensure_from_spec(
+async fn instance_spec_ensure(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceEnsureFromSpecRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     instance_ensure_common(rqctx, request.into_inner()).await
+}
+
+#[endpoint {
+    method = GET,
+    path = "/instance/spec",
+}]
+async fn instance_spec_get(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+) -> Result<HttpResponseOk<InstanceSpecGetResponse>, HttpError> {
+    let ctx = rqctx.context();
+    let (properties, state, spec) = match &*ctx.services.vm.lock().await {
+        VmControllerState::NotCreated => {
+            return Err(HttpError::for_internal_error(
+                "Server not initialized (no instance)".to_string(),
+            ));
+        }
+        VmControllerState::Created(vm) => (
+            vm.properties().clone(),
+            vm.external_instance_state(),
+            vm.instance_spec().clone(),
+        ),
+        VmControllerState::Destroyed {
+            last_instance,
+            last_instance_spec,
+            ..
+        } => (
+            last_instance.properties.clone(),
+            last_instance.state,
+            last_instance_spec.clone(),
+        ),
+    };
+
+    Ok(HttpResponseOk(api::InstanceSpecGetResponse { properties, state, spec }))
 }
 
 #[endpoint {
@@ -733,7 +777,8 @@ async fn instance_issue_crucible_snapshot_request(
 pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
-    api.register(instance_ensure_from_spec).unwrap();
+    api.register(instance_spec_ensure).unwrap();
+    api.register(instance_spec_get).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
