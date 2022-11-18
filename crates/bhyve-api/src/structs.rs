@@ -412,6 +412,9 @@ impl vm_create_req {
 // attempting to create transient allocations.
 pub const VCF_RESERVOIR_MEM: u64 = 1;
 
+/// Enable dirty page tracking for the guest.
+pub const VCF_TRACK_DIRTY: u64 = 1 << 1;
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct vm_destroy_req {
