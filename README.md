@@ -33,8 +33,13 @@ pfexec mdb -kw -e "vmm_allow_state_writes ::write -l 1 1"
 pfexec mdb -kw -e "gpt_track_dirty ::write -l 1 1"
 ```
 
+**Note:** Setting `gpt_track_dirty` is unnecessary on builds including
+[14251](https://www.illumos.org/issues/14251)
+([4ac713d](https://github.com/illumos/illumos-gate/commit/4ac713da4ff2c45287699af975f8c98142bbd9d3)).
+
 Propolis works best (and its CI tests run) on AMD hosts, but it can also be used
-to run VMs on Intel hosts. Live migration is only supported on AMD hosts.
+to run VMs on Intel hosts. Live migration is primarily supported on AMD hosts
+but may work on Intel hosts as well.
 
 ## Building
 
