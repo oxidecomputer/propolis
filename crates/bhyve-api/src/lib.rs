@@ -16,7 +16,7 @@ pub const VMM_CTL_PATH: &str = "/dev/vmmctl";
 /// This is the VMM interface version against which bhyve_api expects to operate
 /// against.  All constants and structs defined by the crate are done so in
 /// terms of that specific version.
-pub const VMM_CURRENT_INTERFACE_VERSION: u32 = 4;
+pub const VMM_CURRENT_INTERFACE_VERSION: u32 = 8;
 
 use std::io::Result;
 

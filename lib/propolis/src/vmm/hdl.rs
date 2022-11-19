@@ -34,6 +34,7 @@ use crate::vmm::mem::Prot;
 pub struct CreateOpts {
     pub force: bool,
     pub use_reservoir: bool,
+    pub track_dirty: bool,
 }
 
 /// Creates a new virtual machine with the provided `name`.
@@ -63,6 +64,9 @@ fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
     let mut req = bhyve_api::vm_create_req::new(name);
     if opts.use_reservoir {
         req.flags |= bhyve_api::VCF_RESERVOIR_MEM;
+    }
+    if opts.track_dirty {
+        req.flags |= bhyve_api::VCF_TRACK_DIRTY;
     }
     let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
     if res != 0 {

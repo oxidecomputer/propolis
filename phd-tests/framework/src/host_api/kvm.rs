@@ -294,9 +294,17 @@ impl<T: SizedKernelGlobal> Drop for KernelValueGuard<T> {
 /// Sets all of the kernel globals needed to run PHD tests. Returns a vector of
 /// RAII guards that reset these values to their pre-test values when dropped.
 pub fn set_vmm_globals() -> Result<Vec<Box<dyn std::any::Any>>> {
+    let mut guards: Vec<Box<dyn std::any::Any>> = vec![];
+
     let allow_state_writes =
-        Box::new(KernelValueGuard::new("vmm_allow_state_writes", 1u32)?);
-    let gpt_track_dirty =
-        Box::new(KernelValueGuard::new("gpt_track_dirty", 1u8)?);
-    Ok(vec![allow_state_writes, gpt_track_dirty])
+        KernelValueGuard::new("vmm_allow_state_writes", 1u32)?;
+    guards.push(Box::new(allow_state_writes));
+
+    // Enable global dirty tracking bit on systems where it exists.
+    // TODO(#255): Remove once CI has updated to include https://code.illumos.org/c/illumos-gate/+/2502
+    if let Ok(gpt_track_dirty) = KernelValueGuard::new("gpt_track_dirty", 1u8) {
+        guards.push(Box::new(gpt_track_dirty));
+    }
+
+    Ok(guards)
 }
