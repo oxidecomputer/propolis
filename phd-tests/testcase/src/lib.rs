@@ -33,7 +33,7 @@ pub enum TestOutcome {
 /// The test context structure passed to every PHD test case.
 pub struct TestContext<'a> {
     pub default_guest_image_artifact: String,
-    pub vm_factory: VmFactory,
+    pub vm_factory: VmFactory<'a>,
     pub disk_factory: DiskFactory<'a>,
 }
 

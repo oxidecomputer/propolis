@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use phd_framework::test_vm::factory::ServerLogMode;
+use phd_framework::server_log_mode::ServerLogMode;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {

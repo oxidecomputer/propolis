@@ -5,6 +5,7 @@ mod fixtures;
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_framework::artifacts::ArtifactStore;
+use phd_framework::port_allocator::PortAllocator;
 use phd_tests::phd_testcase::TestContext;
 use tracing::{debug, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
@@ -45,6 +46,8 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
     )
     .unwrap();
 
+    let port_allocator = PortAllocator::new(9000..10000);
+
     // Convert the command-line config and artifact store into a VM factory
     // definition.
     let mut config_toml_path = run_opts.tmp_directory.clone();
@@ -59,7 +62,6 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         default_guest_cpus: run_opts.default_guest_cpus,
         default_guest_memory_mib: run_opts.default_guest_memory_mib,
-        server_port_range: 9000..10000,
     };
 
     // The VM factory config and artifact store are enough to create a test
@@ -69,6 +71,7 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
         vm_factory: phd_framework::test_vm::factory::VmFactory::new(
             factory_config,
             &artifact_store,
+            &port_allocator,
         )
         .unwrap(),
         disk_factory: phd_framework::disk::DiskFactory::new(
