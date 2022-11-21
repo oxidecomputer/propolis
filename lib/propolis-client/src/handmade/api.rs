@@ -4,13 +4,14 @@
 //! and sled agent (within omicron-common), they are intentionally
 //! decoupled so the interfaces may evolve independently, as necessary.
 
+use crate::instance_spec::InstanceSpec;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use uuid::Uuid;
 
 // Re-export types that are of a public struct
-pub use crate::instance_spec::InstanceSpec;
 pub use crucible_client_types::VolumeConstructionRequest;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
