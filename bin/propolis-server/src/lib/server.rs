@@ -90,6 +90,9 @@ pub enum VmControllerState {
 
         /// A copy of the destroyed instance's spec, used to serve subsequent
         /// `instance_spec_get` requests.
+        //
+        // TODO: Merge this into `api::Instance` when the migration to generated
+        // types is complete.
         last_instance_spec: InstanceSpec,
 
         /// A clone of the receiver side of the server's state watcher, used to
@@ -512,6 +515,40 @@ async fn instance_spec_ensure(
     instance_ensure_common(rqctx, request.into_inner()).await
 }
 
+async fn instance_get_common(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+) -> Result<(api::Instance, InstanceSpec), HttpError> {
+    let ctx = rqctx.context();
+    match &*ctx.services.vm.lock().await {
+        VmControllerState::NotCreated => Err(HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )),
+        VmControllerState::Created(vm) => {
+            Ok((
+                api::Instance {
+                    properties: vm.properties().clone(),
+                    state: vm.external_instance_state(),
+                    disks: vec![],
+                    // TODO: Fix this; we need a way to enumerate attached NICs.
+                    // Possibly using the inventory of the instance?
+                    //
+                    // We *could* record whatever information about the NIC we want
+                    // when they're requested (adding fields to the server), but that
+                    // would make it difficult for Propolis to update any dynamic info
+                    // (i.e., has the device faulted, etc).
+                    nics: vec![],
+                },
+                vm.instance_spec().clone(),
+            ))
+        }
+        VmControllerState::Destroyed {
+            last_instance,
+            last_instance_spec,
+            ..
+        } => Ok((last_instance.clone(), last_instance_spec.clone())),
+    }
+}
+
 #[endpoint {
     method = GET,
     path = "/instance/spec",
@@ -519,30 +556,12 @@ async fn instance_spec_ensure(
 async fn instance_spec_get(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-    let ctx = rqctx.context();
-    let (properties, state, spec) = match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => {
-            return Err(HttpError::for_internal_error(
-                "Server not initialized (no instance)".to_string(),
-            ));
-        }
-        VmControllerState::Created(vm) => (
-            vm.properties().clone(),
-            vm.external_instance_state(),
-            vm.instance_spec().clone(),
-        ),
-        VmControllerState::Destroyed {
-            last_instance,
-            last_instance_spec,
-            ..
-        } => (
-            last_instance.properties.clone(),
-            last_instance.state,
-            last_instance_spec.clone(),
-        ),
-    };
-
-    Ok(HttpResponseOk(api::InstanceSpecGetResponse { properties, state, spec }))
+    let (instance, spec) = instance_get_common(rqctx).await?;
+    Ok(HttpResponseOk(api::InstanceSpecGetResponse {
+        properties: instance.properties,
+        state: instance.state,
+        spec,
+    }))
 }
 
 #[endpoint {
@@ -552,34 +571,8 @@ async fn instance_spec_get(
 async fn instance_get(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    let ctx = rqctx.context();
-    let instance_info = match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => {
-            return Err(HttpError::for_internal_error(
-                "Server not initialized (no instance)".to_string(),
-            ));
-        }
-        VmControllerState::Created(vm) => {
-            api::Instance {
-                properties: vm.properties().clone(),
-                state: vm.external_instance_state(),
-                disks: vec![],
-                // TODO: Fix this; we need a way to enumerate attached NICs.
-                // Possibly using the inventory of the instance?
-                //
-                // We *could* record whatever information about the NIC we want
-                // when they're requested (adding fields to the server), but that
-                // would make it difficult for Propolis to update any dynamic info
-                // (i.e., has the device faulted, etc).
-                nics: vec![],
-            }
-        }
-        VmControllerState::Destroyed { last_instance, .. } => {
-            last_instance.clone()
-        }
-    };
-
-    Ok(HttpResponseOk(api::InstanceGetResponse { instance: instance_info }))
+    let (instance, _) = instance_get_common(rqctx).await?;
+    Ok(HttpResponseOk(api::InstanceGetResponse { instance }))
 }
 
 #[endpoint {
