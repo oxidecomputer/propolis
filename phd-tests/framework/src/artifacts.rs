@@ -228,25 +228,18 @@ impl ArtifactStore {
         &self.local_root
     }
 
-    /// Given an artifact name, attempts to retrieve the guest OS artifact with
-    /// that name and returns the path to the artifact in the local store.
-    pub fn get_guest_image_path_by_name(
+    /// Given a guest OS artifact name, attempts to retrieve the corresponding
+    /// artifact and return a path to its contents and its guest OS kind.
+    pub fn get_guest_artifact_info_by_name(
         &self,
         artifact: &str,
-    ) -> Option<PathBuf> {
-        self.config
-            .guest_images
-            .get(artifact)
-            .map(|a| self.construct_full_path(&a.metadata.relative_local_path))
-    }
-
-    /// Given an artifact name, attempts to retrieve the guest OS artifact with
-    /// that name and returns the artifact's guest OS kind.
-    pub fn get_guest_os_kind_by_name(
-        &self,
-        artifact: &str,
-    ) -> Option<GuestOsKind> {
-        self.config.guest_images.get(artifact).map(|a| a.guest_os_kind)
+    ) -> Option<(PathBuf, GuestOsKind)> {
+        self.config.guest_images.get(artifact).map(|a| {
+            (
+                self.construct_full_path(&a.metadata.relative_local_path),
+                a.guest_os_kind,
+            )
+        })
     }
 
     /// Given an artifact name, attempts to retrieve the guest firmware artifact
