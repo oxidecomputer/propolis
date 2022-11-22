@@ -30,37 +30,13 @@ pub enum DiskError {
 }
 
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
-trait DiskWrapper: std::fmt::Debug {
+pub trait DiskConfig: std::fmt::Debug {
     /// Yields the backend spec for this disk's storage backend.
     fn backend_spec(&self) -> StorageBackend;
-}
 
-/// An RAII wrapper around a guest disks and all the host objects needed to
-/// support it. When dropped, destroys the resources associated with the disk
-/// (backing files, file-serving processes, etc.).
-///
-/// New guest disks created by a [`DiskFactory`] are wrapped in an `Arc` so that
-/// test cases can decide whether to share them or move them into a new VM. See
-/// the documentation for [`DiskFactory`] for more information.
-#[derive(Debug)]
-pub struct GuestDisk {
-    backend: Box<dyn DiskWrapper>,
-    guest_os: Option<GuestOsKind>,
-}
-
-impl GuestDisk {
-    /// Generates the backend spec that should be inserted into a VM's instance
-    /// spec to refer to this disk.
-    pub(crate) fn backend_spec(&self) -> StorageBackend {
-        self.backend.backend_spec()
-    }
-
-    /// If this disk was sourced from a guest OS image, returns that image type.
-    /// If the disk was not sourced from a known guest OS artifact, returns
-    /// `None`.
-    pub(crate) fn guest_os(&self) -> Option<GuestOsKind> {
-        self.guest_os
-    }
+    /// Yields the guest OS kind of the guest image the disk was created from,
+    /// or `None` if the disk was not created from a guest image.
+    fn guest_os(&self) -> Option<GuestOsKind>;
 }
 
 /// The possible sources for a disk's initial data.
@@ -131,19 +107,16 @@ impl DiskFactory<'_> {
     pub fn create_file_backed_disk(
         &self,
         source: DiskSource,
-    ) -> Result<Arc<GuestDisk>, DiskError> {
+    ) -> Result<Arc<FileBackedDisk>, DiskError> {
         let DiskSource::Artifact(artifact_name) = source;
         let (artifact_path, guest_os) =
             self.get_guest_artifact_info(artifact_name)?;
 
-        let disk = FileBackedDisk::new_from_artifact(
+        FileBackedDisk::new_from_artifact(
             &artifact_path,
             &self.storage_dir,
-        )?;
-
-        Ok(Arc::new(GuestDisk {
-            backend: disk as Box<dyn DiskWrapper>,
-            guest_os: Some(guest_os),
-        }))
+            Some(guest_os),
+        )
+        .map(Arc::new)
     }
 }

@@ -6,11 +6,17 @@ use propolis_client::instance_spec::{StorageBackend, StorageBackendKind};
 use tracing::{error, info};
 use uuid::Uuid;
 
+use crate::guest_os::GuestOsKind;
+
 /// An RAII wrapper for a disk wrapped by a file.
 #[derive(Debug)]
-pub(crate) struct FileBackedDisk {
+pub struct FileBackedDisk {
     /// The path at which the disk is stored.
     disk_path: PathBuf,
+
+    /// The kind of guest OS image this guest contains, or `None` if the disk
+    /// was not initialized from a guest OS artifact.
+    guest_os: Option<GuestOsKind>,
 }
 
 impl FileBackedDisk {
@@ -19,7 +25,8 @@ impl FileBackedDisk {
     pub(crate) fn new_from_artifact(
         artifact_path: &impl AsRef<Path>,
         data_dir: &impl AsRef<Path>,
-    ) -> Result<Box<Self>, super::DiskError> {
+        guest_os: Option<GuestOsKind>,
+    ) -> Result<Self, super::DiskError> {
         let mut disk_path = data_dir.as_ref().to_path_buf();
         disk_path.push(format!("{}.phd_disk", Uuid::new_v4()));
         info!(
@@ -37,11 +44,11 @@ impl FileBackedDisk {
         permissions.set_readonly(false);
         disk_file.set_permissions(permissions)?;
 
-        Ok(Box::new(Self { disk_path }))
+        Ok(Self { disk_path, guest_os })
     }
 }
 
-impl super::DiskWrapper for FileBackedDisk {
+impl super::DiskConfig for FileBackedDisk {
     fn backend_spec(&self) -> StorageBackend {
         StorageBackend {
             kind: StorageBackendKind::File {
@@ -49,6 +56,10 @@ impl super::DiskWrapper for FileBackedDisk {
             },
             readonly: false,
         }
+    }
+
+    fn guest_os(&self) -> Option<GuestOsKind> {
+        self.guest_os
     }
 }
 

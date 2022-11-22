@@ -48,7 +48,7 @@ impl From<DiskInterface> for StorageDeviceKind {
 struct DiskRequest {
     /// A reference to the resources needed to create this disk's backend. VMs
     /// created from this configuration also get a reference to these resources.
-    disk: Arc<disk::GuestDisk>,
+    disk: Arc<dyn disk::DiskConfig>,
 
     /// The PCI device number to assign to this disk. The disk's BDF will be
     /// 0/this value/0.
@@ -91,7 +91,7 @@ impl ConfigRequest {
 
     pub fn set_boot_disk(
         mut self,
-        disk: Arc<disk::GuestDisk>,
+        disk: Arc<dyn disk::DiskConfig>,
         pci_device_num: u8,
         interface: DiskInterface,
     ) -> Self {
@@ -190,7 +190,7 @@ impl ConfigRequest {
 #[derive(Clone, Debug)]
 pub struct VmConfig {
     instance_spec: InstanceSpec,
-    _disk_handles: Vec<Arc<disk::GuestDisk>>,
+    _disk_handles: Vec<Arc<dyn disk::DiskConfig>>,
     guest_os_kind: GuestOsKind,
     server_toml_path: PathBuf,
 }
