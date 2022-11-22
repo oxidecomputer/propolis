@@ -535,6 +535,11 @@ impl TestVm {
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
+
+    /// Indicates whether this VM's guest OS has a read-only filesystem.
+    pub fn guest_os_has_read_only_fs(&self) -> bool {
+        self.guest_os.read_only_fs()
+    }
 }
 
 impl Drop for TestVm {

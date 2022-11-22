@@ -26,6 +26,9 @@ pub(super) trait GuestOs {
 
     /// Retrieves the default shell prompt for this OS.
     fn get_shell_prompt(&self) -> &'static str;
+
+    /// Indicates whether the guest has a read-only filesystem.
+    fn read_only_fs(&self) -> bool;
 }
 
 #[allow(dead_code)]

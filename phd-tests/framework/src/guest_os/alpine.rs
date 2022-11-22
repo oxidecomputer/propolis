@@ -16,4 +16,8 @@ impl GuestOs for Alpine {
     fn get_shell_prompt(&self) -> &'static str {
         "localhost:~#"
     }
+
+    fn read_only_fs(&self) -> bool {
+        true
+    }
 }

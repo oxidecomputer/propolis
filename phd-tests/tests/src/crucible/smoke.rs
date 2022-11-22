@@ -29,6 +29,13 @@ fn shutdown_persistence_test(ctx: &TestContext) {
 
     let mut vm =
         ctx.vm_factory.new_vm("crucible_shutdown_persistence_test", config)?;
+    if vm.guest_os_has_read_only_fs() {
+        phd_skip!(
+            "Can't run data persistence test on a guest with a read-only file
+             system"
+        );
+    }
+
     vm.launch()?;
     vm.wait_to_boot()?;
 
