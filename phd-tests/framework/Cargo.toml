@@ -33,3 +33,7 @@ toml = "0.5.9"
 tracing = "0.1.35"
 uuid = "1.1.2"
 vte = "0.10.1"
+
+[dependencies.crucible-client-types]
+git = "https://github.com/oxidecomputer/crucible"
+rev = "00c1de9b165e8abff1eed6e26a5755465785fc07"

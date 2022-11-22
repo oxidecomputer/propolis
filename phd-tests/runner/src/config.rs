@@ -43,6 +43,10 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     pub propolis_server_cmd: PathBuf,
 
+    /// The command to use to launch Crucible downstairs servers.
+    #[clap(long, value_parser)]
+    pub crucible_downstairs_cmd: Option<PathBuf>,
+
     /// The directory into which to write temporary files (config TOMLs, log
     /// files, etc.) generated during test execution.
     #[clap(long, value_parser)]

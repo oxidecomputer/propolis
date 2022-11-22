@@ -13,10 +13,16 @@ use std::{
 use propolis_client::instance_spec::StorageBackend;
 use thiserror::Error;
 
-use crate::{artifacts::ArtifactStore, guest_os::GuestOsKind};
+use crate::{
+    artifacts::ArtifactStore,
+    guest_os::GuestOsKind,
+    port_allocator::{PortAllocator, PortAllocatorError},
+    server_log_mode::ServerLogMode,
+};
 
-use self::file::FileBackedDisk;
+use self::{crucible::CrucibleDisk, file::FileBackedDisk};
 
+pub mod crucible;
 mod file;
 
 /// Errors that can arise while working with disks.
@@ -25,8 +31,32 @@ pub enum DiskError {
     #[error("Could not find source artifact {0}")]
     ArtifactNotFound(String),
 
+    #[error("Disk factory has no Crucible downstairs path")]
+    NoCrucibleDownstairsPath,
+
+    #[error(transparent)]
+    PortAllocatorError(#[from] PortAllocatorError),
+
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum BlockSize {
+    Bytes512,
+    Bytes4096,
+}
+
+impl BlockSize {
+    fn bytes(&self) -> u64 {
+        match self {
+            BlockSize::Bytes512 => 512,
+            BlockSize::Bytes4096 => 4096,
+        }
+    }
 }
 
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
@@ -76,6 +106,17 @@ pub struct DiskFactory<'a> {
     /// A reference to the artifact store to use to look up guest OS artifacts
     /// when those are used as a disk source.
     artifact_store: &'a ArtifactStore,
+
+    /// The path to the Crucible downstairs binary to launch to serve Crucible
+    /// disks.
+    crucible_downstairs_binary: Option<PathBuf>,
+
+    /// The port allocator to use to allocate ports to Crucible server
+    /// processes.
+    port_allocator: &'a PortAllocator,
+
+    /// The logging discipline to use for Crucible server processes.
+    log_mode: ServerLogMode,
 }
 
 impl<'a> DiskFactory<'a> {
@@ -85,8 +126,18 @@ impl<'a> DiskFactory<'a> {
     pub fn new(
         storage_dir: &impl AsRef<Path>,
         artifact_store: &'a ArtifactStore,
+        crucible_downstairs_binary: Option<&impl AsRef<Path>>,
+        port_allocator: &'a PortAllocator,
+        log_mode: ServerLogMode,
     ) -> Self {
-        Self { storage_dir: storage_dir.as_ref().to_path_buf(), artifact_store }
+        Self {
+            storage_dir: storage_dir.as_ref().to_path_buf(),
+            artifact_store,
+            crucible_downstairs_binary: crucible_downstairs_binary
+                .map(|p| p.as_ref().to_path_buf()),
+            port_allocator,
+            log_mode,
+        }
     }
 }
 
@@ -102,8 +153,8 @@ impl DiskFactory<'_> {
             })
     }
 
-    /// Creates a new [`GuestDisk`] backed by a file whose initial contents are
-    /// specified by `source`.
+    /// Creates a new disk backed by a file whose initial contents are specified
+    /// by `source`.
     pub fn create_file_backed_disk(
         &self,
         source: DiskSource,
@@ -118,5 +169,46 @@ impl DiskFactory<'_> {
             Some(guest_os),
         )
         .map(Arc::new)
+    }
+
+    /// Creates a new Crucible-backed disk.
+    ///
+    /// # Parameters
+    ///
+    /// - source: The data source that supplies the disk's initial contents.
+    /// - disk_size_gib: The disk's expected size in GiB.
+    /// - block_size: The disk's block size.
+    pub fn create_crucible_disk(
+        &self,
+        source: DiskSource,
+        disk_size_gib: u64,
+        block_size: BlockSize,
+    ) -> Result<Arc<CrucibleDisk>, DiskError> {
+        let binary_path = self
+            .crucible_downstairs_binary
+            .as_ref()
+            .ok_or_else(|| DiskError::NoCrucibleDownstairsPath)?;
+
+        let DiskSource::Artifact(artifact_name) = source;
+        let (artifact_path, guest_os) =
+            self.get_guest_artifact_info(artifact_name)?;
+
+        let mut ports = [0u16; 3];
+        for port in &mut ports {
+            *port = self.port_allocator.next()?;
+        }
+
+        CrucibleDisk::new(
+            disk_size_gib,
+            block_size,
+            binary_path,
+            &ports,
+            &self.storage_dir,
+            Some(&artifact_path),
+            Some(guest_os),
+            self.log_mode,
+        )
+        .map(Arc::new)
+        .map_err(Into::into)
     }
 }
