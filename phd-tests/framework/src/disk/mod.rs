@@ -79,7 +79,7 @@ pub enum DiskSource<'a> {
 /// A factory that provides tests with the means to create a disk they can
 /// attach to a guest VM.
 ///
-/// The `create_foo` functions implemented by the factory create a [`GuestDisk`]
+/// The `create_foo` functions implemented by the factory create disk objects
 /// whose initial contents are described by a supplied [`DiskSource`]. They
 /// return disks wrapped in an `Arc` that can be passed to `ConfigRequest`
 /// routines that add disks to a VM's configuration. This allows tests to manage
@@ -94,9 +94,9 @@ pub enum DiskSource<'a> {
 ///    attach the same disk to another VM to verify that changes to it are
 ///    persisted.
 ///
-/// N.B. The `GuestDisk` objects the factory creates take no special care to
-///      ensure that they can be used safely by multiple VMs at the same time.
-///      If multiple VMs do use a single set of backend resources, the resulting
+/// N.B. The disk objects the factory creates take no special care to ensure
+///      that they can be used safely by multiple VMs at the same time. If
+///      multiple VMs do use a single set of backend resources, the resulting
 ///      behavior will depend on the chosen backend's semantics and the way the
 ///      Propolis backend implementations interact with the disk.
 pub struct DiskFactory<'a> {
