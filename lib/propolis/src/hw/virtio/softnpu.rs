@@ -537,12 +537,12 @@ impl PacketHandler {
         pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
     ) {
-        if let Some((mut out_pkt, port)) =
+        for (mut out_pkt, port) in
             pipeline.process_packet(index as u16, &mut pkt)
         {
             // packet is going to CPU port
             if port == 0 {
-                Self::send_packet_to_cpu_port(&mut out_pkt, virtio, &log);
+                Self::send_packet_to_cpu_port(&mut out_pkt, &virtio, &log);
             }
             // packet is passing through
             else {
@@ -564,8 +564,7 @@ impl PacketHandler {
         pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
     ) {
-        if let Some((mut out_pkt, port)) = pipeline.process_packet(0, &mut pkt)
-        {
+        for (mut out_pkt, port) in pipeline.process_packet(0, &mut pkt) {
             if port == 0 {
                 // no looping packets back to the guest
                 return;
@@ -601,7 +600,7 @@ impl PacketHandler {
     /// Send a packet out the guest pci port using virtio.
     fn send_packet_to_cpu_port<'a>(
         pkt: &mut packet_out<'a>,
-        virtio: Arc<PortVirtioState>,
+        virtio: &Arc<PortVirtioState>,
         _log: &Logger,
     ) {
         let mem = virtio.pci_state.acc_mem.access().unwrap();
@@ -836,6 +835,7 @@ impl ManagementMessageReader {
 pub struct SoftNpuP9Handler {
     source: String,
     target: String,
+    radix: u16,
     log: Logger,
     pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
 }
@@ -854,10 +854,11 @@ impl SoftNpuP9Handler {
     pub fn new(
         source: String,
         target: String,
+        radix: u16,
         pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Self {
-        Self { source, target, pipeline, log }
+        Self { source, target, radix, pipeline, log }
     }
 
     /// This function is called while the program is being streamed in from the
@@ -904,6 +905,7 @@ impl SoftNpuP9Handler {
     /// from the active program file.
     fn load_program(
         pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        radix: u16,
         log: Logger,
     ) {
         let mut pl = pipeline.lock().unwrap();
@@ -930,7 +932,7 @@ impl SoftNpuP9Handler {
                 return;
             }
         };
-        let func: Symbol<unsafe extern "C" fn() -> *mut dyn p4rs::Pipeline> =
+        let func: Symbol<unsafe extern "C" fn(u16) -> *mut dyn p4rs::Pipeline> =
             match unsafe { lib.get(b"_main_pipeline_create") } {
                 Ok(f) => f,
                 Err(e) => {
@@ -942,7 +944,9 @@ impl SoftNpuP9Handler {
                 }
             };
 
-        let boxpipe = unsafe { Box::from_raw(func()) };
+        // account for CPU port
+        let radix = radix + 1;
+        let boxpipe = unsafe { Box::from_raw(func(radix)) };
         let _ = pl.insert((lib, boxpipe));
     }
 }
@@ -1037,8 +1041,9 @@ impl P9Handler for SoftNpuP9Handler {
     fn handle_clunk(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
         let pipe = self.pipeline.clone();
         let log = self.log.clone();
+        let radix = self.radix;
 
-        spawn(move || Self::load_program(pipe, log));
+        spawn(move || Self::load_program(pipe, radix, log));
 
         let response = Rclunk::new();
         let mut out = ispf::to_bytes_le(&response).unwrap();

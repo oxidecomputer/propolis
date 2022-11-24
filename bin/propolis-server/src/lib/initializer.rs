@@ -481,6 +481,7 @@ impl<'a> MachineInitializer<'a> {
         let p9_handler = virtio::SoftNpuP9Handler::new(
             "/dev/softnpufs".to_owned(),
             "/dev/softnpufs".to_owned(),
+            self.spec.devices.softnpu_ports.len() as u16,
             pipeline.clone(),
             self.log.clone(),
         );
