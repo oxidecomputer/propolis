@@ -198,7 +198,7 @@ impl CrucibleDisk {
             read_only_parent: read_only_parent
                 .map(|p| p.as_ref().to_path_buf()),
             guest_os,
-            generation: AtomicU64::new(0),
+            generation: AtomicU64::new(1),
         })
     }
 
