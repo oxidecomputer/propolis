@@ -171,11 +171,16 @@ impl DiskFactory<'_> {
         .map(Arc::new)
     }
 
-    /// Creates a new Crucible-backed disk.
+    /// Creates a new Crucible-backed disk by creating three region files to
+    /// hold the disk's data and launching a Crucible downstairs process to
+    /// serve each one.
     ///
     /// # Parameters
     ///
     /// - source: The data source that supplies the disk's initial contents.
+    ///   If the source data is stored as a file on the local disk, the
+    ///   resulting disk's `VolumeConstructionRequest`s will specify that this
+    ///   file should be used as a read-only parent volume.
     /// - disk_size_gib: The disk's expected size in GiB.
     /// - block_size: The disk's block size.
     pub fn create_crucible_disk(
