@@ -83,7 +83,7 @@ impl CrucibleDisk {
         block_size: BlockSize,
         downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
         downstairs_ports: &[u16],
-        data_dir: &impl AsRef<Path>,
+        data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
         guest_os: Option<GuestOsKind>,
         log_mode: ServerLogMode,
@@ -105,7 +105,7 @@ impl CrucibleDisk {
         let mut data_dirs = vec![];
         let disk_uuid = Uuid::new_v4();
         for port in downstairs_ports {
-            let mut data_dir_path = data_dir.as_ref().to_path_buf();
+            let mut data_dir_path = data_dir_root.as_ref().to_path_buf();
             data_dir_path.push(format!("{}_{}", disk_uuid, port));
             std::fs::create_dir_all(&data_dir_path)?;
             data_dirs.push(DataDirectory { path: data_dir_path });
@@ -176,7 +176,7 @@ impl CrucibleDisk {
             ];
 
             let (stdout, stderr) = log_mode.get_handles(
-                data_dir,
+                data_dir_root,
                 &format!("crucible_{}_{}", disk_uuid, port),
             )?;
 
