@@ -8,6 +8,7 @@ use std::{
 };
 
 use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -66,6 +67,9 @@ pub struct CrucibleDisk {
     /// The kind of guest OS that can be found on this disk, if there is one.
     guest_os: Option<GuestOsKind>,
 
+    /// The base64-encoded encryption key to use for this disk.
+    encryption_key: String,
+
     /// The generation number to insert into this disk's
     /// `VolumeConstructionRequest`s.
     generation: AtomicU64,
@@ -116,7 +120,7 @@ impl CrucibleDisk {
                 "--data",
                 dir_arg.as_ref(),
                 "--encrypted",
-                "false",
+                "true",
                 "--uuid",
                 &disk_uuid.to_string(),
                 "--extent-size",
@@ -197,6 +201,11 @@ impl CrucibleDisk {
             downstairs_instances,
             read_only_parent: read_only_parent
                 .map(|p| p.as_ref().to_path_buf()),
+            encryption_key: base64::encode({
+                let mut bytes: [u8; 32] = [0; 32];
+                StdRng::from_entropy().fill_bytes(&mut bytes);
+                bytes
+            }),
             guest_os,
             generation: AtomicU64::new(1),
         })
@@ -229,7 +238,7 @@ impl super::DiskConfig for CrucibleDisk {
                                 target: downstairs_addrs,
                                 lossy: false,
                                 flush_timeout: None,
-                                key: None,
+                                key: Some(self.encryption_key.clone()),
                                 cert_pem: None,
                                 key_pem: None,
                                 root_cert_pem: None,
