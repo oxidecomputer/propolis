@@ -731,3 +731,21 @@ pub mod migrate {
         pub used_idx: u16,
     }
 }
+
+pub(crate) fn write_buf(buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
+    // more copy pasta from Chain::write b/c like Chain:read a
+    // statically sized type is expected.
+    let mut done = 0;
+    let _total = chain.for_remaining_type(false, |addr, len| {
+        let remain = &buf[done..];
+        if let Some(copied) = mem.write_from(addr, remain, len) {
+            let need_more = copied != remain.len();
+
+            done += copied;
+            (copied, need_more)
+        } else {
+            // Copy failed, so do not attempt anything else
+            (0, false)
+        }
+    });
+}

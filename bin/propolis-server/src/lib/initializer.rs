@@ -485,7 +485,7 @@ impl<'a> MachineInitializer<'a> {
             pipeline.clone(),
             self.log.clone(),
         );
-        let vio9p = virtio::PciVirtio9pfs::new(0x40, p9_handler);
+        let vio9p = virtio::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
         self.inv.register_instance(&vio9p, "softnpu-p9fs")?;
         let bdf: pci::Bdf = self
             .spec
@@ -578,7 +578,7 @@ impl<'a> MachineInitializer<'a> {
             p9fs.chunk_size,
             self.log.clone(),
         );
-        let vio9p = virtio::PciVirtio9pfs::new(0x40, handler);
+        let vio9p = virtio::PciVirtio9pfs::new(0x40, Arc::new(handler));
         self.inv
             .register(&vio9p)
             .map_err(|e| -> std::io::Error { e.into() })?;

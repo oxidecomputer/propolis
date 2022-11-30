@@ -16,7 +16,7 @@ use crate::vmm::MemCtx;
 
 use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};
-use super::queue::{Chain, VirtQueue, VirtQueues};
+use super::queue::{write_buf, Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 
 use ispf::WireSize;
@@ -49,14 +49,14 @@ mod probes {
 /// Currently filesystems can only be mounted as read-only. Another
 /// implementation is in the SoftNpu device that supports P4 program transfer
 /// via p9fs.
-pub struct PciVirtio9pfs<Handler: P9Handler> {
+pub struct PciVirtio9pfs {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
-    handler: Handler,
+    handler: Arc<dyn P9Handler>,
 }
 
-impl<Handler: P9Handler> PciVirtio9pfs<Handler> {
-    pub fn new(queue_size: u16, handler: Handler) -> Arc<Self> {
+impl PciVirtio9pfs {
+    pub fn new(queue_size: u16, handler: Arc<dyn P9Handler>) -> Arc<Self> {
         let queues = VirtQueues::new(
             NonZeroU16::new(queue_size).unwrap(),
             NonZeroU16::new(1).unwrap(),
@@ -74,7 +74,7 @@ impl<Handler: P9Handler> PciVirtio9pfs<Handler> {
     }
 }
 
-impl<Handler: P9Handler> VirtioDevice for PciVirtio9pfs<Handler> {
+impl VirtioDevice for PciVirtio9pfs {
     fn cfg_rw(&self, mut rwo: RWOp) {
         P9FS_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => {
@@ -109,7 +109,7 @@ impl<Handler: P9Handler> VirtioDevice for PciVirtio9pfs<Handler> {
     }
 }
 
-impl<Handler: P9Handler> Entity for PciVirtio9pfs<Handler> {
+impl Entity for PciVirtio9pfs {
     fn type_name(&self) -> &'static str {
         "pci-virtio-9pfs"
     }
@@ -118,7 +118,7 @@ impl<Handler: P9Handler> Entity for PciVirtio9pfs<Handler> {
     }
 }
 
-impl<Handler: P9Handler> PciVirtio for PciVirtio9pfs<Handler> {
+impl PciVirtio for PciVirtio9pfs {
     fn virtio_state(&self) -> &PciVirtioState {
         &self.virtio_state
     }
@@ -193,31 +193,6 @@ pub trait P9Handler: Sync + Send + 'static {
     fn handle_clunk(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx);
     fn handle_getattr(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx);
     fn handle_statfs(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx);
-
-    fn write_buf(buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        // more copy pasta from Chain::write b/c like Chain:read a
-        // statically sized type is expected.
-        let mut done = 0;
-        let _total = chain.for_remaining_type(false, |addr, len| {
-            let remain = &buf[done..];
-            if let Some(copied) = mem.write_from(addr, remain, len) {
-                let need_more = copied != remain.len();
-
-                done += copied;
-                (copied, need_more)
-            } else {
-                // Copy failed, so do not attempt anything else
-                (0, false)
-            }
-        });
-    }
-
-    fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
-        let msg = Rlerror::new(ecode);
-        let mut out = ispf::to_bytes_le(&msg).unwrap();
-        let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
-    }
 
     fn handle_req(&self, vq: &Arc<VirtQueue>) {
         let mem = vq.acc_mem.access().unwrap();
@@ -296,7 +271,7 @@ pub trait P9Handler: Sync + Send + 'static {
             //      you hit an ENOTSUP, this is the place to start for adding a
             //      new message type handler.
             _ => {
-                Self::write_error(ENOTSUP as u32, &mut chain, &mem);
+                write_error(ENOTSUP as u32, &mut chain, &mem);
             }
         };
 
@@ -344,7 +319,7 @@ impl HostFSHandler {
             Some(ref f) => f,
             None => {
                 // the file is not open
-                return Self::write_error(EINVAL as u32, chain, mem);
+                return write_error(EINVAL as u32, chain, mem);
             }
         };
         let metadata = match file.metadata() {
@@ -358,7 +333,7 @@ impl HostFSHandler {
                     self.log,
                     "read: metadata for {:?}: {:?}", &fid.pathbuf, e,
                 );
-                return Self::write_error(ecode as u32, chain, mem);
+                return write_error(ecode as u32, chain, mem);
             }
         };
 
@@ -367,7 +342,7 @@ impl HostFSHandler {
             let response = Rread::new(Vec::new());
             let mut out = ispf::to_bytes_le(&response).unwrap();
             let buf = out.as_mut_slice();
-            return Self::write_buf(buf, chain, mem);
+            return write_buf(buf, chain, mem);
         }
 
         match file.seek(std::io::SeekFrom::Start(msg.offset)) {
@@ -377,7 +352,7 @@ impl HostFSHandler {
                     None => 0,
                 };
                 warn!(self.log, "read: seek: {:?}: {:?}", &fid.pathbuf, e,);
-                return Self::write_error(ecode as u32, chain, mem);
+                return write_error(ecode as u32, chain, mem);
             }
             Ok(_) => {}
         }
@@ -401,7 +376,7 @@ impl HostFSHandler {
                     None => 0,
                 };
                 warn!(self.log, "read: exact: {:?}: {:?}", &fid.pathbuf, e,);
-                return Self::write_error(ecode as u32, chain, mem);
+                return write_error(ecode as u32, chain, mem);
             }
             Ok(()) => {}
         }
@@ -409,7 +384,7 @@ impl HostFSHandler {
         let response = Rread::new(content);
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn do_statfs(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
@@ -456,7 +431,7 @@ impl HostFSHandler {
 
         let mut out = ispf::to_bytes_le(&resp).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn do_getattr(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
@@ -467,7 +442,7 @@ impl HostFSHandler {
                     Some(ecode) => ecode,
                     None => 0,
                 };
-                return Self::write_error(ecode as u32, chain, mem);
+                return write_error(ecode as u32, chain, mem);
             }
         };
 
@@ -551,7 +526,7 @@ impl HostFSHandler {
 
         let mut out = ispf::to_bytes_le(&resp).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 }
 
@@ -585,7 +560,7 @@ impl P9Handler for HostFSHandler {
                 msg.msize,
                 self.max_chunk_size
             );
-            return Self::write_error(EOVERFLOW as u32, chain, mem);
+            return write_error(EOVERFLOW as u32, chain, mem);
         }
         // TODO this is likely bad for multiple clients with different msizes,
         // should be a session level variable.
@@ -600,7 +575,7 @@ impl P9Handler for HostFSHandler {
         }
         let mut out = ispf::to_bytes_le(&msg).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn handle_attach(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
@@ -619,7 +594,7 @@ impl P9Handler for HostFSHandler {
                     Some(ecode) => ecode,
                     None => 0,
                 };
-                return Self::write_error(ecode as u32, chain, mem);
+                return write_error(ecode as u32, chain, mem);
             }
             Ok(m) => m.ino(),
         };
@@ -634,7 +609,7 @@ impl P9Handler for HostFSHandler {
                         // effort to support clients who don't explicitly cluck
                         // fids, and considering the fact that we do not support
                         // multiple fs trees, just carry on
-                        //return Self::write_error(EEXIST as u32, chain, mem);
+                        //return write_error(EEXIST as u32, chain, mem);
                     }
                     None => {
                         // create fid entry
@@ -649,7 +624,7 @@ impl P9Handler for HostFSHandler {
                 };
             }
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         }
 
@@ -658,7 +633,7 @@ impl P9Handler for HostFSHandler {
             Rattach::new(Qid { typ: QidType::Dir, version: 0, path: qpath });
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn handle_walk(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
@@ -671,7 +646,7 @@ impl P9Handler for HostFSHandler {
                     Some(p) => p,
                     None => {
                         warn!(self.log, "walk: fid {} not found", msg.fid);
-                        return Self::write_error(ENOENT as u32, chain, mem);
+                        return write_error(ENOENT as u32, chain, mem);
                     }
                 };
 
@@ -695,7 +670,7 @@ impl P9Handler for HostFSHandler {
                                 self.log,
                                 "walk: no metadata: {:?}: {:?}", newpath, e
                             );
-                            return Self::write_error(ecode as u32, chain, mem);
+                            return write_error(ecode as u32, chain, mem);
                         }
                         Ok(m) => {
                             let qt = if m.is_dir() {
@@ -716,7 +691,7 @@ impl P9Handler for HostFSHandler {
                         // effort to support clients who don't explicitly cluck
                         // fids, and considering the fact that we do not support
                         // multiple fs trees, just carry on
-                        //return Self::write_error(EEXIST as u32, chain, mem);
+                        //return write_error(EEXIST as u32, chain, mem);
                     }
                     None => {}
                 };
@@ -728,10 +703,10 @@ impl P9Handler for HostFSHandler {
                 let response = Rwalk::new(qids);
                 let mut out = ispf::to_bytes_le(&response).unwrap();
                 let buf = out.as_mut_slice();
-                Self::write_buf(buf, chain, mem);
+                write_buf(buf, chain, mem);
             }
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         }
     }
@@ -746,7 +721,7 @@ impl P9Handler for HostFSHandler {
                     Some(p) => p,
                     None => {
                         warn!(self.log, "open: fid {} not found", msg.fid);
-                        return Self::write_error(ENOENT as u32, chain, mem);
+                        return write_error(ENOENT as u32, chain, mem);
                     }
                 };
 
@@ -761,7 +736,7 @@ impl P9Handler for HostFSHandler {
                             self.log,
                             "open: no metadata: {:?}: {:?}", &fid.pathbuf, e
                         );
-                        return Self::write_error(ecode as u32, chain, mem);
+                        return write_error(ecode as u32, chain, mem);
                     }
                     Ok(m) => {
                         let qt = if m.is_dir() {
@@ -789,7 +764,7 @@ impl P9Handler for HostFSHandler {
                                 self.log,
                                 "open: {:?}: {:?}", &fid.pathbuf, e
                             );
-                            return Self::write_error(ecode as u32, chain, mem);
+                            return write_error(ecode as u32, chain, mem);
                         }
                     },
                 );
@@ -799,10 +774,10 @@ impl P9Handler for HostFSHandler {
 
                 let mut out = ispf::to_bytes_le(&response).unwrap();
                 let buf = out.as_mut_slice();
-                Self::write_buf(buf, chain, mem);
+                write_buf(buf, chain, mem);
             }
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         }
     }
@@ -822,11 +797,11 @@ impl P9Handler for HostFSHandler {
                 Some(f) => f.pathbuf.clone(),
                 None => {
                     warn!(self.log, "readdir: fid {} not found", msg.fid);
-                    return Self::write_error(ENOENT as u32, chain, mem);
+                    return write_error(ENOENT as u32, chain, mem);
                 }
             },
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         };
 
@@ -843,7 +818,7 @@ impl P9Handler for HostFSHandler {
                         self.log,
                         "readdir: collect: {:?}: {:?}", &pathbuf, e
                     );
-                    return Self::write_error(ecode as u32, chain, mem);
+                    return write_error(ecode as u32, chain, mem);
                 }
             },
             Err(e) => {
@@ -852,13 +827,13 @@ impl P9Handler for HostFSHandler {
                     None => 0,
                 };
                 warn!(self.log, "readdir: {:?}: {:?}", &pathbuf, e);
-                return Self::write_error(ecode as u32, chain, mem);
+                return write_error(ecode as u32, chain, mem);
             }
         };
 
         // bail with out of range error if offset is greater than entries
         if (dir.len() as u64) < msg.offset {
-            return Self::write_error(ERANGE as u32, chain, mem);
+            return write_error(ERANGE as u32, chain, mem);
         }
 
         // need to sort to ensure consistent offsets
@@ -887,7 +862,7 @@ impl P9Handler for HostFSHandler {
                         &de.path(),
                         e
                     );
-                    return Self::write_error(ecode as u32, chain, mem);
+                    return write_error(ecode as u32, chain, mem);
                 }
             };
 
@@ -903,7 +878,7 @@ impl P9Handler for HostFSHandler {
                 Ok(n) => n,
                 Err(_) => {
                     // getting a bit esoteric with our error codes here...
-                    return Self::write_error(EILSEQ as u32, chain, mem);
+                    return write_error(EILSEQ as u32, chain, mem);
                 }
             };
 
@@ -921,7 +896,7 @@ impl P9Handler for HostFSHandler {
         let response = Rreaddir::new(entries);
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn handle_read(
@@ -939,11 +914,11 @@ impl P9Handler for HostFSHandler {
                 Some(ref mut fid) => self.do_read(&msg, fid, chain, mem, msize),
                 None => {
                     warn!(self.log, "read: fid {} not found", msg.fid);
-                    return Self::write_error(ENOENT as u32, chain, mem);
+                    return write_error(ENOENT as u32, chain, mem);
                 }
             },
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         };
     }
@@ -955,7 +930,7 @@ impl P9Handler for HostFSHandler {
         mem: &MemCtx,
         _msize: u32,
     ) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_clunk(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
@@ -963,7 +938,7 @@ impl P9Handler for HostFSHandler {
         let resp = Rclunk::new();
         let mut out = ispf::to_bytes_le(&resp).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn handle_getattr(&self, msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
@@ -973,11 +948,11 @@ impl P9Handler for HostFSHandler {
                 Some(ref mut fid) => self.do_getattr(fid, chain, mem),
                 None => {
                     warn!(self.log, "getattr: fid {} not found", msg.fid);
-                    return Self::write_error(ENOENT as u32, chain, mem);
+                    return write_error(ENOENT as u32, chain, mem);
                 }
             },
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         }
     }
@@ -989,12 +964,19 @@ impl P9Handler for HostFSHandler {
                 Some(ref mut fid) => self.do_statfs(fid, chain, mem),
                 None => {
                     warn!(self.log, "statfs: fid {} not found", msg.fid);
-                    return Self::write_error(ENOENT as u32, chain, mem);
+                    return write_error(ENOENT as u32, chain, mem);
                 }
             },
             Err(_) => {
-                return Self::write_error(ENOLCK as u32, chain, mem);
+                return write_error(ENOLCK as u32, chain, mem);
             }
         }
     }
+}
+
+pub(crate) fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
+    let msg = Rlerror::new(ecode);
+    let mut out = ispf::to_bytes_le(&msg).unwrap();
+    let buf = out.as_mut_slice();
+    write_buf(buf, chain, mem);
 }

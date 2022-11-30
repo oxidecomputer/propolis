@@ -19,7 +19,7 @@ use crate::{
 use super::{
     bits::*,
     pci::{PciVirtio, PciVirtioState},
-    queue::{Chain, VirtQueue, VirtQueues},
+    queue::{write_buf, Chain, VirtQueue, VirtQueues},
     viona::bits::VIRTIO_NET_S_LINK_UP,
     VirtioDevice,
 };
@@ -27,7 +27,7 @@ use super::{
 use p4rs::{packet_in, packet_out, Pipeline};
 use softnpu_lib::mgmt::ManagementRequest;
 
-use crate::hw::virtio::p9fs::{P9Handler, PciVirtio9pfs};
+use crate::hw::virtio::p9fs::{write_error, P9Handler, PciVirtio9pfs};
 use dlpi::sys::dlpi_recvinfo_t;
 use lazy_static::lazy_static;
 use libc::ENOTSUP;
@@ -104,7 +104,7 @@ pub struct SoftNpu {
     uart: Arc<LpcUart>,
 
     /// P9 file system endpoint for pre-compiled program transfer
-    pub p9fs: Arc<PciVirtio9pfs<SoftNpuP9Handler>>,
+    pub p9fs: Arc<PciVirtio9pfs>,
 
     //TODO should be able to do this as a RwLock
     pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
@@ -174,7 +174,7 @@ impl SoftNpu {
         data_links: Vec<String>,
         queue_size: u16,
         uart: Arc<LpcUart>,
-        p9fs: Arc<PciVirtio9pfs<SoftNpuP9Handler>>,
+        p9fs: Arc<PciVirtio9pfs>,
         pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
         log: Logger,
     ) -> Result<Arc<Self>> {
@@ -652,19 +652,6 @@ fn read_buf(mem: &MemCtx, chain: &mut Chain, buf: &mut [u8]) -> usize {
         }
     })
 }
-fn write_buf(buf: &[u8], chain: &mut Chain, mem: &MemCtx) -> usize {
-    let mut done = 0;
-    chain.for_remaining_type(false, |addr, len| {
-        let remain = &buf[done..];
-        if let Some(copied) = mem.write_from(addr, remain, len) {
-            let need_more = copied != remain.len();
-            done += copied;
-            (copied, need_more)
-        } else {
-            (0, false)
-        }
-    })
-}
 
 /// Handle ASIC management messages from the guest using the loaded program.
 fn handle_management_message(
@@ -985,19 +972,19 @@ impl P9Handler for SoftNpuP9Handler {
 
         let mut out = ispf::to_bytes_le(&msg).unwrap();
         let buf = out.as_mut_slice();
-        Self::write_buf(buf, chain, mem);
+        write_buf(buf, chain, mem);
     }
 
     fn handle_attach(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_walk(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_open(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_readdir(
@@ -1007,7 +994,7 @@ impl P9Handler for SoftNpuP9Handler {
         mem: &MemCtx,
         _msize: u32,
     ) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_read(
@@ -1017,7 +1004,7 @@ impl P9Handler for SoftNpuP9Handler {
         mem: &MemCtx,
         _msize: u32,
     ) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_write(
@@ -1035,7 +1022,7 @@ impl P9Handler for SoftNpuP9Handler {
         let response = Rwrite::new(len as u32);
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
-        return Self::write_buf(buf, chain, mem);
+        return write_buf(buf, chain, mem);
     }
 
     fn handle_clunk(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
@@ -1048,14 +1035,14 @@ impl P9Handler for SoftNpuP9Handler {
         let response = Rclunk::new();
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
-        return Self::write_buf(buf, chain, mem);
+        return write_buf(buf, chain, mem);
     }
 
     fn handle_getattr(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 
     fn handle_statfs(&self, _msg_buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
-        Self::write_error(ENOTSUP as u32, chain, &mem)
+        write_error(ENOTSUP as u32, chain, &mem)
     }
 }
