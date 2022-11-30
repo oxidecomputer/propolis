@@ -478,14 +478,15 @@ impl<'a> MachineInitializer<'a> {
 
         // Set up the p9fs device for guest programs to load P4 programs
         // through.
-        let p9_handler = virtio::SoftNpuP9Handler::new(
+        let p9_handler = virtio::softnpu::SoftNpuP9Handler::new(
             "/dev/softnpufs".to_owned(),
             "/dev/softnpufs".to_owned(),
             self.spec.devices.softnpu_ports.len() as u16,
             pipeline.clone(),
             self.log.clone(),
         );
-        let vio9p = virtio::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
+        let vio9p =
+            virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
         self.inv.register_instance(&vio9p, "softnpu-p9fs")?;
         let bdf: pci::Bdf = self
             .spec
@@ -513,7 +514,7 @@ impl<'a> MachineInitializer<'a> {
 
         // Create the SoftNpu device.
         let queue_size = 0x8000;
-        let softnpu = virtio::SoftNpu::new(
+        let softnpu = virtio::softnpu::SoftNpu::new(
             data_links,
             queue_size,
             uart,
@@ -572,13 +573,13 @@ impl<'a> MachineInitializer<'a> {
             )
         })?;
 
-        let handler = virtio::HostFSHandler::new(
+        let handler = virtio::p9fs::HostFSHandler::new(
             p9fs.source.to_owned(),
             p9fs.target.to_owned(),
             p9fs.chunk_size,
             self.log.clone(),
         );
-        let vio9p = virtio::PciVirtio9pfs::new(0x40, Arc::new(handler));
+        let vio9p = virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(handler));
         self.inv
             .register(&vio9p)
             .map_err(|e| -> std::io::Error { e.into() })?;
