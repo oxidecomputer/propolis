@@ -85,7 +85,7 @@ impl VirtioDevice for PciVirtio9pfs {
                     }
                     P9fsReg::Tag => {
                         let mut bs = [0; 256];
-                        for (i, x) in self.handler.target().chars().enumerate()
+                        for (i, x) in self.handler.target().bytes().enumerate()
                         {
                             bs[i] = x as u8;
                         }
