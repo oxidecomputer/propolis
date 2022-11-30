@@ -53,6 +53,7 @@ git = "https://github.com/oxidecomputer/omicron"
 branch = "main"
 optional = true
 
+# falcon
 [dependencies.p4rs]
 git = "https://github.com/oxidecomputer/p4"
 branch = "main"
@@ -69,7 +70,6 @@ package = "softnpu"
 git = "https://github.com/oxidecomputer/dlpi-sys"
 rev = "eb4dffeef88f86294d939aeb5521509ea3d59b69"
 optional = true
-
 
 [dev-dependencies]
 crossbeam-channel = "0.5"

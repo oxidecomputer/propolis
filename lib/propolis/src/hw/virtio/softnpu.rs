@@ -381,13 +381,8 @@ impl PciVirtioSoftNpuPort {
     }
 
     fn handle_q0_req(&self, _vq: &Arc<VirtQueue>) {
-        // This is the queue that the virtio driver in the guest reads from and
-        // we write to. It seems that the correct way to handle a queue
-        // notification on this queue is to not handle it? If we vq.pop_avail to
-        // see what's in the queue, it's always zero data, and the act of doing
-        // a vq.pop_avail seems to drain the queue until it is unusable for
-        // writes, even if we do the corresponding push_used.
-
+        // ignore notifications from the queue that we use for writing to the
+        // guest.
         return;
     }
 
@@ -520,7 +515,7 @@ impl PacketHandler {
                 index + 1,
                 pkt,
                 &data_handles,
-                virtio.clone(),
+                &virtio,
                 pl,
                 &log,
             )
@@ -533,7 +528,7 @@ impl PacketHandler {
         index: usize,
         mut pkt: packet_in<'a>,
         data_handles: &Vec<dlpi::DlpiHandle>,
-        virtio: Arc<PortVirtioState>,
+        virtio: &Arc<PortVirtioState>,
         pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
     ) {
@@ -601,9 +596,15 @@ impl PacketHandler {
     fn send_packet_to_cpu_port<'a>(
         pkt: &mut packet_out<'a>,
         virtio: &Arc<PortVirtioState>,
-        _log: &Logger,
+        log: &Logger,
     ) {
-        let mem = virtio.pci_state.acc_mem.access().unwrap();
+        let mem = match virtio.pci_state.acc_mem.access() {
+            Some(mem) => mem,
+            None => {
+                warn!(log, "send packet to guest: no guest virtio memory");
+                return;
+            }
+        };
         let mut chain = Chain::with_capacity(1);
         let vq = &virtio.pci_virtio_state.queues[0];
         if let None = vq.pop_avail(&mut chain, &mem) {
