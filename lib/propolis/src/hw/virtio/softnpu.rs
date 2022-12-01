@@ -92,23 +92,14 @@ pub struct SoftNpu {
     /// Data links SoftNpu will hook into.
     pub data_links: Vec<String>,
 
-    /// dlpi handles for data links.
-    pub data_handles: Vec<dlpi::DlpiHandle>,
-
     /// The PCI port.
     pub pci_port: Arc<PciVirtioSoftNpuPort>,
-
-    /// Virtio state for CPU port.
-    virtio: Arc<PortVirtioState>,
 
     /// UART for management from guest
     uart: Arc<LpcUart>,
 
     /// P9 file system endpoint for pre-compiled program transfer
     pub p9fs: Arc<PciVirtio9pfs>,
-
-    //TODO should be able to do this as a RwLock
-    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
 
     booted: Mutex<bool>,
 
@@ -193,12 +184,9 @@ impl SoftNpu {
 
         Ok(Arc::new(SoftNpu {
             data_links,
-            data_handles,
-            virtio,
             pci_port,
             uart,
             p9fs,
-            pipeline,
             booted: Mutex::new(false),
             log,
         }))
@@ -239,7 +227,7 @@ impl SoftNpu {
 
         let log = self.log.clone();
         let uart = self.uart.clone();
-        let pipeline = self.pipeline.clone();
+        let pipeline = self.pci_port.pipeline.clone();
         let radix = self.data_links.len();
 
         spawn(move || Self::management_handler(uart, pipeline, radix, log));
@@ -277,14 +265,14 @@ impl Entity for SoftNpu {
             return;
         }
         self.run_management_handler_thread();
-        for i in 0..self.data_handles.len() {
+        for i in 0..self.pci_port.data_handles.len() {
             info!(self.log, "starting ingress packet handler for port {}", i);
 
             PacketHandler::run_ingress_packet_handler_thread(
                 i,
-                self.data_handles.clone(),
-                self.virtio.clone(),
-                self.pipeline.clone(),
+                self.pci_port.data_handles.clone(),
+                self.pci_port.virtio_state.clone(),
+                self.pci_port.pipeline.clone(),
                 self.log.clone(),
             );
         }
