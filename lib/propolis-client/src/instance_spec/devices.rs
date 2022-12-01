@@ -299,9 +299,17 @@ pub struct SoftNpuP9 {
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct P9fs {
+    /// The host source path to mount into the guest.
     pub source: String,
+
+    /// The 9P target filesystem tag.
     pub target: String,
+
+    /// The chunk size to use in the 9P protocol. Vanilla Helios images should
+    /// use 8192. Falcon Helios base images and Linux can use up to 65536.
     pub chunk_size: u32,
+
+    /// The PCI path at which to attach the guest to this P9 filesystem.
     pub pci_path: PciPath,
 }
 
