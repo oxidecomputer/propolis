@@ -12,6 +12,7 @@ use crate::{
     chardev::{Sink, Source},
     common::*,
     hw::{pci, uart::LpcUart},
+    migrate::Migrator,
     util::regmap::RegMap,
     vmm::MemCtx,
 };
@@ -288,6 +289,10 @@ impl Entity for SoftNpu {
             );
         }
         *booted = true
+    }
+
+    fn migrate(&'_ self) -> Migrator<'_> {
+        Migrator::NonMigratable
     }
 }
 

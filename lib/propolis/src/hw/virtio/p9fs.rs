@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use crate::hw::pci;
+use crate::migrate::Migrator;
 use crate::util::regmap::RegMap;
 use crate::vmm::MemCtx;
 
@@ -115,6 +116,9 @@ impl Entity for PciVirtio9pfs {
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
+    }
+    fn migrate(&'_ self) -> Migrator<'_> {
+        Migrator::NonMigratable
     }
 }
 
