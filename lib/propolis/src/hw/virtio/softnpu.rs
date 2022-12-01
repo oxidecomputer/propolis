@@ -537,7 +537,7 @@ impl PacketHandler {
         {
             // packet is going to CPU port
             if port == 0 {
-                Self::send_packet_to_cpu_port(&mut out_pkt, &virtio, &log);
+                Self::send_packet_to_cpu_port(&mut out_pkt, virtio, &log);
             }
             // packet is passing through
             else {

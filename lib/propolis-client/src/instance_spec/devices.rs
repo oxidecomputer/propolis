@@ -283,8 +283,8 @@ pub struct SoftNpuPort {
     /// The name of the SoftNpu port.
     pub name: String,
 
-    /// The name of the associated VNIC.
-    pub vnic: String,
+    /// The name of the device's backend.
+    pub backend_name: String,
 }
 
 #[cfg(feature = "falcon")]

@@ -74,6 +74,9 @@ pub enum NetworkBackendKind {
     /// A virtio-net (viona) backend associated with the supplied named vNIC on
     /// the host.
     Virtio { vnic_name: String },
+
+    /// A DLPI backend associated with the supplied named vNIC on the host.
+    Dlpi { vnic_name: String },
 }
 
 /// A network backend.

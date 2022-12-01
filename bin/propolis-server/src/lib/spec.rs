@@ -475,7 +475,10 @@ impl ServerSpecBuilder {
 
         self.builder.add_softnpu_port(
             name.to_string(),
-            SoftNpuPort { name: name.to_string(), vnic: vnic_name.to_string() },
+            SoftNpuPort {
+                name: name.to_string(),
+                backend_name: vnic_name.to_string(),
+            },
         )?;
 
         Ok(())

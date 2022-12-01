@@ -176,6 +176,7 @@ impl SpecBuilder {
         &mut self,
         pci_port: SoftNpuPciPort,
     ) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(pci_port.pci_path)?;
         self.spec.devices.softnpu_pci_port = Some(pci_port);
         Ok(self)
     }
@@ -186,6 +187,15 @@ impl SpecBuilder {
         key: String,
         port: SoftNpuPort,
     ) -> Result<&Self, SpecBuilderError> {
+        let _old = self.spec.backends.network_backends.insert(
+            port.backend_name.clone(),
+            super::backends::NetworkBackend {
+                kind: super::backends::NetworkBackendKind::Dlpi {
+                    vnic_name: port.backend_name.clone(),
+                },
+            },
+        );
+        assert!(_old.is_none());
         if self.spec.devices.softnpu_ports.insert(key, port.clone()).is_some() {
             Err(SpecBuilderError::SoftNpuPortInUse(port.name.clone()))
         } else {

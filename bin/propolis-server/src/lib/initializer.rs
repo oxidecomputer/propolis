@@ -428,10 +428,20 @@ impl<'a> MachineInitializer<'a> {
                     format!("Couldn't get PCI BDF for vNIC {}: {}", name, e),
                 )
             })?;
+            let vnic_name = match &backend_spec.kind {
+                NetworkBackendKind::Virtio { vnic_name } => vnic_name,
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Network backend must be virtio for vNIC {}",
+                            name,
+                        ),
+                    ));
+                }
+            };
             let viona = virtio::PciVirtioViona::new(
-                match &backend_spec.kind {
-                    NetworkBackendKind::Virtio { vnic_name } => vnic_name,
-                },
+                vnic_name,
                 0x100,
                 &self.machine.hdl,
             )?;
@@ -459,8 +469,37 @@ impl<'a> MachineInitializer<'a> {
         let ports: Vec<&SoftNpuPort> =
             self.spec.devices.softnpu_ports.values().collect();
 
-        let data_links: Vec<String> =
-            ports.iter().map(|x| x.vnic.clone()).collect();
+        let mut data_links: Vec<String> = Vec::new();
+        for x in &ports {
+            let backend = self
+                .spec
+                .backends
+                .network_backends
+                .get(&x.backend_name)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Backend {} not found for softnpu port",
+                            x.backend_name
+                        ),
+                    )
+                })?;
+
+            let vnic = match &backend.kind {
+                NetworkBackendKind::Dlpi { vnic_name } => vnic_name,
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Softnpu port must have DLPI backend: {}",
+                            x.backend_name
+                        ),
+                    ));
+                }
+            };
+            data_links.push(vnic.clone());
+        }
 
         // Set up an LPC uart for ASIC management comms from the guest.
         //
