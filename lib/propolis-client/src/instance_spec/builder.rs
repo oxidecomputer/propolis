@@ -208,12 +208,14 @@ impl SpecBuilder {
         &mut self,
         p9: SoftNpuP9,
     ) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(p9.pci_path)?;
         self.spec.devices.softnpu_p9 = Some(p9);
         Ok(self)
     }
 
     #[cfg(feature = "falcon")]
     pub fn set_p9fs(&mut self, p9fs: P9fs) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(p9fs.pci_path)?;
         self.spec.devices.p9fs = Some(p9fs);
         Ok(self)
     }
