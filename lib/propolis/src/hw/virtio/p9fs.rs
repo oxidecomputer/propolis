@@ -88,6 +88,9 @@ impl VirtioDevice for PciVirtio9pfs {
                         let mut bs = [0; 256];
                         for (i, x) in self.handler.target().bytes().enumerate()
                         {
+                            if i == 256 {
+                                break;
+                            }
                             bs[i] = x as u8;
                         }
                         ro.write_bytes(&bs);

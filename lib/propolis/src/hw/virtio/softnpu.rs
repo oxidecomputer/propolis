@@ -308,10 +308,7 @@ impl PciVirtioSoftNpuPort {
 
         let mem = match self.virtio_state.pci_state.acc_mem.access() {
             Some(mem) => mem,
-            None => {
-                warn!(self.log, "failed to access virtio memory");
-                return;
-            }
+            None => return,
         };
         let mut chain = Chain::with_capacity(1);
         match vq.pop_avail(&mut chain, &mem) {
