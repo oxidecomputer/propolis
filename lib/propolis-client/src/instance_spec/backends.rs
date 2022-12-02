@@ -41,9 +41,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub enum StorageBackendKind {
-    /// A Crucible-backed device, containing a generation number and a
-    /// construction request.
-    Crucible { gen: u64, req: crucible_client_types::VolumeConstructionRequest },
+    /// A Crucible-backed device, containing a construction request.
+    Crucible { req: crucible_client_types::VolumeConstructionRequest },
 
     /// A device backed by a file on the host machine. The payload is a path to
     /// this file.

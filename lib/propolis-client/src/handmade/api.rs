@@ -239,7 +239,6 @@ pub struct DiskRequest {
     pub device: String,
 
     // Crucible related opts
-    pub gen: u64,
     pub volume_construction_request:
         crucible_client_types::VolumeConstructionRequest,
 }

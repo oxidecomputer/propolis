@@ -34,12 +34,12 @@ once_cell = "1.13"
 
 [dependencies.crucible-client-types]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "00c1de9b165e8abff1eed6e26a5755465785fc07"
+rev = "861a09c350fd0e127b6105c8099e31a0bc3b711a"
 optional = true
 
 [dependencies.crucible]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "00c1de9b165e8abff1eed6e26a5755465785fc07"
+rev = "861a09c350fd0e127b6105c8099e31a0bc3b711a"
 optional = true
 
 [dependencies.oximeter]
