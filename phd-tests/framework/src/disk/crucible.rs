@@ -58,6 +58,12 @@ pub struct CrucibleDisk {
     /// The disk's block size.
     block_size: BlockSize,
 
+    /// The number of blocks in this disk's region's extents.
+    blocks_per_extent: u64,
+
+    /// The number of extents in each of the disk's regions.
+    extent_count: u32,
+
     /// The collection of downstairs process wrappers for this disk.
     downstairs_instances: Vec<Downstairs>,
 
@@ -121,7 +127,6 @@ impl CrucibleDisk {
                 "--data",
                 dir_arg.as_ref(),
                 "--encrypted",
-                "true",
                 "--uuid",
                 &disk_uuid.to_string(),
                 "--extent-size",
@@ -197,6 +202,8 @@ impl CrucibleDisk {
         Ok(Self {
             id: disk_uuid,
             block_size,
+            blocks_per_extent,
+            extent_count: extents_in_disk as u32,
             downstairs_instances,
             read_only_parent: read_only_parent
                 .map(|p| p.as_ref().to_path_buf()),
@@ -231,6 +238,8 @@ impl super::DiskConfig for CrucibleDisk {
                         block_size: self.block_size.bytes(),
                         sub_volumes: vec![VolumeConstructionRequest::Region {
                             block_size: self.block_size.bytes(),
+                            blocks_per_extent: self.blocks_per_extent,
+                            extent_count: self.extent_count,
                             opts: CrucibleOpts {
                                 id: Uuid::new_v4(),
                                 target: downstairs_addrs,

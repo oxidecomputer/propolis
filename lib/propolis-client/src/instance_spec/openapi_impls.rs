@@ -195,9 +195,19 @@ impl From<CrucibleVCR> for GenVCR {
             CrucibleVCR::Url { id, block_size, url } => {
                 GenVCR::Url { id, block_size, url }
             }
-            CrucibleVCR::Region { block_size, opts, gen } => {
-                GenVCR::Region { block_size, opts: opts.into(), gen }
-            }
+            CrucibleVCR::Region {
+                block_size,
+                blocks_per_extent,
+                extent_count,
+                opts,
+                gen,
+            } => GenVCR::Region {
+                block_size,
+                blocks_per_extent,
+                extent_count,
+                opts: opts.into(),
+                gen,
+            },
             CrucibleVCR::File { id, block_size, path } => {
                 GenVCR::File { id, block_size, path }
             }
