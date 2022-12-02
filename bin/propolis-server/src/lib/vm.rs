@@ -529,6 +529,10 @@ impl VmController {
         let ps2ctrl: Option<Arc<PS2Ctrl>> = inv.get_concrete(ps2ctrl_id);
         init.initialize_qemu_debug_port()?;
         init.initialize_network_devices(&chipset)?;
+        #[cfg(feature = "falcon")]
+        init.initialize_softnpu_ports(&chipset)?;
+        #[cfg(feature = "falcon")]
+        init.initialize_9pfs(&chipset)?;
         let crucible_backends = init.initialize_storage_devices(&chipset)?;
         let framebuffer_id =
             init.initialize_fwcfg(instance_spec.devices.board.cpus)?;

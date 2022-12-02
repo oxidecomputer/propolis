@@ -4,6 +4,8 @@ use propolis_types::PciPath;
 use thiserror::Error;
 
 use super::{Board, Chipset, InstanceSpec, SerialPort, SerialPortNumber};
+#[cfg(feature = "falcon")]
+use super::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort};
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -19,6 +21,9 @@ pub enum SpecBuilderError {
 
     #[error("Serial port {0:?} is already specified")]
     SerialPortInUse(SerialPortNumber),
+
+    #[error("SoftNpu port {0:?} is already specified")]
+    SoftNpuPortInUse(String),
 }
 
 /// A builder that constructs instance specs incrementally and catches basic
@@ -163,6 +168,56 @@ impl SpecBuilder {
         } else {
             Ok(self)
         }
+    }
+
+    #[cfg(feature = "falcon")]
+    /// Sets softnpu pci port
+    pub fn set_softnpu_pci_port(
+        &mut self,
+        pci_port: SoftNpuPciPort,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(pci_port.pci_path)?;
+        self.spec.devices.softnpu_pci_port = Some(pci_port);
+        Ok(self)
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn add_softnpu_port(
+        &mut self,
+        key: String,
+        port: SoftNpuPort,
+    ) -> Result<&Self, SpecBuilderError> {
+        let _old = self.spec.backends.network_backends.insert(
+            port.backend_name.clone(),
+            super::backends::NetworkBackend {
+                kind: super::backends::NetworkBackendKind::Dlpi {
+                    vnic_name: port.backend_name.clone(),
+                },
+            },
+        );
+        assert!(_old.is_none());
+        if self.spec.devices.softnpu_ports.insert(key, port.clone()).is_some() {
+            Err(SpecBuilderError::SoftNpuPortInUse(port.name.clone()))
+        } else {
+            Ok(self)
+        }
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn set_softnpu_p9(
+        &mut self,
+        p9: SoftNpuP9,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(p9.pci_path)?;
+        self.spec.devices.softnpu_p9 = Some(p9);
+        Ok(self)
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn set_p9fs(&mut self, p9fs: P9fs) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(p9fs.pci_path)?;
+        self.spec.devices.p9fs = Some(p9fs);
+        Ok(self)
     }
 
     /// Yields the completed spec, consuming the builder.

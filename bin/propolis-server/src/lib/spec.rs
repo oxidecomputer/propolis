@@ -394,6 +394,22 @@ impl ServerSpecBuilder {
                 "pci-virtio-viona" => {
                     self.add_network_device_from_config(device_name, device)?
                 }
+                #[cfg(feature = "falcon")]
+                "softnpu-pci-port" => {
+                    self.add_softnpu_pci_port_from_config(device_name, device)?
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-port" => {
+                    self.add_softnpu_device_from_config(device_name, device)?
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-p9" => {
+                    self.add_softnpu_p9_from_config(device_name, device)?
+                }
+                #[cfg(feature = "falcon")]
+                "pci-virtio-9p" => {
+                    self.add_p9fs_from_config(device_name, device)?
+                }
                 _ => {
                     return Err(ServerSpecBuilderError::ConfigTomlError(
                         format!("Unrecognized device type {}", driver),
@@ -405,6 +421,102 @@ impl ServerSpecBuilder {
         for bridge in config.pci_bridges.iter() {
             self.add_pci_bridge_from_config(bridge)?;
         }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_softnpu_p9_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get PCI path for storage device {}",
+                name
+            ))
+        })?;
+
+        self.builder.set_softnpu_p9(SoftNpuP9 { pci_path })?;
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_softnpu_pci_port_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get PCI path for network device {}",
+                name
+            ))
+        })?;
+
+        self.builder.set_softnpu_pci_port(SoftNpuPciPort { pci_path })?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_softnpu_device_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let vnic_name = device.get_string("vnic").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to parse vNIC name for device {}",
+                name
+            ))
+        })?;
+
+        self.builder.add_softnpu_port(
+            name.to_string(),
+            SoftNpuPort {
+                name: name.to_string(),
+                backend_name: vnic_name.to_string(),
+            },
+        )?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_p9fs_from_config(
+        &mut self,
+        name: &str,
+        device: &config::Device,
+    ) -> Result<(), ServerSpecBuilderError> {
+        let source: String = device.get("source").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get source for p9 device {}",
+                name
+            ))
+        })?;
+
+        let target: String = device.get("target").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get target for p9 device {}",
+                name
+            ))
+        })?;
+
+        let chunk_size: u32 = match device.get("chunk_size") {
+            Some(s) => s,
+            None => 65536,
+        };
+
+        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
+            ServerSpecBuilderError::ConfigTomlError(format!(
+                "Failed to get PCI path for p9 device {}",
+                name
+            ))
+        })?;
+
+        self.builder.set_p9fs(P9fs { source, target, chunk_size, pci_path })?;
 
         Ok(())
     }

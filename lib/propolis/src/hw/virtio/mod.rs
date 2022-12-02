@@ -4,8 +4,12 @@ use std::sync::Arc;
 mod bits;
 
 pub mod block;
+#[cfg(feature = "falcon")]
+pub mod p9fs;
 pub mod pci;
 mod queue;
+#[cfg(feature = "falcon")]
+pub mod softnpu;
 pub mod viona;
 
 use crate::common::*;

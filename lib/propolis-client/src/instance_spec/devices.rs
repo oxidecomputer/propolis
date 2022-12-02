@@ -268,6 +268,51 @@ impl MigrationElement for PciPciBridge {
     }
 }
 
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuPciPort {
+    /// The PCI path at which to attach the guest to this port.
+    pub pci_path: PciPath,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuPort {
+    /// The name of the SoftNpu port.
+    pub name: String,
+
+    /// The name of the device's backend.
+    pub backend_name: String,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SoftNpuP9 {
+    /// The PCI path at which to attach the guest to this port.
+    pub pci_path: PciPath,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct P9fs {
+    /// The host source path to mount into the guest.
+    pub source: String,
+
+    /// The 9P target filesystem tag.
+    pub target: String,
+
+    /// The chunk size to use in the 9P protocol. Vanilla Helios images should
+    /// use 8192. Falcon Helios base images and Linux can use up to 65536.
+    pub chunk_size: u32,
+
+    /// The PCI path at which to attach the guest to this P9 filesystem.
+    pub pci_path: PciPath,
+}
+
 #[derive(Default, Clone, Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceSpec {
@@ -276,6 +321,14 @@ pub struct DeviceSpec {
     pub network_devices: BTreeMap<SpecKey, NetworkDevice>,
     pub serial_ports: BTreeMap<SpecKey, SerialPort>,
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+    #[cfg(feature = "falcon")]
+    pub softnpu_pci_port: Option<SoftNpuPciPort>,
+    #[cfg(feature = "falcon")]
+    pub softnpu_ports: BTreeMap<SpecKey, SoftNpuPort>,
+    #[cfg(feature = "falcon")]
+    pub softnpu_p9: Option<SoftNpuP9>,
+    #[cfg(feature = "falcon")]
+    pub p9fs: Option<P9fs>,
 }
 
 impl DeviceSpec {

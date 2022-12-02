@@ -432,16 +432,202 @@ impl<'a> MachineInitializer<'a> {
                     format!("Couldn't get PCI BDF for vNIC {}: {}", name, e),
                 )
             })?;
+            let vnic_name = match &backend_spec.kind {
+                NetworkBackendKind::Virtio { vnic_name } => vnic_name,
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Network backend must be virtio for vNIC {}",
+                            name,
+                        ),
+                    ));
+                }
+            };
             let viona = virtio::PciVirtioViona::new(
-                match &backend_spec.kind {
-                    NetworkBackendKind::Virtio { vnic_name } => vnic_name,
-                },
+                vnic_name,
                 0x100,
                 &self.machine.hdl,
             )?;
             let _ = self.inv.register_instance(&viona, bdf.to_string())?;
             chipset.device().pci_attach(bdf, viona);
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn initialize_softnpu_ports(
+        &self,
+        chipset: &RegisteredChipset,
+    ) -> Result<(), Error> {
+        // Check to make sure we actually have both a pci port and at least one
+        // regular SoftNpu port, otherwise just return.
+        let pci_port = match &self.spec.devices.softnpu_pci_port {
+            Some(tfp) => tfp,
+            None => return Ok(()),
+        };
+        if self.spec.devices.softnpu_ports.is_empty() {
+            return Ok(());
+        }
+
+        let ports: Vec<&SoftNpuPort> =
+            self.spec.devices.softnpu_ports.values().collect();
+
+        let mut data_links: Vec<String> = Vec::new();
+        for x in &ports {
+            let backend = self
+                .spec
+                .backends
+                .network_backends
+                .get(&x.backend_name)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Backend {} not found for softnpu port",
+                            x.backend_name
+                        ),
+                    )
+                })?;
+
+            let vnic = match &backend.kind {
+                NetworkBackendKind::Dlpi { vnic_name } => vnic_name,
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Softnpu port must have DLPI backend: {}",
+                            x.backend_name
+                        ),
+                    ));
+                }
+            };
+            data_links.push(vnic.clone());
+        }
+
+        // Set up an LPC uart for ASIC management comms from the guest.
+        //
+        // NOTE: SoftNpu squats on com4.
+        let pio = &self.machine.bus_pio;
+        let port = ibmpc::PORT_COM4;
+        let uart =
+            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap());
+        uart.set_autodiscard(true);
+        LpcUart::attach(&uart, pio, port);
+        self.inv.register_instance(&uart, "softnpu-uart")?;
+
+        // Start with no pipeline. The guest must load the initial P4 program.
+        let pipeline = Arc::new(std::sync::Mutex::new(None));
+
+        // Set up the p9fs device for guest programs to load P4 programs
+        // through.
+        let p9_handler = virtio::softnpu::SoftNpuP9Handler::new(
+            "/dev/softnpufs".to_owned(),
+            "/dev/softnpufs".to_owned(),
+            self.spec.devices.softnpu_ports.len() as u16,
+            pipeline.clone(),
+            self.log.clone(),
+        );
+        let vio9p =
+            virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
+        self.inv.register_instance(&vio9p, "softnpu-p9fs")?;
+        let bdf: pci::Bdf = self
+            .spec
+            .devices
+            .softnpu_p9
+            .as_ref()
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    "SoftNpu p9 device missing".to_owned(),
+                )
+            })?
+            .pci_path
+            .try_into()
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "Couldn't get PCI BDF for SoftNpu p9 device: {}",
+                        e
+                    ),
+                )
+            })?;
+        chipset.device().pci_attach(bdf, vio9p.clone());
+
+        // Create the SoftNpu device.
+        let queue_size = 0x8000;
+        let softnpu = virtio::softnpu::SoftNpu::new(
+            data_links,
+            queue_size,
+            uart,
+            vio9p,
+            pipeline,
+            self.log.clone(),
+        )
+        .map_err(|e| -> std::io::Error {
+            let io_err: std::io::Error = e.into();
+            std::io::Error::new(
+                io_err.kind(),
+                format!("register softnpu: {}", io_err),
+            )
+        })?;
+        self.inv
+            .register(&softnpu)
+            .map_err(|e| -> std::io::Error { e.into() })?;
+
+        // Create the SoftNpu PCI port.
+        let bdf: pci::Bdf = pci_port.pci_path.try_into().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("Couldn't get PCI BDF for SoftNpu pci port: {}", e),
+            )
+        })?;
+        self.inv
+            .register_instance(&softnpu.pci_port, bdf.to_string())
+            .map_err(|e| -> std::io::Error {
+                let io_err: std::io::Error = e.into();
+                std::io::Error::new(
+                    io_err.kind(),
+                    format!("register softnpu port: {}", io_err),
+                )
+            })?;
+        chipset.device().pci_attach(bdf, softnpu.pci_port.clone());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn initialize_9pfs(
+        &self,
+        chipset: &RegisteredChipset,
+    ) -> Result<(), Error> {
+        // Check that there is actually a p9fs device to register, if not bail
+        // early.
+        let p9fs = match &self.spec.devices.p9fs {
+            Some(p9fs) => p9fs,
+            None => return Ok(()),
+        };
+
+        let bdf: pci::Bdf = p9fs.pci_path.try_into().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("Couldn't get PCI BDF for p9fs device: {}", e),
+            )
+        })?;
+
+        let handler = virtio::p9fs::HostFSHandler::new(
+            p9fs.source.to_owned(),
+            p9fs.target.to_owned(),
+            p9fs.chunk_size,
+            self.log.clone(),
+        );
+        let vio9p = virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(handler));
+        self.inv
+            .register(&vio9p)
+            .map_err(|e| -> std::io::Error { e.into() })?;
+
+        chipset.device().pci_attach(bdf, vio9p);
         Ok(())
     }
 
