@@ -47,7 +47,6 @@ mod _compat_impls {
                 slot,
                 read_only,
                 device,
-                gen,
                 volume_construction_request,
             } = self;
             generated::types::DiskRequest {
@@ -55,7 +54,6 @@ mod _compat_impls {
                 slot: slot.into(),
                 read_only,
                 device,
-                gen,
                 volume_construction_request: volume_construction_request.into(),
             }
         }

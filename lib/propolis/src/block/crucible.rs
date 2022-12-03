@@ -25,28 +25,26 @@ pub struct CrucibleBackend {
 
 impl CrucibleBackend {
     pub fn create(
-        gen: u64,
         request: VolumeConstructionRequest,
         read_only: bool,
         producer_registry: Option<ProducerRegistry>,
     ) -> io::Result<Arc<Self>> {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
-            CrucibleBackend::_create(gen, request, read_only, producer_registry)
+            CrucibleBackend::_create(request, read_only, producer_registry)
                 .await
         })
         .map_err(CrucibleError::into)
     }
 
     async fn _create(
-        gen: u64,
         request: VolumeConstructionRequest,
         read_only: bool,
         producer_registry: Option<ProducerRegistry>,
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
         let volume = Volume::construct(request, producer_registry).await?;
 
-        volume.activate(gen).await?;
+        volume.activate().await?;
 
         // After active negotiation, set sizes
         let block_size = volume.get_block_size().await?;

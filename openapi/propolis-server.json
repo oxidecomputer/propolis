@@ -343,11 +343,6 @@
           "device": {
             "type": "string"
           },
-          "gen": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
           "name": {
             "type": "string"
           },
@@ -363,7 +358,6 @@
         },
         "required": [
           "device",
-          "gen",
           "name",
           "read_only",
           "slot",

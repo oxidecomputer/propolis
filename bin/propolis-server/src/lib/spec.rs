@@ -224,7 +224,6 @@ impl ServerSpecBuilder {
         let backend_name = disk.name.clone();
         let backend_spec = StorageBackend {
             kind: StorageBackendKind::Crucible {
-                gen: disk.gen,
                 req: disk.volume_construction_request.clone(),
             },
             readonly: disk.read_only,
@@ -584,7 +583,6 @@ mod test {
                 slot: Slot(0),
                 read_only: true,
                 device: "nvme".to_string(),
-                gen: 0,
                 volume_construction_request: VolumeConstructionRequest::File {
                     id: Uuid::new_v4(),
                     block_size: 512,
@@ -599,7 +597,6 @@ mod test {
                     slot: Slot(0),
                     read_only: true,
                     device: "virtio".to_string(),
-                    gen: 0,
                     volume_construction_request:
                         VolumeConstructionRequest::File {
                             id: Uuid::new_v4(),
@@ -639,7 +636,6 @@ mod test {
                     slot: Slot(0),
                     read_only: true,
                     device: "virtio-scsi".to_string(),
-                    gen: 0,
                     volume_construction_request:
                         VolumeConstructionRequest::File {
                             id: Uuid::new_v4(),

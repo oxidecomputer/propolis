@@ -292,13 +292,12 @@ impl<'a> MachineInitializer<'a> {
                 })?;
             let StorageBackendInstance { be: backend, child, crucible } =
                 match &backend_spec.kind {
-                    StorageBackendKind::Crucible { gen, req } => {
+                    StorageBackendKind::Crucible { req } => {
                         info!(
                             self.log,
                             "Creating Crucible disk from request {:?}", req
                         );
                         let be = propolis::block::CrucibleBackend::create(
-                            *gen,
                             req.clone(),
                             backend_spec.readonly,
                             self.producer_registry.clone(),
