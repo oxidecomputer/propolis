@@ -38,6 +38,12 @@ impl From<DeviceSpec> for api::DeviceSpec {
             network_devices,
             serial_ports,
             pci_pci_bridges,
+            // TODO(#264) If this library is built with the `falcon` feature
+            // enabled, `DeviceSpec` will contain fields thare are not in the
+            // generated `api::DeviceSpec` type. Just drop these for now until
+            // there is a solid plan for dealing with conditionally-compiled
+            // instance spec elements.
+            ..
         } = spec;
 
         api::DeviceSpec {
