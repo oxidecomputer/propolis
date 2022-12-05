@@ -66,7 +66,7 @@ impl Handle {
         // dladm show-linkprop -c -o value -p mtu <NIC_NAME>
         // 1500
         let output = Command::new("dladm")
-            .args(&["show-linkprop", "-c", "-o", "value", "-p", "mtu"])
+            .args(["show-linkprop", "-c", "-o", "value", "-p", "mtu"])
             .arg(name)
             .stderr(Stdio::null())
             .stdin(Stdio::null())
@@ -86,7 +86,7 @@ impl Handle {
         // dladm show-vnic -p -o macaddress <VNIC_NAME>
         // 2:8:20:2d:e9:24
         let output = Command::new("dladm")
-            .args(&["show-vnic", "-p", "-o", "macaddress"])
+            .args(["show-vnic", "-p", "-o", "macaddress"])
             .arg(name)
             .stderr(Stdio::null())
             .stdin(Stdio::null())

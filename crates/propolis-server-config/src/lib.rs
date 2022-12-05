@@ -65,7 +65,7 @@ impl Chipset {
 }
 
 /// A PCI-PCI bridge.
-#[derive(Default, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Default, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct PciBridge {
     /// The bus/device/function of this bridge as a device in the PCI topology.
     #[serde(rename = "pci-path")]
