@@ -53,7 +53,7 @@ pub(crate) async fn save(
     let machine = guard.machine();
     let hdl = machine.hdl.clone();
     let memctx = machine.acc_mem.access().unwrap();
-    let migratectx = MigrateCtx { mem: &*memctx };
+    let migratectx = MigrateCtx { mem: &memctx };
     let inv = guard.inventory();
 
     info!(log, "Serializing global VM state");
@@ -286,7 +286,7 @@ pub(crate) async fn restore(
 
     // Finally, let's restore the device state
     let inv = guard.inventory();
-    let migratectx = MigrateCtx { mem: &*memctx };
+    let migratectx = MigrateCtx { mem: &memctx };
     let devices: Vec<(String, Vec<u8>)> =
         serde_json::from_slice(&device_states)
             .context("Failed to deserialize device state")?;
