@@ -317,7 +317,7 @@ impl ArtifactStore {
         }
 
         all_ok
-            .then(|| ())
+            .then_some(())
             .ok_or_else(|| ArtifactStoreError::ArtifactContentsInvalid().into())
     }
 }

@@ -112,7 +112,7 @@ impl ConfigRequest {
             disk_request
                 .disk
                 .guest_os()
-                .ok_or_else(|| VmConfigError::BootDiskNotGuestImage)?
+                .ok_or(VmConfigError::BootDiskNotGuestImage)?
         } else {
             return Err(VmConfigError::NoBootDisk.into());
         };

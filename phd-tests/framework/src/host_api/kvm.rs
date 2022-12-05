@@ -284,10 +284,11 @@ impl<T: SizedKernelGlobal> Drop for KernelValueGuard<T> {
         // this guard, so unless something has gone terribly wrong, it should be
         // possible to look up the same symbol and restore its old value.
         let va = find_symbol_va(&self.kvm_hdl, self.symbol)
-            .expect(format!("couldn't find symbol {}", self.symbol).as_str());
-        self.old_value.write_to_va(&self.kvm_hdl, va).expect(
-            format!("couldn't reset value of {}", self.symbol).as_str(),
-        );
+            .unwrap_or_else(|_| panic!("couldn't find symbol {}", self.symbol));
+
+        self.old_value.write_to_va(&self.kvm_hdl, va).unwrap_or_else(|_| {
+            panic!("couldn't reset value of {}", self.symbol)
+        });
     }
 }
 

@@ -192,7 +192,7 @@ impl DiskFactory<'_> {
         let binary_path = self
             .crucible_downstairs_binary
             .as_ref()
-            .ok_or_else(|| DiskError::NoCrucibleDownstairsPath)?;
+            .ok_or(DiskError::NoCrucibleDownstairsPath)?;
 
         let DiskSource::Artifact(artifact_name) = source;
         let (artifact_path, guest_os) =
