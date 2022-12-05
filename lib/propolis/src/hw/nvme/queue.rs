@@ -821,7 +821,7 @@ mod tests {
         let cq =
             CompQueue::new(ADMIN_QUEUE_ID, 0, 2, read_base, hdl.clone(), &mem);
         assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
-        let cq = CompQueue::new(1, 0, 2, read_base, hdl.clone(), &mem);
+        let cq = CompQueue::new(1, 0, 2, read_base, hdl, &mem);
         assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
 
         Ok(())
@@ -850,7 +850,7 @@ mod tests {
             .unwrap(),
         );
         let io_cq = Arc::new(
-            CompQueue::new(1, 0, 1024, write_base, hdl.clone(), &mem).unwrap(),
+            CompQueue::new(1, 0, 1024, write_base, hdl, &mem).unwrap(),
         );
 
         // Admin queues must be less than 4K
@@ -874,14 +874,14 @@ mod tests {
         // I/O queues must be less than 64K
         let sq = SubQueue::new(1, io_cq.clone(), 1024, read_base, &mem);
         assert!(matches!(sq, Ok(_)));
-        let sq = SubQueue::new(1, io_cq.clone(), 65 * 1024, read_base, &mem);
+        let sq = SubQueue::new(1, io_cq, 65 * 1024, read_base, &mem);
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
         // Neither must be less than 2
         let sq =
             SubQueue::new(ADMIN_QUEUE_ID, admin_cq.clone(), 1, read_base, &mem);
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
-        let sq = SubQueue::new(1, admin_cq.clone(), 1, read_base, &mem);
+        let sq = SubQueue::new(1, admin_cq, 1, read_base, &mem);
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
         // Completion Queue's must be mapped to readable memory
@@ -915,9 +915,8 @@ mod tests {
         let mem = acc_mem.access().unwrap();
 
         // Create our queues
-        let cq = Arc::new(
-            CompQueue::new(1, 0, 4, write_base, hdl.clone(), &mem).unwrap(),
-        );
+        let cq =
+            Arc::new(CompQueue::new(1, 0, 4, write_base, hdl, &mem).unwrap());
         let sq =
             Arc::new(SubQueue::new(1, cq.clone(), 4, read_base, &mem).unwrap());
 
@@ -983,9 +982,8 @@ mod tests {
 
         // Create our queues
         // Purposely make the CQ smaller to test kicks
-        let cq = Arc::new(
-            CompQueue::new(1, 0, 2, write_base, hdl.clone(), &mem).unwrap(),
-        );
+        let cq =
+            Arc::new(CompQueue::new(1, 0, 2, write_base, hdl, &mem).unwrap());
         let sq =
             Arc::new(SubQueue::new(1, cq.clone(), 4, read_base, &mem).unwrap());
 
@@ -1037,9 +1035,8 @@ mod tests {
         // space available in the CQ.
         let mut rng = rand::thread_rng();
         let sq_size = rng.gen_range(512..2048);
-        let cq = Arc::new(
-            CompQueue::new(1, 0, 4, write_base, hdl.clone(), &mem).unwrap(),
-        );
+        let cq =
+            Arc::new(CompQueue::new(1, 0, 4, write_base, hdl, &mem).unwrap());
         let sq = Arc::new(
             SubQueue::new(1, cq.clone(), sq_size, read_base, &mem).unwrap(),
         );
@@ -1058,7 +1055,7 @@ mod tests {
             Cq(u16),
             Sq(u16),
         }
-        let (doorbell_cq, doorbell_sq) = (cq.clone(), sq.clone());
+        let (doorbell_cq, doorbell_sq) = (cq, sq.clone());
         let doorbell_handler = spawn(move || {
             // Keep track of the "host" side CQ head and SQ tail as
             // we receive "doorbell" hits.
@@ -1096,46 +1093,35 @@ mod tests {
         // SQ "doorbell" is hit and will attempt to pull a new IO
         // request off the SQ. At the end, each will return a count
         // of how many requests they received and then completed.
-        let io_workers = (0..4)
-            .map(|_| {
-                let worker_rx = workers_rx.clone();
-                let worker_sq = sq.clone();
-                let worker_comp_tx = comp_tx.clone();
+        let io_workers = (0..4).map(|_| {
+            let worker_rx = workers_rx.clone();
+            let worker_sq = sq.clone();
+            let worker_comp_tx = comp_tx.clone();
 
-                let child_acc = acc_mem.child();
+            let child_acc = acc_mem.child();
 
-                spawn(move || {
-                    let mut submissions = 0;
-                    let mem = child_acc.access().unwrap();
+            spawn(move || {
+                let mut submissions = 0;
+                let mem = child_acc.access().unwrap();
 
-                    let mut rng = rand::thread_rng();
-                    loop {
-                        match worker_rx.recv() {
-                            Ok(()) => {
-                                while let Some((_, cqe_permit)) =
-                                    worker_sq.pop(&mem)
-                                {
-                                    submissions += 1;
+                let mut rng = rand::thread_rng();
+                while let Ok(()) = worker_rx.recv() {
+                    while let Some((_, cqe_permit)) = worker_sq.pop(&mem) {
+                        submissions += 1;
 
-                                    // Sleep for a bit to mimic actually doing
-                                    // some work before we complete the IO
-                                    sleep(Duration::from_micros(
-                                        rng.gen_range(0..500),
-                                    ));
+                        // Sleep for a bit to mimic actually doing
+                        // some work before we complete the IO
+                        sleep(Duration::from_micros(rng.gen_range(0..500)));
 
-                                    cqe_permit.push_completion_test(&mem);
+                        cqe_permit.push_completion_test(&mem);
 
-                                    // Signal "guest" side of completion handler
-                                    assert!(worker_comp_tx.send(()).is_ok());
-                                }
-                            }
-                            Err(_) => break,
-                        }
+                        // Signal "guest" side of completion handler
+                        assert!(worker_comp_tx.send(()).is_ok());
                     }
-                    submissions
-                })
+                }
+                submissions
             })
-            .collect::<Vec<_>>();
+        });
 
         // Create a thread to "consume" things off the Completion Queue. This
         // simulates the host reacting to our CQ pushes and "ringing" the CQ
@@ -1182,8 +1168,7 @@ mod tests {
 
         // Wait for the IO workers to complete and sum the total
         // number of submissions they recevied
-        let submissions: u32 =
-            io_workers.into_iter().map(|j| j.join().unwrap()).sum();
+        let submissions: u32 = io_workers.map(|j| j.join().unwrap()).sum();
 
         // Make sure the number of submission we recevied matched the number we
         // generated and completed
