@@ -163,6 +163,60 @@
         "x-dropshot-websocket": {}
       }
     },
+    "/instance/spec": {
+      "get": {
+        "operationId": "instance_spec_get",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSpecGetResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "instance_spec_ensure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceSpecEnsureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "successful creation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceEnsureResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/instance/state": {
       "put": {
         "operationId": "instance_state_put",
@@ -237,6 +291,88 @@
       }
     },
     "schemas": {
+      "BackendSpec": {
+        "description": "A wrapper type for all the backends in an instance spec.",
+        "type": "object",
+        "properties": {
+          "network_backends": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NetworkBackend"
+            }
+          },
+          "storage_backends": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StorageBackend"
+            }
+          }
+        },
+        "required": [
+          "network_backends",
+          "storage_backends"
+        ]
+      },
+      "Board": {
+        "description": "A VM's mainboard.",
+        "type": "object",
+        "properties": {
+          "chipset": {
+            "description": "The chipset to expose to guest software.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Chipset"
+              }
+            ]
+          },
+          "cpus": {
+            "description": "The number of virtual logical processors attached to this VM.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "memory_mb": {
+            "description": "The amount of guest RAM attached to this VM.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "chipset",
+          "cpus",
+          "memory_mb"
+        ],
+        "additionalProperties": false
+      },
+      "Chipset": {
+        "description": "A kind of virtual chipset.",
+        "oneOf": [
+          {
+            "description": "An Intel 440FX-compatible chipset.",
+            "type": "object",
+            "properties": {
+              "I440Fx": {
+                "type": "object",
+                "properties": {
+                  "enable_pcie": {
+                    "description": "Specifies whether the chipset should allow PCI configuration space to be accessed through the PCIe extended configuration mechanism.",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enable_pcie"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "I440Fx"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "CrucibleOpts": {
         "type": "object",
         "properties": {
@@ -289,6 +425,46 @@
           "read_only",
           "target"
         ]
+      },
+      "DeviceSpec": {
+        "type": "object",
+        "properties": {
+          "board": {
+            "$ref": "#/components/schemas/Board"
+          },
+          "network_devices": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NetworkDevice"
+            }
+          },
+          "pci_pci_bridges": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PciPciBridge"
+            }
+          },
+          "serial_ports": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SerialPort"
+            }
+          },
+          "storage_devices": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StorageDevice"
+            }
+          }
+        },
+        "required": [
+          "board",
+          "network_devices",
+          "pci_pci_bridges",
+          "serial_ports",
+          "storage_devices"
+        ],
+        "additionalProperties": false
       },
       "DiskAttachment": {
         "type": "object",
@@ -578,6 +754,65 @@
           "vcpus"
         ]
       },
+      "InstanceSpec": {
+        "description": "A full instance specification. See the documentation for individual elements for more information about the fields in this structure.",
+        "type": "object",
+        "properties": {
+          "backends": {
+            "$ref": "#/components/schemas/BackendSpec"
+          },
+          "devices": {
+            "$ref": "#/components/schemas/DeviceSpec"
+          }
+        },
+        "required": [
+          "backends",
+          "devices"
+        ],
+        "additionalProperties": false
+      },
+      "InstanceSpecEnsureRequest": {
+        "type": "object",
+        "properties": {
+          "instance_spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
+          },
+          "migrate": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
+              }
+            ]
+          },
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          }
+        },
+        "required": [
+          "instance_spec",
+          "properties"
+        ]
+      },
+      "InstanceSpecGetResponse": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceState"
+          }
+        },
+        "required": [
+          "properties",
+          "spec",
+          "state"
+        ]
+      },
       "InstanceState": {
         "description": "Current state of an Instance.",
         "type": "string",
@@ -648,6 +883,91 @@
           "Error"
         ]
       },
+      "NetworkBackend": {
+        "description": "A network backend.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/NetworkBackendKind"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "NetworkBackendKind": {
+        "description": "A kind of network backend: a connection to an on-sled networking resource that provides the functions needed for guest network adapters to implement their contracts.",
+        "oneOf": [
+          {
+            "description": "A virtio-net (viona) backend associated with the supplied named vNIC on the host.",
+            "type": "object",
+            "properties": {
+              "Virtio": {
+                "type": "object",
+                "properties": {
+                  "vnic_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vnic_name"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "Virtio"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "description": "A DLPI backend associated with the supplied named vNIC on the host.",
+            "type": "object",
+            "properties": {
+              "Dlpi": {
+                "type": "object",
+                "properties": {
+                  "vnic_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vnic_name"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "Dlpi"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "NetworkDevice": {
+        "description": "A virtual network adapter that presents a virtio network device interface.",
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the device's backend.",
+            "type": "string"
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach this device.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "backend_name",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
       "NetworkInterface": {
         "type": "object",
         "properties": {
@@ -701,11 +1021,224 @@
           "slot"
         ]
       },
+      "PciPath": {
+        "description": "A PCI bus/device/function tuple. Supports conversion from a string formatted as \"B.D.F\", e.g. \"0.7.0\".",
+        "type": "object",
+        "properties": {
+          "bus": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "device": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "function": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "bus",
+          "device",
+          "function"
+        ]
+      },
+      "PciPciBridge": {
+        "description": "A PCI-PCI bridge.",
+        "type": "object",
+        "properties": {
+          "downstream_bus": {
+            "description": "The logical bus number of this bridge's downstream bus. Other devices may use this bus number in their PCI paths to indicate they should be attached to this bridge's bus.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach this bridge.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "downstream_bus",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "SerialPort": {
+        "description": "A serial port device.",
+        "type": "object",
+        "properties": {
+          "num": {
+            "description": "The serial port number for this port.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SerialPortNumber"
+              }
+            ]
+          }
+        },
+        "required": [
+          "num"
+        ],
+        "additionalProperties": false
+      },
+      "SerialPortNumber": {
+        "description": "A serial port identifier, which determines what I/O ports a guest can use to access a port.",
+        "type": "string",
+        "enum": [
+          "Com1",
+          "Com2",
+          "Com3",
+          "Com4"
+        ]
+      },
       "Slot": {
         "description": "A stable index which is translated by Propolis into a PCI BDF, visible to the guest.",
         "type": "integer",
         "format": "uint8",
         "minimum": 0
+      },
+      "StorageBackend": {
+        "description": "A storage backend.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "description": "The kind of storage backend this is.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StorageBackendKind"
+              }
+            ]
+          },
+          "readonly": {
+            "description": "Whether the storage is read-only.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "readonly"
+        ],
+        "additionalProperties": false
+      },
+      "StorageBackendKind": {
+        "description": "A kind of storage backend: a connection to on-sled resources or other services that provide the functions storage devices need to implement their contracts.",
+        "oneOf": [
+          {
+            "description": "A Crucible-backed device, containing a construction request.",
+            "type": "object",
+            "properties": {
+              "Crucible": {
+                "type": "object",
+                "properties": {
+                  "req": {
+                    "$ref": "#/components/schemas/VolumeConstructionRequest"
+                  }
+                },
+                "required": [
+                  "req"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "Crucible"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "description": "A device backed by a file on the host machine. The payload is a path to this file.",
+            "type": "object",
+            "properties": {
+              "File": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "File"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "description": "A device backed by an in-memory buffer in the VMM process. The initial contents of the disk are a base64-encoded string.",
+            "type": "object",
+            "properties": {
+              "InMemory": {
+                "type": "object",
+                "properties": {
+                  "base64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "base64"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "InMemory"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "StorageDevice": {
+        "description": "A storage device.",
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the device's backend.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "The device interface to present to the guest.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StorageDeviceKind"
+              }
+            ]
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach this device.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "backend_name",
+          "kind",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "StorageDeviceKind": {
+        "description": "A kind of storage device: the sort of virtual device interface the VMM exposes to guest software.",
+        "type": "string",
+        "enum": [
+          "Virtio",
+          "Nvme"
+        ]
       },
       "VolumeConstructionRequest": {
         "oneOf": [

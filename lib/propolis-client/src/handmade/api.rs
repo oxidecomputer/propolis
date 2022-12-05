@@ -4,6 +4,8 @@
 //! and sled agent (within omicron-common), they are intentionally
 //! decoupled so the interfaces may evolve independently, as necessary.
 
+use crate::instance_spec::InstanceSpec;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -36,6 +38,13 @@ pub struct InstanceEnsureRequest {
 
     // base64 encoded cloud-init ISO
     pub cloud_init_bytes: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceSpecEnsureRequest {
+    pub properties: InstanceProperties,
+    pub instance_spec: InstanceSpec,
+    pub migrate: Option<InstanceMigrateInitiateRequest>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -98,6 +107,13 @@ pub enum MigrationState {
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceGetResponse {
     pub instance: Instance,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceSpecGetResponse {
+    pub properties: InstanceProperties,
+    pub state: InstanceState,
+    pub spec: InstanceSpec,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

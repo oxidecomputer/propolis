@@ -8,10 +8,11 @@ use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
+use propolis_client::handmade::api::InstanceSpecGetResponse;
 use propolis_client::handmade::{
     api::{
-        InstanceEnsureRequest, InstanceGetResponse,
-        InstanceMigrateInitiateRequest, InstanceProperties, InstanceState,
+        InstanceGetResponse, InstanceMigrateInitiateRequest,
+        InstanceProperties, InstanceSpecEnsureRequest, InstanceState,
         InstanceStateRequested, MigrationState,
     },
     Client, Error as PropolisClientError,
@@ -153,16 +154,14 @@ impl TestVm {
             memory: memory_mib,
             vcpus,
         };
-        let ensure_req = InstanceEnsureRequest {
+        let ensure_req = InstanceSpecEnsureRequest {
             properties,
-            nics: vec![],
-            disks: vec![],
+            instance_spec: self.config.instance_spec().clone(),
             migrate,
-            cloud_init_bytes: None,
         };
 
         let mut retries = 3;
-        while let Err(e) = self.client.instance_ensure(&ensure_req).await {
+        while let Err(e) = self.client.instance_spec_ensure(&ensure_req).await {
             info!("Error {} while creating instance, will retry", e);
             tokio::time::sleep(Duration::from_millis(500)).await;
             retries -= 1;
@@ -180,8 +179,10 @@ impl TestVm {
                 anyhow!("failed to get instance properties")
             })?;
 
+        let instance_spec = self.config.instance_spec();
         info!(
             ?instance_description.instance,
+            ?instance_spec,
             "Started instance"
         );
 
@@ -270,6 +271,19 @@ impl TestVm {
             .instance_get()
             .await
             .with_context(|| anyhow!("failed to query instance properties"))
+    }
+
+    pub fn get_spec(&self) -> Result<InstanceSpecGetResponse> {
+        let _span = self.tracing_span.enter();
+        info!("Sending instance spec get request to server");
+        self.rt.block_on(async { self.get_spec_async().await })
+    }
+
+    async fn get_spec_async(&self) -> Result<InstanceSpecGetResponse> {
+        self.client
+            .instance_spec_get()
+            .await
+            .with_context(|| anyhow!("failed to query instance spec"))
     }
 
     /// Starts this instance by issuing an ensure request that specifies a

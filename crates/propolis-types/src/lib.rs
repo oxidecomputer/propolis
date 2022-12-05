@@ -9,6 +9,7 @@ use std::fmt::Display;
 use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 
+use schemars::JsonSchema;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 const PCI_DEVICES_PER_BUS: u8 = 32;
@@ -16,8 +17,12 @@ const PCI_FUNCTIONS_PER_DEVICE: u8 = 8;
 
 /// A PCI bus/device/function tuple. Supports conversion from a string formatted
 /// as "B.D.F", e.g. "0.7.0".
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct PciPath(u8, u8, u8);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, JsonSchema)]
+pub struct PciPath {
+    bus: u8,
+    device: u8,
+    function: u8,
+}
 
 impl PciPath {
     pub fn new(
@@ -47,22 +52,22 @@ impl PciPath {
             ));
         }
 
-        Ok(Self(bus, device, function))
+        Ok(Self { bus, device, function })
     }
 
     #[inline]
     pub fn bus(&self) -> u8 {
-        self.0
+        self.bus
     }
 
     #[inline]
     pub fn device(&self) -> u8 {
-        self.1
+        self.device
     }
 
     #[inline]
     pub fn function(&self) -> u8 {
-        self.2
+        self.function
     }
 }
 
@@ -96,7 +101,7 @@ impl FromStr for PciPath {
 
 impl Display for PciPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+        write!(f, "{}.{}.{}", self.bus, self.device, self.function)
     }
 }
 
@@ -127,8 +132,8 @@ mod test {
     use std::str::FromStr;
 
     const TEST_CASES: &[(&str, Result<PciPath, ()>)] = &[
-        ("0.7.0", Ok(PciPath(0, 7, 0))),
-        ("1.2.3", Ok(PciPath(1, 2, 3))),
+        ("0.7.0", Ok(PciPath { bus: 0, device: 7, function: 0 })),
+        ("1.2.3", Ok(PciPath { bus: 1, device: 2, function: 3 })),
         ("0.40.0", Err(())),
         ("0.1.9", Err(())),
         ("255.254.253", Err(())),

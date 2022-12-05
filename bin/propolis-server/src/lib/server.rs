@@ -88,6 +88,13 @@ pub enum VmControllerState {
         /// was destroyed, used to serve subsequent `instance_get` requests.
         last_instance: api::Instance,
 
+        /// A copy of the destroyed instance's spec, used to serve subsequent
+        /// `instance_spec_get` requests.
+        //
+        // TODO: Merge this into `api::Instance` when the migration to generated
+        // types is complete.
+        last_instance_spec: InstanceSpec,
+
         /// A clone of the receiver side of the server's state watcher, used to
         /// serve subsequent `instance_state_monitor` requests. Note that an
         /// outgoing controller can publish new state changes even after the
@@ -120,6 +127,8 @@ impl VmControllerState {
                 nics: vec![],
             };
 
+            let last_instance_spec = vm.instance_spec().clone();
+
             // The server is about to drop its reference to the controller, but
             // the controller may continue changing state while it tears itself
             // down. Grab a clone of the state watcher channel for subsequent
@@ -127,7 +136,11 @@ impl VmControllerState {
             let watcher = vm.state_watcher().clone();
             if let VmControllerState::Created(vm) = std::mem::replace(
                 self,
-                VmControllerState::Destroyed { last_instance, watcher },
+                VmControllerState::Destroyed {
+                    last_instance,
+                    last_instance_spec,
+                    watcher,
+                },
             ) {
                 Some(vm)
             } else {
@@ -311,16 +324,13 @@ async fn register_oximeter(
     Ok(registry)
 }
 
-#[endpoint {
-    method = PUT,
-    path = "/instance",
-}]
-async fn instance_ensure(
+async fn instance_ensure_common(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequest>,
+    request: api::InstanceSpecEnsureRequest,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
-    let request = request.into_inner();
+    let api::InstanceSpecEnsureRequest { properties, instance_spec, migrate } =
+        request;
 
     // Handle requests to an instance that has already been initialized. Treat
     // the instances as compatible (and return Ok) if they have the same
@@ -332,14 +342,14 @@ async fn instance_ensure(
         &*server_context.services.vm.lock().await
     {
         let existing_properties = existing.properties();
-        if existing_properties.id != request.properties.id {
+        if existing_properties.id != properties.id {
             return Err(HttpError::for_internal_error(format!(
                 "Server already initialized with ID {}",
                 existing_properties.id
             )));
         }
 
-        if *existing_properties != request.properties {
+        if *existing_properties != properties {
             return Err(HttpError::for_internal_error(
                 "Cannot update running server".to_string(),
             ));
@@ -350,25 +360,13 @@ async fn instance_ensure(
         }));
     }
 
-    let instance_spec =
-        instance_spec_from_request(&request, &server_context.static_config.vm)
-            .map_err(|e| {
-                HttpError::for_bad_request(
-                    None,
-                    format!(
-                        "failed to generate instance spec from request: {}",
-                        e
-                    ),
-                )
-            })?;
-
     let producer_registry =
         if let Some(cfg) = server_context.static_config.metrics.as_ref() {
             Some(
                 register_oximeter(
                     server_context,
                     cfg,
-                    request.properties.id,
+                    properties.id,
                     rqctx.log.clone(),
                 )
                 .await
@@ -393,7 +391,7 @@ async fn instance_ensure(
     // now, the whole process is wrapped up in `spawn_blocking`.  It is
     // admittedly a big kludge until this can be better refactored.
     let vm = {
-        let properties = request.properties.clone();
+        let properties = properties.clone();
         let use_reservoir = server_context.static_config.use_reservoir;
         let bootrom = server_context.static_config.vm.bootrom.clone();
         let log = server_context.log.clone();
@@ -461,7 +459,7 @@ async fn instance_ensure(
     *server_context.services.vm.lock().await =
         VmControllerState::Created(vm.clone());
 
-    let migrate = if let Some(migrate_request) = request.migrate {
+    let migrate = if let Some(migrate_request) = migrate {
         let res = crate::migrate::dest_initiate(&rqctx, vm, migrate_request)
             .await
             .map_err(<_ as Into<HttpError>>::into)?;
@@ -474,40 +472,107 @@ async fn instance_ensure(
 }
 
 #[endpoint {
+    method = PUT,
+    path = "/instance",
+}]
+async fn instance_ensure(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    request: TypedBody<api::InstanceEnsureRequest>,
+) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
+    let server_context = rqctx.context();
+    let request = request.into_inner();
+    let instance_spec =
+        instance_spec_from_request(&request, &server_context.static_config.vm)
+            .map_err(|e| {
+                HttpError::for_bad_request(
+                    None,
+                    format!(
+                        "failed to generate instance spec from request: {}",
+                        e
+                    ),
+                )
+            })?;
+
+    instance_ensure_common(
+        rqctx,
+        api::InstanceSpecEnsureRequest {
+            properties: request.properties,
+            instance_spec,
+            migrate: request.migrate,
+        },
+    )
+    .await
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/instance/spec",
+}]
+async fn instance_spec_ensure(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    request: TypedBody<api::InstanceSpecEnsureRequest>,
+) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
+    instance_ensure_common(rqctx, request.into_inner()).await
+}
+
+async fn instance_get_common(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+) -> Result<(api::Instance, InstanceSpec), HttpError> {
+    let ctx = rqctx.context();
+    match &*ctx.services.vm.lock().await {
+        VmControllerState::NotCreated => Err(HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )),
+        VmControllerState::Created(vm) => {
+            Ok((
+                api::Instance {
+                    properties: vm.properties().clone(),
+                    state: vm.external_instance_state(),
+                    disks: vec![],
+                    // TODO: Fix this; we need a way to enumerate attached NICs.
+                    // Possibly using the inventory of the instance?
+                    //
+                    // We *could* record whatever information about the NIC we want
+                    // when they're requested (adding fields to the server), but that
+                    // would make it difficult for Propolis to update any dynamic info
+                    // (i.e., has the device faulted, etc).
+                    nics: vec![],
+                },
+                vm.instance_spec().clone(),
+            ))
+        }
+        VmControllerState::Destroyed {
+            last_instance,
+            last_instance_spec,
+            ..
+        } => Ok((last_instance.clone(), last_instance_spec.clone())),
+    }
+}
+
+#[endpoint {
+    method = GET,
+    path = "/instance/spec",
+}]
+async fn instance_spec_get(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
+    let (instance, spec) = instance_get_common(rqctx).await?;
+    Ok(HttpResponseOk(api::InstanceSpecGetResponse {
+        properties: instance.properties,
+        state: instance.state,
+        spec,
+    }))
+}
+
+#[endpoint {
     method = GET,
     path = "/instance",
 }]
 async fn instance_get(
     rqctx: Arc<RequestContext<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    let ctx = rqctx.context();
-    let instance_info = match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => {
-            return Err(HttpError::for_internal_error(
-                "Server not initialized (no instance)".to_string(),
-            ));
-        }
-        VmControllerState::Created(vm) => {
-            api::Instance {
-                properties: vm.properties().clone(),
-                state: vm.external_instance_state(),
-                disks: vec![],
-                // TODO: Fix this; we need a way to enumerate attached NICs.
-                // Possibly using the inventory of the instance?
-                //
-                // We *could* record whatever information about the NIC we want
-                // when they're requested (adding fields to the server), but that
-                // would make it difficult for Propolis to update any dynamic info
-                // (i.e., has the device faulted, etc).
-                nics: vec![],
-            }
-        }
-        VmControllerState::Destroyed { last_instance, .. } => {
-            last_instance.clone()
-        }
-    };
-
-    Ok(HttpResponseOk(api::InstanceGetResponse { instance: instance_info }))
+    let (instance, _) = instance_get_common(rqctx).await?;
+    Ok(HttpResponseOk(api::InstanceGetResponse { instance }))
 }
 
 #[endpoint {
@@ -701,7 +766,9 @@ async fn instance_issue_crucible_snapshot_request(
 pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
+    api.register(instance_spec_ensure).unwrap();
     api.register(instance_get).unwrap();
+    api.register(instance_spec_get).unwrap();
     api.register(instance_state_monitor).unwrap();
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();

@@ -128,11 +128,28 @@ impl Client {
         self.put(path, Some(body)).await
     }
 
+    pub async fn instance_spec_ensure(
+        &self,
+        request: &api::InstanceSpecEnsureRequest,
+    ) -> Result<api::InstanceEnsureResponse, Error> {
+        let path = format!("http://{}/instance/spec", self.address,);
+        let body = Body::from(serde_json::to_string(&request).unwrap());
+        self.put(path, Some(body)).await
+    }
+
     /// Returns information about an instance, by UUID.
     pub async fn instance_get(
         &self,
     ) -> Result<api::InstanceGetResponse, Error> {
         let path = format!("http://{}/instance", self.address);
+        self.get(path, None).await
+    }
+
+    /// Returns information about an instance and its spec.
+    pub async fn instance_spec_get(
+        &self,
+    ) -> Result<api::InstanceSpecGetResponse, Error> {
+        let path = format!("http://{}/instance/spec", self.address);
         self.get(path, None).await
     }
 

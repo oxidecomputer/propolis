@@ -21,12 +21,13 @@
 //! requirements, device specs should use only types defined in the crate or
 //! built-in Rust types.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use super::{
     ElementCompatibilityError, MigrationCollection,
     MigrationCompatibilityError, MigrationElement, PciPath, SpecKey,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 //
@@ -34,7 +35,9 @@ use serde::{Deserialize, Serialize};
 //
 
 /// A kind of virtual chipset.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub enum Chipset {
     /// An Intel 440FX-compatible chipset.
@@ -46,7 +49,7 @@ pub enum Chipset {
 }
 
 /// A VM's mainboard.
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
     /// The number of virtual logical processors attached to this VM.
@@ -111,7 +114,9 @@ impl MigrationElement for Board {
 
 /// A kind of storage device: the sort of virtual device interface the VMM
 /// exposes to guest software.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub enum StorageDeviceKind {
     Virtio,
@@ -119,7 +124,7 @@ pub enum StorageDeviceKind {
 }
 
 /// A storage device.
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StorageDevice {
     /// The device interface to present to the guest.
@@ -163,7 +168,7 @@ impl MigrationElement for StorageDevice {
 //
 
 /// A virtual network adapter that presents a virtio network device interface.
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkDevice {
     /// The name of the device's backend.
@@ -201,7 +206,9 @@ impl MigrationElement for NetworkDevice {
 
 /// A serial port identifier, which determines what I/O ports a guest can use to
 /// access a port.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub enum SerialPortNumber {
     Com1,
@@ -211,7 +218,9 @@ pub enum SerialPortNumber {
 }
 
 /// A serial port device.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct SerialPort {
     /// The serial port number for this port.
@@ -234,7 +243,9 @@ impl MigrationElement for SerialPort {
 }
 
 /// A PCI-PCI bridge.
-#[derive(Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct PciPciBridge {
     /// The logical bus number of this bridge's downstream bus. Other devices
@@ -269,7 +280,7 @@ impl MigrationElement for PciPciBridge {
 }
 
 #[cfg(feature = "falcon")]
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPciPort {
     /// The PCI path at which to attach the guest to this port.
@@ -277,7 +288,7 @@ pub struct SoftNpuPciPort {
 }
 
 #[cfg(feature = "falcon")]
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
     /// The name of the SoftNpu port.
@@ -288,7 +299,7 @@ pub struct SoftNpuPort {
 }
 
 #[cfg(feature = "falcon")]
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuP9 {
     /// The PCI path at which to attach the guest to this port.
@@ -296,7 +307,7 @@ pub struct SoftNpuP9 {
 }
 
 #[cfg(feature = "falcon")]
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct P9fs {
     /// The host source path to mount into the guest.
@@ -313,18 +324,18 @@ pub struct P9fs {
     pub pci_path: PciPath,
 }
 
-#[derive(Default, Clone, Deserialize, Serialize, Debug)]
+#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceSpec {
     pub board: Board,
-    pub storage_devices: BTreeMap<SpecKey, StorageDevice>,
-    pub network_devices: BTreeMap<SpecKey, NetworkDevice>,
-    pub serial_ports: BTreeMap<SpecKey, SerialPort>,
-    pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
+    pub storage_devices: HashMap<SpecKey, StorageDevice>,
+    pub network_devices: HashMap<SpecKey, NetworkDevice>,
+    pub serial_ports: HashMap<SpecKey, SerialPort>,
+    pub pci_pci_bridges: HashMap<SpecKey, PciPciBridge>,
     #[cfg(feature = "falcon")]
     pub softnpu_pci_port: Option<SoftNpuPciPort>,
     #[cfg(feature = "falcon")]
-    pub softnpu_ports: BTreeMap<SpecKey, SoftNpuPort>,
+    pub softnpu_ports: HashMap<SpecKey, SoftNpuPort>,
     #[cfg(feature = "falcon")]
     pub softnpu_p9: Option<SoftNpuP9>,
     #[cfg(feature = "falcon")]
