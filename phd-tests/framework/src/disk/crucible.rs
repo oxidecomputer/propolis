@@ -227,7 +227,6 @@ impl super::DiskConfig for CrucibleDisk {
         propolis_client::instance_spec::StorageBackend {
             kind:
                 propolis_client::instance_spec::StorageBackendKind::Crucible {
-                    gen,
                     req: VolumeConstructionRequest::Volume {
                         id: self.id,
                         block_size: self.block_size.bytes(),
