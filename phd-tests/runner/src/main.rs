@@ -77,6 +77,9 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
         disk_factory: phd_framework::disk::DiskFactory::new(
             &run_opts.tmp_directory,
             &artifact_store,
+            run_opts.crucible_downstairs_cmd.clone().as_ref(),
+            &port_allocator,
+            run_opts.server_logging_mode,
         ),
     };
     let fixtures = TestFixtures::new(&artifact_store, &ctx).unwrap();

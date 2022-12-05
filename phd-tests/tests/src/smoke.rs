@@ -1,8 +1,5 @@
 use phd_testcase::{
-    phd_framework::{
-        disk::{DiskBackend, DiskSource},
-        test_vm::vm_config::DiskInterface,
-    },
+    phd_framework::{disk::DiskSource, test_vm::vm_config::DiskInterface},
     *,
 };
 
@@ -20,9 +17,8 @@ fn nproc_test(ctx: &TestContext) {
 
 #[phd_testcase]
 fn instance_spec_get_test(ctx: &TestContext) {
-    let disk = ctx.disk_factory.create_disk(
+    let disk = ctx.disk_factory.create_file_backed_disk(
         DiskSource::Artifact(&ctx.default_guest_image_artifact),
-        DiskBackend::File,
     )?;
 
     let config = ctx

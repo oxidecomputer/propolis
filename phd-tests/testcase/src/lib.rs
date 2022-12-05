@@ -5,7 +5,7 @@ pub use phd_testcase_macros::*;
 use thiserror::Error;
 
 use phd_framework::{
-    disk::{DiskBackend, DiskFactory, DiskSource},
+    disk::{DiskFactory, DiskSource},
     test_vm::{factory::VmFactory, vm_config::ConfigRequest},
 };
 
@@ -44,10 +44,9 @@ impl TestContext<'_> {
     pub fn default_vm_config(&self) -> ConfigRequest {
         let boot_disk = self
             .disk_factory
-            .create_disk(
-                DiskSource::Artifact(&self.default_guest_image_artifact),
-                DiskBackend::File,
-            )
+            .create_file_backed_disk(DiskSource::Artifact(
+                &self.default_guest_image_artifact,
+            ))
             .unwrap();
         self.vm_factory.deviceless_vm_config().set_boot_disk(
             boot_disk,

@@ -16,4 +16,8 @@ impl GuestOs for Debian11NoCloud {
     fn get_shell_prompt(&self) -> &'static str {
         "root@debian:~#"
     }
+
+    fn read_only_fs(&self) -> bool {
+        false
+    }
 }
