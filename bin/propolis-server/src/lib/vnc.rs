@@ -127,7 +127,7 @@ impl Server for PropolisVncServer {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate {
         let inner = self.inner.lock().await;
 
-        let fb = match &inner.framebuffer {
+        match &inner.framebuffer {
             Framebuffer::Uninitialized(fb) => {
                 debug!(self.log, "framebuffer: uninitialized");
 
@@ -170,9 +170,7 @@ impl Server for PropolisVncServer {
                 );
                 FramebufferUpdate::new(vec![r])
             }
-        };
-
-        fb
+        }
     }
 
     async fn key_event(&self, ke: KeyEvent) {

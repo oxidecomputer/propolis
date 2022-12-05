@@ -93,7 +93,7 @@ pub enum VmControllerState {
         //
         // TODO: Merge this into `api::Instance` when the migration to generated
         // types is complete.
-        last_instance_spec: InstanceSpec,
+        last_instance_spec: Box<InstanceSpec>,
 
         /// A clone of the receiver side of the server's state watcher, used to
         /// serve subsequent `instance_state_monitor` requests. Note that an
@@ -138,7 +138,7 @@ impl VmControllerState {
                 self,
                 VmControllerState::Destroyed {
                     last_instance,
-                    last_instance_spec,
+                    last_instance_spec: Box::new(last_instance_spec),
                     watcher,
                 },
             ) {
@@ -545,7 +545,7 @@ async fn instance_get_common(
             last_instance,
             last_instance_spec,
             ..
-        } => Ok((last_instance.clone(), last_instance_spec.clone())),
+        } => Ok((last_instance.clone(), *last_instance_spec.clone())),
     }
 }
 
@@ -639,14 +639,11 @@ async fn instance_state_put(
 
     drop(vm);
     if result.is_ok() {
-        match requested_state {
-            api::InstanceStateRequested::Reboot => {
-                let stats = ctx.services.oximeter_stats.lock().await;
-                if let Some(stats) = stats.as_ref() {
-                    stats.count_reset();
-                }
+        if let api::InstanceStateRequested::Reboot = requested_state {
+            let stats = ctx.services.oximeter_stats.lock().await;
+            if let Some(stats) = stats.as_ref() {
+                stats.count_reset();
             }
-            _ => {}
         }
     }
 
@@ -701,7 +698,7 @@ async fn instance_serial(
     .await;
 
     websocks_send
-        .send(ws_stream.into())
+        .send(ws_stream)
         .await
         .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
 }
