@@ -465,7 +465,7 @@ mod test {
             pci_path: PciPath::new(1, 2, 3).unwrap(),
         };
 
-        let mut b2 = b1.clone();
+        let mut b2 = b1;
         assert!(b1.can_migrate_from_element(&b2).is_ok());
 
         b2.downstream_bus += 1;

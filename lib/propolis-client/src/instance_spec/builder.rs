@@ -197,7 +197,7 @@ impl SpecBuilder {
         );
         assert!(_old.is_none());
         if self.spec.devices.softnpu_ports.insert(key, port.clone()).is_some() {
-            Err(SpecBuilderError::SoftNpuPortInUse(port.name.clone()))
+            Err(SpecBuilderError::SoftNpuPortInUse(port.name))
         } else {
             Ok(self)
         }
