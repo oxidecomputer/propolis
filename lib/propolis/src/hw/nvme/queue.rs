@@ -1093,35 +1093,42 @@ mod tests {
         // SQ "doorbell" is hit and will attempt to pull a new IO
         // request off the SQ. At the end, each will return a count
         // of how many requests they received and then completed.
-        let io_workers = (0..4).map(|_| {
-            let worker_rx = workers_rx.clone();
-            let worker_sq = sq.clone();
-            let worker_comp_tx = comp_tx.clone();
+        //
+        // N.B. Clippy is too aggressive here; the `collect` is needed to
+        //      ensure the closure is evaluated, which is what actually
+        //      launches the worker threads.
+        #[allow(clippy::needless_collect)]
+        let io_workers = (0..4)
+            .map(|_| {
+                let worker_rx = workers_rx.clone();
+                let worker_sq = sq.clone();
+                let worker_comp_tx = comp_tx.clone();
 
-            let child_acc = acc_mem.child();
+                let child_acc = acc_mem.child();
 
-            spawn(move || {
-                let mut submissions = 0;
-                let mem = child_acc.access().unwrap();
+                spawn(move || {
+                    let mut submissions = 0;
+                    let mem = child_acc.access().unwrap();
 
-                let mut rng = rand::thread_rng();
-                while let Ok(()) = worker_rx.recv() {
-                    while let Some((_, cqe_permit)) = worker_sq.pop(&mem) {
-                        submissions += 1;
+                    let mut rng = rand::thread_rng();
+                    while let Ok(()) = worker_rx.recv() {
+                        while let Some((_, cqe_permit)) = worker_sq.pop(&mem) {
+                            submissions += 1;
 
-                        // Sleep for a bit to mimic actually doing
-                        // some work before we complete the IO
-                        sleep(Duration::from_micros(rng.gen_range(0..500)));
+                            // Sleep for a bit to mimic actually doing
+                            // some work before we complete the IO
+                            sleep(Duration::from_micros(rng.gen_range(0..500)));
 
-                        cqe_permit.push_completion_test(&mem);
+                            cqe_permit.push_completion_test(&mem);
 
-                        // Signal "guest" side of completion handler
-                        assert!(worker_comp_tx.send(()).is_ok());
+                            // Signal "guest" side of completion handler
+                            assert!(worker_comp_tx.send(()).is_ok());
+                        }
                     }
-                }
-                submissions
+                    submissions
+                })
             })
-        });
+            .collect::<Vec<_>>();
 
         // Create a thread to "consume" things off the Completion Queue. This
         // simulates the host reacting to our CQ pushes and "ringing" the CQ
@@ -1168,7 +1175,8 @@ mod tests {
 
         // Wait for the IO workers to complete and sum the total
         // number of submissions they recevied
-        let submissions: u32 = io_workers.map(|j| j.join().unwrap()).sum();
+        let submissions: u32 =
+            io_workers.into_iter().map(|j| j.join().unwrap()).sum();
 
         // Make sure the number of submission we recevied matched the number we
         // generated and completed
