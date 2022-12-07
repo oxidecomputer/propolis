@@ -992,7 +992,11 @@ impl VmController {
                     if reset_required {
                         self.reset_vcpus(&vcpu_tasks, &log);
                     }
-                    self.start_entities(&log);
+
+                    // TODO(#209) Transition to a "failed" state here instead of
+                    // expecting.
+                    self.start_entities(&log)
+                        .expect("entity start callout failed");
                     vcpu_tasks.resume_all();
                 }
                 ExternalRequest::Reboot => {
@@ -1371,61 +1375,67 @@ impl VmController {
         }
     }
 
-    fn start_entities(&self, log: &Logger) {
+    fn start_entities(&self, log: &Logger) -> anyhow::Result<()> {
         self.for_each_entity(|ent, rec| {
             info!(log, "Sending startup complete to {}", rec.name());
-            ent.start();
-        });
+            let res = ent.start();
+            if let Err(e) = &res {
+                error!(log, "Startup failed for {}: {:?}", rec.name(), e);
+            }
+            res
+        })
     }
 
     fn pause_entities(&self, log: &Logger) {
         self.for_each_entity(|ent, rec| {
             info!(log, "Sending pause request to {}", rec.name());
             ent.pause();
-        });
+            Ok(())
+        })
+        .unwrap();
     }
 
     fn reset_entities(&self, log: &Logger) {
         self.for_each_entity(|ent, rec| {
             info!(log, "Sending reset request to {}", rec.name());
             ent.reset();
-        });
+            Ok(())
+        })
+        .unwrap();
     }
 
     fn resume_entities(&self, log: &Logger) {
         self.for_each_entity(|ent, rec| {
             info!(log, "Sending resume request to {}", rec.name());
             ent.resume();
-        });
+            Ok(())
+        })
+        .unwrap();
     }
 
     fn halt_entities(&self, log: &Logger) {
         self.for_each_entity(|ent, rec| {
             info!(log, "Sending halt request to {}", rec.name());
             ent.halt();
-        });
+            Ok(())
+        })
+        .unwrap();
     }
 
-    fn for_each_entity<F>(&self, mut func: F)
+    fn for_each_entity<F>(&self, mut func: F) -> anyhow::Result<()>
     where
         F: FnMut(
             &Arc<dyn propolis::inventory::Entity>,
             &propolis::inventory::Record,
-        ),
+        ) -> anyhow::Result<()>,
     {
-        self.vm_objects
-            .instance
-            .lock()
-            .inventory()
-            .for_each_node(
-                propolis::inventory::Order::Pre,
-                |_eid, record| -> Result<(), ()> {
-                    let ent = record.entity();
-                    func(ent, record);
-                    Ok(())
-                },
-            )
-            .unwrap();
+        self.vm_objects.instance.lock().inventory().for_each_node(
+            propolis::inventory::Order::Pre,
+            |_eid, record| -> Result<(), anyhow::Error> {
+                let ent = record.entity();
+                func(ent, record)
+            },
+        )
     }
 
     fn wait_for_entities_to_pause(&self, log: &Logger) {

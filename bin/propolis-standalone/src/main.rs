@@ -264,7 +264,10 @@ impl Instance {
             match state {
                 State::Run => {
                     if first_boot {
-                        ent.start();
+                        ent.start().expect(&format!(
+                            "entity {} failed to start",
+                            record.name()
+                        ));
                     } else {
                         ent.resume();
                     }
