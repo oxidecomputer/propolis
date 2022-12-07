@@ -78,6 +78,7 @@ pub struct CrucibleDisk {
 impl CrucibleDisk {
     /// Constructs a new Crucible disk that stores its files in the supplied
     /// `data_dir`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         disk_size_gib: u64,
         block_size: BlockSize,
@@ -160,9 +161,7 @@ impl CrucibleDisk {
         // Spawn the downstairs processes that will serve requests from guest
         // VMs.
         let mut downstairs_instances = vec![];
-        for (port, dir) in
-            downstairs_ports.into_iter().zip(data_dirs.into_iter())
-        {
+        for (port, dir) in downstairs_ports.iter().zip(data_dirs.into_iter()) {
             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), *port);
             let dir_arg = dir.path.to_string_lossy();
             let crucible_args = [
@@ -273,7 +272,7 @@ fn run_crucible_downstairs(
     stderr: impl Into<Stdio>,
 ) -> anyhow::Result<std::process::Child> {
     info!(?args, "Running crucible-downstairs");
-    let process_handle = std::process::Command::new(&binary_path)
+    let process_handle = std::process::Command::new(binary_path)
         .args(args)
         .stdout(stdout)
         .stderr(stderr)

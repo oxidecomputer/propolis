@@ -146,7 +146,7 @@ impl Machine {
 
             bus_mmio,
             bus_pio,
-            kernel_devs: KernelVmmDevs::new(hdl.clone()),
+            kernel_devs: KernelVmmDevs::new(hdl),
 
             destroyed: AtomicBool::new(false),
         })

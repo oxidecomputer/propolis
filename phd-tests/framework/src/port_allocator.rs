@@ -36,7 +36,7 @@ impl PortAllocator {
 
         let port = self.next.fetch_add(1, Ordering::Relaxed);
         if port >= self.range.end {
-            return Err(PortAllocatorError::NoMorePorts);
+            Err(PortAllocatorError::NoMorePorts)
         } else {
             Ok(port)
         }

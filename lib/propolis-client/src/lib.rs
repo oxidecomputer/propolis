@@ -38,16 +38,16 @@ pub use types as api;
 mod _compat_impls {
     use super::{generated, handmade};
 
-    impl Into<generated::types::DiskRequest> for handmade::api::DiskRequest {
-        fn into(self) -> generated::types::DiskRequest {
-            let Self {
+    impl From<handmade::api::DiskRequest> for generated::types::DiskRequest {
+        fn from(req: handmade::api::DiskRequest) -> Self {
+            let handmade::api::DiskRequest {
                 name,
                 slot,
                 read_only,
                 device,
                 volume_construction_request,
-            } = self;
-            generated::types::DiskRequest {
+            } = req;
+            Self {
                 name,
                 slot: slot.into(),
                 read_only,
@@ -57,9 +57,9 @@ mod _compat_impls {
         }
     }
 
-    impl Into<generated::types::Slot> for handmade::api::Slot {
-        fn into(self) -> generated::types::Slot {
-            generated::types::Slot(self.0)
+    impl From<handmade::api::Slot> for generated::types::Slot {
+        fn from(slot: handmade::api::Slot) -> Self {
+            Self(slot.0)
         }
     }
 }

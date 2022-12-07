@@ -332,10 +332,7 @@ impl HostFSHandler {
         let metadata = match file.metadata() {
             Ok(m) => m,
             Err(e) => {
-                let ecode = match e.raw_os_error() {
-                    Some(ecode) => ecode,
-                    None => 0,
-                };
+                let ecode = e.raw_os_error().unwrap_or(0);
                 warn!(
                     self.log,
                     "read: metadata for {:?}: {:?}", &fid.pathbuf, e,
@@ -354,10 +351,7 @@ impl HostFSHandler {
 
         match file.seek(std::io::SeekFrom::Start(msg.offset)) {
             Err(e) => {
-                let ecode = match e.raw_os_error() {
-                    Some(ecode) => ecode,
-                    None => 0,
-                };
+                let ecode = e.raw_os_error().unwrap_or(0);
                 warn!(self.log, "read: seek: {:?}: {:?}", &fid.pathbuf, e,);
                 return write_error(ecode as u32, chain, mem);
             }
@@ -378,10 +372,7 @@ impl HostFSHandler {
 
         match file.read_exact(content.as_mut_slice()) {
             Err(e) => {
-                let ecode = match e.raw_os_error() {
-                    Some(ecode) => ecode,
-                    None => 0,
-                };
+                let ecode = e.raw_os_error().unwrap_or(0);
                 warn!(self.log, "read: exact: {:?}: {:?}", &fid.pathbuf, e,);
                 return write_error(ecode as u32, chain, mem);
             }
@@ -445,10 +436,7 @@ impl HostFSHandler {
         let metadata = match fs::metadata(&fid.pathbuf) {
             Ok(m) => m,
             Err(e) => {
-                let ecode = match e.raw_os_error() {
-                    Some(ecode) => ecode,
-                    None => 0,
-                };
+                let ecode = e.raw_os_error().unwrap_or(0);
                 return write_error(ecode as u32, chain, mem);
             }
         };
@@ -597,10 +585,7 @@ impl P9Handler for HostFSHandler {
         // grab inode number for qid uniqe file id
         let qpath = match fs::metadata(&self.source) {
             Err(e) => {
-                let ecode = match e.raw_os_error() {
-                    Some(ecode) => ecode,
-                    None => 0,
-                };
+                let ecode = e.raw_os_error().unwrap_or(0);
                 return write_error(ecode as u32, chain, mem);
             }
             Ok(m) => m.ino(),
@@ -669,10 +654,7 @@ impl P9Handler for HostFSHandler {
                     // check that new path is a thing
                     let (ino, qt) = match fs::metadata(&newpath) {
                         Err(e) => {
-                            let ecode = match e.raw_os_error() {
-                                Some(ecode) => ecode,
-                                None => 0,
-                            };
+                            let ecode = e.raw_os_error().unwrap_or(0);
                             warn!(
                                 self.log,
                                 "walk: no metadata: {:?}: {:?}", newpath, e
@@ -735,10 +717,7 @@ impl P9Handler for HostFSHandler {
                 // check that fid path is a thing
                 let (ino, qt) = match fs::metadata(&fid.pathbuf) {
                     Err(e) => {
-                        let ecode = match e.raw_os_error() {
-                            Some(ecode) => ecode,
-                            None => 0,
-                        };
+                        let ecode = e.raw_os_error().unwrap_or(0);
                         warn!(
                             self.log,
                             "open: no metadata: {:?}: {:?}", &fid.pathbuf, e
@@ -763,10 +742,7 @@ impl P9Handler for HostFSHandler {
                     {
                         Ok(f) => f,
                         Err(e) => {
-                            let ecode = match e.raw_os_error() {
-                                Some(ecode) => ecode,
-                                None => 0,
-                            };
+                            let ecode = e.raw_os_error().unwrap_or(0);
                             warn!(
                                 self.log,
                                 "open: {:?}: {:?}", &fid.pathbuf, e
@@ -817,10 +793,7 @@ impl P9Handler for HostFSHandler {
             Ok(r) => match r.collect::<Result<Vec<fs::DirEntry>, _>>() {
                 Ok(d) => d,
                 Err(e) => {
-                    let ecode = match e.raw_os_error() {
-                        Some(ecode) => ecode,
-                        None => 0,
-                    };
+                    let ecode = e.raw_os_error().unwrap_or(0);
                     warn!(
                         self.log,
                         "readdir: collect: {:?}: {:?}", &pathbuf, e
@@ -829,10 +802,7 @@ impl P9Handler for HostFSHandler {
                 }
             },
             Err(e) => {
-                let ecode = match e.raw_os_error() {
-                    Some(ecode) => ecode,
-                    None => 0,
-                };
+                let ecode = e.raw_os_error().unwrap_or(0);
                 warn!(self.log, "readdir: {:?}: {:?}", &pathbuf, e);
                 return write_error(ecode as u32, chain, mem);
             }
@@ -844,7 +814,7 @@ impl P9Handler for HostFSHandler {
         }
 
         // need to sort to ensure consistent offsets
-        dir.sort_by(|a, b| a.path().cmp(&b.path()));
+        dir.sort_by_key(|a| a.path());
 
         let mut space_left = msize as usize
             - size_of::<u32>()          // Rreaddir.size
@@ -859,10 +829,7 @@ impl P9Handler for HostFSHandler {
             let metadata = match de.metadata() {
                 Ok(m) => m,
                 Err(e) => {
-                    let ecode = match e.raw_os_error() {
-                        Some(ecode) => ecode,
-                        None => 0,
-                    };
+                    let ecode = e.raw_os_error().unwrap_or(0);
                     warn!(
                         self.log,
                         "readdir: metadata: {:?}: {:?}",

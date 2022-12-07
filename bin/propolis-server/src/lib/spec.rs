@@ -503,11 +503,7 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        let chunk_size: u32 = match device.get("chunk_size") {
-            Some(s) => s,
-            None => 65536,
-        };
-
+        let chunk_size: u32 = device.get("chunk_size").unwrap_or(65536);
         let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
                 "Failed to get PCI path for p9 device {}",

@@ -565,7 +565,7 @@ impl<'a> MachineInitializer<'a> {
             self.log.clone(),
         )
         .map_err(|e| -> std::io::Error {
-            let io_err: std::io::Error = e.into();
+            let io_err: std::io::Error = e;
             std::io::Error::new(
                 io_err.kind(),
                 format!("register softnpu: {}", io_err),

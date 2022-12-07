@@ -110,6 +110,8 @@ pub struct SoftNpu {
 unsafe impl Send for SoftNpu {}
 unsafe impl Sync for SoftNpu {}
 
+type LoadedP4Program = (Library, Box<dyn Pipeline>);
+
 /// PciVirtioSoftNpuPort is a PCI device exposed to the guest as a virtio-net
 /// device. This device represents a sidecar CPU port.
 pub struct PciVirtioSoftNpuPort {
@@ -125,7 +127,7 @@ pub struct PciVirtioSoftNpuPort {
     mac: [u8; 6],
 
     //TODO should be able to do this as a RwLock
-    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
 }
 
 pub struct PortVirtioState {
@@ -167,7 +169,7 @@ impl SoftNpu {
         queue_size: u16,
         uart: Arc<LpcUart>,
         p9fs: Arc<PciVirtio9pfs>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         log: Logger,
     ) -> Result<Arc<Self>> {
         info!(log, "softnpu: data links {:#?}", data_links);
@@ -176,8 +178,8 @@ impl SoftNpu {
         let virtio = Arc::new(PortVirtioState::new(queue_size));
         let pci_port = PciVirtioSoftNpuPort::new(
             Self::generate_mac(),
-            data_handles.clone(),
-            virtio.clone(),
+            data_handles,
+            virtio,
             pipeline.clone(),
             log.clone(),
         );
@@ -235,7 +237,7 @@ impl SoftNpu {
 
     fn management_handler(
         uart: Arc<LpcUart>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         radix: usize,
         log: Logger,
     ) {
@@ -289,7 +291,7 @@ impl PciVirtioSoftNpuPort {
         mac: [u8; 6],
         data_handles: Vec<dlpi::DlpiHandle>,
         virtio: Arc<PortVirtioState>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         log: Logger,
     ) -> Arc<Self> {
         Arc::new(PciVirtioSoftNpuPort {
@@ -297,7 +299,7 @@ impl PciVirtioSoftNpuPort {
             data_handles,
             pipeline,
             log,
-            virtio_state: virtio.clone(),
+            virtio_state: virtio,
         })
     }
 
@@ -443,7 +445,7 @@ impl PacketHandler {
         index: usize,
         data_handles: Vec<dlpi::DlpiHandle>,
         virtio: Arc<PortVirtioState>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         log: Logger,
     ) {
         spawn(move || {
@@ -464,7 +466,7 @@ impl PacketHandler {
         index: usize,
         data_handles: Vec<dlpi::DlpiHandle>,
         virtio: Arc<PortVirtioState>,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         log: Logger,
     ) {
         let dh = data_handles[index];
@@ -647,7 +649,7 @@ fn read_buf(mem: &MemCtx, chain: &mut Chain, buf: &mut [u8]) -> usize {
 /// Handle ASIC management messages from the guest using the loaded program.
 fn handle_management_message(
     msg: ManagementRequest,
-    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
     uart: Arc<LpcUart>,
     radix: usize,
     log: Logger,
@@ -683,7 +685,7 @@ fn handle_management_message(
             // - https://code.illumos.org/c/illumos-gate/+/1808
             let mut buf: Vec<u8> = Vec::new();
             buf.extend_from_slice(radix.to_string().as_bytes());
-            buf.push('\n' as u8);
+            buf.push(b'\n');
             for b in &buf {
                 while !uart.write(*b) {
                     std::thread::yield_now();
@@ -715,7 +717,7 @@ fn handle_management_message(
                     let mut buf = j.as_bytes().to_vec();
                     info!(log, "writing: {}", j);
                     // Add trailing newline for proper tty handling.
-                    buf.push('\n' as u8);
+                    buf.push(b'\n');
                     buf
                 }
                 Err(e) => {
@@ -815,7 +817,7 @@ pub struct SoftNpuP9Handler {
     target: String,
     radix: u16,
     log: Logger,
-    pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+    pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
 }
 
 /// The file that a P4 program is written to while being streamed by the guest.
@@ -833,7 +835,7 @@ impl SoftNpuP9Handler {
         source: String,
         target: String,
         radix: u16,
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         log: Logger,
     ) -> Self {
         Self { source, target, radix, pipeline, log }
@@ -882,7 +884,7 @@ impl SoftNpuP9Handler {
     /// file is copied to the active program file. Then the pipeline is loaded
     /// from the active program file.
     fn load_program(
-        pipeline: Arc<Mutex<Option<(Library, Box<dyn Pipeline>)>>>,
+        pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
         radix: u16,
         log: Logger,
     ) {

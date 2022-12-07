@@ -6,11 +6,8 @@ use propolis_client::handmade::api::InstanceState;
 #[phd_testcase]
 fn boot_test(ctx: &TestContext) {
     let disk = super::create_default_boot_disk(ctx, 10)?;
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
+    let config =
+        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
 
     let mut vm = ctx.vm_factory.new_vm("crucible_boot_test", config)?;
     vm.launch()?;
@@ -50,11 +47,8 @@ fn shutdown_persistence_test(ctx: &TestContext) {
 
     // Increment the disk's generation before attaching it to a new VM.
     disk.set_generation(2);
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
+    let config =
+        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
 
     // The touched file from the previous VM should be present in the new one.
     let mut vm = ctx

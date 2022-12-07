@@ -472,6 +472,7 @@ impl ChipsetEventHandler for WorkerState {
 }
 
 impl VmController {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         instance_spec: InstanceSpec,
         properties: InstanceProperties,

@@ -35,7 +35,7 @@ impl FileBackedDisk {
             "Copying source image to create temporary disk",
         );
 
-        std::fs::copy(&artifact_path, &disk_path)?;
+        std::fs::copy(artifact_path, &disk_path)?;
 
         // Make sure the disk is writable (the artifact may have been
         // read-only).

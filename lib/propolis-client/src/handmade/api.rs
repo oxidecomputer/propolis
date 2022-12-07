@@ -142,7 +142,9 @@ pub enum InstanceStateRequested {
 }
 
 /// Current state of an Instance.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema,
+)]
 pub enum InstanceState {
     Creating,
     Starting,
@@ -156,7 +158,7 @@ pub enum InstanceState {
     Destroyed,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct InstanceProperties {
     /// Unique identifier for this Instance.
     pub id: Uuid,
