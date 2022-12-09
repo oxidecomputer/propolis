@@ -11,7 +11,6 @@ use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::chardev::{pollers, Sink, Source};
-use propolis::hw::uart::LpcUart;
 use slog::{info, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, RwLock as AsyncRwLock};
@@ -57,10 +56,10 @@ pub struct SerialTask {
     pub websocks_ch: mpsc::Sender<WebSocketStream<Upgraded>>,
 }
 
-pub async fn instance_serial_task(
+pub async fn instance_serial_task<Device: Sink + Source>(
     mut websocks_recv: mpsc::Receiver<WebSocketStream<Upgraded>>,
     mut close_recv: oneshot::Receiver<()>,
-    serial: Arc<Serial<LpcUart>>,
+    serial: Arc<Serial<Device>>,
     log: Logger,
 ) -> Result<(), SerialTaskError> {
     info!(log, "Entered serial task");

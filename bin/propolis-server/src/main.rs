@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use propolis_server::server::MetricsEndpointConfig;
 use propolis_server::vnc::setup_vnc;
-use propolis_server::{config, server, mock_server};
+use propolis_server::{config, mock_server, server};
 
 #[derive(Debug, Parser)]
 #[clap(about, version)]
@@ -44,6 +44,7 @@ enum Args {
         vnc_addr: SocketAddr,
 
         /// If true, run a mock server which does not actually spawn instances
+        /// (i.e. to test with a facsimile of the API on unsupported platforms)
         #[structopt(short, long)]
         mock: bool,
     },
@@ -100,12 +101,12 @@ async fn main() -> anyhow::Result<()> {
 
             if mock {
                 let context =
-                    mock_server::MockContext::new(config, log.new(slog::o!()));
+                    mock_server::Context::new(config, log.new(slog::o!()));
                 info!(log, "Starting mock server...");
                 let server = HttpServerStarter::new(
                     &config_dropshot,
                     mock_server::api(),
-                    context,
+                    Arc::new(context),
                     &log,
                 )
                 .map_err(|error| {
