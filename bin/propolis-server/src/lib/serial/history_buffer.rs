@@ -5,7 +5,10 @@
 //! Maintains a buffer of an instance's serial console data, holding both the
 //! first mebibyte and the most recent mebibyte of console output.
 
+use dropshot::HttpError;
+use propolis_client::handmade::api;
 use std::collections::VecDeque;
+use std::convert::TryFrom;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -31,6 +34,53 @@ pub(crate) enum SerialHistoryOffset {
     FromStart(usize),
     /// The byte index *backwards* from the most recently buffered data.
     MostRecent(usize),
+}
+
+impl TryFrom<&api::InstanceSerialConsoleStreamRequest> for SerialHistoryOffset {
+    type Error = ();
+    fn try_from(
+        req: &api::InstanceSerialConsoleStreamRequest,
+    ) -> Result<Self, ()> {
+        match req {
+            api::InstanceSerialConsoleStreamRequest {
+                from_start: Some(offset),
+                most_recent: None,
+            } => Ok(SerialHistoryOffset::FromStart(*offset as usize)),
+            api::InstanceSerialConsoleStreamRequest {
+                from_start: None,
+                most_recent: Some(offset),
+            } => Ok(SerialHistoryOffset::MostRecent(*offset as usize)),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<&api::InstanceSerialConsoleHistoryRequest>
+    for SerialHistoryOffset
+{
+    type Error = HttpError;
+
+    fn try_from(
+        req: &api::InstanceSerialConsoleHistoryRequest,
+    ) -> Result<SerialHistoryOffset, HttpError> {
+        match req {
+            api::InstanceSerialConsoleHistoryRequest {
+                from_start: Some(offset),
+                most_recent: None,
+                ..
+            } => Ok(SerialHistoryOffset::FromStart(*offset as usize)),
+            api::InstanceSerialConsoleHistoryRequest {
+                from_start: None,
+                most_recent: Some(offset),
+                ..
+            } => Ok(SerialHistoryOffset::MostRecent(*offset as usize)),
+            _ => Err(HttpError::for_bad_request(
+                None,
+                "Exactly one of 'from_start' or 'most_recent' must be specified."
+                    .to_string(),
+            )),
+        }
+    }
 }
 
 impl Default for HistoryBuffer {

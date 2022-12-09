@@ -52,7 +52,7 @@ pub enum SlotType {
 
 /// Translates a device type and PCI slot (as presented in an instance creation
 /// request) into a concrete PCI path. See the documentation for [`SlotType`].
-fn slot_to_pci_path(
+pub(crate) fn slot_to_pci_path(
     slot: api::Slot,
     ty: SlotType,
 ) -> Result<PciPath, ServerSpecBuilderError> {

@@ -5,6 +5,7 @@
 //! HTTP error codes) before sending operations to other components (e.g. the VM
 //! controller) for processing.
 
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
@@ -695,23 +696,7 @@ async fn instance_serial_history_get(
     let serial = vm.com1().clone();
     let query_params = query.into_inner();
 
-    let byte_offset = match query_params {
-        api::InstanceSerialConsoleHistoryRequest {
-            from_start: Some(offset),
-            most_recent: None,
-            ..
-        } => SerialHistoryOffset::FromStart(offset as usize),
-        api::InstanceSerialConsoleHistoryRequest {
-            from_start: None,
-            most_recent: Some(offset),
-            ..
-        } => SerialHistoryOffset::MostRecent(offset as usize),
-        _ => return Err(HttpError::for_bad_request(
-            None,
-            "Exactly one of 'from_start' or 'most_recent' must be specified."
-                .to_string(),
-        )),
-    };
+    let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
 
     let max_bytes = query_params.max_bytes.map(|x| x as usize);
     let (data, end) = serial
@@ -738,18 +723,6 @@ async fn instance_serial(
     let vm = ctx.vm().await?;
     let serial = vm.com1().clone();
 
-    let byte_offset = match query.into_inner() {
-        api::InstanceSerialConsoleStreamRequest {
-            from_start: Some(offset),
-            most_recent: None,
-        } => Some(SerialHistoryOffset::FromStart(offset as usize)),
-        api::InstanceSerialConsoleStreamRequest {
-            from_start: None,
-            most_recent: Some(offset),
-        } => Some(SerialHistoryOffset::MostRecent(offset as usize)),
-        _ => None,
-    };
-
     let config =
         WebSocketConfig { max_send_queue: Some(4096), ..Default::default() };
     let mut ws_stream = WebSocketStream::from_raw_socket(
@@ -759,6 +732,7 @@ async fn instance_serial(
     )
     .await;
 
+    let byte_offset = SerialHistoryOffset::try_from(&query.into_inner()).ok();
     if let Some(mut byte_offset) = byte_offset {
         loop {
             let (data, offset) = serial.history_vec(byte_offset, None).await?;
