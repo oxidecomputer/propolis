@@ -134,8 +134,9 @@ impl Entity for FileBackend {
     fn type_name(&self) -> &'static str {
         "block-file"
     }
-    fn start(&self) {
+    fn start(&self) -> anyhow::Result<()> {
         self.driver.start();
+        Ok(())
     }
     fn pause(&self) {
         self.driver.pause();

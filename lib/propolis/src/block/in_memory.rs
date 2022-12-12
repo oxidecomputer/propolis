@@ -133,8 +133,9 @@ impl Entity for InMemoryBackend {
     fn type_name(&self) -> &'static str {
         "block-in-memory"
     }
-    fn start(&self) {
+    fn start(&self) -> anyhow::Result<()> {
         self.driver.start();
+        Ok(())
     }
     fn pause(&self) {
         self.driver.pause();

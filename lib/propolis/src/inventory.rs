@@ -548,14 +548,16 @@ pub trait Entity: Send + Sync + 'static {
         Box::pin(future::ready(()))
     }
 
-    /// Called when first servicing the guest after initializing an instance.
-    /// After this returns, the callee entity should be ready to do work on the
-    /// guest's behalf.
+    /// Called when an instance is about to begin running, just before any
+    /// vCPU threads are started. After this returns, the callee entity should
+    /// be ready to do work on the guest's behalf.
     ///
     /// Note that this is only called the first time an instance begins running.
     /// If it reboots, the entity will observe a paused -> reset -> resumed
     /// transition instead.
-    fn start(&self) {}
+    fn start(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Directs this entity to pause. A paused entity must stop producing work
     /// for other entities, but must accept (and hold onto) new work from other

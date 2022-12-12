@@ -261,10 +261,10 @@ impl Entity for SoftNpu {
         "softnpu"
     }
 
-    fn start(&self) {
+    fn start(&self) -> anyhow::Result<()> {
         let mut booted = self.booted.lock().unwrap();
         if *booted {
-            return;
+            return Ok(());
         }
         self.run_management_handler_thread();
         for i in 0..self.pci_port.data_handles.len() {
@@ -278,7 +278,8 @@ impl Entity for SoftNpu {
                 self.log.clone(),
             );
         }
-        *booted = true
+        *booted = true;
+        Ok(())
     }
 
     fn migrate(&'_ self) -> Migrator<'_> {

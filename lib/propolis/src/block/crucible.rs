@@ -136,8 +136,9 @@ impl Entity for CrucibleBackend {
     // TODO(#155): Move Crucible activation here. Also, this entity probably
     // needs its own pause/resume routines akin to those in the other block
     // backends.
-    fn start(&self) {
+    fn start(&self) -> anyhow::Result<()> {
         self.scheduler.start();
+        Ok(())
     }
     fn pause(&self) {
         self.scheduler.pause();

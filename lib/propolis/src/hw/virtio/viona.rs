@@ -286,10 +286,11 @@ impl Entity for PciVirtioViona {
     fn reset(&self) {
         self.virtio_state.reset(self);
     }
-    fn start(&self) {
+    fn start(&self) -> anyhow::Result<()> {
         // This entity initializes into a paused state. Starting it is
         // equivalent to resuming it.
         self.resume();
+        Ok(())
     }
     fn pause(&self) {
         self.poller_stop(false);

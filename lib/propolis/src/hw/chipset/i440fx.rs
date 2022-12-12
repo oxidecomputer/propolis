@@ -939,8 +939,9 @@ impl Entity for Piix3PM {
         // If the machine was reset
         self.ensure_pmtmr_located();
     }
-    fn start(&self) {
+    fn start(&self) -> anyhow::Result<()> {
         self.ensure_pmtmr_located();
+        Ok(())
     }
     fn migrate(&self) -> Migrator {
         Migrator::Custom(self)
