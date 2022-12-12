@@ -1,5 +1,6 @@
 #![cfg_attr(not(target_os = "illumos"), allow(dead_code, unused_imports))]
 
+use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Error, ErrorKind};
 use std::num::NonZeroU16;
@@ -56,9 +57,27 @@ impl PciVirtioViona {
         queue_size: u16,
         vm: &VmmHdl,
     ) -> io::Result<Arc<PciVirtioViona>> {
-        let dlhdl = dladm::Handle::new()?;
-        let info = dlhdl.query_vnic(vnic_name)?;
-        let hdl = VionaHdl::new(info.link_id, vm.fd())?;
+        let info =
+            libnet::get_link(&libnet::LinkHandle::Name(vnic_name.to_string()))
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("failed to get link info: {e}"),
+                    )
+                })?;
+
+        let mtu = if let Some(mtu) = info.mtu {
+            Some(u16::try_from(mtu).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("MTU too large: {mtu}"),
+                )
+            })?)
+        } else {
+            None
+        };
+
+        let hdl = VionaHdl::new(info.id, vm.fd())?;
 
         // TX and RX
         let queue_count = NonZeroU16::new(2).unwrap();
@@ -83,11 +102,11 @@ impl PciVirtioViona {
 
             dev_features,
             mac_addr: [0; ETHERADDRL],
-            mtu: info.mtu,
+            mtu,
             hdl,
             inner: Mutex::new(Inner::new()),
         };
-        this.mac_addr.copy_from_slice(&info.mac_addr);
+        this.mac_addr.copy_from_slice(&info.mac);
         let this = Arc::new(this);
 
         // Spawn the interrupt poller

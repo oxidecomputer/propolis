@@ -16,7 +16,6 @@ lazy_static.workspace = true
 num_enum.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true
-dladm.workspace = true
 viona_api.workspace = true
 propolis_types.workspace = true
 usdt = { workspace = true, default-features = false }
@@ -34,6 +33,7 @@ once_cell.workspace = true
 crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }
+libnet.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }

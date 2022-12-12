@@ -679,6 +679,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cstr-argument"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6bd9c8e659a473bce955ae5c35b116af38af11a7acb0b480e01f3ed348aeb40"
+dependencies = [
+ "cfg-if",
+ "memchr",
+]
+
+[[package]]
 name = "ctor"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -841,20 +851,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "dladm"
-version = "0.0.0"
-dependencies = [
- "libc",
- "num_enum",
-]
-
-[[package]]
 name = "dlpi"
 version = "0.2.0"
 source = "git+https://github.com/oxidecomputer/dlpi-sys?branch=main#1d587ea98cf2d36f1b1624b0b960559c76d475d2"
 dependencies = [
  "libc",
- "libdlpi-sys",
+ "libdlpi-sys 0.1.0 (git+https://github.com/oxidecomputer/dlpi-sys?branch=main)",
+ "num_enum",
+ "pretty-hex",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "dlpi"
+version = "0.2.0"
+source = "git+https://github.com/oxidecomputer/dlpi-sys#1d587ea98cf2d36f1b1624b0b960559c76d475d2"
+dependencies = [
+ "libc",
+ "libdlpi-sys 0.1.0 (git+https://github.com/oxidecomputer/dlpi-sys)",
  "num_enum",
  "pretty-hex",
  "thiserror",
@@ -1111,7 +1126,28 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
 dependencies = [
- "foreign-types-shared",
+ "foreign-types-shared 0.1.1",
+]
+
+[[package]]
+name = "foreign-types"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
+dependencies = [
+ "foreign-types-macros",
+ "foreign-types-shared 0.3.1",
+]
+
+[[package]]
+name = "foreign-types-macros"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8469d0d40519bc608ec6863f1cc88f3f1deee15913f2f3b3e573d81ed38cccc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1119,6 +1155,12 @@ name = "foreign-types-shared"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
+
+[[package]]
+name = "foreign-types-shared"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form_urlencoded"
@@ -1648,6 +1690,11 @@ version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/dlpi-sys?branch=main#1d587ea98cf2d36f1b1624b0b960559c76d475d2"
 
 [[package]]
+name = "libdlpi-sys"
+version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/dlpi-sys#1d587ea98cf2d36f1b1624b0b960559c76d475d2"
+
+[[package]]
 name = "libloading"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1655,6 +1702,24 @@ checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
 dependencies = [
  "cfg-if",
  "winapi",
+]
+
+[[package]]
+name = "libnet"
+version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/netadm-sys#c5415cc82d0967cebd515f99ea8877fd11aecf6b"
+dependencies = [
+ "anyhow",
+ "cfg-if",
+ "colored",
+ "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys)",
+ "libc",
+ "nvpair",
+ "nvpair-sys",
+ "rusty-doors",
+ "socket2",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1999,6 +2064,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
+name = "nvpair"
+version = "0.5.0"
+source = "git+https://github.com/jmesmon/rust-libzfs?branch=master#ecd5a922247a6c5acef55d76c5b8d115572bc850"
+dependencies = [
+ "cstr-argument",
+ "foreign-types 0.5.0",
+ "nvpair-sys",
+]
+
+[[package]]
+name = "nvpair-sys"
+version = "0.4.0"
+source = "git+https://github.com/jmesmon/rust-libzfs?branch=master#ecd5a922247a6c5acef55d76c5b8d115572bc850"
+
+[[package]]
 name = "object"
 version = "0.30.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,7 +2170,7 @@ checksum = "b102428fd03bc5edf97f62620f7298614c45cedf287c271e7ed450bbaf83f2e1"
 dependencies = [
  "bitflags",
  "cfg-if",
- "foreign-types",
+ "foreign-types 0.3.2",
  "libc",
  "once_cell",
  "openssl-macros",
@@ -2691,14 +2771,14 @@ dependencies = [
  "crossbeam-channel",
  "crucible",
  "crucible-client-types",
- "dladm",
- "dlpi",
+ "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys?branch=main)",
  "erased-serde",
  "futures",
  "ispf",
  "lazy_static",
  "libc",
  "libloading",
+ "libnet",
  "num_enum",
  "once_cell",
  "oximeter",
@@ -3145,6 +3225,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5583e89e108996506031660fe09baa5011b9dd0341b89029313006d1fb508d70"
 
 [[package]]
+name = "rusty-doors"
+version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/rusty-doors#c9c064efbb686af124264ee6995d9db7082b249d"
+dependencies = [
+ "libc",
+ "rusty-doors-macros",
+]
+
+[[package]]
+name = "rusty-doors-macros"
+version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/rusty-doors#c9c064efbb686af124264ee6995d9db7082b249d"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3588,7 +3686,7 @@ dependencies = [
  "anyhow",
  "clap 4.0.32",
  "devinfo 0.1.0 (git+https://github.com/oxidecomputer/devinfo-sys?branch=main)",
- "dlpi",
+ "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys?branch=main)",
  "indicatif",
  "libc",
  "libloading",
