@@ -47,3 +47,26 @@ fn incompatible_vms(ctx: &TestContext) {
         assert!(target.migrate_from(&source, Duration::from_secs(60)).is_err());
     }
 }
+
+#[phd_testcase]
+fn multiple_migrations(ctx: &TestContext) {
+    let mut vm0 = ctx
+        .vm_factory
+        .new_vm("multiple_migrations_0", ctx.default_vm_config())?;
+    let mut vm1 = ctx
+        .vm_factory
+        .new_vm_from_cloned_config("multiple_migrations_1", &vm0)?;
+    let mut vm2 = ctx
+        .vm_factory
+        .new_vm_from_cloned_config("multiple_migrations_2", &vm1)?;
+
+    vm0.launch()?;
+    vm0.wait_to_boot()?;
+    vm1.migrate_from(&vm0, Duration::from_secs(60))?;
+    assert_eq!(vm1.run_shell_command("echo Hello world")?, "Hello world");
+    vm2.migrate_from(&vm1, Duration::from_secs(60))?;
+    assert_eq!(
+        vm2.run_shell_command("echo I have migrated!")?,
+        "I have migrated!"
+    );
+}
