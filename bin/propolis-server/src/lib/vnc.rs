@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use propolis::common::GuestAddr;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::ramfb::{Config, FramebufferSpec};
-use propolis::Instance;
 use rfb::encodings::RawEncoding;
 use rfb::pixel_formats::fourcc;
 use rfb::rfb::{
@@ -14,6 +13,8 @@ use slog::{debug, error, info, o, trace, Logger};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use crate::vm::InstanceProvider;
 
 const INITIAL_WIDTH: u16 = 1024;
 const INITIAL_HEIGHT: u16 = 768;
@@ -50,7 +51,7 @@ enum Framebuffer {
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
     ps2ctrl: Option<Arc<PS2Ctrl>>,
-    instance: Option<Arc<Instance>>,
+    instance: Option<Arc<dyn InstanceProvider>>,
 }
 
 #[derive(Clone)]
@@ -78,7 +79,7 @@ impl PropolisVncServer {
         &self,
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,
-        instance: Arc<Instance>,
+        instance: Arc<dyn InstanceProvider>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
@@ -152,7 +153,7 @@ impl Server for PropolisVncServer {
 
                 let read = tokio::task::block_in_place(|| {
                     let instance_guard =
-                        inner.instance.as_ref().unwrap().lock();
+                        inner.instance.as_ref().unwrap().get().lock();
                     let memctx =
                         instance_guard.machine().acc_mem.access().unwrap();
                     memctx.read_into(GuestAddr(fb.addr), &mut buf, len)

@@ -65,7 +65,7 @@ pub fn build_instance(
     spec: &InstanceSpec,
     use_reservoir: bool,
     _log: slog::Logger,
-) -> Result<Arc<Instance>> {
+) -> Result<Instance> {
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
     let create_opts = propolis::vmm::CreateOpts {
         force: true,
@@ -87,7 +87,7 @@ pub fn build_instance(
         builder = builder.add_mem_region(0x1_0000_0000, highmem, "highmem")?;
     }
 
-    Ok(Arc::new(Instance::create(builder.finalize()?)))
+    Ok(Instance::create(builder.finalize()?))
 }
 
 pub struct RegisteredChipset(Arc<I440Fx>, EntityID);
