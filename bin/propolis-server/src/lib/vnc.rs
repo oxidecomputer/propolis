@@ -79,12 +79,12 @@ impl PropolisVncServer {
         &self,
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,
-        instance: Arc<VmController>,
+        vm: Arc<VmController>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
         inner.ps2ctrl = Some(ps2ctrl);
-        inner.vm = Some(instance);
+        inner.vm = Some(vm);
     }
 
     pub async fn update(
