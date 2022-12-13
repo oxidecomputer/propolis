@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use super::base::Uart;
+use super::uart16550::Uart;
 use crate::chardev::*;
 use crate::common::*;
 use crate::intr_pins::IntrPin;
@@ -8,6 +8,10 @@ use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
 use erased_serde::Serialize;
+
+/*
+ * Low Pin Count UART
+ */
 
 pub const REGISTER_LEN: usize = 8;
 
@@ -164,7 +168,7 @@ impl Migrate for LpcUart {
 }
 
 pub mod migrate {
-    use crate::hw::uart::base::migrate::UartV1;
+    use crate::hw::uart::uart16550::migrate::UartV1;
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]

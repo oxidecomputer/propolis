@@ -1,5 +1,5 @@
-mod base;
 mod lpc;
+mod uart16550;
 
-pub use base::*;
 pub use lpc::*;
+pub use uart16550::*;

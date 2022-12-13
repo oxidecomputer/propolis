@@ -48,6 +48,7 @@ propolis-client = { workspace = true, features = ["generated"] }
 propolis-server-config.workspace = true
 rfb.workspace = true
 uuid.workspace = true
+usdt.workspace = true
 base64.workspace = true
 schemars = { workspace = true, features = ["chrono", "uuid1"] }
 

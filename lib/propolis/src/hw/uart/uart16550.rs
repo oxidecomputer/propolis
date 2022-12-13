@@ -1,6 +1,22 @@
+use bits::*;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-use bits::*;
+/*
+ * 16550 UART
+ *
+ * Host -> Device Data Path:
+ * The host writes data to the UART via its Transmitter Holding Register (THR),
+ * which is backed by tx_fifo. After this data is received out of the THR, the
+ * UART will raise the Transmitter Holding Register Empty interrupt, which
+ * notifies the host that it can write more data.
+ */
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn uart_reg_read(offset: u8, is_dlab: u8, val: u8) {}
+    fn uart_reg_write(offset: u8, is_dlab: u8, data: u8) {}
+}
 
 pub struct Uart {
     reg_intr_enable: u8,
@@ -15,7 +31,7 @@ pub struct Uart {
     reg_div_low: u8,
     reg_div_high: u8,
 
-    thre_intr: bool,
+    thre_intr: bool, // Transmitter Holding Register Empty interrupt
     intr_pin: bool,
 
     rx_fifo: Fifo,
@@ -44,7 +60,7 @@ impl Uart {
     }
     /// Read UART register
     pub fn reg_read(&mut self, offset: u8) -> u8 {
-        match (offset, self.is_dlab()) {
+        let val = match (offset, self.is_dlab()) {
             (REG_RHR, false) => {
                 if let Some(d) = self.rx_fifo.read() {
                     self.update_dr();
@@ -74,12 +90,18 @@ impl Uart {
             (REG_DLL, true) => self.reg_div_low,
             (REG_DLH, true) => self.reg_div_high,
             _ => {
+                probes::uart_reg_read!(|| (offset, self.is_dlab() as u8, 0));
                 panic!();
             }
-        }
+        };
+
+        probes::uart_reg_read!(|| (offset, self.is_dlab() as u8, val));
+
+        val
     }
     /// Write UART register
     pub fn reg_write(&mut self, offset: u8, data: u8) {
+        probes::uart_reg_write!(|| (offset, self.is_dlab() as u8, data));
         match (offset, self.is_dlab()) {
             (REG_THR, false) => {
                 if !self.is_loopback() {
@@ -265,6 +287,8 @@ impl Uart {
             div_low: self.reg_div_low,
             div_high: self.reg_div_high,
             thre_state: self.thre_intr,
+            rx_fifo: self.rx_fifo.clone(),
+            tx_fifo: self.tx_fifo.clone(),
         }
     }
 
@@ -279,10 +303,13 @@ impl Uart {
         self.reg_div_low = state.div_low;
         self.reg_div_high = state.div_high;
         self.thre_intr = state.thre_state;
+        self.rx_fifo = state.rx_fifo.clone();
+        self.tx_fifo = state.tx_fifo.clone();
     }
 }
 
-struct Fifo {
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Fifo {
     len: usize,
     buf: VecDeque<u8>,
 }
@@ -316,6 +343,8 @@ impl Fifo {
 pub mod migrate {
     use serde::{Deserialize, Serialize};
 
+    use super::Fifo;
+
     #[derive(Deserialize, Serialize)]
     pub struct UartV1 {
         pub intr_enable: u8,
@@ -328,30 +357,41 @@ pub mod migrate {
         pub div_low: u8,
         pub div_high: u8,
         pub thre_state: bool,
+        pub rx_fifo: Fifo,
+        pub tx_fifo: Fifo,
     }
 }
 
 mod bits {
     #![allow(unused)]
 
-    pub const REG_RHR: u8 = 0b000; // RO
-    pub const REG_THR: u8 = 0b000; // WO
-    pub const REG_IER: u8 = 0b001; // RW
-    pub const REG_ISR: u8 = 0b010; // RO
-    pub const REG_FCR: u8 = 0b010; // WO
-    pub const REG_LCR: u8 = 0b011; // RW
-    pub const REG_MCR: u8 = 0b100; // RW
-    pub const REG_LSR: u8 = 0b101; // RO
-    pub const REG_MSR: u8 = 0b110; // RO
-    pub const REG_SPR: u8 = 0b111; // RW
-    pub const REG_DLL: u8 = 0b000; // RW when DLAB=1
-    pub const REG_DLH: u8 = 0b001; // RW when DLAB=1
+    /*
+     * Register offsets from base
+     */
+    pub const REG_RHR: u8 = 0b000; // Receiver Buffer Register (RO)
+    pub const REG_THR: u8 = 0b000; // Transmitter Holding Register (WO)
+    pub const REG_IER: u8 = 0b001; // Interrupt Enable Register (RW)
+    pub const REG_ISR: u8 = 0b010; // Interrupt Ident Register (RO)
+    pub const REG_FCR: u8 = 0b010; // FIFO Control Register (WO)
+    pub const REG_LCR: u8 = 0b011; // Line Control Register (RW)
+    pub const REG_MCR: u8 = 0b100; // Modem Control Register (RW)
+    pub const REG_LSR: u8 = 0b101; // Line Status Register (RO)
+    pub const REG_MSR: u8 = 0b110; // Modem Status Register (RO)
+    pub const REG_SPR: u8 = 0b111; // Scratch Register (RW)
+    pub const REG_DLL: u8 = 0b000; // Divisor Latch LSB (RW when DLAB=1)
+    pub const REG_DLH: u8 = 0b001; // Divisor Latch MSB (RW when DLAB=1)
 
+    /*
+     * Interrupt Enable Register (IER) bits
+     */
     pub const IER_ERBFI: u8 = 1 << 0; // enable received data available intr
     pub const IER_ETBEI: u8 = 1 << 1; // enable xmit holding register empty intr
     pub const IER_ELSI: u8 = 1 << 2; // enable receiver line status intr
     pub const IER_EDSSI: u8 = 1 << 3; // enable modem status intr
 
+    /*
+     * Possible values of Interrupt Identification Register
+     */
     pub const ISRC_NONE: u8 = 0b0001; // no interrupt
     pub const ISRC_RLS: u8 = 0b0110; // receiver line status
     pub const ISRC_DR: u8 = 0b0100; // data ready
@@ -359,20 +399,28 @@ mod bits {
     pub const ISRC_THRE: u8 = 0b0010; // transmitter holding register empty
     pub const ISRC_MDM: u8 = 0b0000; // modem status
 
-    pub const FCR_ENA: u8 = 1 << 0;
-    pub const FCR_RXRST: u8 = 1 << 1;
-    pub const FCR_TXRST: u8 = 1 << 2;
+    /*
+     * FIFO Control Register (FCR) bits
+     */
+    pub const FCR_ENA: u8 = 1 << 0; // enable transmitter/receive FIFOs
+    pub const FCR_RXRST: u8 = 1 << 1; // clear bytes and count in receiver FIFO
+    pub const FCR_TXRST: u8 = 1 << 2; // clear bytes and count in transmit FIFO
     pub const FCR_DMAMD: u8 = 1 << 3;
     pub const FCR_TRGR: u8 = 0b11000000;
 
-    pub const MCR_LOOP: u8 = 1 << 4;
+    /*
+     * Modem Control Register (MCR) bits
+     */
+    pub const MCR_LOOP: u8 = 1 << 4; // loopback
 
-    pub const LSR_DR: u8 = 1 << 0;
-    pub const LSR_OE: u8 = 1 << 1;
-    pub const LSR_THRE: u8 = 1 << 5;
-    pub const LSR_TEMT: u8 = 1 << 6;
-
-    pub const LCR_DLAB: u8 = 0b10000000;
+    /*
+     * Line Status Register (LSR) bits
+     */
+    pub const LSR_DR: u8 = 1 << 0; // Data Ready
+    pub const LSR_OE: u8 = 1 << 1; // Overrun Error
+    pub const LSR_THRE: u8 = 1 << 5; // THRE indicator
+    pub const LSR_TEMT: u8 = 1 << 6; // Transmitter Empty indicator
+    pub const LCR_DLAB: u8 = 0b10000000; // Divisor Latch Access Bit
 
     pub const MASK_PCD: u8 = 0b00001111;
     pub const MASK_MCR: u8 = 0b00011111;

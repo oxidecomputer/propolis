@@ -24,6 +24,17 @@ use tokio_tungstenite::{tungstenite, WebSocketStream};
 
 pub(crate) mod history_buffer;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn serial_close_recv() {}
+    fn serial_new_ws() {}
+    fn serial_uart_write(n: usize) {}
+    fn serial_uart_out() {}
+    fn serial_uart_read(n: usize) {}
+    fn serial_inject_uart() {}
+    fn serial_ws_recv() {}
+}
+
 /// Errors which may occur during the course of a serial connection.
 #[derive(Error, Debug)]
 pub enum SerialTaskError {
@@ -125,6 +136,7 @@ pub async fn instance_serial_task(
             // so that a constant stream of incoming/outgoing messages
             // don't cause us to ignore it
             _ = &mut close_recv => {
+                probes::serial_close_recv!(|| {});
                 // Gracefully close the connections to any clients
                 for ws in ws_sinks.into_iter().zip(ws_streams) {
                     let mut ws = ws.0.reunite(ws.1).unwrap();
@@ -138,6 +150,7 @@ pub async fn instance_serial_task(
             }
 
             new_ws = new_ws_recv => {
+                probes::serial_new_ws!(|| {});
                 if let Some(ws) = new_ws {
                     let (ws_sink, ws_stream) = ws.split();
                     ws_sinks.push(ws_sink);
@@ -148,8 +161,12 @@ pub async fn instance_serial_task(
             // Write bytes into the UART from the WS
             written = uart_write => {
                 match written {
-                    Some(0) | None => break,
+                    Some(0) | None => {
+                        probes::serial_uart_write!(|| { 0 });
+                        break;
+                    }
                     Some(n) => {
+                        probes::serial_uart_write!(|| { n });
                         let (data, consumed) = cur_input.as_mut().unwrap();
                         *consumed += n;
                         if *consumed == data.len() {
@@ -161,14 +178,21 @@ pub async fn instance_serial_task(
 
             // Transmit bytes from the UART through the WS
             _ = ws_send => {
+                probes::serial_uart_out!(|| {});
                 cur_output = None;
             }
 
             // Read bytes from the UART to be transmitted out the WS
             nread = uart_read => {
                 match nread {
-                    Some(0) | None => break,
-                    Some(n) => { cur_output = Some(0..n) }
+                    Some(0) | None => {
+                        probes::serial_uart_read!(|| { 0 });
+                        break;
+                    }
+                    Some(n) => {
+                        probes::serial_uart_read!(|| { n });
+                        cur_output = Some(0..n)
+                    }
                 }
             }
 
@@ -177,6 +201,7 @@ pub async fn instance_serial_task(
             // "close" messages can be processed and their indicated
             // sinks/streams removed before they are polled again.
             pair = recv_ch_fut => {
+                probes::serial_inject_uart!(|| {});
                 if let Some((i, msg)) = pair {
                     match msg {
                         Some(Ok(Message::Binary(input))) => {
@@ -194,7 +219,9 @@ pub async fn instance_serial_task(
 
             // Receive bytes from connected WS clients to feed to the
             // intermediate recv_ch
-            _ = ws_recv => {}
+            _ = ws_recv => {
+                probes::serial_ws_recv!(|| {});
+            }
         }
     }
     Ok(())
