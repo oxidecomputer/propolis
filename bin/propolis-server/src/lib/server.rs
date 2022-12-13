@@ -28,7 +28,7 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
-use crate::vm::{InstanceProvider, VmController};
+use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
 
 pub(crate) type CrucibleBackendMap =
@@ -436,11 +436,7 @@ async fn instance_ensure_common(
         // framebuffer, and PS2 controller.
         vnc_server
             .server
-            .initialize(
-                vnc_fb,
-                Arc::clone(ps2ctrl),
-                vm.clone() as Arc<dyn InstanceProvider>,
-            )
+            .initialize(vnc_fb, Arc::clone(ps2ctrl), vm.clone())
             .await;
 
         // Hook up the framebuffer notifier to update the Propolis VNC adapter

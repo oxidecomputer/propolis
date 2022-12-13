@@ -135,10 +135,6 @@ impl From<VmControllerError> for dropshot::HttpError {
     }
 }
 
-pub trait InstanceProvider: Send + Sync {
-    fn get(&self) -> &Instance;
-}
-
 /// A collection of objects that describe an instance and references to that
 /// instance and its components.
 pub(crate) struct VmObjects {
@@ -1457,12 +1453,6 @@ impl VmController {
             let pause_futures = devices.iter().map(|ent| ent.paused());
             futures::future::join_all(pause_futures).await;
         });
-    }
-}
-
-impl InstanceProvider for VmController {
-    fn get(&self) -> &Instance {
-        self.instance()
     }
 }
 

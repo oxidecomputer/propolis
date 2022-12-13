@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::vm::InstanceProvider;
+use crate::vm::VmController;
 
 const INITIAL_WIDTH: u16 = 1024;
 const INITIAL_HEIGHT: u16 = 768;
@@ -51,7 +51,7 @@ enum Framebuffer {
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
     ps2ctrl: Option<Arc<PS2Ctrl>>,
-    instance: Option<Arc<dyn InstanceProvider>>,
+    vm: Option<Arc<VmController>>,
 }
 
 #[derive(Clone)]
@@ -69,7 +69,7 @@ impl PropolisVncServer {
                     height: initial_height,
                 }),
                 ps2ctrl: None,
-                instance: None,
+                vm: None,
             })),
             log,
         }
@@ -79,12 +79,12 @@ impl PropolisVncServer {
         &self,
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,
-        instance: Arc<dyn InstanceProvider>,
+        instance: Arc<VmController>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
         inner.ps2ctrl = Some(ps2ctrl);
-        inner.instance = Some(instance);
+        inner.vm = Some(instance);
     }
 
     pub async fn update(
@@ -153,7 +153,7 @@ impl Server for PropolisVncServer {
 
                 let read = tokio::task::block_in_place(|| {
                     let instance_guard =
-                        inner.instance.as_ref().unwrap().get().lock();
+                        inner.vm.as_ref().unwrap().instance().lock();
                     let memctx =
                         instance_guard.machine().acc_mem.access().unwrap();
                     memctx.read_into(GuestAddr(fb.addr), &mut buf, len)
@@ -195,7 +195,7 @@ impl Server for PropolisVncServer {
             height: INITIAL_HEIGHT,
         });
         inner.ps2ctrl = None;
-        inner.instance = None;
+        inner.vm = None;
     }
 }
 
