@@ -120,19 +120,21 @@ impl VmControllerState {
     /// `VmControllerState::Destroyed`.
     pub fn take_controller(&mut self) -> Option<Arc<VmController>> {
         if let VmControllerState::Created(vm) = self {
+            let state = vm.state_watcher().borrow().state;
             let last_instance = api::Instance {
                 properties: vm.properties().clone(),
-                state: api::InstanceState::Destroyed,
+                state,
                 disks: vec![],
                 nics: vec![],
             };
-
             let last_instance_spec = vm.instance_spec().clone();
 
-            // The server is about to drop its reference to the controller, but
-            // the controller may continue changing state while it tears itself
-            // down. Grab a clone of the state watcher channel for subsequent
-            // calls to `instance_state_monitor` to use.
+            // Preserve the state watcher so that subsequent updates to the VM's
+            // state are visible to calls to query/monitor that state. Note that
+            // the VM's state will change at least once more after this point:
+            // the final transition to the "destroyed" state happens only when
+            // all references to the VM have been dropped, including the one
+            // this routine just exchanged and will return.
             let watcher = vm.state_watcher().clone();
             if let VmControllerState::Created(vm) = std::mem::replace(
                 self,
@@ -184,10 +186,9 @@ impl ServiceProviders {
         self.vnc_server.stop().await;
 
         if let Some(vm) = self.vm.lock().await.take_controller() {
-            slog::info!(log, "Dropping instance";
+            slog::info!(log, "Dropping server's VM controller reference";
                 "strong_refs" => Arc::strong_count(&vm),
                 "weak_refs" => Arc::weak_count(&vm),
-                "instance_refs" => Arc::strong_count(vm.instance()),
             );
         }
         if let Some(serial_task) = self.serial_task.lock().await.take() {
@@ -435,7 +436,7 @@ async fn instance_ensure_common(
         // framebuffer, and PS2 controller.
         vnc_server
             .server
-            .initialize(vnc_fb, Arc::clone(ps2ctrl), Arc::clone(vm.instance()))
+            .initialize(vnc_fb, Arc::clone(ps2ctrl), vm.clone())
             .await;
 
         // Hook up the framebuffer notifier to update the Propolis VNC adapter
@@ -544,8 +545,13 @@ async fn instance_get_common(
         VmControllerState::Destroyed {
             last_instance,
             last_instance_spec,
-            ..
-        } => Ok((last_instance.clone(), *last_instance_spec.clone())),
+            watcher,
+        } => {
+            let watcher = watcher.borrow();
+            let mut last_instance = last_instance.clone();
+            last_instance.state = watcher.state;
+            Ok((last_instance, *last_instance_spec.clone()))
+        }
     }
 }
 

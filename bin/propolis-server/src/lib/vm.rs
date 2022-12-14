@@ -139,7 +139,7 @@ impl From<VmControllerError> for dropshot::HttpError {
 /// instance and its components.
 pub(crate) struct VmObjects {
     /// The underlying Propolis `Instance` this controller is managing.
-    instance: Arc<Instance>,
+    instance: Option<Instance>,
 
     /// The instance properties supplied when this controller was created.
     properties: InstanceProperties,
@@ -350,20 +350,6 @@ impl WorkerStateInner {
     }
 }
 
-impl Drop for WorkerStateInner {
-    fn drop(&mut self) {
-        // Send a final state monitor message indicating that the instance is
-        // destroyed. Normally, the existence of this structure implies the
-        // instance of at least one receiver, but at this point everything is
-        // being dropped, so this call to `send` is not safe to unwrap.
-        let gen = self.api_state.borrow().gen + 1;
-        let _ = self.api_state.send(ApiMonitoredState {
-            gen,
-            state: ApiInstanceState::Destroyed,
-        });
-    }
-}
-
 impl WorkerStateInner {
     fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
         Self {
@@ -548,7 +534,7 @@ impl VmController {
         // The instance is fully set up; pass it to the new controller.
         let controller = Arc::new_cyclic(|this| Self {
             vm_objects: VmObjects {
-                instance,
+                instance: Some(instance),
                 properties,
                 spec: instance_spec,
                 com1,
@@ -587,8 +573,13 @@ impl VmController {
         &self.vm_objects.properties
     }
 
-    pub fn instance(&self) -> &Arc<Instance> {
-        &self.vm_objects.instance
+    pub fn instance(&self) -> &Instance {
+        // Unwrap safety: The instance is created when the controller is created
+        // and removed only when the controller is dropped.
+        self.vm_objects
+            .instance
+            .as_ref()
+            .expect("VM controller always has a valid instance")
     }
 
     pub fn instance_spec(&self) -> &InstanceSpec {
@@ -1118,7 +1109,7 @@ impl VmController {
         // then reset the vCPUs. The vCPU reset must come after the
         // bhyve reset.
         self.reset_entities(log);
-        self.vm_objects.instance.lock().machine().reinitialize().unwrap();
+        self.instance().lock().machine().reinitialize().unwrap();
         self.reset_vcpus(vcpu_tasks, log);
 
         // Resume entities so they're ready to do more work, then
@@ -1359,7 +1350,7 @@ impl VmController {
 
     fn reset_vcpus(&self, vcpu_tasks: &VcpuTasks, log: &Logger) {
         vcpu_tasks.new_generation();
-        for vcpu in self.vm_objects.instance.lock().machine().vcpus.iter() {
+        for vcpu in self.instance().lock().machine().vcpus.iter() {
             info!(log, "Resetting vCPU {}", vcpu.id);
             vcpu.activate().unwrap();
             vcpu.reboot_state().unwrap();
@@ -1429,7 +1420,7 @@ impl VmController {
             &propolis::inventory::Record,
         ) -> anyhow::Result<()>,
     {
-        self.vm_objects.instance.lock().inventory().for_each_node(
+        self.instance().lock().inventory().for_each_node(
             propolis::inventory::Order::Pre,
             |_eid, record| -> Result<(), anyhow::Error> {
                 let ent = record.entity();
@@ -1442,8 +1433,7 @@ impl VmController {
         info!(log, "Waiting for all entities to pause");
         self.runtime_hdl.block_on(async {
             let mut devices = vec![];
-            self.vm_objects
-                .instance
+            self.instance()
                 .lock()
                 .inventory()
                 .for_each_node(
@@ -1462,6 +1452,29 @@ impl VmController {
 
             let pause_futures = devices.iter().map(|ent| ent.paused());
             futures::future::join_all(pause_futures).await;
+        });
+    }
+}
+
+impl Drop for VmController {
+    fn drop(&mut self) {
+        info!(self.log, "Dropping VM controller");
+        let instance = self
+            .vm_objects
+            .instance
+            .take()
+            .expect("VM controller should have an instance at drop");
+        drop(instance);
+
+        // Send a final state monitor message indicating that the instance is
+        // destroyed. Normally, the existence of this structure implies the
+        // instance of at least one receiver, but at this point everything is
+        // being dropped, so this call to `send` is not safe to unwrap.
+        let api_state = &self.worker_state.inner.lock().unwrap().api_state;
+        let gen = api_state.borrow().gen + 1;
+        let _ = api_state.send(ApiMonitoredState {
+            gen,
+            state: ApiInstanceState::Destroyed,
         });
     }
 }
