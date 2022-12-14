@@ -15,7 +15,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub struct CrucibleBackend {
-    block_io: Arc<dyn BlockIO + Send + Sync>,
+    tokio_rt: tokio::runtime::Handle,
+    block_io: Arc<Volume>,
     scheduler: block::Scheduler,
 
     read_only: bool,
@@ -44,14 +45,13 @@ impl CrucibleBackend {
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
         let volume = Volume::construct(request, producer_registry).await?;
 
-        volume.activate().await?;
-
         // After active negotiation, set sizes
         let block_size = volume.get_block_size().await?;
         let total_size = volume.total_size().await?;
         let sectors = total_size / block_size;
 
         Ok(Arc::new(Self {
+            tokio_rt: tokio::runtime::Handle::current(),
             block_io: Arc::new(volume),
             scheduler: block::Scheduler::new(),
 
@@ -133,10 +133,10 @@ impl Entity for CrucibleBackend {
     fn type_name(&self) -> &'static str {
         "block-crucible"
     }
-    // TODO(#155): Move Crucible activation here. Also, this entity probably
-    // needs its own pause/resume routines akin to those in the other block
-    // backends.
     fn start(&self) -> anyhow::Result<()> {
+        self.tokio_rt
+            .block_on(async move { self.block_io.activate().await })?;
+
         self.scheduler.start();
         Ok(())
     }

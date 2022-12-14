@@ -38,4 +38,4 @@ base64 = "0.13.1"
 
 [dependencies.crucible-client-types]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "861a09c350fd0e127b6105c8099e31a0bc3b711a"
+rev = "5966aab7b1bb024d620d349230a58bcc558f9ffb"
