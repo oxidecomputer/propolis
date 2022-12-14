@@ -7,6 +7,7 @@ use phd_testcase::{
     phd_skip, TestContext,
 };
 
+mod migrate;
 mod smoke;
 
 /// Attempts to create a Crucible disk with the specified parameters. If the
