@@ -65,10 +65,9 @@ branch = "main"
 optional = true
 package = "softnpu"
 
-#see: https://github.com/oxidecomputer/dlpi-sys/issues/1
 [dependencies.dlpi]
 git = "https://github.com/oxidecomputer/dlpi-sys"
-rev = "eb4dffeef88f86294d939aeb5521509ea3d59b69"
+branch = "main"
 optional = true
 
 [dev-dependencies]
