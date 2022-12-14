@@ -25,11 +25,8 @@ fn smoke_test(ctx: &TestContext) {
     source.run_shell_command("sync ./foo.bar")?;
 
     disk.set_generation(2);
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
+    let config =
+        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
 
     let mut target =
         ctx.vm_factory.new_vm("crucible_migrate_smoke_target", config)?;
@@ -51,11 +48,8 @@ fn load_test(ctx: &TestContext) {
         ctx.vm_factory.new_vm("crucible_migrate_load_source", config)?;
 
     disk.set_generation(2);
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
+    let config =
+        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
     let mut target =
         ctx.vm_factory.new_vm("crucible_migrate_load_target", config)?;
 
@@ -68,7 +62,7 @@ fn load_test(ctx: &TestContext) {
         format!("dd if=/dev/random of=./rand.txt bs=5M count={}", block_count)
             .as_str(),
     )?;
-    assert!(ddout.starts_with(format!("{}+0 records in", block_count).as_str()));
+    assert!(ddout.contains(format!("{}+0 records in", block_count).as_str()));
 
     // Compute the data's hash.
     let sha256sum_out = source.run_shell_command("sha256sum rand.txt")?;
@@ -80,6 +74,9 @@ fn load_test(ctx: &TestContext) {
     source.run_shell_command("dd if=./rand.txt of=./rand_new.txt &")?;
     target.migrate_from(&source, Duration::from_secs(60))?;
 
+    // Wait for the background command to finish running, then compute the
+    // hash of the copied file. If all went well this will match the hash of
+    // the source file.
     target.run_shell_command("wait $!")?;
     let sha256sum_target =
         target.run_shell_command("sha256sum rand_new.txt")?;
