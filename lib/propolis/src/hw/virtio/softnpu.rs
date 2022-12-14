@@ -330,6 +330,8 @@ impl PciVirtioSoftNpuPort {
             if n != 10 {
                 if n > 0 {
                     push_used = true;
+                } else {
+                    break;
                 }
                 warn!(self.log, "failed to read virtio mystery bytes ({})", n);
                 //break;
