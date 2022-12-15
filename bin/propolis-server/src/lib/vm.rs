@@ -1132,6 +1132,12 @@ impl VmController {
         let next_external = Some(ApiInstanceState::Stopped);
         let next_lifecycle = Some(LifecycleStage::NoLongerActive);
         drop(inner);
+
+        // Force vCPUs and entities to quiesce before sending the halt message.
+        vcpu_tasks.pause_all();
+        self.pause_entities(log);
+        self.wait_for_entities_to_pause(log);
+
         vcpu_tasks.exit_all();
         self.halt_entities(log);
         (next_external, next_lifecycle)
