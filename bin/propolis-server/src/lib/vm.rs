@@ -27,7 +27,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{Arc, Condvar, Mutex},
     thread::JoinHandle,
 };
 
@@ -52,7 +52,6 @@ use crate::{
     initializer::{build_instance, MachineInitializer},
     migrate::MigrateError,
     serial::Serial,
-    vcpu_tasks::VcpuTasks,
 };
 
 #[derive(Debug, Error)]
@@ -291,9 +290,10 @@ enum GuestEvent {
     ChipsetReset,
 }
 
-/// Shared instance state guarded by the controller's state mutex.
+/// Shared instance state guarded by the controller's state mutex. This state is
+/// accessed from the controller API and the VM's state worker.
 #[derive(Debug)]
-struct WorkerStateInner {
+struct SharedVmStateInner {
     /// The VM's lifecycle stage. This can be used to determine whether incoming
     /// API requests are allowed--for example, requesting to migrate into a VM
     /// that's already running is forbidden.
@@ -332,7 +332,20 @@ struct WorkerStateInner {
     migration_state: Option<(Uuid, ApiMigrationState)>,
 }
 
-impl WorkerStateInner {
+impl SharedVmStateInner {
+    fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
+        Self {
+            lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
+            marked_migration_source: false,
+            migrate_from_pending: false,
+            halt_pending: false,
+            external_request_queue: VecDeque::new(),
+            guest_event_queue: VecDeque::new(),
+            api_state: watch,
+            migration_state: None,
+        }
+    }
+
     /// Updates an instance's externally visible state by incrementing the
     /// supplied generation number and writing the incremented value and the
     /// supplied state to the worker's watcher.
@@ -350,24 +363,9 @@ impl WorkerStateInner {
     }
 }
 
-impl WorkerStateInner {
-    fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
-        Self {
-            lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
-            marked_migration_source: false,
-            migrate_from_pending: false,
-            halt_pending: false,
-            external_request_queue: VecDeque::new(),
-            guest_event_queue: VecDeque::new(),
-            api_state: watch,
-            migration_state: None,
-        }
-    }
-}
-
 #[derive(Debug)]
-pub(crate) struct WorkerState {
-    inner: Mutex<WorkerStateInner>,
+pub(crate) struct SharedVmState {
+    inner: Mutex<SharedVmStateInner>,
     cv: Condvar,
 }
 
@@ -380,27 +378,20 @@ pub struct VmController {
     /// inventory).
     vm_objects: VmObjects,
 
-    /// A handle to the host server's tokio runtime, useful for spawning tasks
-    /// that need to interact with async code (e.g. spinning up migration
-    /// tasks).
-    runtime_hdl: tokio::runtime::Handle,
-
     /// A wrapper for the runtime state of this instance, managed by the state
-    /// worker thread.
-    worker_state: Arc<WorkerState>,
+    /// worker thread. This also serves as a sink for hardware events (e.g. from
+    /// vCPUs and the chipset), so it is wrapped in an Arc so that it can be
+    /// shared with those events' sources.
+    worker_state: Arc<SharedVmState>,
 
-    /// A handle to the worker thread for this instance.
+    /// A handle to the state worker thread for this instance.
     worker_thread: Mutex<Option<JoinHandle<()>>>,
 
     /// This controller's logger.
     log: Logger,
-
-    /// A weak reference to this controller, suitable for upgrading and passing
-    /// to tasks launched by the state worker.
-    this: Weak<Self>,
 }
 
-impl WorkerState {
+impl SharedVmState {
     pub(crate) fn suspend_halt_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner.guest_event_queue.push_back(GuestEvent::VcpuSuspendHalt(vcpu_id));
@@ -443,7 +434,7 @@ pub trait ChipsetEventHandler: Send + Sync {
     fn chipset_reset(&self);
 }
 
-impl ChipsetEventHandler for WorkerState {
+impl ChipsetEventHandler for SharedVmState {
     fn chipset_halt(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.guest_event_queue.push_back(GuestEvent::ChipsetHalt);
@@ -488,8 +479,8 @@ impl VmController {
                 gen: 0,
                 state: ApiInstanceState::Creating,
             });
-        let worker_state = Arc::new(WorkerState {
-            inner: Mutex::new(WorkerStateInner::new(monitor_tx)),
+        let worker_state = Arc::new(SharedVmState {
+            inner: Mutex::new(SharedVmStateInner::new(monitor_tx)),
             cv: Condvar::new(),
         });
 
@@ -532,7 +523,7 @@ impl VmController {
         )?;
 
         // The instance is fully set up; pass it to the new controller.
-        let controller = Arc::new_cyclic(|this| Self {
+        let controller = Arc::new(Self {
             vm_objects: VmObjects {
                 instance: Some(instance),
                 properties,
@@ -543,22 +534,29 @@ impl VmController {
                 crucible_backends,
                 monitor_rx,
             },
-            runtime_hdl,
             worker_state,
             worker_thread: Mutex::new(None),
             log: log.new(slog::o!("component" => "vm_controller")),
-            this: this.clone(),
         });
 
-        // Now that the controller exists, clone a reference to it and launch
-        // the state worker.
+        // Now that the controller exists, launch the state worker that will
+        // drive state transitions for this instance. When the VM halts, the
+        // worker will exit and drop its reference to the controller.
         let ctrl_for_worker = controller.clone();
         let log_for_worker =
             log.new(slog::o!("component" => "vm_state_worker"));
         let worker_thread = std::thread::Builder::new()
             .name("vm_state_worker".to_string())
             .spawn(move || {
-                ctrl_for_worker.state_worker(vcpu_tasks, log_for_worker);
+                let state_gen =
+                    ctrl_for_worker.vm_objects.monitor_rx.borrow().gen;
+                let mut driver = StateWorkerContext::new(
+                    runtime_hdl,
+                    vcpu_tasks,
+                    log_for_worker,
+                    state_gen,
+                );
+                driver.run_state_worker(ctrl_for_worker);
 
                 // Signal back to the server state once the worker has exited.
                 let _ = stop_ch.send(());
@@ -861,22 +859,90 @@ impl VmController {
         }
     }
 
-    /// Manages an instance's lifecycle once it has moved to the Running state.
-    fn state_worker(
+    pub fn migrate_status(
         &self,
-        mut vcpu_tasks: super::vcpu_tasks::VcpuTasks,
-        log: Logger,
-    ) {
-        info!(log, "State worker launched");
+        migration_id: Uuid,
+    ) -> Result<ApiMigrationState, MigrateError> {
+        let inner = self.worker_state.inner.lock().unwrap();
+        match inner.migration_state {
+            None => Err(MigrateError::NoMigrationInProgress),
+            Some((id, state)) => {
+                if migration_id != id {
+                    Err(MigrateError::UuidMismatch)
+                } else {
+                    Ok(state)
+                }
+            }
+        }
+    }
+}
 
-        let mut gen = self.vm_objects.monitor_rx.borrow().gen;
+impl Drop for VmController {
+    fn drop(&mut self) {
+        info!(self.log, "Dropping VM controller");
+        let instance = self
+            .vm_objects
+            .instance
+            .take()
+            .expect("VM controller should have an instance at drop");
+        drop(instance);
+
+        // Send a final state monitor message indicating that the instance is
+        // destroyed. Normally, the existence of this structure implies the
+        // instance of at least one receiver, but at this point everything is
+        // being dropped, so this call to `send` is not safe to unwrap.
+        let api_state = &self.worker_state.inner.lock().unwrap().api_state;
+        let gen = api_state.borrow().gen + 1;
+        let _ = api_state.send(ApiMonitoredState {
+            gen,
+            state: ApiInstanceState::Destroyed,
+        });
+    }
+}
+
+/// A wrapper struct for the state worker's private data. This allows state
+/// worker routines to take `&mut self` and avoid passing extra parameters to
+/// track information that is entirely private to the worker.
+struct StateWorkerContext {
+    /// A handle to the host server's tokio runtime, useful for spawning tasks
+    /// that need to interact with async code (e.g. spinning up migration
+    /// tasks).
+    runtime_hdl: tokio::runtime::Handle,
+
+    /// The bundle of vCPU tasks for this worker's VM.
+    vcpu_tasks: super::vcpu_tasks::VcpuTasks,
+
+    /// The state worker's logger.
+    log: Logger,
+
+    /// The generation number to use when publishing externally-visible state
+    /// updates.
+    state_gen: u64,
+
+    /// Whether the worker's VM's entities are paused.
+    paused: bool,
+}
+
+impl StateWorkerContext {
+    fn new(
+        runtime_hdl: tokio::runtime::Handle,
+        vcpu_tasks: super::vcpu_tasks::VcpuTasks,
+        log: Logger,
+        state_gen: u64,
+    ) -> Self {
+        Self { runtime_hdl, vcpu_tasks, log, state_gen, paused: false }
+    }
+
+    /// Manages an instance's lifecycle once it has moved to the Running state.
+    fn run_state_worker(&mut self, controller: Arc<VmController>) {
+        info!(self.log, "State worker launched");
 
         // Allow actions to queue up state changes that are applied on the next
         // loop iteration.
         let mut next_external: Option<ApiInstanceState> = None;
         let mut next_lifecycle: Option<LifecycleStage> = None;
         loop {
-            let mut inner = self.worker_state.inner.lock().unwrap();
+            let mut inner = controller.worker_state.inner.lock().unwrap();
             if let Some(next_lifecycle) = next_lifecycle.take() {
                 inner.lifecycle_stage = next_lifecycle;
             }
@@ -888,14 +954,14 @@ impl VmController {
             //
             // N.B. This check must be last, because it breaks out of the loop.
             if let Some(next_external) = next_external.take() {
-                inner.update_external_state(&mut gen, next_external);
+                inner.update_external_state(&mut self.state_gen, next_external);
                 if matches!(next_external, ApiInstanceState::Stopped) {
                     break;
                 }
             }
 
             // Wait for some work to do.
-            inner = self
+            inner = controller
                 .worker_state
                 .cv
                 .wait_while(inner, |i| {
@@ -908,13 +974,8 @@ impl VmController {
             // raised by guest entities and that need unconditional responses.
             // Handle these first.
             if let Some(event) = inner.guest_event_queue.pop_front() {
-                (next_external, next_lifecycle) = self.handle_guest_event(
-                    event,
-                    inner,
-                    &mut gen,
-                    &mut vcpu_tasks,
-                    &log,
-                );
+                (next_external, next_lifecycle) =
+                    self.handle_guest_event(event, inner, controller.as_ref());
                 continue;
             }
 
@@ -925,7 +986,7 @@ impl VmController {
                     upgrade_fut,
                 } => {
                     inner.update_external_state(
-                        &mut gen,
+                        &mut self.state_gen,
                         ApiInstanceState::Migrating,
                     );
 
@@ -949,12 +1010,12 @@ impl VmController {
                     // enter the guest after migration. Do this before launching
                     // the migration task so that reset doesn't overwrite the
                     // state written by migration.
-                    self.reset_vcpus(&vcpu_tasks, &log);
+                    self.reset_vcpus(&controller);
                     next_lifecycle = Some(
                         match self.migrate_as_target(
+                            &controller,
                             migration_id,
                             upgrade_fut,
-                            &log,
                         ) {
                             Ok(_) => LifecycleStage::NotStarted(
                                 StartupStage::Migrated,
@@ -966,14 +1027,14 @@ impl VmController {
                     );
                 }
                 ExternalRequest::Start { reset_required } => {
-                    info!(log, "Starting instance";
+                    info!(self.log, "Starting instance";
                           "reset" => reset_required);
 
                     // Requests to start should put the instance into the
                     // 'starting' stage. Reflect this out to callers who ask
                     // what state the VM is in.
                     inner.update_external_state(
-                        &mut gen,
+                        &mut self.state_gen,
                         ApiInstanceState::Starting,
                     );
                     next_external = Some(ApiInstanceState::Running);
@@ -981,44 +1042,42 @@ impl VmController {
                     drop(inner);
 
                     if reset_required {
-                        self.reset_vcpus(&vcpu_tasks, &log);
+                        self.reset_vcpus(&controller);
                     }
 
                     // TODO(#209) Transition to a "failed" state here instead of
                     // expecting.
-                    self.start_entities(&log)
+                    self.start_entities(&controller)
                         .expect("entity start callout failed");
-                    vcpu_tasks.resume_all();
+                    self.vcpu_tasks.resume_all();
                 }
                 ExternalRequest::Reboot => {
-                    next_external =
-                        self.do_reboot(inner, &mut gen, &mut vcpu_tasks, &log);
+                    next_external = self.do_reboot(inner, controller.as_ref());
                 }
                 ExternalRequest::MigrateAsSource {
                     migration_id,
                     upgrade_fut,
                 } => {
                     inner.update_external_state(
-                        &mut gen,
+                        &mut self.state_gen,
                         ApiInstanceState::Migrating,
                     );
 
                     drop(inner);
 
                     match self.migrate_as_source(
+                        &controller,
                         migration_id,
                         upgrade_fut,
-                        &mut vcpu_tasks,
-                        &log,
                     ) {
                         Ok(()) => {
                             info!(
-                                log,
+                                self.log,
                                 "Halting after successful migration out"
                             );
 
                             let mut inner =
-                                self.worker_state.inner.lock().unwrap();
+                                controller.worker_state.inner.lock().unwrap();
                             inner.migrate_from_pending = false;
                             inner.halt_pending = true;
                             inner
@@ -1027,12 +1086,12 @@ impl VmController {
                         }
                         Err(e) => {
                             info!(
-                                log,
+                                self.log,
                                 "Resuming after failed migration out ({})", e
                             );
 
                             let mut inner =
-                                self.worker_state.inner.lock().unwrap();
+                                controller.worker_state.inner.lock().unwrap();
                             inner.migrate_from_pending = false;
                             inner.lifecycle_stage = LifecycleStage::Active;
                         }
@@ -1040,59 +1099,68 @@ impl VmController {
                 }
                 ExternalRequest::Stop => {
                     (next_external, next_lifecycle) =
-                        self.do_halt(inner, &mut gen, &mut vcpu_tasks, &log);
+                        self.do_halt(inner, &controller);
                 }
             }
         }
 
-        info!(log, "State worker exiting");
+        info!(self.log, "State worker exiting");
     }
 
     fn handle_guest_event(
-        &self,
+        &mut self,
         event: GuestEvent,
-        inner: std::sync::MutexGuard<WorkerStateInner>,
-        state_gen: &mut u64,
-        vcpu_tasks: &mut super::vcpu_tasks::VcpuTasks,
-        log: &Logger,
+        inner: std::sync::MutexGuard<SharedVmStateInner>,
+        controller: &VmController,
     ) -> (Option<ApiInstanceState>, Option<LifecycleStage>) {
         match event {
             GuestEvent::VcpuSuspendHalt(vcpu_id) => {
-                info!(log, "Halting due to halt event on vCPU {}", vcpu_id);
-                self.do_halt(inner, state_gen, vcpu_tasks, log)
+                info!(
+                    self.log,
+                    "Halting due to halt event on vCPU {}", vcpu_id
+                );
+                self.do_halt(inner, controller)
             }
             GuestEvent::VcpuSuspendReset(vcpu_id) => {
-                info!(log, "Resetting due to reset event on vCPU {}", vcpu_id);
-                (self.do_reboot(inner, state_gen, vcpu_tasks, log), None)
+                info!(
+                    self.log,
+                    "Resetting due to reset event on vCPU {}", vcpu_id
+                );
+                (self.do_reboot(inner, controller), None)
             }
             GuestEvent::VcpuSuspendTripleFault(vcpu_id) => {
-                info!(log, "Resetting due to triple fault on vCPU {}", vcpu_id);
-                (self.do_reboot(inner, state_gen, vcpu_tasks, log), None)
+                info!(
+                    self.log,
+                    "Resetting due to triple fault on vCPU {}", vcpu_id
+                );
+                (self.do_reboot(inner, controller), None)
             }
             GuestEvent::ChipsetHalt => {
-                info!(log, "Halting due to chipset-driven halt");
-                self.do_halt(inner, state_gen, vcpu_tasks, log)
+                info!(self.log, "Halting due to chipset-driven halt");
+                self.do_halt(inner, controller)
             }
             GuestEvent::ChipsetReset => {
-                info!(log, "Resetting due to chipset-driven reset");
-                (self.do_reboot(inner, state_gen, vcpu_tasks, log), None)
+                info!(self.log, "Resetting due to chipset-driven reset");
+                (self.do_reboot(inner, controller), None)
             }
         }
     }
 
     fn do_reboot(
-        &self,
-        mut inner: std::sync::MutexGuard<WorkerStateInner>,
-        state_gen: &mut u64,
-        vcpu_tasks: &mut super::vcpu_tasks::VcpuTasks,
-        log: &Logger,
+        &mut self,
+        mut inner: std::sync::MutexGuard<SharedVmStateInner>,
+        controller: &VmController,
     ) -> Option<ApiInstanceState> {
-        info!(log, "Resetting instance");
+        info!(self.log, "Resetting instance");
 
         // Reboots should only arrive after an instance has started.
         assert!(matches!(inner.lifecycle_stage, LifecycleStage::Active));
 
-        inner.update_external_state(state_gen, ApiInstanceState::Rebooting);
+        inner.update_external_state(
+            &mut self.state_gen,
+            ApiInstanceState::Rebooting,
+        );
+
         let next_external = Some(ApiInstanceState::Running);
         drop(inner);
 
@@ -1101,54 +1169,55 @@ impl VmController {
         //
         // First, pause the vCPUs and all entities so no
         // partially-completed work is present.
-        vcpu_tasks.pause_all();
-        self.pause_entities(log);
-        self.wait_for_entities_to_pause(log);
+        self.vcpu_tasks.pause_all();
+        self.pause_entities(controller);
+        self.wait_for_entities_to_pause(controller);
 
         // Reset all the entities, then reset the VM's bhyve state,
         // then reset the vCPUs. The vCPU reset must come after the
         // bhyve reset.
-        self.reset_entities(log);
-        self.instance().lock().machine().reinitialize().unwrap();
-        self.reset_vcpus(vcpu_tasks, log);
+        self.reset_entities(controller);
+        controller.instance().lock().machine().reinitialize().unwrap();
+        self.reset_vcpus(controller);
 
         // Resume entities so they're ready to do more work, then
         // resume vCPUs.
-        self.resume_entities(log);
-        vcpu_tasks.resume_all();
+        self.resume_entities(controller);
+        self.vcpu_tasks.resume_all();
 
         next_external
     }
 
     fn do_halt(
-        &self,
-        mut inner: std::sync::MutexGuard<WorkerStateInner>,
-        state_gen: &mut u64,
-        vcpu_tasks: &mut super::vcpu_tasks::VcpuTasks,
-        log: &Logger,
+        &mut self,
+        mut inner: std::sync::MutexGuard<SharedVmStateInner>,
+        controller: &VmController,
     ) -> (Option<ApiInstanceState>, Option<LifecycleStage>) {
-        info!(log, "Stopping instance");
-        inner.update_external_state(state_gen, ApiInstanceState::Stopping);
+        info!(self.log, "Stopping instance");
+        inner.update_external_state(
+            &mut self.state_gen,
+            ApiInstanceState::Stopping,
+        );
         let next_external = Some(ApiInstanceState::Stopped);
         let next_lifecycle = Some(LifecycleStage::NoLongerActive);
         drop(inner);
-        vcpu_tasks.exit_all();
-        self.halt_entities(log);
+        self.vcpu_tasks.exit_all();
+        self.halt_entities(controller);
         (next_external, next_lifecycle)
     }
 
     fn migrate_as_target(
         &self,
+        controller: &Arc<VmController>,
         migration_id: Uuid,
         upgrade_fut: hyper::upgrade::OnUpgrade,
-        log: &Logger,
     ) -> Result<(), MigrateError> {
         let log_for_task =
-            self.log().new(slog::o!("component" => "migrate_target_task"));
-        let ctrl_for_task = self.this.upgrade().unwrap();
+            self.log.new(slog::o!("component" => "migrate_target_task"));
+        let ctrl_for_task = controller.clone();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
 
-        info!(log, "Launching migration target task");
+        info!(self.log, "Launching migration target task");
         let mut task = self.runtime_hdl.spawn(async move {
             let conn = match upgrade_fut.await {
                 Ok(upgraded) => upgraded,
@@ -1174,19 +1243,25 @@ impl VmController {
 
         loop {
             let action = self.runtime_hdl.block_on(async {
-                Self::next_migrate_task_event(&mut task, &mut command_rx, log)
-                    .await
+                Self::next_migrate_task_event(
+                    &mut task,
+                    &mut command_rx,
+                    &self.log,
+                )
+                .await
             });
 
             match action {
                 MigrateTaskEvent::TaskExited(res) => {
                     if res.is_err() {
-                        let mut inner = self.worker_state.inner.lock().unwrap();
+                        let mut inner =
+                            controller.worker_state.inner.lock().unwrap();
                         inner.migration_state =
                             Some((migration_id, ApiMigrationState::Error));
                     } else {
                         assert!(matches!(
-                            self.worker_state
+                            controller
+                                .worker_state
                                 .inner
                                 .lock()
                                 .unwrap()
@@ -1199,7 +1274,8 @@ impl VmController {
                 MigrateTaskEvent::Command(
                     MigrateTargetCommand::UpdateState(state),
                 ) => {
-                    let mut inner = self.worker_state.inner.lock().unwrap();
+                    let mut inner =
+                        controller.worker_state.inner.lock().unwrap();
                     inner.migration_state = Some((migration_id, state));
                 }
             }
@@ -1207,21 +1283,20 @@ impl VmController {
     }
 
     fn migrate_as_source(
-        &self,
+        &mut self,
+        controller: &Arc<VmController>,
         migration_id: Uuid,
         upgrade_fut: hyper::upgrade::OnUpgrade,
-        vcpu_tasks: &mut VcpuTasks,
-        log: &Logger,
     ) -> Result<(), MigrateError> {
         let log_for_task =
-            self.log().new(slog::o!("component" => "migrate_source_task"));
-        let ctrl_for_task = self.this.upgrade().unwrap();
+            self.log.new(slog::o!("component" => "migrate_source_task"));
+        let ctrl_for_task = controller.clone();
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
         let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
 
         // The migration process uses async operations when communicating with
         // the migration target. Run that work on the async runtime.
-        info!(log, "Launching migration source task");
+        info!(self.log, "Launching migration source task");
         let mut task = self.runtime_hdl.spawn(async move {
             let conn = match upgrade_fut.await {
                 Ok(upgraded) => upgraded,
@@ -1248,11 +1323,14 @@ impl VmController {
 
         // Wait either for the migration task to exit or for it to ask the
         // worker to pause or resume the instance's entities.
-        let mut paused = false;
         loop {
             let action = self.runtime_hdl.block_on(async {
-                Self::next_migrate_task_event(&mut task, &mut command_rx, log)
-                    .await
+                Self::next_migrate_task_event(
+                    &mut task,
+                    &mut command_rx,
+                    &self.log,
+                )
+                .await
             });
 
             match action {
@@ -1263,17 +1341,19 @@ impl VmController {
                 // is allowed to resume, so resume its components here.
                 MigrateTaskEvent::TaskExited(res) => {
                     if res.is_err() {
-                        if paused {
-                            self.resume_entities(log);
-                            vcpu_tasks.resume_all();
+                        if self.paused {
+                            self.resume_entities(controller);
+                            self.vcpu_tasks.resume_all();
+                            self.paused = false;
                             let mut inner =
-                                self.worker_state.inner.lock().unwrap();
+                                controller.worker_state.inner.lock().unwrap();
                             inner.migration_state =
                                 Some((migration_id, ApiMigrationState::Error));
                         }
                     } else {
                         assert!(matches!(
-                            self.worker_state
+                            controller
+                                .worker_state
                                 .inner
                                 .lock()
                                 .unwrap()
@@ -1285,14 +1365,15 @@ impl VmController {
                 }
                 MigrateTaskEvent::Command(cmd) => match cmd {
                     MigrateSourceCommand::UpdateState(state) => {
-                        let mut inner = self.worker_state.inner.lock().unwrap();
+                        let mut inner =
+                            controller.worker_state.inner.lock().unwrap();
                         inner.migration_state = Some((migration_id, state));
                     }
                     MigrateSourceCommand::Pause => {
-                        vcpu_tasks.pause_all();
-                        self.pause_entities(log);
-                        self.wait_for_entities_to_pause(log);
-                        paused = true;
+                        self.vcpu_tasks.pause_all();
+                        self.pause_entities(controller);
+                        self.wait_for_entities_to_pause(controller);
+                        self.paused = true;
                         response_tx
                             .blocking_send(MigrateSourceResponse::Pause(Ok(())))
                             .unwrap();
@@ -1331,31 +1412,14 @@ impl VmController {
         }
     }
 
-    pub fn migrate_status(
-        &self,
-        migration_id: Uuid,
-    ) -> Result<ApiMigrationState, MigrateError> {
-        let inner = self.worker_state.inner.lock().unwrap();
-        match inner.migration_state {
-            None => Err(MigrateError::NoMigrationInProgress),
-            Some((id, state)) => {
-                if migration_id != id {
-                    Err(MigrateError::UuidMismatch)
-                } else {
-                    Ok(state)
-                }
-            }
-        }
-    }
-
-    fn reset_vcpus(&self, vcpu_tasks: &VcpuTasks, log: &Logger) {
-        vcpu_tasks.new_generation();
-        for vcpu in self.instance().lock().machine().vcpus.iter() {
-            info!(log, "Resetting vCPU {}", vcpu.id);
+    fn reset_vcpus(&self, controller: &VmController) {
+        self.vcpu_tasks.new_generation();
+        for vcpu in controller.instance().lock().machine().vcpus.iter() {
+            info!(self.log, "Resetting vCPU {}", vcpu.id);
             vcpu.activate().unwrap();
             vcpu.reboot_state().unwrap();
             if vcpu.is_bsp() {
-                info!(log, "Resetting BSP vCPU {}", vcpu.id);
+                info!(self.log, "Resetting BSP vCPU {}", vcpu.id);
                 vcpu.set_run_state(propolis::bhyve_api::VRS_RUN, None).unwrap();
                 vcpu.set_reg(
                     propolis::bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
@@ -1366,61 +1430,65 @@ impl VmController {
         }
     }
 
-    fn start_entities(&self, log: &Logger) -> anyhow::Result<()> {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending startup complete to {}", rec.name());
+    fn start_entities(&self, controller: &VmController) -> anyhow::Result<()> {
+        self.for_each_entity(controller, |ent, rec| {
+            info!(self.log, "Sending startup complete to {}", rec.name());
             let res = ent.start();
             if let Err(e) = &res {
-                error!(log, "Startup failed for {}: {:?}", rec.name(), e);
+                error!(self.log, "Startup failed for {}: {:?}", rec.name(), e);
             }
             res
         })
     }
 
-    fn pause_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending pause request to {}", rec.name());
+    fn pause_entities(&self, controller: &VmController) {
+        self.for_each_entity(controller, |ent, rec| {
+            info!(self.log, "Sending pause request to {}", rec.name());
             ent.pause();
             Ok(())
         })
         .unwrap();
     }
 
-    fn reset_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending reset request to {}", rec.name());
+    fn reset_entities(&self, controller: &VmController) {
+        self.for_each_entity(controller, |ent, rec| {
+            info!(self.log, "Sending reset request to {}", rec.name());
             ent.reset();
             Ok(())
         })
         .unwrap();
     }
 
-    fn resume_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending resume request to {}", rec.name());
+    fn resume_entities(&self, controller: &VmController) {
+        self.for_each_entity(controller, |ent, rec| {
+            info!(self.log, "Sending resume request to {}", rec.name());
             ent.resume();
             Ok(())
         })
         .unwrap();
     }
 
-    fn halt_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending halt request to {}", rec.name());
+    fn halt_entities(&self, controller: &VmController) {
+        self.for_each_entity(controller, |ent, rec| {
+            info!(self.log, "Sending halt request to {}", rec.name());
             ent.halt();
             Ok(())
         })
         .unwrap();
     }
 
-    fn for_each_entity<F>(&self, mut func: F) -> anyhow::Result<()>
+    fn for_each_entity<F>(
+        &self,
+        controller: &VmController,
+        mut func: F,
+    ) -> anyhow::Result<()>
     where
         F: FnMut(
             &Arc<dyn propolis::inventory::Entity>,
             &propolis::inventory::Record,
         ) -> anyhow::Result<()>,
     {
-        self.instance().lock().inventory().for_each_node(
+        controller.instance().lock().inventory().for_each_node(
             propolis::inventory::Order::Pre,
             |_eid, record| -> Result<(), anyhow::Error> {
                 let ent = record.entity();
@@ -1429,18 +1497,19 @@ impl VmController {
         )
     }
 
-    fn wait_for_entities_to_pause(&self, log: &Logger) {
-        info!(log, "Waiting for all entities to pause");
+    fn wait_for_entities_to_pause(&self, controller: &VmController) {
+        info!(self.log, "Waiting for all entities to pause");
         self.runtime_hdl.block_on(async {
             let mut devices = vec![];
-            self.instance()
+            controller
+                .instance()
                 .lock()
                 .inventory()
                 .for_each_node(
                     propolis::inventory::Order::Post,
                     |_eid, record| {
                         info!(
-                            log,
+                            self.log,
                             "Got paused future from entity {}",
                             record.name()
                         );
@@ -1452,29 +1521,6 @@ impl VmController {
 
             let pause_futures = devices.iter().map(|ent| ent.paused());
             futures::future::join_all(pause_futures).await;
-        });
-    }
-}
-
-impl Drop for VmController {
-    fn drop(&mut self) {
-        info!(self.log, "Dropping VM controller");
-        let instance = self
-            .vm_objects
-            .instance
-            .take()
-            .expect("VM controller should have an instance at drop");
-        drop(instance);
-
-        // Send a final state monitor message indicating that the instance is
-        // destroyed. Normally, the existence of this structure implies the
-        // instance of at least one receiver, but at this point everything is
-        // being dropped, so this call to `send` is not safe to unwrap.
-        let api_state = &self.worker_state.inner.lock().unwrap().api_state;
-        let gen = api_state.borrow().gen + 1;
-        let _ = api_state.send(ApiMonitoredState {
-            gen,
-            state: ApiInstanceState::Destroyed,
         });
     }
 }
