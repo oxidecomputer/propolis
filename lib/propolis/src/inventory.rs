@@ -584,9 +584,10 @@ pub trait Entity: Send + Sync + 'static {
     fn reset(&self) {}
 
     /// Indicates that the entity's instance is stopping and will soon be
-    /// discarded. The entity should complete any in-flight requests and release
-    /// any references or resources it needs to release to ensure the instance
-    /// is fully destroyed.
+    /// discarded. The entity should requests and release any references or
+    /// resources it needs to release to ensure the instance is fully destroyed.
+    ///
+    /// N.B. The state driver ensures this is called only on paused entities.
     fn halt(&self) {}
 
     /// Return the Migrator object that will be used to export/import

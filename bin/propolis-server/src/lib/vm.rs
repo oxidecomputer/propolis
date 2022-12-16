@@ -1201,6 +1201,19 @@ impl StateWorkerContext {
         let next_external = Some(ApiInstanceState::Stopped);
         let next_lifecycle = Some(LifecycleStage::NoLongerActive);
         drop(inner);
+
+        // Entities expect to be paused before being halted (but they may be
+        // paused already if, e.g., this halt was preceded by a successful
+        // migration out).
+        if !self.paused {
+            info!(self.log, "Pausing entities before telling them to halt");
+            self.vcpu_tasks.pause_all();
+            self.pause_entities(controller);
+            self.wait_for_entities_to_pause(controller);
+            self.paused = true;
+        }
+
+        info!(self.log, "Stopping vCPUs and halting entities");
         self.vcpu_tasks.exit_all();
         self.halt_entities(controller);
         (next_external, next_lifecycle)
