@@ -40,12 +40,12 @@ rand = { version = "0.8", optional = true }
 
 [dependencies.crucible-client-types]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "5966aab7b1bb024d620d349230a58bcc558f9ffb"
+rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"
 optional = true
 
 [dependencies.crucible]
 git = "https://github.com/oxidecomputer/crucible"
-rev = "5966aab7b1bb024d620d349230a58bcc558f9ffb"
+rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"
 optional = true
 
 [dependencies.oximeter]
