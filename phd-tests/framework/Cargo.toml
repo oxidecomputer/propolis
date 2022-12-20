@@ -8,34 +8,31 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.58"
-backoff = "0.4.0"
-cfg-if = "1.0.0"
-errno = "0.2.8"
-futures = "0.3"
-hex = "0.4.3"
-libc = "0.2.129"
-propolis-client = { path = "../../lib/propolis-client", features = ["generated"] }
-propolis-server-config = { path = "../../crates/propolis-server-config" }
-propolis_types = { path = "../../crates/propolis-types" }
-reqwest = { version = "0.11.12", features = ["blocking"] }
-ring = "0.16.20"
-serde = { version = "1.0.139", features = ["derive"] }
-serde_derive = "1.0.139"
-slog = "2.7"
-slog-async = "2.7"
-slog-term = "2.8"
-tempfile = "3.3.0"
-thiserror = "1.0.31"
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.17"
-toml = "0.5.9"
-tracing = "0.1.35"
-uuid = "1.1.2"
-vte = "0.10.1"
-rand = "0.8.5"
-base64 = "0.13.1"
+anyhow.workspace = true
+backoff.workspace = true
+cfg-if.workspace = true
+errno.workspace = true
+futures.workspace = true
+hex.workspace = true
+libc.workspace = true
+propolis-client = { workspace = true, features = ["generated"] }
+propolis-server-config.workspace = true
+propolis_types.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+ring.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_derive.workspace = true
+slog.workspace = true
+slog-async.workspace = true
+slog-term.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite.workspace = true
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+vte.workspace = true
+rand.workspace = true
+base64.workspace = true
+crucible-client-types.workspace = true
 
-[dependencies.crucible-client-types]
-git = "https://github.com/oxidecomputer/crucible"
-rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"

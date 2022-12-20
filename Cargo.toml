@@ -39,3 +39,92 @@ panic = "unwind"
 
 #[patch."http://github.com/oxidecomputer/rfb"]
 #rfb = { path = "../rfb" }
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1.53"
+backoff = "0.4.0"
+backtrace = "0.3.66"
+base64 = "0.13"
+bhyve_api = { path = "crates/bhyve-api" }
+bit_field = "0.10.1"
+bitflags = "1.3"
+bitstruct = "0.1"
+bitvec = "1.0"
+byteorder = "1"
+bytes = "1.1"
+cfg-if = "1.0.0"
+chrono = "0.4.19"
+clap = "3.2"
+const_format = "0.2"
+ctrlc = "3.2"
+dladm = { path = "crates/dladm" }
+dlpi = { git = "https://github.com/oxidecomputer/dlpi-sys", branch = "main" }
+dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
+erased-serde = "0.3"
+errno = "0.2.8"
+futures = "0.3"
+hex = "0.4.3"
+hyper = "0.14"
+inventory = "0.3.0"
+ispf = { git = "https://github.com/oxidecomputer/ispf" }
+lazy_static = "1.4"
+libc = "0.2"
+libloading = "0.7"
+num_enum = "0.5"
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+omicron-zone-package = "0.1.2"
+once_cell = "1.13"
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+p4rs = { git = "https://github.com/oxidecomputer/p4", branch = "main" }
+p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
+phd-framework = { path = "phd-tests/framework" }
+phd-testcase = { path = "phd-tests/testcase" }
+phd-testcase-macros = { path = "phd-tests/testcase_macro" }
+phd-tests = { path = "phd-tests/tests" }
+proc-macro2 = "1.0"
+progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "main" }
+propolis = { path = "lib/propolis" }
+propolis-client = { path = "lib/propolis-client" }
+propolis-server-config = { path = "crates/propolis-server-config" }
+propolis_types = { path = "crates/propolis-types" }
+quote = "1.0"
+rand = "0.8"
+reqwest = "0.11.12"
+rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0cac8d9c25eb27acfa35df80f3b9d371de98ab3b" }
+ring = "0.16"
+ron = "0.7"
+schemars = "0.8.10"
+semver = "1"
+serde = "1.0"
+serde_arrays = "0.1"
+serde_derive = "1.0"
+serde_json = "1.0"
+serde_test = "1.0.138"
+slog = "2.7"
+slog-async = "2.7"
+slog-term = "2.8"
+softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", branch = "main", package = "softnpu" }
+syn = "1.0"
+thiserror = "1.0"
+tokio = "1"
+tokio-tungstenite = "0.17"
+tokio-util = "0.7"
+toml = "0.5"
+tracing = "0.1.35"
+tracing-appender = "0.2.2"
+tracing-bunyan-formatter = "0.3.3"
+tracing-subscriber = "0.3.14"
+usdt = "0.3.2"
+uuid = "1.0.0"
+viona_api = { path = "crates/viona-api" }
+vte = "0.10.1"
+
+[workspace.dependencies.crucible-client-types]
+git = "https://github.com/oxidecomputer/crucible"
+rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"
+
+[workspace.dependencies.crucible]
+git = "https://github.com/oxidecomputer/crucible"
+rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"

@@ -17,21 +17,21 @@ path = "src/main.rs"
 name = "savex"
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "3.2", features = ["derive"] }
-ctrlc = "3.2"
-futures = "0.3"
-libc = "0.2"
-toml = "0.5"
-tokio = { version = "1", features = ["io-util", "rt-multi-thread"] }
-serde = { version = "1.0", features = ["derive"] }
-propolis = { path = "../../lib/propolis", default-features = false }
-erased-serde = "0.3"
-serde_json = "1.0"
-slog = "2.7"
-slog-async = "2.7"
-slog-term = "2.7"
-num_enum = "0.5"
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+ctrlc.workspace = true
+futures.workspace = true
+libc.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
+serde = { workspace = true, features = ["derive"] }
+propolis = { workspace = true, default-features = false }
+erased-serde.workspace = true
+serde_json.workspace = true
+slog.workspace = true
+slog-async.workspace = true
+slog-term.workspace = true
+num_enum.workspace = true
 
 [features]
 default = ["dtrace-probes"]

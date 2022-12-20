@@ -8,8 +8,8 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-schemars = { version = "0.8.10", features = [ "uuid1" ] }
-serde = "1.0"
+schemars = { workspace = true, features = [ "uuid1" ] }
+serde.workspace = true
 
 [dev-dependencies]
 serde_test = "1.0.138"

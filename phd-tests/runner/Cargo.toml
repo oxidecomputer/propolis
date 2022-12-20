@@ -6,13 +6,13 @@ license = "MPL-2.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.58"
-backtrace = "0.3.66"
-clap = { version = "3.2.12", features = ["derive"] }
-phd-framework = { path = "../framework" }
-phd-tests = { path = "../tests" }
-tracing = "0.1.35"
-tracing-appender = "0.2.2"
-tracing-bunyan-formatter = "0.3.3"
-tracing-subscriber = { version = "0.3.14", features = ["env-filter"] }
-uuid = "1.1.2"
+anyhow.workspace = true
+backtrace.workspace = true
+clap = { workspace = true, features = ["derive"] }
+phd-framework.workspace = true
+phd-tests.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-bunyan-formatter.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid.workspace = true
