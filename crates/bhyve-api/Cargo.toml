@@ -10,6 +10,5 @@ edition = "2018"
 [dependencies]
 libc.workspace = true
 num_enum.workspace = true
-bitflags.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_arrays = { workspace = true }

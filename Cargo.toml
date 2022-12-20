@@ -96,7 +96,6 @@ rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0cac8d9c25eb27acfa3
 ring = "0.16"
 ron = "0.7"
 schemars = "0.8.10"
-semver = "1"
 serde = "1.0"
 serde_arrays = "0.1"
 serde_derive = "1.0"
