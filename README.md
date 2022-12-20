@@ -15,7 +15,7 @@ is required.
 
 ### Minimum Supported Rust Version (MSRV)
 
-- Rust 1.62.0
+- Rust 1.64.0
 
 ### System Configuration
 
