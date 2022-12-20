@@ -45,11 +45,11 @@ softnpu-lib = { workspace = true, optional = true }
 dlpi = { workspace = true, optional = true }
 
 [dev-dependencies]
-crossbeam-channel = "0.5"
-tempfile = "3.2"
-slog-term = "2.7"
-slog-async = "2.7"
-rand = "0.8"
+crossbeam-channel.workspace = true
+tempfile.workspace = true
+slog-term.workspace = true
+slog-async.workspace = true
+rand.workspace = true
 
 [features]
 default = ["dtrace-probes"]

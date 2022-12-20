@@ -11,8 +11,8 @@ viona_api.workspace = true
 libc.workspace = true
 
 [build-dependencies]
-cc = "1.0.73"
-ctest2 = "0.4.3"
+cc.workspace = true
+ctest2.workspace = true
 
 [[test]]
 name = "main"

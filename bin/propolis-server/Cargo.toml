@@ -52,11 +52,11 @@ base64.workspace = true
 schemars = { workspace = true, features = ["chrono", "uuid1"] }
 
 [dev-dependencies]
-hex = "0.4.3"
-reqwest = { version = "0.11.12", default-features = false, features = ["rustls-tls"] }
-ring = "0.16"
-slog = { version = "2.5", features = [ "max_level_trace", "release_max_level_debug" ] }
-expectorate = "1.0.5"
+hex.workspace = true
+reqwest = { workspace = true, default-features = false, features = ["rustls-tls"] }
+ring.workspace = true
+slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
+expectorate.workspace = true
 
 [features]
 default = ["dtrace-probes"]
