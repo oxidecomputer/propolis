@@ -15,7 +15,12 @@ use propolis_client::handmade::{
 use slog::{info, Logger};
 use uuid::Uuid;
 
-pub(super) struct StateDriver<C: super::StateDriverCommandSink> {
+use crate::vcpu_tasks::VcpuTaskController;
+
+pub(super) struct StateDriver<
+    V: super::StateDriverVmController,
+    C: VcpuTaskController,
+> {
     /// A handle to the host server's tokio runtime, useful for spawning tasks
     /// that need to interact with async code (e.g. spinning up migration
     /// tasks).
@@ -24,10 +29,10 @@ pub(super) struct StateDriver<C: super::StateDriverCommandSink> {
     /// A reference to the command sink to which this driver should send its
     /// requests to send messages to entities or update other VM controller
     /// state.
-    controller: Arc<C>,
+    controller: Arc<V>,
 
-    /// The bundle of tasks that execute the vCPU run loops for this VM's vCPUs.
-    vcpu_tasks: crate::vcpu_tasks::VcpuTasks,
+    /// The controller for this instance's vCPU tasks.
+    vcpu_tasks: C,
 
     /// The state worker's logger.
     log: Logger,
@@ -40,11 +45,15 @@ pub(super) struct StateDriver<C: super::StateDriverCommandSink> {
     paused: bool,
 }
 
-impl<C: super::StateDriverCommandSink> StateDriver<C> {
+impl<V, C> StateDriver<V, C>
+where
+    V: super::StateDriverVmController,
+    C: VcpuTaskController,
+{
     pub(super) fn new(
         runtime_hdl: tokio::runtime::Handle,
-        controller: Arc<C>,
-        vcpu_tasks: crate::vcpu_tasks::VcpuTasks,
+        controller: Arc<V>,
+        vcpu_tasks: C,
         log: Logger,
         state_gen: u64,
     ) -> Self {
@@ -86,117 +95,125 @@ impl<C: super::StateDriverCommandSink> StateDriver<C> {
             }
 
             let event = self.controller.wait_for_next_event();
-            let next_action = match event {
-                StateDriverEvent::Guest(guest_event) => {
+            self.handle_event(event, &mut next_external, &mut next_lifecycle);
+        }
+
+        info!(self.log, "State worker exiting");
+    }
+
+    fn handle_event(
+        &mut self,
+        event: StateDriverEvent,
+        next_external: &mut Option<ApiInstanceState>,
+        next_lifecycle: &mut Option<LifecycleStage>,
+    ) {
+        let next_action = match event {
+            StateDriverEvent::Guest(guest_event) => {
+                (*next_external, *next_lifecycle) =
                     self.handle_guest_event(guest_event);
-                    continue;
-                }
-                StateDriverEvent::External(external_event) => external_event,
-            };
+                return;
+            }
+            StateDriverEvent::External(external_event) => external_event,
+        };
 
-            match next_action {
-                ExternalRequest::MigrateAsTarget {
-                    migration_id,
-                    task,
-                    start_tx,
-                    command_rx,
-                } => {
-                    self.controller.update_external_state(
-                        &mut self.state_gen,
-                        ApiInstanceState::Migrating,
-                    );
+        match next_action {
+            ExternalRequest::MigrateAsTarget {
+                migration_id,
+                task,
+                start_tx,
+                command_rx,
+            } => {
+                self.controller.update_external_state(
+                    &mut self.state_gen,
+                    ApiInstanceState::Migrating,
+                );
 
-                    // The controller API should have updated the lifecycle
-                    // stage prior to queuing this work, and neither it nor the
-                    // worker should have allowed any other stage to be written
-                    // at this point. (Specifically, the API shouldn't allow a
-                    // migration in to start after the VM enters the "running"
-                    // portion of its lifecycle, from which the worker may need
-                    // to tweak lifecycle stages itself.)
-                    assert!(matches!(
-                        self.controller.get_lifecycle_stage(),
-                        LifecycleStage::NotStarted(
-                            StartupStage::MigratePending
-                        )
-                    ));
+                // The controller API should have updated the lifecycle
+                // stage prior to queuing this work, and neither it nor the
+                // worker should have allowed any other stage to be written
+                // at this point. (Specifically, the API shouldn't allow a
+                // migration in to start after the VM enters the "running"
+                // portion of its lifecycle, from which the worker may need
+                // to tweak lifecycle stages itself.)
+                assert!(matches!(
+                    self.controller.get_lifecycle_stage(),
+                    LifecycleStage::NotStarted(StartupStage::MigratePending)
+                ));
 
-                    // Ensure the vCPUs are activated properly so that they can
-                    // enter the guest after migration. Do this before launching
-                    // the migration task so that reset doesn't overwrite the
-                    // state written by migration.
-                    self.reset_vcpus();
-                    next_lifecycle = Some(
-                        match self.migrate_as_target(
-                            migration_id,
-                            task,
-                            start_tx,
-                            command_rx,
-                        ) {
-                            Ok(_) => LifecycleStage::NotStarted(
-                                StartupStage::Migrated,
-                            ),
-                            Err(_) => LifecycleStage::NotStarted(
-                                StartupStage::MigrationFailed,
-                            ),
-                        },
-                    );
-                }
-                ExternalRequest::Start { reset_required } => {
-                    info!(self.log, "Starting instance";
+                // Ensure the vCPUs are activated properly so that they can
+                // enter the guest after migration. Do this before launching
+                // the migration task so that reset doesn't overwrite the
+                // state written by migration.
+                self.reset_vcpus();
+                *next_lifecycle = Some(
+                    match self.migrate_as_target(
+                        migration_id,
+                        task,
+                        start_tx,
+                        command_rx,
+                    ) {
+                        Ok(_) => {
+                            LifecycleStage::NotStarted(StartupStage::Migrated)
+                        }
+                        Err(_) => LifecycleStage::NotStarted(
+                            StartupStage::MigrationFailed,
+                        ),
+                    },
+                );
+            }
+            ExternalRequest::Start { reset_required } => {
+                info!(self.log, "Starting instance";
                           "reset" => reset_required);
 
-                    // Requests to start should put the instance into the
-                    // 'starting' stage. Reflect this out to callers who ask
-                    // what state the VM is in.
-                    self.controller.update_external_state(
-                        &mut self.state_gen,
-                        ApiInstanceState::Starting,
-                    );
-                    next_external = Some(ApiInstanceState::Running);
-                    next_lifecycle = Some(LifecycleStage::Active);
+                // Requests to start should put the instance into the
+                // 'starting' stage. Reflect this out to callers who ask
+                // what state the VM is in.
+                self.controller.update_external_state(
+                    &mut self.state_gen,
+                    ApiInstanceState::Starting,
+                );
+                *next_external = Some(ApiInstanceState::Running);
+                *next_lifecycle = Some(LifecycleStage::Active);
 
-                    if reset_required {
-                        self.reset_vcpus();
-                    }
+                if reset_required {
+                    self.reset_vcpus();
+                }
 
-                    // TODO(#209) Transition to a "failed" state here instead of
-                    // expecting.
-                    self.controller
-                        .start_entities()
-                        .expect("entity start callout failed");
-                    self.vcpu_tasks.resume_all();
-                }
-                ExternalRequest::Reboot => {
-                    next_external = self.do_reboot();
-                }
-                ExternalRequest::MigrateAsSource {
+                // TODO(#209) Transition to a "failed" state here instead of
+                // expecting.
+                self.controller
+                    .start_entities()
+                    .expect("entity start callout failed");
+                self.vcpu_tasks.resume_all();
+            }
+            ExternalRequest::Reboot => {
+                *next_external = self.do_reboot();
+            }
+            ExternalRequest::MigrateAsSource {
+                migration_id,
+                task,
+                start_tx,
+                command_rx,
+                response_tx,
+            } => {
+                self.controller.update_external_state(
+                    &mut self.state_gen,
+                    ApiInstanceState::Migrating,
+                );
+
+                let result = self.migrate_as_source(
                     migration_id,
                     task,
                     start_tx,
                     command_rx,
                     response_tx,
-                } => {
-                    self.controller.update_external_state(
-                        &mut self.state_gen,
-                        ApiInstanceState::Migrating,
-                    );
-
-                    let result = self.migrate_as_source(
-                        migration_id,
-                        task,
-                        start_tx,
-                        command_rx,
-                        response_tx,
-                    );
-                    self.controller.finish_migrate_as_source(result);
-                }
-                ExternalRequest::Stop => {
-                    (next_external, next_lifecycle) = self.do_halt();
-                }
+                );
+                self.controller.finish_migrate_as_source(result);
+            }
+            ExternalRequest::Stop => {
+                (*next_external, *next_lifecycle) = self.do_halt();
             }
         }
-
-        info!(self.log, "State worker exiting");
     }
 
     fn handle_guest_event(
@@ -426,5 +443,185 @@ impl<C: super::StateDriverCommandSink> StateDriver<C> {
     fn reset_vcpus(&self) {
         self.vcpu_tasks.new_generation();
         self.controller.reset_vcpu_state();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mockall::Sequence;
+
+    use super::*;
+    use crate::vcpu_tasks::MockVcpuTaskController;
+    use crate::vm::MockStateDriverVmController;
+
+    fn make_state_driver(
+        vm_ctrl: MockStateDriverVmController,
+        vcpu_ctrl: MockVcpuTaskController,
+    ) -> StateDriver<MockStateDriverVmController, MockVcpuTaskController> {
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        StateDriver::new(
+            tokio::runtime::Handle::current(),
+            Arc::new(vm_ctrl),
+            vcpu_ctrl,
+            logger,
+            0,
+        )
+    }
+
+    fn make_default_mocks(
+    ) -> (MockStateDriverVmController, MockVcpuTaskController) {
+        let mut vm_ctrl = MockStateDriverVmController::new();
+        let vcpu_ctrl = MockVcpuTaskController::new();
+
+        vm_ctrl
+            .expect_get_lifecycle_stage()
+            .returning(|| LifecycleStage::Active);
+        vm_ctrl.expect_get_migration_state().returning(|| None);
+
+        (vm_ctrl, vcpu_ctrl)
+    }
+
+    fn add_reboot_expectations(
+        vm_ctrl: &mut MockStateDriverVmController,
+        vcpu_ctrl: &mut MockVcpuTaskController,
+    ) {
+        vm_ctrl
+            .expect_update_external_state()
+            .times(1)
+            .withf(|&_gen, &state| state == ApiInstanceState::Rebooting)
+            .returning(|_, _| ());
+
+        // The reboot process requires careful ordering of steps to make sure
+        // the VM's vCPUs are put into the correct state when the machine starts
+        // up.
+        let mut seq = Sequence::new();
+
+        // First, reboot has to pause everything. It doesn't actually matter
+        // whether vCPUs or entities pause first, but there's no way to specify
+        // that these events must be sequenced before other expectations but
+        // have no ordering with respect to each other.
+        vcpu_ctrl
+            .expect_pause_all()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_pause_entities()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+
+        // The entities and--importantly--the bhyve VM itself must be reset
+        // before resetting any vCPU state (so that bhyve will accept the ioctls
+        // sent to the vCPUs during the reset process).
+        vm_ctrl
+            .expect_reset_entities_and_machine()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vcpu_ctrl
+            .expect_new_generation()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_reset_vcpu_state()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+
+        // Entities and vCPUs can technically be resumed in either order, but
+        // resuming entities first allows them to be ready when the vCPUs start
+        // creating work for them to do.
+        vm_ctrl
+            .expect_resume_entities()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vcpu_ctrl
+            .expect_resume_all()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+    }
+
+    #[tokio::test]
+    async fn guest_triple_fault_reboots() {
+        let (mut vm_ctrl, mut vcpu_ctrl) = make_default_mocks();
+        let mut next_external: Option<ApiInstanceState> = None;
+        let mut next_lifecycle: Option<LifecycleStage> = None;
+
+        add_reboot_expectations(&mut vm_ctrl, &mut vcpu_ctrl);
+        let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
+        driver.handle_event(
+            StateDriverEvent::Guest(GuestEvent::VcpuSuspendTripleFault(0)),
+            &mut next_external,
+            &mut next_lifecycle,
+        );
+
+        assert!(matches!(next_external, Some(ApiInstanceState::Running)));
+    }
+
+    #[tokio::test]
+    async fn guest_chipset_reset_reboots() {
+        let (mut vm_ctrl, mut vcpu_ctrl) = make_default_mocks();
+        let mut next_external: Option<ApiInstanceState> = None;
+        let mut next_lifecycle: Option<LifecycleStage> = None;
+
+        add_reboot_expectations(&mut vm_ctrl, &mut vcpu_ctrl);
+        let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
+        driver.handle_event(
+            StateDriverEvent::Guest(GuestEvent::ChipsetReset),
+            &mut next_external,
+            &mut next_lifecycle,
+        );
+
+        assert!(matches!(next_external, Some(ApiInstanceState::Running)));
+    }
+
+    #[tokio::test]
+    async fn start_from_cold_boot() {
+        let (mut vm_ctrl, mut vcpu_ctrl) = make_default_mocks();
+        let mut next_external: Option<ApiInstanceState> = None;
+        let mut next_lifecycle: Option<LifecycleStage> = None;
+
+        let mut seq = Sequence::new();
+        vm_ctrl
+            .expect_update_external_state()
+            .times(1)
+            .withf(|&_gen, &state| state == ApiInstanceState::Starting)
+            .returning(|_, _| ());
+        vcpu_ctrl
+            .expect_new_generation()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_reset_vcpu_state()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_start_entities()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| Ok(()));
+        vcpu_ctrl
+            .expect_resume_all()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+
+        let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
+        driver.handle_event(
+            StateDriverEvent::External(ExternalRequest::Start {
+                reset_required: true,
+            }),
+            &mut next_external,
+            &mut next_lifecycle,
+        );
+
+        assert!(matches!(next_external, Some(ApiInstanceState::Running)));
+        assert!(matches!(next_lifecycle, Some(LifecycleStage::Active)));
     }
 }

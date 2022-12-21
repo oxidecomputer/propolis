@@ -75,6 +75,7 @@ ispf = { git = "https://github.com/oxidecomputer/ispf" }
 lazy_static = "1.4"
 libc = "0.2"
 libloading = "0.7"
+mockall = "0.11"
 num_enum = "0.5"
 omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-zone-package = "0.1.2"

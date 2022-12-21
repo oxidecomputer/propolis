@@ -1065,7 +1065,8 @@ enum StateDriverEvent {
 /// abstracted into a trait to allow them to be mocked out for testing without
 /// having to supply mock implementations of the rest of the VM controller's
 /// functionality.
-trait StateDriverCommandSink {
+#[cfg_attr(test, mockall::automock)]
+trait StateDriverVmController {
     /// Sends a reset request to each entity in the instance, then sends a
     /// reset command to the instance's bhyve VM.
     fn reset_entities_and_machine(&self);
@@ -1110,7 +1111,7 @@ trait StateDriverCommandSink {
     fn finish_migrate_as_source(&self, res: Result<(), MigrateError>);
 }
 
-impl StateDriverCommandSink for VmController {
+impl StateDriverVmController for VmController {
     fn reset_entities_and_machine(&self) {
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending reset request to {}", rec.name());

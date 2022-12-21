@@ -58,6 +58,7 @@ reqwest = { workspace = true, default-features = false, features = ["rustls-tls"
 ring.workspace = true
 slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
 expectorate.workspace = true
+mockall.workspace = true
 
 [features]
 default = ["dtrace-probes"]
