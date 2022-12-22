@@ -509,7 +509,6 @@ mod tests {
         (vm_ctrl, vcpu_ctrl)
     }
 
-    /* TODO(#250)
     fn make_migration_target_mocks(
         migration_id: Uuid,
     ) -> (MockStateDriverVmController, MockVcpuTaskController) {
@@ -525,7 +524,6 @@ mod tests {
 
         (vm_ctrl, vcpu_ctrl)
     }
-    */
 
     fn add_reboot_expectations(
         vm_ctrl: &mut MockStateDriverVmController,
@@ -794,7 +792,6 @@ mod tests {
         );
     }
 
-    /* TODO(#250)
     #[tokio::test]
     async fn vm_starts_after_migration_in() {
         let migration_id = Uuid::new_v4();
@@ -852,7 +849,6 @@ mod tests {
         .await
         .unwrap();
     }
-    */
 
     /* TODO(#252)
     #[tokio::test]
