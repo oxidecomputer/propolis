@@ -145,21 +145,35 @@ where
                 // the migration task so that reset doesn't overwrite the
                 // state written by migration.
                 self.reset_vcpus();
-                *next_lifecycle = Some(
-                    match self.migrate_as_target(
-                        migration_id,
-                        task,
-                        start_tx,
-                        command_rx,
-                    ) {
-                        Ok(_) => {
-                            LifecycleStage::NotStarted(StartupStage::Migrated)
-                        }
-                        Err(_) => LifecycleStage::NotStarted(
+                match self.migrate_as_target(
+                    migration_id,
+                    task,
+                    start_tx,
+                    command_rx,
+                ) {
+                    Ok(_) => {
+                        // Publish the "migrated" state before signaling that
+                        // migration is finished. Without this, there's a race
+                        // where a client can observe that migration is done
+                        // (because the migration state was written), but
+                        // further attempts to change the VM's state will fail
+                        // (because the lifecycle stage is what determines
+                        // whether a migration is "done" for the purposes of
+                        // accepting or rejecting a request to run the VM).
+                        self.controller.set_lifecycle_stage(
+                            LifecycleStage::NotStarted(StartupStage::Migrated),
+                        );
+                        self.controller.set_migration_state(
+                            migration_id,
+                            ApiMigrationState::Finish,
+                        );
+                    }
+                    Err(_) => self.controller.set_lifecycle_stage(
+                        LifecycleStage::NotStarted(
                             StartupStage::MigrationFailed,
                         ),
-                    },
-                );
+                    ),
+                }
             }
             ExternalRequest::Start { reset_required } => {
                 info!(self.log, "Starting instance";
@@ -322,6 +336,7 @@ where
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
     ) -> Result<(), MigrateError> {
         start_tx.send(()).unwrap();
+        let mut finished = false;
         loop {
             let action = self.runtime_hdl.block_on(async {
                 Self::next_migrate_task_event(
@@ -334,23 +349,28 @@ where
 
             match action {
                 MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_err() {
-                        self.controller.set_migration_state(
-                            migration_id,
-                            ApiMigrationState::Error,
-                        );
-                    } else {
-                        assert!(matches!(
-                            self.controller.get_migration_state(),
-                            Some((_, ApiMigrationState::Finish))
-                        ));
-                    }
+                    // If the task finished successfully but didn't signal that
+                    // it finished its work, something is amiss.
+                    assert_eq!(finished, res.is_ok());
                     return res;
                 }
                 MigrateTaskEvent::Command(
                     MigrateTargetCommand::UpdateState(state),
                 ) => {
-                    self.controller.set_migration_state(migration_id, state);
+                    // The "finished" state must always arrive last.
+                    assert!(!finished);
+
+                    // Do not publish the "finished" state from this point;
+                    // instead, let the migration complete and return success to
+                    // the caller so that it can decide when to publish this
+                    // state relative to other changes to the VM's lifecycle
+                    // stage.
+                    if matches!(state, ApiMigrationState::Finish) {
+                        finished = true;
+                    } else {
+                        self.controller
+                            .set_migration_state(migration_id, state);
+                    }
                 }
             }
         }
@@ -510,7 +530,6 @@ mod tests {
     }
 
     fn make_migration_target_mocks(
-        migration_id: Uuid,
     ) -> (MockStateDriverVmController, MockVcpuTaskController) {
         let mut vm_ctrl = MockStateDriverVmController::new();
         let vcpu_ctrl = MockVcpuTaskController::new();
@@ -518,9 +537,6 @@ mod tests {
         vm_ctrl.expect_get_lifecycle_stage().returning(|| {
             LifecycleStage::NotStarted(StartupStage::MigratePending)
         });
-        vm_ctrl
-            .expect_get_migration_state()
-            .returning(move || Some((migration_id, ApiMigrationState::Finish)));
 
         (vm_ctrl, vcpu_ctrl)
     }
@@ -803,8 +819,7 @@ mod tests {
             task_exit_rx.await.unwrap()
         });
 
-        let (mut vm_ctrl, mut vcpu_ctrl) =
-            make_migration_target_mocks(migration_id);
+        let (mut vm_ctrl, mut vcpu_ctrl) = make_migration_target_mocks();
         let mut next_external: Option<ApiInstanceState> = None;
         let mut next_lifecycle: Option<LifecycleStage> = None;
 
@@ -812,6 +827,21 @@ mod tests {
             .expect_update_external_state()
             .times(1)
             .withf(|&_gen, &state| state == ApiInstanceState::Migrating)
+            .returning(|_, _| ());
+        vm_ctrl
+            .expect_set_lifecycle_stage()
+            .times(1)
+            .withf(|state| {
+                matches!(
+                    state,
+                    LifecycleStage::NotStarted(StartupStage::Migrated)
+                )
+            })
+            .returning(|_| ());
+        vm_ctrl
+            .expect_set_migration_state()
+            .times(1)
+            .withf(|&_gen, &state| state == ApiMigrationState::Finish)
             .returning(|_, _| ());
         vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
         vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
@@ -838,6 +868,10 @@ mod tests {
 
         // Explicitly drop the command channel to signal to the driver that
         // the migration task is completing.
+        command_tx
+            .send(MigrateTargetCommand::UpdateState(ApiMigrationState::Finish))
+            .await
+            .unwrap();
         drop(command_tx);
         task_exit_tx.send(Ok(())).unwrap();
 
