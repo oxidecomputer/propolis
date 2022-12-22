@@ -167,6 +167,17 @@ where
                             migration_id,
                             ApiMigrationState::Finish,
                         );
+
+                        // The migration completed successfully, so immediately
+                        // push the VM into a 'running' state without waiting
+                        // for further input (to minimize blackout time).
+                        //
+                        // TODO(#209) Transition to a "failed" state instead of
+                        // expecting.
+                        self.start_vm(false)
+                            .expect("failed to start VM after migrating");
+                        *next_external = Some(ApiInstanceState::Running);
+                        *next_lifecycle = Some(LifecycleStage::Active);
                     }
                     Err(_) => self.controller.set_lifecycle_stage(
                         LifecycleStage::NotStarted(
@@ -175,30 +186,12 @@ where
                     ),
                 }
             }
-            ExternalRequest::Start { reset_required } => {
-                info!(self.log, "Starting instance";
-                          "reset" => reset_required);
-
-                // Requests to start should put the instance into the
-                // 'starting' stage. Reflect this out to callers who ask
-                // what state the VM is in.
-                self.controller.update_external_state(
-                    &mut self.state_gen,
-                    ApiInstanceState::Starting,
-                );
+            ExternalRequest::Start => {
+                // TODO(#209) Transition to a "failed" state instead of
+                // expecting.
+                self.start_vm(true).expect("failed to start VM");
                 *next_external = Some(ApiInstanceState::Running);
                 *next_lifecycle = Some(LifecycleStage::Active);
-
-                if reset_required {
-                    self.reset_vcpus();
-                }
-
-                // TODO(#209) Transition to a "failed" state here instead of
-                // expecting.
-                self.controller
-                    .start_entities()
-                    .expect("entity start callout failed");
-                self.vcpu_tasks.resume_all();
             }
             ExternalRequest::Reboot => {
                 *next_external = self.do_reboot();
@@ -265,6 +258,25 @@ where
                 (self.do_reboot(), None)
             }
         }
+    }
+
+    fn start_vm(&mut self, reset_required: bool) -> anyhow::Result<()> {
+        info!(self.log, "Starting instance"; "reset" => reset_required);
+
+        // Requests to start should put the instance into the 'starting' stage.
+        // Reflect this out to callers who ask what state the VM is in.
+        self.controller.update_external_state(
+            &mut self.state_gen,
+            ApiInstanceState::Starting,
+        );
+
+        if reset_required {
+            self.reset_vcpus();
+        }
+
+        self.controller.start_entities()?;
+        self.vcpu_tasks.resume_all();
+        Ok(())
     }
 
     fn do_reboot(&mut self) -> Option<ApiInstanceState> {
@@ -674,9 +686,7 @@ mod tests {
 
         let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
         driver.handle_event(
-            StateDriverEvent::External(ExternalRequest::Start {
-                reset_required: true,
-            }),
+            StateDriverEvent::External(ExternalRequest::Start),
             &mut next_external,
             &mut next_lifecycle,
         );
@@ -820,13 +830,19 @@ mod tests {
         });
 
         let (mut vm_ctrl, mut vcpu_ctrl) = make_migration_target_mocks();
-        let mut next_external: Option<ApiInstanceState> = None;
-        let mut next_lifecycle: Option<LifecycleStage> = None;
 
+        let mut state_seq = Sequence::new();
         vm_ctrl
             .expect_update_external_state()
             .times(1)
+            .in_sequence(&mut state_seq)
             .withf(|&_gen, &state| state == ApiInstanceState::Migrating)
+            .returning(|_, _| ());
+        vm_ctrl
+            .expect_update_external_state()
+            .times(1)
+            .in_sequence(&mut state_seq)
+            .withf(|&_gen, &state| state == ApiInstanceState::Starting)
             .returning(|_, _| ());
         vm_ctrl
             .expect_set_lifecycle_stage()
@@ -845,7 +861,7 @@ mod tests {
             .returning(|_, _| ());
         vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
         vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
-        vm_ctrl.expect_resume_entities().times(1).returning(|| ());
+        vm_ctrl.expect_start_entities().times(1).returning(|| Ok(()));
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
 
         let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
@@ -854,6 +870,9 @@ mod tests {
         // runtime so that it can call `block_on` to wait for messages from the
         // migration task.
         let hdl = std::thread::spawn(move || {
+            let mut next_external: Option<ApiInstanceState> = None;
+            let mut next_lifecycle: Option<LifecycleStage> = None;
+
             driver.handle_event(
                 StateDriverEvent::External(ExternalRequest::MigrateAsTarget {
                     migration_id,
@@ -863,7 +882,9 @@ mod tests {
                 }),
                 &mut next_external,
                 &mut next_lifecycle,
-            )
+            );
+
+            (next_external, next_lifecycle)
         });
 
         // Explicitly drop the command channel to signal to the driver that
@@ -877,11 +898,13 @@ mod tests {
 
         // Wait for the call to `handle_event` to return before tearing anything
         // else down.
-        tokio::task::spawn_blocking(move || {
-            hdl.join().unwrap();
-        })
-        .await
-        .unwrap();
+        let (next_external, next_lifecycle) =
+            tokio::task::spawn_blocking(move || hdl.join().unwrap())
+                .await
+                .unwrap();
+
+        assert!(matches!(next_external, Some(ApiInstanceState::Running)));
+        assert!(matches!(next_lifecycle, Some(LifecycleStage::Active)));
     }
 
     /* TODO(#252)
