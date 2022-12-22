@@ -299,6 +299,16 @@ where
         );
         let next_external = Some(ApiInstanceState::Stopped);
         let next_lifecycle = Some(LifecycleStage::NoLongerActive);
+
+        // Entities expect to be paused before being halted. Note that the VM
+        // may be paused already if it is being torn down after a successful
+        // migration out.
+        if !self.paused {
+            self.vcpu_tasks.pause_all();
+            self.controller.pause_entities();
+            self.paused = true;
+        }
+
         self.vcpu_tasks.exit_all();
         self.controller.halt_entities();
         (next_external, next_lifecycle)
@@ -483,6 +493,22 @@ mod tests {
         (vm_ctrl, vcpu_ctrl)
     }
 
+    fn make_migration_source_mocks(
+        migration_id: Uuid,
+    ) -> (MockStateDriverVmController, MockVcpuTaskController) {
+        let mut vm_ctrl = MockStateDriverVmController::new();
+        let vcpu_ctrl = MockVcpuTaskController::new();
+
+        vm_ctrl
+            .expect_get_lifecycle_stage()
+            .returning(|| LifecycleStage::Active);
+        vm_ctrl
+            .expect_get_migration_state()
+            .returning(move || Some((migration_id, ApiMigrationState::Finish)));
+
+        (vm_ctrl, vcpu_ctrl)
+    }
+
     /* TODO(#250)
     fn make_migration_target_mocks(
         migration_id: Uuid,
@@ -645,7 +671,6 @@ mod tests {
         assert!(matches!(next_lifecycle, Some(LifecycleStage::Active)));
     }
 
-    /* TODO(#258)
     #[tokio::test]
     async fn entities_pause_before_halting() {
         let (mut vm_ctrl, mut vcpu_ctrl) = make_default_mocks();
@@ -686,7 +711,88 @@ mod tests {
             &mut next_lifecycle,
         );
     }
-    */
+
+    #[tokio::test]
+    async fn entities_pause_once_when_halting_after_migration_out() {
+        let migration_id = Uuid::new_v4();
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel(1);
+        let migrate_task = tokio::spawn(async move {
+            start_rx.await.unwrap();
+            task_exit_rx.await.unwrap()
+        });
+
+        let (mut vm_ctrl, mut vcpu_ctrl) =
+            make_migration_source_mocks(migration_id);
+        let mut next_external: Option<ApiInstanceState> = None;
+        let mut next_lifecycle: Option<LifecycleStage> = None;
+
+        // This test will simulate a migration out (with a pause command), then
+        // order the state driver to halt. This should produce exactly one set
+        // of pause commands and one set of halt commands with no resume
+        // commands.
+        vm_ctrl.expect_pause_entities().times(1).returning(|| ());
+        vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
+        vcpu_ctrl.expect_exit_all().times(1).returning(|| ());
+        vm_ctrl.expect_halt_entities().times(1).returning(|| ());
+        vm_ctrl.expect_resume_entities().never();
+        vcpu_ctrl.expect_resume_all().never();
+
+        // The driver may update the external state during this operation.
+        // Permit any of these mutations (the specific sequence thereof is
+        // out of this test's scope).
+        vm_ctrl.expect_update_external_state().times(..).returning(|_, _| ());
+        vm_ctrl
+            .expect_finish_migrate_as_source()
+            .times(1)
+            .withf(|res| res.is_ok())
+            .returning(|_| ());
+
+        let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
+
+        // The state driver expects to run on an OS thread outside the async
+        // runtime so that it can call `block_on` to wait for messages from the
+        // migration task.
+        let hdl = std::thread::spawn(move || {
+            driver.handle_event(
+                StateDriverEvent::External(ExternalRequest::MigrateAsSource {
+                    migration_id,
+                    task: migrate_task,
+                    start_tx,
+                    command_rx,
+                    response_tx,
+                }),
+                &mut next_external,
+                &mut next_lifecycle,
+            );
+
+            // Return the driver (which has the mocks attached) when the thread
+            // is joined so the test can continue using it.
+            driver
+        });
+
+        // Simulate a pause and the successful completion of migration.
+        command_tx.send(MigrateSourceCommand::Pause).await.unwrap();
+        let resp = response_rx.recv().await.unwrap();
+        assert!(matches!(resp, MigrateSourceResponse::Pause(Ok(()))));
+
+        drop(command_tx);
+        task_exit_tx.send(Ok(())).unwrap();
+
+        // Wait for the call to `handle_event` to return before tearing anything
+        // else down.
+        driver = tokio::task::spawn_blocking(move || hdl.join().unwrap())
+            .await
+            .unwrap();
+
+        driver.handle_event(
+            StateDriverEvent::External(ExternalRequest::Stop),
+            &mut next_external,
+            &mut next_lifecycle,
+        );
+    }
 
     /* TODO(#250)
     #[tokio::test]
