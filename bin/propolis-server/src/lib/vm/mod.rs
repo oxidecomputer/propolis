@@ -1,25 +1,30 @@
 //! Implements the VM controller: the public interface to a single Propolis
 //! instance.
 //!
-//! The controller wraps all of the objects describing a VM (its Propolis
-//! `Instance`, its instance spec, etc.) and a single "state driver" thread that
-//! changes the VM's state at runtime. External requests to change a VM's state
-//! (originating from a Propolis server) first reach the VM controller, which
-//! vets those requests, rejects any that are infeasible in light of the VM's
-//! current state or the pendency of prior requests, and passes the rest to the
-//! state driver for processing. As part of its work, the driver may need to
-//! request changes to the instance (e.g. pausing or resuming entities), which
-//! requests it issues by calling back into the VM controller.
+//! The VM controller serves two purposes. First, it collects all of the objects
+//! describing a single Propolis VM (the Propolis `Instance` itself, the
+//! instance's spec, direct references to components in the instance, etc.).
+//! Second, it records requests and events that affect how a VM moves through
+//! the stages of its lifecycle, i.e. how and when it boots, reboots, migrates,
+//! and stops.
 //!
-//! The VM controller's public API also lets the server gather information about
-//! an instance (e.g. its instance spec) and obtain references to some of its
-//! components for use in specialized server routines (e.g. a serial console
-//! task needs a reference to its instance's UART).
+//! Each VM controller has a single "state driver" thread that processes
+//! requests and events recorded by its controller and acts on the underlying
+//! Propolis instance to move the VM into the appropriate states. Doing this
+//! work on a single thread ensures that a VM can only undergo one state change
+//! at a time, that there are no races to start/pause/resume/halt a VM's
+//! components, and that there is a single source of truth as to a VM's current
+//! state (and as to the steps that are required to move it to a different
+//! state). Operations like live migration that require components to pause and
+//! resume coordinate directly with the state driver thread.
 //!
-//! Some VM state changes result from events raised from within the guest, e.g.
-//! a guest-initiated reboot or shutdown. The VM controller provides trait
-//! objects to the relevant Propolis components that allow them to queue
-//! events back to the state driver for processing.
+//! The VM controller's public API allows a Propolis Dropshot server to query a
+//! VM's current state, to ask to change that state, and to obtain references to
+//! objects in a VM as needed to handle other requests made of the server (e.g.
+//! requests to connect to an instance's serial console or to take a disk
+//! snapshot). The controller also implements traits that allow a VM's
+//! components to raise events for the state driver to process (e.g. a request
+//! from a VM's chipset to reboot or halt the VM).
 
 use std::{
     collections::{BTreeMap, VecDeque},
