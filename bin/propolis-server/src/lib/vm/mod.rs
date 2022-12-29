@@ -169,6 +169,9 @@ pub(crate) struct VmObjects {
     /// A notification receiver to which the state worker publishes the most
     /// recent instance state and state generation.
     monitor_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
+
+    migrate_state_rx:
+        tokio::sync::watch::Receiver<Option<(Uuid, ApiMigrationState)>>,
 }
 
 /// A message sent from a live migration destination task to update the
@@ -340,18 +343,11 @@ struct SharedVmStateInner {
     /// The state worker's queue of unprocessed events from guest devices.
     guest_event_queue: VecDeque<GuestEvent>,
 
-    /// The sender side of the watcher that records the instance's externally
-    /// visible state, i.e., the state returned when a client invokes the
-    /// server's `get` API.
-    api_state: tokio::sync::watch::Sender<ApiMonitoredState>,
-
-    /// The state of the most recently attempted migration into or out of this
-    /// instance, or None if no migration has ever been attempted.
-    migration_state: Option<(Uuid, ApiMigrationState)>,
+    pending_migration_id: Option<Uuid>,
 }
 
 impl SharedVmStateInner {
-    fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
+    fn new() -> Self {
         Self {
             lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
             marked_migration_source: false,
@@ -359,25 +355,8 @@ impl SharedVmStateInner {
             halt_pending: false,
             external_request_queue: VecDeque::new(),
             guest_event_queue: VecDeque::new(),
-            api_state: watch,
-            migration_state: None,
+            pending_migration_id: None,
         }
-    }
-
-    /// Updates an instance's externally visible state by incrementing the
-    /// supplied generation number and writing the incremented value and the
-    /// supplied state to the worker's watcher.
-    fn update_external_state(
-        &mut self,
-        gen: &mut u64,
-        state: ApiInstanceState,
-    ) {
-        *gen += 1;
-
-        // Unwrap is safe here because this routine is only called from the
-        // state worker, and if the state worker is running, the VM controller
-        // must be alive, which implies that its embedded receiver is alive.
-        self.api_state.send(ApiMonitoredState { gen: *gen, state }).unwrap();
     }
 }
 
@@ -403,7 +382,9 @@ pub struct VmController {
     worker_state: Arc<SharedVmState>,
 
     /// A handle to the state worker thread for this instance.
-    worker_thread: Mutex<Option<JoinHandle<()>>>,
+    worker_thread: Mutex<
+        Option<JoinHandle<tokio::sync::watch::Sender<ApiMonitoredState>>>,
+    >,
 
     /// This controller's logger.
     log: Logger,
@@ -505,8 +486,9 @@ impl VmController {
                 gen: 0,
                 state: ApiInstanceState::Creating,
             });
+        let (migrate_tx, migrate_rx) = tokio::sync::watch::channel(None);
         let worker_state = Arc::new(SharedVmState {
-            inner: Mutex::new(SharedVmStateInner::new(monitor_tx)),
+            inner: Mutex::new(SharedVmStateInner::new()),
             cv: Condvar::new(),
         });
 
@@ -559,6 +541,7 @@ impl VmController {
                 ps2ctrl,
                 crucible_backends,
                 monitor_rx,
+                migrate_state_rx: migrate_rx,
             },
             worker_state,
             worker_thread: Mutex::new(None),
@@ -576,19 +559,20 @@ impl VmController {
         let worker_thread = std::thread::Builder::new()
             .name("vm_state_worker".to_string())
             .spawn(move || {
-                let state_gen =
-                    ctrl_for_worker.vm_objects.monitor_rx.borrow().gen;
-                let mut driver = state_driver::StateDriver::new(
+                let driver = state_driver::StateDriver::new(
                     runtime_hdl,
                     ctrl_for_worker,
                     vcpu_tasks,
                     log_for_worker,
-                    state_gen,
+                    monitor_tx,
+                    migrate_tx,
                 );
-                driver.run_state_worker();
+
+                let monitor_tx = driver.run_state_worker();
 
                 // Signal back to the server state once the worker has exited.
                 let _ = stop_ch.send(());
+                monitor_tx
             })
             .map_err(VmControllerError::StateWorkerCreationFailed)?;
 
@@ -700,8 +684,7 @@ impl VmController {
                     // state fails because a migration is in progress, there
                     // will in fact appear to be a pending migration even if the
                     // state worker hasn't yet picked up the work.
-                    inner.migration_state =
-                        Some((migration_id, ApiMigrationState::Sync));
+                    inner.pending_migration_id = Some(migration_id);
                     inner.external_request_queue.push_back(
                         self.launch_source_migration_task(migration_id, conn),
                     );
@@ -798,8 +781,7 @@ impl VmController {
                     // state fails because a migration is in progress, there
                     // will in fact appear to be a pending migration even if the
                     // state worker hasn't yet picked up the work.
-                    inner.migration_state =
-                        Some((migration_id, ApiMigrationState::Sync));
+                    inner.pending_migration_id = Some(migration_id);
                     inner.external_request_queue.push_back(
                         self.launch_target_migration_task(migration_id, conn),
                     );
@@ -989,16 +971,29 @@ impl VmController {
         &self,
         migration_id: Uuid,
     ) -> Result<ApiMigrationState, MigrateError> {
-        let inner = self.worker_state.inner.lock().unwrap();
-        match inner.migration_state {
-            None => Err(MigrateError::NoMigrationInProgress),
-            Some((id, state)) => {
-                if migration_id != id {
-                    Err(MigrateError::UuidMismatch)
-                } else {
-                    Ok(state)
-                }
+        // If the state worker has published migration state with a matching ID,
+        // report the status from the worker. Note that this call to `borrow`
+        // takes a lock on the channel.
+        let published = self.vm_objects.migrate_state_rx.borrow();
+        if let Some((id, state)) = *published {
+            if id == migration_id {
+                return Ok(state);
             }
+        }
+        drop(published);
+
+        // Either the worker hasn't published any status or the IDs didn't
+        // match. See if there's a pending migration task that the worker hasn't
+        // picked up yet that has the correct ID and report its status if so.
+        let inner = self.worker_state.inner.lock().unwrap();
+        if let Some(id) = inner.pending_migration_id {
+            if migration_id != id {
+                Err(MigrateError::UuidMismatch)
+            } else {
+                Ok(ApiMigrationState::Sync)
+            }
+        } else {
+            Err(MigrateError::NoMigrationInProgress)
         }
     }
 
@@ -1033,12 +1028,14 @@ impl Drop for VmController {
         // destroyed. Normally, the existence of this structure implies the
         // instance of at least one receiver, but at this point everything is
         // being dropped, so this call to `send` is not safe to unwrap.
-        let api_state = &self.worker_state.inner.lock().unwrap().api_state;
-        let gen = api_state.borrow().gen + 1;
-        let _ = api_state.send(ApiMonitoredState {
-            gen,
-            state: ApiInstanceState::Destroyed,
-        });
+        if let Some(thread) = self.worker_thread.lock().unwrap().take() {
+            let api_state = thread.join().unwrap();
+            let gen = api_state.borrow().gen + 1;
+            let _ = api_state.send(ApiMonitoredState {
+                gen,
+                state: ApiInstanceState::Destroyed,
+            });
+        }
     }
 }
 
@@ -1086,16 +1083,6 @@ trait StateDriverVmController {
 
     /// Gets the VM's current lifecycle stage.
     fn get_lifecycle_stage(&self) -> LifecycleStage;
-
-    /// Sets the VM's current migration state.
-    fn set_migration_state(&self, migration_id: Uuid, state: ApiMigrationState);
-
-    /// Gets the VM's current migration state.
-    fn get_migration_state(&self) -> Option<(Uuid, ApiMigrationState)>;
-
-    /// Updates the externally-visible VM state (i.e. the state visible through
-    /// instance get and monitor commands).
-    fn update_external_state(&self, gen: &mut u64, state: ApiInstanceState);
 
     /// Informs the controller that an attempt to migrate out of this VM
     /// completed with the supplied result.
@@ -1219,27 +1206,6 @@ impl StateDriverVmController for VmController {
 
     fn get_lifecycle_stage(&self) -> LifecycleStage {
         self.worker_state.inner.lock().unwrap().lifecycle_stage
-    }
-
-    fn set_migration_state(
-        &self,
-        migration_id: Uuid,
-        state: ApiMigrationState,
-    ) {
-        self.worker_state.inner.lock().unwrap().migration_state =
-            Some((migration_id, state));
-    }
-
-    fn get_migration_state(&self) -> Option<(Uuid, ApiMigrationState)> {
-        self.worker_state.inner.lock().unwrap().migration_state
-    }
-
-    fn update_external_state(&self, gen: &mut u64, state: ApiInstanceState) {
-        self.worker_state
-            .inner
-            .lock()
-            .unwrap()
-            .update_external_state(gen, state);
     }
 
     fn finish_migrate_as_source(&self, res: Result<(), MigrateError>) {
