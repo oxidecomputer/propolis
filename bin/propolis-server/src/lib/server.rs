@@ -842,6 +842,20 @@ async fn instance_issue_crucible_snapshot_request(
     Ok(HttpResponseOk(()))
 }
 
+/// Issues an NMI to the instance.
+#[endpoint {
+    method = POST,
+    path = "/instance/nmi",
+}]
+async fn instance_issue_nmi(
+    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+) -> Result<HttpResponseOk<()>, HttpError> {
+    let vm = rqctx.context().vm().await?;
+    vm.inject_nmi();
+
+    Ok(HttpResponseOk(()))
+}
+
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<DropshotEndpointContext> {
     let mut api = ApiDescription::new();
@@ -856,6 +870,7 @@ pub fn api() -> ApiDescription<DropshotEndpointContext> {
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
     api.register(instance_issue_crucible_snapshot_request).unwrap();
+    api.register(instance_issue_nmi).unwrap();
 
     api
 }

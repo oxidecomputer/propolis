@@ -207,4 +207,10 @@ impl Client {
         );
         self.post(path, None).await
     }
+
+    /// Send an Non Maskable Interrupt (NMI) to the instance.
+    pub async fn instance_inject_nmi(&self) -> Result<(), Error> {
+        let path = format!("http://{}/instance/nmi", self.address);
+        self.post(path, None).await
+    }
 }

@@ -108,6 +108,12 @@ impl Machine {
             None
         }
     }
+
+    pub fn inject_nmi(&self) -> Result<()> {
+        // When the Machine is created, we're guaranteed at least one vcpu, so
+        // just send the NMI to the first one.
+        self.vcpus[0].inject_nmi()
+    }
 }
 impl Drop for Machine {
     fn drop(&mut self) {

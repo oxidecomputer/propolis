@@ -266,6 +266,12 @@ pub struct vm_capability {
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
+pub struct vm_nmi {
+    pub cpuid: c_int,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
 pub struct vm_suspend {
     /// Acceptable values defined by `vm_suspend_how`
     pub how: u32,

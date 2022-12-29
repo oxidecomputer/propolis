@@ -214,6 +214,12 @@ impl Vcpu {
             }
         })
     }
+
+    /// Send a Non Maskable Interrupt (NMI) to the vcpu.
+    pub fn inject_nmi(&self) -> Result<()> {
+        let mut vm_nmi = bhyve_api::vm_nmi { cpuid: self.cpuid() };
+        unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
+    }
 }
 
 impl Entity for Vcpu {
