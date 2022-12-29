@@ -33,10 +33,18 @@ pub trait VcpuEventHandler: Send + Sync {
     fn io_error_event(&self, vcpu_id: i32, error: std::io::Error);
 }
 
+#[cfg_attr(test, mockall::automock)]
+pub(crate) trait VcpuTaskController {
+    fn new_generation(&self);
+    fn pause_all(&mut self);
+    fn resume_all(&mut self);
+    fn exit_all(&mut self);
+}
+
 impl VcpuTasks {
     pub(crate) fn new(
         instance: propolis::instance::InstanceGuard,
-        event_handler: Arc<super::vm::WorkerState>,
+        event_handler: Arc<super::vm::SharedVmState>,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
         let generation = Arc::new(AtomicUsize::new(0));
@@ -65,36 +73,10 @@ impl VcpuTasks {
         Ok(Self { tasks, generation })
     }
 
-    pub fn pause_all(&mut self) {
-        for task in self.tasks.iter_mut().map(|t| &mut t.0) {
-            task.hold().unwrap();
-        }
-    }
-
-    pub fn new_generation(&self) {
-        self.generation.fetch_add(1, Ordering::Release);
-    }
-
-    pub fn resume_all(&mut self) {
-        for task in self.tasks.iter_mut().map(|t| &mut t.0) {
-            task.run().unwrap();
-        }
-    }
-
-    pub fn exit_all(&mut self) {
-        for task in self.tasks.iter_mut().map(|t| &mut t.0) {
-            task.exit();
-        }
-
-        for thread in self.tasks.drain(..) {
-            thread.1.join().unwrap();
-        }
-    }
-
     fn vcpu_loop(
         vcpu: &Vcpu,
         task: propolis::tasks::TaskHdl,
-        event_handler: Arc<super::vm::WorkerState>,
+        event_handler: Arc<super::vm::SharedVmState>,
         generation: Arc<AtomicUsize>,
         log: slog::Logger,
     ) {
@@ -203,5 +185,33 @@ impl VcpuTasks {
             }
         }
         info!(log, "Exiting vCPU thread for CPU {}", vcpu.id);
+    }
+}
+
+impl VcpuTaskController for VcpuTasks {
+    fn pause_all(&mut self) {
+        for task in self.tasks.iter_mut().map(|t| &mut t.0) {
+            task.hold().unwrap();
+        }
+    }
+
+    fn new_generation(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
+    fn resume_all(&mut self) {
+        for task in self.tasks.iter_mut().map(|t| &mut t.0) {
+            task.run().unwrap();
+        }
+    }
+
+    fn exit_all(&mut self) {
+        for task in self.tasks.iter_mut().map(|t| &mut t.0) {
+            task.exit();
+        }
+
+        for thread in self.tasks.drain(..) {
+            thread.1.join().unwrap();
+        }
     }
 }

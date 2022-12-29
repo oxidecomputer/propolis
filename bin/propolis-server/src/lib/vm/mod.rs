@@ -1,27 +1,30 @@
-//! Implements the VM controller: the interface to a single Propolis instance.
+//! Implements the VM controller: the public interface to a single Propolis
+//! instance.
 //!
-//! A single VM controller has a single worker thread that updates the wrapped
-//! instance's state and performs all lifecycle operations on that instance.
-//! All requests to pause or resume entities, to migrate to or from an instance,
-//! and to reboot or halt an instance are handled on this worker thread.
+//! The VM controller serves two purposes. First, it collects all of the objects
+//! describing a single Propolis VM (the Propolis `Instance` itself, the
+//! instance's spec, direct references to components in the instance, etc.).
+//! Second, it records requests and events that affect how a VM moves through
+//! the stages of its lifecycle, i.e. how and when it boots, reboots, migrates,
+//! and stops.
 //!
-//! The VM controller's public API allows the server to ask to change an
-//! instance's state or to migrate in or out of the wrapped instance. The
-//! controller vets all these requests, rejects those that are infeasible in
-//! light of the VM's current state or the pendency of prior requests, and
-//! passes the rest to the state worker for processing. The controller API also
-//! lets the server gather information about an instance (e.g. its instance
-//! spec) and obtain references to some of its components for use in specialized
-//! server routines (e.g. a serial console task needs a reference to its
-//! instance's UART).
+//! Each VM controller has a single "state driver" thread that processes
+//! requests and events recorded by its controller and acts on the underlying
+//! Propolis instance to move the VM into the appropriate states. Doing this
+//! work on a single thread ensures that a VM can only undergo one state change
+//! at a time, that there are no races to start/pause/resume/halt a VM's
+//! components, and that there is a single source of truth as to a VM's current
+//! state (and as to the steps that are required to move it to a different
+//! state). Operations like live migration that require components to pause and
+//! resume coordinate directly with the state driver thread.
 //!
-//! Some VM state changes result from events raised from within the guest, e.g.
-//! a guest-initiated reboot or shutdown. The VM controller provides trait
-//! objects to the relevant Propolis components that allow them to queue
-//! events back to the state worker for processing.
-//!
-//! The state worker also handles live migrations by starting migration tasks
-//! and coordinating with them to pause/resume devices at those tasks' request.
+//! The VM controller's public API allows a Propolis Dropshot server to query a
+//! VM's current state, to ask to change that state, and to obtain references to
+//! objects in a VM as needed to handle other requests made of the server (e.g.
+//! requests to connect to an instance's serial console or to take a disk
+//! snapshot). The controller also implements traits that allow a VM's
+//! components to raise events for the state driver to process (e.g. a request
+//! from a VM's chipset to reboot or halt the VM).
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -45,15 +48,16 @@ use propolis_client::handmade::{
 use propolis_client::instance_spec::InstanceSpec;
 use slog::{error, info, Logger};
 use thiserror::Error;
-use tokio::{sync::oneshot, task::JoinHandle as TaskJoinHandle};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::{
     initializer::{build_instance, MachineInitializer},
     migrate::MigrateError,
     serial::Serial,
-    vcpu_tasks::VcpuTasks,
 };
+
+mod state_driver;
 
 #[derive(Debug, Error)]
 pub enum VmControllerError {
@@ -248,9 +252,15 @@ enum ExternalRequest {
         /// The ID of the live migration to use when initializing.
         migration_id: Uuid,
 
-        /// A future that yields the upgraded HTTP connection the migration task
-        /// should use to communicate with its source.
-        upgrade_fut: hyper::upgrade::OnUpgrade,
+        /// A handle to the task that will execute the migration procedure.
+        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
+
+        /// The sender side of a one-shot channel that, when signaled, tells the
+        /// migration task to start its work.
+        start_tx: tokio::sync::oneshot::Sender<()>,
+
+        /// A channel that receives commands from the migration task.
+        command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
     },
 
     /// Starts the VM.
@@ -265,9 +275,18 @@ enum ExternalRequest {
         /// The ID of the live migration for which this VM will be the source.
         migration_id: Uuid,
 
-        /// A future that yields the upgraded HTTP connection the migration task
-        /// should use to communicate with the migration target.
-        upgrade_fut: hyper::upgrade::OnUpgrade,
+        /// A handle to the task that will execute the migration procedure.
+        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
+
+        /// The sender side of a one-shot channel that, when signaled, tells the
+        /// migration task to start its work.
+        start_tx: tokio::sync::oneshot::Sender<()>,
+
+        /// A channel that receives commands from the migration task.
+        command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
+
+        /// A channel used to send responses to migration commands.
+        response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
     },
 
     /// Resets the guest by pausing all devices, resetting them to their
@@ -291,9 +310,10 @@ enum GuestEvent {
     ChipsetReset,
 }
 
-/// Shared instance state guarded by the controller's state mutex.
+/// Shared instance state guarded by the controller's state mutex. This state is
+/// accessed from the controller API and the VM's state worker.
 #[derive(Debug)]
-struct WorkerStateInner {
+struct SharedVmStateInner {
     /// The VM's lifecycle stage. This can be used to determine whether incoming
     /// API requests are allowed--for example, requesting to migrate into a VM
     /// that's already running is forbidden.
@@ -332,7 +352,20 @@ struct WorkerStateInner {
     migration_state: Option<(Uuid, ApiMigrationState)>,
 }
 
-impl WorkerStateInner {
+impl SharedVmStateInner {
+    fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
+        Self {
+            lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
+            marked_migration_source: false,
+            migrate_from_pending: false,
+            halt_pending: false,
+            external_request_queue: VecDeque::new(),
+            guest_event_queue: VecDeque::new(),
+            api_state: watch,
+            migration_state: None,
+        }
+    }
+
     /// Updates an instance's externally visible state by incrementing the
     /// supplied generation number and writing the incremented value and the
     /// supplied state to the worker's watcher.
@@ -350,24 +383,9 @@ impl WorkerStateInner {
     }
 }
 
-impl WorkerStateInner {
-    fn new(watch: tokio::sync::watch::Sender<ApiMonitoredState>) -> Self {
-        Self {
-            lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
-            marked_migration_source: false,
-            migrate_from_pending: false,
-            halt_pending: false,
-            external_request_queue: VecDeque::new(),
-            guest_event_queue: VecDeque::new(),
-            api_state: watch,
-            migration_state: None,
-        }
-    }
-}
-
 #[derive(Debug)]
-pub(crate) struct WorkerState {
-    inner: Mutex<WorkerStateInner>,
+pub(crate) struct SharedVmState {
+    inner: Mutex<SharedVmStateInner>,
     cv: Condvar,
 }
 
@@ -380,27 +398,28 @@ pub struct VmController {
     /// inventory).
     vm_objects: VmObjects,
 
-    /// A handle to the host server's tokio runtime, useful for spawning tasks
-    /// that need to interact with async code (e.g. spinning up migration
-    /// tasks).
-    runtime_hdl: tokio::runtime::Handle,
-
     /// A wrapper for the runtime state of this instance, managed by the state
-    /// worker thread.
-    worker_state: Arc<WorkerState>,
+    /// worker thread. This also serves as a sink for hardware events (e.g. from
+    /// vCPUs and the chipset), so it is wrapped in an Arc so that it can be
+    /// shared with those events' sources.
+    worker_state: Arc<SharedVmState>,
 
-    /// A handle to the worker thread for this instance.
+    /// A handle to the state worker thread for this instance.
     worker_thread: Mutex<Option<JoinHandle<()>>>,
 
     /// This controller's logger.
     log: Logger,
 
+    /// A handle to a tokio runtime onto which this controller can spawn tasks
+    /// (e.g. migration tasks).
+    runtime_hdl: tokio::runtime::Handle,
+
     /// A weak reference to this controller, suitable for upgrading and passing
-    /// to tasks launched by the state worker.
+    /// to tasks the controller spawns.
     this: Weak<Self>,
 }
 
-impl WorkerState {
+impl SharedVmState {
     pub(crate) fn suspend_halt_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner.guest_event_queue.push_back(GuestEvent::VcpuSuspendHalt(vcpu_id));
@@ -443,7 +462,7 @@ pub trait ChipsetEventHandler: Send + Sync {
     fn chipset_reset(&self);
 }
 
-impl ChipsetEventHandler for WorkerState {
+impl ChipsetEventHandler for SharedVmState {
     fn chipset_halt(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.guest_event_queue.push_back(GuestEvent::ChipsetHalt);
@@ -488,8 +507,8 @@ impl VmController {
                 gen: 0,
                 state: ApiInstanceState::Creating,
             });
-        let worker_state = Arc::new(WorkerState {
-            inner: Mutex::new(WorkerStateInner::new(monitor_tx)),
+        let worker_state = Arc::new(SharedVmState {
+            inner: Mutex::new(SharedVmStateInner::new(monitor_tx)),
             cv: Condvar::new(),
         });
 
@@ -543,22 +562,32 @@ impl VmController {
                 crucible_backends,
                 monitor_rx,
             },
-            runtime_hdl,
             worker_state,
             worker_thread: Mutex::new(None),
             log: log.new(slog::o!("component" => "vm_controller")),
+            runtime_hdl: runtime_hdl.clone(),
             this: this.clone(),
         });
 
-        // Now that the controller exists, clone a reference to it and launch
-        // the state worker.
+        // Now that the controller exists, launch the state worker that will
+        // drive state transitions for this instance. When the VM halts, the
+        // worker will exit and drop its reference to the controller.
         let ctrl_for_worker = controller.clone();
         let log_for_worker =
             log.new(slog::o!("component" => "vm_state_worker"));
         let worker_thread = std::thread::Builder::new()
             .name("vm_state_worker".to_string())
             .spawn(move || {
-                ctrl_for_worker.state_worker(vcpu_tasks, log_for_worker);
+                let state_gen =
+                    ctrl_for_worker.vm_objects.monitor_rx.borrow().gen;
+                let mut driver = state_driver::StateDriver::new(
+                    runtime_hdl,
+                    ctrl_for_worker,
+                    vcpu_tasks,
+                    log_for_worker,
+                    state_gen,
+                );
+                driver.run_state_worker();
 
                 // Signal back to the server state once the worker has exited.
                 let _ = stop_ch.send(());
@@ -664,10 +693,10 @@ impl VmController {
                     inner.migration_state =
                         Some((migration_id, ApiMigrationState::Sync));
                     inner.external_request_queue.push_back(
-                        ExternalRequest::MigrateAsSource {
+                        self.launch_source_migration_task(
                             migration_id,
                             upgrade_fut,
-                        },
+                        ),
                     );
                     self.worker_state.cv.notify_one();
                     Ok(())
@@ -676,6 +705,62 @@ impl VmController {
             LifecycleStage::NoLongerActive => {
                 Err(VmControllerError::InstanceNotActive)
             }
+        }
+    }
+
+    /// Launches a task that will execute a live migration out of this VM.
+    /// Returns a state change request message to queue to the state driver,
+    /// which will coordinate with this task to run the migration.
+    fn launch_source_migration_task(
+        &self,
+        migration_id: Uuid,
+        upgrade_fut: hyper::upgrade::OnUpgrade,
+    ) -> ExternalRequest {
+        let log_for_task =
+            self.log.new(slog::o!("component" => "migrate_source_task"));
+        let ctrl_for_task = self.this.upgrade().unwrap();
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
+
+        // The migration process uses async operations when communicating with
+        // the migration target. Run that work on the async runtime.
+        info!(self.log, "Launching migration source task");
+        let task = self.runtime_hdl.spawn(async move {
+            info!(log_for_task, "Waiting to be told to start");
+            start_rx.await.unwrap();
+
+            info!(log_for_task, "Upgrading HTTP connection");
+            let conn = match upgrade_fut.await {
+                Ok(upgraded) => upgraded,
+                Err(e) => {
+                    error!(log_for_task, "Connection upgrade failed: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            info!(log_for_task, "Starting migration procedure");
+            if let Err(e) = crate::migrate::source::migrate(
+                ctrl_for_task,
+                command_tx,
+                response_rx,
+                conn,
+            )
+            .await
+            {
+                error!(log_for_task, "Migration task failed: {}", e);
+                return Err(e);
+            }
+
+            Ok(())
+        });
+
+        ExternalRequest::MigrateAsSource {
+            migration_id,
+            task,
+            start_tx,
+            command_rx,
+            response_tx,
         }
     }
 
@@ -718,10 +803,10 @@ impl VmController {
                     inner.migration_state =
                         Some((migration_id, ApiMigrationState::Sync));
                     inner.external_request_queue.push_back(
-                        ExternalRequest::MigrateAsTarget {
+                        self.launch_target_migration_task(
                             migration_id,
                             upgrade_fut,
-                        },
+                        ),
                     );
                     self.worker_state.cv.notify_one();
                     Ok(())
@@ -742,6 +827,59 @@ impl VmController {
             LifecycleStage::NoLongerActive => {
                 Err(VmControllerError::InstanceNotActive)
             }
+        }
+    }
+
+    /// Launches a task that will execute a live migration into this VM.
+    /// Returns a state change request message to queue to the state driver,
+    /// which will coordinate with this task to run the migration.
+    fn launch_target_migration_task(
+        &self,
+        migration_id: Uuid,
+        upgrade_fut: hyper::upgrade::OnUpgrade,
+    ) -> ExternalRequest {
+        let log_for_task =
+            self.log.new(slog::o!("component" => "migrate_source_task"));
+        let ctrl_for_task = self.this.upgrade().unwrap();
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+
+        // The migration process uses async operations when communicating with
+        // the migration target. Run that work on the async runtime.
+        info!(self.log, "Launching migration target task");
+        let task = self.runtime_hdl.spawn(async move {
+            info!(log_for_task, "Waiting to be told to start");
+            start_rx.await.unwrap();
+
+            info!(log_for_task, "Upgrading HTTP connection");
+            let conn = match upgrade_fut.await {
+                Ok(upgraded) => upgraded,
+                Err(e) => {
+                    error!(log_for_task, "Connection upgrade failed: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            info!(log_for_task, "Starting migration procedure");
+            if let Err(e) = crate::migrate::destination::migrate(
+                ctrl_for_task,
+                command_tx,
+                conn,
+            )
+            .await
+            {
+                error!(log_for_task, "Migration task failed: {}", e);
+                return Err(e);
+            }
+
+            Ok(())
+        });
+
+        ExternalRequest::MigrateAsTarget {
+            migration_id,
+            task,
+            start_tx,
+            command_rx,
         }
     }
 
@@ -861,476 +999,6 @@ impl VmController {
         }
     }
 
-    /// Manages an instance's lifecycle once it has moved to the Running state.
-    fn state_worker(
-        &self,
-        mut vcpu_tasks: super::vcpu_tasks::VcpuTasks,
-        log: Logger,
-    ) {
-        info!(log, "State worker launched");
-
-        let mut gen = self.vm_objects.monitor_rx.borrow().gen;
-
-        // Allow actions to queue up state changes that are applied on the next
-        // loop iteration.
-        let mut next_external: Option<ApiInstanceState> = None;
-        let mut next_lifecycle: Option<LifecycleStage> = None;
-        loop {
-            let mut inner = self.worker_state.inner.lock().unwrap();
-            if let Some(next_lifecycle) = next_lifecycle.take() {
-                inner.lifecycle_stage = next_lifecycle;
-            }
-
-            // Update the state visible to external threads querying the state
-            // of this instance. If the instance is now logically stopped, this
-            // thread must exit (in part to drop its reference to its VM
-            // controller).
-            //
-            // N.B. This check must be last, because it breaks out of the loop.
-            if let Some(next_external) = next_external.take() {
-                inner.update_external_state(&mut gen, next_external);
-                if matches!(next_external, ApiInstanceState::Stopped) {
-                    break;
-                }
-            }
-
-            // Wait for some work to do.
-            inner = self
-                .worker_state
-                .cv
-                .wait_while(inner, |i| {
-                    i.external_request_queue.is_empty()
-                        && i.guest_event_queue.is_empty()
-                })
-                .unwrap();
-
-            // The guest event queue indicates conditions that have already been
-            // raised by guest entities and that need unconditional responses.
-            // Handle these first.
-            if let Some(event) = inner.guest_event_queue.pop_front() {
-                (next_external, next_lifecycle) = self.handle_guest_event(
-                    event,
-                    inner,
-                    &mut gen,
-                    &mut vcpu_tasks,
-                    &log,
-                );
-                continue;
-            }
-
-            let next_action = inner.external_request_queue.pop_front().unwrap();
-            match next_action {
-                ExternalRequest::MigrateAsTarget {
-                    migration_id,
-                    upgrade_fut,
-                } => {
-                    inner.update_external_state(
-                        &mut gen,
-                        ApiInstanceState::Migrating,
-                    );
-
-                    // The controller API should have updated the lifecycle
-                    // stage prior to queuing this work, and neither it nor the
-                    // worker should have allowed any other stage to be written
-                    // at this point. (Specifically, the API shouldn't allow a
-                    // migration in to start after the VM enters the "running"
-                    // portion of its lifecycle, from which the worker may need
-                    // to tweak lifecycle stages itself.)
-                    assert!(matches!(
-                        inner.lifecycle_stage,
-                        LifecycleStage::NotStarted(
-                            StartupStage::MigratePending
-                        )
-                    ));
-
-                    drop(inner);
-
-                    // Ensure the vCPUs are activated properly so that they can
-                    // enter the guest after migration. Do this before launching
-                    // the migration task so that reset doesn't overwrite the
-                    // state written by migration.
-                    self.reset_vcpus(&vcpu_tasks, &log);
-                    next_lifecycle = Some(
-                        match self.migrate_as_target(
-                            migration_id,
-                            upgrade_fut,
-                            &log,
-                        ) {
-                            Ok(_) => LifecycleStage::NotStarted(
-                                StartupStage::Migrated,
-                            ),
-                            Err(_) => LifecycleStage::NotStarted(
-                                StartupStage::MigrationFailed,
-                            ),
-                        },
-                    );
-                }
-                ExternalRequest::Start { reset_required } => {
-                    info!(log, "Starting instance";
-                          "reset" => reset_required);
-
-                    // Requests to start should put the instance into the
-                    // 'starting' stage. Reflect this out to callers who ask
-                    // what state the VM is in.
-                    inner.update_external_state(
-                        &mut gen,
-                        ApiInstanceState::Starting,
-                    );
-                    next_external = Some(ApiInstanceState::Running);
-                    next_lifecycle = Some(LifecycleStage::Active);
-                    drop(inner);
-
-                    if reset_required {
-                        self.reset_vcpus(&vcpu_tasks, &log);
-                    }
-
-                    // TODO(#209) Transition to a "failed" state here instead of
-                    // expecting.
-                    self.start_entities(&log)
-                        .expect("entity start callout failed");
-                    vcpu_tasks.resume_all();
-                }
-                ExternalRequest::Reboot => {
-                    next_external =
-                        self.do_reboot(inner, &mut gen, &mut vcpu_tasks, &log);
-                }
-                ExternalRequest::MigrateAsSource {
-                    migration_id,
-                    upgrade_fut,
-                } => {
-                    inner.update_external_state(
-                        &mut gen,
-                        ApiInstanceState::Migrating,
-                    );
-
-                    drop(inner);
-
-                    match self.migrate_as_source(
-                        migration_id,
-                        upgrade_fut,
-                        &mut vcpu_tasks,
-                        &log,
-                    ) {
-                        Ok(()) => {
-                            info!(
-                                log,
-                                "Halting after successful migration out"
-                            );
-
-                            let mut inner =
-                                self.worker_state.inner.lock().unwrap();
-                            inner.migrate_from_pending = false;
-                            inner.halt_pending = true;
-                            inner
-                                .external_request_queue
-                                .push_back(ExternalRequest::Stop);
-                        }
-                        Err(e) => {
-                            info!(
-                                log,
-                                "Resuming after failed migration out ({})", e
-                            );
-
-                            let mut inner =
-                                self.worker_state.inner.lock().unwrap();
-                            inner.migrate_from_pending = false;
-                            inner.lifecycle_stage = LifecycleStage::Active;
-                        }
-                    }
-                }
-                ExternalRequest::Stop => {
-                    (next_external, next_lifecycle) =
-                        self.do_halt(inner, &mut gen, &mut vcpu_tasks, &log);
-                }
-            }
-        }
-
-        info!(log, "State worker exiting");
-    }
-
-    fn handle_guest_event(
-        &self,
-        event: GuestEvent,
-        inner: std::sync::MutexGuard<WorkerStateInner>,
-        state_gen: &mut u64,
-        vcpu_tasks: &mut super::vcpu_tasks::VcpuTasks,
-        log: &Logger,
-    ) -> (Option<ApiInstanceState>, Option<LifecycleStage>) {
-        match event {
-            GuestEvent::VcpuSuspendHalt(vcpu_id) => {
-                info!(log, "Halting due to halt event on vCPU {}", vcpu_id);
-                self.do_halt(inner, state_gen, vcpu_tasks, log)
-            }
-            GuestEvent::VcpuSuspendReset(vcpu_id) => {
-                info!(log, "Resetting due to reset event on vCPU {}", vcpu_id);
-                (self.do_reboot(inner, state_gen, vcpu_tasks, log), None)
-            }
-            GuestEvent::VcpuSuspendTripleFault(vcpu_id) => {
-                info!(log, "Resetting due to triple fault on vCPU {}", vcpu_id);
-                (self.do_reboot(inner, state_gen, vcpu_tasks, log), None)
-            }
-            GuestEvent::ChipsetHalt => {
-                info!(log, "Halting due to chipset-driven halt");
-                self.do_halt(inner, state_gen, vcpu_tasks, log)
-            }
-            GuestEvent::ChipsetReset => {
-                info!(log, "Resetting due to chipset-driven reset");
-                (self.do_reboot(inner, state_gen, vcpu_tasks, log), None)
-            }
-        }
-    }
-
-    fn do_reboot(
-        &self,
-        mut inner: std::sync::MutexGuard<WorkerStateInner>,
-        state_gen: &mut u64,
-        vcpu_tasks: &mut super::vcpu_tasks::VcpuTasks,
-        log: &Logger,
-    ) -> Option<ApiInstanceState> {
-        info!(log, "Resetting instance");
-
-        // Reboots should only arrive after an instance has started.
-        assert!(matches!(inner.lifecycle_stage, LifecycleStage::Active));
-
-        inner.update_external_state(state_gen, ApiInstanceState::Rebooting);
-        let next_external = Some(ApiInstanceState::Running);
-        drop(inner);
-
-        // Reboot is implemented as a pause -> reset -> resume
-        // transition.
-        //
-        // First, pause the vCPUs and all entities so no
-        // partially-completed work is present.
-        vcpu_tasks.pause_all();
-        self.pause_entities(log);
-        self.wait_for_entities_to_pause(log);
-
-        // Reset all the entities, then reset the VM's bhyve state,
-        // then reset the vCPUs. The vCPU reset must come after the
-        // bhyve reset.
-        self.reset_entities(log);
-        self.instance().lock().machine().reinitialize().unwrap();
-        self.reset_vcpus(vcpu_tasks, log);
-
-        // Resume entities so they're ready to do more work, then
-        // resume vCPUs.
-        self.resume_entities(log);
-        vcpu_tasks.resume_all();
-
-        next_external
-    }
-
-    fn do_halt(
-        &self,
-        mut inner: std::sync::MutexGuard<WorkerStateInner>,
-        state_gen: &mut u64,
-        vcpu_tasks: &mut super::vcpu_tasks::VcpuTasks,
-        log: &Logger,
-    ) -> (Option<ApiInstanceState>, Option<LifecycleStage>) {
-        info!(log, "Stopping instance");
-        inner.update_external_state(state_gen, ApiInstanceState::Stopping);
-        let next_external = Some(ApiInstanceState::Stopped);
-        let next_lifecycle = Some(LifecycleStage::NoLongerActive);
-        drop(inner);
-        vcpu_tasks.exit_all();
-        self.halt_entities(log);
-        (next_external, next_lifecycle)
-    }
-
-    fn migrate_as_target(
-        &self,
-        migration_id: Uuid,
-        upgrade_fut: hyper::upgrade::OnUpgrade,
-        log: &Logger,
-    ) -> Result<(), MigrateError> {
-        let log_for_task =
-            self.log().new(slog::o!("component" => "migrate_target_task"));
-        let ctrl_for_task = self.this.upgrade().unwrap();
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-
-        info!(log, "Launching migration target task");
-        let mut task = self.runtime_hdl.spawn(async move {
-            let conn = match upgrade_fut.await {
-                Ok(upgraded) => upgraded,
-                Err(e) => {
-                    error!(log_for_task, "Connection upgrade failed: {}", e);
-                    return Err(e.into());
-                }
-            };
-
-            if let Err(e) = crate::migrate::destination::migrate(
-                ctrl_for_task,
-                command_tx,
-                conn,
-            )
-            .await
-            {
-                error!(log_for_task, "Migration task failed: {}", e);
-                return Err(e);
-            }
-
-            Ok(())
-        });
-
-        loop {
-            let action = self.runtime_hdl.block_on(async {
-                Self::next_migrate_task_event(&mut task, &mut command_rx, log)
-                    .await
-            });
-
-            match action {
-                MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_err() {
-                        let mut inner = self.worker_state.inner.lock().unwrap();
-                        inner.migration_state =
-                            Some((migration_id, ApiMigrationState::Error));
-                    } else {
-                        assert!(matches!(
-                            self.worker_state
-                                .inner
-                                .lock()
-                                .unwrap()
-                                .migration_state,
-                            Some((_, ApiMigrationState::Finish))
-                        ));
-                    }
-                    return res;
-                }
-                MigrateTaskEvent::Command(
-                    MigrateTargetCommand::UpdateState(state),
-                ) => {
-                    let mut inner = self.worker_state.inner.lock().unwrap();
-                    inner.migration_state = Some((migration_id, state));
-                }
-            }
-        }
-    }
-
-    fn migrate_as_source(
-        &self,
-        migration_id: Uuid,
-        upgrade_fut: hyper::upgrade::OnUpgrade,
-        vcpu_tasks: &mut VcpuTasks,
-        log: &Logger,
-    ) -> Result<(), MigrateError> {
-        let log_for_task =
-            self.log().new(slog::o!("component" => "migrate_source_task"));
-        let ctrl_for_task = self.this.upgrade().unwrap();
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-
-        // The migration process uses async operations when communicating with
-        // the migration target. Run that work on the async runtime.
-        info!(log, "Launching migration source task");
-        let mut task = self.runtime_hdl.spawn(async move {
-            let conn = match upgrade_fut.await {
-                Ok(upgraded) => upgraded,
-                Err(e) => {
-                    error!(log_for_task, "Connection upgrade failed: {}", e);
-                    return Err(e.into());
-                }
-            };
-
-            if let Err(e) = crate::migrate::source::migrate(
-                ctrl_for_task,
-                command_tx,
-                response_rx,
-                conn,
-            )
-            .await
-            {
-                error!(log_for_task, "Migration task failed: {}", e);
-                return Err(e);
-            }
-
-            Ok(())
-        });
-
-        // Wait either for the migration task to exit or for it to ask the
-        // worker to pause or resume the instance's entities.
-        let mut paused = false;
-        loop {
-            let action = self.runtime_hdl.block_on(async {
-                Self::next_migrate_task_event(&mut task, &mut command_rx, log)
-                    .await
-            });
-
-            match action {
-                // If the task exited, bubble its result back up to the main
-                // state worker loop to decide on the instance's next state.
-                //
-                // If migration failed while entities were paused, this instance
-                // is allowed to resume, so resume its components here.
-                MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_err() {
-                        if paused {
-                            self.resume_entities(log);
-                            vcpu_tasks.resume_all();
-                            let mut inner =
-                                self.worker_state.inner.lock().unwrap();
-                            inner.migration_state =
-                                Some((migration_id, ApiMigrationState::Error));
-                        }
-                    } else {
-                        assert!(matches!(
-                            self.worker_state
-                                .inner
-                                .lock()
-                                .unwrap()
-                                .migration_state,
-                            Some((_, ApiMigrationState::Finish))
-                        ));
-                    }
-                    return res;
-                }
-                MigrateTaskEvent::Command(cmd) => match cmd {
-                    MigrateSourceCommand::UpdateState(state) => {
-                        let mut inner = self.worker_state.inner.lock().unwrap();
-                        inner.migration_state = Some((migration_id, state));
-                    }
-                    MigrateSourceCommand::Pause => {
-                        vcpu_tasks.pause_all();
-                        self.pause_entities(log);
-                        self.wait_for_entities_to_pause(log);
-                        paused = true;
-                        response_tx
-                            .blocking_send(MigrateSourceResponse::Pause(Ok(())))
-                            .unwrap();
-                    }
-                },
-            }
-        }
-    }
-
-    async fn next_migrate_task_event<T>(
-        task: &mut TaskJoinHandle<Result<(), MigrateError>>,
-        command_rx: &mut tokio::sync::mpsc::Receiver<T>,
-        log: &Logger,
-    ) -> MigrateTaskEvent<T> {
-        if let Some(cmd) = command_rx.recv().await {
-            return MigrateTaskEvent::Command(cmd);
-        }
-
-        // The sender side of the command channel is dropped, which means the
-        // migration task is exiting. Wait for it to finish and snag its result.
-        match task.await {
-            Ok(res) => {
-                info!(log, "Migration source task exited: {:?}", res);
-                MigrateTaskEvent::TaskExited(res)
-            }
-            Err(join_err) => {
-                if join_err.is_cancelled() {
-                    panic!("Migration task canceled");
-                } else {
-                    panic!(
-                        "Migration task panicked: {:?}",
-                        join_err.into_panic()
-                    );
-                }
-            }
-        }
-    }
-
     pub fn migrate_status(
         &self,
         migration_id: Uuid,
@@ -1348,71 +1016,6 @@ impl VmController {
         }
     }
 
-    fn reset_vcpus(&self, vcpu_tasks: &VcpuTasks, log: &Logger) {
-        vcpu_tasks.new_generation();
-        for vcpu in self.instance().lock().machine().vcpus.iter() {
-            info!(log, "Resetting vCPU {}", vcpu.id);
-            vcpu.activate().unwrap();
-            vcpu.reboot_state().unwrap();
-            if vcpu.is_bsp() {
-                info!(log, "Resetting BSP vCPU {}", vcpu.id);
-                vcpu.set_run_state(propolis::bhyve_api::VRS_RUN, None).unwrap();
-                vcpu.set_reg(
-                    propolis::bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                    0xfff0,
-                )
-                .unwrap();
-            }
-        }
-    }
-
-    fn start_entities(&self, log: &Logger) -> anyhow::Result<()> {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending startup complete to {}", rec.name());
-            let res = ent.start();
-            if let Err(e) = &res {
-                error!(log, "Startup failed for {}: {:?}", rec.name(), e);
-            }
-            res
-        })
-    }
-
-    fn pause_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending pause request to {}", rec.name());
-            ent.pause();
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    fn reset_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending reset request to {}", rec.name());
-            ent.reset();
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    fn resume_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending resume request to {}", rec.name());
-            ent.resume();
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    fn halt_entities(&self, log: &Logger) {
-        self.for_each_entity(|ent, rec| {
-            info!(log, "Sending halt request to {}", rec.name());
-            ent.halt();
-            Ok(())
-        })
-        .unwrap();
-    }
-
     fn for_each_entity<F>(&self, mut func: F) -> anyhow::Result<()>
     where
         F: FnMut(
@@ -1427,32 +1030,6 @@ impl VmController {
                 func(ent, record)
             },
         )
-    }
-
-    fn wait_for_entities_to_pause(&self, log: &Logger) {
-        info!(log, "Waiting for all entities to pause");
-        self.runtime_hdl.block_on(async {
-            let mut devices = vec![];
-            self.instance()
-                .lock()
-                .inventory()
-                .for_each_node(
-                    propolis::inventory::Order::Post,
-                    |_eid, record| {
-                        info!(
-                            log,
-                            "Got paused future from entity {}",
-                            record.name()
-                        );
-                        devices.push(Arc::clone(record.entity()));
-                        Ok::<_, ()>(())
-                    },
-                )
-                .unwrap();
-
-            let pause_futures = devices.iter().map(|ent| ent.paused());
-            futures::future::join_all(pause_futures).await;
-        });
     }
 }
 
@@ -1476,5 +1053,226 @@ impl Drop for VmController {
             gen,
             state: ApiInstanceState::Destroyed,
         });
+    }
+}
+
+/// An event that a VM's state driver must process.
+enum StateDriverEvent {
+    /// An event that was raised from within the guest.
+    Guest(GuestEvent),
+
+    /// An event that was raised by an external entity (e.g. an API call to the
+    /// server).
+    External(ExternalRequest),
+}
+
+/// Commands issued by the state driver back to its VM controller. These are
+/// abstracted into a trait to allow them to be mocked out for testing without
+/// having to supply mock implementations of the rest of the VM controller's
+/// functionality.
+#[cfg_attr(test, mockall::automock)]
+trait StateDriverVmController {
+    /// Sends a reset request to each entity in the instance, then sends a
+    /// reset command to the instance's bhyve VM.
+    fn reset_entities_and_machine(&self);
+
+    /// Sends each entity a start request.
+    fn start_entities(&self) -> anyhow::Result<()>;
+
+    /// Sends each entity a pause request, then waits for all these requests to
+    /// complete.
+    fn pause_entities(&self);
+
+    /// Sends each entity a resume request.
+    fn resume_entities(&self);
+
+    /// Sends each entity a halt request.
+    fn halt_entities(&self);
+
+    /// Resets the state of each vCPU in the instance to its on-reboot state.
+    fn reset_vcpu_state(&self);
+
+    /// Waits for a new event to arrive for processing and returns that event.
+    fn wait_for_next_event(&self) -> StateDriverEvent;
+
+    /// Sets the VM's current lifecycle stage.
+    fn set_lifecycle_stage(&self, stage: LifecycleStage);
+
+    /// Gets the VM's current lifecycle stage.
+    fn get_lifecycle_stage(&self) -> LifecycleStage;
+
+    /// Sets the VM's current migration state.
+    fn set_migration_state(&self, migration_id: Uuid, state: ApiMigrationState);
+
+    /// Gets the VM's current migration state.
+    fn get_migration_state(&self) -> Option<(Uuid, ApiMigrationState)>;
+
+    /// Updates the externally-visible VM state (i.e. the state visible through
+    /// instance get and monitor commands).
+    fn update_external_state(&self, gen: &mut u64, state: ApiInstanceState);
+
+    /// Informs the controller that an attempt to migrate out of this VM
+    /// completed with the supplied result.
+    fn finish_migrate_as_source(&self, res: Result<(), MigrateError>);
+}
+
+impl StateDriverVmController for VmController {
+    fn reset_entities_and_machine(&self) {
+        self.for_each_entity(|ent, rec| {
+            info!(self.log, "Sending reset request to {}", rec.name());
+            ent.reset();
+            Ok(())
+        })
+        .unwrap();
+
+        self.instance().lock().machine().reinitialize().unwrap();
+    }
+
+    fn start_entities(&self) -> anyhow::Result<()> {
+        self.for_each_entity(|ent, rec| {
+            info!(self.log, "Sending startup complete to {}", rec.name());
+            let res = ent.start();
+            if let Err(e) = &res {
+                error!(self.log, "Startup failed for {}: {:?}", rec.name(), e);
+            }
+            res
+        })
+    }
+
+    fn pause_entities(&self) {
+        self.for_each_entity(|ent, rec| {
+            info!(self.log, "Sending pause request to {}", rec.name());
+            ent.pause();
+            Ok(())
+        })
+        .unwrap();
+
+        info!(self.log, "Waiting for entities to pause");
+        self.runtime_hdl.block_on(async {
+            let mut devices = vec![];
+            self.instance()
+                .lock()
+                .inventory()
+                .for_each_node(
+                    propolis::inventory::Order::Post,
+                    |_eid, record| {
+                        info!(
+                            self.log,
+                            "Got paused future from entity {}",
+                            record.name()
+                        );
+                        devices.push(Arc::clone(record.entity()));
+                        Ok::<_, ()>(())
+                    },
+                )
+                .unwrap();
+
+            let pause_futures = devices.iter().map(|ent| ent.paused());
+            futures::future::join_all(pause_futures).await;
+        });
+    }
+
+    fn resume_entities(&self) {
+        self.for_each_entity(|ent, rec| {
+            info!(self.log, "Sending resume request to {}", rec.name());
+            ent.resume();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn halt_entities(&self) {
+        self.for_each_entity(|ent, rec| {
+            info!(self.log, "Sending halt request to {}", rec.name());
+            ent.halt();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn reset_vcpu_state(&self) {
+        for vcpu in self.instance().lock().machine().vcpus.iter() {
+            info!(self.log, "Resetting vCPU {}", vcpu.id);
+            vcpu.activate().unwrap();
+            vcpu.reboot_state().unwrap();
+            if vcpu.is_bsp() {
+                info!(self.log, "Resetting BSP vCPU {}", vcpu.id);
+                vcpu.set_run_state(propolis::bhyve_api::VRS_RUN, None).unwrap();
+                vcpu.set_reg(
+                    propolis::bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
+                    0xfff0,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn wait_for_next_event(&self) -> StateDriverEvent {
+        let guard = self.worker_state.inner.lock().unwrap();
+        let mut guard = self
+            .worker_state
+            .cv
+            .wait_while(guard, |i| {
+                i.external_request_queue.is_empty()
+                    && i.guest_event_queue.is_empty()
+            })
+            .unwrap();
+
+        if let Some(guest_event) = guard.guest_event_queue.pop_front() {
+            StateDriverEvent::Guest(guest_event)
+        } else {
+            StateDriverEvent::External(
+                guard.external_request_queue.pop_front().unwrap(),
+            )
+        }
+    }
+
+    fn set_lifecycle_stage(&self, stage: LifecycleStage) {
+        self.worker_state.inner.lock().unwrap().lifecycle_stage = stage;
+    }
+
+    fn get_lifecycle_stage(&self) -> LifecycleStage {
+        self.worker_state.inner.lock().unwrap().lifecycle_stage
+    }
+
+    fn set_migration_state(
+        &self,
+        migration_id: Uuid,
+        state: ApiMigrationState,
+    ) {
+        self.worker_state.inner.lock().unwrap().migration_state =
+            Some((migration_id, state));
+    }
+
+    fn get_migration_state(&self) -> Option<(Uuid, ApiMigrationState)> {
+        self.worker_state.inner.lock().unwrap().migration_state
+    }
+
+    fn update_external_state(&self, gen: &mut u64, state: ApiInstanceState) {
+        self.worker_state
+            .inner
+            .lock()
+            .unwrap()
+            .update_external_state(gen, state);
+    }
+
+    fn finish_migrate_as_source(&self, res: Result<(), MigrateError>) {
+        match res {
+            Ok(()) => {
+                info!(self.log, "Halting after successful migration out");
+
+                let mut inner = self.worker_state.inner.lock().unwrap();
+                inner.migrate_from_pending = false;
+                inner.halt_pending = true;
+                inner.external_request_queue.push_back(ExternalRequest::Stop);
+            }
+            Err(e) => {
+                info!(self.log, "Resuming after failed migration out ({})", e);
+
+                let mut inner = self.worker_state.inner.lock().unwrap();
+                inner.migrate_from_pending = false;
+                inner.lifecycle_stage = LifecycleStage::Active;
+            }
+        }
     }
 }
