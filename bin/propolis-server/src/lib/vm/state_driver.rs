@@ -200,7 +200,6 @@ where
                         // expecting.
                         self.start_vm(false)
                             .expect("failed to start VM after migrating");
-                        self.update_external_state(ApiInstanceState::Running);
                         *next_lifecycle = Some(LifecycleStage::Active);
                         HandleEventOutcome::Continue
                     }
@@ -218,7 +217,6 @@ where
                 // TODO(#209) Transition to a "failed" state instead of
                 // expecting.
                 self.start_vm(true).expect("failed to start VM");
-                self.update_external_state(ApiInstanceState::Running);
                 *next_lifecycle = Some(LifecycleStage::Active);
                 HandleEventOutcome::Continue
             }
@@ -307,6 +305,7 @@ where
 
         self.controller.start_entities()?;
         self.vcpu_tasks.resume_all();
+        self.update_external_state(ApiInstanceState::Running);
         Ok(())
     }
 
