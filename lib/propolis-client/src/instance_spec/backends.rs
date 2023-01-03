@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// services that provide the functions storage devices need to implement their
 /// contracts.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum StorageBackendKind {
     /// A Crucible-backed device, containing a construction request.
     Crucible { req: crucible_client_types::VolumeConstructionRequest },
@@ -69,7 +69,7 @@ pub struct StorageBackend {
 /// that provides the functions needed for guest network adapters to implement
 /// their contracts.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum NetworkBackendKind {
     /// A virtio-net (viona) backend associated with the supplied named vNIC on
     /// the host.

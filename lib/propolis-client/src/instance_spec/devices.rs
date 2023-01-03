@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
 )]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum Chipset {
     /// An Intel 440FX-compatible chipset.
     I440Fx {
@@ -117,7 +117,7 @@ impl MigrationElement for Board {
 #[derive(
     Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
 )]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum StorageDeviceKind {
     Virtio,
     Nvme,
@@ -209,7 +209,7 @@ impl MigrationElement for NetworkDevice {
 #[derive(
     Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
 )]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum SerialPortNumber {
     Com1,
     Com2,
