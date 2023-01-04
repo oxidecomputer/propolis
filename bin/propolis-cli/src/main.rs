@@ -109,6 +109,9 @@ enum Command {
 
     /// Monitor an instance's state in real time
     Monitor,
+
+    /// Inject an NMI into the instance
+    InjectNmi,
 }
 
 fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
@@ -516,6 +519,13 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
     }
 }
 
+async fn inject_nmi(client: &Client) -> anyhow::Result<()> {
+    client
+        .instance_inject_nmi()
+        .await
+        .with_context(|| anyhow!("failed to inject NMI"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
@@ -564,6 +574,7 @@ async fn main() -> anyhow::Result<()> {
             migrate_instance(client, dst_client, addr, dst_uuid).await?
         }
         Command::Monitor => monitor(addr).await?,
+        Command::InjectNmi => inject_nmi(&client).await?,
     }
 
     Ok(())

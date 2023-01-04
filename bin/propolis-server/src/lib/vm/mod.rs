@@ -641,6 +641,20 @@ impl VmController {
         self.vm_objects.monitor_rx.borrow().state
     }
 
+    pub fn inject_nmi(&self) {
+        if let Some(instance) = &self.vm_objects.instance {
+            let instance = instance.lock();
+            match instance.machine().inject_nmi() {
+                Ok(_) => {
+                    info!(self.log, "Sending NMI to instance");
+                }
+                Err(e) => {
+                    error!(self.log, "Could not send NMI to instance: {}", e);
+                }
+            };
+        }
+    }
+
     pub fn state_watcher(
         &self,
     ) -> &tokio::sync::watch::Receiver<ApiMonitoredState> {
