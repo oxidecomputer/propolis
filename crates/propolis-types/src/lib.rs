@@ -10,14 +10,25 @@ use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 
 use schemars::JsonSchema;
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 const PCI_DEVICES_PER_BUS: u8 = 32;
 const PCI_FUNCTIONS_PER_DEVICE: u8 = 8;
 
 /// A PCI bus/device/function tuple. Supports conversion from a string formatted
 /// as "B.D.F", e.g. "0.7.0".
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, JsonSchema)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Debug,
+    JsonSchema,
+    Serialize,
+    Deserialize,
+)]
 pub struct PciPath {
     bus: u8,
     device: u8,
@@ -105,30 +116,9 @@ impl Display for PciPath {
     }
 }
 
-impl Serialize for PciPath {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(format!("{}", self).as_str())
-    }
-}
-
-impl<'d> Deserialize<'d> for PciPath {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'d>,
-    {
-        let s = String::deserialize(deserializer)?;
-        FromStr::from_str(&s).map_err(de::Error::custom)
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::PciPath;
-    use serde::Deserialize;
-    use serde_test::{assert_tokens, Token};
     use std::str::FromStr;
 
     const TEST_CASES: &[(&str, Result<PciPath, ()>)] = &[
@@ -155,25 +145,6 @@ mod test {
                     "Expected error parsing PCI path {}",
                     input
                 ),
-            }
-        }
-    }
-
-    #[test]
-    fn pci_path_serialization() {
-        for (input, expected) in TEST_CASES {
-            match expected {
-                Ok(path) => {
-                    assert_tokens(path, &[Token::Str(input)]);
-                }
-                Err(_) => {
-                    // Manually deserialize instead of using
-                    // serde_test::assert_tokens_de_error to avoid having to
-                    // specify exact error messages.
-                    let tokens = [Token::Str(input)];
-                    let mut de = serde_test::Deserializer::new(&tokens);
-                    assert!(PciPath::deserialize(&mut de).is_err());
-                }
             }
         }
     }
