@@ -460,7 +460,7 @@
             "description": "An Intel 440FX-compatible chipset.",
             "type": "object",
             "properties": {
-              "I440Fx": {
+              "i440_fx": {
                 "type": "object",
                 "properties": {
                   "enable_pcie": {
@@ -475,7 +475,7 @@
               }
             },
             "required": [
-              "I440Fx"
+              "i440_fx"
             ],
             "additionalProperties": false
           }
@@ -1036,7 +1036,7 @@
             "description": "A virtio-net (viona) backend associated with the supplied named vNIC on the host.",
             "type": "object",
             "properties": {
-              "Virtio": {
+              "virtio": {
                 "type": "object",
                 "properties": {
                   "vnic_name": {
@@ -1050,7 +1050,7 @@
               }
             },
             "required": [
-              "Virtio"
+              "virtio"
             ],
             "additionalProperties": false
           },
@@ -1058,7 +1058,7 @@
             "description": "A DLPI backend associated with the supplied named vNIC on the host.",
             "type": "object",
             "properties": {
-              "Dlpi": {
+              "dlpi": {
                 "type": "object",
                 "properties": {
                   "vnic_name": {
@@ -1072,7 +1072,7 @@
               }
             },
             "required": [
-              "Dlpi"
+              "dlpi"
             ],
             "additionalProperties": false
           }
@@ -1155,7 +1155,7 @@
         ]
       },
       "PciPath": {
-        "description": "A PCI bus/device/function tuple. Supports conversion from a string formatted as \"B.D.F\", e.g. \"0.7.0\".",
+        "description": "A PCI bus/device/function tuple.",
         "type": "object",
         "properties": {
           "bus": {
@@ -1227,10 +1227,10 @@
         "description": "A serial port identifier, which determines what I/O ports a guest can use to access a port.",
         "type": "string",
         "enum": [
-          "Com1",
-          "Com2",
-          "Com3",
-          "Com4"
+          "com1",
+          "com2",
+          "com3",
+          "com4"
         ]
       },
       "Slot": {
@@ -1269,7 +1269,7 @@
             "description": "A Crucible-backed device, containing a construction request.",
             "type": "object",
             "properties": {
-              "Crucible": {
+              "crucible": {
                 "type": "object",
                 "properties": {
                   "req": {
@@ -1283,7 +1283,7 @@
               }
             },
             "required": [
-              "Crucible"
+              "crucible"
             ],
             "additionalProperties": false
           },
@@ -1291,7 +1291,7 @@
             "description": "A device backed by a file on the host machine. The payload is a path to this file.",
             "type": "object",
             "properties": {
-              "File": {
+              "file": {
                 "type": "object",
                 "properties": {
                   "path": {
@@ -1305,7 +1305,7 @@
               }
             },
             "required": [
-              "File"
+              "file"
             ],
             "additionalProperties": false
           },
@@ -1313,7 +1313,7 @@
             "description": "A device backed by an in-memory buffer in the VMM process. The initial contents of the disk are a base64-encoded string.",
             "type": "object",
             "properties": {
-              "InMemory": {
+              "in_memory": {
                 "type": "object",
                 "properties": {
                   "base64": {
@@ -1327,7 +1327,7 @@
               }
             },
             "required": [
-              "InMemory"
+              "in_memory"
             ],
             "additionalProperties": false
           }
@@ -1369,8 +1369,8 @@
         "description": "A kind of storage device: the sort of virtual device interface the VMM exposes to guest software.",
         "type": "string",
         "enum": [
-          "Virtio",
-          "Nvme"
+          "virtio",
+          "nvme"
         ]
       },
       "VolumeConstructionRequest": {

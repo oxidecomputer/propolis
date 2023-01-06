@@ -168,7 +168,11 @@ impl From<SerialPortNumber> for api::SerialPortNumber {
 
 impl From<PciPath> for api::PciPath {
     fn from(path: PciPath) -> Self {
-        path.into()
+        api::PciPath {
+            bus: path.bus(),
+            device: path.device(),
+            function: path.function(),
+        }
     }
 }
 
@@ -241,5 +245,53 @@ impl From<crucible_client_types::CrucibleOpts> for crate::types::CrucibleOpts {
             control: control.map(|c| c.to_string()),
             read_only,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_specs_are_convertible() {
+        let mut builder = SpecBuilder::new(4, 4096, false);
+        builder
+            .add_storage_device(
+                "disk1".to_string(),
+                StorageDevice {
+                    kind: StorageDeviceKind::Nvme,
+                    backend_name: "disk1_be".to_string(),
+                    pci_path: PciPath::new(0, 16, 0).unwrap(),
+                },
+                "disk1_be".to_string(),
+                StorageBackend {
+                    kind: StorageBackendKind::Crucible {
+                        req: VolumeConstructionRequest::Region {
+                            block_size: 512,
+                            blocks_per_extent: 20,
+                            extent_count: 40,
+                            opts: crucible_client_types::CrucibleOpts {
+                                id: uuid::Uuid::new_v4(),
+                                target: vec![],
+                                lossy: false,
+                                flush_timeout: None,
+                                key: None,
+                                cert_pem: None,
+                                key_pem: None,
+                                root_cert_pem: None,
+                                control: None,
+                                read_only: true,
+                            },
+                            gen: 1,
+                        },
+                    },
+                    readonly: true,
+                },
+            )
+            .unwrap();
+
+        let spec = builder.finish();
+        let api_spec: api::InstanceSpec = spec.into();
+        assert_eq!(api_spec.devices.storage_devices.len(), 1);
     }
 }
