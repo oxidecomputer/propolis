@@ -15,8 +15,7 @@ use serde::{Deserialize, Serialize};
 const PCI_DEVICES_PER_BUS: u8 = 32;
 const PCI_FUNCTIONS_PER_DEVICE: u8 = 8;
 
-/// A PCI bus/device/function tuple. Supports conversion from a string formatted
-/// as "B.D.F", e.g. "0.7.0".
+/// A PCI bus/device/function tuple.
 #[derive(
     Clone,
     Copy,
