@@ -1155,7 +1155,7 @@
         ]
       },
       "PciPath": {
-        "description": "A PCI bus/device/function tuple. Supports conversion from a string formatted as \"B.D.F\", e.g. \"0.7.0\".",
+        "description": "A PCI bus/device/function tuple.",
         "type": "object",
         "properties": {
           "bus": {
