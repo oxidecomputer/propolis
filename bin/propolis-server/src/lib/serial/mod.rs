@@ -184,6 +184,9 @@ pub async fn instance_serial_task(
 
             // Read bytes from the UART to be transmitted out the WS
             nread = uart_read => {
+                // N.B. Putting this probe inside the match arms below causes
+                //      the `break` arm to be taken unexpectedly. See
+                //      propolis#292 for details.
                 probes::serial_uart_read!(|| { nread.unwrap_or(0) });
                 match nread {
                     Some(0) | None => {
