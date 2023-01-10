@@ -63,6 +63,7 @@ pub async fn instance_serial_task(
     serial: Arc<Serial<LpcUart>>,
     log: Logger,
 ) -> Result<(), SerialTaskError> {
+    info!(log, "Entered serial task");
     let mut output = [0u8; 1024];
     let mut cur_output: Option<Range<usize>> = None;
     let mut cur_input: Option<(Vec<u8>, usize)> = None;
@@ -160,13 +161,12 @@ pub async fn instance_serial_task(
 
             // Write bytes into the UART from the WS
             written = uart_write => {
+                probes::serial_uart_write!(|| { written.unwrap_or(0) });
                 match written {
                     Some(0) | None => {
-                        probes::serial_uart_write!(|| { 0 });
                         break;
                     }
                     Some(n) => {
-                        probes::serial_uart_write!(|| { n });
                         let (data, consumed) = cur_input.as_mut().unwrap();
                         *consumed += n;
                         if *consumed == data.len() {
@@ -184,13 +184,12 @@ pub async fn instance_serial_task(
 
             // Read bytes from the UART to be transmitted out the WS
             nread = uart_read => {
+                probes::serial_uart_read!(|| { nread.unwrap_or(0) });
                 match nread {
                     Some(0) | None => {
-                        probes::serial_uart_read!(|| { 0 });
                         break;
                     }
                     Some(n) => {
-                        probes::serial_uart_read!(|| { n });
                         cur_output = Some(0..n)
                     }
                 }
@@ -224,6 +223,7 @@ pub async fn instance_serial_task(
             }
         }
     }
+    info!(log, "Returning from serial task");
     Ok(())
 }
 
