@@ -113,6 +113,7 @@ softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", branch = "main
 syn = "1.0"
 tempfile = "3.2"
 thiserror = "1.0"
+thouart = { git = "https://github.com/oxidecomputer/thouart", rev = "656d2a77dd22f7110f513aed2401ebd740b9ef79" }
 tokio = "1"
 tokio-tungstenite = "0.17"
 tokio-util = "0.7"

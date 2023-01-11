@@ -15,6 +15,7 @@ propolis-client = { workspace = true, features = ["generated"] }
 slog.workspace = true
 slog-async.workspace = true
 slog-term.workspace = true
+thouart.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-tungstenite.workspace = true
 uuid.workspace = true
