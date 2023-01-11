@@ -60,6 +60,9 @@ slog = { workspace = true, features = [ "max_level_trace", "release_max_level_de
 expectorate.workspace = true
 mockall.workspace = true
 
+[build-dependencies]
+version_check.workspace = true
+
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["propolis/dtrace-probes", "dropshot/usdt-probes"]

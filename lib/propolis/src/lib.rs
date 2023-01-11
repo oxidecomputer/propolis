@@ -1,9 +1,7 @@
 #![allow(clippy::style)]
 #![allow(clippy::drop_non_drop)]
-#![cfg_attr(
-    all(feature = "dtrace-probes", target_os = "macos"),
-    feature(asm_sym)
-)]
+#![cfg_attr(usdt_need_asm, feature(asm))]
+#![cfg_attr(all(target_os = "macos", usdt_need_asm_sym), feature(asm_sym))]
 
 pub extern crate bhyve_api;
 pub extern crate usdt;
