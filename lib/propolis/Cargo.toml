@@ -51,6 +51,9 @@ slog-term.workspace = true
 slog-async.workspace = true
 rand.workspace = true
 
+[build-dependencies]
+version_check.workspace = true
+
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["usdt/asm"]

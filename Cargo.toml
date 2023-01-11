@@ -123,6 +123,7 @@ tracing-bunyan-formatter = "0.3.3"
 tracing-subscriber = "0.3.14"
 usdt = "0.3.2"
 uuid = "1.0.0"
+version_check = "0.9"
 viona_api = { path = "crates/viona-api" }
 vte = "0.10.1"
 
