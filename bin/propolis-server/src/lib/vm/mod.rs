@@ -524,7 +524,7 @@ impl VmController {
             oximeter_registry,
         );
 
-        init.initialize_rom(&bootrom)?;
+        init.initialize_rom(bootrom)?;
         init.initialize_kernel_devs()?;
         let chipset = init.initialize_chipset(
             &(worker_state.clone() as Arc<dyn ChipsetEventHandler>),

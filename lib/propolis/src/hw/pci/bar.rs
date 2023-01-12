@@ -28,7 +28,7 @@ impl BarDefine {
         match self {
             BarDefine::Pio(sz) => *sz as u64,
             BarDefine::Mmio(sz) => *sz as u64,
-            BarDefine::Mmio64(sz) => *sz as u64,
+            BarDefine::Mmio64(sz) => *sz,
         }
     }
 }
@@ -135,7 +135,7 @@ impl Bars {
             EntryKind::Mmio64(size) => {
                 let old = ent.value;
                 let mask = !(size - 1) as u32;
-                let low = val as u32 & mask;
+                let low = val & mask;
                 ent.value = (old & (0xffffffff << 32)) | low as u64;
                 (BarDefine::Mmio64(size), old, ent.value)
             }

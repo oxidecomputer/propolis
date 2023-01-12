@@ -83,7 +83,7 @@ impl block::Backend for CrucibleBackend {
     fn info(&self) -> DeviceInfo {
         DeviceInfo {
             block_size: self.block_size as u32,
-            total_size: self.sectors as u64,
+            total_size: self.sectors,
             writable: !self.read_only,
         }
     }

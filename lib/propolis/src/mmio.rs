@@ -45,7 +45,7 @@ impl MmioBus {
             _ => panic!(),
         };
         let handled = self.do_mmio(addr, |a, o, func| {
-            let mut wo = WriteOp::from_buf(o as usize, data);
+            let mut wo = WriteOp::from_buf(o, data);
             func(a, RWOp::Write(&mut wo))
         });
 
@@ -67,7 +67,7 @@ impl MmioBus {
             _ => panic!(),
         };
         let handled = self.do_mmio(addr, |a, o, func| {
-            let mut ro = ReadOp::from_buf(o as usize, &mut data);
+            let mut ro = ReadOp::from_buf(o, &mut data);
             func(a, RWOp::Read(&mut ro))
         });
 
