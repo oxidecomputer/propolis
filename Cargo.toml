@@ -59,6 +59,8 @@ chrono = "0.4.19"
 clap = "3.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
+crucible = { git = "https://github.com/oxidecomputer/crucible", branch = "main" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", branch = "main" }
 ctest2 = "0.4.3"
 ctrlc = "3.2"
 dladm = { path = "crates/dladm" }
@@ -126,11 +128,3 @@ uuid = "1.0.0"
 version_check = "0.9"
 viona_api = { path = "crates/viona-api" }
 vte = "0.10.1"
-
-[workspace.dependencies.crucible-client-types]
-git = "https://github.com/oxidecomputer/crucible"
-rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"
-
-[workspace.dependencies.crucible]
-git = "https://github.com/oxidecomputer/crucible"
-rev = "0e2bea7741c6bdc34e8e08addb941ee31e4ac9ec"
