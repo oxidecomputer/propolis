@@ -96,7 +96,7 @@ impl HistoryBuffer {
             ))
         } else if from_end < self.rolling.len() {
             // (apologies to Takenobu Mitsuyoshi)
-            let rolling_start = self.rolling.len() - from_end as usize;
+            let rolling_start = self.rolling.len() - from_end;
             Ok((
                 Box::new(self.rolling.iter().copied().skip(rolling_start)),
                 from_start,
@@ -203,7 +203,7 @@ mod tests {
         );
         assert_eq!(sugar(&buf, MostRecent(100), 4), ("This".to_string(), 4));
 
-        buf.consume(&"\nNo thing beside remains.".as_bytes().to_vec());
+        buf.consume("\nNo thing beside remains.".as_bytes());
         assert_eq!(sugar(&buf, MostRecent(10), 4), ("e re".to_string(), 46));
         assert_eq!(sugar(&buf, FromStart(8), 8), ("an examp".to_string(), 16));
         assert_eq!(sugar(&buf, FromStart(8), 12), ("an examp".to_string(), 16));

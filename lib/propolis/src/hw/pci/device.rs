@@ -884,7 +884,7 @@ impl MsixCfg {
                         MsixCapReg::MsgCtrl => {
                             let state = self.state.lock().unwrap();
                             // low 10 bits hold `count - 1`
-                            let mut val = self.count as u16 - 1;
+                            let mut val = self.count - 1;
                             if state.enabled {
                                 val |= MSIX_MSGCTRL_ENABLE;
                             }
