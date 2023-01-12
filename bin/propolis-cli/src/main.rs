@@ -64,7 +64,7 @@ enum Command {
         #[clap(short, default_value = "1024", action)]
         memory: u64,
 
-        // file with a JSON array of DiskRequest structs
+        /// File with a JSON array of DiskRequest structs
         #[clap(long, action)]
         crucible_disks: Option<PathBuf>,
 
@@ -105,6 +105,10 @@ enum Command {
         /// Uuid for the destination instance
         #[clap(short = 'u', action)]
         dst_uuid: Option<Uuid>,
+
+        /// File with a JSON array of DiskRequest structs
+        #[clap(long, action)]
+        crucible_disks: Option<PathBuf>,
     },
 
     /// Monitor an instance's state in real time
@@ -411,6 +415,7 @@ async fn migrate_instance(
     dst_client: Client,
     src_addr: SocketAddr,
     dst_uuid: Uuid,
+    disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
     // Grab the instance details
     let src_instance = src_client
@@ -425,9 +430,9 @@ async fn migrate_instance(
             id: dst_uuid,
             ..src_instance.instance.properties
         },
-        // TODO: Handle migrating NICs & disks
+        // TODO: Handle migrating NICs
         nics: vec![],
-        disks: vec![],
+        disks,
         migrate: Some(InstanceMigrateInitiateRequest {
             migration_id: Uuid::new_v4(),
             src_addr,
@@ -570,11 +575,16 @@ async fn main() -> anyhow::Result<()> {
         Command::Get => get_instance(&client).await?,
         Command::State { state } => put_instance(&client, state).await?,
         Command::Serial { byte_offset } => serial(addr, byte_offset).await?,
-        Command::Migrate { dst_server, dst_port, dst_uuid } => {
+        Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
             let dst_client = Client::new(dst_addr, log.clone());
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
-            migrate_instance(client, dst_client, addr, dst_uuid).await?
+            let disks = if let Some(crucible_disks) = crucible_disks {
+                parse_json_file(&crucible_disks)?
+            } else {
+                vec![]
+            };
+            migrate_instance(client, dst_client, addr, dst_uuid, disks).await?
         }
         Command::Monitor => monitor(addr).await?,
         Command::InjectNmi => inject_nmi(&client).await?,
