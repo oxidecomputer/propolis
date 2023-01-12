@@ -207,11 +207,14 @@ impl CrucibleDisk {
             downstairs_instances,
             read_only_parent: read_only_parent
                 .map(|p| p.as_ref().to_path_buf()),
-            encryption_key: base64::encode({
-                let mut bytes: [u8; 32] = [0; 32];
-                StdRng::from_entropy().fill_bytes(&mut bytes);
-                bytes
-            }),
+            encryption_key: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                {
+                    let mut bytes: [u8; 32] = [0; 32];
+                    StdRng::from_entropy().fill_bytes(&mut bytes);
+                    bytes
+                },
+            ),
             guest_os,
             generation: AtomicU64::new(1),
         })

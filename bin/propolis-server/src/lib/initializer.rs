@@ -329,7 +329,11 @@ impl<'a> MachineInitializer<'a> {
                         StorageBackendInstance { be, child, crucible: None }
                     }
                     StorageBackendKind::InMemory { base64 } => {
-                        let bytes = base64::decode(base64).map_err(|e| {
+                        let bytes = base64::Engine::decode(
+                            &base64::engine::general_purpose::STANDARD,
+                            base64,
+                        )
+                        .map_err(|e| {
                             Error::new(
                                 std::io::ErrorKind::InvalidData,
                                 format!(

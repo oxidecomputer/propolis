@@ -549,7 +549,10 @@ async fn main() -> anyhow::Result<()> {
                 vec![]
             };
             let cloud_init_bytes = if let Some(cloud_init) = cloud_init {
-                Some(base64::encode(std::fs::read(&cloud_init)?))
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    std::fs::read(&cloud_init)?,
+                ))
             } else {
                 None
             };
