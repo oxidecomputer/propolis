@@ -112,19 +112,20 @@
         }
       }
     },
-    "/instance/migrate/status": {
+    "/instance/migrate/{migration_id}/status": {
       "get": {
         "operationId": "instance_migrate_status",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/InstanceMigrateStatusRequest"
-              }
+        "parameters": [
+          {
+            "in": "path",
+            "name": "migration_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
-          },
-          "required": true
-        },
+          }
+        ],
         "responses": {
           "200": {
             "description": "successful operation",
@@ -779,18 +780,6 @@
         ]
       },
       "InstanceMigrateInitiateResponse": {
-        "type": "object",
-        "properties": {
-          "migration_id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        },
-        "required": [
-          "migration_id"
-        ]
-      },
-      "InstanceMigrateStatusRequest": {
         "type": "object",
         "properties": {
           "migration_id": {

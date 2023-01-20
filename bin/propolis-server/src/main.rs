@@ -12,6 +12,7 @@ use propolis::usdt::register_probes;
 use slog::info;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use propolis_server::server::MetricsEndpointConfig;
 use propolis_server::vnc::setup_vnc;
@@ -106,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
             let server = HttpServerStarter::new(
                 &config_dropshot,
                 server::api(),
-                context,
+                Arc::new(context),
                 &log,
             )
             .map_err(|error| anyhow!("Failed to start server: {}", error))?

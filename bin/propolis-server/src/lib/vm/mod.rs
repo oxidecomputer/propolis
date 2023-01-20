@@ -48,7 +48,9 @@ use propolis_client::handmade::{
 use propolis_client::instance_spec::InstanceSpec;
 use slog::{error, info, Logger};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::oneshot;
+use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
 use crate::{
@@ -673,14 +675,13 @@ impl VmController {
     ///
     /// On success, clients may query the instance's migration status to
     /// determine how the migration has progressed.
-    pub fn request_migration_from<F>(
+    pub fn request_migration_from<
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    >(
         &self,
         migration_id: Uuid,
-        upgrade_fn: F,
-    ) -> Result<(), VmControllerError>
-    where
-        F: FnOnce() -> Result<hyper::upgrade::OnUpgrade, MigrateError>,
-    {
+        conn: WebSocketStream<T>,
+    ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
         match inner.lifecycle_stage {
             LifecycleStage::NotStarted(_) => {
@@ -695,7 +696,6 @@ impl VmController {
                 } else if inner.halt_pending {
                     Err(VmControllerError::InstanceHaltPending)
                 } else {
-                    let upgrade_fut = upgrade_fn()?;
                     inner.migrate_from_pending = true;
 
                     // Update the migration state before the task starts so that
@@ -707,10 +707,7 @@ impl VmController {
                     inner.migration_state =
                         Some((migration_id, ApiMigrationState::Sync));
                     inner.external_request_queue.push_back(
-                        self.launch_source_migration_task(
-                            migration_id,
-                            upgrade_fut,
-                        ),
+                        self.launch_source_migration_task(migration_id, conn),
                     );
                     self.worker_state.cv.notify_one();
                     Ok(())
@@ -725,10 +722,12 @@ impl VmController {
     /// Launches a task that will execute a live migration out of this VM.
     /// Returns a state change request message to queue to the state driver,
     /// which will coordinate with this task to run the migration.
-    fn launch_source_migration_task(
+    fn launch_source_migration_task<
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    >(
         &self,
         migration_id: Uuid,
-        upgrade_fut: hyper::upgrade::OnUpgrade,
+        conn: WebSocketStream<T>,
     ) -> ExternalRequest {
         let log_for_task =
             self.log.new(slog::o!("component" => "migrate_source_task"));
@@ -743,15 +742,6 @@ impl VmController {
         let task = self.runtime_hdl.spawn(async move {
             info!(log_for_task, "Waiting to be told to start");
             start_rx.await.unwrap();
-
-            info!(log_for_task, "Upgrading HTTP connection");
-            let conn = match upgrade_fut.await {
-                Ok(upgraded) => upgraded,
-                Err(e) => {
-                    error!(log_for_task, "Connection upgrade failed: {}", e);
-                    return Err(e.into());
-                }
-            };
 
             info!(log_for_task, "Starting migration procedure");
             if let Err(e) = crate::migrate::source::migrate(
@@ -791,19 +781,17 @@ impl VmController {
     ///
     /// On success, clients may query the instance's migration status to
     /// determine how the migration has progressed.
-    pub fn request_migration_into<F>(
+    pub fn request_migration_into<
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    >(
         &self,
         migration_id: Uuid,
-        upgrade_fn: F,
-    ) -> Result<(), VmControllerError>
-    where
-        F: FnOnce() -> Result<hyper::upgrade::OnUpgrade, MigrateError>,
-    {
+        conn: WebSocketStream<T>,
+    ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
         match inner.lifecycle_stage {
             LifecycleStage::NotStarted(substage) => match substage {
                 StartupStage::ColdBoot => {
-                    let upgrade_fut = upgrade_fn()?;
                     inner.lifecycle_stage = LifecycleStage::NotStarted(
                         StartupStage::MigratePending,
                     );
@@ -817,10 +805,7 @@ impl VmController {
                     inner.migration_state =
                         Some((migration_id, ApiMigrationState::Sync));
                     inner.external_request_queue.push_back(
-                        self.launch_target_migration_task(
-                            migration_id,
-                            upgrade_fut,
-                        ),
+                        self.launch_target_migration_task(migration_id, conn),
                     );
                     self.worker_state.cv.notify_one();
                     Ok(())
@@ -847,10 +832,12 @@ impl VmController {
     /// Launches a task that will execute a live migration into this VM.
     /// Returns a state change request message to queue to the state driver,
     /// which will coordinate with this task to run the migration.
-    fn launch_target_migration_task(
+    fn launch_target_migration_task<
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    >(
         &self,
         migration_id: Uuid,
-        upgrade_fut: hyper::upgrade::OnUpgrade,
+        conn: WebSocketStream<T>,
     ) -> ExternalRequest {
         let log_for_task =
             self.log.new(slog::o!("component" => "migrate_source_task"));
@@ -864,15 +851,6 @@ impl VmController {
         let task = self.runtime_hdl.spawn(async move {
             info!(log_for_task, "Waiting to be told to start");
             start_rx.await.unwrap();
-
-            info!(log_for_task, "Upgrading HTTP connection");
-            let conn = match upgrade_fut.await {
-                Ok(upgraded) => upgraded,
-                Err(e) => {
-                    error!(log_for_task, "Connection upgrade failed: {}", e);
-                    return Err(e.into());
-                }
-            };
 
             info!(log_for_task, "Starting migration procedure");
             if let Err(e) = crate::migrate::destination::migrate(
