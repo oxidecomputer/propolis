@@ -43,7 +43,7 @@ serde.workspace = true
 serde_derive.workspace = true
 serde_json.workspace = true
 slog.workspace = true
-propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
+propolis.workspace = true
 propolis-client = { workspace = true, features = ["generated"] }
 propolis-server-config.workspace = true
 rfb.workspace = true
@@ -64,6 +64,7 @@ mockall.workspace = true
 version_check.workspace = true
 
 [features]
-default = ["dtrace-probes"]
+default = ["dtrace-probes", "propolis/crucible-full", "propolis/oximeter"]
 dtrace-probes = ["propolis/dtrace-probes", "dropshot/usdt-probes"]
 falcon = ["propolis/falcon"]
+mock-only = []
