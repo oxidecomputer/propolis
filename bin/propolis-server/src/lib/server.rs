@@ -15,7 +15,6 @@ use dropshot::{
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use hyper::{Body, Response};
 use oximeter::types::ProducerRegistry;
 use propolis_client::{
     handmade::api,
@@ -328,7 +327,7 @@ async fn register_oximeter(
 }
 
 async fn instance_ensure_common(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: api::InstanceSpecEnsureRequest,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
@@ -503,7 +502,7 @@ async fn instance_ensure_common(
     path = "/instance",
 }]
 async fn instance_ensure(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
@@ -536,14 +535,14 @@ async fn instance_ensure(
     path = "/instance/spec",
 }]
 async fn instance_spec_ensure(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceSpecEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     instance_ensure_common(rqctx, request.into_inner()).await
 }
 
 async fn instance_get_common(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<(api::Instance, InstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
@@ -586,7 +585,7 @@ async fn instance_get_common(
     path = "/instance/spec",
 }]
 async fn instance_spec_get(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
     let (instance, spec) = instance_get_common(rqctx).await?;
     Ok(HttpResponseOk(api::InstanceSpecGetResponse {
@@ -601,7 +600,7 @@ async fn instance_spec_get(
     path = "/instance",
 }]
 async fn instance_get(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
     let (instance, _) = instance_get_common(rqctx).await?;
     Ok(HttpResponseOk(api::InstanceGetResponse { instance }))
@@ -612,7 +611,7 @@ async fn instance_get(
     path = "/instance/state-monitor",
 }]
 async fn instance_state_monitor(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceStateMonitorRequest>,
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
     let ctx = rqctx.context();
@@ -658,7 +657,7 @@ async fn instance_state_monitor(
     path = "/instance/state",
 }]
 async fn instance_state_put(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceStateRequested>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let ctx = rqctx.context();
@@ -687,7 +686,7 @@ async fn instance_state_put(
     path = "/instance/serial/history",
 }]
 async fn instance_serial_history_get(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     query: Query<api::InstanceSerialConsoleHistoryRequest>,
 ) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
 {
@@ -731,9 +730,9 @@ async fn instance_serial_history_get(
     path = "/instance/serial",
 }]
 async fn instance_serial(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    websock: WebsocketConnection,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     query: Query<api::InstanceSerialConsoleStreamRequest>,
+    websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
     let vm = ctx.vm().await?;
@@ -790,28 +789,36 @@ async fn instance_serial(
 // instance to the source instance as part of the HTTP connection upgrade used to
 // establish the migration link. We don't actually want this exported via OpenAPI
 // clients.
-#[endpoint {
-    method = PUT,
-    path = "/instance/migrate/start",
+#[channel {
+    protocol = WEBSOCKETS,
+    path = "/instance/migrate/{migration_id}/start",
     unpublished = true,
 }]
 async fn instance_migrate_start(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceMigrateStartRequest>,
-) -> Result<Response<Body>, HttpError> {
-    let migration_id = request.into_inner().migration_id;
-    crate::migrate::source_start(rqctx, migration_id).await.map_err(Into::into)
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    path_params: Path<api::InstanceMigrateStartRequest>,
+    websock: WebsocketConnection,
+) -> dropshot::WebsocketChannelResult {
+    let migration_id = path_params.into_inner().migration_id;
+    let conn = WebSocketStream::from_raw_socket(
+        websock.into_inner(),
+        Role::Server,
+        None,
+    )
+    .await;
+    crate::migrate::source_start(rqctx, migration_id, conn).await?;
+    Ok(())
 }
 
 #[endpoint {
     method = GET,
-    path = "/instance/migrate/status"
+    path = "/instance/migrate/{migration_id}/status"
 }]
 async fn instance_migrate_status(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceMigrateStatusRequest>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    path_params: Path<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
-    let migration_id = request.into_inner().migration_id;
+    let migration_id = path_params.into_inner().migration_id;
     let vm = rqctx.context().vm().await?;
     vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
         HttpResponseOk(api::InstanceMigrateStatusResponse { state })
@@ -824,7 +831,7 @@ async fn instance_migrate_status(
     path = "/instance/disk/{id}/snapshot/{snapshot_id}",
 }]
 async fn instance_issue_crucible_snapshot_request(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let inst = rqctx.context().vm().await?;
@@ -848,7 +855,7 @@ async fn instance_issue_crucible_snapshot_request(
     path = "/instance/nmi",
 }]
 async fn instance_issue_nmi(
-    rqctx: Arc<RequestContext<DropshotEndpointContext>>,
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let vm = rqctx.context().vm().await?;
     vm.inject_nmi();
@@ -857,7 +864,7 @@ async fn instance_issue_nmi(
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
-pub fn api() -> ApiDescription<DropshotEndpointContext> {
+pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
     api.register(instance_spec_ensure).unwrap();

@@ -1,15 +1,16 @@
 use futures::{SinkExt, StreamExt};
-use hyper::upgrade::Upgraded;
 use propolis::common::GuestAddr;
 use propolis::inventory::Order;
 use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info};
+use std::convert::TryInto;
 use std::io;
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
-use tokio_util::codec::Framed;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_tungstenite::WebSocketStream;
 
-use crate::migrate::codec::{self, LiveMigrationFramer};
+use crate::migrate::codec;
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::{
@@ -17,11 +18,11 @@ use crate::migrate::{
 };
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
-pub async fn migrate(
+pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     vm_controller: Arc<VmController>,
     command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
     response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
-    conn: Upgraded,
+    conn: WebSocketStream<T>,
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
     let mut proto =
@@ -37,14 +38,14 @@ pub async fn migrate(
         // Note, we don't use `?` here as this is a best effort and we don't
         // want an error encountered during this send to shadow the run error
         // from the caller.
-        let _ = proto.conn.send(codec::Message::Error(err.clone())).await;
+        let _ = proto.send_msg(codec::Message::Error(err.clone())).await;
         return Err(err);
     }
 
     Ok(())
 }
 
-struct SourceProtocol {
+struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     /// The VM controller for the instance of interest.
     vm_controller: Arc<VmController>,
 
@@ -57,23 +58,17 @@ struct SourceProtocol {
     response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
 
     /// Transport to the destination Instance.
-    conn: Framed<Upgraded, LiveMigrationFramer>,
+    conn: WebSocketStream<T>,
 }
 
-impl SourceProtocol {
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     fn new(
         vm_controller: Arc<VmController>,
         command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
         response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
-        conn: Upgraded,
+        conn: WebSocketStream<T>,
     ) -> Self {
-        let codec_log = vm_controller.log().new(slog::o!());
-        Self {
-            vm_controller,
-            command_tx,
-            response_rx,
-            conn: Framed::new(conn, LiveMigrationFramer::new(codec_log)),
-        }
+        Self { vm_controller, command_tx, response_rx, conn }
     }
 
     fn log(&self) -> &slog::Logger {
@@ -323,6 +318,9 @@ impl SourceProtocol {
                     io::ErrorKind::BrokenPipe,
                 ))
             })?
+            .map_err(|e| codec::ProtocolError::WebsocketError(e))
+            // convert tungstenite::Message to codec::Message
+            .and_then(std::convert::TryInto::try_into)
             // If this is an error message, lift that out
             .map(|msg| match msg {
                 codec::Message::Error(err) => {
@@ -365,7 +363,7 @@ impl SourceProtocol {
         &mut self,
         m: codec::Message,
     ) -> Result<(), MigrateError> {
-        Ok(self.conn.send(m).await?)
+        Ok(self.conn.send(m.try_into()?).await?)
     }
 
     async fn vmm_ram_bounds(

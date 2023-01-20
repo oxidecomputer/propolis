@@ -181,14 +181,11 @@ impl Client {
         &self,
         migration_id: Uuid,
     ) -> Result<api::InstanceMigrateStatusResponse, Error> {
-        let path = format!("http://{}/instance/migrate/status", self.address);
-        let body = Body::from(
-            serde_json::to_string(&api::InstanceMigrateStatusRequest {
-                migration_id,
-            })
-            .unwrap(),
+        let path = format!(
+            "http://{}/instance/migrate/{}/status",
+            self.address, migration_id
         );
-        self.get(path, Some(body)).await
+        self.get(path, None).await
     }
 
     /// Returns the WebSocket URI to an instance's serial console stream.
