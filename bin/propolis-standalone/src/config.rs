@@ -8,12 +8,12 @@ use propolis::block;
 use propolis::hw::pci::Bdf;
 use propolis::inventory::ChildRegister;
 
-use propolis_standalone_shared as shared;
-pub use shared::Config;
+use propolis_standalone_config::Device;
+pub use propolis_standalone_config::{Config, SnapshotTag};
 
 pub fn block_backend(
-    config: &shared::Config,
-    dev: &shared::Device,
+    config: &Config,
+    dev: &Device,
     log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();

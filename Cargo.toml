@@ -94,6 +94,7 @@ progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "ma
 propolis = { path = "lib/propolis", default-features = false }
 propolis-client = { path = "lib/propolis-client" }
 propolis-server-config = { path = "crates/propolis-server-config" }
+propolis-standalone-config = { path = "crates/propolis-standalone-config" }
 propolis_types = { path = "crates/propolis-types" }
 quote = "1.0"
 rand = "0.8"

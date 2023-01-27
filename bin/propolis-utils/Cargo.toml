@@ -1,0 +1,16 @@
+[package]
+name = "propolis-utils"
+version = "0.0.0"
+license = "MPL-2.0"
+edition = "2021"
+
+[[bin]]
+name = "savex"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+propolis = { workspace = true, default-features = false }
+serde_json.workspace = true
+propolis-standalone-config = { workspace = true }

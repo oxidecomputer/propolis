@@ -4,8 +4,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use clap::{Parser, Subcommand};
 
-use propolis_standalone_shared as shared;
-use shared::SnapshotTag;
+use propolis_standalone_config::SnapshotTag;
 
 #[derive(Subcommand)]
 enum Field {

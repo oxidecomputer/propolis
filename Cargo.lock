@@ -2928,6 +2928,7 @@ dependencies = [
  "libc",
  "num_enum",
  "propolis",
+ "propolis-standalone-config",
  "serde",
  "serde_json",
  "slog",
@@ -2935,6 +2936,28 @@ dependencies = [
  "slog-term",
  "tokio",
  "toml 0.5.11",
+]
+
+[[package]]
+name = "propolis-standalone-config"
+version = "0.0.0"
+dependencies = [
+ "num_enum",
+ "serde",
+ "serde_derive",
+ "toml 0.5.11",
+]
+
+[[package]]
+name = "propolis-utils"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap 3.2.23",
+ "propolis",
+ "propolis-standalone-config",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

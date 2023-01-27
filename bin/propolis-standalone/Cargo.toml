@@ -5,16 +5,9 @@ authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
 edition = "2018"
 
-[lib]
-name = "propolis_standalone_shared"
-path = "src/lib.rs"
-
 [[bin]]
 name = "propolis-standalone"
 path = "src/main.rs"
-
-[[bin]]
-name = "savex"
 
 [dependencies]
 anyhow.workspace = true
@@ -26,6 +19,7 @@ toml.workspace = true
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
 serde = { workspace = true, features = ["derive"] }
 propolis.workspace = true
+propolis-standalone-config = { workspace = true }
 erased-serde.workspace = true
 serde_json.workspace = true
 slog.workspace = true

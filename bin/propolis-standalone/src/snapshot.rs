@@ -30,9 +30,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 
+use super::config::{Config, SnapshotTag};
 use super::Instance;
-use propolis_standalone_shared as shared;
-use shared::{Config, SnapshotTag};
 
 /// Save a snapshot of the current state of the given instance to disk.
 pub(crate) async fn save(
