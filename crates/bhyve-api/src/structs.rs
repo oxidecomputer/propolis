@@ -383,6 +383,50 @@ impl Default for vm_data_xfer {
     }
 }
 
+/// Use index (ecx) input value when matching entry
+pub const VCE_FLAG_MATCH_INDEX: u32 = 1 << 0;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct vcpu_cpuid_entry {
+    vce_function: u32,
+    vce_index: u32,
+    vce_flags: u32,
+    vce_eax: u32,
+    vce_ebx: u32,
+    vce_ecx: u32,
+    vce_edx: u32,
+    _pad: u32,
+}
+
+/// Use legacy hard-coded cpuid masking tables applied to the host CPU
+pub const VCC_FLAG_LEGACY_HANDLING: u32 = 1 << 0;
+
+/// Emulate Intel-style fallback behavior (emit highest "standard" entry) if the
+/// queried function/index do not match.  If not set, emulate AMD-style, where
+/// all zeroes are returned in such cases.
+pub const VCC_FLAG_INTEL_FALLBACK: u32 = 1 << 1;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_vcpu_cpuid_config {
+    pub vvcc_vcpuid: c_int,
+    pub vvcc_flags: u32,
+    pub vvcc_nent: u32,
+    pub _pad: u32,
+    pub vvcc_entries: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vm_legacy_cpuid {
+    pub vlc_vcpuid: c_int,
+    pub vlc_eax: u32,
+    pub vlc_ebx: u32,
+    pub vlc_ecx: u32,
+    pub vlc_edx: u32,
+}
+
 pub const VM_MAX_NAMELEN: usize = 128;
 pub const VM_MAX_SEG_NAMELEN: usize = 128;
 

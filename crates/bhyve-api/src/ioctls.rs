@@ -43,6 +43,9 @@ pub const VM_GET_RUN_STATE: i32 = VMM_CPU_IOC_BASE | 0x17;
 pub const VM_SET_RUN_STATE: i32 = VMM_CPU_IOC_BASE | 0x18;
 pub const VM_GET_FPU: i32 = VMM_CPU_IOC_BASE | 0x19;
 pub const VM_SET_FPU: i32 = VMM_CPU_IOC_BASE | 0x1a;
+pub const VM_GET_CPUID: i32 = VMM_CPU_IOC_BASE | 0x1b;
+pub const VM_SET_CPUID: i32 = VMM_CPU_IOC_BASE | 0x1c;
+pub const VM_LEGACY_CPUID: i32 = VMM_CPU_IOC_BASE | 0x1d;
 
 // Operations requiring write-locking the VM
 pub const VM_REINIT: i32 = VMM_LOCK_IOC_BASE | 0x01;
