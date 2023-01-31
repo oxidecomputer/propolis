@@ -9,17 +9,14 @@
 
 use erased_serde::{Deserializer, Serialize};
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Error, ErrorKind, Result, Write};
 use std::os::raw::c_void;
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::common::PAGE_SIZE;
 use crate::migrate::MigrateStateError;
-use crate::util::sys::{ioctl, ioctl_usize};
 use crate::vmm::mem::Prot;
 
 #[derive(Default, Copy, Clone)]
@@ -46,20 +43,8 @@ pub struct CreateOpts {
 /// # Arguments
 /// - `name`: The name of the VM to create.
 /// - `opts`: Creation options (detailed in `CreateOpts`)
-pub(crate) fn create_vm(
-    name: impl AsRef<str>,
-    opts: CreateOpts,
-) -> Result<VmmHdl> {
-    create_vm_impl(name.as_ref(), opts)
-}
-
-#[cfg(target_os = "illumos")]
-fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
-    let ctl = OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_EXCL)
-        .open(bhyve_api::VMM_CTL_PATH)?;
-    let ctlfd = ctl.as_raw_fd();
+pub(crate) fn create_vm(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
+    let ctl = bhyve_api::VmmCtlFd::open()?;
 
     let mut req = bhyve_api::vm_create_req::new(name);
     if opts.use_reservoir {
@@ -68,39 +53,28 @@ fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
     if opts.track_dirty {
         req.flags |= bhyve_api::VCF_TRACK_DIRTY;
     }
-    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
-    if res != 0 {
-        let err = Error::last_os_error();
-        if err.kind() != ErrorKind::AlreadyExists || !opts.force {
-            return Err(err);
+    let res = unsafe { ctl.ioctl(bhyve_api::VMM_CREATE_VM, &mut req) };
+    if let Err(e) = res {
+        if e.kind() != ErrorKind::AlreadyExists || !opts.force {
+            return Err(e);
         }
 
         // try to nuke(!) the existing vm
-        let dreq = bhyve_api::vm_destroy_req::new(name);
-        let res =
-            unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, &dreq) };
-        if res != 0 {
-            let err = Error::last_os_error();
-            if err.kind() != ErrorKind::NotFound {
-                return Err(err);
-            }
-        }
+        let mut dreq = bhyve_api::vm_destroy_req::new(name);
+        let _ = unsafe { ctl.ioctl(bhyve_api::VMM_DESTROY_VM, &mut dreq) }
+            .or_else(|e| match e.kind() {
+                ErrorKind::NotFound => Ok(0),
+                _ => Err(e),
+            })?;
 
         // now attempt to create in its presumed absence
-        let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_CREATE_VM, &req) };
-        if res != 0 {
-            return Err(Error::last_os_error());
-        }
+        let _ = unsafe { ctl.ioctl(bhyve_api::VMM_CREATE_VM, &mut req) }?;
     }
-
-    let mut vmpath = PathBuf::from(bhyve_api::VMM_PATH_PREFIX);
-    vmpath.push(name);
-
-    let fp = OpenOptions::new().write(true).read(true).open(vmpath)?;
 
     // Safety: Files opened within VMM_PATH_PREFIX are VMMs, which may not be
     // truncated.
-    let inner = unsafe { VmmFile::new(fp) };
+    let inner = bhyve_api::VmmFd::open(name)?;
+
     Ok(VmmHdl {
         inner,
         destroyed: AtomicBool::new(false),
@@ -109,41 +83,16 @@ fn create_vm_impl(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
         is_test_hdl: false,
     })
 }
-#[cfg(not(target_os = "illumos"))]
-fn create_vm_impl(_name: &str, _opts: CreateOpts) -> Result<VmmHdl> {
-    {
-        // suppress unused warnings
-        let mut _oo = OpenOptions::new();
-        _oo.mode(0o444);
-        let _flag = libc::O_EXCL;
-        let _pathbuf = PathBuf::new();
-    }
-    Err(Error::new(ErrorKind::Other, "illumos required"))
-}
 
-#[cfg(target_os = "illumos")]
 /// Destroys the virtual machine matching the provided `name`.
 fn destroy_vm_impl(name: &str) -> Result<()> {
-    let ctl = OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_EXCL)
-        .open(bhyve_api::VMM_CTL_PATH)?;
-    let ctlfd = ctl.as_raw_fd();
-
-    let dreq = bhyve_api::vm_destroy_req::new(name);
-    let res = unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_DESTROY_VM, &dreq) };
-    if res != 0 {
-        let err = Error::last_os_error();
-        if err.kind() == ErrorKind::NotFound {
-            return Ok(());
-        }
-        return Err(err);
-    }
-    Ok(())
-}
-#[cfg(not(target_os = "illumos"))]
-/// Destroys the virtual machine matching the provided `name`.
-fn destroy_vm_impl(_name: &str) -> Result<()> {
+    let ctl = bhyve_api::VmmCtlFd::open()?;
+    let mut dreq = bhyve_api::vm_destroy_req::new(name);
+    let _ = unsafe { ctl.ioctl(bhyve_api::VMM_DESTROY_VM, &mut dreq) }
+        .or_else(|e| match e.kind() {
+            ErrorKind::NotFound => Ok(0),
+            _ => Err(e),
+        })?;
     Ok(())
 }
 
@@ -169,7 +118,7 @@ impl VmmFile {
 
 /// A handle to an existing virtual machine monitor.
 pub struct VmmHdl {
-    pub(super) inner: VmmFile,
+    pub(super) inner: bhyve_api::VmmFd,
     destroyed: AtomicBool,
     name: String,
 
@@ -180,7 +129,7 @@ pub struct VmmHdl {
 impl VmmHdl {
     /// Accesses the raw file descriptor behind the VMM.
     pub fn fd(&self) -> RawFd {
-        self.inner.0.as_raw_fd()
+        self.inner.as_raw_fd()
     }
     /// Sends an ioctl to the underlying VMM.
     pub unsafe fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<()> {
@@ -195,7 +144,7 @@ impl VmmHdl {
             return Ok(());
         }
 
-        ioctl(self.fd(), cmd, data)?;
+        self.inner.ioctl(cmd, data)?;
         Ok(())
     }
 
@@ -212,7 +161,7 @@ impl VmmHdl {
             return Ok(());
         }
 
-        ioctl_usize(self.fd(), cmd, data)?;
+        self.inner.ioctl_usize(cmd, data)?;
         Ok(())
     }
 
@@ -445,7 +394,7 @@ impl VmmHdl {
         // This is done through the [ioctl_usize] helper rather than
         // [Self::ioctl_usize], since the latter rejects attempted operations
         // after `destroyed` is set.
-        if let Ok(_) = ioctl_usize(self.fd(), bhyve_api::VM_DESTROY_SELF, 0) {
+        if let Ok(_) = self.inner.ioctl_usize(bhyve_api::VM_DESTROY_SELF, 0) {
             return Ok(());
         }
 
@@ -490,8 +439,9 @@ impl VmmHdl {
         use tempfile::tempfile;
         let fp = tempfile()?;
         fp.set_len(mem_size as u64).unwrap();
+        let inner = unsafe { bhyve_api::VmmFd::new_raw(fp) };
         Ok(Self {
-            inner: VmmFile(fp),
+            inner,
             destroyed: AtomicBool::new(false),
             name: "TEST-ONLY VMM INSTANCE".to_string(),
             is_test_hdl: true,
@@ -499,26 +449,11 @@ impl VmmHdl {
     }
 }
 
-#[cfg(target_os = "illumos")]
 pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
-    let ctl = OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_EXCL)
-        .open(bhyve_api::VMM_CTL_PATH)?;
-    let ctlfd = ctl.as_raw_fd();
-
+    let ctl = bhyve_api::VmmCtlFd::open()?;
     let mut data = bhyve_api::vmm_resv_query::default();
-    let res =
-        unsafe { libc::ioctl(ctlfd, bhyve_api::VMM_RESV_QUERY, &mut data) };
-    if res != 0 {
-        Err(Error::last_os_error())
-    } else {
-        Ok(data)
-    }
-}
-#[cfg(not(target_os = "illumos"))]
-pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
-    Err(Error::new(ErrorKind::Other, "illumos required"))
+    let _ = unsafe { ctl.ioctl(bhyve_api::VMM_RESV_QUERY, &mut data) }?;
+    Ok(data)
 }
 
 pub mod migrate {

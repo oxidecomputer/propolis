@@ -1,18 +1,17 @@
 [package]
-name = "header-check"
+name = "bhyve_api-hdrchk"
 version = "0.0.0"
-authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
 build = "build.rs"
 publish = false
 
 [dependencies]
-bhyve_api = { path = ".." }
+bhyve_api_sys = { path = "../sys" }
 libc = "0.2"
 
 [build-dependencies]
-cc.workspace = true
-ctest2.workspace = true
+cc = "1"
+ctest2 = "0.4"
 
 [[test]]
 name = "main"

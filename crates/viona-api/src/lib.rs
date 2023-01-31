@@ -1,66 +1,81 @@
-const VNA_IOC: i32 = ((b'V' as i32) << 16) | ((b'C' as i32) << 8);
-pub const VNA_IOC_CREATE: i32 = VNA_IOC | 0x01;
-pub const VNA_IOC_DELETE: i32 = VNA_IOC | 0x02;
-pub const VNA_IOC_VERSION: i32 = VNA_IOC | 0x03;
+use std::fs::{File, OpenOptions};
+use std::io::{Error, ErrorKind, Result};
+use std::os::fd::*;
 
-pub const VNA_IOC_RING_INIT: i32 = VNA_IOC | 0x10;
-pub const VNA_IOC_RING_RESET: i32 = VNA_IOC | 0x11;
-pub const VNA_IOC_RING_KICK: i32 = VNA_IOC | 0x12;
-pub const VNA_IOC_RING_SET_MSI: i32 = VNA_IOC | 0x13;
-pub const VNA_IOC_RING_INTR_CLR: i32 = VNA_IOC | 0x14;
-pub const VNA_IOC_RING_SET_STATE: i32 = VNA_IOC | 0x15;
-pub const VNA_IOC_RING_GET_STATE: i32 = VNA_IOC | 0x16;
-pub const VNA_IOC_RING_PAUSE: i32 = VNA_IOC | 0x17;
+pub use viona_api_sys::*;
 
-pub const VNA_IOC_INTR_POLL: i32 = VNA_IOC | 0x20;
-pub const VNA_IOC_SET_FEATURES: i32 = VNA_IOC | 0x21;
-pub const VNA_IOC_GET_FEATURES: i32 = VNA_IOC | 0x22;
-pub const VNA_IOC_SET_NOTIFY_IOP: i32 = VNA_IOC | 0x23;
-
-pub const VIONA_VQ_MAX: u16 = 2;
 pub const VIONA_DEV_PATH: &str = "/dev/viona";
 
-mod structs {
-    #![allow(non_camel_case_types)]
+pub struct VionaFd(File);
+impl VionaFd {
+    pub fn new(link_id: u32, vm_fd: RawFd) -> Result<Self> {
+        let fp =
+            OpenOptions::new().read(true).write(true).open(VIONA_DEV_PATH)?;
 
-    use super::VIONA_VQ_MAX;
+        let this = Self(fp);
 
-    #[repr(C)]
-    pub struct vioc_create {
-        pub c_linkid: u32,
-        pub c_vmfd: i32,
+        let mut vna_create = vioc_create { c_linkid: link_id, c_vmfd: vm_fd };
+        let _ = unsafe { this.ioctl(ioctls::VNA_IOC_CREATE, &mut vna_create) }?;
+        Ok(this)
     }
 
-    #[repr(C)]
-    pub struct vioc_ring_init {
-        pub ri_index: u16,
-        pub ri_qsize: u16,
-        pub _pad: [u16; 2],
-        pub ri_qaddr: u64,
+    /// Issue ioctl against open viona instance
+    ///
+    /// # Safety
+    ///
+    /// Caller is charged with providing `data` argument which is adequate for
+    /// any copyin/copyout actions which may occur as part of the ioctl
+    /// processing.
+    pub unsafe fn ioctl<T>(&self, cmd: i32, data: *mut T) -> Result<i32> {
+        ioctl(self.as_raw_fd(), cmd, data as *mut libc::c_void)
     }
 
-    #[repr(C)]
-    pub struct vioc_ring_msi {
-        pub rm_index: u16,
-        pub _pad: [u16; 3],
-        pub rm_addr: u64,
-        pub rm_msg: u64,
+    pub fn ioctl_usize(&self, cmd: i32, data: usize) -> Result<i32> {
+        if !Self::ioctl_usize_safe(cmd) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "unsafe cmd provided",
+            ));
+        }
+        // Safety: Since we are explicitly filtering for vmm ioctls which will
+        // not assume the data argument is a pointer for copyin/copyout, we can
+        // dismiss those dangers.  The caller is assumed to be cognizant of
+        // other potential side effects.
+        unsafe { ioctl(self.as_raw_fd(), cmd, data as *mut libc::c_void) }
     }
 
-    #[repr(C)]
-    pub struct vioc_intr_poll {
-        pub vip_status: [u32; VIONA_VQ_MAX as usize],
+    /// Check VMM ioctl command against those known to not require any
+    /// copyin/copyout to function.
+    const fn ioctl_usize_safe(cmd: i32) -> bool {
+        matches!(
+            cmd,
+            ioctls::VNA_IOC_DELETE
+                | ioctls::VNA_IOC_RING_RESET
+                | ioctls::VNA_IOC_RING_KICK
+                | ioctls::VNA_IOC_RING_PAUSE
+                | ioctls::VNA_IOC_RING_INTR_CLR
+        )
     }
-
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct vioc_ring_state {
-        pub vrs_index: u16,
-        pub vrs_avail_idx: u16,
-        pub vrs_used_idx: u16,
-        pub vrs_qsize: u16,
-        pub vrs_qaddr: u64,
+}
+impl AsRawFd for VionaFd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
     }
 }
 
-pub use structs::*;
+#[cfg(target_os = "illumos")]
+unsafe fn ioctl(fd: RawFd, cmd: i32, data: *mut libc::c_void) -> Result<i32> {
+    match libc::ioctl(fd, cmd, data) {
+        -1 => Err(Error::last_os_error()),
+        other => Ok(other),
+    }
+}
+
+#[cfg(not(target_os = "illumos"))]
+unsafe fn ioctl(
+    _fd: RawFd,
+    _cmd: i32,
+    _data: *mut libc::c_void,
+) -> Result<i32> {
+    Err(Error::new(ErrorKind::Other, "illumos required"))
+}

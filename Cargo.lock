@@ -247,6 +247,14 @@ checksum = "a4a4ddaa51a5bc52a6948f74c06d20aaaddb71924eab79b8c97a8c556e942d6a"
 name = "bhyve_api"
 version = "0.0.0"
 dependencies = [
+ "bhyve_api_sys",
+ "libc",
+]
+
+[[package]]
+name = "bhyve_api_sys"
+version = "0.0.0"
+dependencies = [
  "libc",
  "num_enum",
  "serde",
@@ -4589,6 +4597,17 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 [[package]]
 name = "viona_api"
 version = "0.0.0"
+dependencies = [
+ "libc",
+ "viona_api_sys",
+]
+
+[[package]]
+name = "viona_api_sys"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "vte"

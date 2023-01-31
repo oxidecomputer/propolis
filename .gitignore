@@ -1,5 +1,6 @@
 /target
 /crates/*/header-check/target
+/crates/*/header-check/Cargo.lock
 debug.out
 core
 out/

@@ -80,5 +80,5 @@ fn main() {
         _ => false,
     });
 
-    cfg.generate("../src/lib.rs", "main.rs");
+    cfg.generate("../sys/src/lib.rs", "main.rs");
 }

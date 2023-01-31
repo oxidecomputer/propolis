@@ -1,10 +1,11 @@
 [package]
 name = "viona_api"
 version = "0.0.0"
-authors = ["Patrick Mooney <pmooney@oxide.computer>"]
 license = "MPL-2.0"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+libc.workspace = true
+viona_api_sys.workspace = true

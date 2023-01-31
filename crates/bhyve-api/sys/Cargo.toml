@@ -1,5 +1,5 @@
 [package]
-name = "bhyve_api"
+name = "bhyve_api_sys"
 version = "0.0.0"
 license = "MPL-2.0"
 edition = "2018"
@@ -8,4 +8,6 @@ edition = "2018"
 
 [dependencies]
 libc.workspace = true
-bhyve_api_sys.workspace = true
+num_enum.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_arrays = { workspace = true }
