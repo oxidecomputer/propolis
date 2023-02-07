@@ -2,7 +2,7 @@
 #:
 #: name = "phd-build"
 #: variety = "basic"
-#: target = "helios"
+#: target = "helios-latest"
 #: rust_toolchain = "stable"
 #: output_rules = [
 #:   "/out/*",
