@@ -760,7 +760,8 @@ impl PciNvme {
             }
 
             CtrlrReg::DoorBellAdminSQ => {
-                let val = wo.read_u32().try_into().unwrap();
+                // 32-bit register but ignore reserved top 16-bits
+                let val = wo.read_u32() as u16;
                 let state = self.state.lock().unwrap();
                 let admin_sq = state.get_admin_sq();
                 admin_sq.notify_tail(val)?;
@@ -769,7 +770,8 @@ impl PciNvme {
                 self.process_admin_queue(state, admin_sq)?;
             }
             CtrlrReg::DoorBellAdminCQ => {
-                let val = wo.read_u32().try_into().unwrap();
+                // 32-bit register but ignore reserved top 16-bits
+                let val = wo.read_u32() as u16;
                 let state = self.state.lock().unwrap();
                 let admin_cq = state.get_admin_cq();
                 admin_cq.notify_head(val)?;
@@ -794,7 +796,8 @@ impl PciNvme {
                 // But note that we only support CAP.DSTRD = 0
                 let off = wo.offset() - 0x1000;
 
-                let val: u16 = wo.read_u32().try_into().unwrap();
+                // 32-bit register but ignore reserved top 16-bits
+                let val = wo.read_u32() as u16;
                 let state = self.state.lock().unwrap();
 
                 if (off >> 2) & 0b1 == 0b1 {
