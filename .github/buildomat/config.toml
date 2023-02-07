@@ -8,3 +8,10 @@ enable = true
 # Require approval for pull requests made by users outside our organisation.
 #
 org_only = true
+
+#
+# Allow jobs on pull requests from automated services specified here.
+#
+allow_users = [
+	"dependabot[bot]",
+]
