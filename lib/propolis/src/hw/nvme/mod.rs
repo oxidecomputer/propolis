@@ -298,21 +298,13 @@ impl NvmeCtrl {
     }
 
     /// Returns a reference to the Admin [`CompQueue`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the Admin Completion Queue hasn't been created yet.
-    fn get_admin_cq(&self) -> Arc<CompQueue> {
-        self.get_cq(queue::ADMIN_QUEUE_ID).unwrap()
+    fn get_admin_cq(&self) -> Result<Arc<CompQueue>, NvmeError> {
+        self.get_cq(queue::ADMIN_QUEUE_ID)
     }
 
     /// Returns a reference to the Admin [`SubQueue`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the Admin Submission Queue hasn't been created yet.
-    fn get_admin_sq(&self) -> Arc<SubQueue> {
-        self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
+    fn get_admin_sq(&self) -> Result<Arc<SubQueue>, NvmeError> {
+        self.get_sq(queue::ADMIN_QUEUE_ID)
     }
 
     /// Configure Controller
@@ -774,7 +766,7 @@ impl PciNvme {
                     ));
                 }
 
-                let admin_sq = state.get_admin_sq();
+                let admin_sq = state.get_admin_sq()?;
                 admin_sq.notify_tail(val)?;
 
                 // Process any new SQ entries
@@ -795,14 +787,14 @@ impl PciNvme {
                     ));
                 }
 
-                let admin_cq = state.get_admin_cq();
+                let admin_cq = state.get_admin_cq()?;
                 admin_cq.notify_head(val)?;
 
                 // We may have skipped pulling entries off the admin sq
                 // due to no available completion entry permit, so just
                 // kick it here again in case.
                 if admin_cq.kick() {
-                    let admin_sq = state.get_admin_sq();
+                    let admin_sq = state.get_admin_sq()?;
                     self.process_admin_queue(state, admin_sq)?;
                 }
             }
@@ -878,7 +870,7 @@ impl PciNvme {
         }
 
         // Grab the Admin CQ too
-        let cq = state.get_admin_cq();
+        let cq = state.get_admin_cq()?;
 
         let mem = self.mem_access();
         if mem.is_none() {
