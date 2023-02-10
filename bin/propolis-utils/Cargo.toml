@@ -7,10 +7,15 @@ edition = "2021"
 [[bin]]
 name = "savex"
 
+[[bin]]
+name = "cpuid-gen"
+
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, default-features = false }
+bhyve_api = { workspace = true }
+libc = { workspace = true }
 serde_json.workspace = true
 propolis-standalone-config = { workspace = true }

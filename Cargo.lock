@@ -2961,7 +2961,9 @@ name = "propolis-utils"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bhyve_api",
  "clap 3.2.23",
+ "libc",
  "propolis",
  "propolis-standalone-config",
  "serde",
