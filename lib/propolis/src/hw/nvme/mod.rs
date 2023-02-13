@@ -298,21 +298,13 @@ impl NvmeCtrl {
     }
 
     /// Returns a reference to the Admin [`CompQueue`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the Admin Completion Queue hasn't been created yet.
-    fn get_admin_cq(&self) -> Arc<CompQueue> {
-        self.get_cq(queue::ADMIN_QUEUE_ID).unwrap()
+    fn get_admin_cq(&self) -> Result<Arc<CompQueue>, NvmeError> {
+        self.get_cq(queue::ADMIN_QUEUE_ID)
     }
 
     /// Returns a reference to the Admin [`SubQueue`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the Admin Submission Queue hasn't been created yet.
-    fn get_admin_sq(&self) -> Arc<SubQueue> {
-        self.get_sq(queue::ADMIN_QUEUE_ID).unwrap()
+    fn get_admin_sq(&self) -> Result<Arc<SubQueue>, NvmeError> {
+        self.get_sq(queue::ADMIN_QUEUE_ID)
     }
 
     /// Configure Controller
@@ -760,25 +752,49 @@ impl PciNvme {
             }
 
             CtrlrReg::DoorBellAdminSQ => {
-                let val = wo.read_u32().try_into().unwrap();
+                // 32-bit register but ignore reserved top 16-bits
+                let val = wo.read_u32() as u16;
                 let state = self.state.lock().unwrap();
-                let admin_sq = state.get_admin_sq();
+
+                if !state.ctrl.cc.enabled() {
+                    slog::warn!(
+                        self.log,
+                        "Doorbell write while controller is disabled"
+                    );
+                    return Err(NvmeError::InvalidSubQueue(
+                        queue::ADMIN_QUEUE_ID,
+                    ));
+                }
+
+                let admin_sq = state.get_admin_sq()?;
                 admin_sq.notify_tail(val)?;
 
                 // Process any new SQ entries
                 self.process_admin_queue(state, admin_sq)?;
             }
             CtrlrReg::DoorBellAdminCQ => {
-                let val = wo.read_u32().try_into().unwrap();
+                // 32-bit register but ignore reserved top 16-bits
+                let val = wo.read_u32() as u16;
                 let state = self.state.lock().unwrap();
-                let admin_cq = state.get_admin_cq();
+
+                if !state.ctrl.cc.enabled() {
+                    slog::warn!(
+                        self.log,
+                        "Doorbell write while controller is disabled"
+                    );
+                    return Err(NvmeError::InvalidCompQueue(
+                        queue::ADMIN_QUEUE_ID,
+                    ));
+                }
+
+                let admin_cq = state.get_admin_cq()?;
                 admin_cq.notify_head(val)?;
 
                 // We may have skipped pulling entries off the admin sq
                 // due to no available completion entry permit, so just
                 // kick it here again in case.
                 if admin_cq.kick() {
-                    let admin_sq = state.get_admin_sq();
+                    let admin_sq = state.get_admin_sq()?;
                     self.process_admin_queue(state, admin_sq)?;
                 }
             }
@@ -793,14 +809,30 @@ impl PciNvme {
                 //
                 // But note that we only support CAP.DSTRD = 0
                 let off = wo.offset() - 0x1000;
+                let is_cq = (off >> 2) & 0b1 == 0b1;
+                let qid = if is_cq { (off - 4) >> 3 } else { off >> 3 };
 
-                let val: u16 = wo.read_u32().try_into().unwrap();
+                // Queue IDs should be 16-bit and we know `off <= CONTROLLER_REG_SZ (0x4000)`
+                let qid = qid.try_into().unwrap();
+
                 let state = self.state.lock().unwrap();
+                if !state.ctrl.cc.enabled() {
+                    slog::warn!(
+                        self.log,
+                        "Doorbell write while controller is disabled"
+                    );
+                    return Err(if is_cq {
+                        NvmeError::InvalidCompQueue(qid)
+                    } else {
+                        NvmeError::InvalidSubQueue(qid)
+                    });
+                }
 
-                if (off >> 2) & 0b1 == 0b1 {
+                // 32-bit register but ignore reserved top 16-bits
+                let val = wo.read_u32() as u16;
+                if is_cq {
                     // Completion Queue y Head Doorbell
-                    let y = (off - 4) >> 3;
-                    let cq = state.get_cq(y as u16)?;
+                    let cq = state.get_cq(qid)?;
                     cq.notify_head(val)?;
 
                     // We may have skipped pulling entries off some SQ due to this
@@ -813,8 +845,7 @@ impl PciNvme {
                     }
                 } else {
                     // Submission Queue y Tail Doorbell
-                    let y = off >> 3;
-                    let sq = state.get_sq(y as u16)?;
+                    let sq = state.get_sq(qid)?;
                     sq.notify_tail(val)?;
 
                     // Poke block device to service new requests
@@ -839,7 +870,7 @@ impl PciNvme {
         }
 
         // Grab the Admin CQ too
-        let cq = state.get_admin_cq();
+        let cq = state.get_admin_cq()?;
 
         let mem = self.mem_access();
         if mem.is_none() {
