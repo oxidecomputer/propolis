@@ -25,7 +25,7 @@ libc.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
 serde = { workspace = true, features = ["derive"] }
-propolis = { workspace = true, default-features = false }
+propolis.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
 slog.workspace = true

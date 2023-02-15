@@ -19,7 +19,7 @@ bhyve_api.workspace = true
 dladm.workspace = true
 viona_api.workspace = true
 propolis_types.workspace = true
-usdt = { workspace = true, default-features = false }
+usdt.workspace = true
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 anyhow.workspace = true
