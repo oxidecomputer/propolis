@@ -91,13 +91,13 @@ phd-testcase-macros = { path = "phd-tests/testcase_macro" }
 phd-tests = { path = "phd-tests/tests" }
 proc-macro2 = "1.0"
 progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "main" }
-propolis = { path = "lib/propolis" }
+propolis = { path = "lib/propolis", default-features = false }
 propolis-client = { path = "lib/propolis-client" }
 propolis-server-config = { path = "crates/propolis-server-config" }
 propolis_types = { path = "crates/propolis-types" }
 quote = "1.0"
 rand = "0.8"
-reqwest = "0.11.12"
+reqwest = { version = "0.11.12", default-features = false }
 rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0cac8d9c25eb27acfa35df80f3b9d371de98ab3b" }
 ring = "0.16"
 ron = "0.7"
@@ -122,7 +122,7 @@ tracing = "0.1.35"
 tracing-appender = "0.2.2"
 tracing-bunyan-formatter = "0.3.3"
 tracing-subscriber = "0.3.14"
-usdt = "0.3.2"
+usdt = { version = "0.3.2", default-features = false }
 uuid = "1.0.0"
 version_check = "0.9"
 viona_api = { path = "crates/viona-api" }

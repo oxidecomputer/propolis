@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 propolis_types.workspace = true
-reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 base64.workspace = true
 rand.workspace = true
 ring.workspace = true

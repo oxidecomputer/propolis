@@ -43,7 +43,7 @@ serde.workspace = true
 serde_derive.workspace = true
 serde_json.workspace = true
 slog.workspace = true
-propolis = { workspace = true, features = ["crucible-full", "oximeter"], default-features = false }
+propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
 propolis-client = { workspace = true, features = ["generated"] }
 propolis-server-config.workspace = true
 rfb.workspace = true
@@ -54,7 +54,7 @@ schemars = { workspace = true, features = ["chrono", "uuid1"] }
 
 [dev-dependencies]
 hex.workspace = true
-reqwest = { workspace = true, default-features = false, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
 ring.workspace = true
 slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
 expectorate.workspace = true
