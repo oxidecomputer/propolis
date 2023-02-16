@@ -461,9 +461,7 @@ impl chardev::Sink for MockUart {
         true
     }
 
-    fn set_notifier(&self, _f: Option<SinkNotifier>) {
-        //todo!()
-    }
+    fn set_notifier(&self, _f: Option<SinkNotifier>) {}
 }
 
 impl chardev::Source for MockUart {
@@ -477,13 +475,9 @@ impl chardev::Source for MockUart {
         buf.drain(0..end).count()
     }
 
-    fn set_autodiscard(&self, _active: bool) {
-        //todo!()
-    }
+    fn set_autodiscard(&self, _active: bool) {}
 
-    fn set_notifier(&self, _f: Option<SourceNotifier>) {
-        //todo!()
-    }
+    fn set_notifier(&self, _f: Option<SourceNotifier>) {}
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a mock Propolis
@@ -497,4 +491,60 @@ pub fn api() -> ApiDescription<Arc<Context>> {
     api.register(instance_serial).unwrap();
     api.register(instance_serial_history_get).unwrap();
     api
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MockUart;
+    use crate::serial::history_buffer::SerialHistoryOffset;
+    use crate::serial::Serial;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+
+    async fn read_at_least(
+        serial: &Arc<Serial<MockUart>>,
+        length: usize,
+    ) -> Vec<u8> {
+        let mut buf = [0; 1024];
+        let mut data = Vec::<u8>::new();
+        while let Some(count) = serial.read_source(&mut buf).await {
+            if count == 0 {
+                break;
+            }
+            data.extend(&buf[..count]);
+            if data.len() >= length {
+                break;
+            }
+        }
+        data
+    }
+
+    async fn read_and_expect(serial: &Arc<Serial<MockUart>>, expected: &[u8]) {
+        let actual = read_at_least(serial, expected.len()).await;
+        assert_eq!(&actual[..expected.len()], expected);
+    }
+
+    #[tokio::test]
+    async fn mock_uart() {
+        let mock_uart = Arc::new(MockUart::new("unit-test"));
+        let sink_size = NonZeroUsize::new(64).unwrap();
+        let source_size = NonZeroUsize::new(1024).unwrap();
+        let serial = Arc::new(Serial::new(mock_uart, sink_size, source_size));
+
+        let expected =
+            "This is simulated serial console output for unit-test".as_bytes();
+        read_and_expect(&serial, expected).await;
+
+        // check that history ranges work after read_source
+        let expected = "simulated serial console output for unit-test";
+        let (data, end) = serial
+            .history_vec(
+                SerialHistoryOffset::FromStart(8),
+                Some(expected.len()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(&data, expected.as_bytes());
+        assert_eq!(end, 8 + data.len());
+    }
 }
