@@ -41,6 +41,8 @@ use slog::{error, info, warn, Logger};
 // TODO make configurable
 const MTU: usize = 1600;
 
+const SOFTNPU_CPU_AUX_PORT: u16 = 1000;
+
 pub const MANAGEMENT_MESSAGE_PREAMBLE: u8 = 0b11100101;
 pub const SOFTNPU_TTY: &str = "/dev/tty03";
 
@@ -559,6 +561,10 @@ impl PacketHandler {
                 // no looping packets back to the guest
                 return;
             }
+            if port == SOFTNPU_CPU_AUX_PORT {
+                // we are not currently emulating this port type
+                return;
+            }
             Self::send_packet_to_ext_port(
                 &mut out_pkt,
                 data_handles,
@@ -575,6 +581,10 @@ impl PacketHandler {
         port: u16,
         log: &Logger,
     ) {
+        if usize::from(port) >= data_handles.len() {
+            error!(log, "port out of range {} > {}", port, data_handles.len());
+            return;
+        }
         // get the dlpi handle for this port
         let dh = data_handles[port as usize];
 
