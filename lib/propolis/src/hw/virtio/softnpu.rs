@@ -521,9 +521,9 @@ impl PacketHandler {
 
     /// Run a packet coming into the ASIC from an external port through the
     /// loaded pipeline and forward it on to its destination.
-    fn process_external_packet<'a>(
+    fn process_external_packet(
         index: usize,
-        mut pkt: packet_in<'a>,
+        mut pkt: packet_in<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         virtio: &Arc<PortVirtioState>,
         pipeline: &mut Box<dyn Pipeline>,
@@ -550,8 +550,8 @@ impl PacketHandler {
 
     /// Run a packet coming into the ASIC from the guest pci port through the
     /// loaded pipeline and forward it on to its destination.
-    fn process_guest_packet<'a>(
-        mut pkt: packet_in<'a>,
+    fn process_guest_packet(
+        mut pkt: packet_in<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
@@ -575,8 +575,8 @@ impl PacketHandler {
     }
 
     /// Send a packet out an external port using dlpi.
-    fn send_packet_to_ext_port<'a>(
-        pkt: &mut packet_out<'a>,
+    fn send_packet_to_ext_port(
+        pkt: &mut packet_out<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         port: u16,
         log: &Logger,
@@ -598,8 +598,8 @@ impl PacketHandler {
     }
 
     /// Send a packet out the guest pci port using virtio.
-    fn send_packet_to_cpu_port<'a>(
-        pkt: &mut packet_out<'a>,
+    fn send_packet_to_cpu_port(
+        pkt: &mut packet_out<'_>,
         virtio: &Arc<PortVirtioState>,
         log: &Logger,
     ) {
