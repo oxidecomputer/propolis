@@ -91,7 +91,7 @@ impl VirtioDevice for PciVirtio9pfs {
                             if i == 256 {
                                 break;
                             }
-                            bs[i] = x as u8;
+                            bs[i] = x;
                         }
                         ro.write_bytes(&bs);
                         ro.fill(0);
@@ -365,8 +365,7 @@ impl HostFSHandler {
             - size_of::<u32>(); // Rread.data.len
 
         let buflen =
-            std::cmp::min(space_left, (metadata.len() - msg.offset) as usize)
-                as usize;
+            std::cmp::min(space_left, (metadata.len() - msg.offset) as usize);
 
         let mut content: Vec<u8> = vec![0; buflen];
 

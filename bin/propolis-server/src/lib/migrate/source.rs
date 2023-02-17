@@ -318,7 +318,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                     io::ErrorKind::BrokenPipe,
                 ))
             })?
-            .map_err(|e| codec::ProtocolError::WebsocketError(e))
+            .map_err(codec::ProtocolError::WebsocketError)
             // convert tungstenite::Message to codec::Message
             .and_then(std::convert::TryInto::try_into)
             // If this is an error message, lift that out

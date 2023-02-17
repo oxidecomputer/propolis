@@ -41,6 +41,8 @@ use slog::{error, info, warn, Logger};
 // TODO make configurable
 const MTU: usize = 1600;
 
+const SOFTNPU_CPU_AUX_PORT: u16 = 1000;
+
 pub const MANAGEMENT_MESSAGE_PREAMBLE: u8 = 0b11100101;
 pub const SOFTNPU_TTY: &str = "/dev/tty03";
 
@@ -519,9 +521,9 @@ impl PacketHandler {
 
     /// Run a packet coming into the ASIC from an external port through the
     /// loaded pipeline and forward it on to its destination.
-    fn process_external_packet<'a>(
+    fn process_external_packet(
         index: usize,
-        mut pkt: packet_in<'a>,
+        mut pkt: packet_in<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         virtio: &Arc<PortVirtioState>,
         pipeline: &mut Box<dyn Pipeline>,
@@ -548,8 +550,8 @@ impl PacketHandler {
 
     /// Run a packet coming into the ASIC from the guest pci port through the
     /// loaded pipeline and forward it on to its destination.
-    fn process_guest_packet<'a>(
-        mut pkt: packet_in<'a>,
+    fn process_guest_packet(
+        mut pkt: packet_in<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
@@ -557,6 +559,10 @@ impl PacketHandler {
         for (mut out_pkt, port) in pipeline.process_packet(0, &mut pkt) {
             if port == 0 {
                 // no looping packets back to the guest
+                return;
+            }
+            if port == SOFTNPU_CPU_AUX_PORT {
+                // we are not currently emulating this port type
                 return;
             }
             Self::send_packet_to_ext_port(
@@ -569,12 +575,16 @@ impl PacketHandler {
     }
 
     /// Send a packet out an external port using dlpi.
-    fn send_packet_to_ext_port<'a>(
-        pkt: &mut packet_out<'a>,
+    fn send_packet_to_ext_port(
+        pkt: &mut packet_out<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         port: u16,
         log: &Logger,
     ) {
+        if usize::from(port) >= data_handles.len() {
+            error!(log, "port out of range {} >= {}", port, data_handles.len());
+            return;
+        }
         // get the dlpi handle for this port
         let dh = data_handles[port as usize];
 
@@ -588,8 +598,8 @@ impl PacketHandler {
     }
 
     /// Send a packet out the guest pci port using virtio.
-    fn send_packet_to_cpu_port<'a>(
-        pkt: &mut packet_out<'a>,
+    fn send_packet_to_cpu_port(
+        pkt: &mut packet_out<'_>,
         virtio: &Arc<PortVirtioState>,
         log: &Logger,
     ) {

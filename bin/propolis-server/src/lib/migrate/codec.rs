@@ -185,7 +185,7 @@ impl std::convert::TryInto<Message> for tungstenite::Message {
                 // Attempt decode and return the received message.
                 let m = match tag {
                     MessageType::Okay => {
-                        if src.len() != 0 {
+                        if !src.is_empty() {
                             return Err(ProtocolError::UnexpectedMessageLen(
                                 tag as u8,
                                 src.len(),
@@ -235,7 +235,7 @@ impl std::convert::TryInto<Message> for tungstenite::Message {
                         Message::MemXfer(start, end, bitmap)
                     }
                     MessageType::MemDone => {
-                        if src.len() != 0 {
+                        if !src.is_empty() {
                             return Err(ProtocolError::UnexpectedMessageLen(
                                 tag as u8,
                                 src.len(),
