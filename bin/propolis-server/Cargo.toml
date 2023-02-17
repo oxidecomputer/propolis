@@ -67,4 +67,6 @@ version_check.workspace = true
 default = ["dtrace-probes", "propolis/crucible-full", "propolis/oximeter"]
 dtrace-probes = ["propolis/dtrace-probes", "dropshot/usdt-probes"]
 falcon = ["propolis/falcon"]
+# If selected, only build a mock server which does not actually spawn instances
+# (i.e. to test with a facsimile of the API on unsupported platforms)
 mock-only = []
