@@ -17,10 +17,13 @@ set -o xtrace
 cargo --version
 rustc --version
 
-banner build
+banner check
 ptime -m cargo check --features falcon
-ptime -m cargo build --features falcon
-ptime -m cargo build --features falcon --release
+
+banner build
+PKGS="-p propolis-server -p propolis-cli"
+ptime -m cargo build --features falcon $PKGS
+ptime -m cargo build --features falcon $PKGS --release
 
 for x in debug release
 do
