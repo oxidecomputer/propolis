@@ -25,14 +25,6 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{protocol::Role, Message};
 use tokio_tungstenite::WebSocketStream;
 
-#[derive(Debug, Eq, PartialEq, Error)]
-pub enum Error {
-    #[error("Failed to send simulated state change update through channel")]
-    TransitionSendFail,
-    #[error("Cannot request any new mock instance state once it is stopped/destroyed/failed")]
-    TerminalState,
-}
-
 use propolis::chardev;
 use propolis::chardev::{SinkNotifier, SourceNotifier};
 use propolis_client::handmade::api;
@@ -41,6 +33,14 @@ use crate::config::Config;
 use crate::serial::history_buffer::SerialHistoryOffset;
 use crate::serial::{Serial, SerialTask};
 use crate::spec::{slot_to_pci_path, SlotType};
+
+#[derive(Debug, Eq, PartialEq, Error)]
+pub enum Error {
+    #[error("Failed to send simulated state change update through channel")]
+    TransitionSendFail,
+    #[error("Cannot request any new mock instance state once it is stopped/destroyed/failed")]
+    TerminalState,
+}
 
 /// simulated instance properties
 pub struct InstanceContext {
