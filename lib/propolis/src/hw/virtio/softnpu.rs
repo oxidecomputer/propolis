@@ -582,7 +582,7 @@ impl PacketHandler {
         log: &Logger,
     ) {
         if usize::from(port) >= data_handles.len() {
-            error!(log, "port out of range {} > {}", port, data_handles.len());
+            error!(log, "port out of range {} >= {}", port, data_handles.len());
             return;
         }
         // get the dlpi handle for this port
