@@ -20,7 +20,7 @@ use std::io::{Error as IoError, ErrorKind};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{protocol::Role, Message};
 use tokio_tungstenite::WebSocketStream;
@@ -68,13 +68,13 @@ impl InstanceContext {
         let serial_clone = serial.clone();
 
         let (websocks_ch, websocks_recv) = mpsc::channel(1);
-        let (close_ch, close_recv) = oneshot::channel();
+        let (control_ch, control_recv) = mpsc::channel(1);
 
         let log = log.new(slog::o!("component" => "serial task"));
         let task = tokio::spawn(async move {
             if let Err(e) = super::serial::instance_serial_task(
                 websocks_recv,
-                close_recv,
+                control_recv,
                 serial_clone,
                 log.clone(),
             )
@@ -84,7 +84,7 @@ impl InstanceContext {
             }
         });
 
-        let serial_task = SerialTask { task, close_ch, websocks_ch };
+        let serial_task = SerialTask { task, control_ch, websocks_ch };
 
         Self {
             state: api::InstanceState::Creating,

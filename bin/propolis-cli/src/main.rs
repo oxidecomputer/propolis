@@ -13,10 +13,12 @@ use futures::{future, SinkExt, StreamExt};
 use propolis_client::handmade::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceStateRequested, MigrationState,
+        InstanceProperties, InstanceSerialConsoleControlMessage,
+        InstanceStateRequested, MigrationState,
     },
     Client,
 };
+use reqwest::Upgraded;
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -338,21 +340,7 @@ async fn serial(
     addr: SocketAddr,
     byte_offset: Option<i64>,
 ) -> anyhow::Result<()> {
-    let client = propolis_client::Client::new(&format!("http://{}", addr));
-    let mut req = client.instance_serial();
-
-    match byte_offset {
-        Some(x) if x >= 0 => req = req.from_start(x as u64),
-        Some(x) => req = req.most_recent(-x as u64),
-        None => req = req.most_recent(16384),
-    }
-    let upgraded = req
-        .send()
-        .await
-        .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
-        .into_inner();
-    let mut ws =
-        WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await;
+    let mut ws = serial_connect(&addr, byte_offset).await?;
 
     let _raw_guard = RawTermiosGuard::stdio_guard()
         .with_context(|| anyhow!("failed to set raw mode"))?;
@@ -401,6 +389,15 @@ async fn serial(
                         stdout.flush().await?;
                     }
                     Some(Ok(Message::Close(..))) | None => break,
+                    Some(Ok(Message::Text(json))) => {
+                        match serde_json::from_str(&json)? {
+                            InstanceSerialConsoleControlMessage::Migrating {
+                                destination, from_start,
+                            } => {
+                                ws = serial_connect(&destination, Some(from_start as i64)).await?;
+                            }
+                        }
+                    }
                     _ => continue,
                 }
             }
@@ -408,6 +405,26 @@ async fn serial(
     }
 
     Ok(())
+}
+
+async fn serial_connect(
+    addr: &SocketAddr,
+    byte_offset: Option<i64>,
+) -> anyhow::Result<WebSocketStream<Upgraded>> {
+    let client = propolis_client::Client::new(&format!("http://{}", addr));
+    let mut req = client.instance_serial();
+
+    match byte_offset {
+        Some(x) if x >= 0 => req = req.from_start(x as u64),
+        Some(x) => req = req.most_recent(-x as u64),
+        None => req = req.most_recent(16384),
+    }
+    let upgraded = req
+        .send()
+        .await
+        .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
+        .into_inner();
+    Ok(WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await)
 }
 
 async fn migrate_instance(

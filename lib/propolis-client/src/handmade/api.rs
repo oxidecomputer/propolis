@@ -100,6 +100,7 @@ pub enum MigrationState {
     Device,
     Resume,
     RamPull,
+    Server,
     Finish,
     Error,
 }
@@ -227,6 +228,13 @@ pub struct InstanceSerialConsoleStreamRequest {
     /// recently buffered data retrieved from the instance. (See note on `from_start` about mutual
     /// exclusivity)
     pub most_recent: Option<u64>,
+}
+
+/// Send things besides raw bytes to connected serial console clients, such as
+/// the change-of-address notice when the VM migrates
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum InstanceSerialConsoleControlMessage {
+    Migrating { destination: SocketAddr, from_start: u64 },
 }
 
 /// Describes how to connect to one or more storage agent services.
