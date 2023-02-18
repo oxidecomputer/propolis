@@ -11,6 +11,7 @@ use std::{collections::BTreeMap, net::SocketAddr};
 
 use crate::migrate::MigrateError;
 use crate::serial::history_buffer::SerialHistoryOffset;
+use crate::serial::SerialTaskControlMessage;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
@@ -195,7 +196,8 @@ impl ServiceProviders {
             );
         }
         if let Some(serial_task) = self.serial_task.lock().await.take() {
-            let _ = serial_task.close_ch.send(());
+            let _ =
+                serial_task.control_ch.send(SerialTaskControlMessage::Stopping);
             // Wait for the serial task to exit
             let _ = serial_task.task.await;
         }
@@ -454,14 +456,15 @@ async fn instance_ensure_common(
     let mut serial_task = server_context.services.serial_task.lock().await;
     if serial_task.is_none() {
         let (websocks_ch, websocks_recv) = mpsc::channel(1);
-        let (close_ch, close_recv) = oneshot::channel();
+        let (control_ch, control_recv) = mpsc::channel(1);
 
         let serial = vm.com1().clone();
+        serial.set_task_control_sender(control_ch.clone()).await;
         let err_log = rqctx.log.new(o!("component" => "serial task"));
         let task = tokio::spawn(async move {
             if let Err(e) = super::serial::instance_serial_task(
                 websocks_recv,
-                close_recv,
+                control_recv,
                 serial,
                 err_log.clone(),
             )
@@ -470,9 +473,8 @@ async fn instance_ensure_common(
                 error!(err_log, "Failure in serial task: {}", e);
             }
         });
-
         *serial_task =
-            Some(super::serial::SerialTask { task, close_ch, websocks_ch });
+            Some(super::serial::SerialTask { task, control_ch, websocks_ch });
     }
 
     let log = server_context.log.clone();

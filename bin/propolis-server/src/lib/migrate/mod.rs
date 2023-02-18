@@ -63,6 +63,7 @@ enum MigratePhase {
     RamPush,
     DeviceState,
     RamPull,
+    ServerState,
     Finish,
 }
 
@@ -74,6 +75,7 @@ impl std::fmt::Display for MigratePhase {
             MigratePhase::RamPush => "RamPush",
             MigratePhase::DeviceState => "DeviceState",
             MigratePhase::RamPull => "RamPull",
+            MigratePhase::ServerState => "ServerState",
             MigratePhase::Finish => "Finish",
         };
 
@@ -225,8 +227,7 @@ struct Device {
 
 /// Begin the migration process (source-side).
 ///
-/// This will attempt to upgrade the given HTTP request to a `propolis-migrate`
-/// connection and begin the migration in a separate task.
+/// This will check protocol version and then begin the migration in a separate task.
 pub async fn source_start<
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 >(
@@ -286,10 +287,10 @@ pub async fn source_start<
 
 /// Initiate a migration to the given source instance.
 ///
-/// This will attempt to send an HTTP request, along with a request to upgrade
-/// it to a `propolis-migrate` connection, to the given source instance. Once
-/// we've successfully established the connection, we can begin the migration
-/// process (destination-side).
+/// This will attempt to open a websocket to the given source instance and
+/// check that the migrate protocol version is compatible ("equal" presently).
+/// Once we've successfully established the connection, we can begin the
+/// migration process (destination-side).
 pub(crate) async fn dest_initiate(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
     controller: Arc<VmController>,
@@ -347,11 +348,15 @@ pub(crate) async fn dest_initiate(
             return Err(MigrateError::Initiate);
         }
     }
-
+    let local_addr = rqctx.server.local_addr;
     tokio::runtime::Handle::current()
         .spawn_blocking(move || -> Result<(), MigrateError> {
             // Now start using the websocket for the migration protocol
-            controller.request_migration_into(migration_id, conn)?;
+            controller.request_migration_into(
+                migration_id,
+                conn,
+                local_addr,
+            )?;
             Ok(())
         })
         .await

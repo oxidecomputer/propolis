@@ -1012,6 +1012,7 @@
           "Device",
           "Resume",
           "RamPull",
+          "Server",
           "Finish",
           "Error"
         ]

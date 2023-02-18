@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::migrate::codec;
+use crate::migrate::codec::Message;
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
@@ -98,6 +99,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             MigratePhase::RamPush => self.ram_push().await,
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
+            MigratePhase::ServerState => self.server_state().await,
             MigratePhase::Finish => self.finish().await,
         };
 
@@ -117,6 +119,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.run_phase(MigratePhase::RamPush).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
+        self.run_phase(MigratePhase::ServerState).await?;
         self.run_phase(MigratePhase::Finish).await?;
 
         info!(self.log(), "Source Migration Successful");
@@ -299,6 +302,20 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got done {:?}", m);
         Ok(())
+    }
+
+    async fn server_state(&mut self) -> Result<(), MigrateError> {
+        self.update_state(MigrationState::Server).await;
+        let remote_addr = match self.read_msg().await? {
+            Message::Serialized(s) => {
+                ron::from_str(&s).map_err(codec::ProtocolError::from)?
+            }
+            _ => return Err(MigrateError::UnexpectedMessage),
+        };
+        let com1_history =
+            self.vm_controller.com1().export_history(remote_addr).await?;
+        self.send_msg(codec::Message::Serialized(com1_history)).await?;
+        self.read_ok().await
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {

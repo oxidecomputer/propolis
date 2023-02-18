@@ -29,6 +29,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
+    net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Condvar, Mutex, Weak},
     thread::JoinHandle,
@@ -665,6 +666,7 @@ impl VmController {
         &self,
         migration_id: Uuid,
         conn: WebSocketStream<T>,
+        local_addr: SocketAddr,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
         if !inner.external_request_queue.migrate_as_target_will_enqueue()? {
@@ -674,7 +676,7 @@ impl VmController {
         // Check that the request can be enqueued before setting up the
         // migration task.
         let migration_request =
-            self.launch_target_migration_task(migration_id, conn);
+            self.launch_target_migration_task(migration_id, conn, local_addr);
 
         // Unwrap is safe because the queue state was checked under the lock.
         inner.external_request_queue.try_queue(migration_request).unwrap();
@@ -691,6 +693,7 @@ impl VmController {
         &self,
         migration_id: Uuid,
         conn: WebSocketStream<T>,
+        local_addr: SocketAddr,
     ) -> ExternalRequest {
         let log_for_task =
             self.log.new(slog::o!("component" => "migrate_source_task"));
@@ -710,6 +713,7 @@ impl VmController {
                 ctrl_for_task,
                 command_tx,
                 conn,
+                local_addr,
             )
             .await
             {

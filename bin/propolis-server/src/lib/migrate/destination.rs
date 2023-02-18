@@ -5,6 +5,7 @@ use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
@@ -24,9 +25,11 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     vm_controller: Arc<VmController>,
     command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
     conn: WebSocketStream<T>,
+    local_addr: SocketAddr,
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
-    let mut proto = DestinationProtocol::new(vm_controller, command_tx, conn);
+    let mut proto =
+        DestinationProtocol::new(vm_controller, command_tx, conn, local_addr);
 
     if let Err(err) = proto.run().await {
         err_tx
@@ -57,6 +60,10 @@ struct DestinationProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
 
     /// Transport to the source Instance.
     conn: WebSocketStream<T>,
+
+    /// Local propolis-server address
+    /// (to inform the source-side where to redirect its clients)
+    local_addr: SocketAddr,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
@@ -64,8 +71,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         vm_controller: Arc<VmController>,
         command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
         conn: WebSocketStream<T>,
+        local_addr: SocketAddr,
     ) -> Self {
-        Self { vm_controller, command_tx, conn }
+        Self { vm_controller, command_tx, conn, local_addr }
     }
 
     fn log(&self) -> &slog::Logger {
@@ -97,6 +105,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             MigratePhase::RamPush => self.ram_push().await,
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
+            MigratePhase::ServerState => self.server_state().await,
             MigratePhase::Finish => self.finish().await,
         };
 
@@ -112,6 +121,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         self.run_phase(MigratePhase::RamPush).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
+        self.run_phase(MigratePhase::ServerState).await?;
         self.run_phase(MigratePhase::Finish).await?;
 
         info!(self.log(), "Destination Migration Successful");
@@ -323,6 +333,29 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got end {:?}", m);
         self.send_msg(codec::Message::MemDone).await
+    }
+
+    async fn server_state(&mut self) -> Result<(), MigrateError> {
+        self.update_state(MigrationState::Server).await;
+        self.send_msg(codec::Message::Serialized(
+            ron::to_string(&self.local_addr)
+                .map_err(codec::ProtocolError::from)?,
+        ))
+        .await?;
+        let com1_history = match self.read_msg().await? {
+            codec::Message::Serialized(encoded) => encoded,
+            msg => {
+                error!(self.log(), "server_state: unexpected message: {msg:?}");
+                return Err(MigrateError::UnexpectedMessage);
+            }
+        };
+
+        self.vm_controller
+            .com1()
+            .import(&com1_history)
+            .await
+            .map_err(|e| MigrateError::Codec(e.to_string()))?;
+        self.send_msg(codec::Message::Okay).await
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {

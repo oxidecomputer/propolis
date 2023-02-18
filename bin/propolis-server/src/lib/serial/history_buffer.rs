@@ -7,13 +7,20 @@
 
 use dropshot::HttpError;
 use propolis_client::handmade::api;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Requested byte offset is no longer cached: {0}")]
-    ExpiredRange(usize),
+    #[error("Requested byte offset {requested_from_start} (-{requested_from_end}) is no longer cached: Only have first {beginning_len} + most recent {rolling_len} saved out of a total {total_bytes} of output")]
+    ExpiredRange {
+        requested_from_start: usize,
+        requested_from_end: usize,
+        beginning_len: usize,
+        rolling_len: usize,
+        total_bytes: usize,
+    },
 }
 
 const TTY_BUFFER_SIZE: usize = 1024 * 1024;
@@ -22,10 +29,12 @@ const DEFAULT_MAX_LENGTH: isize = 16 * 1024;
 /// An abstraction for storing the contents of the instance's serial console
 /// output, intended for retrieval by the web console or other monitoring or
 /// troubleshooting tools.
+#[derive(Deserialize, Serialize, Clone)]
 pub(crate) struct HistoryBuffer {
     beginning: Vec<u8>,
     rolling: VecDeque<u8>,
     total_bytes: usize,
+    buffer_size: usize,
 }
 
 #[derive(Copy, Clone)]
@@ -94,25 +103,21 @@ impl HistoryBuffer {
         HistoryBuffer {
             beginning: Vec::with_capacity(buffer_size),
             rolling: VecDeque::with_capacity(buffer_size),
+            buffer_size,
             total_bytes: 0,
         }
     }
 
     /// Feeds the buffer new bytes from the serial console.
     pub fn consume(&mut self, data: &[u8]) {
-        let rolling_len = self.rolling.len();
-        let headroom = self.rolling.capacity() - rolling_len;
-        let read_size = data.len();
-        if read_size > headroom {
-            let to_capture = self.beginning.capacity() - self.beginning.len();
-            let drain = self
-                .rolling
-                .drain(0..rolling_len.min(read_size - headroom))
-                .take(to_capture);
+        self.rolling.extend(data);
+        if self.rolling.len() > self.buffer_size {
+            let to_drain = self.rolling.len() - self.buffer_size;
+            let to_capture = self.buffer_size - self.beginning.len();
+            let drain = self.rolling.drain(0..to_drain).take(to_capture);
             self.beginning.extend(drain);
         }
-        self.rolling.extend(data);
-        self.total_bytes += read_size;
+        self.total_bytes += data.len();
     }
 
     /// Returns a tuple containing:
@@ -144,7 +149,7 @@ impl HistoryBuffer {
                 Box::new(self.beginning.iter().copied().skip(from_start)),
                 from_start,
             ))
-        } else if from_end < self.rolling.len() {
+        } else if from_end <= self.rolling.len() {
             // (apologies to Takenobu Mitsuyoshi)
             let rolling_start = self.rolling.len() - from_end;
             Ok((
@@ -152,7 +157,13 @@ impl HistoryBuffer {
                 from_start,
             ))
         } else {
-            Err(Error::ExpiredRange(from_start))
+            Err(Error::ExpiredRange {
+                requested_from_start: from_start,
+                requested_from_end: from_end,
+                beginning_len: self.beginning.len(),
+                rolling_len: self.rolling.len(),
+                total_bytes: self.total_bytes,
+            })
         }
     }
 
@@ -197,6 +208,11 @@ impl HistoryBuffer {
                 }
             }
         }
+    }
+
+    /// Returns the number of bytes output since instance boot.
+    pub fn bytes_from_start(&self) -> usize {
+        self.total_bytes
     }
 }
 
