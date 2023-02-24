@@ -3024,12 +3024,14 @@ dependencies = [
  "anyhow",
  "bhyve_api",
  "clap 4.2.4",
+ "crucible-client-types",
  "ctrlc",
  "erased-serde",
  "futures",
  "libc",
  "num_enum",
  "propolis",
+ "propolis-client",
  "propolis-standalone-config",
  "serde",
  "serde_json",
@@ -3038,6 +3040,7 @@ dependencies = [
  "slog-term",
  "tokio",
  "toml 0.5.11",
+ "uuid",
 ]
 
 [[package]]
