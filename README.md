@@ -157,6 +157,72 @@ which acts as a serial port. One such tool for accessing this serial port is
 [sercons](https://github.com/jclulow/vmware-sercons), though others (such as
 "screen") would also work.
 
+propolis-standalone also supports defining crucible-backed storage devices,
+thought it is somewhat inconvenient to do so without scripting. Currently you can only use a single region per block device. Read the comments in this TOML example for more details:
+
+```toml
+[block_dev.some_datastore]
+type = "crucible"
+
+# === REQUIRED OPTIONS ===
+# these MUST match the region configuration downstairs
+block_size = 512
+blocks_per_extent = 262144
+extent_count = 32
+
+# Array of the SocketAddrs of the Downstairs instances. There must be three
+# of these, or propolis-standalone will panic.
+targets = [
+  "127.0.0.1:3810",
+  "127.0.0.1:3820",
+  "127.0.0.1:3830",
+]
+
+# Generation number used when connecting to Downstairs. This must
+# monotonically increase with each successive connection to the Downstairs,
+# which means that you need to bump this number every time you restart
+# your VM. Kind of annoying, maybe we can get a better way to pass it in.
+# Anyway, if you don't want to read-modify-write this value, a hack you
+# could do is set this to the current number of seconds since the epoch.
+# This'll always work, except for if the system time goes backwards, which
+# it can definitely do! So, you know. Be careful.
+generation = 1
+# === END REQUIRED OPTIONS ===
+
+
+# === OPTIONAL OPTIONS ===
+# This should be a UUID. It can be anything, really. When unset, defaults
+# to a random UUIDv4
+# upstairs_id = "e4396bd0-ede1-48d7-ac14-3d2094dfba5b"
+
+# When true, some random amount of IO requests will synthetically "fail".
+# This is useful when testing IO behavior under Bad Conditions.
+# Defaults to false.
+# lossy = false
+
+# YYY what does this do?
+# flush_timeout = <number>
+
+# Base64'd encryption key used to encrypt data at rest. Keys are 256 bits.
+# Note that the region must have already been created with encryption
+# enabled for this to work. That may change later though.
+# encryption_key = ""
+
+# These three values are pem files for TLS encryption of data between
+# propolis and the downstairs.
+# cert_pem = ""
+# key_pem = ""
+# root_cert_pem = ""
+
+# Specifies the SocketAddr of the crucible control interface. YYY I'm not
+# really sure what this actually does, but it defaults to Nothing
+# control_addr = ""
+
+# When true, the device will be read-only. Defaults to false
+# read_only = false
+# === END OPTIONAL OPTIONS ===
+```
+
 ### Quickstart to Alpine
 
 In the aforementioned config files, there are three major components

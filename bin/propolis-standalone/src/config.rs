@@ -1,7 +1,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::SystemTime;
-use std::{num::NonZeroUsize, time::Instant};
+use std::num::NonZeroUsize;
 
 use anyhow::Context;
 
@@ -147,20 +146,20 @@ pub fn block_backend(
 
             let req =
                 crucible_client_types::VolumeConstructionRequest::Region {
-                    block_size: block_size,
-                    blocks_per_extent: blocks_per_extent,
-                    extent_count: extent_count,
+                    block_size,
+                    blocks_per_extent,
+                    extent_count,
                     opts: crucible_client_types::CrucibleOpts {
                         id: uuid,
                         target: targets,
-                        lossy: lossy,
-                        flush_timeout: flush_timeout,
-                        key: key,
-                        cert_pem: cert_pem,
-                        key_pem: key_pem,
-                        root_cert_pem: root_cert_pem,
+                        lossy,
+                        flush_timeout,
+                        key,
+                        cert_pem,
+                        key_pem,
+                        root_cert_pem,
                         control: control_addr,
-                        read_only: read_only,
+                        read_only,
                     },
                     gen: generation,
                 };
