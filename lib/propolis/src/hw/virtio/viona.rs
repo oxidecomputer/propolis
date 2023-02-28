@@ -692,3 +692,29 @@ pub(crate) mod bits {
     pub const VIRTIO_NET_CFG_SIZE: usize = 0xc;
 }
 use bits::*;
+
+pub mod version {
+    #[derive(Debug, thiserror::Error)]
+    pub enum VersionError {
+        #[error("IO Error")]
+        Io(#[from] std::io::Error),
+
+        #[error("viona API version {0} did not match expectation {1}")]
+        Mismatch(u32, u32),
+    }
+
+    /// Check that available viona API matches expectations of propolis crate
+    pub fn check() -> Result<(), VersionError> {
+        let fd = viona_api::VionaFd::open()?;
+        let vers = fd.api_version()?;
+
+        // viona only requires the V2 bits for now
+        let compare = viona_api::ApiVersion::V2.into();
+
+        if vers < compare {
+            Err(VersionError::Mismatch(vers, compare))
+        } else {
+            Ok(())
+        }
+    }
+}

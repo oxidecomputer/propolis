@@ -65,5 +65,10 @@ mod structs {
     }
 }
 
+/// This is the viona interface version which viona_api expects to operate
+/// against.  All constants and structs definied by the crate are done so in
+/// terms of that specific version.
+pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 2;
+
 pub use ioctls::*;
 pub use structs::*;

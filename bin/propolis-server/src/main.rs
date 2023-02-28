@@ -86,6 +86,16 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
+            // Check that devices conform to expected API version
+            if let Err(e) = propolis::vmm::version::check() {
+                slog::error!(log, "Error checking VMM API version");
+                return Err(e.into());
+            }
+            if let Err(e) = propolis::hw::virtio::viona::version::check() {
+                slog::error!(log, "Error checking viona API version");
+                return Err(e.into());
+            }
+
             let vnc_server = setup_vnc(&log, vnc_addr);
             let vnc_server_hdl = vnc_server.clone();
             let use_reservoir = config::reservoir_decide(&log);

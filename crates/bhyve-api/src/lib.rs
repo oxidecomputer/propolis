@@ -4,6 +4,8 @@ use std::os::fd::*;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
+use num_enum::IntoPrimitive;
+
 pub use bhyve_api_sys::*;
 
 pub const VMM_PATH_PREFIX: &str = "/dev/vmm";
@@ -41,6 +43,16 @@ impl VmmCtlFd {
         // dismiss those dangers.  The caller is assumed to be cognizant of
         // other potential side effects.
         unsafe { ioctl(self.as_raw_fd(), cmd, data as *mut libc::c_void) }
+    }
+
+    /// Query the API version exposed by the kernel VMM.
+    pub fn api_version(&self) -> Result<u32> {
+        let vers = self.ioctl_usize(ioctls::VMM_INTERFACE_VERSION, 0)?;
+
+        // We expect and demand a positive version number from the
+        // VMM_INTERFACE_VERSION interface.
+        assert!(vers > 0);
+        Ok(vers as u32)
     }
 
     /// Check VMM ioctl command against those known to not require any
@@ -150,4 +162,44 @@ unsafe fn ioctl(
     _data: *mut libc::c_void,
 ) -> Result<i32> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
+}
+
+/// Convenience constants to provide some documentation on what changes have
+/// been introduced in the various bhyve API versions.
+#[repr(u32)]
+#[derive(IntoPrimitive)]
+pub enum ApiVersion {
+    /// Revamps ioctls for administrating the VMM memory reservoir and adds
+    /// kstat for tracking its capacity and utilization.
+    V9 = 9,
+
+    /// Adds flag to enable dirty page tracking for VMs when running on hardware
+    /// with adequate support.
+    V8 = 8,
+
+    /// Adds pause/resume ioctls to assist with the ability to load or store a
+    /// consistent snapshot of VM state
+    V7 = 7,
+
+    /// Made hlt-on-exit a required CPU feature, and enabled by default in vmm
+    V6 = 6,
+
+    /// Adds ability to control CPUID results for guest vCPUs
+    V5 = 5,
+}
+impl ApiVersion {
+    pub const fn current() -> Self {
+        Self::V9
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn latest_api_version() {
+        let cur = ApiVersion::current();
+        assert_eq!(VMM_CURRENT_INTERFACE_VERSION, cur.into());
+    }
 }

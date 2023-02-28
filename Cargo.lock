@@ -249,6 +249,7 @@ version = "0.0.0"
 dependencies = [
  "bhyve_api_sys",
  "libc",
+ "num_enum",
 ]
 
 [[package]]
@@ -4601,6 +4602,7 @@ name = "viona_api"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "num_enum",
  "viona_api_sys",
 ]
 
