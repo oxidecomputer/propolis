@@ -265,12 +265,8 @@ enum ExternalRequest {
         command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
     },
 
-    /// Starts the VM.
-    Start {
-        /// Indicates whether the VM's entities and CPUs should be fully reset
-        /// before starting.
-        reset_required: bool,
-    },
+    /// Resets all the VM's entities and CPUs, then starts the VM.
+    Start,
 
     /// Asks the state worker to start a migration-source task.
     MigrateAsSource {
@@ -892,24 +888,22 @@ impl VmController {
             // Requests to run succeed if the VM hasn't started yet, but can be
             // started, or if it has started already.
             ApiInstanceStateRequested::Run => match inner.lifecycle_stage {
-                LifecycleStage::NotStarted(substage) => {
-                    let reset_required = match substage {
-                        StartupStage::ColdBoot => Ok(true),
-                        StartupStage::MigratePending => {
-                            Err(VmControllerError::MigrationTargetInProgress)
-                        }
-                        StartupStage::Migrated => Ok(false),
-                        StartupStage::MigrationFailed => {
-                            Err(VmControllerError::MigrationTargetFailed)
-                        }
-                    }?;
-
-                    inner
-                        .external_request_queue
-                        .push_back(ExternalRequest::Start { reset_required });
-                    self.worker_state.cv.notify_one();
-                    Ok(())
-                }
+                LifecycleStage::NotStarted(substage) => match substage {
+                    StartupStage::ColdBoot => {
+                        inner
+                            .external_request_queue
+                            .push_back(ExternalRequest::Start);
+                        self.worker_state.cv.notify_one();
+                        Ok(())
+                    }
+                    StartupStage::MigratePending => {
+                        Err(VmControllerError::MigrationTargetInProgress)
+                    }
+                    StartupStage::Migrated => Ok(()),
+                    StartupStage::MigrationFailed => {
+                        Err(VmControllerError::MigrationTargetFailed)
+                    }
+                },
                 LifecycleStage::Active => Ok(()),
                 LifecycleStage::NoLongerActive => {
                     Err(VmControllerError::InvalidStageForRequest(

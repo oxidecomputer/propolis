@@ -355,7 +355,6 @@ impl TestVm {
             }
         }
 
-        self.run()?;
         Ok(())
     }
 
