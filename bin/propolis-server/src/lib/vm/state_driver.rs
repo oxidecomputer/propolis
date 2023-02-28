@@ -152,14 +152,15 @@ where
                     command_rx,
                 ) {
                     Ok(_) => {
-                        // Publish the "migrated" state before signaling that
-                        // migration is finished. Without this, there's a race
-                        // where a client can observe that migration is done
-                        // (because the migration state was written), but
-                        // further attempts to change the VM's state will fail
-                        // (because the lifecycle stage is what determines
-                        // whether a migration is "done" for the purposes of
-                        // accepting or rejecting a request to run the VM).
+                        // Set the lifecycle stage to "migrated" before
+                        // revealing to external clients (who might query for
+                        // the migration's status) that the migration is
+                        // finished (by setting the migration state). This
+                        // ensures that any client who observes the "finished"
+                        // migration state can change the VM's state further (as
+                        // opposed to seeing that the migration has finished but
+                        // having a call to e.g. stop the VM be rejected because
+                        // the lifecycle stage is wrong).
                         self.controller.set_lifecycle_stage(
                             LifecycleStage::NotStarted(StartupStage::Migrated),
                         );
@@ -168,9 +169,8 @@ where
                             ApiMigrationState::Finish,
                         );
 
-                        // The migration completed successfully, so immediately
-                        // push the VM into a 'running' state without waiting
-                        // for further input (to minimize blackout time).
+                        // Resume the VM immediately without waiting for a
+                        // request to enter the "running" state.
                         //
                         // TODO(#209) Transition to a "failed" state instead of
                         // expecting.
