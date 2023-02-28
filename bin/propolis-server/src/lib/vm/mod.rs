@@ -170,6 +170,8 @@ pub(crate) struct VmObjects {
     /// recent instance state and state generation.
     monitor_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
 
+    /// The receiver side of the monitor that publishes the most recent
+    /// migration status for this VM.
     migrate_state_rx:
         tokio::sync::watch::Receiver<Option<(Uuid, ApiMigrationState)>>,
 }
@@ -1029,10 +1031,11 @@ impl Drop for VmController {
             .expect("VM controller should have an instance at drop");
         drop(instance);
 
-        // Send a final state monitor message indicating that the instance is
-        // destroyed. Normally, the existence of this structure implies the
-        // instance of at least one receiver, but at this point everything is
-        // being dropped, so this call to `send` is not safe to unwrap.
+        // A fully-initialized controller is kept alive in part by its worker
+        // thread, which owns the sender side of the controller's state-change
+        // notification channel. Since the controller is being dropped, the
+        // worker is gone, so reclaim the sender from it and use it to publish
+        // that the controller is being destroyed.
         if let Some(thread) = self.worker_thread.lock().unwrap().take() {
             let api_state = thread.join().unwrap();
             let gen = api_state.borrow().gen + 1;

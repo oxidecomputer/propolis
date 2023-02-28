@@ -18,6 +18,8 @@ use uuid::Uuid;
 
 use crate::vcpu_tasks::VcpuTaskController;
 
+/// Tells the state driver whether or not to continue running after responding
+/// to an event.
 enum HandleEventOutcome {
     Continue,
     Exit,
@@ -65,6 +67,7 @@ where
     V: super::StateDriverVmController,
     C: VcpuTaskController,
 {
+    /// Constructs a new state driver context.
     pub(super) fn new(
         runtime_hdl: tokio::runtime::Handle,
         controller: Arc<V>,
@@ -87,6 +90,8 @@ where
         }
     }
 
+    /// Publishes the supplied externally-visible instance state to the external
+    /// instance state channel.
     fn update_external_state(&mut self, state: ApiInstanceState) {
         self.state_gen += 1;
         let _ = self
@@ -94,10 +99,17 @@ where
             .send(ApiMonitoredState { gen: self.state_gen, state });
     }
 
+    /// Retrieves the most recently published migration state from the external
+    /// migration state channel.
+    ///
+    /// This function does not return the borrowed monitor, so the state may
+    /// change again as soon as this function returns.
     fn get_migration_state(&self) -> Option<(Uuid, ApiMigrationState)> {
         *self.migration_state_tx.borrow()
     }
 
+    /// Publishes the supplied externally-visible migration status to the
+    /// external migration state channel.
     fn set_migration_state(
         &mut self,
         migration_id: Uuid,
