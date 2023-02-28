@@ -343,6 +343,11 @@ struct SharedVmStateInner {
     /// The state worker's queue of unprocessed events from guest devices.
     guest_event_queue: VecDeque<GuestEvent>,
 
+    /// The expected ID of the next live migration this instance will
+    /// participate in (either in or out). If this is `Some`, external callers
+    /// who query migration state will observe that a live migration is in
+    /// progress even if the state driver has yet to pick up the live migration
+    /// tasks from its queue.
     pending_migration_id: Option<Uuid>,
 }
 

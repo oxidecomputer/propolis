@@ -50,7 +50,12 @@ pub(super) struct StateDriver<
     /// Whether the worker's VM's entities are paused.
     paused: bool,
 
+    /// The sender side of the monitor that reflects the instance's current
+    /// externally-visible state.
     api_state_tx: tokio::sync::watch::Sender<ApiMonitoredState>,
+
+    /// The sender side of the monitor that reflects the state of the current
+    /// or most recent active migration into or out of this instance.
     migration_state_tx:
         tokio::sync::watch::Sender<Option<(Uuid, ApiMigrationState)>>,
 }
@@ -886,66 +891,4 @@ mod tests {
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));
         assert!(matches!(next_lifecycle, Some(LifecycleStage::Active)));
     }
-
-    /* TODO(#252)
-    #[tokio::test]
-    async fn failed_migration_out_does_not_unpause() {
-        let migration_id = Uuid::new_v4();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel(1);
-        let migrate_task = tokio::spawn(async move {
-            start_rx.await.unwrap();
-            task_exit_rx.await.unwrap()
-        });
-
-        let (mut vm_ctrl, mut vcpu_ctrl) = make_default_mocks();
-        let mut next_external: Option<ApiInstanceState> = None;
-        let mut next_lifecycle: Option<LifecycleStage> = None;
-
-        vm_ctrl
-            .expect_update_external_state()
-            .times(1)
-            .withf(|&_gen, &state| state == ApiInstanceState::Migrating)
-            .returning(|_, _| ());
-        vm_ctrl.expect_pause_entities().times(1).returning(|| ());
-        vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
-
-        let expected_migration_id = migration_id;
-        vm_ctrl
-            .expect_set_migration_state()
-            .times(1)
-            .withf(move |&id, &state| {
-                id == expected_migration_id && state == ApiMigrationState::Error
-            })
-            .returning(|_, _| ());
-
-        vm_ctrl.expect_resume_entities().never();
-        vcpu_ctrl.expect_resume_all().never();
-
-        let mut driver = make_state_driver(vm_ctrl, vcpu_ctrl);
-        driver.driver.handle_event(
-            StateDriverEvent::External(ExternalRequest::MigrateAsSource {
-                migration_id,
-                task: migrate_task,
-                start_tx,
-                command_rx,
-                response_tx,
-            }),
-            &mut next_external,
-            &mut next_lifecycle,
-        );
-
-        // Tell the state driver to pause entities, just like in a real
-        // migration.
-        command_tx.send(MigrateSourceCommand::Pause).await.unwrap();
-        let resp = response_rx.recv().await.unwrap();
-        assert!(matches!(resp, MigrateSourceResponse::Pause(Ok(()))));
-
-        // Now tell the migration task to fail and yield an error. This should
-        // produce no additional calls to resume things.
-        task_exit_tx.send(Err(MigrateError::UnexpectedMessage)).unwrap();
-    }
-    */
 }
