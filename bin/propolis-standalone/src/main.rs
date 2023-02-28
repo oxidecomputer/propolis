@@ -863,6 +863,31 @@ fn setup_instance(
     Ok((inst, com1_sock))
 }
 
+/// Check bhyve and viona API versions, squawking if they do not meet
+/// expectations, but ultimately still allowing forward progress since
+/// propolis-standalone lives in the Thunderdome.
+fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
+    match api_version::check() {
+        Err(api_version::Error::Io(e)) => {
+            // IO errors _are_ fatal
+            Err(e)
+        }
+        Err(api_version::Error::Mismatch(comp, act, exp)) => {
+            // Make noise about version mismatch, but soldier on and let the
+            // user decide if they want to quit
+            slog::error!(
+                log,
+                "{} API version mismatch {} != {}",
+                comp,
+                act,
+                exp
+            );
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
 #[derive(clap::Parser)]
 /// Propolis command-line frontend for running a VM.
 struct Args {
@@ -886,6 +911,9 @@ fn main() -> anyhow::Result<()> {
     register_probes().context("Failed to setup USDT probes")?;
 
     let (log, _log_async_guard) = build_log();
+
+    // Check that vmm and viona device version match what we expect
+    api_version_checks(&log).context("API version checks")?;
 
     // Create tokio runtime, we don't use the tokio::main macro
     // since we'll block in main when we call `Instance::wait_for_state`

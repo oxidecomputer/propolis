@@ -692,3 +692,18 @@ pub(crate) mod bits {
     pub const VIRTIO_NET_CFG_SIZE: usize = 0xc;
 }
 use bits::*;
+
+/// Check that available viona API matches expectations of propolis crate
+pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
+    let fd = viona_api::VionaFd::open()?;
+    let vers = fd.api_version()?;
+
+    // viona only requires the V2 bits for now
+    let compare = viona_api::ApiVersion::V2.into();
+
+    if vers < compare {
+        Err(crate::api_version::Error::Mismatch("viona", vers, compare))
+    } else {
+        Ok(())
+    }
+}

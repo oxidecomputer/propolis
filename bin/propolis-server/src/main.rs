@@ -2,7 +2,7 @@
 #![cfg_attr(usdt_need_asm, feature(asm))]
 #![cfg_attr(all(target_os = "macos", usdt_need_asm_sym), feature(asm_sym))]
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use clap::Parser;
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
@@ -85,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
             let log = config_logging.to_logger("propolis-server").map_err(
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
+
+            // Check that devices conform to expected API version
+            propolis::api_version::check().context("API version checks")?;
 
             let vnc_server = setup_vnc(&log, vnc_addr);
             let vnc_server_hdl = vnc_server.clone();
