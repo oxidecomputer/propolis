@@ -5,6 +5,7 @@ use propolis::inventory::Entity;
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
+use propolis::vmm;
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
 use std::io;
@@ -108,6 +109,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                 self.ram_push(&step).await
             }
             MigratePhase::DeviceState => self.device_state().await,
+            MigratePhase::TimeData => self.time_data().await,
             MigratePhase::RamPull => self.ram_pull().await,
             MigratePhase::ServerState => self.server_state().await,
             MigratePhase::Finish => self.finish().await,
@@ -129,6 +131,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         // pre- and post-pause steps.
         self.run_phase(MigratePhase::RamPushPrePause).await?;
         self.run_phase(MigratePhase::RamPushPostPause).await?;
+
+        // Import of the time data *must* be done before we import device
+        // state: the proper functioning of device timers depends on an adjusted
+        // boot_hrtime.
+        self.run_phase(MigratePhase::TimeData).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
         self.run_phase(MigratePhase::ServerState).await?;
@@ -321,6 +328,110 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                 self.import_device(&target, &device, &migrate_ctx)?;
             }
         }
+        self.send_msg(codec::Message::Okay).await
+    }
+
+    // Get the guest time data from the source, make updates to it based on the
+    // new host, and write the data out to bhvye.
+    async fn time_data(&mut self) -> Result<(), MigrateError> {
+        // Read time data sent by the source and deserialize
+        let raw: String = match self.read_msg().await? {
+            codec::Message::Serialized(encoded) => encoded,
+            msg => {
+                error!(self.log(), "time data: unexpected message: {msg:?}");
+                return Err(MigrateError::UnexpectedMessage);
+            }
+        };
+        info!(self.log(), "VMM Time Data: {:?}", raw);
+        let time_data_src: vmm::time::VmTimeData = ron::from_str(&raw)
+            .map_err(|e| {
+                MigrateError::TimeData(format!(
+                    "VMM Time Data deserialization error: {}",
+                    e
+                ))
+            })?;
+        probes::migrate_time_data_before!(|| {
+            (
+                time_data_src.guest_freq,
+                time_data_src.guest_tsc,
+                time_data_src.boot_hrtime,
+            )
+        });
+
+        // Take a snapshot of the host hrtime/wall clock time, then adjust
+        // time data appropriately.
+        let vmm_hdl = {
+            let instance_guard = self.vm_controller.instance().lock();
+            &instance_guard.machine().hdl.clone()
+        };
+        let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
+            .map_err(|e| {
+                MigrateError::TimeData(format!(
+                    "could not read host time: {}",
+                    e
+                ))
+            })?;
+        let (time_data_dst, adjust) =
+            vmm::time::adjust_time_data(time_data_src, dst_hrt, dst_wc)
+                .map_err(|e| {
+                    MigrateError::TimeData(format!(
+                        "could not adjust VMM Time Data: {}",
+                        e
+                    ))
+                })?;
+
+        // In case import fails, log adjustments made to time data and fire
+        // dtrace probe first
+        if adjust.migrate_delta_negative {
+            warn!(
+                self.log(),
+                "Found negative wall clock delta between target import \
+                and source export:\n\
+                - source wall clock time: {:?}\n\
+                - target wall clock time: {:?}\n",
+                time_data_src.wall_clock(),
+                dst_wc
+            );
+        }
+        info!(
+            self.log(),
+            "Time data adjustments:\n\
+            - guest TSC freq: {} Hz = {} GHz\n\
+            - guest uptime ns: {:?}\n\
+            - migration time delta: {:?}\n\
+            - guest_tsc adjustment = {} + {} = {}\n\
+            - boot_hrtime adjustment = {} ---> {} - {} = {}\n\
+            - dest highres clock time: {}\n\
+            - dest wall clock time: {:?}",
+            time_data_dst.guest_freq,
+            time_data_dst.guest_freq as f64 / vmm::time::NS_PER_SEC as f64,
+            adjust.guest_uptime_ns,
+            adjust.migrate_delta,
+            time_data_src.guest_tsc,
+            adjust.guest_tsc_delta,
+            time_data_dst.guest_tsc,
+            time_data_src.boot_hrtime,
+            dst_hrt,
+            adjust.boot_hrtime_delta,
+            time_data_dst.boot_hrtime,
+            dst_hrt,
+            dst_wc
+        );
+        probes::migrate_time_data_after!(|| {
+            (
+                time_data_dst.guest_freq,
+                time_data_dst.guest_tsc,
+                time_data_dst.boot_hrtime,
+                adjust.guest_uptime_ns,
+                adjust.migrate_delta.as_nanos() as u64,
+                adjust.migrate_delta_negative,
+            )
+        });
+
+        // Import the adjusted time data
+        vmm::time::import_time_data(vmm_hdl, time_data_dst).map_err(|e| {
+            MigrateError::TimeData(format!("VMM Time Data import error: {}", e))
+        })?;
 
         self.send_msg(codec::Message::Okay).await
     }

@@ -4,6 +4,7 @@ use propolis::inventory::Order;
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
+use propolis::vmm;
 use slog::{error, info, trace};
 use std::convert::TryInto;
 use std::io;
@@ -112,6 +113,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
                 self.ram_push(&step).await
             }
+            MigratePhase::TimeData => self.time_data().await,
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
             MigratePhase::ServerState => self.server_state().await,
@@ -130,6 +132,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.run_phase(MigratePhase::RamPushPrePause).await?;
         self.run_phase(MigratePhase::Pause).await?;
         self.run_phase(MigratePhase::RamPushPostPause).await?;
+        self.run_phase(MigratePhase::TimeData).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
         self.run_phase(MigratePhase::ServerState).await?;
@@ -386,6 +389,29 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         .await?;
 
         self.send_msg(codec::Message::Okay).await?;
+        self.read_ok().await
+    }
+
+    // Read and send over the time data
+    async fn time_data(&mut self) -> Result<(), MigrateError> {
+        let vmm_hdl = {
+            let instance_guard = self.vm_controller.instance().lock();
+            &instance_guard.machine().hdl.clone()
+        };
+        let vm_time_data =
+            vmm::time::export_time_data(vmm_hdl).map_err(|e| {
+                MigrateError::TimeData(format!(
+                    "VMM Time Data export error: {}",
+                    e
+                ))
+            })?;
+        info!(self.log(), "VMM Time Data: {:#?}", vm_time_data);
+
+        let time_data_serialized = ron::ser::to_string(&vm_time_data)
+            .map_err(codec::ProtocolError::from)?;
+        info!(self.log(), "VMM Time Data: {:#?}", time_data_serialized);
+        self.send_msg(codec::Message::Serialized(time_data_serialized)).await?;
+
         self.read_ok().await
     }
 
