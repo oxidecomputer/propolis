@@ -2,7 +2,7 @@
 name = "propolis-standalone-config"
 version = "0.0.0"
 license = "MPL-2.0"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 num_enum.workspace = true
