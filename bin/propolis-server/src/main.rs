@@ -87,13 +87,24 @@ async fn main() -> anyhow::Result<()> {
             )?;
 
             // Check that devices conform to expected API version
-            if let Err(e) = propolis::vmm::version::check() {
-                slog::error!(log, "Error checking VMM API version");
-                return Err(e.into());
-            }
-            if let Err(e) = propolis::hw::virtio::viona::version::check() {
-                slog::error!(log, "Error checking viona API version");
-                return Err(e.into());
+            use propolis::api_version;
+            if let Err(e) = api_version::check() {
+                match e {
+                    api_version::Error::Io(io_err) => {
+                        slog::error!(log, "Error checking API versions");
+                        return Err(io_err.into());
+                    }
+                    api_version::Error::Mismatch(comp, act, exp) => {
+                        slog::error!(
+                            log,
+                            "Inadequate {} API version {} < {}",
+                            comp,
+                            act,
+                            exp
+                        );
+                        return Err(e.into());
+                    }
+                }
             }
 
             let vnc_server = setup_vnc(&log, vnc_addr);

@@ -867,31 +867,21 @@ fn setup_instance(
 /// expectations, but ultimately still allowing forward progress since
 /// propolis-standalone lives in the Thunderdome.
 fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
-    use propolis::hw::virtio::viona::version as viona_version;
-    use propolis::vmm::version as vmm_version;
-
-    match vmm_version::check() {
-        Err(vmm_version::VersionError::Io(e)) => {
+    match api_version::check() {
+        Err(api_version::Error::Io(e)) => {
             // IO errors _are_ fatal
             return Err(e);
         }
-        Err(vmm_version::VersionError::Mismatch(act, exp)) => {
+        Err(api_version::Error::Mismatch(comp, act, exp)) => {
             // Make noise about version mismatch, but soldier on and let the
             // user decide if they want to quit
-            slog::error!(log, "vmm API version mismatch {} != {}", act, exp);
-        }
-        _ => {}
-    }
-
-    match viona_version::check() {
-        Err(viona_version::VersionError::Io(e)) => {
-            // IO errors _are_ fatal
-            return Err(e);
-        }
-        Err(viona_version::VersionError::Mismatch(act, exp)) => {
-            // Make noise about version mismatch, but soldier on and let the
-            // user decide if they want to quit
-            slog::error!(log, "viona API version mismatch {} != {}", act, exp);
+            slog::error!(
+                log,
+                "{} API version mismatch {} != {}",
+                comp,
+                act,
+                exp
+            );
         }
         _ => {}
     }

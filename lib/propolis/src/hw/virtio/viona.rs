@@ -693,28 +693,17 @@ pub(crate) mod bits {
 }
 use bits::*;
 
-pub mod version {
-    #[derive(Debug, thiserror::Error)]
-    pub enum VersionError {
-        #[error("IO Error")]
-        Io(#[from] std::io::Error),
+/// Check that available viona API matches expectations of propolis crate
+pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
+    let fd = viona_api::VionaFd::open()?;
+    let vers = fd.api_version()?;
 
-        #[error("viona API version {0} did not match expectation {1}")]
-        Mismatch(u32, u32),
-    }
+    // viona only requires the V2 bits for now
+    let compare = viona_api::ApiVersion::V2.into();
 
-    /// Check that available viona API matches expectations of propolis crate
-    pub fn check() -> Result<(), VersionError> {
-        let fd = viona_api::VionaFd::open()?;
-        let vers = fd.api_version()?;
-
-        // viona only requires the V2 bits for now
-        let compare = viona_api::ApiVersion::V2.into();
-
-        if vers < compare {
-            Err(VersionError::Mismatch(vers, compare))
-        } else {
-            Ok(())
-        }
+    if vers < compare {
+        Err(crate::api_version::Error::Mismatch("viona", vers, compare))
+    } else {
+        Ok(())
     }
 }
