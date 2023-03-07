@@ -870,7 +870,7 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
     match api_version::check() {
         Err(api_version::Error::Io(e)) => {
             // IO errors _are_ fatal
-            return Err(e);
+            Err(e)
         }
         Err(api_version::Error::Mismatch(comp, act, exp)) => {
             // Make noise about version mismatch, but soldier on and let the
@@ -882,11 +882,10 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
                 act,
                 exp
             );
+            Ok(())
         }
-        _ => {}
+        Ok(_) => Ok(()),
     }
-
-    Ok(())
 }
 
 #[derive(clap::Parser)]
@@ -914,10 +913,7 @@ fn main() -> anyhow::Result<()> {
     let (log, _log_async_guard) = build_log();
 
     // Check that vmm and viona device version match what we expect
-    if let Err(e) = api_version_checks(&log) {
-        slog::error!(&log, "IO error during API version checks");
-        return Err(e.into());
-    }
+    api_version_checks(&log).context("API version checks")?;
 
     // Create tokio runtime, we don't use the tokio::main macro
     // since we'll block in main when we call `Instance::wait_for_state`

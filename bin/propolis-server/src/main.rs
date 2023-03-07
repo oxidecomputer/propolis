@@ -2,7 +2,7 @@
 #![cfg_attr(usdt_need_asm, feature(asm))]
 #![cfg_attr(all(target_os = "macos", usdt_need_asm_sym), feature(asm_sym))]
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use clap::Parser;
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
@@ -87,25 +87,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
 
             // Check that devices conform to expected API version
-            use propolis::api_version;
-            if let Err(e) = api_version::check() {
-                match e {
-                    api_version::Error::Io(io_err) => {
-                        slog::error!(log, "Error checking API versions");
-                        return Err(io_err.into());
-                    }
-                    api_version::Error::Mismatch(comp, act, exp) => {
-                        slog::error!(
-                            log,
-                            "Inadequate {} API version {} < {}",
-                            comp,
-                            act,
-                            exp
-                        );
-                        return Err(e.into());
-                    }
-                }
-            }
+            propolis::api_version::check().context("API version checks")?;
 
             let vnc_server = setup_vnc(&log, vnc_addr);
             let vnc_server_hdl = vnc_server.clone();
