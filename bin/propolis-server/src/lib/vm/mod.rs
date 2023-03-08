@@ -650,6 +650,12 @@ impl VmController {
         &self.vm_objects.monitor_rx
     }
 
+    pub fn migrate_state_watcher(
+        &self,
+    ) -> &tokio::sync::watch::Receiver<Option<(Uuid, ApiMigrationState)>> {
+        &self.vm_objects.migrate_state_rx
+    }
+
     /// Asks to queue a request to start a source migration task for this VM.
     /// The migration will have the supplied `migration_id` and will obtain its
     /// connection to the target by calling `upgrade_fn` to obtain a future that
