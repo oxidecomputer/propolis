@@ -133,9 +133,6 @@ impl InstanceContext {
                     self.state = api::InstanceState::Stopped;
                     Ok(())
                 }
-                api::InstanceStateRequested::MigrateStart => {
-                    unimplemented!("migration not yet implemented")
-                }
             },
         }
     }
