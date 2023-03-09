@@ -57,8 +57,12 @@ use crate::{
     initializer::{build_instance, MachineInitializer},
     migrate::MigrateError,
     serial::Serial,
+    vm::request_queue::ExternalRequest,
 };
 
+use self::request_queue::ExternalRequestQueue;
+
+mod request_queue;
 mod state_driver;
 
 #[derive(Debug, Error)]
@@ -87,14 +91,8 @@ pub enum VmControllerError {
     #[error("Can't migrate into a running instance")]
     TooLateToBeMigrationTarget,
 
-    #[error("Cannot request state {0:?} while in lifecycle stage {1:?}")]
-    InvalidStageForRequest(ApiInstanceStateRequested, LifecycleStage),
-
-    #[error(
-        "Cannot ask to be a migration target while in lifecycle stage \
-            {0:?}"
-    )]
-    InvalidStageForMigrationTarget(LifecycleStage),
+    #[error("Failed to queue requested state change: {0}")]
+    StateChangeRequestDenied(#[from] request_queue::RequestDeniedReason),
 
     #[error("Migration protocol error: {0:?}")]
     MigrationProtocolError(#[from] MigrateError),
@@ -115,8 +113,7 @@ impl From<VmControllerError> for dropshot::HttpError {
             | VmControllerError::MigrationTargetInProgress
             | VmControllerError::MigrationTargetFailed
             | VmControllerError::TooLateToBeMigrationTarget
-            | VmControllerError::InvalidStageForRequest(_, _)
-            | VmControllerError::InvalidStageForMigrationTarget(_)
+            | VmControllerError::StateChangeRequestDenied(_)
             | VmControllerError::InstanceNotActive
             | VmControllerError::InstanceHaltPending
             | VmControllerError::MigrationTargetPreviouslyCompleted => {
@@ -210,94 +207,6 @@ enum MigrateTaskEvent<T> {
     Command(T),
 }
 
-/// The subordinate state of an instance that has not yet been asked to run.
-/// Dictates whether the instance can start and, if so, what startup procedure
-/// should be used.
-#[derive(Clone, Copy, Debug)]
-pub enum StartupStage {
-    /// The instance's entities should be started from their initial, cold-reset
-    /// state.
-    ColdBoot,
-
-    /// The instance cannot run yet because a client asked it to serve as a
-    /// migration target, and that migration is not finished yet.
-    MigratePending,
-
-    /// The instance successfully initialized via live migration.
-    Migrated,
-
-    /// The instance tried to initialize via live migration, but the migration
-    /// failed.
-    MigrationFailed,
-}
-
-/// A logical stage in a VM's lifecycle.
-#[derive(Clone, Copy, Debug)]
-pub enum LifecycleStage {
-    /// The VM has not started yet and is in the specified phase of its
-    /// pre-start lifecycle.
-    NotStarted(StartupStage),
-
-    /// The VM has been launched. Note that it may be paused.
-    Active,
-
-    /// The VM has been stopped and will not restart.
-    NoLongerActive,
-}
-
-/// An external request made of the controller via the server API. Handled by
-/// the controller's worker thread.
-#[derive(Debug)]
-enum ExternalRequest {
-    /// Initializes the VM through live migration by running a
-    /// migration-destination task.
-    MigrateAsTarget {
-        /// The ID of the live migration to use when initializing.
-        migration_id: Uuid,
-
-        /// A handle to the task that will execute the migration procedure.
-        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-
-        /// The sender side of a one-shot channel that, when signaled, tells the
-        /// migration task to start its work.
-        start_tx: tokio::sync::oneshot::Sender<()>,
-
-        /// A channel that receives commands from the migration task.
-        command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    },
-
-    /// Resets all the VM's entities and CPUs, then starts the VM.
-    Start,
-
-    /// Asks the state worker to start a migration-source task.
-    MigrateAsSource {
-        /// The ID of the live migration for which this VM will be the source.
-        migration_id: Uuid,
-
-        /// A handle to the task that will execute the migration procedure.
-        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-
-        /// The sender side of a one-shot channel that, when signaled, tells the
-        /// migration task to start its work.
-        start_tx: tokio::sync::oneshot::Sender<()>,
-
-        /// A channel that receives commands from the migration task.
-        command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
-
-        /// A channel used to send responses to migration commands.
-        response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
-    },
-
-    /// Resets the guest by pausing all devices, resetting them to their
-    /// cold-boot states, and resuming the devices. Note that this is not a
-    /// graceful reboot and does not coordinate with guest software.
-    Reboot,
-
-    /// Halts the VM. Note that this is not a graceful shutdown and does not
-    /// coordinate with guest software.
-    Stop,
-}
-
 /// An event raised by some component in the instance (e.g. a vCPU or the
 /// chipset) that the state worker must handle.
 #[derive(Clone, Copy, Debug)]
@@ -313,24 +222,7 @@ enum GuestEvent {
 /// accessed from the controller API and the VM's state worker.
 #[derive(Debug)]
 struct SharedVmStateInner {
-    /// The VM's lifecycle stage. This can be used to determine whether incoming
-    /// API requests are allowed--for example, requesting to migrate into a VM
-    /// that's already running is forbidden.
-    lifecycle_stage: LifecycleStage,
-
-    /// True if the instance's request queue has a pending request to migrate to
-    /// another instance. If true, external API requests that may need to be
-    /// serviced by the target should be blocked until this is cleared. (Clients
-    /// can monitor the state of the migration and retry once it has resolved.)
-    migrate_from_pending: bool,
-
-    /// True if the instance's request queue has a pending request to stop the
-    /// instance. If true, external API requests that only make sense on a
-    /// running instance should be blocked.
-    halt_pending: bool,
-
-    /// The state worker's queue of pending requests from the server API.
-    external_request_queue: VecDeque<ExternalRequest>,
+    external_request_queue: ExternalRequestQueue,
 
     /// The state worker's queue of unprocessed events from guest devices.
     guest_event_queue: VecDeque<GuestEvent>,
@@ -346,10 +238,7 @@ struct SharedVmStateInner {
 impl SharedVmStateInner {
     fn new() -> Self {
         Self {
-            lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
-            migrate_from_pending: false,
-            halt_pending: false,
-            external_request_queue: VecDeque::new(),
+            external_request_queue: ExternalRequestQueue::new(),
             guest_event_queue: VecDeque::new(),
             pending_migration_id: None,
         }
@@ -395,13 +284,39 @@ pub struct VmController {
 }
 
 impl SharedVmState {
-    pub(crate) fn suspend_halt_event(&self, vcpu_id: i32) {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(SharedVmStateInner::new()),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn wait_for_next_event(&self) -> StateDriverEvent {
+        let guard = self.inner.lock().unwrap();
+        let mut guard = self
+            .cv
+            .wait_while(guard, |i| {
+                i.external_request_queue.is_empty()
+                    && i.guest_event_queue.is_empty()
+            })
+            .unwrap();
+
+        if let Some(guest_event) = guard.guest_event_queue.pop_front() {
+            StateDriverEvent::Guest(guest_event)
+        } else {
+            StateDriverEvent::External(
+                guard.external_request_queue.pop_front().unwrap(),
+            )
+        }
+    }
+
+    pub fn suspend_halt_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner.guest_event_queue.push_back(GuestEvent::VcpuSuspendHalt(vcpu_id));
         self.cv.notify_one();
     }
 
-    pub(crate) fn suspend_reset_event(&self, vcpu_id: i32) {
+    pub fn suspend_reset_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner
             .guest_event_queue
@@ -409,7 +324,7 @@ impl SharedVmState {
         self.cv.notify_one();
     }
 
-    pub(crate) fn suspend_triple_fault_event(&self, vcpu_id: i32) {
+    pub fn suspend_triple_fault_event(&self, vcpu_id: i32) {
         let mut inner = self.inner.lock().unwrap();
         inner
             .guest_event_queue
@@ -417,7 +332,7 @@ impl SharedVmState {
         self.cv.notify_one();
     }
 
-    pub(crate) fn unhandled_vm_exit(
+    pub fn unhandled_vm_exit(
         &self,
         vcpu_id: i32,
         exit: propolis::exits::VmExitKind,
@@ -425,7 +340,7 @@ impl SharedVmState {
         panic!("vCPU {}: Unhandled VM exit: {:?}", vcpu_id, exit);
     }
 
-    pub(crate) fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
+    pub fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
         panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
     }
 }
@@ -483,10 +398,7 @@ impl VmController {
                 state: ApiInstanceState::Creating,
             });
         let (migrate_tx, migrate_rx) = tokio::sync::watch::channel(None);
-        let worker_state = Arc::new(SharedVmState {
-            inner: Mutex::new(SharedVmStateInner::new()),
-            cv: Condvar::new(),
-        });
+        let worker_state = Arc::new(SharedVmState::new());
 
         // Create and initialize devices in the new instance.
         let instance_inner = instance.lock();
@@ -527,6 +439,7 @@ impl VmController {
         )?;
 
         // The instance is fully set up; pass it to the new controller.
+        let shared_state_for_worker = worker_state.clone();
         let controller = Arc::new_cyclic(|this| Self {
             vm_objects: VmObjects {
                 instance: Some(instance),
@@ -558,6 +471,7 @@ impl VmController {
                 let driver = state_driver::StateDriver::new(
                     runtime_hdl,
                     ctrl_for_worker,
+                    shared_state_for_worker,
                     vcpu_tasks,
                     log_for_worker,
                     monitor_tx,
@@ -665,36 +579,16 @@ impl VmController {
         conn: WebSocketStream<T>,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
-        match inner.lifecycle_stage {
-            LifecycleStage::NotStarted(_) => {
-                Err(VmControllerError::InstanceNotActive)
-            }
-            LifecycleStage::Active => {
-                if inner.migrate_from_pending {
-                    Err(VmControllerError::AlreadyMigrationSource)
-                } else if inner.halt_pending {
-                    Err(VmControllerError::InstanceHaltPending)
-                } else {
-                    inner.migrate_from_pending = true;
 
-                    // Update the migration state before the task starts so that
-                    // requests to query the migration state will succeed. This
-                    // ensures that if a later request to change the instance's
-                    // state fails because a migration is in progress, there
-                    // will in fact appear to be a pending migration even if the
-                    // state worker hasn't yet picked up the work.
-                    inner.pending_migration_id = Some(migration_id);
-                    inner.external_request_queue.push_back(
-                        self.launch_source_migration_task(migration_id, conn),
-                    );
-                    self.worker_state.cv.notify_one();
-                    Ok(())
-                }
-            }
-            LifecycleStage::NoLongerActive => {
-                Err(VmControllerError::InstanceNotActive)
-            }
-        }
+        // Check that the request can be enqueued before setting up the
+        // migration task.
+        inner.external_request_queue.migrate_as_source_allowed()?;
+        let migration_request =
+            self.launch_source_migration_task(migration_id, conn);
+
+        // Unwrap is safe because the queue state was checked under the lock.
+        inner.external_request_queue.try_queue(migration_request).unwrap();
+        Ok(())
     }
 
     /// Launches a task that will execute a live migration out of this VM.
@@ -767,43 +661,16 @@ impl VmController {
         conn: WebSocketStream<T>,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
-        match inner.lifecycle_stage {
-            LifecycleStage::NotStarted(substage) => match substage {
-                StartupStage::ColdBoot => {
-                    inner.lifecycle_stage = LifecycleStage::NotStarted(
-                        StartupStage::MigratePending,
-                    );
 
-                    // Update the migration state before the task starts so that
-                    // requests to query the migration state will succeed. This
-                    // ensures that if a later request to change the instance's
-                    // state fails because a migration is in progress, there
-                    // will in fact appear to be a pending migration even if the
-                    // state worker hasn't yet picked up the work.
-                    inner.pending_migration_id = Some(migration_id);
-                    inner.external_request_queue.push_back(
-                        self.launch_target_migration_task(migration_id, conn),
-                    );
-                    self.worker_state.cv.notify_one();
-                    Ok(())
-                }
-                StartupStage::MigratePending => {
-                    Err(VmControllerError::MigrationTargetInProgress)
-                }
-                StartupStage::Migrated => {
-                    Err(VmControllerError::MigrationTargetPreviouslyCompleted)
-                }
-                StartupStage::MigrationFailed => {
-                    Err(VmControllerError::MigrationTargetFailed)
-                }
-            },
-            LifecycleStage::Active => {
-                Err(VmControllerError::TooLateToBeMigrationTarget)
-            }
-            LifecycleStage::NoLongerActive => {
-                Err(VmControllerError::InstanceNotActive)
-            }
-        }
+        // Check that the request can be enqueued before setting up the
+        // migration task.
+        inner.external_request_queue.migrate_as_target_allowed()?;
+        let migration_request =
+            self.launch_target_migration_task(migration_id, conn);
+
+        // Unwrap is safe because the queue state was checked under the lock.
+        inner.external_request_queue.try_queue(migration_request).unwrap();
+        Ok(())
     }
 
     /// Launches a task that will execute a live migration into this VM.
@@ -865,85 +732,14 @@ impl VmController {
             inner
         );
 
-        match requested {
-            // Requests to run succeed if the VM hasn't started yet, but can be
-            // started, or if it has started already.
-            ApiInstanceStateRequested::Run => match inner.lifecycle_stage {
-                LifecycleStage::NotStarted(substage) => match substage {
-                    StartupStage::ColdBoot => {
-                        inner
-                            .external_request_queue
-                            .push_back(ExternalRequest::Start);
-                        self.worker_state.cv.notify_one();
-                        Ok(())
-                    }
-                    StartupStage::MigratePending => {
-                        Err(VmControllerError::MigrationTargetInProgress)
-                    }
-                    StartupStage::Migrated => Ok(()),
-                    StartupStage::MigrationFailed => {
-                        Err(VmControllerError::MigrationTargetFailed)
-                    }
-                },
-                LifecycleStage::Active => Ok(()),
-                LifecycleStage::NoLongerActive => {
-                    Err(VmControllerError::InvalidStageForRequest(
-                        requested,
-                        inner.lifecycle_stage,
-                    ))
-                }
-            },
-
-            // Requests to stop always succeed. Note that a request to stop a VM
-            // that hasn't started should still be queued to the state worker so
-            // that the worker can exit and drop its references to the instance.
-            ApiInstanceStateRequested::Stop => match inner.lifecycle_stage {
-                LifecycleStage::NotStarted(_) | LifecycleStage::Active => {
-                    inner.halt_pending = true;
-                    inner
-                        .external_request_queue
-                        .push_back(ExternalRequest::Stop);
-                    self.worker_state.cv.notify_one();
-                    Ok(())
-                }
-                LifecycleStage::NoLongerActive => Ok(()),
-            },
-
-            // Requests to reboot require an active VM that isn't migrating or
-            // halting. (Reboots during a migration are forbidden for
-            // simplicity: until the migration is done, it's not clear whether
-            // the source or target will be the one to handle the reboot
-            // command.)
-            ApiInstanceStateRequested::Reboot => {
-                match inner.lifecycle_stage {
-                    LifecycleStage::NotStarted(_) => {
-                        Err(VmControllerError::InvalidStageForRequest(
-                            requested,
-                            inner.lifecycle_stage,
-                        ))
-                    }
-                    LifecycleStage::Active => {
-                        if inner.migrate_from_pending {
-                            Err(VmControllerError::InvalidRequestForMigrationSource(requested))
-                        } else if inner.halt_pending {
-                            Err(VmControllerError::InstanceHaltPending)
-                        } else {
-                            inner
-                                .external_request_queue
-                                .push_back(ExternalRequest::Reboot);
-                            self.worker_state.cv.notify_one();
-                            Ok(())
-                        }
-                    }
-                    LifecycleStage::NoLongerActive => {
-                        Err(VmControllerError::InvalidStageForRequest(
-                            requested,
-                            inner.lifecycle_stage,
-                        ))
-                    }
-                }
-            }
-        }
+        inner
+            .external_request_queue
+            .try_queue(match requested {
+                ApiInstanceStateRequested::Run => ExternalRequest::Start,
+                ApiInstanceStateRequested::Stop => ExternalRequest::Stop,
+                ApiInstanceStateRequested::Reboot => ExternalRequest::Reboot,
+            })
+            .map_err(Into::into)
     }
 
     pub fn migrate_status(
@@ -1054,19 +850,6 @@ trait StateDriverVmController {
 
     /// Resets the state of each vCPU in the instance to its on-reboot state.
     fn reset_vcpu_state(&self);
-
-    /// Waits for a new event to arrive for processing and returns that event.
-    fn wait_for_next_event(&self) -> StateDriverEvent;
-
-    /// Sets the VM's current lifecycle stage.
-    fn set_lifecycle_stage(&self, stage: LifecycleStage);
-
-    /// Gets the VM's current lifecycle stage.
-    fn get_lifecycle_stage(&self) -> LifecycleStage;
-
-    /// Informs the controller that an attempt to migrate out of this VM
-    /// completed with the supplied result.
-    fn finish_migrate_as_source(&self, res: Result<(), MigrateError>);
 }
 
 impl StateDriverVmController for VmController {
@@ -1156,54 +939,6 @@ impl StateDriverVmController for VmController {
                     0xfff0,
                 )
                 .unwrap();
-            }
-        }
-    }
-
-    fn wait_for_next_event(&self) -> StateDriverEvent {
-        let guard = self.worker_state.inner.lock().unwrap();
-        let mut guard = self
-            .worker_state
-            .cv
-            .wait_while(guard, |i| {
-                i.external_request_queue.is_empty()
-                    && i.guest_event_queue.is_empty()
-            })
-            .unwrap();
-
-        if let Some(guest_event) = guard.guest_event_queue.pop_front() {
-            StateDriverEvent::Guest(guest_event)
-        } else {
-            StateDriverEvent::External(
-                guard.external_request_queue.pop_front().unwrap(),
-            )
-        }
-    }
-
-    fn set_lifecycle_stage(&self, stage: LifecycleStage) {
-        self.worker_state.inner.lock().unwrap().lifecycle_stage = stage;
-    }
-
-    fn get_lifecycle_stage(&self) -> LifecycleStage {
-        self.worker_state.inner.lock().unwrap().lifecycle_stage
-    }
-
-    fn finish_migrate_as_source(&self, res: Result<(), MigrateError>) {
-        match res {
-            Ok(()) => {
-                info!(self.log, "Halting after successful migration out");
-
-                let mut inner = self.worker_state.inner.lock().unwrap();
-                inner.migrate_from_pending = false;
-                inner.halt_pending = true;
-                inner.external_request_queue.push_back(ExternalRequest::Stop);
-            }
-            Err(e) => {
-                info!(self.log, "Resuming after failed migration out ({})", e);
-
-                let mut inner = self.worker_state.inner.lock().unwrap();
-                inner.migrate_from_pending = false;
-                inner.lifecycle_stage = LifecycleStage::Active;
             }
         }
     }
