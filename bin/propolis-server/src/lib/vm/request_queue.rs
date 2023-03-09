@@ -1,4 +1,21 @@
-#![allow(dead_code)]
+//! Handles requests to change a Propolis server's state via the external API.
+//!
+//! An instance accepts or rejects requests to change state based on a
+//! combination of its current state and its knowledge of the requests it has
+//! previously queued but not processed yet. The latter knowledge is used to
+//! reject requests that will never be fulfilled (because they're preceded by an
+//! action that will forbid them; consider rebooting after stopping) or that may
+//! need be to redirected to a migration target.
+//!
+//! The queue maintains a disposition for each kind of request that can be sent
+//! to it, which allows that request to be enqueued, denied, or silently ignored
+//! (for idempotency purposes). These dispositions can change as new requests
+//! are queued. The queue also provides callbacks to the VM state driver that
+//! allow the driver to advise the queue of state changes that further affect
+//! what requests should be accepted.
+//!
+//! Users who want to share a queue must wrap it in the synchronization objects
+//! of their choice.
 
 use std::collections::VecDeque;
 
@@ -93,20 +110,27 @@ pub enum RequestDeniedReason {
     InstanceFailed,
 }
 
+/// The possible methods of handling a request to queue a state change.
 #[derive(Copy, Clone, Debug)]
-pub enum RequestDisposition {
+enum RequestDisposition {
+    /// Put the state change on the queue.
     Enqueue,
+
+    /// Drop the state change silently.
     Ignore,
+
+    /// Deny the request to change state.
     Deny(RequestDeniedReason),
 }
 
+/// The current disposition for each kind of incoming request.
 #[derive(Debug)]
-pub struct AllowedRequests {
-    pub migrate_as_target: RequestDisposition,
-    pub start: RequestDisposition,
-    pub migrate_as_source: RequestDisposition,
-    pub reboot: RequestDisposition,
-    pub stop: RequestDisposition,
+struct AllowedRequests {
+    migrate_as_target: RequestDisposition,
+    start: RequestDisposition,
+    migrate_as_source: RequestDisposition,
+    reboot: RequestDisposition,
+    stop: RequestDisposition,
 }
 
 #[derive(Debug)]
@@ -117,6 +141,7 @@ pub struct ExternalRequestQueue {
 }
 
 impl ExternalRequestQueue {
+    /// Creates a new queue that logs to the supplied logger.
     pub fn new(log: Logger) -> Self {
         Self {
             queue: VecDeque::new(),
@@ -135,14 +160,17 @@ impl ExternalRequestQueue {
         }
     }
 
+    /// Pops the request at the front of the queue.
     pub fn pop_front(&mut self) -> Option<ExternalRequest> {
         self.queue.pop_front()
     }
 
+    /// Indicates whether the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
+    /// Asks to place the supplied request on the queue.
     pub fn try_queue(
         &mut self,
         request: ExternalRequest,
@@ -249,6 +277,8 @@ impl ExternalRequestQueue {
         Ok(())
     }
 
+    /// Notifies the queue that its instance is now running. This allows
+    /// requests to reboot and migrate out of the instance.
     pub fn notify_instance_running(&mut self) {
         info!(
             self.log,
@@ -258,6 +288,8 @@ impl ExternalRequestQueue {
         self.allowed.reboot = RequestDisposition::Enqueue;
     }
 
+    /// Notifies the queue that its instance has stopped. This blocks all new
+    /// requests except requests to stop, which are ignored.
     pub fn notify_instance_stopped(&mut self) {
         info!(self.log, "Instance is stopped, denying all actions");
         self.allowed.migrate_as_target =
@@ -271,6 +303,8 @@ impl ExternalRequestQueue {
         self.allowed.stop = RequestDisposition::Ignore;
     }
 
+    /// Notifies the queue that its instance has failed. This blocks all new
+    /// requests except requests to stop, which are ignored.
     pub fn notify_instance_failed(&mut self) {
         info!(self.log, "Instance has failed, denying all actions");
         self.allowed.migrate_as_target =
@@ -283,6 +317,9 @@ impl ExternalRequestQueue {
             RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
     }
 
+    /// Indicates whether the queue would allow a request to migrate into this
+    /// instance. This can be used to avoid setting up migration tasks for
+    /// requests that will ultimately be denied.
     pub fn migrate_as_target_allowed(&self) -> Result<(), RequestDeniedReason> {
         match self.allowed.migrate_as_target {
             RequestDisposition::Enqueue => Ok(()),
@@ -293,6 +330,9 @@ impl ExternalRequestQueue {
         }
     }
 
+    /// Indicates whether the queue would allow a request to migrate out of this
+    /// instance. This can be used to avoid setting up migration tasks for
+    /// requests that will ultimately be denied.
     pub fn migrate_as_source_allowed(&self) -> Result<(), RequestDeniedReason> {
         match self.allowed.migrate_as_source {
             RequestDisposition::Enqueue => Ok(()),
