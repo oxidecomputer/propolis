@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use slog::{info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -87,6 +88,9 @@ pub enum RequestDeniedReason {
 
     #[error("The instance is preparing to stop")]
     HaltPending,
+
+    #[error("The instance failed to start or halted due to a failure")]
+    InstanceFailed,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -102,16 +106,18 @@ pub struct AllowedRequests {
     pub start: RequestDisposition,
     pub migrate_as_source: RequestDisposition,
     pub reboot: RequestDisposition,
+    pub stop: RequestDisposition,
 }
 
 #[derive(Debug)]
 pub struct ExternalRequestQueue {
     queue: VecDeque<ExternalRequest>,
     allowed: AllowedRequests,
+    log: Logger,
 }
 
 impl ExternalRequestQueue {
-    pub fn new() -> Self {
+    pub fn new(log: Logger) -> Self {
         Self {
             queue: VecDeque::new(),
             allowed: AllowedRequests {
@@ -123,7 +129,9 @@ impl ExternalRequestQueue {
                 reboot: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
+                stop: RequestDisposition::Enqueue,
             },
+            log,
         }
     }
 
@@ -155,7 +163,7 @@ impl ExternalRequestQueue {
             // Requests to stop always succeed. Note that a request to stop a VM
             // that hasn't started should still be queued to the state worker so
             // that the worker can exit and drop its references to the instance.
-            ExternalRequest::Stop => Disposition::Enqueue,
+            ExternalRequest::Stop => self.allowed.stop,
         };
 
         match disposition {
@@ -163,6 +171,10 @@ impl ExternalRequestQueue {
             Disposition::Ignore => return Ok(()),
             Disposition::Deny(reason) => return Err(reason),
         };
+
+        info!(&self.log, "queuing external request";
+              "request" => ?request,
+              "disposition" => ?disposition);
 
         // At this point the request will be queued. Queuing some requests
         // logically forecloses on other kinds of requests. Update the
@@ -229,6 +241,7 @@ impl ExternalRequestQueue {
                     Disposition::Deny(DenyReason::HaltPending);
                 self.allowed.reboot =
                     Disposition::Deny(DenyReason::HaltPending);
+                self.allowed.stop = Disposition::Ignore;
             }
         }
 
@@ -236,8 +249,38 @@ impl ExternalRequestQueue {
         Ok(())
     }
 
-    pub fn set_allowed_requests(&mut self, new_allowed: AllowedRequests) {
-        self.allowed = new_allowed;
+    pub fn notify_instance_running(&mut self) {
+        info!(
+            self.log,
+            "Instance is running, allowing migration out and reboot"
+        );
+        self.allowed.migrate_as_source = RequestDisposition::Enqueue;
+        self.allowed.reboot = RequestDisposition::Enqueue;
+    }
+
+    pub fn notify_instance_stopped(&mut self) {
+        info!(self.log, "Instance is stopped, denying all actions");
+        self.allowed.migrate_as_target =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
+        self.allowed.start =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
+        self.allowed.migrate_as_source =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
+        self.allowed.reboot =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
+        self.allowed.stop = RequestDisposition::Ignore;
+    }
+
+    pub fn notify_instance_failed(&mut self) {
+        info!(self.log, "Instance has failed, denying all actions");
+        self.allowed.migrate_as_target =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
+        self.allowed.start =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
+        self.allowed.migrate_as_source =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
+        self.allowed.reboot =
+            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
     }
 
     pub fn migrate_as_target_allowed(&self) -> Result<(), RequestDeniedReason> {
@@ -251,7 +294,7 @@ impl ExternalRequestQueue {
     }
 
     pub fn migrate_as_source_allowed(&self) -> Result<(), RequestDeniedReason> {
-        match self.allowed.migrate_as_target {
+        match self.allowed.migrate_as_source {
             RequestDisposition::Enqueue => Ok(()),
             RequestDisposition::Ignore => {
                 panic!("requests to migrate as source should not be ignored")

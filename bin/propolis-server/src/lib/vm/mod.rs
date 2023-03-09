@@ -60,7 +60,7 @@ use crate::{
     vm::request_queue::ExternalRequest,
 };
 
-use self::request_queue::ExternalRequestQueue;
+use self::request_queue::{ExternalRequestQueue, RequestDeniedReason};
 
 mod request_queue;
 mod state_driver;
@@ -236,9 +236,9 @@ struct SharedVmStateInner {
 }
 
 impl SharedVmStateInner {
-    fn new() -> Self {
+    fn new(log: Logger) -> Self {
         Self {
-            external_request_queue: ExternalRequestQueue::new(),
+            external_request_queue: ExternalRequestQueue::new(log),
             guest_event_queue: VecDeque::new(),
             pending_migration_id: None,
         }
@@ -284,11 +284,23 @@ pub struct VmController {
 }
 
 impl SharedVmState {
-    fn new() -> Self {
+    fn new(log: Logger) -> Self {
         Self {
-            inner: Mutex::new(SharedVmStateInner::new()),
+            inner: Mutex::new(SharedVmStateInner::new(log)),
             cv: Condvar::new(),
         }
+    }
+
+    fn queue_external_request(
+        &self,
+        request: ExternalRequest,
+    ) -> Result<(), RequestDeniedReason> {
+        let mut inner = self.inner.lock().unwrap();
+        let result = inner.external_request_queue.try_queue(request);
+        if result.is_ok() {
+            self.cv.notify_one();
+        }
+        result
     }
 
     fn wait_for_next_event(&self) -> StateDriverEvent {
@@ -398,7 +410,10 @@ impl VmController {
                 state: ApiInstanceState::Creating,
             });
         let (migrate_tx, migrate_rx) = tokio::sync::watch::channel(None);
-        let worker_state = Arc::new(SharedVmState::new());
+
+        let queue_log =
+            log.new(slog::o!("component" => "external_request_queue"));
+        let worker_state = Arc::new(SharedVmState::new(queue_log));
 
         // Create and initialize devices in the new instance.
         let instance_inner = instance.lock();
@@ -588,6 +603,7 @@ impl VmController {
 
         // Unwrap is safe because the queue state was checked under the lock.
         inner.external_request_queue.try_queue(migration_request).unwrap();
+        self.worker_state.cv.notify_one();
         Ok(())
     }
 
@@ -661,15 +677,16 @@ impl VmController {
         conn: WebSocketStream<T>,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
+        inner.external_request_queue.migrate_as_target_allowed()?;
 
         // Check that the request can be enqueued before setting up the
         // migration task.
-        inner.external_request_queue.migrate_as_target_allowed()?;
         let migration_request =
             self.launch_target_migration_task(migration_id, conn);
 
         // Unwrap is safe because the queue state was checked under the lock.
         inner.external_request_queue.try_queue(migration_request).unwrap();
+        self.worker_state.cv.notify_one();
         Ok(())
     }
 
@@ -724,17 +741,10 @@ impl VmController {
         &self,
         requested: ApiInstanceStateRequested,
     ) -> Result<(), VmControllerError> {
-        let mut inner = self.worker_state.inner.lock().unwrap();
-        info!(
-            self.log(),
-            "Requested state {:?} via API, current worker state: {:?}",
-            requested,
-            inner
-        );
+        info!(self.log(), "Requested state {:?} via API", requested);
 
-        inner
-            .external_request_queue
-            .try_queue(match requested {
+        self.worker_state
+            .queue_external_request(match requested {
                 ApiInstanceStateRequested::Run => ExternalRequest::Start,
                 ApiInstanceStateRequested::Stop => ExternalRequest::Stop,
                 ApiInstanceStateRequested::Reboot => ExternalRequest::Reboot,

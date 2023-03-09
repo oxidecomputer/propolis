@@ -156,43 +156,12 @@ where
                 start_tx,
                 command_rx,
             } => {
-                self.update_external_state(ApiInstanceState::Migrating);
-
-                // Ensure the vCPUs are activated properly so that they can
-                // enter the guest after migration. Do this before launching
-                // the migration task so that reset doesn't overwrite the
-                // state written by migration.
-                self.reset_vcpus();
-                match self.migrate_as_target(
-                    migration_id,
-                    task,
-                    start_tx,
-                    command_rx,
-                ) {
-                    Ok(_) => {
-                        // TODO(gjc) update allowed external requests
-                        self.set_migration_state(
-                            migration_id,
-                            ApiMigrationState::Finish,
-                        );
-
-                        // Resume the VM immediately without waiting for a
-                        // request to enter the "running" state.
-                        //
-                        // TODO(#209) Transition to a "failed" state instead of
-                        // expecting.
-                        self.start_vm(false)
-                            .expect("failed to start VM after migrating");
-                        HandleEventOutcome::Continue
-                    }
-                    Err(_) => HandleEventOutcome::Continue,
-                }
+                self.migrate_as_target(migration_id, task, start_tx, command_rx)
             }
             ExternalRequest::Start => {
                 // TODO(#209) Transition to a "failed" state instead of
                 // expecting.
                 self.start_vm(true).expect("failed to start VM");
-                // TODO(gjc) update allowed requests
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Reboot => {
@@ -205,21 +174,15 @@ where
                 start_tx,
                 command_rx,
                 response_tx,
-            } => {
-                self.update_external_state(ApiInstanceState::Migrating);
-                let _result = self.migrate_as_source(
-                    migration_id,
-                    task,
-                    start_tx,
-                    command_rx,
-                    response_tx,
-                );
-                // TODO(gjc) update allowed requests
-                HandleEventOutcome::Continue
-            }
+            } => self.migrate_as_source(
+                migration_id,
+                task,
+                start_tx,
+                command_rx,
+                response_tx,
+            ),
             ExternalRequest::Stop => {
                 self.do_halt();
-                // TODO(gjc) update allowed requests
                 HandleEventOutcome::Exit
             }
         }
@@ -233,7 +196,6 @@ where
                     "Halting due to halt event on vCPU {}", vcpu_id
                 );
                 self.do_halt();
-                // TODO(gjc) update allowed requests
                 HandleEventOutcome::Exit
             }
             GuestEvent::VcpuSuspendReset(vcpu_id) => {
@@ -255,7 +217,6 @@ where
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
                 self.do_halt();
-                // TODO(gjc) update allowed requests
                 HandleEventOutcome::Exit
             }
             GuestEvent::ChipsetReset => {
@@ -279,7 +240,7 @@ where
 
         self.controller.start_entities()?;
         self.vcpu_tasks.resume_all();
-        self.update_external_state(ApiInstanceState::Running);
+        self.publish_running_state();
         Ok(())
     }
 
@@ -323,6 +284,12 @@ where
 
         self.vcpu_tasks.exit_all();
         self.controller.halt_entities();
+        self.shared_state
+            .inner
+            .lock()
+            .unwrap()
+            .external_request_queue
+            .notify_instance_stopped();
         self.update_external_state(ApiInstanceState::Stopped);
     }
 
@@ -332,7 +299,15 @@ where
         mut task: tokio::task::JoinHandle<Result<(), MigrateError>>,
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    ) -> Result<(), MigrateError> {
+    ) -> HandleEventOutcome {
+        self.update_external_state(ApiInstanceState::Migrating);
+
+        // Ensure the VM's vCPUs are activated properly so that they can enter
+        // the guest after migration. Do this before allowing the migration task
+        // to start so that reset doesn't overwrite any state written by
+        // migration.
+        self.reset_vcpus();
+
         start_tx.send(()).unwrap();
         let mut finished = false;
         loop {
@@ -350,7 +325,24 @@ where
                     // If the task finished successfully but didn't signal that
                     // it finished its work, something is amiss.
                     assert_eq!(finished, res.is_ok());
-                    return res;
+
+                    if res.is_ok() {
+                        self.start_vm(false)
+                            .expect("failed to start VM after migrating");
+                        self.set_migration_state(
+                            migration_id,
+                            ApiMigrationState::Finish,
+                        );
+                    } else {
+                        self.shared_state
+                            .inner
+                            .lock()
+                            .unwrap()
+                            .external_request_queue
+                            .notify_instance_failed();
+                    }
+
+                    return HandleEventOutcome::Continue;
                 }
                 MigrateTaskEvent::Command(
                     MigrateTargetCommand::UpdateState(state),
@@ -380,7 +372,8 @@ where
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
         response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
-    ) -> Result<(), MigrateError> {
+    ) -> HandleEventOutcome {
+        self.update_external_state(ApiInstanceState::Migrating);
         start_tx.send(()).unwrap();
 
         // Wait either for the migration task to exit or for it to ask the
@@ -407,18 +400,23 @@ where
                             self.controller.resume_entities();
                             self.vcpu_tasks.resume_all();
                             self.paused = false;
+                            self.publish_running_state();
                             self.set_migration_state(
                                 migration_id,
                                 ApiMigrationState::Error,
                             );
                         }
                     } else {
+                        self.shared_state
+                            .queue_external_request(ExternalRequest::Stop)
+                            .expect("can always queue a request to stop");
+
                         assert!(matches!(
                             self.get_migration_state(),
                             Some((_, ApiMigrationState::Finish))
                         ));
                     }
-                    return res;
+                    return HandleEventOutcome::Continue;
                 }
                 MigrateTaskEvent::Command(cmd) => match cmd {
                     MigrateSourceCommand::UpdateState(state) => {
@@ -469,6 +467,16 @@ where
     fn reset_vcpus(&self) {
         self.vcpu_tasks.new_generation();
         self.controller.reset_vcpu_state();
+    }
+
+    fn publish_running_state(&mut self) {
+        self.shared_state
+            .inner
+            .lock()
+            .unwrap()
+            .external_request_queue
+            .notify_instance_running();
+        self.update_external_state(ApiInstanceState::Running);
     }
 }
 
@@ -527,12 +535,13 @@ mod tests {
     /// Generates default mocks for the VM controller and vCPU task controller
     /// that accept unlimited requests to read state.
     fn make_default_mocks() -> TestObjects {
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
         let vm_ctrl = MockStateDriverVmController::new();
         let vcpu_ctrl = MockVcpuTaskController::new();
         TestObjects {
             vm_ctrl,
             vcpu_ctrl,
-            shared_state: Arc::new(SharedVmState::new()),
+            shared_state: Arc::new(SharedVmState::new(logger)),
         }
     }
 
@@ -659,7 +668,6 @@ mod tests {
             .handle_event(StateDriverEvent::External(ExternalRequest::Start));
 
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-        // TODO(gjc) assert!(matches!(next_lifecycle, Some(LifecycleStage::Active)));
     }
 
     #[tokio::test]
@@ -824,6 +832,5 @@ mod tests {
             .unwrap();
 
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-        // TODO(gjc) check allowed actions
     }
 }
