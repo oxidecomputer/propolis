@@ -244,7 +244,7 @@ where
 
         self.controller.start_entities()?;
         self.vcpu_tasks.resume_all();
-        self.publish_running_state();
+        self.publish_steady_state(ApiInstanceState::Running);
         Ok(())
     }
 
@@ -408,7 +408,9 @@ where
                             self.controller.resume_entities();
                             self.vcpu_tasks.resume_all();
                             self.paused = false;
-                            self.publish_running_state();
+                            self.publish_steady_state(
+                                ApiInstanceState::Running,
+                            );
                             self.set_migration_state(
                                 migration_id,
                                 ApiMigrationState::Error,
@@ -477,16 +479,31 @@ where
         self.controller.reset_vcpu_state();
     }
 
-    fn publish_running_state(&mut self) {
+    fn publish_steady_state(&mut self, state: ApiInstanceState) {
+        let change = match state {
+            ApiInstanceState::Running => {
+                request_queue::InstanceStateChange::Running
+            }
+            ApiInstanceState::Stopped => {
+                request_queue::InstanceStateChange::Stopped
+            }
+            ApiInstanceState::Failed => {
+                request_queue::InstanceStateChange::Failed
+            }
+            _ => panic!(
+                "Called publish_steady_state on non-terminal state {:?}",
+                state
+            ),
+        };
+
         self.shared_state
             .inner
             .lock()
             .unwrap()
             .external_request_queue
-            .notify_instance_state_change(
-                request_queue::InstanceStateChange::Running,
-            );
-        self.update_external_state(ApiInstanceState::Running);
+            .notify_instance_state_change(change);
+
+        self.update_external_state(state);
     }
 }
 
