@@ -18,7 +18,7 @@ For this setup, you'll need:
 - a "source" propolis server
 - a "destination" propolis server (on the same machine or otherwise)
 - a propolis CLI
-- a copy of [crucible](https://github.com/oxidecomputer/crucible) and a place to
+- a copy of [crucible](https://github.com/oxidecomputer/crucible) that **matches the revision that propolis is compiled with** and a place to
   run downstairs processes that the source/destination machines can access
 - an OS image that you'd like to boot
 
