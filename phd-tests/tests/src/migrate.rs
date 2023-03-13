@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use phd_testcase::*;
+use propolis_client::handmade::api::MigrationState;
+use uuid::Uuid;
 
 #[phd_testcase]
 fn smoke_test(ctx: &TestContext) {
@@ -19,7 +21,16 @@ fn smoke_test(ctx: &TestContext) {
         .vm_factory
         .new_vm_from_cloned_config("migration_smoke_target", &source)?;
 
-    target.migrate_from(&source, Duration::from_secs(60))?;
+    let migration_id = Uuid::new_v4();
+    target.migrate_from(&source, migration_id, Duration::from_secs(60))?;
+
+    // Explicitly check migration status on both the source and target to make
+    // sure it is available even after migration has finished.
+    let src_migration_state = source.get_migration_state(migration_id)?;
+    assert_eq!(src_migration_state, MigrationState::Finish);
+    let target_migration_state = target.get_migration_state(migration_id)?;
+    assert_eq!(target_migration_state, MigrationState::Finish);
+
     let lsout = target.run_shell_command("ls foo.bar")?;
     assert_eq!(lsout, "foo.bar");
 }
@@ -44,7 +55,18 @@ fn incompatible_vms(ctx: &TestContext) {
             cfg,
         )?;
 
-        assert!(target.migrate_from(&source, Duration::from_secs(60)).is_err());
+        let migration_id = Uuid::new_v4();
+        assert!(target
+            .migrate_from(&source, migration_id, Duration::from_secs(60))
+            .is_err());
+
+        // Explicitly check migration status on both the source and target to
+        // make sure it is available even after migration has finished.
+        let src_migration_state = source.get_migration_state(migration_id)?;
+        assert_eq!(src_migration_state, MigrationState::Error);
+        let target_migration_state =
+            target.get_migration_state(migration_id)?;
+        assert_eq!(target_migration_state, MigrationState::Error);
     }
 }
 
@@ -62,9 +84,9 @@ fn multiple_migrations(ctx: &TestContext) {
 
     vm0.launch()?;
     vm0.wait_to_boot()?;
-    vm1.migrate_from(&vm0, Duration::from_secs(60))?;
+    vm1.migrate_from(&vm0, Uuid::new_v4(), Duration::from_secs(60))?;
     assert_eq!(vm1.run_shell_command("echo Hello world")?, "Hello world");
-    vm2.migrate_from(&vm1, Duration::from_secs(60))?;
+    vm2.migrate_from(&vm1, Uuid::new_v4(), Duration::from_secs(60))?;
     assert_eq!(
         vm2.run_shell_command("echo I have migrated!")?,
         "I have migrated!"

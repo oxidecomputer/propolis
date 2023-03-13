@@ -9,6 +9,7 @@ use std::convert::TryFrom;
 use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
+use crate::migrate::MigrateError;
 use crate::serial::history_buffer::SerialHistoryOffset;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
@@ -28,6 +29,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
+use uuid::Uuid;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
@@ -102,8 +104,15 @@ pub enum VmControllerState {
         /// outgoing controller can publish new state changes even after the
         /// server has dropped its reference to it (its state worker may
         /// continue running for a time).
-        watcher:
+        state_watcher:
             tokio::sync::watch::Receiver<api::InstanceStateMonitorResponse>,
+
+        /// A clone of the receiver side of the former VM controller's migration
+        /// status channel, used to serve queries for migration status after an
+        /// instance is destroyed. (These are common because an instance stops
+        /// itself after successfully migrating out.)
+        migrate_state_watcher:
+            tokio::sync::watch::Receiver<Option<(Uuid, api::MigrationState)>>,
     },
 }
 
@@ -137,13 +146,15 @@ impl VmControllerState {
             // the final transition to the "destroyed" state happens only when
             // all references to the VM have been dropped, including the one
             // this routine just exchanged and will return.
-            let watcher = vm.state_watcher().clone();
+            let state_watcher = vm.state_watcher().clone();
+            let migrate_state_watcher = vm.migrate_state_watcher().clone();
             if let VmControllerState::Created(vm) = std::mem::replace(
                 self,
                 VmControllerState::Destroyed {
                     last_instance,
                     last_instance_spec: Box::new(last_instance_spec),
-                    watcher,
+                    state_watcher,
+                    migrate_state_watcher,
                 },
             ) {
                 Some(vm)
@@ -571,9 +582,10 @@ async fn instance_get_common(
         VmControllerState::Destroyed {
             last_instance,
             last_instance_spec,
-            watcher,
+            state_watcher,
+            ..
         } => {
-            let watcher = watcher.borrow();
+            let watcher = state_watcher.borrow();
             let mut last_instance = last_instance.clone();
             last_instance.state = watcher.state;
             Ok((last_instance, *last_instance_spec.clone()))
@@ -627,7 +639,9 @@ async fn instance_state_monitor(
                 ));
             }
             VmControllerState::Created(vm) => vm.state_watcher().clone(),
-            VmControllerState::Destroyed { watcher, .. } => watcher.clone(),
+            VmControllerState::Destroyed { state_watcher, .. } => {
+                state_watcher.clone()
+            }
         }
     };
 
@@ -793,10 +807,29 @@ async fn instance_migrate_status(
     path_params: Path<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
     let migration_id = path_params.into_inner().migration_id;
-    let vm = rqctx.context().vm().await?;
-    vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
-        HttpResponseOk(api::InstanceMigrateStatusResponse { state })
-    })
+    let ctx = rqctx.context();
+    match &*ctx.services.vm.lock().await {
+        VmControllerState::NotCreated => Err(HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )),
+        VmControllerState::Created(vm) => {
+            vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
+                HttpResponseOk(api::InstanceMigrateStatusResponse { state })
+            })
+        }
+        VmControllerState::Destroyed { migrate_state_watcher, .. } => {
+            let watcher = migrate_state_watcher.borrow();
+            match *watcher {
+                None => Err((MigrateError::NoMigrationInProgress).into()),
+                Some((id, state)) if id == migration_id => {
+                    Ok(HttpResponseOk(api::InstanceMigrateStatusResponse {
+                        state,
+                    }))
+                }
+                Some(_) => Err((MigrateError::UuidMismatch).into()),
+            }
+        }
+    }
 }
 
 /// Issues a snapshot request to a crucible backend.

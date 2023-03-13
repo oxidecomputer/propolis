@@ -291,12 +291,12 @@ impl TestVm {
     pub fn migrate_from(
         &mut self,
         source: &Self,
+        migration_id: Uuid,
         timeout_duration: Duration,
     ) -> Result<()> {
         let _vm_guard = self.tracing_span.enter();
         match self.state {
             VmState::New => {
-                let migration_id = Uuid::new_v4();
                 info!(
                     ?migration_id,
                     "Migrating from source at address {}",
@@ -348,17 +348,15 @@ impl TestVm {
                     ..Default::default()
                 };
                 backoff::retry(backoff, watch_migrate)
-                    .map_err(|e| anyhow!("error during migration: {}", e))?;
+                    .map_err(|e| anyhow!("error during migration: {}", e))
             }
             VmState::Ensured { .. } => {
                 return Err(VmStateError::InstanceAlreadyEnsured.into());
             }
         }
-
-        Ok(())
     }
 
-    fn get_migration_state(
+    pub fn get_migration_state(
         &self,
         migration_id: Uuid,
     ) -> Result<MigrationState> {

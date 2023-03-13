@@ -3,6 +3,7 @@ use std::time::Duration;
 use phd_framework::test_vm::vm_config::DiskInterface;
 use phd_testcase::*;
 use tracing::info;
+use uuid::Uuid;
 
 #[phd_testcase]
 fn smoke_test(ctx: &TestContext) {
@@ -30,7 +31,7 @@ fn smoke_test(ctx: &TestContext) {
 
     let mut target =
         ctx.vm_factory.new_vm("crucible_migrate_smoke_target", config)?;
-    target.migrate_from(&source, Duration::from_secs(60))?;
+    target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
     let lsout = target.run_shell_command("ls foo.bar")?;
     assert_eq!(lsout, "foo.bar");
 }
@@ -72,7 +73,7 @@ fn load_test(ctx: &TestContext) {
     // Start copying the generated file into a second file, then start a
     // migration while that copy is in progress.
     source.run_shell_command("dd if=./rand.txt of=./rand_new.txt &")?;
-    target.migrate_from(&source, Duration::from_secs(60))?;
+    target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
 
     // Wait for the background command to finish running, then compute the
     // hash of the copied file. If all went well this will match the hash of
