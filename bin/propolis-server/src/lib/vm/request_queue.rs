@@ -264,11 +264,11 @@ impl ExternalRequestQueue {
             // Requests to reboot don't affect whether operations can be
             // performed.
             ExternalRequest::Reboot => {
-                assert!(matches!(
-                    self.allowed.migrate_as_target,
-                    Disposition::Deny(_)
-                ));
                 assert!(matches!(self.allowed.start, Disposition::Ignore));
+                assert!(!matches!(
+                    self.allowed.migrate_as_target,
+                    Disposition::Enqueue
+                ));
             }
 
             // Queueing a request to stop an instance disables any other
