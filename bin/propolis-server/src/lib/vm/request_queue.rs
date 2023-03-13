@@ -223,7 +223,17 @@ impl ExternalRequestQueue {
                 };
 
                 self.allowed.start = Disposition::Ignore;
-                self.allowed.migrate_as_target = Disposition::Deny(deny_reason);
+
+                // If this is a request to migrate in, make sure future requests
+                // to migrate in are handled idempotently.
+                self.allowed.migrate_as_target = if matches!(
+                    request,
+                    ExternalRequest::MigrateAsTarget { .. }
+                ) {
+                    Disposition::Ignore
+                } else {
+                    Disposition::Deny(deny_reason)
+                };
                 self.allowed.reboot = Disposition::Deny(deny_reason);
                 self.allowed.migrate_as_source = Disposition::Deny(deny_reason);
             }
@@ -232,16 +242,18 @@ impl ExternalRequestQueue {
             // starting. It also forbids requests to reboot, since after a
             // successful migration out these should instead be handled by the
             // migration target.
-            //
-            // If migrating as a source is allowed, migrating as a target should
-            // be forbidden, and requests to run should be idempotently
-            // accepted.
             ExternalRequest::MigrateAsSource { .. } => {
-                assert!(matches!(
-                    self.allowed.migrate_as_target,
-                    Disposition::Deny(_)
-                ));
+                // Further requests to run the instance should be accepted but
+                // ignored.
                 assert!(matches!(self.allowed.start, Disposition::Ignore));
+
+                // Requests to migrate into the instance should not be enqueued
+                // from this point, but whether they're dropped or ignored
+                // depends on how the instance was originally initialized.
+                assert!(!matches!(
+                    self.allowed.migrate_as_target,
+                    Disposition::Enqueue
+                ));
                 self.allowed.migrate_as_source =
                     Disposition::Deny(DenyReason::AlreadyMigrationSource);
                 self.allowed.reboot = Disposition::Deny(
@@ -284,6 +296,7 @@ impl ExternalRequestQueue {
             self.log,
             "Instance is running, allowing migration out and reboot"
         );
+
         self.allowed.migrate_as_source = RequestDisposition::Enqueue;
         self.allowed.reboot = RequestDisposition::Enqueue;
     }
