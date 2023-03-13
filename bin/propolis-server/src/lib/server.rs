@@ -107,6 +107,10 @@ pub enum VmControllerState {
         state_watcher:
             tokio::sync::watch::Receiver<api::InstanceStateMonitorResponse>,
 
+        /// A clone of the receiver side of the former VM controller's migration
+        /// status channel, used to serve queries for migration status after an
+        /// instance is destroyed. (These are common because an instance stops
+        /// itself after successfully migrating out.)
         migrate_state_watcher:
             tokio::sync::watch::Receiver<Option<(Uuid, api::MigrationState)>>,
     },
