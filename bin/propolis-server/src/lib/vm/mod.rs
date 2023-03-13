@@ -236,9 +236,11 @@ struct SharedVmStateInner {
 }
 
 impl SharedVmStateInner {
-    fn new(log: Logger) -> Self {
+    fn new(parent_log: &Logger) -> Self {
+        let queue_log =
+            parent_log.new(slog::o!("component" => "external_request_queue"));
         Self {
-            external_request_queue: ExternalRequestQueue::new(log),
+            external_request_queue: ExternalRequestQueue::new(queue_log),
             guest_event_queue: VecDeque::new(),
             pending_migration_id: None,
         }
@@ -284,9 +286,9 @@ pub struct VmController {
 }
 
 impl SharedVmState {
-    fn new(log: Logger) -> Self {
+    fn new(parent_log: &Logger) -> Self {
         Self {
-            inner: Mutex::new(SharedVmStateInner::new(log)),
+            inner: Mutex::new(SharedVmStateInner::new(parent_log)),
             cv: Condvar::new(),
         }
     }
@@ -411,9 +413,7 @@ impl VmController {
             });
         let (migrate_tx, migrate_rx) = tokio::sync::watch::channel(None);
 
-        let queue_log =
-            log.new(slog::o!("component" => "external_request_queue"));
-        let worker_state = Arc::new(SharedVmState::new(queue_log));
+        let worker_state = Arc::new(SharedVmState::new(&log));
 
         // Create and initialize devices in the new instance.
         let instance_inner = instance.lock();

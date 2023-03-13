@@ -541,7 +541,7 @@ mod tests {
         TestObjects {
             vm_ctrl,
             vcpu_ctrl,
-            shared_state: Arc::new(SharedVmState::new(logger)),
+            shared_state: Arc::new(SharedVmState::new(&logger)),
         }
     }
 
