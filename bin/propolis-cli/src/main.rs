@@ -441,14 +441,6 @@ async fn migrate_instance(
         cloud_init_bytes: None,
     };
 
-    // Get the source instance ready
-    src_client
-        .instance_state_put(InstanceStateRequested::MigrateStart)
-        .await
-        .with_context(|| {
-        anyhow!("failed to place src instance in migrate start state")
-    })?;
-
     // Initiate the migration via the destination instance
     let migration_id = dst_client
         .instance_ensure(&request)

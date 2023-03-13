@@ -986,8 +986,7 @@
         "enum": [
           "Run",
           "Stop",
-          "Reboot",
-          "MigrateStart"
+          "Reboot"
         ]
       },
       "MigrationState": {

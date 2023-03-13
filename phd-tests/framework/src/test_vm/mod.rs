@@ -242,14 +242,6 @@ impl TestVm {
         })
     }
 
-    /// Moves this VM into the migrate-start state.
-    fn start_migrate(&self) -> StdResult<(), PropolisClientError> {
-        self.rt.block_on(async {
-            self.put_instance_state_async(InstanceStateRequested::MigrateStart)
-                .await
-        })
-    }
-
     async fn put_instance_state_async(
         &self,
         state: InstanceStateRequested,
@@ -303,7 +295,6 @@ impl TestVm {
                     source.server.server_addr()
                 );
 
-                source.start_migrate()?;
                 let console = self.rt.block_on(async {
                     self.instance_ensure_async(Some(
                         InstanceMigrateInitiateRequest {

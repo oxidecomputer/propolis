@@ -69,9 +69,6 @@ pub enum VmControllerError {
     #[error("The instance has a pending request to halt")]
     InstanceHaltPending,
 
-    #[error("Instance is not marked as a possible migration source")]
-    NotMarkedMigrationSource,
-
     #[error("Instance is already a migration source")]
     AlreadyMigrationSource,
 
@@ -114,7 +111,6 @@ impl From<VmControllerError> for dropshot::HttpError {
         use dropshot::HttpError;
         match vm_error {
             VmControllerError::AlreadyMigrationSource
-            | VmControllerError::NotMarkedMigrationSource
             | VmControllerError::InvalidRequestForMigrationSource(_)
             | VmControllerError::MigrationTargetInProgress
             | VmControllerError::MigrationTargetFailed
@@ -322,12 +318,6 @@ struct SharedVmStateInner {
     /// that's already running is forbidden.
     lifecycle_stage: LifecycleStage,
 
-    /// True if the instance previously received an API call denoting that it
-    /// should expect a request to act as a live migration source. If false,
-    /// incoming requests to migrate from a prospective destination should be
-    /// rejected.
-    marked_migration_source: bool,
-
     /// True if the instance's request queue has a pending request to migrate to
     /// another instance. If true, external API requests that may need to be
     /// serviced by the target should be blocked until this is cleared. (Clients
@@ -357,7 +347,6 @@ impl SharedVmStateInner {
     fn new() -> Self {
         Self {
             lifecycle_stage: LifecycleStage::NotStarted(StartupStage::ColdBoot),
-            marked_migration_source: false,
             migrate_from_pending: false,
             halt_pending: false,
             external_request_queue: VecDeque::new(),
@@ -678,13 +667,10 @@ impl VmController {
         let mut inner = self.worker_state.inner.lock().unwrap();
         match inner.lifecycle_stage {
             LifecycleStage::NotStarted(_) => {
-                assert!(!inner.marked_migration_source);
                 Err(VmControllerError::InstanceNotActive)
             }
             LifecycleStage::Active => {
-                if !inner.marked_migration_source {
-                    Err(VmControllerError::NotMarkedMigrationSource)
-                } else if inner.migrate_from_pending {
+                if inner.migrate_from_pending {
                     Err(VmControllerError::AlreadyMigrationSource)
                 } else if inner.halt_pending {
                     Err(VmControllerError::InstanceHaltPending)
@@ -954,26 +940,6 @@ impl VmController {
                             requested,
                             inner.lifecycle_stage,
                         ))
-                    }
-                }
-            }
-
-            // Requests to mark the VM as a migration source require the VM to
-            // be active.
-            ApiInstanceStateRequested::MigrateStart => {
-                match inner.lifecycle_stage {
-                    LifecycleStage::NotStarted(_) => {
-                        Err(VmControllerError::InvalidStageForRequest(
-                            requested,
-                            inner.lifecycle_stage,
-                        ))
-                    }
-                    LifecycleStage::Active => {
-                        inner.marked_migration_source = true;
-                        Ok(())
-                    }
-                    LifecycleStage::NoLongerActive => {
-                        Err(VmControllerError::InstanceNotActive)
                     }
                 }
             }
