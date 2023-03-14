@@ -1,6 +1,6 @@
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::num::NonZeroUsize;
 
 use anyhow::Context;
 
@@ -137,12 +137,9 @@ pub fn block_backend(
             // the current system time, and this will usually give us a newer
             // generation than the last connection. NEVER do this in prod
             // EVER.
-            let generation = be
-                .options
-                .get("generation")
-                .unwrap()
-                .as_integer()
-                .unwrap() as u64;
+            let generation =
+                be.options.get("generation").unwrap().as_integer().unwrap()
+                    as u64;
 
             let req =
                 crucible_client_types::VolumeConstructionRequest::Region {
