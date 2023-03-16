@@ -33,4 +33,4 @@ uuid.workspace = true
 [features]
 default = ["dtrace-probes"]
 dtrace-probes = ["propolis/dtrace-probes"]
-crucible = ["propolis/crucible", "propolis/oximeter"]
+crucible = ["propolis/crucible-full", "propolis/oximeter"]
