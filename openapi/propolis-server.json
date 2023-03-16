@@ -794,11 +794,16 @@
       "InstanceMigrateStatusResponse": {
         "type": "object",
         "properties": {
+          "migration_id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "state": {
             "$ref": "#/components/schemas/MigrationState"
           }
         },
         "required": [
+          "migration_id",
           "state"
         ]
       },
@@ -971,6 +976,14 @@
             "type": "integer",
             "format": "uint64",
             "minimum": 0
+          },
+          "migration": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
+              }
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/InstanceState"
