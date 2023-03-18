@@ -26,6 +26,12 @@ enum HandleEventOutcome {
     Exit,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum VmStartReason {
+    MigratedIn,
+    ExplicitRequest,
+}
+
 pub(super) struct StateDriver<
     V: super::StateDriverVmController,
     C: VcpuTaskController,
@@ -85,6 +91,11 @@ where
             paused: false,
             api_state_tx,
         }
+    }
+
+    /// Yields the current externally-visible instance state.
+    fn get_instance_state(&self) -> ApiInstanceState {
+        self.api_state_tx.borrow().state
     }
 
     /// Publishes the supplied externally-visible instance state to the external
@@ -172,7 +183,7 @@ where
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Start => {
-                self.start_vm(true);
+                self.start_vm(VmStartReason::ExplicitRequest);
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Reboot => {
@@ -241,15 +252,29 @@ where
         }
     }
 
-    fn start_vm(&mut self, reset_required: bool) {
-        info!(self.log, "Starting instance"; "reset" => reset_required);
+    fn start_vm(&mut self, start_reason: VmStartReason) {
+        info!(self.log, "Starting instance"; "reason" => ?start_reason);
 
-        // Requests to start should put the instance into the 'starting' stage.
-        // Reflect this out to callers who ask what state the VM is in.
-        self.set_instance_state(ApiInstanceState::Starting);
-
-        if reset_required {
-            self.reset_vcpus();
+        // Only move to the Starting state if this VM is starting by explicit
+        // request (as opposed to the implicit start that happens after a
+        // migration in). In this case, no one has initialized vCPU state yet,
+        // so explicitly initialize it here.
+        //
+        // In the migration-in case, remain in the Migrating state until the
+        // VM is actually running. Note that this is contractual behavior--sled
+        // agent relies on this to represent that a migrating instance is
+        // continuously running through a successful migration.
+        match start_reason {
+            VmStartReason::ExplicitRequest => {
+                self.set_instance_state(ApiInstanceState::Starting);
+                self.reset_vcpus();
+            }
+            VmStartReason::MigratedIn => {
+                assert_eq!(
+                    self.get_instance_state(),
+                    ApiInstanceState::Migrating
+                );
+            }
         }
 
         match self.controller.start_entities() {
@@ -345,7 +370,7 @@ where
                             ApiMigrationState::Finish
                         ));
 
-                        self.start_vm(false);
+                        self.start_vm(VmStartReason::MigratedIn);
                     } else {
                         assert!(matches!(
                             self.get_migration_status().unwrap().state,
@@ -1110,5 +1135,42 @@ mod tests {
                 state: ApiMigrationState::Finish
             }
         );
+    }
+
+    #[tokio::test]
+    async fn start_vm_after_migration_in_does_not_publish_starting_state() {
+        let mut test_objects = make_default_mocks();
+        let vm_ctrl = &mut test_objects.vm_ctrl;
+        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
+
+        // A call to start a VM after a successful migration should start vCPUs
+        // and entities without resetting anything.
+        vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
+        vm_ctrl.expect_start_entities().times(1).returning(|| Ok(()));
+
+        // Skip the rigmarole of standing up a fake migration. Instead, just
+        // push the driver into the state it would have after a successful
+        // migration to appease the assertions in `start_vm`.
+        //
+        // Faking an entire migration, as in the previous tests, requires the
+        // state driver to run on its own worker thread. This is fine for tests
+        // that only want to examine state after the driver has finished an
+        // operation, but this test wants to test side effects of a specific
+        // part of the state driver's actions, which are tough to synchronize
+        // with when the driver is running on another thread.
+        let mut driver = make_state_driver(test_objects);
+        driver.driver.set_instance_state(ApiInstanceState::Migrating);
+
+        // The driver starts in the Migrating state and should go directly to
+        // the Running state without passing through Starting. Because there's
+        // no way to guarantee that the test will see all intermediate states
+        // that `start_vm` publishes, instead assert that the final state of
+        // Running is correct and that the state generation only went up by 1
+        // (implying that there were no intervening transitions).
+        let migrating_gen = driver.driver.api_state_tx.borrow().gen;
+        driver.driver.start_vm(VmStartReason::MigratedIn);
+        let new_state = driver.driver.api_state_tx.borrow().clone();
+        assert!(matches!(new_state.state, ApiInstanceState::Running));
+        assert_eq!(new_state.gen, migrating_gen + 1);
     }
 }
