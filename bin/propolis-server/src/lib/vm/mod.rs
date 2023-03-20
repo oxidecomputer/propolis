@@ -597,7 +597,10 @@ impl VmController {
 
         // Check that the request can be enqueued before setting up the
         // migration task.
-        inner.external_request_queue.migrate_as_source_allowed()?;
+        if !inner.external_request_queue.migrate_as_source_will_enqueue()? {
+            return Ok(());
+        }
+
         let migration_request =
             self.launch_source_migration_task(migration_id, conn);
 
@@ -677,7 +680,9 @@ impl VmController {
         conn: WebSocketStream<T>,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
-        inner.external_request_queue.migrate_as_target_allowed()?;
+        if !inner.external_request_queue.migrate_as_target_will_enqueue()? {
+            return Ok(());
+        }
 
         // Check that the request can be enqueued before setting up the
         // migration task.

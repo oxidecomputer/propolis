@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
 use crate::migrate::MigrateError;
+use crate::vcpu_tasks::VcpuTaskController;
 
 use super::{
-    ExternalRequest, GuestEvent, MigrateSourceCommand, MigrateSourceResponse,
-    MigrateTargetCommand, MigrateTaskEvent, SharedVmState, StateDriverEvent,
+    request_queue, ExternalRequest, GuestEvent, MigrateSourceCommand,
+    MigrateSourceResponse, MigrateTargetCommand, MigrateTaskEvent,
+    SharedVmState, StateDriverEvent,
 };
 
 use propolis_client::handmade::{
@@ -14,8 +16,6 @@ use propolis_client::handmade::{
 };
 use slog::{info, Logger};
 use uuid::Uuid;
-
-use crate::vcpu_tasks::VcpuTaskController;
 
 /// Tells the state driver whether or not to continue running after responding
 /// to an event.
@@ -289,7 +289,9 @@ where
             .lock()
             .unwrap()
             .external_request_queue
-            .notify_instance_stopped();
+            .notify_instance_state_change(
+                request_queue::InstanceStateChange::Stopped,
+            );
         self.update_external_state(ApiInstanceState::Stopped);
     }
 
@@ -339,7 +341,9 @@ where
                             .lock()
                             .unwrap()
                             .external_request_queue
-                            .notify_instance_failed();
+                            .notify_instance_state_change(
+                                request_queue::InstanceStateChange::Failed,
+                            );
                     }
 
                     return HandleEventOutcome::Continue;
@@ -475,7 +479,9 @@ where
             .lock()
             .unwrap()
             .external_request_queue
-            .notify_instance_running();
+            .notify_instance_state_change(
+                request_queue::InstanceStateChange::Running,
+            );
         self.update_external_state(ApiInstanceState::Running);
     }
 }

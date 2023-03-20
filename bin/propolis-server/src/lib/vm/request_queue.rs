@@ -86,28 +86,42 @@ pub enum ExternalRequest {
 /// fail.
 #[derive(Copy, Clone, Debug, Error)]
 pub enum RequestDeniedReason {
-    #[error("The requested operation requires an active instance")]
+    #[error("Operation requires an active instance")]
     InstanceNotActive,
 
-    #[error("A migration into this instance is in progress")]
+    #[error("Already migrating into this instance")]
     MigrationTargetInProgress,
 
-    #[error("The instance is currently starting")]
+    #[error("Instance is currently starting")]
     StartInProgress,
 
-    #[error("The instance is already a migration source")]
+    #[error("Instance is already a migration source")]
     AlreadyMigrationSource,
 
-    #[error(
-        "The requested operation cannot be performed on a migration source"
-    )]
+    #[error("Operation cannot be performed on a migration source")]
     InvalidRequestForMigrationSource,
 
-    #[error("The instance is preparing to stop")]
+    #[error("Instance is preparing to stop")]
     HaltPending,
 
-    #[error("The instance failed to start or halted due to a failure")]
+    #[error("Instance failed to start or halted due to a failure")]
     InstanceFailed,
+}
+
+/// The set of instance state changes that should change the dispositions of
+/// future requests to the queue.
+#[derive(Copy, Clone, Debug)]
+pub enum InstanceStateChange {
+    Running,
+    Stopped,
+    Failed,
+}
+
+/// A reason for a change in the queue's request dispositions.
+#[derive(Debug)]
+enum DispositionChangeReason<'a> {
+    ApiRequest(&'a ExternalRequest),
+    StateChange(InstanceStateChange),
 }
 
 /// The possible methods of handling a request to queue a state change.
@@ -116,7 +130,9 @@ enum RequestDisposition {
     /// Put the state change on the queue.
     Enqueue,
 
-    /// Drop the state change silently.
+    /// Drop the state change silently. This is used to make requests appear
+    /// idempotent to callers without making the state driver deal with the
+    /// consequences of queuing the same state change request twice.
     Ignore,
 
     /// Deny the request to change state.
@@ -124,7 +140,7 @@ enum RequestDisposition {
 }
 
 /// The current disposition for each kind of incoming request.
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 struct AllowedRequests {
     migrate_as_target: RequestDisposition,
     start: RequestDisposition,
@@ -170,14 +186,12 @@ impl ExternalRequestQueue {
         self.queue.is_empty()
     }
 
-    /// Asks to place the supplied request on the queue.
+    /// Asks to place the supplied request on the queue. If the requests is
+    /// enqueued, updates the dispositions to use for future requests.
     pub fn try_queue(
         &mut self,
         request: ExternalRequest,
     ) -> Result<(), RequestDeniedReason> {
-        use RequestDeniedReason as DenyReason;
-        use RequestDisposition as Disposition;
-
         let disposition = match request {
             ExternalRequest::MigrateAsTarget { .. } => {
                 self.allowed.migrate_as_target
@@ -195,56 +209,123 @@ impl ExternalRequestQueue {
         };
 
         match disposition {
-            Disposition::Enqueue => {}
-            Disposition::Ignore => return Ok(()),
-            Disposition::Deny(reason) => return Err(reason),
+            RequestDisposition::Enqueue => {}
+            RequestDisposition::Ignore => return Ok(()),
+            RequestDisposition::Deny(reason) => return Err(reason),
         };
 
         info!(&self.log, "queuing external request";
               "request" => ?request,
               "disposition" => ?disposition);
 
-        // At this point the request will be queued. Queuing some requests
-        // logically forecloses on other kinds of requests. Update the
-        // dispositions of these requests, then queue the request.
-        match request {
+        self.allowed = self.get_new_dispositions(
+            DispositionChangeReason::ApiRequest(&request),
+        );
+        self.queue.push_back(request);
+        Ok(())
+    }
+
+    /// Notifies the queue that the instance's state has changed and that its
+    /// disposition should be updated accordingly.
+    pub fn notify_instance_state_change(&mut self, state: InstanceStateChange) {
+        self.allowed = self
+            .get_new_dispositions(DispositionChangeReason::StateChange(state));
+    }
+
+    /// Indicates whether the queue would allow a request to migrate into this
+    /// instance. This can be used to avoid setting up migration tasks for
+    /// requests that will ultimately be denied.
+    ///
+    /// # Return value
+    ///
+    /// - `Ok(true)` if the request will be queued.
+    /// - `Ok(false)` if the request is allowed for idempotency reasons but will
+    ///   not be queued.
+    /// - `Err` if the request is forbidden.
+    pub fn migrate_as_target_will_enqueue(
+        &self,
+    ) -> Result<bool, RequestDeniedReason> {
+        match self.allowed.migrate_as_target {
+            RequestDisposition::Enqueue => Ok(true),
+            RequestDisposition::Ignore => Ok(false),
+            RequestDisposition::Deny(reason) => Err(reason),
+        }
+    }
+
+    /// Indicates whether the queue would allow a request to migrate out of this
+    /// instance. This can be used to avoid setting up migration tasks for
+    /// requests that will ultimately be denied.
+    ///
+    /// # Return value
+    ///
+    /// - `Ok(true)` if the request will be queued.
+    /// - `Ok(false)` if the request is allowed for idempotency reasons but will
+    ///   not be queued.
+    /// - `Err` if the request is forbidden.
+    pub fn migrate_as_source_will_enqueue(
+        &self,
+    ) -> Result<bool, RequestDeniedReason> {
+        assert!(!matches!(
+            self.allowed.migrate_as_source,
+            RequestDisposition::Ignore
+        ));
+
+        match self.allowed.migrate_as_source {
+            RequestDisposition::Enqueue => Ok(true),
+            RequestDisposition::Ignore => unreachable!(),
+            RequestDisposition::Deny(reason) => Err(reason),
+        }
+    }
+
+    /// Computes a new set of queue dispositions given the current state of the
+    /// queue and the event that is changing those dispositions.
+    fn get_new_dispositions(
+        &self,
+        reason: DispositionChangeReason,
+    ) -> AllowedRequests {
+        info!(self.log, "Computing new queue dispositions";
+              "reason" => ?reason);
+
+        use DispositionChangeReason as ChangeReason;
+        use RequestDeniedReason as DenyReason;
+        use RequestDisposition as Disposition;
+        match reason {
             // Starting the instance, whether via migration or cold boot,
             // forecloses on further attempts to migrate in. For idempotency,
             // further requests to start are allowed when an instance-starting
             // transition is enqueued.
-            ExternalRequest::MigrateAsTarget { .. }
-            | ExternalRequest::Start => {
-                let deny_reason = match request {
-                    ExternalRequest::MigrateAsTarget { .. } => {
-                        DenyReason::MigrationTargetInProgress
-                    }
-                    ExternalRequest::Start => DenyReason::StartInProgress,
+            ChangeReason::ApiRequest(ExternalRequest::MigrateAsTarget {
+                ..
+            })
+            | ChangeReason::ApiRequest(ExternalRequest::Start) => {
+                let (migrate_as_target_disposition, deny_reason) = match reason
+                {
+                    // If this is a request to migrate in, make sure future
+                    // requests to migrate in are handled idempotently.
+                    ChangeReason::ApiRequest(
+                        ExternalRequest::MigrateAsTarget { .. },
+                    ) => (
+                        Disposition::Ignore,
+                        DenyReason::MigrationTargetInProgress,
+                    ),
+                    ChangeReason::ApiRequest(ExternalRequest::Start) => (
+                        Disposition::Deny(DenyReason::StartInProgress),
+                        DenyReason::StartInProgress,
+                    ),
                     _ => unreachable!(),
                 };
 
-                self.allowed.start = Disposition::Ignore;
-
-                // If this is a request to migrate in, make sure future requests
-                // to migrate in are handled idempotently.
-                self.allowed.migrate_as_target = if matches!(
-                    request,
-                    ExternalRequest::MigrateAsTarget { .. }
-                ) {
-                    Disposition::Ignore
-                } else {
-                    Disposition::Deny(deny_reason)
-                };
-                self.allowed.reboot = Disposition::Deny(deny_reason);
-                self.allowed.migrate_as_source = Disposition::Deny(deny_reason);
+                AllowedRequests {
+                    migrate_as_target: migrate_as_target_disposition,
+                    start: Disposition::Ignore,
+                    migrate_as_source: Disposition::Deny(deny_reason),
+                    reboot: Disposition::Deny(deny_reason),
+                    stop: self.allowed.stop,
+                }
             }
-
-            // Acting as a migration source forbids new migrations from
-            // starting. It also forbids requests to reboot, since after a
-            // successful migration out these should instead be handled by the
-            // migration target.
-            ExternalRequest::MigrateAsSource { .. } => {
-                // Further requests to run the instance should be accepted but
-                // ignored.
+            ChangeReason::ApiRequest(ExternalRequest::MigrateAsSource {
+                ..
+            }) => {
                 assert!(matches!(self.allowed.start, Disposition::Ignore));
 
                 // Requests to migrate into the instance should not be enqueued
@@ -254,105 +335,91 @@ impl ExternalRequestQueue {
                     self.allowed.migrate_as_target,
                     Disposition::Enqueue
                 ));
-                self.allowed.migrate_as_source =
-                    Disposition::Deny(DenyReason::AlreadyMigrationSource);
-                self.allowed.reboot = Disposition::Deny(
-                    DenyReason::InvalidRequestForMigrationSource,
-                );
+
+                AllowedRequests {
+                    migrate_as_target: self.allowed.migrate_as_target,
+                    start: self.allowed.start,
+                    migrate_as_source: Disposition::Deny(
+                        DenyReason::AlreadyMigrationSource,
+                    ),
+                    reboot: Disposition::Deny(
+                        DenyReason::InvalidRequestForMigrationSource,
+                    ),
+                    stop: self.allowed.stop,
+                }
             }
 
-            // Requests to reboot don't affect whether operations can be
+            // Requests to reboot don't affect whether other operations can be
             // performed.
-            ExternalRequest::Reboot => {
+            ChangeReason::ApiRequest(ExternalRequest::Reboot) => {
                 assert!(matches!(self.allowed.start, Disposition::Ignore));
                 assert!(!matches!(
                     self.allowed.migrate_as_target,
                     Disposition::Enqueue
                 ));
+
+                self.allowed
             }
 
-            // Queueing a request to stop an instance disables any other
-            // operations on that instance.
-            ExternalRequest::Stop => {
-                self.allowed.migrate_as_target =
-                    Disposition::Deny(DenyReason::HaltPending);
-                self.allowed.start = Disposition::Deny(DenyReason::HaltPending);
-                self.allowed.migrate_as_source =
-                    Disposition::Deny(DenyReason::HaltPending);
-                self.allowed.reboot =
-                    Disposition::Deny(DenyReason::HaltPending);
-                self.allowed.stop = Disposition::Ignore;
+            // Requests to stop the instance block other requests from being
+            // queued. Additional requests to stop are ignored for idempotency.
+            ChangeReason::ApiRequest(ExternalRequest::Stop) => {
+                AllowedRequests {
+                    migrate_as_target: Disposition::Deny(
+                        DenyReason::HaltPending,
+                    ),
+                    start: Disposition::Deny(DenyReason::HaltPending),
+                    migrate_as_source: Disposition::Deny(
+                        DenyReason::HaltPending,
+                    ),
+                    reboot: Disposition::Deny(DenyReason::HaltPending),
+                    stop: Disposition::Ignore,
+                }
             }
-        }
 
-        self.queue.push_back(request);
-        Ok(())
-    }
-
-    /// Notifies the queue that its instance is now running. This allows
-    /// requests to reboot and migrate out of the instance.
-    pub fn notify_instance_running(&mut self) {
-        info!(
-            self.log,
-            "Instance is running, allowing migration out and reboot"
-        );
-
-        self.allowed.migrate_as_source = RequestDisposition::Enqueue;
-        self.allowed.reboot = RequestDisposition::Enqueue;
-    }
-
-    /// Notifies the queue that its instance has stopped. This blocks all new
-    /// requests except requests to stop, which are ignored.
-    pub fn notify_instance_stopped(&mut self) {
-        info!(self.log, "Instance is stopped, denying all actions");
-        self.allowed.migrate_as_target =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
-        self.allowed.start =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
-        self.allowed.migrate_as_source =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
-        self.allowed.reboot =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceNotActive);
-        self.allowed.stop = RequestDisposition::Ignore;
-    }
-
-    /// Notifies the queue that its instance has failed. This blocks all new
-    /// requests except requests to stop, which are ignored.
-    pub fn notify_instance_failed(&mut self) {
-        info!(self.log, "Instance has failed, denying all actions");
-        self.allowed.migrate_as_target =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
-        self.allowed.start =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
-        self.allowed.migrate_as_source =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
-        self.allowed.reboot =
-            RequestDisposition::Deny(RequestDeniedReason::InstanceFailed);
-    }
-
-    /// Indicates whether the queue would allow a request to migrate into this
-    /// instance. This can be used to avoid setting up migration tasks for
-    /// requests that will ultimately be denied.
-    pub fn migrate_as_target_allowed(&self) -> Result<(), RequestDeniedReason> {
-        match self.allowed.migrate_as_target {
-            RequestDisposition::Enqueue => Ok(()),
-            RequestDisposition::Ignore => {
-                panic!("requests to migrate as target should not be ignored")
+            // When an instance begins running, requests to migrate out of it or
+            // to reboot it become valid.
+            ChangeReason::StateChange(InstanceStateChange::Running) => {
+                AllowedRequests {
+                    migrate_as_target: self.allowed.migrate_as_target,
+                    start: self.allowed.start,
+                    migrate_as_source: Disposition::Enqueue,
+                    reboot: Disposition::Enqueue,
+                    stop: self.allowed.stop,
+                }
             }
-            RequestDisposition::Deny(reason) => Err(reason),
-        }
-    }
 
-    /// Indicates whether the queue would allow a request to migrate out of this
-    /// instance. This can be used to avoid setting up migration tasks for
-    /// requests that will ultimately be denied.
-    pub fn migrate_as_source_allowed(&self) -> Result<(), RequestDeniedReason> {
-        match self.allowed.migrate_as_source {
-            RequestDisposition::Enqueue => Ok(()),
-            RequestDisposition::Ignore => {
-                panic!("requests to migrate as source should not be ignored")
+            // When an instance stops or fails, requests to do anything other
+            // than stop it are denied with an appropriate deny reason. Note
+            // that an instance may stop or fail due to guest activity, so the
+            // previous dispositions for migrate and reboot requests may not be
+            // "deny".
+            ChangeReason::StateChange(InstanceStateChange::Stopped) => {
+                AllowedRequests {
+                    migrate_as_target: Disposition::Deny(
+                        DenyReason::InstanceNotActive,
+                    ),
+                    start: Disposition::Deny(DenyReason::InstanceNotActive),
+                    migrate_as_source: Disposition::Deny(
+                        DenyReason::InstanceNotActive,
+                    ),
+                    reboot: Disposition::Deny(DenyReason::InstanceNotActive),
+                    stop: Disposition::Ignore,
+                }
             }
-            RequestDisposition::Deny(reason) => Err(reason),
+            ChangeReason::StateChange(InstanceStateChange::Failed) => {
+                AllowedRequests {
+                    migrate_as_target: Disposition::Deny(
+                        DenyReason::InstanceFailed,
+                    ),
+                    start: Disposition::Deny(DenyReason::InstanceFailed),
+                    migrate_as_source: Disposition::Deny(
+                        DenyReason::InstanceFailed,
+                    ),
+                    reboot: Disposition::Deny(DenyReason::InstanceFailed),
+                    stop: Disposition::Ignore,
+                }
+            }
         }
     }
 }
