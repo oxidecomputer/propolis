@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 /// Tells the state driver whether or not to continue running after responding
 /// to an event.
+#[derive(Debug)]
 enum HandleEventOutcome {
     Continue,
     Exit,
@@ -130,7 +131,10 @@ where
 
         loop {
             let event = self.shared_state.wait_for_next_event();
+            info!(self.log, "State worker handling event"; "event" => ?event);
+
             let outcome = self.handle_event(event);
+            info!(self.log, "State worker handled event"; "outcome" => ?outcome);
             if matches!(outcome, HandleEventOutcome::Exit) {
                 break;
             }

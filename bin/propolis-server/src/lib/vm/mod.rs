@@ -831,6 +831,7 @@ impl Drop for VmController {
 }
 
 /// An event that a VM's state driver must process.
+#[derive(Debug)]
 enum StateDriverEvent {
     /// An event that was raised from within the guest.
     Guest(GuestEvent),

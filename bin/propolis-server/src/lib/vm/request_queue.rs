@@ -208,15 +208,15 @@ impl ExternalRequestQueue {
             ExternalRequest::Stop => self.allowed.stop,
         };
 
+        info!(&self.log, "Queuing external request";
+              "request" => ?request,
+              "disposition" => ?disposition);
+
         match disposition {
             RequestDisposition::Enqueue => {}
             RequestDisposition::Ignore => return Ok(()),
             RequestDisposition::Deny(reason) => return Err(reason),
         };
-
-        info!(&self.log, "Queuing external request";
-              "request" => ?request,
-              "disposition" => ?disposition);
 
         self.allowed = self.get_new_dispositions(
             DispositionChangeReason::ApiRequest(&request),
@@ -417,7 +417,7 @@ impl ExternalRequestQueue {
                         DenyReason::InstanceFailed,
                     ),
                     reboot: Disposition::Deny(DenyReason::InstanceFailed),
-                    stop: Disposition::Ignore,
+                    stop: self.allowed.stop,
                 }
             }
         }
@@ -534,5 +534,16 @@ mod tests {
         queue.notify_instance_state_change(InstanceStateChange::Stopped);
         assert!(queue.migrate_as_source_will_enqueue().is_err());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
+    }
+
+    #[tokio::test]
+    async fn stop_requests_enqueue_after_vm_failure() {
+        let mut queue = ExternalRequestQueue::new(test_logger());
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        queue.notify_instance_state_change(InstanceStateChange::Failed);
+
+        assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Stop)));
     }
 }
