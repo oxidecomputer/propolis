@@ -19,7 +19,7 @@
 
 use std::collections::VecDeque;
 
-use slog::{info, Logger};
+use slog::{debug, info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -214,7 +214,7 @@ impl ExternalRequestQueue {
             RequestDisposition::Deny(reason) => return Err(reason),
         };
 
-        info!(&self.log, "queuing external request";
+        info!(&self.log, "Queuing external request";
               "request" => ?request,
               "disposition" => ?disposition);
 
@@ -283,8 +283,8 @@ impl ExternalRequestQueue {
         &self,
         reason: DispositionChangeReason,
     ) -> AllowedRequests {
-        info!(self.log, "Computing new queue dispositions";
-              "reason" => ?reason);
+        debug!(self.log, "Computing new queue dispositions";
+               "reason" => ?reason);
 
         use DispositionChangeReason as ChangeReason;
         use RequestDeniedReason as DenyReason;
@@ -421,5 +421,118 @@ impl ExternalRequestQueue {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use uuid::Uuid;
+
+    fn test_logger() -> slog::Logger {
+        slog::Logger::root(slog::Discard, slog::o!())
+    }
+
+    fn make_migrate_as_target_request() -> ExternalRequest {
+        let task = tokio::task::spawn(async { Ok(()) });
+        let (start_tx, _) = tokio::sync::oneshot::channel();
+        let (_, command_rx) = tokio::sync::mpsc::channel(1);
+        ExternalRequest::MigrateAsTarget {
+            migration_id: Uuid::new_v4(),
+            task,
+            start_tx,
+            command_rx,
+        }
+    }
+
+    fn make_migrate_as_source_request() -> ExternalRequest {
+        let task = tokio::task::spawn(async { Ok(()) });
+        let (start_tx, _) = tokio::sync::oneshot::channel();
+        let (_, command_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, _) = tokio::sync::mpsc::channel(1);
+        ExternalRequest::MigrateAsSource {
+            migration_id: Uuid::new_v4(),
+            task,
+            start_tx,
+            command_rx,
+            response_tx,
+        }
+    }
+
+    #[tokio::test]
+    async fn migrate_as_target_is_idempotent() {
+        let mut queue = ExternalRequestQueue::new(test_logger());
+
+        // Requests to migrate as a target should queue normally at first.
+        assert!(queue.migrate_as_target_will_enqueue().unwrap());
+
+        // After queuing such a request, subsequent requests should be allowed
+        // without enqueuing anything.
+        assert!(queue.try_queue(make_migrate_as_target_request()).is_ok());
+        assert!(!queue.migrate_as_target_will_enqueue().unwrap());
+
+        // Pop the request and tell the queue the instance is running.
+        assert!(matches!(
+            queue.pop_front(),
+            Some(ExternalRequest::MigrateAsTarget { .. })
+        ));
+        queue.notify_instance_state_change(InstanceStateChange::Running);
+
+        // Because the instance was started via migration in, future requests
+        // to migrate in should be allowed.
+        assert!(queue.try_queue(make_migrate_as_target_request()).is_ok());
+        assert!(!queue.migrate_as_target_will_enqueue().unwrap());
+    }
+
+    #[tokio::test]
+    async fn migrate_as_target_is_forbidden_after_cold_boot() {
+        let mut queue = ExternalRequestQueue::new(test_logger());
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        queue.notify_instance_state_change(InstanceStateChange::Running);
+
+        assert!(queue.migrate_as_target_will_enqueue().is_err());
+        assert!(queue.try_queue(make_migrate_as_target_request()).is_err());
+    }
+
+    #[tokio::test]
+    async fn migrate_as_source_is_not_idempotent() {
+        // Simulate a running instance.
+        let mut queue = ExternalRequestQueue::new(test_logger());
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        queue.notify_instance_state_change(InstanceStateChange::Running);
+
+        // Requests to migrate out should be allowed.
+        assert!(queue.migrate_as_source_will_enqueue().unwrap());
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
+
+        // Once the request is queued, other requests to migrate out are
+        // disallowed until the queued request is disposed of.
+        //
+        // This differs from the migration-in case in that requests to migrate
+        // in are issued by the sled agent as part of a saga (where idempotency
+        // is assumed), but requests to migrate out are issued by the target
+        // Propolis (which does not assume idempotency and issues only one
+        // request per migration attempt).
+        assert!(queue.migrate_as_source_will_enqueue().is_err());
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
+
+        // If migration fails, the instance resumes running, and then another
+        // request to migrate out should be allowed.
+        assert!(matches!(
+            queue.pop_front(),
+            Some(ExternalRequest::MigrateAsSource { .. })
+        ));
+        queue.notify_instance_state_change(InstanceStateChange::Running);
+        assert!(queue.migrate_as_source_will_enqueue().unwrap());
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
+
+        // A successful migration stops the instance, which forecloses on future
+        // requests to migrate out.
+        queue.pop_front();
+        queue.notify_instance_state_change(InstanceStateChange::Stopped);
+        assert!(queue.migrate_as_source_will_enqueue().is_err());
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
     }
 }
