@@ -97,7 +97,6 @@ pub enum MigrationState {
     Pause,
     RamPushDirty,
     Device,
-    Arch,
     Resume,
     RamPull,
     Finish,
