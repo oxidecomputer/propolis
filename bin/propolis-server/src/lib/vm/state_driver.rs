@@ -162,11 +162,7 @@ where
             } => {
                 self.migrate_as_target(migration_id, task, start_tx, command_rx)
             }
-            ExternalRequest::Start => {
-                // TODO(#209) Transition to a "failed" state instead of
-                // expecting.
-                self.start_vm(true)
-            }
+            ExternalRequest::Start => self.start_vm(true),
             ExternalRequest::Reboot => {
                 self.do_reboot();
                 HandleEventOutcome::Continue
