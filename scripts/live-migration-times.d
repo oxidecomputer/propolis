@@ -140,10 +140,10 @@ dtrace:::END
 	/* Print summary of RAM pages transferred */
 	if ($$1 != "" && xfer_pages != 0) {
 		printf("%-15s %30d\n", "NPAGES XFERED", xfer_pages);
-		printf("%-15s %30d\n", "BYTES XFERED", xfer_bytes);
+		printf("%-15s %30d\n", "NBYTES XFERED", xfer_bytes);
 		if (this->d_rpush != 0) {
-			printf("%-15s %30d\n", "KB/SEC",
-			    (xfer_bytes / 1000) / (this->d_rpush / 1000000000));
+			printf("%-15s %30d\n", "KiB/SEC",
+			    (xfer_bytes / 1024) / (this->d_rpush / 1000000000));
 		}
 	}
 }
