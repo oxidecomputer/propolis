@@ -57,6 +57,30 @@ pub enum MigrateRole {
     Destination,
 }
 
+enum MigratePhase {
+    MigrateSync,
+    Pause,
+    RamPush,
+    DeviceState,
+    RamPull,
+    Finish,
+}
+
+impl std::fmt::Display for MigratePhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            MigratePhase::MigrateSync => "Sync",
+            MigratePhase::Pause => "Pause",
+            MigratePhase::RamPush => "RamPush",
+            MigratePhase::DeviceState => "DeviceState",
+            MigratePhase::RamPull => "RamPull",
+            MigratePhase::Finish => "Finish",
+        };
+
+        write!(f, "{}", s)
+    }
+}
+
 /// Errors which may occur during the course of a migration
 #[derive(Clone, Debug, Error, Deserialize, PartialEq, Serialize)]
 pub enum MigrateError {
@@ -201,7 +225,7 @@ struct Device {
 
 /// Begin the migration process (source-side).
 ///
-///This will attempt to upgrade the given HTTP request to a `propolis-migrate`
+/// This will attempt to upgrade the given HTTP request to a `propolis-migrate`
 /// connection and begin the migration in a separate task.
 pub async fn source_start<
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -366,4 +390,11 @@ impl<'a> Iterator for PageIter<'a> {
         }
         None
     }
+}
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn migrate_phase_begin(step_desc: &str) {}
+    fn migrate_phase_end(step_desc: &str) {}
+    fn migrate_xfer_ram_page(addr: u64, size: u64) {}
 }

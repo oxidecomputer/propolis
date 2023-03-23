@@ -997,7 +997,6 @@
           "Pause",
           "RamPushDirty",
           "Device",
-          "Arch",
           "Resume",
           "RamPull",
           "Finish",

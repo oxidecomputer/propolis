@@ -2,7 +2,7 @@ use futures::{SinkExt, StreamExt};
 use propolis::common::GuestAddr;
 use propolis::inventory::Order;
 use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
-use slog::{error, info};
+use slog::{error, info, trace};
 use std::convert::TryInto;
 use std::io;
 use std::ops::{Range, RangeInclusive};
@@ -13,8 +13,9 @@ use tokio_tungstenite::WebSocketStream;
 use crate::migrate::codec;
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
+use crate::migrate::probes;
 use crate::migrate::{
-    Device, MigrateError, MigrateRole, MigrationState, PageIter,
+    Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
@@ -85,24 +86,41 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             .unwrap();
     }
 
+    async fn run_phase(
+        &mut self,
+        step: MigratePhase,
+    ) -> Result<(), MigrateError> {
+        probes::migrate_phase_begin!(|| { step.to_string() });
+
+        let res = match step {
+            MigratePhase::MigrateSync => self.sync().await,
+            MigratePhase::Pause => self.pause().await,
+            MigratePhase::RamPush => self.ram_push().await,
+            MigratePhase::DeviceState => self.device_state().await,
+            MigratePhase::RamPull => self.ram_pull().await,
+            MigratePhase::Finish => self.finish().await,
+        };
+
+        probes::migrate_phase_end!(|| { step.to_string() });
+
+        res
+    }
+
     async fn run(&mut self) -> Result<(), MigrateError> {
-        self.start();
-        self.sync().await?;
+        info!(self.log(), "Entering Source Migration Task");
+
+        self.run_phase(MigratePhase::MigrateSync).await?;
 
         // TODO: Optimize RAM transfer so that most memory can be transferred
         // prior to pausing.
-        self.pause().await?;
-        self.ram_push().await?;
-        self.device_state().await?;
-        self.arch_state().await?;
-        self.ram_pull().await?;
-        self.finish().await?;
-        self.end();
-        Ok(())
-    }
+        self.run_phase(MigratePhase::Pause).await?;
+        self.run_phase(MigratePhase::RamPush).await?;
+        self.run_phase(MigratePhase::DeviceState).await?;
+        self.run_phase(MigratePhase::RamPull).await?;
+        self.run_phase(MigratePhase::Finish).await?;
 
-    fn start(&mut self) {
-        info!(self.log(), "Entering Source Migration Task");
+        info!(self.log(), "Source Migration Successful");
+        Ok(())
     }
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
@@ -112,6 +130,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;
+
         self.read_ok().await
     }
 
@@ -129,7 +148,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         loop {
             let m = self.read_msg().await?;
-            info!(self.log(), "ram_push: source xfer phase recvd {:?}", m);
+            trace!(self.log(), "ram_push: source xfer phase recvd {:?}", m);
             match m {
                 codec::Message::MemDone => break,
                 codec::Message::MemFetch(start, end, bits) => {
@@ -202,6 +221,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             let mut bytes = [0u8; 4096];
             self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
             self.send_msg(codec::Message::Page(bytes.into())).await?;
+            probes::migrate_xfer_ram_page!(|| (addr, 4096));
         }
         Ok(())
     }
@@ -269,12 +289,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.read_ok().await
     }
 
-    async fn arch_state(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::Arch).await;
-        self.read_ok().await?;
-        self.send_msg(codec::Message::Okay).await
-    }
-
     async fn ram_pull(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::RamPush).await;
         let m = self.read_msg().await?;
@@ -303,10 +317,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         }
 
         Ok(())
-    }
-
-    fn end(&mut self) {
-        info!(self.log(), "Source Migration Successful");
     }
 
     async fn read_msg(&mut self) -> Result<codec::Message, MigrateError> {
