@@ -302,8 +302,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::Finish).await;
-
         // Wait for the destination to acknowledge that it's ready to run the
         // VM.
         self.read_ok().await?;
@@ -315,6 +313,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         //      overseers) must assume that the destination has begun running
         //      the guest.
         self.send_msg(codec::Message::Okay).await?;
+
+        // Now that handoff is complete, publish that the migration has
+        // succeeded.
+        self.update_state(MigrationState::Finish).await;
 
         // This VMM is going away, so if any guest memory is still dirty, it
         // won't be transferred. Assert that there is no such memory.

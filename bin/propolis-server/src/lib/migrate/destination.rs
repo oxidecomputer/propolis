@@ -326,8 +326,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::Finish).await;
-
         // Tell the source this destination is ready to run the VM.
         self.send_msg(codec::Message::Okay).await?;
 
@@ -336,6 +334,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         // to be sure the source hasn't decided the migration has failed and
         // that it should resume the VM.
         self.read_ok().await?;
+
+        // Now that control is definitely being transferred, publish that the
+        // migration has succeeded.
+        self.update_state(MigrationState::Finish).await;
         Ok(())
     }
 
