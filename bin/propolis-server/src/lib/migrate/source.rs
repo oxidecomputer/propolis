@@ -303,16 +303,31 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Finish).await;
+
+        // Wait for the destination to acknowledge that it's ready to run the
+        // VM.
         self.read_ok().await?;
-        let _ = self.send_msg(codec::Message::Okay).await; // A failure here is ok.
+
+        // Hand control over to the destination. If this send fails, the
+        // destination won't run the VM and it can resume here.
+        //
+        // N.B. After this message is sent, this Propolis (and any of its
+        //      overseers) must assume that the destination has begun running
+        //      the guest.
+        self.send_msg(codec::Message::Okay).await?;
 
         // This VMM is going away, so if any guest memory is still dirty, it
         // won't be transferred. Assert that there is no such memory.
-        let vmm_range = self.vmm_ram_bounds().await?;
+        //
+        // The unwraps in the block below amount to assertions that the VMM
+        // exists at this point (it should). Note that returning an error here
+        // is not permitted because that will cause migration to unwind and the
+        // VM to resume, which is forbidden at this point (see above).
+        let vmm_range = self.vmm_ram_bounds().await.unwrap();
         let mut bits = [0u8; 4096];
         let step = bits.len() * 8 * 4096;
         for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
-            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
+            self.track_dirty(GuestAddr(gpa), &mut bits).await.unwrap();
             assert!(bits.iter().all(|&b| b == 0));
         }
 
