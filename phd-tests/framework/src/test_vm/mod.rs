@@ -8,20 +8,20 @@ use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
-use propolis_client::handmade::api::InstanceSpecGetResponse;
-use propolis_client::handmade::{
-    api::{
-        InstanceGetResponse, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceSpecEnsureRequest, InstanceState,
-        InstanceStateRequested, MigrationState,
-    },
-    Client, Error as PropolisClientError,
+use propolis_client::types::{
+    InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
+    InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
+    InstanceStateRequested, MigrationState,
 };
-use slog::Drain;
+use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
+
+type PropolisClientError =
+    propolis_client::Error<propolis_client::types::Error>;
+type PropolisClientResult<T> = StdResult<ResponseValue<T>, PropolisClientError>;
 
 use self::vm_config::VmConfig;
 
@@ -98,15 +98,7 @@ impl TestVm {
         let server_addr = process_params.server_addr;
         let server = server::PropolisServer::new(process_params)?;
 
-        let client_decorator = slog_term::TermDecorator::new().stdout().build();
-        let client_drain =
-            slog_term::CompactFormat::new(client_decorator).build().fuse();
-        let client_async_drain =
-            slog_async::Async::new(client_drain).build().fuse();
-        let client = Client::new(
-            server_addr.into(),
-            slog::Logger::root(client_async_drain, slog::o!()),
-        );
+        let client = Client::new(&format!("http://{}", server_addr));
 
         Ok(Self {
             id,
@@ -154,14 +146,17 @@ impl TestVm {
             memory: memory_mib,
             vcpus,
         };
+
         let ensure_req = InstanceSpecEnsureRequest {
             properties,
-            instance_spec: self.config.instance_spec().clone(),
+            instance_spec: From::from(self.config.instance_spec().to_owned()),
             migrate,
         };
 
         let mut retries = 3;
-        while let Err(e) = self.client.instance_spec_ensure(&ensure_req).await {
+        while let Err(e) =
+            self.client.instance_spec_ensure().body(&ensure_req).send().await
+        {
             info!("Error {} while creating instance, will retry", e);
             tokio::time::sleep(Duration::from_millis(500)).await;
             retries -= 1;
@@ -171,11 +166,18 @@ impl TestVm {
             }
         }
 
-        let serial_uri = self.client.instance_serial_console_ws_uri();
-        let console = SerialConsole::new(serial_uri).await?;
+        let serial_conn = self
+            .client
+            .instance_serial()
+            .most_recent(0)
+            .send()
+            .await
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?
+            .into_inner();
+        let console = SerialConsole::new(serial_conn).await?;
 
         let instance_description =
-            self.client.instance_get().await.with_context(|| {
+            self.client.instance_get().send().await.with_context(|| {
                 anyhow!("failed to get instance properties")
             })?;
 
@@ -221,14 +223,14 @@ impl TestVm {
 
     /// Sets the VM to the running state without first sending an instance
     /// ensure request.
-    pub fn run(&self) -> StdResult<(), PropolisClientError> {
+    pub fn run(&self) -> PropolisClientResult<()> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Run).await
         })
     }
 
     /// Stops the VM.
-    pub fn stop(&self) -> StdResult<(), PropolisClientError> {
+    pub fn stop(&self) -> PropolisClientResult<()> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Stop).await
         })
@@ -236,7 +238,7 @@ impl TestVm {
 
     /// Resets the VM by requesting the `Reboot` state from the server (as
     /// distinct from requesting a reboot from within the guest).
-    pub fn reset(&self) -> StdResult<(), PropolisClientError> {
+    pub fn reset(&self) -> PropolisClientResult<()> {
         self.rt.block_on(async {
             self.put_instance_state_async(InstanceStateRequested::Reboot).await
         })
@@ -245,10 +247,10 @@ impl TestVm {
     async fn put_instance_state_async(
         &self,
         state: InstanceStateRequested,
-    ) -> StdResult<(), PropolisClientError> {
+    ) -> PropolisClientResult<()> {
         let _span = self.tracing_span.enter();
         info!(?state, "Requesting instance state change");
-        self.client.instance_state_put(state).await
+        self.client.instance_state_put().body(state).send().await
     }
 
     /// Issues a Propolis client `instance_get` request.
@@ -261,7 +263,9 @@ impl TestVm {
     async fn get_async(&self) -> Result<InstanceGetResponse> {
         self.client
             .instance_get()
+            .send()
             .await
+            .map(ResponseValue::into_inner)
             .with_context(|| anyhow!("failed to query instance properties"))
     }
 
@@ -274,7 +278,9 @@ impl TestVm {
     async fn get_spec_async(&self) -> Result<InstanceSpecGetResponse> {
         self.client
             .instance_spec_get()
+            .send()
             .await
+            .map(ResponseValue::into_inner)
             .with_context(|| anyhow!("failed to query instance spec"))
     }
 
@@ -299,7 +305,7 @@ impl TestVm {
                     self.instance_ensure_async(Some(
                         InstanceMigrateInitiateRequest {
                             migration_id,
-                            src_addr: source.server.server_addr().into(),
+                            src_addr: source.server.server_addr().to_string(),
                             src_uuid: Uuid::default(),
                         },
                     ))
@@ -352,7 +358,13 @@ impl TestVm {
         migration_id: Uuid,
     ) -> Result<MigrationState> {
         self.rt.block_on(async {
-            Ok(self.client.instance_migrate_status(migration_id).await?.state)
+            Ok(self
+                .client
+                .instance_migrate_status()
+                .migration_id(migration_id)
+                .send()
+                .await?
+                .state)
         })
     }
 
@@ -368,8 +380,11 @@ impl TestVm {
         );
 
         let wait_fn = || -> Result<(), backoff::Error<anyhow::Error>> {
-            let current =
-                self.get().map_err(backoff::Error::Permanent)?.instance.state;
+            let current = self
+                .get()
+                .map_err(|e| backoff::Error::Permanent(e.into()))?
+                .instance
+                .state;
             if current == target {
                 Ok(())
             } else {

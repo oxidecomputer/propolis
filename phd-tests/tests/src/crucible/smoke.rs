@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use phd_testcase::{phd_framework::test_vm::vm_config::DiskInterface, *};
-use propolis_client::handmade::api::InstanceState;
+use propolis_client::types::InstanceState;
 
 #[phd_testcase]
 fn boot_test(ctx: &TestContext) {

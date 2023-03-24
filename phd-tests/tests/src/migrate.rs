@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use phd_testcase::*;
-use propolis_client::handmade::api::MigrationState;
+use propolis_client::types::MigrationState;
 use uuid::Uuid;
 
 #[phd_testcase]
