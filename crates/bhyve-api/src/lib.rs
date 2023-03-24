@@ -55,6 +55,46 @@ impl VmmCtlFd {
         Ok(vers as u32)
     }
 
+    /// Request that the VMM memory reservoir be resized.
+    ///
+    /// Since this may involve gathering a large portion of memory from the OS
+    /// kernel to place in the reservoir, a chunking parameter `chunk_bytes` can
+    /// be used to limit the size of in-kernel requests used to fulfill the
+    /// request.
+    pub fn reservoir_resize(
+        &self,
+        target_bytes: usize,
+        chunk_bytes: usize,
+    ) -> std::result::Result<(), ReservoirError> {
+        let mut req = vmm_resv_target {
+            vrt_target_sz: target_bytes,
+            vrt_chunk_sz: chunk_bytes,
+            ..Default::default()
+        };
+
+        // Safety: We are using the appropriate struct for this ioctl
+        let res = unsafe { self.ioctl(ioctls::VMM_RESV_SET_TARGET, &mut req) };
+
+        match res {
+            Err(e) if e.kind() == ErrorKind::Interrupted => {
+                Err(ReservoirError::Interrupted(req.vrt_result_sz))
+            }
+            Err(e) => Err(ReservoirError::Io(e)),
+
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// Query VMM memory reservoir capacity and usage.
+    pub fn reservoir_query(&self) -> Result<vmm_resv_query> {
+        let mut req = vmm_resv_query::default();
+
+        // Safety: We are using the appropriate struct for this ioctl
+        unsafe { self.ioctl(ioctls::VMM_RESV_QUERY, &mut req) }?;
+
+        Ok(req)
+    }
+
     /// Check VMM ioctl command against those known to not require any
     /// copyin/copyout to function.
     const fn ioctl_usize_safe(cmd: i32) -> bool {
@@ -65,6 +105,27 @@ impl VmmCtlFd {
 impl AsRawFd for VmmCtlFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
+    }
+}
+
+pub enum ReservoirError {
+    /// Resizing operation was interrupted, but if a non-zero chunk size was
+    /// specified, one or more chunk-sized adjustments to the reservoir size may
+    /// have completed.
+    ///
+    /// In that case, the resulting size of the reservoir is returned.
+    Interrupted(usize),
+    /// An IO error (other than interruption) occurred
+    Io(Error),
+}
+impl From<ReservoirError> for Error {
+    fn from(val: ReservoirError) -> Self {
+        match val {
+            ReservoirError::Interrupted(_) => {
+                Error::new(ErrorKind::Interrupted, "interrupted")
+            }
+            ReservoirError::Io(e) => e,
+        }
     }
 }
 

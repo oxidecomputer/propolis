@@ -491,3 +491,18 @@ pub struct vmm_resv_query {
     pub vrq_alloc_transient_sz: size_t,
     pub vrq_limit: size_t,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vmm_resv_target {
+    /// Target size for VMM reservoir
+    pub vrt_target_sz: size_t,
+
+    /// Change of reservoir size to meet target will be done in multiple steps
+    /// of chunk size (or smaller)
+    pub vrt_chunk_sz: size_t,
+
+    /// Resultant size of reservoir after operation.  Should match target size,
+    /// except when interrupted.
+    pub vrt_result_sz: size_t,
+}

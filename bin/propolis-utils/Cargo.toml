@@ -10,6 +10,9 @@ name = "savex"
 [[bin]]
 name = "cpuid-gen"
 
+[[bin]]
+name = "rsrvrctl"
+
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
