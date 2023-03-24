@@ -1,10 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use futures::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
+use reqwest::Upgraded;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::WebSocketStream;
 use tracing::{error, info, info_span, Instrument};
 
 use self::vt100::Vt100Processor;
@@ -18,7 +19,7 @@ pub struct SerialConsole {
 }
 
 async fn websocket_handler(
-    mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    mut ws: WebSocketStream<Upgraded>,
     output_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     mut input_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) {
@@ -35,6 +36,9 @@ async fn websocket_handler(
                         info!("Serial socket closed");
                         break;
                     },
+                    Some(Ok(Message::Text(s))) => {
+                        info!("Serial socket received control message: {:?}", s);
+                    }
                     None => {
                         info!("Serial socket returned None");
                         break;
@@ -61,11 +65,10 @@ async fn websocket_handler(
 }
 
 impl SerialConsole {
-    pub async fn new(serial_uri: String) -> anyhow::Result<Self> {
-        let (ws, _) =
-            tokio_tungstenite::connect_async(serial_uri).await.with_context(
-                || anyhow!("failed to connect to serial websocket"),
-            )?;
+    pub async fn new(serial_conn: Upgraded) -> anyhow::Result<Self> {
+        let ws =
+            WebSocketStream::from_raw_socket(serial_conn, Role::Client, None)
+                .await;
 
         let (vttx, vtrx) = tokio::sync::mpsc::channel(16);
         let (wstx, wsrx) = tokio::sync::mpsc::channel(16);
