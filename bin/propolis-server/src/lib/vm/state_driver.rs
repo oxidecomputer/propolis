@@ -160,9 +160,18 @@ where
                 start_tx,
                 command_rx,
             } => {
-                self.migrate_as_target(migration_id, task, start_tx, command_rx)
+                self.migrate_as_target(
+                    migration_id,
+                    task,
+                    start_tx,
+                    command_rx,
+                );
+                HandleEventOutcome::Continue
             }
-            ExternalRequest::Start => self.start_vm(true),
+            ExternalRequest::Start => {
+                self.start_vm(true);
+                HandleEventOutcome::Continue
+            }
             ExternalRequest::Reboot => {
                 self.do_reboot();
                 HandleEventOutcome::Continue
@@ -173,13 +182,16 @@ where
                 start_tx,
                 command_rx,
                 response_tx,
-            } => self.migrate_as_source(
-                migration_id,
-                task,
-                start_tx,
-                command_rx,
-                response_tx,
-            ),
+            } => {
+                self.migrate_as_source(
+                    migration_id,
+                    task,
+                    start_tx,
+                    command_rx,
+                    response_tx,
+                );
+                HandleEventOutcome::Continue
+            }
             ExternalRequest::Stop => {
                 self.do_halt();
                 HandleEventOutcome::Exit
@@ -226,7 +238,7 @@ where
         }
     }
 
-    fn start_vm(&mut self, reset_required: bool) -> HandleEventOutcome {
+    fn start_vm(&mut self, reset_required: bool) {
         info!(self.log, "Starting instance"; "reset" => reset_required);
 
         // Requests to start should put the instance into the 'starting' stage.
@@ -241,12 +253,10 @@ where
             Ok(()) => {
                 self.vcpu_tasks.resume_all();
                 self.publish_steady_state(ApiInstanceState::Running);
-                HandleEventOutcome::Continue
             }
             Err(e) => {
                 error!(&self.log, "Failed to start entities: {:?}", e);
                 self.publish_steady_state(ApiInstanceState::Failed);
-                HandleEventOutcome::Exit
             }
         }
     }
@@ -308,7 +318,7 @@ where
         mut task: tokio::task::JoinHandle<Result<(), MigrateError>>,
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    ) -> HandleEventOutcome {
+    ) {
         self.update_external_state(ApiInstanceState::Migrating);
 
         // Ensure the VM's vCPUs are activated properly so that they can enter
@@ -330,7 +340,7 @@ where
 
             match action {
                 MigrateTaskEvent::TaskExited(res) => {
-                    let outcome = if res.is_ok() {
+                    if res.is_ok() {
                         // Clients that observe that migration has finished
                         // need to observe that the instance is running before
                         // they are guaranteed to be able to do anything else
@@ -340,7 +350,7 @@ where
                             Some((_, ApiMigrationState::Finish))
                         ));
 
-                        self.start_vm(false)
+                        self.start_vm(false);
                     } else {
                         assert!(matches!(
                             self.get_migration_state(),
@@ -348,10 +358,9 @@ where
                         ));
 
                         self.publish_steady_state(ApiInstanceState::Failed);
-                        HandleEventOutcome::Exit
                     };
 
-                    return outcome;
+                    break;
                 }
                 MigrateTaskEvent::Command(
                     MigrateTargetCommand::UpdateState(state),
@@ -369,7 +378,7 @@ where
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
         response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
-    ) -> HandleEventOutcome {
+    ) {
         self.update_external_state(ApiInstanceState::Migrating);
         start_tx.send(()).unwrap();
 
@@ -417,7 +426,7 @@ where
                         }
                     }
 
-                    return HandleEventOutcome::Continue;
+                    break;
                 }
                 MigrateTaskEvent::Command(cmd) => match cmd {
                     MigrateSourceCommand::UpdateState(state) => {
@@ -713,13 +722,12 @@ mod tests {
 
         let mut driver = make_state_driver(test_objects);
 
-        // Failing to start the instance should cause the state driver to exit
-        // so that the VM is torn down.
+        // Failure allows the instance to be preserved for debugging.
         assert_eq!(
             driver.driver.handle_event(StateDriverEvent::External(
                 ExternalRequest::Start
             )),
-            HandleEventOutcome::Exit
+            HandleEventOutcome::Continue
         );
 
         assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
@@ -1021,10 +1029,9 @@ mod tests {
                 .await
                 .unwrap();
 
-        // Failing to start the instance after migration should cause the worker
-        // exit so the VM can be torn down. The migration should appear to have
-        // failed.
-        assert_eq!(outcome, HandleEventOutcome::Exit);
+        // The migration should appear to have failed, but the VM should be
+        // preserved for debugging.
+        assert_eq!(outcome, HandleEventOutcome::Continue);
         assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
         assert!(matches!(
             driver.driver.get_migration_state(),
@@ -1087,9 +1094,9 @@ mod tests {
                 .await
                 .unwrap();
 
-        // Failing to start the instance after migration should cause the worker
-        // exit so the VM can be torn down.
-        assert_eq!(outcome, HandleEventOutcome::Exit);
+        // The instance should have failed, but should also be preserved for
+        // debugging.
+        assert_eq!(outcome, HandleEventOutcome::Continue);
         assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
 
         // The migration has still succeeded in this case.
