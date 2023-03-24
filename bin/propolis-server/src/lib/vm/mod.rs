@@ -821,11 +821,20 @@ impl Drop for VmController {
         // that the controller is being destroyed.
         if let Some(thread) = self.worker_thread.lock().unwrap().take() {
             let api_state = thread.join().unwrap();
-            let gen = api_state.borrow().gen + 1;
-            let _ = api_state.send(ApiMonitoredState {
-                gen,
-                state: ApiInstanceState::Destroyed,
-            });
+            let (gen, state) = {
+                let borrowed = api_state.borrow();
+                (borrowed.gen, borrowed.state)
+            };
+
+            // Preserve the instance's state if it failed so that clients can
+            // distinguish gracefully-stopped instances from failed instances.
+            if !matches!(state, ApiInstanceState::Failed) {
+                let gen = gen + 1;
+                let _ = api_state.send(ApiMonitoredState {
+                    gen,
+                    state: ApiInstanceState::Destroyed,
+                });
+            }
         }
     }
 }

@@ -14,12 +14,12 @@ use propolis_client::handmade::{
     api::InstanceStateMonitorResponse as ApiMonitoredState,
     api::MigrationState as ApiMigrationState,
 };
-use slog::{info, Logger};
+use slog::{error, info, Logger};
 use uuid::Uuid;
 
 /// Tells the state driver whether or not to continue running after responding
 /// to an event.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum HandleEventOutcome {
     Continue,
     Exit,
@@ -160,12 +160,16 @@ where
                 start_tx,
                 command_rx,
             } => {
-                self.migrate_as_target(migration_id, task, start_tx, command_rx)
+                self.migrate_as_target(
+                    migration_id,
+                    task,
+                    start_tx,
+                    command_rx,
+                );
+                HandleEventOutcome::Continue
             }
             ExternalRequest::Start => {
-                // TODO(#209) Transition to a "failed" state instead of
-                // expecting.
-                self.start_vm(true).expect("failed to start VM");
+                self.start_vm(true);
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Reboot => {
@@ -178,13 +182,16 @@ where
                 start_tx,
                 command_rx,
                 response_tx,
-            } => self.migrate_as_source(
-                migration_id,
-                task,
-                start_tx,
-                command_rx,
-                response_tx,
-            ),
+            } => {
+                self.migrate_as_source(
+                    migration_id,
+                    task,
+                    start_tx,
+                    command_rx,
+                    response_tx,
+                );
+                HandleEventOutcome::Continue
+            }
             ExternalRequest::Stop => {
                 self.do_halt();
                 HandleEventOutcome::Exit
@@ -231,7 +238,7 @@ where
         }
     }
 
-    fn start_vm(&mut self, reset_required: bool) -> anyhow::Result<()> {
+    fn start_vm(&mut self, reset_required: bool) {
         info!(self.log, "Starting instance"; "reset" => reset_required);
 
         // Requests to start should put the instance into the 'starting' stage.
@@ -242,10 +249,16 @@ where
             self.reset_vcpus();
         }
 
-        self.controller.start_entities()?;
-        self.vcpu_tasks.resume_all();
-        self.publish_running_state();
-        Ok(())
+        match self.controller.start_entities() {
+            Ok(()) => {
+                self.vcpu_tasks.resume_all();
+                self.publish_steady_state(ApiInstanceState::Running);
+            }
+            Err(e) => {
+                error!(&self.log, "Failed to start entities: {:?}", e);
+                self.publish_steady_state(ApiInstanceState::Failed);
+            }
+        }
     }
 
     fn do_reboot(&mut self) {
@@ -305,7 +318,7 @@ where
         mut task: tokio::task::JoinHandle<Result<(), MigrateError>>,
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    ) -> HandleEventOutcome {
+    ) {
         self.update_external_state(ApiInstanceState::Migrating);
 
         // Ensure the VM's vCPUs are activated properly so that they can enter
@@ -315,7 +328,6 @@ where
         self.reset_vcpus();
 
         start_tx.send(()).unwrap();
-        let mut finished = false;
         loop {
             let action = self.runtime_hdl.block_on(async {
                 Self::next_migrate_task_event(
@@ -328,46 +340,32 @@ where
 
             match action {
                 MigrateTaskEvent::TaskExited(res) => {
-                    // If the task finished successfully but didn't signal that
-                    // it finished its work, something is amiss.
-                    assert_eq!(finished, res.is_ok());
-
                     if res.is_ok() {
-                        self.start_vm(false)
-                            .expect("failed to start VM after migrating");
-                        self.set_migration_state(
-                            migration_id,
-                            ApiMigrationState::Finish,
-                        );
-                    } else {
-                        self.shared_state
-                            .inner
-                            .lock()
-                            .unwrap()
-                            .external_request_queue
-                            .notify_instance_state_change(
-                                request_queue::InstanceStateChange::Failed,
-                            );
-                    }
+                        // Clients that observe that migration has finished
+                        // need to observe that the instance is running before
+                        // they are guaranteed to be able to do anything else
+                        // that requires a running instance.
+                        assert!(matches!(
+                            self.get_migration_state(),
+                            Some((_, ApiMigrationState::Finish))
+                        ));
 
-                    return HandleEventOutcome::Continue;
+                        self.start_vm(false);
+                    } else {
+                        assert!(matches!(
+                            self.get_migration_state(),
+                            Some((_, ApiMigrationState::Error))
+                        ));
+
+                        self.publish_steady_state(ApiInstanceState::Failed);
+                    };
+
+                    break;
                 }
                 MigrateTaskEvent::Command(
                     MigrateTargetCommand::UpdateState(state),
                 ) => {
-                    // The "finished" state must always arrive last.
-                    assert!(!finished);
-
-                    // Do not publish the "finished" state from this point;
-                    // instead, let the migration complete and return success to
-                    // the caller so that it can decide when to publish this
-                    // state relative to other changes to the VM's lifecycle
-                    // stage.
-                    if matches!(state, ApiMigrationState::Finish) {
-                        finished = true;
-                    } else {
-                        self.set_migration_state(migration_id, state);
-                    }
+                    self.set_migration_state(migration_id, state);
                 }
             }
         }
@@ -380,7 +378,7 @@ where
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
         response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
-    ) -> HandleEventOutcome {
+    ) {
         self.update_external_state(ApiInstanceState::Migrating);
         start_tx.send(()).unwrap();
 
@@ -403,28 +401,32 @@ where
                 // If migration failed while entities were paused, this instance
                 // is allowed to resume, so resume its components here.
                 MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_err() {
-                        if self.paused {
-                            self.controller.resume_entities();
-                            self.vcpu_tasks.resume_all();
-                            self.paused = false;
-                            self.publish_running_state();
-                            self.set_migration_state(
-                                migration_id,
-                                ApiMigrationState::Error,
-                            );
-                        }
-                    } else {
-                        self.shared_state
-                            .queue_external_request(ExternalRequest::Stop)
-                            .expect("can always queue a request to stop");
-
+                    if res.is_ok() {
                         assert!(matches!(
                             self.get_migration_state(),
                             Some((_, ApiMigrationState::Finish))
                         ));
+
+                        self.shared_state
+                            .queue_external_request(ExternalRequest::Stop)
+                            .expect("can always queue a request to stop");
+                    } else {
+                        assert!(matches!(
+                            self.get_migration_state(),
+                            Some((_, ApiMigrationState::Error))
+                        ));
+
+                        if self.paused {
+                            self.controller.resume_entities();
+                            self.vcpu_tasks.resume_all();
+                            self.paused = false;
+                            self.publish_steady_state(
+                                ApiInstanceState::Running,
+                            );
+                        }
                     }
-                    return HandleEventOutcome::Continue;
+
+                    break;
                 }
                 MigrateTaskEvent::Command(cmd) => match cmd {
                     MigrateSourceCommand::UpdateState(state) => {
@@ -477,21 +479,37 @@ where
         self.controller.reset_vcpu_state();
     }
 
-    fn publish_running_state(&mut self) {
+    fn publish_steady_state(&mut self, state: ApiInstanceState) {
+        let change = match state {
+            ApiInstanceState::Running => {
+                request_queue::InstanceStateChange::Running
+            }
+            ApiInstanceState::Stopped => {
+                request_queue::InstanceStateChange::Stopped
+            }
+            ApiInstanceState::Failed => {
+                request_queue::InstanceStateChange::Failed
+            }
+            _ => panic!(
+                "Called publish_steady_state on non-terminal state {:?}",
+                state
+            ),
+        };
+
         self.shared_state
             .inner
             .lock()
             .unwrap()
             .external_request_queue
-            .notify_instance_state_change(
-                request_queue::InstanceStateChange::Running,
-            );
-        self.update_external_state(ApiInstanceState::Running);
+            .notify_instance_state_change(change);
+
+        self.update_external_state(state);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use anyhow::bail;
     use mockall::Sequence;
 
     use super::*;
@@ -681,6 +699,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn entity_start_failure_causes_instance_failure() {
+        let mut test_objects = make_default_mocks();
+        let vm_ctrl = &mut test_objects.vm_ctrl;
+        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
+        let mut seq = Sequence::new();
+        vcpu_ctrl
+            .expect_new_generation()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_reset_vcpu_state()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_start_entities()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| bail!("injected failure into start_entities!"));
+
+        let mut driver = make_state_driver(test_objects);
+
+        // Failure allows the instance to be preserved for debugging.
+        assert_eq!(
+            driver.driver.handle_event(StateDriverEvent::External(
+                ExternalRequest::Start
+            )),
+            HandleEventOutcome::Continue
+        );
+
+        assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
+    }
+
+    #[tokio::test]
     async fn entities_pause_before_halting() {
         let mut test_objects = make_default_mocks();
         let vm_ctrl = &mut test_objects.vm_ctrl;
@@ -781,11 +834,89 @@ mod tests {
             .await
             .unwrap();
 
+        // The migration should appear to have finished. The state driver will
+        // queue a "stop" command to itself in this case, but because the driver
+        // is not directly processing the queue here, the test has to issue this
+        // call itself.
+        assert!(matches!(
+            driver.driver.get_migration_state(),
+            Some((id, ApiMigrationState::Finish)) if id == migration_id
+        ));
+
         driver
             .driver
             .handle_event(StateDriverEvent::External(ExternalRequest::Stop));
 
         assert!(matches!(driver.api_state(), ApiInstanceState::Stopped));
+    }
+
+    #[tokio::test]
+    async fn paused_vm_resumes_after_failed_migration_out() {
+        let migration_id = Uuid::new_v4();
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel(1);
+        let migrate_task = tokio::spawn(async move {
+            start_rx.await.unwrap();
+            task_exit_rx.await.unwrap()
+        });
+
+        let mut test_objects = make_default_mocks();
+        let vm_ctrl = &mut test_objects.vm_ctrl;
+        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
+
+        // This test will simulate a migration out up through pausing the
+        // source, then fail migration. This should pause and resume all the
+        // entities and the vCPUs.
+        vm_ctrl.expect_pause_entities().times(1).returning(|| ());
+        vm_ctrl.expect_resume_entities().times(1).returning(|| ());
+        vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
+        vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
+
+        let mut driver = make_state_driver(test_objects);
+        let hdl = std::thread::spawn(move || {
+            let outcome = driver.driver.handle_event(
+                StateDriverEvent::External(ExternalRequest::MigrateAsSource {
+                    migration_id,
+                    task: migrate_task,
+                    start_tx,
+                    command_rx,
+                    response_tx,
+                }),
+            );
+
+            (driver, outcome)
+        });
+
+        // Simulate a successful pause.
+        command_tx.send(MigrateSourceCommand::Pause).await.unwrap();
+        let resp = response_rx.recv().await.unwrap();
+        assert!(matches!(resp, MigrateSourceResponse::Pause(Ok(()))));
+
+        // Simulate failure. The migration protocol must both update the state
+        // to Error and make the task return `Err`.
+        command_tx
+            .send(MigrateSourceCommand::UpdateState(ApiMigrationState::Error))
+            .await
+            .unwrap();
+        drop(command_tx);
+        task_exit_tx.send(Err(MigrateError::UnexpectedMessage)).unwrap();
+
+        // Wait for the call to `handle_event` to return.
+        let (driver, outcome) =
+            tokio::task::spawn_blocking(move || hdl.join().unwrap())
+                .await
+                .unwrap();
+
+        // The VM should be running and the state driver should continue
+        // operating normally.
+        assert!(matches!(driver.api_state(), ApiInstanceState::Running));
+        assert_eq!(outcome, HandleEventOutcome::Continue);
+        assert!(matches!(
+            driver.driver.get_migration_state(),
+            Some((id, ApiMigrationState::Error)) if id == migration_id
+        ));
     }
 
     #[tokio::test]
@@ -841,6 +972,137 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(matches!(
+            driver.driver.get_migration_state(),
+            Some((id, ApiMigrationState::Finish)) if id == migration_id
+        ));
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));
+    }
+
+    #[tokio::test]
+    async fn failed_migration_in_fails_instance() {
+        let migration_id = Uuid::new_v4();
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+        let migrate_task = tokio::spawn(async move {
+            start_rx.await.unwrap();
+            task_exit_rx.await.unwrap()
+        });
+
+        let mut test_objects = make_default_mocks();
+        let vm_ctrl = &mut test_objects.vm_ctrl;
+        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
+
+        vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
+        vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
+        let mut driver = make_state_driver(test_objects);
+
+        // The state driver expects to run on an OS thread outside the async
+        // runtime so that it can call `block_on` to wait for messages from the
+        // migration task.
+        let hdl = std::thread::spawn(move || {
+            let outcome = driver.driver.handle_event(
+                StateDriverEvent::External(ExternalRequest::MigrateAsTarget {
+                    migration_id,
+                    task: migrate_task,
+                    start_tx,
+                    command_rx,
+                }),
+            );
+
+            (driver, outcome)
+        });
+
+        // The migration task is required to update the migration state to
+        // "Error" before exiting when migration fails.
+        command_tx
+            .send(MigrateTargetCommand::UpdateState(ApiMigrationState::Error))
+            .await
+            .unwrap();
+        drop(command_tx);
+        task_exit_tx.send(Err(MigrateError::UnexpectedMessage)).unwrap();
+
+        // Wait for the call to `handle_event` to return.
+        let (driver, outcome) =
+            tokio::task::spawn_blocking(move || hdl.join().unwrap())
+                .await
+                .unwrap();
+
+        // The migration should appear to have failed, but the VM should be
+        // preserved for debugging.
+        assert_eq!(outcome, HandleEventOutcome::Continue);
+        assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
+        assert!(matches!(
+            driver.driver.get_migration_state(),
+            Some((id, ApiMigrationState::Error)) if id == migration_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_vm_start_after_migration_in_fails_instance() {
+        let migration_id = Uuid::new_v4();
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+        let migrate_task = tokio::spawn(async move {
+            start_rx.await.unwrap();
+            task_exit_rx.await.unwrap()
+        });
+
+        let mut test_objects = make_default_mocks();
+        let vm_ctrl = &mut test_objects.vm_ctrl;
+        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
+
+        vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
+        vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
+        vm_ctrl
+            .expect_start_entities()
+            .times(1)
+            .returning(|| bail!("injected failure into start_entities!"));
+
+        let mut driver = make_state_driver(test_objects);
+
+        // The state driver expects to run on an OS thread outside the async
+        // runtime so that it can call `block_on` to wait for messages from the
+        // migration task.
+        let hdl = std::thread::spawn(move || {
+            let outcome = driver.driver.handle_event(
+                StateDriverEvent::External(ExternalRequest::MigrateAsTarget {
+                    migration_id,
+                    task: migrate_task,
+                    start_tx,
+                    command_rx,
+                }),
+            );
+
+            (driver, outcome)
+        });
+
+        // Explicitly drop the command channel to signal to the driver that
+        // the migration task is completing.
+        command_tx
+            .send(MigrateTargetCommand::UpdateState(ApiMigrationState::Finish))
+            .await
+            .unwrap();
+        drop(command_tx);
+        task_exit_tx.send(Ok(())).unwrap();
+
+        // Wait for the call to `handle_event` to return.
+        let (driver, outcome) =
+            tokio::task::spawn_blocking(move || hdl.join().unwrap())
+                .await
+                .unwrap();
+
+        // The instance should have failed, but should also be preserved for
+        // debugging.
+        assert_eq!(outcome, HandleEventOutcome::Continue);
+        assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
+
+        // The migration has still succeeded in this case.
+        assert!(matches!(
+            driver.driver.get_migration_state(),
+            Some((id, ApiMigrationState::Finish)) if id == migration_id
+        ));
     }
 }
