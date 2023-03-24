@@ -832,12 +832,8 @@ mod tests {
         // call itself.
         assert!(matches!(
             driver.driver.get_migration_state(),
-            Some((_, ApiMigrationState::Finish))
+            Some((id, ApiMigrationState::Finish)) if id == migration_id
         ));
-        assert_eq!(
-            driver.driver.get_migration_state().unwrap().0,
-            migration_id
-        );
 
         driver
             .driver
@@ -911,12 +907,8 @@ mod tests {
         assert_eq!(outcome, HandleEventOutcome::Continue);
         assert!(matches!(
             driver.driver.get_migration_state(),
-            Some((_, ApiMigrationState::Error))
+            Some((id, ApiMigrationState::Error)) if id == migration_id
         ));
-        assert_eq!(
-            driver.driver.get_migration_state().unwrap().0,
-            migration_id
-        );
     }
 
     #[tokio::test]
@@ -974,12 +966,8 @@ mod tests {
 
         assert!(matches!(
             driver.driver.get_migration_state(),
-            Some((_, ApiMigrationState::Finish))
+            Some((id, ApiMigrationState::Finish)) if id == migration_id
         ));
-        assert_eq!(
-            driver.driver.get_migration_state().unwrap().0,
-            migration_id
-        );
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));
     }
 
@@ -1040,12 +1028,8 @@ mod tests {
         assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
         assert!(matches!(
             driver.driver.get_migration_state(),
-            Some((_, ApiMigrationState::Error))
+            Some((id, ApiMigrationState::Error)) if id == migration_id
         ));
-        assert_eq!(
-            driver.driver.get_migration_state().unwrap().0,
-            migration_id
-        );
     }
 
     #[tokio::test]
@@ -1111,11 +1095,7 @@ mod tests {
         // The migration has still succeeded in this case.
         assert!(matches!(
             driver.driver.get_migration_state(),
-            Some((_, ApiMigrationState::Finish))
+            Some((id, ApiMigrationState::Finish)) if id == migration_id
         ));
-        assert_eq!(
-            driver.driver.get_migration_state().unwrap().0,
-            migration_id
-        );
     }
 }
