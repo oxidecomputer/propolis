@@ -1,6 +1,7 @@
 // Required for USDT
 #![cfg_attr(usdt_need_asm, feature(asm))]
 #![cfg_attr(all(target_os = "macos", usdt_need_asm_sym), feature(asm_sym))]
+#![cfg_attr(feature = "mock-only", allow(unused))]
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
@@ -15,10 +16,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(feature = "mock-only")]
-use propolis_server::mock_server;
-use propolis_server::server::MetricsEndpointConfig;
-use propolis_server::vnc::setup_vnc;
-use propolis_server::{config, server};
+use propolis_server::mock_server as server;
+
+cfg_if::cfg_if! {
+    if #[cfg(not(feature = "mock-only"))] {
+        use propolis_server::server::{self, MetricsEndpointConfig};
+        use propolis_server::vnc::setup_vnc;
+    }
+}
+
+use propolis_server::config;
 
 #[derive(Debug, Parser)]
 #[clap(about, version)]
@@ -86,30 +93,32 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            // Check that devices conform to expected API version
-            propolis::api_version::check().context("API version checks")?;
+            let context;
+            cfg_if::cfg_if! {
+                if #[cfg(not(feature = "mock-only"))] {
+                    // Check that devices conform to expected API version
+                    propolis::api_version::check().context("API version checks")?;
 
-            let vnc_server = setup_vnc(&log, vnc_addr);
-            let vnc_server_hdl = vnc_server.clone();
-            let use_reservoir = config::reservoir_decide(&log);
+                    let vnc_server = setup_vnc(&log, vnc_addr);
+                    let vnc_server_hdl = vnc_server.clone();
+                    let use_reservoir = config::reservoir_decide(&log);
 
-            let metric_config = metric_addr.map(|addr| {
-                let imc = MetricsEndpointConfig::new(propolis_addr, addr);
-                info!(log, "Metrics server will use {:?}", imc);
-                imc
-            });
-
-            #[cfg(feature = "mock-only")]
-            let context =
-                mock_server::Context::new(config, log.new(slog::o!()));
-            #[cfg(not(feature = "mock-only"))]
-            let context = server::DropshotEndpointContext::new(
-                config,
-                vnc_server,
-                use_reservoir,
-                log.new(slog::o!()),
-                metric_config,
-            );
+                    let metric_config = metric_addr.map(|addr| {
+                        let imc = MetricsEndpointConfig::new(propolis_addr, addr);
+                        info!(log, "Metrics server will use {:?}", imc);
+                        imc
+                    });
+                    context = server::DropshotEndpointContext::new(
+                        config,
+                        vnc_server,
+                        use_reservoir,
+                        log.new(slog::o!()),
+                        metric_config,
+                    );
+                } else {
+                    context = server::Context::new(config, log.new(slog::o!()));
+                }
+            }
 
             info!(log, "Starting server...");
 
@@ -122,7 +131,14 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|error| anyhow!("Failed to start server: {}", error))?
             .start();
 
-            let server_res = join!(server, vnc_server_hdl.start()).0;
+            let server_res;
+            cfg_if::cfg_if! {
+                if #[cfg(not(feature = "mock-only"))] {
+                    server_res = join!(server, vnc_server_hdl.start()).0;
+                } else {
+                    server_res = server.await;
+                }
+            };
             server_res
                 .map_err(|e| anyhow!("Server exited with an error: {}", e))
         }

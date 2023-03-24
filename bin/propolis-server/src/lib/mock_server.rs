@@ -331,34 +331,39 @@ async fn instance_serial(
     )
     .await;
 
-    let instance_mtx = rqctx.context().instance.lock().await;
-    if instance_mtx.as_ref().unwrap().state != api::InstanceState::Running {
-        ws_stream.send(Message::Close(None)).await?;
-        return Err("Instance isn't running!".into());
-    }
+    match rqctx.context().instance.lock().await.as_ref() {
+        None => {
+            ws_stream.send(Message::Close(None)).await?;
+            Err("Instance not yet created!".into())
+        }
+        Some(InstanceContext { state, .. })
+            if *state != api::InstanceState::Running =>
+        {
+            ws_stream.send(Message::Close(None)).await?;
+            Err(format!("Instance isn't Running! ({:?})", state).into())
+        }
+        Some(instance_ctx) => {
+            let serial = instance_ctx.serial.clone();
 
-    let serial = instance_mtx.as_ref().unwrap().serial.clone();
-
-    let byte_offset = SerialHistoryOffset::try_from(&query.into_inner()).ok();
-    if let Some(mut byte_offset) = byte_offset {
-        loop {
-            let (data, offset) = serial.history_vec(byte_offset, None).await?;
-            if data.is_empty() {
-                break;
+            let byte_offset =
+                SerialHistoryOffset::try_from(&query.into_inner()).ok();
+            if let Some(mut byte_offset) = byte_offset {
+                loop {
+                    let (data, offset) =
+                        serial.history_vec(byte_offset, None).await?;
+                    if data.is_empty() {
+                        break;
+                    }
+                    ws_stream.send(Message::Binary(data)).await?;
+                    byte_offset = SerialHistoryOffset::FromStart(offset);
+                }
             }
-            ws_stream.send(Message::Binary(data)).await?;
-            byte_offset = SerialHistoryOffset::FromStart(offset);
+
+            instance_ctx.serial_task.websocks_ch.send(ws_stream).await.map_err(
+                |e| format!("Serial socket hand-off failed: {}", e).into(),
+            )
         }
     }
-
-    instance_mtx
-        .as_ref()
-        .unwrap()
-        .serial_task
-        .websocks_ch
-        .send(ws_stream)
-        .await
-        .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
 }
 
 #[endpoint {
