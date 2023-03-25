@@ -1,5 +1,6 @@
 //! Routines to expose a connection to an instance's serial port.
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::chardev::{pollers, Sink, Source};
-use slog::{info, Logger};
+use slog::{info, warn, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, RwLock as AsyncRwLock};
 use tokio::task::JoinHandle;
@@ -45,6 +46,9 @@ pub enum SerialTaskError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Mismatched websocket streams while closing")]
+    MismatchedStreams,
 }
 
 pub struct SerialTask {
@@ -67,13 +71,18 @@ pub async fn instance_serial_task<Device: Sink + Source>(
     let mut cur_output: Option<Range<usize>> = None;
     let mut cur_input: Option<(Vec<u8>, usize)> = None;
 
-    let mut ws_sinks: Vec<SplitSink<WebSocketStream<Upgraded>, Message>> =
-        Vec::new();
-    let mut ws_streams: Vec<
+    let mut ws_sinks: HashMap<
+        usize,
+        SplitSink<WebSocketStream<Upgraded>, Message>,
+    > = HashMap::new();
+    let mut ws_streams: HashMap<
+        usize,
         futures::stream::SplitStream<WebSocketStream<Upgraded>>,
-    > = Vec::new();
+    > = HashMap::new();
 
     let (send_ch, mut recv_ch) = mpsc::channel(4);
+
+    let mut next_stream_id = 0usize;
 
     loop {
         let (uart_read, ws_send) =
@@ -89,7 +98,7 @@ pub async fn instance_serial_task<Device: Sink + Source>(
                                 Vec::from(&output[range]),
                             )),
                         )
-                        .for_each_concurrent(4, |(ws, bin)| {
+                        .for_each_concurrent(4, |((_i, ws), bin)| {
                             ws.send(Message::binary(bin)).map(|_| ())
                         })
                         .fuse()
@@ -102,15 +111,10 @@ pub async fn instance_serial_task<Device: Sink + Source>(
         let (ws_recv, uart_write) = match &cur_input {
             None => (
                 if !ws_streams.is_empty() {
-                    futures::stream::iter(ws_streams.iter_mut().enumerate())
+                    futures::stream::iter(ws_streams.iter_mut())
                         .for_each_concurrent(4, |(i, ws)| {
-                            // if we don't `move` below, rustc says that `i`
-                            // (which is usize: Copy (!)) is borrowed. but if we
-                            // move without making this explicit reference here,
-                            // it moves send_ch into the closure.
-                            let ch = &send_ch;
                             ws.next()
-                                .then(move |msg| ch.send((i, msg)))
+                                .then(|msg| send_ch.send((*i, msg)))
                                 .map(|_| ())
                         })
                         .fuse()
@@ -138,8 +142,9 @@ pub async fn instance_serial_task<Device: Sink + Source>(
             _ = &mut close_recv => {
                 probes::serial_close_recv!(|| {});
                 // Gracefully close the connections to any clients
-                for ws in ws_sinks.into_iter().zip(ws_streams) {
-                    let mut ws = ws.0.reunite(ws.1).unwrap();
+                for (i, ws0) in ws_sinks.into_iter() {
+                    let ws1 = ws_streams.remove(&i).ok_or(SerialTaskError::MismatchedStreams)?;
+                    let mut ws = ws0.reunite(ws1).map_err(|_| SerialTaskError::MismatchedStreams)?;
                     let _ = ws.close(Some(CloseFrame {
                         code: CloseCode::Away,
                         reason: "VM stopped".into(),
@@ -153,8 +158,9 @@ pub async fn instance_serial_task<Device: Sink + Source>(
                 probes::serial_new_ws!(|| {});
                 if let Some(ws) = new_ws {
                     let (ws_sink, ws_stream) = ws.split();
-                    ws_sinks.push(ws_sink);
-                    ws_streams.push(ws_stream);
+                    ws_sinks.insert(next_stream_id, ws_sink);
+                    ws_streams.insert(next_stream_id, ws_stream);
+                    next_stream_id += 1;
                 }
             }
 
@@ -209,9 +215,12 @@ pub async fn instance_serial_task<Device: Sink + Source>(
                             cur_input = Some((input, 0));
                         }
                         Some(Ok(Message::Close(..))) | None => {
-                            info!(log, "Removed a closed serial connection.");
-                            let _ = ws_sinks.remove(i).close().await;
-                            let _ = ws_streams.remove(i);
+                            info!(log, "Removing closed serial connection {}.", i);
+                            let sink = ws_sinks.remove(&i).ok_or(SerialTaskError::MismatchedStreams)?;
+                            let stream = ws_streams.remove(&i).ok_or(SerialTaskError::MismatchedStreams)?;
+                            if let Err(e) = sink.reunite(stream).map_err(|_| SerialTaskError::MismatchedStreams)?.close(None).await {
+                                warn!(log, "Failed while closing stream {}: {}", i, e);
+                            }
                         },
                         _ => continue,
                     }
