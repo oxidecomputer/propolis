@@ -1,9 +1,3 @@
-// Required for USDT
-#![cfg_attr(
-    all(feature = "dtrace-probes", target_os = "macos"),
-    feature(asm_sym)
-)]
-
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
