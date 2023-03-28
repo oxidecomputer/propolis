@@ -330,7 +330,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         self.send_msg(codec::Message::Okay).await?;
 
         // Wait for the source to acknowledge that it's handing control to this
-        // destination. If this acknolwedgement doesn't arrive, there's no way
+        // destination. If this acknowledgement doesn't arrive, there's no way
         // to be sure the source hasn't decided the migration has failed and
         // that it should resume the VM.
         self.read_ok().await?;
