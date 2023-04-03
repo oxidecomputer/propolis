@@ -59,6 +59,7 @@ impl InstanceContext {
             watch::channel(api::InstanceStateMonitorResponse {
                 gen: 0,
                 state: api::InstanceState::Creating,
+                migration: None,
             });
         let mock_uart = Arc::new(MockUart::new(&properties.name));
         let sink_size = NonZeroUsize::new(64).unwrap();
@@ -126,6 +127,7 @@ impl InstanceContext {
                         .send(api::InstanceStateMonitorResponse {
                             gen: self.generation,
                             state: self.state.clone(),
+                            migration: None,
                         })
                         .map_err(|_| Error::TransitionSendFail)
                 }
@@ -284,6 +286,7 @@ async fn instance_state_monitor(
             let response = api::InstanceStateMonitorResponse {
                 gen: last.gen,
                 state: last.state,
+                migration: None,
             };
             return Ok(HttpResponseOk(response));
         }

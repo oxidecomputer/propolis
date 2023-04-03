@@ -160,13 +160,8 @@ pub(crate) struct VmObjects {
     crucible_backends: BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>,
 
     /// A notification receiver to which the state worker publishes the most
-    /// recent instance state and state generation.
+    /// recent instance state information.
     monitor_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
-
-    /// The receiver side of the monitor that publishes the most recent
-    /// migration status for this VM.
-    migrate_state_rx:
-        tokio::sync::watch::Receiver<Option<(Uuid, ApiMigrationState)>>,
 }
 
 /// A message sent from a live migration destination task to update the
@@ -410,8 +405,8 @@ impl VmController {
             tokio::sync::watch::channel(ApiMonitoredState {
                 gen: 0,
                 state: ApiInstanceState::Creating,
+                migration: None,
             });
-        let (migrate_tx, migrate_rx) = tokio::sync::watch::channel(None);
 
         let worker_state = Arc::new(SharedVmState::new(&log));
 
@@ -465,7 +460,6 @@ impl VmController {
                 ps2ctrl,
                 crucible_backends,
                 monitor_rx,
-                migrate_state_rx: migrate_rx,
             },
             worker_state,
             worker_thread: Mutex::new(None),
@@ -490,7 +484,6 @@ impl VmController {
                     vcpu_tasks,
                     log_for_worker,
                     monitor_tx,
-                    migrate_tx,
                 );
 
                 let monitor_tx = driver.run_state_worker();
@@ -566,12 +559,6 @@ impl VmController {
         &self,
     ) -> &tokio::sync::watch::Receiver<ApiMonitoredState> {
         &self.vm_objects.monitor_rx
-    }
-
-    pub fn migrate_state_watcher(
-        &self,
-    ) -> &tokio::sync::watch::Receiver<Option<(Uuid, ApiMigrationState)>> {
-        &self.vm_objects.migrate_state_rx
     }
 
     /// Asks to queue a request to start a source migration task for this VM.
@@ -764,10 +751,10 @@ impl VmController {
         // If the state worker has published migration state with a matching ID,
         // report the status from the worker. Note that this call to `borrow`
         // takes a lock on the channel.
-        let published = self.vm_objects.migrate_state_rx.borrow();
-        if let Some((id, state)) = *published {
-            if id == migration_id {
-                return Ok(state);
+        let published = self.vm_objects.monitor_rx.borrow();
+        if let Some(status) = &published.migration {
+            if status.migration_id == migration_id {
+                return Ok(status.state);
             }
         }
         drop(published);
@@ -821,20 +808,20 @@ impl Drop for VmController {
         // that the controller is being destroyed.
         if let Some(thread) = self.worker_thread.lock().unwrap().take() {
             let api_state = thread.join().unwrap();
-            let (gen, state) = {
-                let borrowed = api_state.borrow();
-                (borrowed.gen, borrowed.state)
-            };
+            let old_state = api_state.borrow().clone();
 
             // Preserve the instance's state if it failed so that clients can
             // distinguish gracefully-stopped instances from failed instances.
-            if !matches!(state, ApiInstanceState::Failed) {
-                let gen = gen + 1;
-                let _ = api_state.send(ApiMonitoredState {
-                    gen,
-                    state: ApiInstanceState::Destroyed,
-                });
+            if matches!(old_state.state, ApiInstanceState::Failed) {
+                return;
             }
+
+            let gen = old_state.gen + 1;
+            let _ = api_state.send(ApiMonitoredState {
+                gen,
+                state: ApiInstanceState::Destroyed,
+                ..old_state
+            });
         }
     }
 }

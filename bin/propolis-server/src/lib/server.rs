@@ -29,7 +29,6 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
-use uuid::Uuid;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
@@ -106,13 +105,6 @@ pub enum VmControllerState {
         /// continue running for a time).
         state_watcher:
             tokio::sync::watch::Receiver<api::InstanceStateMonitorResponse>,
-
-        /// A clone of the receiver side of the former VM controller's migration
-        /// status channel, used to serve queries for migration status after an
-        /// instance is destroyed. (These are common because an instance stops
-        /// itself after successfully migrating out.)
-        migrate_state_watcher:
-            tokio::sync::watch::Receiver<Option<(Uuid, api::MigrationState)>>,
     },
 }
 
@@ -147,14 +139,12 @@ impl VmControllerState {
             // all references to the VM have been dropped, including the one
             // this routine just exchanged and will return.
             let state_watcher = vm.state_watcher().clone();
-            let migrate_state_watcher = vm.migrate_state_watcher().clone();
             if let VmControllerState::Created(vm) = std::mem::replace(
                 self,
                 VmControllerState::Destroyed {
                     last_instance,
                     last_instance_spec: Box::new(last_instance_spec),
                     state_watcher,
-                    migrate_state_watcher,
                 },
             ) {
                 Some(vm)
@@ -814,17 +804,20 @@ async fn instance_migrate_status(
         )),
         VmControllerState::Created(vm) => {
             vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
-                HttpResponseOk(api::InstanceMigrateStatusResponse { state })
+                HttpResponseOk(api::InstanceMigrateStatusResponse {
+                    migration_id,
+                    state,
+                })
             })
         }
-        VmControllerState::Destroyed { migrate_state_watcher, .. } => {
-            let watcher = migrate_state_watcher.borrow();
-            match *watcher {
+        VmControllerState::Destroyed { state_watcher, .. } => {
+            let watcher = state_watcher.borrow();
+            match &watcher.migration {
                 None => Err((MigrateError::NoMigrationInProgress).into()),
-                Some((id, state)) if id == migration_id => {
-                    Ok(HttpResponseOk(api::InstanceMigrateStatusResponse {
-                        state,
-                    }))
+                Some(migration_status)
+                    if migration_status.migration_id == migration_id =>
+                {
+                    Ok(HttpResponseOk(migration_status.clone()))
                 }
                 Some(_) => Err((MigrateError::UuidMismatch).into()),
             }

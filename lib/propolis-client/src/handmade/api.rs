@@ -74,8 +74,9 @@ pub struct InstanceMigrateStatusRequest {
     pub migration_id: Uuid,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceMigrateStatusResponse {
+    pub migration_id: Uuid,
     pub state: MigrationState,
 }
 
@@ -124,6 +125,7 @@ pub struct InstanceStateMonitorRequest {
 pub struct InstanceStateMonitorResponse {
     pub gen: u64,
     pub state: InstanceState,
+    pub migration: Option<InstanceMigrateStatusResponse>,
 }
 
 /// Requested state of an Instance.
