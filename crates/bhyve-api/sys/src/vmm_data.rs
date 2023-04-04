@@ -191,9 +191,24 @@ impl Default for vdi_rtc_v1 {
 
 // VDC_VMM_ARCH v1 data identifiers
 
+// VM-wide:
+
 /// Offset of guest TSC from system at time of boot
 pub const VAI_TSC_BOOT_OFFSET: u32 = 1;
 /// Time that guest (nominally) booted, as hrtime
 pub const VAI_BOOT_HRTIME: u32 = 2;
 /// Guest TSC frequency measured by hrtime (not effected by wall clock adj.)
 pub const VAI_TSC_FREQ: u32 = 3;
+/// Guest instance has been placed in paused state
+pub const VAI_VM_IS_PAUSED: u32 = 4;
+
+// per-vCPU
+
+/// NMI pending injection for vCPU (0 or 1)
+pub const VAI_PEND_NMI: u32 = 10;
+/// extint pending injection for vCPU (0 or 1)
+pub const VAI_PEND_EXTINT: u32 = 11;
+/// HW exception pending injection for vCPU
+pub const VAI_PEND_EXCP: u32 = 12;
+/// exception/interrupt pending injection for vCPU
+pub const VAI_PEND_INTINFO: u32 = 13;

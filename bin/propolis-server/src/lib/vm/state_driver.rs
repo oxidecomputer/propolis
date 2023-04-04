@@ -274,6 +274,10 @@ where
                     self.get_instance_state(),
                     ApiInstanceState::Migrating
                 );
+                // Signal the kernel VMM to resume devices which are handled by
+                // the in-kernel emulation.  They were kept paused for
+                // consistency while migration state was loaded.
+                self.controller.resume_vm();
             }
         }
 
@@ -346,6 +350,10 @@ where
         // to start so that reset doesn't overwrite any state written by
         // migration.
         self.reset_vcpus();
+
+        // Place the VM in a paused state so we can load emulated device state
+        // in a consistent manner
+        self.controller.pause_vm();
 
         start_tx.send(()).unwrap();
         loop {
@@ -437,6 +445,7 @@ where
                         ));
 
                         if self.paused {
+                            self.controller.resume_vm();
                             self.controller.resume_entities();
                             self.vcpu_tasks.resume_all();
                             self.paused = false;
@@ -455,6 +464,7 @@ where
                     MigrateSourceCommand::Pause => {
                         self.vcpu_tasks.pause_all();
                         self.controller.pause_entities();
+                        self.controller.pause_vm();
                         self.paused = true;
                         response_tx
                             .blocking_send(MigrateSourceResponse::Pause(Ok(())))
@@ -810,6 +820,8 @@ mod tests {
         vm_ctrl.expect_halt_entities().times(1).returning(|| ());
         vm_ctrl.expect_resume_entities().never();
         vcpu_ctrl.expect_resume_all().never();
+        vm_ctrl.expect_pause_vm().times(1).returning(|| ());
+        vm_ctrl.expect_resume_vm().never();
 
         let mut driver = make_state_driver(test_objects);
 
@@ -893,6 +905,20 @@ mod tests {
         vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
 
+        // VMM will be paused once prior to exporting state, and then resumed
+        // afterwards when the migration fails.
+        let mut pause_seq = Sequence::new();
+        vm_ctrl
+            .expect_pause_vm()
+            .times(1)
+            .in_sequence(&mut pause_seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_resume_vm()
+            .times(1)
+            .in_sequence(&mut pause_seq)
+            .returning(|| ());
+
         let mut driver = make_state_driver(test_objects);
         let hdl = std::thread::spawn(move || {
             let outcome = driver.driver.handle_event(
@@ -961,6 +987,18 @@ mod tests {
         vm_ctrl.expect_start_entities().times(1).returning(|| Ok(()));
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
 
+        let mut pause_seq = Sequence::new();
+        vm_ctrl
+            .expect_pause_vm()
+            .times(1)
+            .in_sequence(&mut pause_seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_resume_vm()
+            .times(1)
+            .in_sequence(&mut pause_seq)
+            .returning(|| ());
+
         let mut driver = make_state_driver(test_objects);
 
         // The state driver expects to run on an OS thread outside the async
@@ -1021,6 +1059,8 @@ mod tests {
 
         vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
         vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
+        vm_ctrl.expect_pause_vm().times(1).returning(|| ());
+        vm_ctrl.expect_resume_vm().never();
         let mut driver = make_state_driver(test_objects);
 
         // The state driver expects to run on an OS thread outside the async
@@ -1084,6 +1124,19 @@ mod tests {
 
         vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
         vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
+
+        let mut pause_seq = Sequence::new();
+        vm_ctrl
+            .expect_pause_vm()
+            .times(1)
+            .in_sequence(&mut pause_seq)
+            .returning(|| ());
+        vm_ctrl
+            .expect_resume_vm()
+            .times(1)
+            .in_sequence(&mut pause_seq)
+            .returning(|| ());
+
         vm_ctrl
             .expect_start_entities()
             .times(1)
@@ -1147,6 +1200,14 @@ mod tests {
         // and entities without resetting anything.
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
         vm_ctrl.expect_start_entities().times(1).returning(|| Ok(()));
+
+        // As noted below, the instance state is being magicked directly into a
+        // `Migrating` state, rather than executing the logic which would
+        // typically carry it there.  As such, `pause_vm()` will not be called
+        // as part of setup.  Since instance start _is_ being tested here, the
+        // `resume_vm()` call is expected.
+        vm_ctrl.expect_pause_vm().never();
+        vm_ctrl.expect_resume_vm().times(1).returning(|| ());
 
         // Skip the rigmarole of standing up a fake migration. Instead, just
         // push the driver into the state it would have after a successful

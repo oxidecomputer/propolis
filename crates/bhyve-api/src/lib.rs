@@ -3,6 +3,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::os::fd::*;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use num_enum::IntoPrimitive;
 
@@ -193,19 +194,46 @@ impl AsRawFd for VmmFd {
     }
 }
 
-/// Check that bhyve kernel VMM component matches version underlying interfaces
-/// defined in bhyve-api.  Can use a user-provided version (via `version` arg)
-/// or the current one known to bhyve_api.
-pub fn check_version(version: Option<u32>) -> Result<bool> {
-    let ctl = VmmCtlFd::open()?;
-    let current_vers = unsafe {
-        ctl.ioctl(
-            ioctls::VMM_INTERFACE_VERSION,
-            std::ptr::null_mut() as *mut libc::c_void,
-        )
-    }?;
+/// Store a cached copy of the queried API version.  Negative values indicate an
+/// error occurred during query (and hold the corresponding negated `errno`).
+/// A positive value indicates the cached version, and should be less than
+/// `u32::MAX`.  A value of 0 indicates that no query has been performed yet.
+static VERSION_CACHE: AtomicI64 = AtomicI64::new(0);
 
-    Ok(current_vers as u32 == version.unwrap_or(VMM_CURRENT_INTERFACE_VERSION))
+/// Query the API version from the kernel VMM component on the system.
+///
+/// Caches said version (or any emitted error) for later calls.
+pub fn api_version() -> Result<u32> {
+    fn do_query() -> Result<u32> {
+        let ctl = VmmCtlFd::open()?;
+        let vers = ctl.api_version()?;
+        Ok(vers)
+    }
+
+    if VERSION_CACHE.load(Ordering::Acquire) == 0 {
+        let newval = match do_query() {
+            Ok(x) => x as i64,
+            Err(e) => -(e.raw_os_error().unwrap_or(libc::ENOENT) as i64),
+        };
+        let _ = VERSION_CACHE.compare_exchange(
+            0,
+            newval,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    match VERSION_CACHE.load(Ordering::Acquire) {
+        0 => {
+            panic!("expected VERSION_CACHE to be initialized")
+        }
+        x if x < 0 => Err(Error::from_raw_os_error(-x as i32)),
+        y => {
+            assert!(y < u32::MAX as i64);
+
+            Ok(y as u32)
+        }
+    }
 }
 
 #[cfg(target_os = "illumos")]
@@ -230,6 +258,10 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(IntoPrimitive)]
 pub enum ApiVersion {
+    /// Interrupt and exception state is properly saved/restored on VM
+    /// pause/resume, and is exposed via vmm-data interface
+    V10 = 10,
+
     /// Revamps ioctls for administrating the VMM memory reservoir and adds
     /// kstat for tracking its capacity and utilization.
     V9 = 9,
@@ -250,7 +282,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V9
+        Self::V10
     }
 }
 

@@ -271,13 +271,17 @@ pub mod migrate {
         /// TODO: do not use the bhyve_api type
         lapic: bhyve_api::vdi_lapic_v1,
         ms_regs: Vec<MsrEntryV1>,
-        // exception/interrupt state
     }
 
     #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct BhyveVcpuRunStateV1 {
-        state: u32,
-        sipi_vector: u8,
+        pub run_state: u32,
+        pub sipi_vector: u8,
+
+        pub pending_nmi: bool,
+        pub pending_extint: bool,
+        pub pending_exception: u64,
+        pub pending_intinfo: u64,
     }
 
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
@@ -351,12 +355,96 @@ pub mod migrate {
 
     impl BhyveVcpuRunStateV1 {
         fn read(vcpu: &Vcpu) -> io::Result<Self> {
-            let state = vcpu.get_run_state()?;
-            Ok(Self { state: state.state, sipi_vector: state.sipi_vector })
+            let run_state = vcpu.get_run_state()?;
+
+            let vmm_arch: Vec<bhyve_api::vdi_field_entry_v1> =
+                vmm::data::read_many(
+                    vcpu.hdl.as_ref(),
+                    vcpu.id,
+                    bhyve_api::VDC_VMM_ARCH,
+                    1,
+                )?;
+
+            // Load all of the pending interrupt/exception state
+            //
+            // If illumos#15143 support is missing, none of these fields will be
+            // present, so the values will remain false/zeroed.  Such an outcome
+            // is fine for now.
+            let (
+                mut pending_nmi,
+                mut pending_extint,
+                mut pending_exception,
+                mut pending_intinfo,
+            ) = (false, false, 0, 0);
+            for ent in vmm_arch.iter() {
+                match ent.vfe_ident {
+                    bhyve_api::VAI_PEND_NMI => pending_nmi = ent.vfe_value != 0,
+                    bhyve_api::VAI_PEND_EXTINT => {
+                        pending_extint = ent.vfe_value != 0
+                    }
+                    bhyve_api::VAI_PEND_EXCP => {
+                        pending_exception = ent.vfe_value
+                    }
+                    bhyve_api::VAI_PEND_INTINFO => {
+                        pending_intinfo = ent.vfe_value
+                    }
+                    _ => {}
+                }
+            }
+
+            Ok(Self {
+                run_state: run_state.state,
+                sipi_vector: run_state.sipi_vector,
+                pending_nmi,
+                pending_extint,
+                pending_exception,
+                pending_intinfo,
+            })
         }
 
         fn write(self, vcpu: &Vcpu) -> io::Result<()> {
-            vcpu.set_run_state(self.state, Some(self.sipi_vector))
+            vcpu.set_run_state(self.run_state, Some(self.sipi_vector))?;
+
+            let mut ents = [
+                vdi_field_entry_v1 {
+                    vfe_ident: bhyve_api::VAI_PEND_NMI,
+                    vfe_value: self.pending_nmi as u64,
+                    ..Default::default()
+                },
+                vdi_field_entry_v1 {
+                    vfe_ident: bhyve_api::VAI_PEND_EXTINT,
+                    vfe_value: self.pending_extint as u64,
+                    ..Default::default()
+                },
+                vdi_field_entry_v1 {
+                    vfe_ident: bhyve_api::VAI_PEND_EXCP,
+                    vfe_value: self.pending_exception,
+                    ..Default::default()
+                },
+                vdi_field_entry_v1 {
+                    vfe_ident: bhyve_api::VAI_PEND_INTINFO,
+                    vfe_value: self.pending_intinfo,
+                    ..Default::default()
+                },
+            ];
+
+            // Do not attempt to import interrupt/exception state unless there
+            // is proper support for it on the host we are running upon.
+            //
+            // When hosts with illumos#15143 integrated become common, the
+            // overall required version for propolis can grow to encompass V10
+            // and this check can be elided.
+            if bhyve_api::api_version()? >= bhyve_api::ApiVersion::V10 as u32 {
+                vmm::data::write_many(
+                    vcpu.hdl.as_ref(),
+                    vcpu.id,
+                    bhyve_api::VDC_VMM_ARCH,
+                    1,
+                    &mut ents,
+                )?;
+            }
+
+            Ok(())
         }
     }
 

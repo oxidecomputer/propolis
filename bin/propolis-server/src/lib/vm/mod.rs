@@ -843,6 +843,19 @@ enum StateDriverEvent {
 /// functionality.
 #[cfg_attr(test, mockall::automock)]
 trait StateDriverVmController {
+    /// Pause VM at the kernel VMM level, ensuring that in-kernel-emulated
+    /// devices and vCPUs are brought to a consistent state.
+    ///
+    /// When the VM is paused, attempts to run its vCPUs (via `VM_RUN` ioctl)
+    /// will fail.  A corresponding `resume_vm()` call must be made prior to
+    /// allowing vCPU tasks to run.
+    fn pause_vm(&self);
+
+    /// Resume a previously-paused VM at the kernel VMM level.  This will resume
+    /// any timers driving in-kernel-emulated devices, and allow the vCPU to run
+    /// again.
+    fn resume_vm(&self);
+
     /// Sends a reset request to each entity in the instance, then sends a
     /// reset command to the instance's bhyve VM.
     fn reset_entities_and_machine(&self);
@@ -865,6 +878,26 @@ trait StateDriverVmController {
 }
 
 impl StateDriverVmController for VmController {
+    fn pause_vm(&self) {
+        info!(self.log, "Pausing kernel VMM resources");
+        self.instance()
+            .lock()
+            .machine()
+            .hdl
+            .pause()
+            .expect("VM_PAUSE should succeed")
+    }
+
+    fn resume_vm(&self) {
+        info!(self.log, "Resuming kernel VMM resources");
+        self.instance()
+            .lock()
+            .machine()
+            .hdl
+            .resume()
+            .expect("VM_RESUME should succeed")
+    }
+
     fn reset_entities_and_machine(&self) {
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending reset request to {}", rec.name());
