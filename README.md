@@ -157,8 +157,19 @@ which acts as a serial port. One such tool for accessing this serial port is
 [sercons](https://github.com/jclulow/vmware-sercons), though others (such as
 "screen") would also work.
 
-propolis-standalone also supports defining crucible-backed storage devices,
-thought it is somewhat inconvenient to do so without scripting. Currently you can only use a single region per block device. Read the comments in this TOML example for more details:
+propolis-standalone also supports defining crucible-backed storage devices in
+the TOML config. It is somewhat inconvenient to do this without scripting,
+because `generation` must monotonically increase with each successive connection
+to the Downstairs datastore. So if you use this, you need to somehow
+monotonically bump up that number in the TOML file before re-launching the VM,
+unless you're also creating a new Downstairs region from scratch.
+
+All the crucible configuration options are crucible-specific, so future changes
+to crucible may result in changes to the config options here as well. Consult
+the [oxidecomputer/crucible](https://github.com/oxidecomputer/crucible) codebase
+if you need low level details on what certain options actually do.
+
+Here's an example config. Read the comments for parameter-specific details:
 
 ```toml
 [block_dev.some_datastore]
@@ -200,7 +211,9 @@ generation = 1
 # Defaults to false.
 # lossy = false
 
-# YYY what does this do?
+# the Upstairs (propolis-side) component of crucible currently regularly
+# dispatches flushes to act as IO barriers. By default this happens once every 5
+# seconds, but you can adjust it with this option.
 # flush_timeout = <number>
 
 # Base64'd encryption key used to encrypt data at rest. Keys are 256 bits.
@@ -214,8 +227,10 @@ generation = 1
 # key_pem = ""
 # root_cert_pem = ""
 
-# Specifies the SocketAddr of the crucible control interface. YYY I'm not
-# really sure what this actually does, but it defaults to Nothing
+# Specifies the SocketAddr of the Upstairs crucible control interface. When
+# ommitted, the control interface won't be started. The control interface is an
+# HTTP server that exposes commands to take snapshots, simulate faults, and
+# retrieve runtime debug information.
 # control_addr = ""
 
 # When true, the device will be read-only. Defaults to false
