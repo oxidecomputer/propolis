@@ -82,7 +82,7 @@ libloading = "0.7"
 mockall = "0.11"
 num_enum = "0.5"
 omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-omicron-zone-package = "0.7.1"
+omicron-zone-package = { git = "https://github.com/oxidecomputer/omicron-package", rev = "a425676edcdefe5a40f77d436f74836bb906b302" }
 once_cell = "1.13"
 oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }

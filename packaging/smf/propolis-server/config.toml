@@ -3,7 +3,7 @@
 # Refer to https://github.com/oxidecomputer/propolis#readme
 # for more detail on the config format.
 
-bootrom = "/opt/oxide/propolis-server/blob/OVMF_CODE_20220922.fd"
+bootrom = "/opt/oxide/propolis-server/blob/OVMF_CODE.fd"
 
 # NOTE: This VNIC is here for reference, but VNICs are typically managed by the
 # Sled Agent.
