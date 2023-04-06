@@ -106,14 +106,14 @@ pub fn vcpu_process(
                 .map_err(|_| VmError::Unhandled(exit)),
         },
         VmExitKind::Rdmsr(msr) => {
-            slog::info!(log, "rdmsr"; "msr" => msr);
+            slog::debug!(log, "rdmsr"; "msr" => msr);
             // XXX just emulate with 0 for now
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, 0).unwrap();
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, 0).unwrap();
             Ok(VmEntry::Run)
         }
         VmExitKind::Wrmsr(msr, val) => {
-            slog::info!(log, "wrmsr"; "msr" => msr, "value" => val);
+            slog::debug!(log, "wrmsr"; "msr" => msr, "value" => val);
             Ok(VmEntry::Run)
         }
         VmExitKind::Debug => {
