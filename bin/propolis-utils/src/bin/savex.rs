@@ -44,16 +44,10 @@ fn print_globals(mut fp: File, len: u64) -> anyhow::Result<()> {
     let mut buf = vec![0u8; len as usize];
     fp.read_exact(&mut buf[..])?;
 
-    let data: propolis::vmm::migrate::BhyveVmV1 = serde_json::from_slice(&buf)?;
+    let data: serde_json::Value = serde_json::from_slice(&buf)?;
 
-    println!("Global entries:");
-    if !data.arch_entries.is_empty() {
-        for ent in data.arch_entries {
-            println!("{:08X} = {}", ent.ident, ent.value);
-        }
-    } else {
-        println!("None");
-    }
+    println!("Global data:");
+    println!("{:?}", data);
 
     Ok(())
 }

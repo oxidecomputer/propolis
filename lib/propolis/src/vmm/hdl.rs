@@ -7,16 +7,14 @@
 //! for encapsulating commands to the underlying kernel
 //! object which represents a single VM.
 
-use erased_serde::{Deserializer, Serialize};
-
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result, Write};
 use std::os::raw::c_void;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::common::PAGE_SIZE;
-use crate::migrate::MigrateStateError;
 use crate::vmm::mem::Prot;
 
 #[derive(Default, Copy, Clone)]
@@ -165,6 +163,11 @@ impl VmmHdl {
         Ok(())
     }
 
+    /// Query the API version exposed by the kernel VMM.
+    pub fn api_version(&self) -> Result<u32> {
+        self.inner.api_version()
+    }
+
     /// Allocate a memory segment within the VM.
     ///
     /// # Arguments
@@ -255,9 +258,8 @@ impl VmmHdl {
     }
 
     /// Issues a request to update the virtual RTC time.
-    pub fn rtc_settime(&self, unix_time: u64) -> Result<()> {
-        let mut time: u64 = unix_time;
-        unsafe { self.ioctl(bhyve_api::VM_RTC_SETTIME, &mut time) }
+    pub fn rtc_settime(&self, time: Duration) -> Result<()> {
+        self.inner.rtc_settime(time)
     }
     /// Writes to the registers within the RTC device.
     pub fn rtc_write(&self, offset: u8, value: u8) -> Result<()> {
@@ -404,24 +406,6 @@ impl VmmHdl {
         destroy_vm_impl(&self.name)
     }
 
-    /// Export the global VMM state.
-    pub fn export(
-        &self,
-    ) -> std::result::Result<Box<dyn Serialize>, MigrateStateError> {
-        Ok(Box::new(migrate::BhyveVmV1::read(self)?))
-    }
-
-    /// Restore previously exported global VMM state.
-    pub fn import(
-        &self,
-        deserializer: &mut dyn Deserializer,
-    ) -> std::result::Result<(), MigrateStateError> {
-        let deserialized: migrate::BhyveVmV1 =
-            erased_serde::deserialize(deserializer)?;
-        deserialized.write(self)?;
-        Ok(())
-    }
-
     /// Set whether instance should auto-destruct when closed
     pub fn set_autodestruct(&self, enable_autodestruct: bool) -> Result<()> {
         self.ioctl_usize(
@@ -454,67 +438,4 @@ pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
     let mut data = bhyve_api::vmm_resv_query::default();
     let _ = unsafe { ctl.ioctl(bhyve_api::VMM_RESV_QUERY, &mut data) }?;
     Ok(data)
-}
-
-pub mod migrate {
-    use std::io;
-
-    use bhyve_api::vdi_field_entry_v1;
-    use serde::{Deserialize, Serialize};
-
-    use crate::vmm;
-
-    use super::VmmHdl;
-
-    #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-    pub struct BhyveVmV1 {
-        pub arch_entries: Vec<ArchEntryV1>,
-    }
-
-    #[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
-    pub struct ArchEntryV1 {
-        pub ident: u32,
-        pub value: u64,
-    }
-
-    impl From<vdi_field_entry_v1> for ArchEntryV1 {
-        fn from(raw: vdi_field_entry_v1) -> Self {
-            Self { ident: raw.vfe_ident, value: raw.vfe_value }
-        }
-    }
-    impl From<ArchEntryV1> for vdi_field_entry_v1 {
-        fn from(entry: ArchEntryV1) -> Self {
-            vdi_field_entry_v1 {
-                vfe_ident: entry.ident,
-                vfe_value: entry.value,
-                ..Default::default()
-            }
-        }
-    }
-
-    impl BhyveVmV1 {
-        pub(super) fn read(hdl: &VmmHdl) -> io::Result<Self> {
-            let arch_entries: Vec<bhyve_api::vdi_field_entry_v1> =
-                vmm::data::read_many(hdl, -1, bhyve_api::VDC_VMM_ARCH, 1)?;
-            Ok(Self {
-                arch_entries: arch_entries
-                    .into_iter()
-                    .map(From::from)
-                    .collect(),
-            })
-        }
-
-        pub(super) fn write(self, hdl: &VmmHdl) -> io::Result<()> {
-            let mut arch_entries: Vec<bhyve_api::vdi_field_entry_v1> =
-                self.arch_entries.into_iter().map(From::from).collect();
-            vmm::data::write_many(
-                hdl,
-                -1,
-                bhyve_api::VDC_VMM_ARCH,
-                1,
-                &mut arch_entries,
-            )?;
-            Ok(())
-        }
-    }
 }

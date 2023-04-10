@@ -4,7 +4,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clap::Parser;
@@ -709,7 +709,11 @@ fn setup_instance(
 
     let rtc = &machine.kernel_devs.rtc;
     rtc.memsize_to_nvram(lowmem as u32, highmem as u64)?;
-    rtc.set_time(SystemTime::now())?;
+    rtc.set_time(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time precedes UNIX epoch"),
+    )?;
 
     let (power_pin, reset_pin) = inst.generate_pins();
     let pci_topo =

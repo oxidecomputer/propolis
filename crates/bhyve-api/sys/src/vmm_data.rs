@@ -190,6 +190,26 @@ impl Default for vdi_rtc_v1 {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct vdi_rtc_v2 {
+    pub vr_base_clock: i64,
+    pub vr_last_period: i64,
+    #[serde(with = "serde_arrays")]
+    pub vr_content: [u8; 128],
+    pub vr_addr: u8,
+}
+impl Default for vdi_rtc_v2 {
+    fn default() -> Self {
+        vdi_rtc_v2 {
+            vr_base_clock: 0,
+            vr_last_period: 0,
+            vr_content: [0u8; 128],
+            vr_addr: 0,
+        }
+    }
+}
+
 // VDC_VMM_TIME v1 interface
 
 #[repr(C)]
@@ -209,6 +229,16 @@ pub struct vdi_time_info_v1 {
 
 /// Guest instance has been placed in paused state
 pub const VAI_VM_IS_PAUSED: u32 = 4;
+
+// Time-related data which was superseded by the VMM_TIME interface in API
+// version 11, maintained here for reference (and for older versions)
+
+/// Offset of guest TSC from system at time of boot
+pub const VAI_TSC_BOOT_OFFSET: u32 = 1;
+/// Time that guest (nominally) booted, as hrtime
+pub const VAI_BOOT_HRTIME: u32 = 2;
+/// Guest TSC frequency measured by hrtime (not effected by wall clock adj.)
+pub const VAI_TSC_FREQ: u32 = 3;
 
 // per-vCPU
 

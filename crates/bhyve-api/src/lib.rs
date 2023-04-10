@@ -4,6 +4,7 @@ use std::os::fd::*;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 use num_enum::IntoPrimitive;
 
@@ -48,6 +49,11 @@ impl VmmCtlFd {
 
     /// Query the API version exposed by the kernel VMM.
     pub fn api_version(&self) -> Result<u32> {
+        cache_api_version(|| -> Result<u32> { self.query_api_version() })
+    }
+
+    /// Perform the actual query of the API version
+    fn query_api_version(&self) -> Result<u32> {
         let vers = self.ioctl_usize(ioctls::VMM_INTERFACE_VERSION, 0)?;
 
         // We expect and demand a positive version number from the
@@ -175,6 +181,46 @@ impl VmmFd {
         unsafe { ioctl(self.as_raw_fd(), cmd, data as *mut libc::c_void) }
     }
 
+    /// Query the API version exposed by the kernel VMM.
+    pub fn api_version(&self) -> Result<u32> {
+        cache_api_version(|| -> Result<u32> {
+            match self.ioctl_usize(ioctls::VMM_INTERFACE_VERSION, 0) {
+                Ok(v) => {
+                    assert!(v > 0);
+                    Ok(v as u32)
+                }
+                Err(e) if e.raw_os_error() == Some(libc::ENOTTY) => {
+                    // Prior to V6, the only the vmmctl device would answer
+                    // version queries, so fall back gracefully if the ioctl is
+                    // unrecognized.
+                    let ctl = VmmCtlFd::open()?;
+                    ctl.query_api_version()
+                }
+                Err(e) => Err(e),
+            }
+        })
+    }
+
+    /// Set the time reported by the virtual RTC time.
+    ///
+    /// Arguments:
+    /// - `time`: Duration since `UNIX_EPOCH`
+    pub fn rtc_settime(&self, time: Duration) -> Result<()> {
+        if self.api_version()? >= ApiVersion::V12.into() {
+            let mut ts = libc::timespec {
+                tv_sec: time.as_secs() as i64,
+                tv_nsec: time.subsec_nanos() as i64,
+            };
+            unsafe { self.ioctl(ioctls::VM_RTC_SETTIME, &mut ts) }?;
+            Ok(())
+        } else {
+            // The old RTC_SETTIME only support seconds precision
+            let mut time_sec: u64 = time.as_secs();
+            unsafe { self.ioctl(ioctls::VM_RTC_SETTIME, &mut time_sec) }?;
+            Ok(())
+        }
+    }
+
     /// Check VMM ioctl command against those known to not require any
     /// copyin/copyout to function.
     const fn ioctl_usize_safe(cmd: i32) -> bool {
@@ -183,7 +229,8 @@ impl VmmFd {
             ioctls::VM_PAUSE
                 | ioctls::VM_RESUME
                 | ioctls::VM_DESTROY_SELF
-                | ioctls::VM_SET_AUTODESTRUCT,
+                | ioctls::VM_SET_AUTODESTRUCT
+                | ioctls::VMM_INTERFACE_VERSION,
         )
     }
 }
@@ -204,12 +251,14 @@ static VERSION_CACHE: AtomicI64 = AtomicI64::new(0);
 ///
 /// Caches said version (or any emitted error) for later calls.
 pub fn api_version() -> Result<u32> {
-    fn do_query() -> Result<u32> {
+    cache_api_version(|| -> Result<u32> {
         let ctl = VmmCtlFd::open()?;
-        let vers = ctl.api_version()?;
+        let vers = ctl.query_api_version()?;
         Ok(vers)
-    }
+    })
+}
 
+fn cache_api_version(do_query: impl FnOnce() -> Result<u32>) -> Result<u32> {
     if VERSION_CACHE.load(Ordering::Acquire) == 0 {
         let newval = match do_query() {
             Ok(x) => x as i64,
@@ -258,6 +307,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(IntoPrimitive)]
 pub enum ApiVersion {
+    /// Improved RTC emulation, including sub-second precision
+    V12 = 12,
+
     /// Add support for modifing guest time data via vmm-data interface
     V11 = 11,
 
@@ -285,7 +337,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V11
+        Self::V12
     }
 }
 
