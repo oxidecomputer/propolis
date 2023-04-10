@@ -77,8 +77,6 @@ entries:
 
 - `local_root`: The path to the local directory in which artifacts are stored.
   PHD requires read/write access to this directory.
-- `remote_root`: Optional. The URI of a remote path from which artifacts can be
-  downloaded if they're missing from the local path or appear to be corrupted.
 - One or more `guest_images` tables, written as `[guest_images.$KEY]`. The
   runner uses the value of its `--default-guest-artifact` parameter to choose a
   guest image to use for tests that don't attach their own disks.
@@ -107,8 +105,8 @@ entries:
     If not specified, PHD will skip pre-test integrity checks for this artifact.
     Note that this can cause changes to a disk image to persist between test
     cases!
-  - `metadata.relative_remote_path`: Optional. The path to this artifact
-    relative to the `remote_root` in this artifact file.
+  - `metadata.remote_uri`: Optional. A URI from which to try to download this
+    artifact.
 
     If an artifact is not present on disk or has the wrong SHA256 digest, the
     runner will try to redownload the artifact from this path.
@@ -120,8 +118,8 @@ entries:
   use for tests that don't select their own bootrom.
 
   The fields in these tables are `relative_local_path`, `expected_digest`, and
-  `relative_remote_path`, with the same semantics as for guest images (just
-  without the `metadata.` prefix).
+  `remote_uri`, with the same semantics as for guest images (just without the
+  `metadata.` prefix).
 
 ## Authoring tests
 

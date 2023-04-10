@@ -70,7 +70,7 @@ struct ArtifactMetadata {
     /// An optional path to this artifact relative to the file server root
     /// stored in the artifact store. If present, the store will use this to
     /// replace the artifact at startup if it appears to be corrupted.
-    relative_remote_path: Option<String>,
+    remote_uri: Option<String>,
 }
 
 impl ArtifactMetadata {
@@ -79,7 +79,7 @@ impl ArtifactMetadata {
     fn check_local_artifact(
         &self,
         local_root: &Path,
-        remote_root: Option<&str>,
+        remote_uri: Option<&str>,
     ) -> Result<()> {
         let mut local_path = PathBuf::new();
         local_path.push(local_root);
@@ -119,16 +119,8 @@ impl ArtifactMetadata {
 
         // The artifact is not usable as-is. See if it can be reacquired from
         // the remote source.
-        if remote_root.is_none() {
-            return Err(anyhow!("Can't download artifact: no remote root"));
-        }
-        let remote_root = remote_root.unwrap();
-        if self.relative_remote_path.is_none() {
-            return Err(anyhow!("Can't download artifact: no remote path"));
-        }
-        let remote_relative = self.relative_remote_path.as_ref().unwrap();
-        let remote_path = format!("{}/{}", remote_root, remote_relative);
-
+        let remote_uri = remote_uri
+            .ok_or_else(|| anyhow!("Can't download artifact: no remote URI"))?;
         if exists {
             info!(?local_path, "Removing mismatched artifact before replacing");
             std::fs::remove_file(&local_path)?;
@@ -137,7 +129,7 @@ impl ArtifactMetadata {
         let download_timeout = Duration::from_secs(600);
         info!(
             ?local_path,
-            ?remote_path,
+            ?remote_uri,
             "Downloading artifact with timeout {:?}",
             download_timeout,
         );
@@ -145,7 +137,7 @@ impl ArtifactMetadata {
         let client = reqwest::blocking::ClientBuilder::new()
             .timeout(download_timeout)
             .build()?;
-        let request = client.get(remote_path).build()?;
+        let request = client.get(remote_uri).build()?;
         let response = client.execute(request)?;
         let mut new_file = std::fs::File::create(&local_path)?;
         new_file.write_all(&response.bytes()?)?;
@@ -173,10 +165,6 @@ struct GuestOsArtifact {
 /// A collection of artifacts that can be loaded by test VMs.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ArtifactStoreConfig {
-    /// An optional remote file server from which to download artifacts whose
-    /// digests do not match when the store is refreshed.
-    remote_root: Option<String>,
-
     /// A map from names to guest OS artifacts.
     guest_images: BTreeMap<String, GuestOsArtifact>,
 
@@ -309,7 +297,7 @@ impl ArtifactStore {
             let _guard = span.enter();
             if let Err(e) = metadata.check_local_artifact(
                 &self.local_root,
-                self.config.remote_root.as_deref(),
+                metadata.remote_uri.as_deref(),
             ) {
                 error!(?e, "Metadata check failed");
                 all_ok = false;
@@ -364,18 +352,17 @@ mod test {
             metadata: ArtifactMetadata {
                 relative_local_path: "alpine.raw".into(),
                 expected_digest: Some("abcd1234".to_string()),
-                relative_remote_path: Some("alpine.raw".to_string()),
+                remote_uri: Some("https://127.0.0.1/alpine.raw".to_string()),
             },
         };
 
         let bootrom_artifact = ArtifactMetadata {
             relative_local_path: "OVMF_CODE.fd".into(),
             expected_digest: None,
-            relative_remote_path: Some("OVMF_CODE.fd".to_string()),
+            remote_uri: Some("https://127.0.0.1/OVMF_CODE.fd".to_string()),
         };
 
         let config = ArtifactStoreConfig {
-            remote_root: Some("https://10.0.0.255".to_string()),
             guest_images: BTreeMap::from([(
                 "alpine".to_string(),
                 guest_artifact,
@@ -394,8 +381,6 @@ mod test {
     #[test]
     fn verify_raw_toml() {
         let raw = r#"
-            remote_root = "https://10.0.0.255"
-
             [guest_images.alpine]
             guest_os_kind = "alpine"
             metadata.relative_local_path = "alpine.raw"
