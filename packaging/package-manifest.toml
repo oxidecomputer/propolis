@@ -9,6 +9,7 @@ source.paths = [
 source.blobs = [ "alpine.iso" ]
 output.type = "zone"
 
+# N.B. Should be kept in sync with phd-tests/artifacts.toml.
 [[package.propolis-server.source.buildomat_blobs]]
 repo = "edk2"
 series = "image_debug"

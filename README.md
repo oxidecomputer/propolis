@@ -169,9 +169,7 @@ are some options to get up-and-running quickly:
 #### Guest bootrom
 
 The current recommended and tested guest bootrom is available
-[here](https://oxide-omicron-build.s3.amazonaws.com/OVMF_CODE_20220922.fd).
-Rename this file to `OVMF_CODE.fd` to use it with the example configuration
-below.
+[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/6d92acf0a22718dd4175d7c64dbcf7aaec3740bd/OVMF_CODE.fd).
 
 Other UEFI firmware images built from the [Open Virtual Machine Firmware
 project](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) may also
