@@ -1,6 +1,6 @@
 use std::io;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::Duration;
 
 use crate::inventory::Entity;
 use crate::migrate::*;
@@ -19,10 +19,8 @@ impl BhyveRtc {
     /// Synchronizes the time within the virtual machine
     /// represented by `hdl` with the current system clock,
     /// accurate to the second.
-    pub fn set_time(&self, time: SystemTime) -> io::Result<()> {
-        self.hdl.rtc_settime(
-            time.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
-        )
+    pub fn set_time(&self, time: Duration) -> io::Result<()> {
+        self.hdl.rtc_settime(time)
     }
 
     /// Store memory size information within the NVRAM area of the RTC device.
@@ -114,7 +112,7 @@ impl Entity for BhyveRtc {
 }
 impl Migrate for BhyveRtc {
     fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::BhyveRtcV1::read(&self.hdl))
+        Box::new(migrate::BhyveRtcV2::read(&self.hdl))
     }
 
     fn import(
@@ -123,7 +121,7 @@ impl Migrate for BhyveRtc {
         deserializer: &mut dyn erased_serde::Deserializer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::BhyveRtcV1 =
+        let deserialized: migrate::BhyveRtcV2 =
             erased_serde::deserialize(deserializer)?;
         deserialized.write(&self.hdl)?;
         Ok(())
@@ -136,37 +134,34 @@ pub mod migrate {
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
-    pub struct BhyveRtcV1 {
+    pub struct BhyveRtcV2 {
+        pub base_clock: i64,
+        pub last_period: i64,
         #[serde(with = "serde_arrays")]
         pub cmos: [u8; 128],
-        pub time_sec: u64,
-        pub time_nsec: u64,
-        pub time_base: i64,
         pub addr: u8,
     }
 
-    impl BhyveRtcV1 {
+    impl BhyveRtcV2 {
         pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
-            let vdi: bhyve_api::vdi_rtc_v1 =
-                vmm::data::read(hdl, -1, bhyve_api::VDC_RTC, 1).unwrap();
+            let vdi: bhyve_api::vdi_rtc_v2 =
+                vmm::data::read(hdl, -1, bhyve_api::VDC_RTC, 2).unwrap();
             Self {
+                base_clock: vdi.vr_base_clock,
+                last_period: vdi.vr_last_period,
                 cmos: vdi.vr_content,
-                time_sec: vdi.vr_rtc_sec,
-                time_nsec: vdi.vr_rtc_nsec,
-                time_base: vdi.vr_time_base,
                 addr: vdi.vr_addr,
             }
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
-            let vdi = bhyve_api::vdi_rtc_v1 {
+            let vdi = bhyve_api::vdi_rtc_v2 {
+                vr_base_clock: self.base_clock,
+                vr_last_period: self.last_period,
                 vr_content: self.cmos,
                 vr_addr: self.addr,
-                vr_time_base: self.time_base,
-                vr_rtc_sec: self.time_sec,
-                vr_rtc_nsec: self.time_nsec,
             };
-            vmm::data::write(hdl, -1, bhyve_api::VDC_RTC, 1, vdi)?;
+            vmm::data::write(hdl, -1, bhyve_api::VDC_RTC, 2, vdi)?;
             Ok(())
         }
     }

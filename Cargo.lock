@@ -3022,6 +3022,7 @@ name = "propolis-standalone"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bhyve_api",
  "clap 4.2.4",
  "ctrlc",
  "erased-serde",

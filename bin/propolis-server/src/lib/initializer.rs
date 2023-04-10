@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use oximeter::types::ProducerRegistry;
 use propolis::block;
@@ -146,7 +146,11 @@ impl<'a> MachineInitializer<'a> {
 
         let rtc = &self.machine.kernel_devs.rtc;
         rtc.memsize_to_nvram(lowmem as u32, highmem as u64)?;
-        rtc.set_time(SystemTime::now())?;
+        rtc.set_time(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time precedes UNIX epoch"),
+        )?;
 
         Ok(())
     }

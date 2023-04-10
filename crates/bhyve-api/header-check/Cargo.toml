@@ -12,6 +12,8 @@ libc = "0.2"
 [build-dependencies]
 cc = "1"
 ctest2 = "0.4"
+# Build-time conditions depend on the max API version defined in the crate
+bhyve_api_sys = { path = "../sys" }
 
 [[test]]
 name = "main"

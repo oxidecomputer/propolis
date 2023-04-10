@@ -18,12 +18,19 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
+use bhyve_api::{
+    vdi_field_entry_v1, vdi_time_info_v1, ApiVersion, VAI_BOOT_HRTIME,
+    VDC_VMM_ARCH, VDC_VMM_TIME,
+};
+use propolis::vmm::data as vmm_data;
 use propolis::{
     chardev::UDSock,
     common::{GuestAddr, GuestRegion},
     inventory::Order,
     migrate::{MigrateCtx, Migrator},
+    vmm::VmmHdl,
 };
+
 use slog::{info, warn};
 use tokio::{
     fs::File,
@@ -57,9 +64,9 @@ pub(crate) async fn save(
 
     info!(log, "Serializing global VM state");
     let global_state = {
-        let global_state =
-            hdl.export().context("Failed to export global VM state")?;
-        serde_json::to_vec(&global_state)?
+        let output =
+            export_global(&hdl).context("Failed to export global VM state")?;
+        serde_json::to_vec(&output)?
     };
 
     info!(log, "Serializing VM device state");
@@ -223,13 +230,12 @@ pub(crate) async fn restore(
         let state_len = file.read_u64().await?;
         let mut global_state = vec![0; state_len.try_into()?];
         file.read_exact(&mut global_state).await?;
-        let mut deserializer =
-            serde_json::Deserializer::from_slice(&global_state);
-        let deserializer =
-            &mut <dyn erased_serde::Deserializer>::erase(&mut deserializer);
 
-        // Restore it
-        hdl.import(deserializer).context("Failed to import global VM state")?;
+        let data: VmGlobalState = serde_json::from_slice(&global_state)
+            .context("Failed to deserialize global VM state")?;
+
+        import_global(&hdl, &data)
+            .context("failed to import global VM state")?;
     }
 
     // Next are the devices
@@ -332,4 +338,49 @@ pub(crate) async fn restore(
     drop(guard);
     drop(inst_inner);
     Ok((inst, com1_sock))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct VmGlobalState {
+    // Just using the raw boot_hrtime leaves room for all sorts of failures,
+    // especially if a saved state file is used after a subsequent reboot of the
+    // host.  These problems can be addressed later.
+    pub boot_hrtime: i64,
+    // Fixing up the guest TSC is left as an exercise for later
+}
+
+fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
+    if hdl.api_version()? > ApiVersion::V11.into() {
+        let info: vdi_time_info_v1 = vmm_data::read(hdl, -1, VDC_VMM_TIME, 1)?;
+
+        Ok(VmGlobalState { boot_hrtime: info.vt_boot_hrtime })
+    } else {
+        let arch_entries: Vec<bhyve_api::vdi_field_entry_v1> =
+            vmm_data::read_many(hdl, -1, VDC_VMM_ARCH, 1)?;
+        let boot_ent = arch_entries
+            .iter()
+            .find(|ent| ent.vfe_ident == VAI_BOOT_HRTIME)
+            .expect("VAI_BOOT_HRTIME should be present");
+
+        Ok(VmGlobalState { boot_hrtime: boot_ent.vfe_value as i64 })
+    }
+}
+fn import_global(hdl: &VmmHdl, state: &VmGlobalState) -> std::io::Result<()> {
+    if hdl.api_version()? > ApiVersion::V11.into() {
+        let mut info: vdi_time_info_v1 =
+            vmm_data::read(hdl, -1, VDC_VMM_TIME, 1)?;
+
+        info.vt_boot_hrtime = state.boot_hrtime;
+        vmm_data::write(hdl, -1, VDC_VMM_TIME, 1, info)?;
+
+        Ok(())
+    } else {
+        let arch_entry = vdi_field_entry_v1 {
+            vfe_ident: VAI_BOOT_HRTIME,
+            vfe_value: state.boot_hrtime as u64,
+            ..Default::default()
+        };
+        vmm_data::write(hdl, -1, VDC_VMM_ARCH, 1, arch_entry)?;
+        Ok(())
+    }
 }
