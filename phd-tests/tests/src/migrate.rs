@@ -21,6 +21,9 @@ fn smoke_test(ctx: &TestContext) {
         .vm_factory
         .new_vm_from_cloned_config("migration_smoke_target", &source)?;
 
+    let serial_hist_pre = source.get_serial_console_history(0)?;
+    assert!(serial_hist_pre.data.len() > 0);
+
     let migration_id = Uuid::new_v4();
     target.migrate_from(&source, migration_id, Duration::from_secs(60))?;
 
@@ -30,6 +33,15 @@ fn smoke_test(ctx: &TestContext) {
     assert_eq!(src_migration_state, MigrationState::Finish);
     let target_migration_state = target.get_migration_state(migration_id)?;
     assert_eq!(target_migration_state, MigrationState::Finish);
+
+    let serial_hist_post = target.get_serial_console_history(0)?;
+    assert_eq!(
+        serial_hist_pre.data,
+        serial_hist_post.data[..serial_hist_pre.data.len()]
+    );
+    assert!(
+        serial_hist_pre.last_byte_offset <= serial_hist_post.last_byte_offset
+    );
 
     let lsout = target.run_shell_command("ls foo.bar")?;
     assert_eq!(lsout, "foo.bar");

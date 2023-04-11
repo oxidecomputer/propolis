@@ -10,8 +10,9 @@ use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
 use propolis_client::types::{
     InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
-    InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
-    InstanceStateRequested, MigrationState,
+    InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
+    InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
+    MigrationState,
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
@@ -365,6 +366,21 @@ impl TestVm {
                 .send()
                 .await?
                 .state)
+        })
+    }
+
+    pub fn get_serial_console_history(
+        &self,
+        from_start: u64,
+    ) -> Result<InstanceSerialConsoleHistoryResponse> {
+        self.rt.block_on(async {
+            Ok(self
+                .client
+                .instance_serial_history_get()
+                .from_start(from_start)
+                .send()
+                .await?
+                .into_inner())
         })
     }
 
