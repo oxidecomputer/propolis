@@ -57,6 +57,7 @@ pub enum ArtifactStoreError {
 
 /// A single artifact.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ArtifactMetadata {
     /// The path to the artifact relative to the root directory specified in
     /// this artifact's store.
@@ -157,6 +158,7 @@ impl ArtifactMetadata {
 
 /// A wrapper for guest OS artifacts that includes their OS kind.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GuestOsArtifact {
     guest_os_kind: GuestOsKind,
     metadata: ArtifactMetadata,
@@ -164,6 +166,7 @@ struct GuestOsArtifact {
 
 /// A collection of artifacts that can be loaded by test VMs.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactStoreConfig {
     /// A map from names to guest OS artifacts.
     guest_images: BTreeMap<String, GuestOsArtifact>,
