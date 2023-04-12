@@ -6,5 +6,13 @@ source.rust.release = true
 source.paths = [
     { from = "packaging/smf/propolis-server", to = "/var/svc/manifest/site/propolis-server" },
 ]
-source.blobs = [ "alpine.iso", "OVMF_CODE_20220922.fd" ]
+source.blobs = [ "alpine.iso" ]
 output.type = "zone"
+
+# N.B. Should be kept in sync with phd-tests/artifacts.toml.
+[[package.propolis-server.source.buildomat_blobs]]
+repo = "edk2"
+series = "image_debug"
+commit = "6d92acf0a22718dd4175d7c64dbcf7aaec3740bd"
+artifact = "OVMF_CODE.fd"
+sha256 = "29813374b58e3b77fb665f2d95cb3bab37d44fdd2c4fce2a70de9d76a3512a4f"

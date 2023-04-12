@@ -7,6 +7,8 @@ use indicatif::MultiProgress;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use omicron_zone_package::progress::Progress;
+use omicron_zone_package::target::Target;
+use std::collections::BTreeMap;
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::time::Duration;
@@ -120,9 +122,13 @@ async fn main() -> Result<()> {
         .get(PKG_NAME)
         .with_context(|| anyhow!("missing propolis-server package"))?;
 
-    let progress = ProgressUI::new(pkg.get_total_work());
+    let target = Target(BTreeMap::new());
+    let progress = ProgressUI::new(pkg.get_total_work_for_target(&target)?);
 
-    pkg.create_with_progress(&progress, PKG_NAME, output_dir).await?;
+    pkg.create_with_progress_for_target(
+        &progress, &target, PKG_NAME, output_dir,
+    )
+    .await?;
 
     progress.pkg_pb.set_style(completed_progress_style());
     progress.pkg_pb.finish_with_message(format!(
