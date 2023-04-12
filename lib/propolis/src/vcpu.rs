@@ -268,8 +268,7 @@ pub mod migrate {
         ctrl_regs: CtrlRegsV1,
         seg_regs: SegRegsV1,
         fpu_state: FpuStateV1,
-        /// TODO: do not use the bhyve_api type
-        lapic: bhyve_api::vdi_lapic_v1,
+        lapic: LapicV1,
         ms_regs: Vec<MsrEntryV1>,
     }
 
@@ -351,6 +350,39 @@ pub mod migrate {
     #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct FpuStateV1 {
         pub blob: Vec<u8>,
+    }
+
+    #[derive(Clone, Default, Deserialize, Serialize)]
+    pub struct LapicV1 {
+        pub page: LapicPageV1,
+        pub msr_apicbase: u64,
+        pub timer_target: i64,
+        pub esr_pending: u32,
+    }
+
+    #[derive(Clone, Default, Deserialize, Serialize)]
+    pub struct LapicPageV1 {
+        pub id: u32,
+        pub version: u32,
+        pub tpr: u32,
+        pub apr: u32,
+        pub ldr: u32,
+        pub dfr: u32,
+        pub svr: u32,
+        pub isr: [u32; 8],
+        pub tmr: [u32; 8],
+        pub irr: [u32; 8],
+        pub esr: u32,
+        pub lvt_cmci: u32,
+        pub icr: u64,
+        pub lvt_timer: u32,
+        pub lvt_thermal: u32,
+        pub lvt_pcint: u32,
+        pub lvt_lint0: u32,
+        pub lvt_lint1: u32,
+        pub lvt_error: u32,
+        pub icr_timer: u32,
+        pub dcr_timer: u32,
     }
 
     impl BhyveVcpuRunStateV1 {
@@ -696,6 +728,89 @@ pub mod migrate {
             Ok(())
         }
     }
+    impl LapicV1 {
+        fn read(vcpu: &Vcpu) -> io::Result<Self> {
+            let hdl = &vcpu.hdl;
+            let raw: bhyve_api::vdi_lapic_v1 =
+                vmm::data::read(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1)?;
+
+            let page = LapicPageV1::from_raw(&raw.vl_lapic);
+
+            Ok(Self {
+                page,
+                msr_apicbase: raw.vl_msr_apicbase,
+                timer_target: raw.vl_timer_target,
+                esr_pending: raw.vl_esr_pending,
+            })
+        }
+        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
+            let page = LapicPageV1::to_raw(&self.page);
+
+            let raw = bhyve_api::vdi_lapic_v1 {
+                vl_lapic: page,
+                vl_msr_apicbase: self.msr_apicbase,
+                vl_timer_target: self.timer_target,
+                vl_esr_pending: self.esr_pending,
+            };
+
+            let hdl = &vcpu.hdl;
+            vmm::data::write(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1, raw)?;
+
+            Ok(())
+        }
+    }
+    impl LapicPageV1 {
+        fn from_raw(inp: &bhyve_api::vdi_lapic_page_v1) -> Self {
+            Self {
+                id: inp.vlp_id,
+                version: inp.vlp_version,
+                tpr: inp.vlp_tpr,
+                apr: inp.vlp_apr,
+                ldr: inp.vlp_ldr,
+                dfr: inp.vlp_dfr,
+                svr: inp.vlp_svr,
+                isr: inp.vlp_isr,
+                tmr: inp.vlp_tmr,
+                irr: inp.vlp_irr,
+                esr: inp.vlp_esr,
+                lvt_cmci: inp.vlp_lvt_cmci,
+                icr: inp.vlp_icr,
+                lvt_timer: inp.vlp_lvt_timer,
+                lvt_thermal: inp.vlp_lvt_thermal,
+                lvt_pcint: inp.vlp_lvt_pcint,
+                lvt_lint0: inp.vlp_lvt_lint0,
+                lvt_lint1: inp.vlp_lvt_lint1,
+                lvt_error: inp.vlp_lvt_error,
+                icr_timer: inp.vlp_icr_timer,
+                dcr_timer: inp.vlp_dcr_timer,
+            }
+        }
+        fn to_raw(&self) -> bhyve_api::vdi_lapic_page_v1 {
+            bhyve_api::vdi_lapic_page_v1 {
+                vlp_id: self.id,
+                vlp_version: self.version,
+                vlp_tpr: self.tpr,
+                vlp_apr: self.apr,
+                vlp_ldr: self.ldr,
+                vlp_dfr: self.dfr,
+                vlp_svr: self.svr,
+                vlp_isr: self.isr,
+                vlp_tmr: self.tmr,
+                vlp_irr: self.irr,
+                vlp_esr: self.esr,
+                vlp_lvt_cmci: self.lvt_cmci,
+                vlp_icr: self.icr,
+                vlp_lvt_timer: self.lvt_timer,
+                vlp_lvt_thermal: self.lvt_thermal,
+                vlp_lvt_pcint: self.lvt_pcint,
+                vlp_lvt_lint0: self.lvt_lint0,
+                vlp_lvt_lint1: self.lvt_lint1,
+                vlp_lvt_error: self.lvt_error,
+                vlp_icr_timer: self.icr_timer,
+                vlp_dcr_timer: self.dcr_timer,
+            }
+        }
+    }
 
     impl BhyveVcpuV1 {
         pub(super) fn read(vcpu: &Vcpu) -> Self {
@@ -703,15 +818,13 @@ pub mod migrate {
             let msrs: Vec<bhyve_api::vdi_field_entry_v1> =
                 vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)
                     .unwrap();
-            let lapic: bhyve_api::vdi_lapic_v1 =
-                vmm::data::read(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1).unwrap();
             let res = Self {
                 run_state: BhyveVcpuRunStateV1::read(vcpu).unwrap(),
                 gp_regs: GpRegsV1::read(vcpu).unwrap(),
                 ctrl_regs: CtrlRegsV1::read(vcpu).unwrap(),
                 seg_regs: SegRegsV1::read(vcpu).unwrap(),
                 fpu_state: FpuStateV1::read(vcpu).unwrap(),
-                lapic,
+                lapic: LapicV1::read(vcpu).unwrap(),
                 ms_regs: msrs.into_iter().map(MsrEntryV1::from).collect(),
             };
             res
@@ -728,18 +841,12 @@ pub mod migrate {
                 1,
                 &mut msrs,
             )?;
-            vmm::data::write(
-                hdl,
-                vcpu.id,
-                bhyve_api::VDC_LAPIC,
-                1,
-                self.lapic,
-            )?;
             self.run_state.write(vcpu)?;
             self.gp_regs.write(vcpu)?;
             self.ctrl_regs.write(vcpu)?;
             self.seg_regs.write(vcpu)?;
             self.fpu_state.write(vcpu)?;
+            self.lapic.write(vcpu)?;
             Ok(())
         }
     }
