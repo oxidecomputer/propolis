@@ -9,6 +9,7 @@ edition = "2021"
 propolis_types.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 base64.workspace = true
+futures = { workspace = true, optional = true }
 rand.workspace = true
 ring.workspace = true
 schemars = { workspace = true, features = [ "uuid1" ] }
@@ -19,10 +20,11 @@ thiserror.workspace = true
 uuid = { workspace = true, features = [ "serde", "v4" ] }
 progenitor = { workspace = true, optional = true }
 tokio = { workspace = true, features = [ "net" ], optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
 crucible-client-types.workspace = true
 
 [features]
 default = []
-generated = ["progenitor", "tokio"]
+generated = ["progenitor", "tokio", "tokio-tungstenite", "futures"]
 generated-migration = ["generated"]
 falcon = []

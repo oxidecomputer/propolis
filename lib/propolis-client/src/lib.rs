@@ -63,3 +63,88 @@ mod _compat_impls {
         }
     }
 }
+
+#[cfg(feature = "generated")]
+pub mod support {
+    use crate::generated::Client as PropolisClient;
+    use crate::handmade::api::InstanceSerialConsoleControlMessage;
+    use futures::{SinkExt, StreamExt};
+    use reqwest::Upgraded;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::tungstenite::{Error as WSError, Message};
+    use tokio_tungstenite::WebSocketStream;
+
+    /// This is a trivial abstraction wrapping the websocket connection
+    /// returned by [crate::generated::Client::instance_serial], providing
+    /// the additional functionality of connecting to the new propolis-server
+    /// when an instance is migrated (thus providing the illusion of the
+    /// connection being seamlessly maintained through migration)
+    pub struct InstanceSerialConsoleHelper {
+        ws_stream: WebSocketStream<Upgraded>,
+    }
+
+    impl InstanceSerialConsoleHelper {
+        /// Pass the [Upgraded] connection to the /instance/serial channel,
+        /// the value of `client.instance_serial().send().await?.into_inner()`.
+        pub async fn new(upgraded: Upgraded) -> Self {
+            let ws_stream =
+                WebSocketStream::from_raw_socket(upgraded, Role::Client, None)
+                    .await;
+            Self { ws_stream }
+        }
+
+        /// Sends the given [Message] to the server.
+        /// To send character inputs for the console, send [Message::Binary].
+        pub async fn send(&mut self, input: Message) -> Result<(), WSError> {
+            self.ws_stream.send(input).await
+        }
+
+        /// Receive the next [Message] from the server.
+        /// Returns [Option::None] if the connection has been terminated.
+        /// - [Message::Binary] are character output from the serial console.
+        /// - [Message::Close] is a close frame.
+        /// - [Message::Text] contain metadata, i.e. about a migration, which
+        ///   this function still returns after connecting to the new server
+        ///   in case the application needs to take further action (e.g. log
+        ///   an event, or show a UI indicator that a migration has occurred).
+        pub async fn recv(
+            &mut self,
+        ) -> Option<
+            Result<Message, Box<dyn std::error::Error + Send + Sync + 'static>>,
+        > {
+            let value = self.ws_stream.next().await;
+            if let Some(Ok(Message::Text(json))) = &value {
+                match serde_json::from_str(&json) {
+                    Ok(InstanceSerialConsoleControlMessage::Migrating {
+                        destination,
+                        from_start,
+                    }) => {
+                        let client = PropolisClient::new(&format!(
+                            "http://{}",
+                            destination
+                        ));
+                        match client
+                            .instance_serial()
+                            .from_start(from_start)
+                            .send()
+                            .await
+                        {
+                            Ok(resp) => {
+                                self.ws_stream =
+                                    WebSocketStream::from_raw_socket(
+                                        resp.into_inner(),
+                                        Role::Client,
+                                        None,
+                                    )
+                                    .await;
+                            }
+                            Err(e) => return Some(Err(e.to_string().into())),
+                        }
+                    }
+                    Err(e) => return Some(Err(e.into())),
+                }
+            }
+            value.map(|x| x.map_err(Into::into))
+        }
+    }
+}
