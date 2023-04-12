@@ -9,21 +9,18 @@ use std::{
 
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
-use futures::{future, SinkExt, StreamExt};
+use futures::future;
 use propolis_client::handmade::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceSerialConsoleControlMessage,
-        InstanceStateRequested, MigrationState,
+        InstanceProperties, InstanceStateRequested, MigrationState,
     },
     Client,
 };
-use reqwest::Upgraded;
+use propolis_client::support::InstanceSerialConsoleHelper;
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -340,7 +337,7 @@ async fn serial(
     addr: SocketAddr,
     byte_offset: Option<i64>,
 ) -> anyhow::Result<()> {
-    let mut ws = serial_connect(&addr, byte_offset).await?;
+    let mut ws_console = serial_connect(addr, byte_offset).await?;
 
     let _raw_guard = RawTermiosGuard::stdio_guard()
         .with_context(|| anyhow!("failed to set raw mode"))?;
@@ -378,26 +375,17 @@ async fn serial(
                         break;
                     }
                     Some(c) => {
-                        ws.send(Message::Binary(c)).await?;
+                        ws_console.send(Message::Binary(c)).await?;
                     },
                 }
             }
-            msg = ws.next() => {
+            msg = ws_console.recv() => {
                 match msg {
                     Some(Ok(Message::Binary(input))) => {
                         stdout.write_all(&input).await?;
                         stdout.flush().await?;
                     }
                     Some(Ok(Message::Close(..))) | None => break,
-                    Some(Ok(Message::Text(json))) => {
-                        match serde_json::from_str(&json)? {
-                            InstanceSerialConsoleControlMessage::Migrating {
-                                destination, from_start,
-                            } => {
-                                ws = serial_connect(&destination, Some(from_start as i64)).await?;
-                            }
-                        }
-                    }
                     _ => continue,
                 }
             }
@@ -408,9 +396,9 @@ async fn serial(
 }
 
 async fn serial_connect(
-    addr: &SocketAddr,
+    addr: SocketAddr,
     byte_offset: Option<i64>,
-) -> anyhow::Result<WebSocketStream<Upgraded>> {
+) -> anyhow::Result<InstanceSerialConsoleHelper> {
     let client = propolis_client::Client::new(&format!("http://{}", addr));
     let mut req = client.instance_serial();
 
@@ -424,7 +412,7 @@ async fn serial_connect(
         .await
         .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
         .into_inner();
-    Ok(WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await)
+    Ok(InstanceSerialConsoleHelper::new(upgraded).await)
 }
 
 async fn migrate_instance(
