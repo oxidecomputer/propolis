@@ -385,11 +385,11 @@ mod test {
             guest_os_kind = "alpine"
             metadata.relative_local_path = "alpine.raw"
             metadata.expected_digest = "abcd1234"
-            metadata.relative_remote_path = "alpine.raw"
+            metadata.remote_uri = "https://127.0.0.1/alpine.raw"
 
             [bootroms.bootrom]
             relative_local_path = "OVMF_CODE.fd"
-            relative_remote_path = "OVMF_CODE.fd"
+            remote_uri = "https://127.0.0.1/OVMF_CODE.fd"
         "#;
 
         let store = ArtifactStoreConfig::from_toml(raw).unwrap();
