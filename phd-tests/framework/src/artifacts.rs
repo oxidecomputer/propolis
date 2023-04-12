@@ -397,5 +397,31 @@ mod test {
 
         let store = ArtifactStoreConfig::from_toml(raw).unwrap();
         println!("Generated store: {:#?}", store);
+
+        let guest_image = store.guest_images.get("alpine").unwrap();
+        assert!(matches!(guest_image.guest_os_kind, GuestOsKind::Alpine));
+        assert_eq!(
+            guest_image.metadata.relative_local_path.to_string_lossy(),
+            "alpine.raw"
+        );
+        assert_eq!(
+            guest_image.metadata.expected_digest.as_ref().unwrap(),
+            "abcd1234"
+        );
+        assert_eq!(
+            guest_image.metadata.remote_uri.as_ref().unwrap(),
+            "https://127.0.0.1/alpine.raw"
+        );
+
+        let bootrom = store.bootroms.get("bootrom").unwrap();
+        assert_eq!(
+            bootrom.relative_local_path.to_string_lossy(),
+            "OVMF_CODE.fd"
+        );
+        assert!(bootrom.expected_digest.is_none());
+        assert_eq!(
+            bootrom.remote_uri.as_ref().unwrap(),
+            "https://127.0.0.1/OVMF_CODE.fd"
+        );
     }
 }
