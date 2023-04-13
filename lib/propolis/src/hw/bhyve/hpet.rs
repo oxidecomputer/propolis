@@ -25,7 +25,7 @@ impl Entity for BhyveHpet {
 }
 impl Migrate for BhyveHpet {
     fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::BhyveHpetV1::read(&self.hdl))
+        Box::new(migrate::HpetV1::read(&self.hdl).unwrap())
     }
 
     fn import(
@@ -34,7 +34,7 @@ impl Migrate for BhyveHpet {
         deserializer: &mut dyn erased_serde::Deserializer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::BhyveHpetV1 =
+        let deserialized: migrate::HpetV1 =
             erased_serde::deserialize(deserializer)?;
         deserialized.write(&self.hdl)?;
         Ok(())
@@ -46,21 +46,84 @@ pub mod migrate {
 
     use serde::{Deserialize, Serialize};
 
-    #[derive(Copy, Clone, Deserialize, Serialize)]
-    pub struct BhyveHpetV1 {
-        /// XXX: do not expose vdi struct
-        pub data: bhyve_api::vdi_hpet_v1,
+    #[derive(Copy, Clone, Default, Serialize, Deserialize)]
+    pub struct HpetV1 {
+        pub config: u64,
+        pub isr: u64,
+        pub count_base: u32,
+        pub time_base: i64,
+
+        pub timers: [HpetTimerV1; 8],
     }
 
-    impl BhyveHpetV1 {
-        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
-            Self {
-                data: vmm::data::read(hdl, -1, bhyve_api::VDC_HPET, 1).unwrap(),
+    #[derive(Copy, Clone, Default, Serialize, Deserialize)]
+    pub struct HpetTimerV1 {
+        pub config: u64,
+        pub msi: u64,
+        pub comp_val: u32,
+        pub comp_rate: u32,
+        pub time_target: i64,
+    }
+
+    impl HpetV1 {
+        fn from_raw(inp: &bhyve_api::vdi_hpet_v1) -> Self {
+            let mut res = Self {
+                config: inp.vh_config,
+                isr: inp.vh_isr,
+                count_base: inp.vh_count_base,
+                time_base: inp.vh_time_base,
+                ..Default::default()
+            };
+            for (n, timer) in res.timers.iter_mut().enumerate() {
+                *timer = HpetTimerV1::from_raw(&inp.vh_timers[n]);
             }
+            res
+        }
+        fn to_raw(&self) -> bhyve_api::vdi_hpet_v1 {
+            let mut res = bhyve_api::vdi_hpet_v1 {
+                vh_config: self.config,
+                vh_isr: self.isr,
+                vh_count_base: self.count_base,
+                vh_time_base: self.time_base,
+                ..Default::default()
+            };
+            for (n, timer) in res.vh_timers.iter_mut().enumerate() {
+                *timer = HpetTimerV1::to_raw(&self.timers[n]);
+            }
+            res
+        }
+    }
+    impl HpetTimerV1 {
+        fn from_raw(inp: &bhyve_api::vdi_hpet_timer_v1) -> Self {
+            Self {
+                config: inp.vht_config,
+                msi: inp.vht_msi,
+                comp_val: inp.vht_comp_val,
+                comp_rate: inp.vht_comp_rate,
+                time_target: inp.vht_time_target,
+            }
+        }
+        fn to_raw(&self) -> bhyve_api::vdi_hpet_timer_v1 {
+            bhyve_api::vdi_hpet_timer_v1 {
+                vht_config: self.config,
+                vht_msi: self.msi,
+                vht_comp_val: self.comp_val,
+                vht_comp_rate: self.comp_rate,
+                vht_time_target: self.time_target,
+            }
+        }
+    }
+
+    impl HpetV1 {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
+            let vdi: bhyve_api::vdi_hpet_v1 =
+                vmm::data::read(hdl, -1, bhyve_api::VDC_HPET, 1)?;
+
+            Ok(Self::from_raw(&vdi))
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
-            vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.data)?;
+            vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.to_raw())?;
             Ok(())
         }
     }
