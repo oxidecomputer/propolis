@@ -307,8 +307,6 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "num_enum",
- "serde",
- "serde_arrays",
 ]
 
 [[package]]

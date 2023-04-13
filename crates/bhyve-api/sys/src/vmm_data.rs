@@ -1,8 +1,6 @@
 #![allow(non_camel_case_types)]
 // VMM Data Classes
 
-use serde::{Deserialize, Serialize};
-
 pub const VDC_VERSION: u16 = 1;
 
 // Classes bearing per-vCPU data
@@ -24,7 +22,7 @@ pub const VDC_RTC: u16 = 12;
 pub const VDC_VMM_TIME: u16 = 13;
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_version_entry_v1 {
     pub vve_class: u16,
     pub vve_version: u16,
@@ -33,7 +31,7 @@ pub struct vdi_version_entry_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_field_entry_v1 {
     pub vfe_ident: u32,
     pub _pad: u32,
@@ -41,7 +39,7 @@ pub struct vdi_field_entry_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_lapic_page_v1 {
     pub vlp_id: u32,
     pub vlp_version: u32,
@@ -67,7 +65,7 @@ pub struct vdi_lapic_page_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_lapic_v1 {
     pub vl_lapic: vdi_lapic_page_v1,
     pub vl_msr_apicbase: u64,
@@ -76,7 +74,7 @@ pub struct vdi_lapic_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_ioapic_v1 {
     pub vi_pin_reg: [u64; 32],
     pub vi_pin_level: [u32; 32],
@@ -85,7 +83,7 @@ pub struct vdi_ioapic_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_atpit_channel_v1 {
     pub vac_initial: u16,
     pub vac_reg_cr: u16,
@@ -105,13 +103,13 @@ pub struct vdi_atpit_channel_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_atpit_v1 {
     pub va_channel: [vdi_atpit_channel_v1; 3],
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_atpic_chip_v1 {
     pub vac_icw_state: u8,
 
@@ -135,13 +133,13 @@ pub struct vdi_atpic_chip_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_atpic_v1 {
     pub va_chip: [vdi_atpic_chip_v1; 2],
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_hpet_timer_v1 {
     pub vht_config: u64,
     pub vht_msi: u64,
@@ -151,7 +149,7 @@ pub struct vdi_hpet_timer_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_hpet_v1 {
     pub vh_config: u64,
     pub vh_isr: u64,
@@ -162,16 +160,15 @@ pub struct vdi_hpet_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_pm_timer_v1 {
     pub vpt_time_base: i64,
     pub vpt_ioport: u16,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone)]
 pub struct vdi_rtc_v1 {
-    #[serde(with = "serde_arrays")]
     pub vr_content: [u8; 128],
     pub vr_addr: u8,
     pub vr_time_base: i64,
@@ -193,7 +190,7 @@ impl Default for vdi_rtc_v1 {
 // VDC_VMM_TIME v1 interface
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default)]
 pub struct vdi_time_info_v1 {
     pub vt_guest_freq: u64,
     pub vt_guest_tsc: u64,

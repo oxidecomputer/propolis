@@ -9,5 +9,3 @@ edition = "2021"
 [dependencies]
 libc.workspace = true
 num_enum.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_arrays = { workspace = true }
