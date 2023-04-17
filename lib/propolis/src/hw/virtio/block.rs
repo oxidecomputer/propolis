@@ -14,7 +14,6 @@ use super::queue::{Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 use bits::*;
 
-use erased_serde::Serialize;
 use futures::future::BoxFuture;
 use lazy_static::lazy_static;
 
@@ -224,26 +223,24 @@ impl Entity for PciVirtioBlock {
         Box::pin(async move { block_paused.await })
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Multi(self)
     }
 }
-impl Migrate for PciVirtioBlock {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::PciVirtioBlockV1 {
-            pci_virtio_state: PciVirtio::export(self),
-        })
+impl MigrateMulti for PciVirtioBlock {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        <dyn PciVirtio>::export(self, output, ctx)
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &MigrateCtx,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::PciVirtioBlockV1 =
-            erased_serde::deserialize(deserializer)?;
-
-        PciVirtio::import(self, deserialized.pci_virtio_state)
+        <dyn PciVirtio>::import(self, offer, ctx)
     }
 }
 
@@ -307,16 +304,6 @@ lazy_static! {
             Some(BlockReg::Unused),
         )
     };
-}
-
-pub mod migrate {
-    use crate::hw::virtio::pci::migrate::PciVirtioStateV1;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Deserialize, Serialize)]
-    pub struct PciVirtioBlockV1 {
-        pub pci_virtio_state: PciVirtioStateV1,
-    }
 }
 
 mod bits {

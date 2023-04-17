@@ -4,8 +4,6 @@ use crate::inventory::Entity;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
-use erased_serde::Serialize;
-
 pub struct BhyveAtPit {
     hdl: Arc<VmmHdl>,
 }
@@ -20,28 +18,29 @@ impl Entity for BhyveAtPit {
         "lpc-bhyve-atpit"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for BhyveAtPit {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::AtPitV1::read(&self.hdl).unwrap())
+impl MigrateSingle for BhyveAtPit {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        Ok(migrate::AtPitV1::read(&self.hdl)?.emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::AtPitV1 =
-            erased_serde::deserialize(deserializer)?;
-        deserialized.write(&self.hdl)?;
+        offer.parse::<migrate::AtPitV1>()?.write(&self.hdl)?;
         Ok(())
     }
 }
 
 pub mod migrate {
+    use crate::migrate::*;
     use crate::vmm;
 
     use serde::{Deserialize, Serialize};
@@ -92,6 +91,12 @@ pub mod migrate {
             Ok(())
         }
     }
+    impl Schema<'_> for AtPitV1 {
+        fn id() -> SchemaId {
+            ("bhyve-atpit", 1)
+        }
+    }
+
     impl AtPitChannelV1 {
         fn from_raw(inp: &bhyve_api::vdi_atpit_channel_v1) -> Self {
             Self {

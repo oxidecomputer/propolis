@@ -6,8 +6,6 @@ use crate::inventory::Entity;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
-use erased_serde::Serialize;
-
 pub struct BhyveRtc {
     hdl: Arc<VmmHdl>,
 }
@@ -107,28 +105,29 @@ impl Entity for BhyveRtc {
         "lpc-bhyve-rtc"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for BhyveRtc {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::BhyveRtcV2::read(&self.hdl))
+impl MigrateSingle for BhyveRtc {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        Ok(migrate::BhyveRtcV2::read(&self.hdl)?.emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::BhyveRtcV2 =
-            erased_serde::deserialize(deserializer)?;
-        deserialized.write(&self.hdl)?;
+        offer.parse::<migrate::BhyveRtcV2>()?.write(&self.hdl)?;
         Ok(())
     }
 }
 
 pub mod migrate {
+    use crate::migrate::*;
     use crate::vmm;
 
     use serde::{Deserialize, Serialize};
@@ -143,15 +142,15 @@ pub mod migrate {
     }
 
     impl BhyveRtcV2 {
-        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
             let vdi: bhyve_api::vdi_rtc_v2 =
                 vmm::data::read(hdl, -1, bhyve_api::VDC_RTC, 2).unwrap();
-            Self {
+            Ok(Self {
                 base_clock: vdi.vr_base_clock,
                 last_period: vdi.vr_last_period,
                 cmos: vdi.vr_content,
                 addr: vdi.vr_addr,
-            }
+            })
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
@@ -163,6 +162,11 @@ pub mod migrate {
             };
             vmm::data::write(hdl, -1, bhyve_api::VDC_RTC, 2, vdi)?;
             Ok(())
+        }
+    }
+    impl Schema<'_> for BhyveRtcV2 {
+        fn id() -> SchemaId {
+            ("bhyve-rtc", 2)
         }
     }
 }

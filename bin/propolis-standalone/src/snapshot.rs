@@ -27,10 +27,13 @@ use propolis::{
     chardev::UDSock,
     common::{GuestAddr, GuestRegion},
     inventory::Order,
-    migrate::{MigrateCtx, Migrator},
+    migrate::{
+        MigrateCtx, Migrator, PayloadOffer, PayloadOffers, PayloadOutputs,
+    },
     vmm::VmmHdl,
 };
 
+use serde::{Deserialize, Serialize};
 use slog::{info, warn};
 use tokio::{
     fs::File,
@@ -39,6 +42,18 @@ use tokio::{
 
 use super::config::{Config, SnapshotTag};
 use super::Instance;
+
+#[derive(Deserialize, Serialize)]
+struct SnapshotDevice {
+    pub instance_name: String,
+    pub payload: Vec<SnapshotDevicePayload>,
+}
+#[derive(Deserialize, Serialize)]
+struct SnapshotDevicePayload {
+    pub kind: String,
+    pub version: u32,
+    pub data: Vec<u8>,
+}
 
 /// Save a snapshot of the current state of the given instance to disk.
 pub(crate) async fn save(
@@ -81,17 +96,39 @@ pub(crate) async fn save(
                     rec.name()
                 );
                 }
-                Migrator::Simple => {}
-                Migrator::Custom(migrate) => {
-                    let payload = migrate.export(&migratectx);
-                    device_states.push((
-                        rec.name().to_owned(),
-                        serde_json::to_vec(&payload)?,
-                    ));
+                Migrator::Empty => {}
+                Migrator::Single(mech) => {
+                    let output = mech.export(&migratectx)?;
+                    device_states.push(SnapshotDevice {
+                        instance_name: rec.name().to_owned(),
+                        payload: vec![SnapshotDevicePayload {
+                            kind: output.kind.to_owned(),
+                            version: output.version,
+                            data: serde_json::to_vec(&output.payload)?,
+                        }],
+                    });
+                }
+                Migrator::Multi(mech) => {
+                    let mut outputs = PayloadOutputs::new();
+                    mech.export(&mut outputs, &migratectx)?;
+
+                    let mut payloads = Vec::new();
+                    for part in outputs {
+                        payloads.push(SnapshotDevicePayload {
+                            kind: part.kind.to_owned(),
+                            version: part.version,
+                            data: serde_json::to_vec(&part.payload)?,
+                        });
+                    }
+                    device_states.push(SnapshotDevice {
+                        instance_name: rec.name().to_owned(),
+                        payload: payloads,
+                    });
                 }
             }
             Ok(())
         })?;
+
         serde_json::to_vec(&device_states)?
     };
 
@@ -296,11 +333,12 @@ pub(crate) async fn restore(
     // Finally, let's restore the device state
     let inv = guard.inventory();
     let migratectx = MigrateCtx { mem: &memctx };
-    let devices: Vec<(String, Vec<u8>)> =
+    let devices: Vec<SnapshotDevice> =
         serde_json::from_slice(&device_states)
             .context("Failed to deserialize device state")?;
-    for (name, payload) in devices {
-        let dev_ent = inv.get_by_name(&name).ok_or_else(|| {
+    for snap_dev in devices {
+        let name = snap_dev.instance_name.as_ref();
+        let dev_ent = inv.get_by_name(name).ok_or_else(|| {
             anyhow::anyhow!("unknown device in snapshot {}", name)
         })?;
 
@@ -309,27 +347,77 @@ pub(crate) async fn restore(
                 "can't restore snapshot with non-migratable device ({})",
                 name
             ),
-            Migrator::Simple => {
+            Migrator::Empty => {
                 // There really shouldn't be a payload for this
                 warn!(
                     log,
                     "unexpected device state for device {} in snapshot", name
                 );
             }
-            Migrator::Custom(migrate) => {
-                let mut deserializer =
-                    serde_json::Deserializer::from_slice(&payload);
-                let deserializer = &mut <dyn erased_serde::Deserializer>::erase(
-                    &mut deserializer,
-                );
-                migrate
-                    .import(dev_ent.type_name(), deserializer, &migratectx)
-                    .with_context(|| {
-                        anyhow::anyhow!(
-                            "Failed to restore device state for {}",
-                            name
-                        )
-                    })?;
+            Migrator::Single(mech) => {
+                if snap_dev.payload.len() != 1 {
+                    anyhow::bail!(
+                        "Unexpected payload count {}",
+                        snap_dev.payload.len()
+                    );
+                }
+                let payload = &snap_dev.payload[0];
+                let mut deser_data =
+                    serde_json::Deserializer::from_slice(&payload.data);
+
+                let offer = PayloadOffer {
+                    kind: &payload.kind,
+                    version: payload.version,
+                    payload: Box::new(<dyn erased_serde::Deserializer>::erase(
+                        &mut deser_data,
+                    )),
+                };
+                mech.import(offer, &migratectx).with_context(|| {
+                    anyhow::anyhow!(
+                        "Failed to restore device state for {}",
+                        name
+                    )
+                })?;
+            }
+            Migrator::Multi(mech) => {
+                let mut payload_desers: Vec<
+                    serde_json::Deserializer<serde_json::de::SliceRead>,
+                > = Vec::with_capacity(snap_dev.payload.len());
+                let mut metadata: Vec<(&str, u32)> =
+                    Vec::with_capacity(snap_dev.payload.len());
+                for payload in snap_dev.payload.iter() {
+                    payload_desers.push(serde_json::Deserializer::from_slice(
+                        &payload.data,
+                    ));
+                    metadata.push((&payload.kind, payload.version));
+                }
+                let offer_iter = metadata
+                    .iter()
+                    .zip(payload_desers.iter_mut())
+                    .map(|(meta, deser)| PayloadOffer {
+                        kind: meta.0,
+                        version: meta.1,
+                        payload: Box::new(
+                            <dyn erased_serde::Deserializer>::erase(deser),
+                        ),
+                    });
+
+                let mut offer = PayloadOffers::new(offer_iter);
+                mech.import(&mut offer, &migratectx).with_context(|| {
+                    anyhow::anyhow!(
+                        "Failed to restore device state for {}",
+                        name
+                    )
+                })?;
+
+                let remain = offer.remaining().count();
+                if remain > 0 {
+                    return Err(anyhow::anyhow!(
+                        "Device {} had {} remaining payload(s)",
+                        name,
+                        remain
+                    ));
+                }
             }
         }
     }

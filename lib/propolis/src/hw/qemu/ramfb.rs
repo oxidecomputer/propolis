@@ -7,7 +7,6 @@ use crate::migrate::*;
 use crate::util::regmap::RegMap;
 use crate::vmm::MemCtx;
 
-use erased_serde::Serialize;
 use lazy_static::lazy_static;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -182,44 +181,48 @@ impl Entity for RamFb {
         "qemu-ramfb"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for RamFb {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+impl MigrateSingle for RamFb {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
         let state = self.config.lock().unwrap();
-        Box::new(migrate::RamFbV1 {
+        Ok(migrate::RamFbV1 {
             addr: state.addr,
             fourcc: state.fourcc,
             flags: state.flags,
             width: state.width,
             height: state.height,
             stride: state.stride,
-        })
+        }
+        .emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
-    ) -> Result<(), crate::migrate::MigrateStateError> {
-        let deserialized: migrate::RamFbV1 =
-            erased_serde::deserialize(deserializer)?;
+    ) -> Result<(), MigrateStateError> {
+        let data: migrate::RamFbV1 = offer.parse()?;
 
         let mut state = self.config.lock().unwrap();
-        state.addr = deserialized.addr;
-        state.fourcc = deserialized.fourcc;
-        state.flags = deserialized.flags;
-        state.width = deserialized.width;
-        state.height = deserialized.height;
-        state.stride = deserialized.stride;
+        state.addr = data.addr;
+        state.fourcc = data.fourcc;
+        state.flags = data.flags;
+        state.width = data.width;
+        state.height = data.height;
+        state.stride = data.stride;
 
         Ok(())
     }
 }
 
 pub mod migrate {
+    use crate::migrate::*;
+
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
@@ -230,5 +233,10 @@ pub mod migrate {
         pub width: u32,
         pub height: u32,
         pub stride: u32,
+    }
+    impl Schema<'_> for RamFbV1 {
+        fn id() -> SchemaId {
+            ("qemu-ramfb", 1)
+        }
     }
 }

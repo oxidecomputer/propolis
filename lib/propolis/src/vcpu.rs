@@ -11,8 +11,6 @@ use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
 
-use erased_serde::Serialize;
-
 /// A handle to a virtual CPU.
 pub struct Vcpu {
     hdl: Arc<VmmHdl>,
@@ -227,27 +225,27 @@ impl Entity for Vcpu {
         "bhyve-vcpu"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 
     // The consumer is expected to handle run/pause/halt events directly, since
     // the vCPUs are mostly likely to be driven in manner separate from the
     // other emulated devices.
 }
-impl Migrate for Vcpu {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::BhyveVcpuV1::read(self))
+impl MigrateSingle for Vcpu {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> std::result::Result<PayloadOutput, MigrateStateError> {
+        Ok(migrate::BhyveX86CpuV1::read(self)?.emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> std::result::Result<(), MigrateStateError> {
-        let deserialized: migrate::BhyveVcpuV1 =
-            erased_serde::deserialize(deserializer)?;
-        deserialized.write(self)?;
+        offer.parse::<migrate::BhyveX86CpuV1>()?.write(self)?;
         Ok(())
     }
 }
@@ -256,20 +254,26 @@ pub mod migrate {
     use std::{convert::TryInto, io};
 
     use super::Vcpu;
+    use crate::migrate::*;
     use crate::vmm;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name};
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Default, Deserialize, Serialize)]
-    pub struct BhyveVcpuV1 {
-        run_state: BhyveVcpuRunStateV1,
-        gp_regs: GpRegsV1,
-        ctrl_regs: CtrlRegsV1,
-        seg_regs: SegRegsV1,
-        fpu_state: FpuStateV1,
-        lapic: LapicV1,
-        ms_regs: Vec<MsrEntryV1>,
+    pub struct BhyveX86CpuV1 {
+        pub run_state: BhyveVcpuRunStateV1,
+        pub gp_regs: GpRegsV1,
+        pub ctrl_regs: CtrlRegsV1,
+        pub seg_regs: SegRegsV1,
+        pub fpu_state: FpuStateV1,
+        pub lapic: LapicV1,
+        pub ms_regs: Vec<MsrEntryV1>,
+    }
+    impl Schema<'_> for BhyveX86CpuV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-cpu", 1)
+        }
     }
 
     #[derive(Clone, Default, Deserialize, Serialize)]
@@ -816,22 +820,21 @@ pub mod migrate {
         }
     }
 
-    impl BhyveVcpuV1 {
-        pub(super) fn read(vcpu: &Vcpu) -> Self {
+    impl BhyveX86CpuV1 {
+        pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
             let hdl = &vcpu.hdl;
             let msrs: Vec<bhyve_api::vdi_field_entry_v1> =
-                vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)
-                    .unwrap();
+                vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)?;
             let res = Self {
-                run_state: BhyveVcpuRunStateV1::read(vcpu).unwrap(),
-                gp_regs: GpRegsV1::read(vcpu).unwrap(),
-                ctrl_regs: CtrlRegsV1::read(vcpu).unwrap(),
-                seg_regs: SegRegsV1::read(vcpu).unwrap(),
-                fpu_state: FpuStateV1::read(vcpu).unwrap(),
-                lapic: LapicV1::read(vcpu).unwrap(),
+                run_state: BhyveVcpuRunStateV1::read(vcpu)?,
+                gp_regs: GpRegsV1::read(vcpu)?,
+                ctrl_regs: CtrlRegsV1::read(vcpu)?,
+                seg_regs: SegRegsV1::read(vcpu)?,
+                fpu_state: FpuStateV1::read(vcpu)?,
+                lapic: LapicV1::read(vcpu)?,
                 ms_regs: msrs.into_iter().map(MsrEntryV1::from).collect(),
             };
-            res
+            Ok(res)
         }
 
         pub(super) fn write(self, vcpu: &Vcpu) -> io::Result<()> {

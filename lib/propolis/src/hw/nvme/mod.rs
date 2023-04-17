@@ -12,7 +12,6 @@ use crate::migrate::*;
 use crate::util::regmap::RegMap;
 use crate::vmm::MemCtx;
 
-use erased_serde::Serialize;
 use futures::future::BoxFuture;
 use lazy_static::lazy_static;
 use thiserror::Error;
@@ -962,6 +961,39 @@ impl pci::Device for PciNvme {
         &self.pci_state
     }
 }
+
+impl MigrateMulti for PciNvme {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        let ctrl = self.state.lock().unwrap();
+        output.push(ctrl.export().emit())?;
+        drop(ctrl);
+
+        MigrateMulti::export(&self.pci_state, output, ctx)?;
+
+        Ok(())
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        let input: migrate::NvmeCtrlV1 = offer.take()?;
+
+        let mut ctrl = self.state.lock().unwrap();
+        ctrl.import(input, ctx.mem)?;
+        drop(ctrl);
+
+        MigrateMulti::import(&self.pci_state, offer, ctx)?;
+
+        Ok(())
+    }
+}
+
 impl Entity for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
@@ -1001,47 +1033,16 @@ impl Entity for PciNvme {
     }
 
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
-    }
-}
-impl Migrate for PciNvme {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        let ctrl = self.state.lock().unwrap();
-        Box::new(migrate::PciNvmeStateV1 {
-            pci: self.pci_state.export(),
-            ctrl: ctrl.export(),
-        })
-    }
-
-    fn import(
-        &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
-        ctx: &MigrateCtx,
-    ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::PciNvmeStateV1 =
-            erased_serde::deserialize(deserializer)?;
-
-        self.pci_state.import(deserialized.pci)?;
-
-        let mut ctrl = self.state.lock().unwrap();
-        ctrl.import(deserialized.ctrl, &ctx.mem)?;
-
-        Ok(())
+        Migrator::Multi(self)
     }
 }
 
 pub mod migrate {
-    use crate::hw::pci::migrate::PciStateV1;
+    use crate::migrate::*;
+
     use serde::{Deserialize, Serialize};
 
     use super::queue::migrate::{NvmeCompQueueV1, NvmeSubQueueV1};
-
-    #[derive(Deserialize, Serialize)]
-    pub struct PciNvmeStateV1 {
-        pub pci: PciStateV1,
-        pub ctrl: NvmeCtrlV1,
-    }
 
     #[derive(Deserialize, Serialize)]
     pub struct NvmeCtrlV1 {
@@ -1055,6 +1056,11 @@ pub mod migrate {
 
         pub cqs: Vec<NvmeCompQueueV1>,
         pub sqs: Vec<NvmeSubQueueV1>,
+    }
+    impl Schema<'_> for NvmeCtrlV1 {
+        fn id() -> SchemaId {
+            ("nvme-ctrl", 1)
+        }
     }
 }
 

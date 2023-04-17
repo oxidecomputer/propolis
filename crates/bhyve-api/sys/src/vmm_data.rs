@@ -188,11 +188,10 @@ impl Default for vdi_rtc_v1 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Copy, Clone)]
 pub struct vdi_rtc_v2 {
     pub vr_base_clock: i64,
     pub vr_last_period: i64,
-    #[serde(with = "serde_arrays")]
     pub vr_content: [u8; 128],
     pub vr_addr: u8,
 }

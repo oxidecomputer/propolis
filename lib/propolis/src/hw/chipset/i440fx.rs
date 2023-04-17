@@ -22,7 +22,6 @@ use crate::pio::{PioBus, PioFn};
 use crate::util::regmap::RegMap;
 use crate::vmm::{Machine, VmmHdl};
 
-use erased_serde::Serialize;
 use lazy_static::lazy_static;
 
 const HB_DEV: u8 = 0;
@@ -213,24 +212,26 @@ impl Chipset for I440Fx {
         self.pin_reset.clone()
     }
 }
-impl Migrate for I440Fx {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        // TODO: serialize PCI topology state?
-        Box::new(migrate::I440TopV1 { pci_cfg_addr: self.pci_cfg.addr() })
+impl MigrateSingle for I440Fx {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        Ok(migrate::I440FXChipsetV1 { pci_cfg_addr: self.pci_cfg.addr() }
+            .emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::I440TopV1 =
-            erased_serde::deserialize(deserializer)?;
-        self.pci_cfg.set_addr(deserialized.pci_cfg_addr);
+        let data: migrate::I440FXChipsetV1 = offer.parse()?;
+        self.pci_cfg.set_addr(data.pci_cfg_addr);
         Ok(())
     }
 }
+
 impl Entity for I440Fx {
     fn type_name(&self) -> &'static str {
         "chipset-i440fx"
@@ -244,7 +245,7 @@ impl Entity for I440Fx {
         ])
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
 
@@ -381,26 +382,24 @@ impl Entity for Piix4HostBridge {
         self.pci_state.reset(self);
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Multi(self)
     }
 }
-impl Migrate for Piix4HostBridge {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::Piix4HostBridgeV1 {
-            pci_state: self.pci_state.export(),
-        })
+impl MigrateMulti for Piix4HostBridge {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        MigrateMulti::export(&self.pci_state, output, ctx)
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &MigrateCtx,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::Piix4HostBridgeV1 =
-            erased_serde::deserialize(deserializer)?;
-        self.pci_state.import(deserialized.pci_state)?;
-        Ok(())
+        MigrateMulti::import(&self.pci_state, offer, ctx)
     }
 }
 
@@ -522,35 +521,41 @@ impl Entity for Piix3Lpc {
         self.pci_state.reset(self);
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Multi(self)
     }
 }
-impl Migrate for Piix3Lpc {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+impl MigrateMulti for Piix3Lpc {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
         let pir = self.reg_pir.lock().unwrap();
-        Box::new(migrate::Piix3LpcV1 {
-            pci_state: self.pci_state.export(),
-            pir_regs: *pir,
-            post_code: self.post_code.load(Ordering::Acquire),
-        })
+        output.push(
+            migrate::Piix3LpcV1 {
+                pir_regs: *pir,
+                post_code: self.post_code.load(Ordering::Acquire),
+            }
+            .emit(),
+        )?;
+        drop(pir);
+
+        MigrateMulti::export(&self.pci_state, output, ctx)
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &MigrateCtx,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::Piix3LpcV1 =
-            erased_serde::deserialize(deserializer)?;
-        self.pci_state.import(deserialized.pci_state)?;
+        let input: migrate::Piix3LpcV1 = offer.take()?;
 
         // The device is paused during import. Acquiring the PIR lock will
         // add an implicit barrier, so relaxed ordering is OK here.
-        self.post_code.store(deserialized.post_code, Ordering::Relaxed);
-        *self.reg_pir.lock().unwrap() = deserialized.pir_regs;
+        self.post_code.store(input.post_code, Ordering::Relaxed);
+        *self.reg_pir.lock().unwrap() = input.pir_regs;
 
-        Ok(())
+        MigrateMulti::import(&self.pci_state, offer, ctx)
     }
 }
 
@@ -944,86 +949,100 @@ impl Entity for Piix3PM {
         Ok(())
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Multi(self)
     }
 }
-impl Migrate for Piix3PM {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+impl MigrateMulti for Piix3PM {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
         let regs = &self.inner.lock().unwrap().regs;
-        Box::new(migrate::Piix3PmV1 {
-            pci_state: self.pci_state.export(),
-            pm_base: regs.pm_base,
-            pm_status: regs.pm_status.bits(),
-            pm_ena: regs.pm_ena.bits(),
-            pm_ctrl: regs.pm_ctrl.bits(),
-        })
+        output.push(
+            migrate::Piix3PmV1 {
+                pm_base: regs.pm_base,
+                pm_status: regs.pm_status.bits(),
+                pm_ena: regs.pm_ena.bits(),
+                pm_ctrl: regs.pm_ctrl.bits(),
+            }
+            .emit(),
+        )?;
+
+        MigrateMulti::export(&self.pci_state, output, ctx)?;
+
+        Ok(())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &MigrateCtx,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::Piix3PmV1 =
-            erased_serde::deserialize(deserializer)?;
+        let data: migrate::Piix3PmV1 = offer.take()?;
 
         let regs = &mut self.inner.lock().unwrap().regs;
-        regs.pm_base = deserialized.pm_base;
-        regs.pm_status =
-            PmSts::from_bits(deserialized.pm_status).ok_or_else(|| {
-                MigrateStateError::ImportFailed(format!(
-                    "PIIX3 pm_status: failed to import saved value {:#x}",
-                    deserialized.pm_status,
-                ))
-            })?;
-        regs.pm_ena =
-            PmEn::from_bits(deserialized.pm_ena).ok_or_else(|| {
-                MigrateStateError::ImportFailed(format!(
-                    "PIIX3 pm_ena: failed to import saved value {:#x}",
-                    deserialized.pm_ena,
-                ))
-            })?;
-        regs.pm_ctrl =
-            PmCntrl::from_bits(deserialized.pm_ctrl).ok_or_else(|| {
-                MigrateStateError::ImportFailed(format!(
-                    "PIIX3 pm_ctrl: failed to import saved value {:#x}",
-                    deserialized.pm_ctrl,
-                ))
-            })?;
-        self.pci_state.import(deserialized.pci_state)?;
+        regs.pm_base = data.pm_base;
+        regs.pm_status = PmSts::from_bits(data.pm_status).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "PIIX3 pm_status: failed to import saved value {:#x}",
+                data.pm_status,
+            ))
+        })?;
+        regs.pm_ena = PmEn::from_bits(data.pm_ena).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "PIIX3 pm_ena: failed to import saved value {:#x}",
+                data.pm_ena,
+            ))
+        })?;
+        regs.pm_ctrl = PmCntrl::from_bits(data.pm_ctrl).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "PIIX3 pm_ctrl: failed to import saved value {:#x}",
+                data.pm_ctrl,
+            ))
+        })?;
+
+        MigrateMulti::import(&self.pci_state, offer, ctx)?;
 
         Ok(())
     }
 }
 
 mod migrate {
-    use crate::hw::pci::migrate::PciStateV1;
+    use crate::migrate::*;
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
-    pub struct I440TopV1 {
+    pub struct I440FXChipsetV1 {
         pub pci_cfg_addr: u32,
     }
-
-    #[derive(Deserialize, Serialize)]
-    pub struct Piix4HostBridgeV1 {
-        pub pci_state: PciStateV1,
+    impl Schema<'_> for I440FXChipsetV1 {
+        fn id() -> SchemaId {
+            ("i440fx-chipset", 1)
+        }
     }
 
     #[derive(Deserialize, Serialize)]
     pub struct Piix3LpcV1 {
-        pub pci_state: PciStateV1,
         pub pir_regs: [u8; super::PIR_LEN],
         pub post_code: u8,
+    }
+    impl Schema<'_> for Piix3LpcV1 {
+        fn id() -> SchemaId {
+            ("piix3-lpc", 1)
+        }
     }
 
     #[derive(Deserialize, Serialize)]
     pub struct Piix3PmV1 {
-        pub pci_state: PciStateV1,
         pub pm_base: u16,
         pub pm_status: u16,
         pub pm_ena: u16,
         pub pm_ctrl: u16,
+    }
+    impl Schema<'_> for Piix3PmV1 {
+        fn id() -> SchemaId {
+            ("piix3-pm", 1)
+        }
     }
 }
