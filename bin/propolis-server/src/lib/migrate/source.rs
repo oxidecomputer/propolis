@@ -1,7 +1,9 @@
 use futures::{SinkExt, StreamExt};
 use propolis::common::GuestAddr;
 use propolis::inventory::Order;
-use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
+use propolis::migrate::{
+    MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
+};
 use slog::{error, info, trace};
 use std::convert::TryInto;
 use std::io;
@@ -16,7 +18,8 @@ use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
 use crate::migrate::{
-    Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
+    Device, DevicePayload, MigrateError, MigratePhase, MigrateRole,
+    MigrationState, PageIter,
 };
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
@@ -260,21 +263,43 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             // Collect together the serialized state for all the devices
             instance_guard.inventory().for_each_node(Order::Pre, |_, rec| {
                 let entity = rec.entity();
+                let mut dev = Device {
+                    instance_name: rec.name().to_owned(),
+                    payload: Vec::new(),
+                };
                 match entity.migrate() {
                     Migrator::NonMigratable => {
-                        error!(self.log(), "Can't migrate instance with non-migratable device ({})", rec.name());
-                        return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable));
+                        error!(self.log(),
+                            "Can't migrate instance with non-migratable device ({})",
+                            rec.name());
+                        return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable.to_string()));
                     },
-                    // No device state needs to be trasmitted for 'Simple' devices
-                    Migrator::Simple => {},
-                    Migrator::Custom(migrate) => {
-                        let payload = migrate.export(&migrate_ctx);
-                        device_states.push(Device {
-                            instance_name: rec.name().to_owned(),
-                            payload: ron::ser::to_string(&payload)
+                    // No device state needs to be trasmitted for 'Empty' devices
+                    Migrator::Empty => {},
+                    Migrator::Single(mech) => {
+                        let out = mech.export(&migrate_ctx)?;
+                        dev.payload.push(DevicePayload {
+                            kind: out.kind.to_owned(),
+                            version: out.version,
+                            data: ron::ser::to_string(&out.payload)
                                 .map_err(codec::ProtocolError::from)?,
                         });
-                    },
+                        device_states.push(dev);
+                    }
+                    Migrator::Multi(mech) => {
+                        let mut outputs = PayloadOutputs::new();
+                        mech.export(&mut outputs, &migrate_ctx)?;
+
+                        for part in outputs {
+                            dev.payload.push(DevicePayload {
+                                kind: part.kind.to_owned(),
+                                version: part.version,
+                                data: ron::ser::to_string(&part.payload)
+                                    .map_err(codec::ProtocolError::from)?,
+                            });
+                        }
+                        device_states.push(dev);
+                    }
                 }
                 Ok(())
             })?;

@@ -145,7 +145,7 @@ pub enum MigrateError {
 
     /// Failed to export/import device state for migration
     #[error("failed to migrate device state: {0}")]
-    DeviceState(#[from] MigrateStateError),
+    DeviceState(String),
 
     /// The destination instance doesn't recognize the received device
     #[error("received device state for unknown device ({0})")]
@@ -184,6 +184,11 @@ impl From<VmControllerError> for MigrateError {
         }
     }
 }
+impl From<MigrateStateError> for MigrateError {
+    fn from(value: MigrateStateError) -> Self {
+        Self::DeviceState(value.to_string())
+    }
+}
 
 impl From<MigrateError> for HttpError {
     fn from(err: MigrateError) -> Self {
@@ -218,11 +223,21 @@ impl From<MigrateError> for HttpError {
 #[derive(Debug, Deserialize, Serialize)]
 struct Device {
     /// The unique name identifying the device in the instance inventory.
-    instance_name: String,
+    pub instance_name: String,
 
-    /// The (Ron) serialized device state.
-    /// See `Migrate::export`.
-    payload: String,
+    /// Device state data
+    pub payload: Vec<DevicePayload>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+struct DevicePayload {
+    /// Payload schema type
+    pub kind: String,
+
+    /// Payload schema version
+    pub version: u32,
+
+    /// Serialized device state.
+    pub data: String,
 }
 
 /// Begin the migration process (source-side).

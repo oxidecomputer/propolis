@@ -7,7 +7,7 @@ use super::{bus, BarN, Endpoint};
 use crate::accessors::{MemAccessor, MsiAccessor};
 use crate::common::*;
 use crate::intr_pins::IntrPin;
-use crate::migrate::MigrateStateError;
+use crate::migrate::*;
 use crate::util::regmap::{Flags, RegMap};
 
 use lazy_static::lazy_static;
@@ -633,6 +633,24 @@ impl DeviceState {
     }
 }
 
+impl MigrateMulti for DeviceState {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        _ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        output.push(self.export().emit())
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        _ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        self.import(offer.take()?)
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum IntrMode {
     Disabled,
@@ -1196,6 +1214,7 @@ impl Builder {
 
 pub mod migrate {
     use crate::hw::pci::bar;
+    use crate::migrate::*;
 
     use serde::{Deserialize, Serialize};
 
@@ -1221,6 +1240,11 @@ pub mod migrate {
         pub reg_intr_line: u8,
         pub bars: bar::migrate::BarStateV1,
         pub msix: Option<MsixStateV1>,
+    }
+    impl Schema<'_> for PciStateV1 {
+        fn id() -> SchemaId {
+            ("pci-device", 1)
+        }
     }
 }
 

@@ -17,7 +17,6 @@ use super::pci::{PciVirtio, PciVirtioState};
 use super::queue::{self, VirtQueue, VirtQueues};
 use super::{VirtioDevice, VqChange, VqIntr};
 
-use erased_serde::Serialize;
 use lazy_static::lazy_static;
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
@@ -306,40 +305,34 @@ impl Entity for PciVirtioViona {
         let _ = self.hdl.delete();
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Multi(self)
     }
 }
-impl Migrate for PciVirtioViona {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::PciVirtioVionaV1 {
-            pci_virtio_state: PciVirtio::export(self),
-        })
-    }
 
-    fn import(
-        &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
-        _ctx: &MigrateCtx,
-    ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::PciVirtioVionaV1 =
-            erased_serde::deserialize(deserializer)?;
-
-        PciVirtio::import(self, deserialized.pci_virtio_state)?;
-
-        // Configure viona device with already-negotiated features
-        let nego_feat = self.virtio_state.negotiated_features();
-        self.hdl.set_features(nego_feat)?;
-
-        Ok(())
-    }
-}
 impl PciVirtio for PciVirtioViona {
     fn virtio_state(&self) -> &PciVirtioState {
         &self.virtio_state
     }
     fn pci_state(&self) -> &pci::DeviceState {
         &self.pci_state
+    }
+}
+
+impl MigrateMulti for PciVirtioViona {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        <dyn PciVirtio>::export(self, output, ctx)
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        <dyn PciVirtio>::import(self, offer, ctx)
     }
 }
 
@@ -670,16 +663,6 @@ impl Drop for Poller {
         unsafe {
             libc::close(self.epfd);
         }
-    }
-}
-
-pub mod migrate {
-    use crate::hw::virtio::pci::migrate::PciVirtioStateV1;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Deserialize, Serialize)]
-    pub struct PciVirtioVionaV1 {
-        pub pci_virtio_state: PciVirtioStateV1,
     }
 }
 

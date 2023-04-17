@@ -1,7 +1,10 @@
 use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
 use propolis::common::GuestAddr;
-use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
+use propolis::inventory::Entity;
+use propolis::migrate::{
+    MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
+};
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
 use std::io;
@@ -278,53 +281,115 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                     "Applying state to device {}", device.instance_name
                 );
 
-                let dev_ent = inv
+                let target = inv
                     .get_by_name(&device.instance_name)
                     .ok_or_else(|| {
                         MigrateError::UnknownDevice(
                             device.instance_name.clone(),
                         )
                     })?;
-
-                match dev_ent.migrate() {
-                    Migrator::NonMigratable => {
-                        error!(
-                            self.log(),
-                            "Can't migrate instance with non-migratable \
-                               device ({})",
-                            device.instance_name
-                        );
-                        return Err(MigrateError::DeviceState(
-                            MigrateStateError::NonMigratable,
-                        ));
-                    }
-                    Migrator::Simple => {
-                        // The source shouldn't be sending devices with empty payloads
-                        warn!(
-                            self.log(),
-                            "received unexpected device state for device {}",
-                            device.instance_name
-                        );
-                    }
-                    Migrator::Custom(migrate) => {
-                        let mut deserializer =
-                            ron::Deserializer::from_str(&device.payload)
-                                .map_err(codec::ProtocolError::from)?;
-                        let deserializer =
-                            &mut <dyn erased_serde::Deserializer>::erase(
-                                &mut deserializer,
-                            );
-                        migrate.import(
-                            dev_ent.type_name(),
-                            deserializer,
-                            &migrate_ctx,
-                        )?;
-                    }
-                }
+                self.import_device(&target, &device, &migrate_ctx)?;
             }
         }
 
         self.send_msg(codec::Message::Okay).await
+    }
+
+    fn import_device(
+        &self,
+        target: &Arc<dyn Entity>,
+        device: &Device,
+        migrate_ctx: &MigrateCtx,
+    ) -> Result<(), MigrateError> {
+        match target.migrate() {
+            Migrator::NonMigratable => {
+                error!(
+                    self.log(),
+                    "Can't migrate instance with non-migratable \
+                               device ({})",
+                    device.instance_name
+                );
+                return Err(MigrateStateError::NonMigratable.into());
+            }
+            Migrator::Empty => {
+                // The source shouldn't be sending devices with empty payloads
+                warn!(
+                    self.log(),
+                    "received unexpected device state for device {}",
+                    device.instance_name
+                );
+            }
+            Migrator::Single(mech) => {
+                if device.payload.len() != 1 {
+                    return Err(MigrateError::DeviceState(format!(
+                        "Unexpected payload count {}",
+                        device.payload.len()
+                    )));
+                }
+
+                let payload = &device.payload[0];
+                let ron_data = &mut ron::Deserializer::from_str(&payload.data)
+                    .map_err(codec::ProtocolError::from)?;
+                let clean =
+                    Box::new(<dyn erased_serde::Deserializer>::erase(ron_data));
+                let offer = PayloadOffer {
+                    kind: &payload.kind,
+                    version: payload.version,
+                    payload: clean,
+                };
+
+                mech.import(offer, &migrate_ctx)?;
+            }
+            Migrator::Multi(mech) => {
+                // Assembling the collection of PayloadOffers looks a bit more
+                // verbose than ideal, but gathering the borrows (those split
+                // from Device, and the mutable Deserializer) all at once
+                // requires a delicate dance.
+                let mut payload_desers: Vec<ron::Deserializer> =
+                    Vec::with_capacity(device.payload.len());
+                let mut metadata: Vec<(&str, u32)> =
+                    Vec::with_capacity(device.payload.len());
+                for payload in device.payload.iter() {
+                    payload_desers.push(
+                        ron::Deserializer::from_str(&payload.data)
+                            .map_err(codec::ProtocolError::from)?,
+                    );
+                    metadata.push((&payload.kind, payload.version));
+                }
+                let offer_iter = metadata
+                    .iter()
+                    .zip(payload_desers.iter_mut())
+                    .map(|(meta, deser)| PayloadOffer {
+                        kind: meta.0,
+                        version: meta.1,
+                        payload: Box::new(
+                            <dyn erased_serde::Deserializer>::erase(deser),
+                        ),
+                    });
+
+                let mut offer = PayloadOffers::new(offer_iter);
+                mech.import(&mut offer, &migrate_ctx)?;
+
+                let mut count = 0;
+                for offer in offer.remaining() {
+                    error!(
+                        self.log(),
+                        "Unexpected payload - device:{} kind:{} version:{}",
+                        &device.instance_name,
+                        offer.kind,
+                        offer.version,
+                    );
+                    count += 1;
+                }
+                if count != 0 {
+                    return Err(MigrateError::DeviceState(format!(
+                        "Found {} unconsumed payload(s) for device {}",
+                        count, &device.instance_name,
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn ram_pull(&mut self) -> Result<(), MigrateError> {

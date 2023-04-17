@@ -1,17 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use super::uart16550::Uart;
+use super::uart16550::{migrate, Uart};
 use crate::chardev::*;
 use crate::common::*;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
-use erased_serde::Serialize;
-
-/*
- * Low Pin Count UART
- */
+// Low Pin Count UART
 
 pub const REGISTER_LEN: usize = 8;
 
@@ -79,8 +75,9 @@ impl LpcUart {
         let read_notify = !readable_before && state.uart.is_readable();
         let write_notify = !writable_before && state.uart.is_writable();
 
-        // The uart state lock cannot be held while dispatching notifications since those callbacks
-        // could immediately attempt to read/write the pending data.
+        // The uart state lock cannot be held while dispatching notifications
+        // since those callbacks could immediately attempt to read/write the
+        // pending data.
         drop(state);
         if read_notify {
             self.notify_readable.notify(self as &dyn Source);
@@ -144,35 +141,25 @@ impl Entity for LpcUart {
         LpcUart::reset(self);
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for LpcUart {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+impl MigrateSingle for LpcUart {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
         let state = self.state.lock().unwrap();
-        Box::new(migrate::LpcUartV1 { uart_state: state.uart.export() })
+        Ok(state.uart.export().emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::LpcUartV1 =
-            erased_serde::deserialize(deserializer)?;
+        let data = offer.parse::<migrate::Uart16550V1>()?;
         let mut state = self.state.lock().unwrap();
-        state.uart.import(&deserialized.uart_state);
-        Ok(())
-    }
-}
-
-pub mod migrate {
-    use crate::hw::uart::uart16550::migrate::UartV1;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Deserialize, Serialize)]
-    pub struct LpcUartV1 {
-        pub uart_state: UartV1,
+        state.uart.import(&data)
     }
 }

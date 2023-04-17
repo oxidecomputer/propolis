@@ -4,8 +4,6 @@ use crate::inventory::Entity;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
-use erased_serde::Serialize;
-
 pub struct BhyveHpet {
     hdl: Arc<VmmHdl>,
 }
@@ -20,28 +18,29 @@ impl Entity for BhyveHpet {
         "lpc-bhyve-hpet"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for BhyveHpet {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::HpetV1::read(&self.hdl).unwrap())
+impl MigrateSingle for BhyveHpet {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        Ok(migrate::HpetV1::read(&self.hdl)?.emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::HpetV1 =
-            erased_serde::deserialize(deserializer)?;
-        deserialized.write(&self.hdl)?;
+        offer.parse::<migrate::HpetV1>()?.write(&self.hdl)?;
         Ok(())
     }
 }
 
 pub mod migrate {
+    use crate::migrate::*;
     use crate::vmm;
 
     use serde::{Deserialize, Serialize};
@@ -125,6 +124,11 @@ pub mod migrate {
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
             vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.to_raw())?;
             Ok(())
+        }
+    }
+    impl Schema<'_> for HpetV1 {
+        fn id() -> SchemaId {
+            ("bhyve-hpet", 1)
         }
     }
 }

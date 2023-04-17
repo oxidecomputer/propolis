@@ -9,7 +9,6 @@ use crate::vmm::MemCtx;
 use bits::*;
 
 use byteorder::{ByteOrder, BE, LE};
-use erased_serde::Serialize;
 
 pub type Result = std::result::Result<(), &'static str>;
 
@@ -655,39 +654,43 @@ impl Entity for FwCfg {
         "qemu-fwcfg"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for FwCfg {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+impl MigrateSingle for FwCfg {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> std::result::Result<PayloadOutput, MigrateStateError> {
         let state = self.state.lock().unwrap();
-        Box::new(migrate::FwCfgV1 {
+        Ok(migrate::FwCfgV1 {
             dma_addr: state.dma_addr(),
             selector: state.selector,
             offset: state.offset,
-        })
+        }
+        .emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> std::result::Result<(), MigrateStateError> {
-        let deserialized: migrate::FwCfgV1 =
-            erased_serde::deserialize(deserializer)?;
+        let data: migrate::FwCfgV1 = offer.parse()?;
 
         let mut inner = self.state.lock().unwrap();
-        inner.addr_low = deserialized.dma_addr as u32;
-        inner.addr_high = (deserialized.dma_addr >> 32) as u32;
-        inner.selector = deserialized.selector;
-        inner.offset = deserialized.offset;
+        inner.addr_low = data.dma_addr as u32;
+        inner.addr_high = (data.dma_addr >> 32) as u32;
+        inner.selector = data.selector;
+        inner.offset = data.offset;
 
         Ok(())
     }
 }
 
 pub mod migrate {
+    use crate::migrate::*;
+
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
@@ -695,6 +698,11 @@ pub mod migrate {
         pub dma_addr: u64,
         pub selector: u16,
         pub offset: u32,
+    }
+    impl Schema<'_> for FwCfgV1 {
+        fn id() -> SchemaId {
+            ("qemu-fwcfg", 1)
+        }
     }
 }
 

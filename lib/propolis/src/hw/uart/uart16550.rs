@@ -1,6 +1,10 @@
-use bits::*;
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+
+use crate::migrate::MigrateStateError;
+
+use serde::{Deserialize, Serialize};
+
+use bits::*;
 
 /*
  * 16550 UART
@@ -275,8 +279,8 @@ impl Uart {
             self.reg_line_status &= !LSR_DR;
         }
     }
-    pub(super) fn export(&self) -> migrate::UartV1 {
-        migrate::UartV1 {
+    pub(super) fn export(&self) -> migrate::Uart16550V1 {
+        migrate::Uart16550V1 {
             intr_enable: self.reg_intr_enable,
             intr_status: self.reg_intr_status,
             line_ctrl: self.reg_line_ctrl,
@@ -287,12 +291,28 @@ impl Uart {
             div_low: self.reg_div_low,
             div_high: self.reg_div_high,
             thre_state: self.thre_intr,
-            rx_fifo: self.rx_fifo.clone(),
-            tx_fifo: self.tx_fifo.clone(),
+            rx_fifo: self.rx_fifo.buf.clone().into(),
+            tx_fifo: self.tx_fifo.buf.clone().into(),
         }
     }
 
-    pub(super) fn import(&mut self, state: &migrate::UartV1) {
+    pub(super) fn import(
+        &mut self,
+        state: &migrate::Uart16550V1,
+    ) -> Result<(), MigrateStateError> {
+        if self.rx_fifo.len < state.rx_fifo.len() {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "RX FIFO contents too long: {}",
+                state.rx_fifo.len()
+            )));
+        }
+        if self.tx_fifo.len < state.tx_fifo.len() {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "TX FIFO contents too long: {}",
+                state.rx_fifo.len()
+            )));
+        }
+
         self.reg_intr_enable = state.intr_enable;
         self.reg_intr_status = state.intr_status;
         self.reg_line_ctrl = state.line_ctrl;
@@ -303,8 +323,9 @@ impl Uart {
         self.reg_div_low = state.div_low;
         self.reg_div_high = state.div_high;
         self.thre_intr = state.thre_state;
-        self.rx_fifo = state.rx_fifo.clone();
-        self.tx_fifo = state.tx_fifo.clone();
+        self.rx_fifo.buf = state.rx_fifo.clone().into();
+        self.tx_fifo.buf = state.tx_fifo.clone().into();
+        Ok(())
     }
 }
 
@@ -341,12 +362,12 @@ impl Fifo {
 }
 
 pub mod migrate {
+    use crate::migrate::*;
+
     use serde::{Deserialize, Serialize};
 
-    use super::Fifo;
-
     #[derive(Deserialize, Serialize)]
-    pub struct UartV1 {
+    pub struct Uart16550V1 {
         pub intr_enable: u8,
         pub intr_status: u8,
         pub line_ctrl: u8,
@@ -357,8 +378,13 @@ pub mod migrate {
         pub div_low: u8,
         pub div_high: u8,
         pub thre_state: bool,
-        pub rx_fifo: Fifo,
-        pub tx_fifo: Fifo,
+        pub rx_fifo: Vec<u8>,
+        pub tx_fifo: Vec<u8>,
+    }
+    impl Schema<'_> for Uart16550V1 {
+        fn id() -> SchemaId {
+            ("uart-16550", 1)
+        }
     }
 }
 

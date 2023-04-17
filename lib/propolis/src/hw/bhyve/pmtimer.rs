@@ -4,8 +4,6 @@ use crate::inventory::Entity;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
-use erased_serde::Serialize;
-
 pub struct BhyvePmTimer {
     hdl: Arc<VmmHdl>,
 }
@@ -20,28 +18,29 @@ impl Entity for BhyvePmTimer {
         "lpc-bhyve-pmtimer"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for BhyvePmTimer {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
-        Box::new(migrate::BhyvePmTimerV1::read(&self.hdl))
+impl MigrateSingle for BhyvePmTimer {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        Ok(migrate::BhyvePmTimerV1::read(&self.hdl)?.emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let deserialized: migrate::BhyvePmTimerV1 =
-            erased_serde::deserialize(deserializer)?;
-        deserialized.write(&self.hdl)?;
+        offer.parse::<migrate::BhyvePmTimerV1>()?.write(&self.hdl)?;
         Ok(())
     }
 }
 
 pub mod migrate {
+    use crate::migrate::*;
     use crate::vmm;
 
     use serde::{Deserialize, Serialize};
@@ -51,16 +50,16 @@ pub mod migrate {
         pub start_time: i64,
     }
     impl BhyvePmTimerV1 {
-        pub(super) fn read(hdl: &vmm::VmmHdl) -> Self {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
             let vdi: bhyve_api::vdi_pm_timer_v1 =
-                vmm::data::read(hdl, -1, bhyve_api::VDC_PM_TIMER, 1).unwrap();
+                vmm::data::read(hdl, -1, bhyve_api::VDC_PM_TIMER, 1)?;
 
-            Self {
+            Ok(Self {
                 // vdi_pm_timer_v1 also carries the ioport to which the pmtimer
                 // is attached, but migration of that state is handled by the
                 // chipset PM device.
                 start_time: vdi.vpt_time_base,
-            }
+            })
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
@@ -70,6 +69,11 @@ pub mod migrate {
             };
             vmm::data::write(hdl, -1, bhyve_api::VDC_PM_TIMER, 1, vdi)?;
             Ok(())
+        }
+    }
+    impl Schema<'_> for BhyvePmTimerV1 {
+        fn id() -> SchemaId {
+            ("bhyve-atpic", 1)
         }
     }
 }

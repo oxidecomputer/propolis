@@ -10,7 +10,7 @@ use crate::common::*;
 use crate::hw::ids::pci::VENDOR_VIRTIO;
 use crate::hw::pci;
 use crate::intr_pins::IntrPin;
-use crate::migrate::MigrateStateError;
+use crate::migrate::*;
 use crate::util::regmap::RegMap;
 
 use lazy_static::lazy_static;
@@ -84,47 +84,6 @@ impl VirtioState {
 pub trait PciVirtio: VirtioDevice + Send + Sync + 'static {
     fn virtio_state(&self) -> &PciVirtioState;
     fn pci_state(&self) -> &pci::DeviceState;
-
-    fn export(&self) -> migrate::PciVirtioStateV1 {
-        let vs = self.virtio_state();
-        let ps = self.pci_state();
-
-        let queues = vs.queues.iter().map(|q| q.export()).collect();
-        migrate::PciVirtioStateV1 {
-            pci: ps.export(),
-            state: vs.export(),
-            queues,
-        }
-    }
-
-    fn import(
-        &self,
-        input: migrate::PciVirtioStateV1,
-    ) -> Result<(), MigrateStateError> {
-        let vs = self.virtio_state();
-        let ps = self.pci_state();
-
-        // Keep Virtio in ISR-only mode (no lintr-pin or MSIs) during import so
-        // it does not spuriously emit any observable interrupt events until all
-        // of the state can be made consistent prior to any re-enabling.
-        vs.set_intr_mode(ps, IntrMode::IsrOnly);
-
-        // Bulk of the virtio state
-        vs.import(input.state)?;
-
-        // VirtQueue state
-        for (vq, vq_input) in vs.queues.iter().zip(input.queues.into_iter()) {
-            vq.import(vq_input)?;
-        }
-
-        // PCI state
-        ps.import(input.pci)?;
-
-        // Reconcile interrupt mode now that PCI state is populated too
-        vs.set_intr_mode(ps, ps.get_intr_mode().into());
-
-        Ok(())
-    }
 }
 
 impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
@@ -527,12 +486,17 @@ impl PciVirtioState {
         let state = self.state.lock().unwrap();
         state.nego_feat
     }
-
-    pub fn export(&self) -> migrate::DeviceStateV1 {
+}
+impl MigrateMulti for PciVirtioState {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        _ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
         let state = self.state.lock().unwrap();
         let (isr_queue, isr_cfg) = self.isr_state.read();
 
-        migrate::DeviceStateV1 {
+        let device = migrate::DeviceStateV1 {
             status: state.status.bits(),
             queue_sel: state.queue_sel,
             nego_feat: state.nego_feat,
@@ -540,25 +504,76 @@ impl PciVirtioState {
             msix_queue_vec: state.msix_queue_vec.clone(),
             isr_queue,
             isr_cfg,
-        }
+        };
+        drop(state);
+
+        let queues = self.queues.iter().map(|q| q.export()).collect();
+
+        output.push(migrate::PciVirtioStateV1 { device, queues }.emit())
     }
 
-    pub fn import(
+    fn import(
         &self,
-        input: migrate::DeviceStateV1,
+        offer: &mut PayloadOffers,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
+        let input: migrate::PciVirtioStateV1 = offer.take()?;
+
+        let dev = input.device;
         let mut state = self.state.lock().unwrap();
-        state.status = Status::from_bits(input.status).ok_or_else(|| {
+        state.status = Status::from_bits(dev.status).ok_or_else(|| {
             MigrateStateError::ImportFailed(format!(
                 "virtio status: failed to import saved value {:#x}",
                 state.status
             ))
         })?;
-        state.queue_sel = input.queue_sel;
-        state.nego_feat = input.nego_feat;
-        state.msix_cfg_vec = input.msix_cfg_vec;
-        state.msix_queue_vec = input.msix_queue_vec;
-        self.isr_state.write(input.isr_queue, input.isr_cfg);
+        state.queue_sel = dev.queue_sel;
+        state.nego_feat = dev.nego_feat;
+        state.msix_cfg_vec = dev.msix_cfg_vec;
+        state.msix_queue_vec = dev.msix_queue_vec;
+        self.isr_state.write(dev.isr_queue, dev.isr_cfg);
+
+        // VirtQueue state
+        for (vq, vq_input) in self.queues.iter().zip(input.queues.into_iter()) {
+            vq.import(vq_input)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl MigrateMulti for dyn PciVirtio {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        let ps = self.pci_state();
+        let vs = self.virtio_state();
+
+        MigrateMulti::export(vs, output, ctx)?;
+        MigrateMulti::export(ps, output, ctx)?;
+        Ok(())
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        let ps = self.pci_state();
+        let vs = self.virtio_state();
+
+        // Keep Virtio in ISR-only mode (no lintr-pin or MSIs) during import so
+        // it does not spuriously emit any observable interrupt events until all
+        // of the state can be made consistent prior to any re-enabling.
+        vs.set_intr_mode(ps, IntrMode::IsrOnly);
+
+        MigrateMulti::import(vs, offer, ctx)?;
+        MigrateMulti::import(ps, offer, ctx)?;
+
+        // Reconcile interrupt mode now that PCI state is populated too
+        vs.set_intr_mode(ps, ps.get_intr_mode().into());
 
         Ok(())
     }
@@ -757,25 +772,9 @@ lazy_static! {
 }
 
 pub mod migrate {
-    use crate::hw::pci::migrate::PciStateV1;
     use crate::hw::virtio::queue;
+    use crate::migrate::*;
     use serde::{Deserialize, Serialize};
-
-    #[derive(Deserialize, Serialize)]
-    pub enum IntrModeV1 {
-        IsrOnly,
-        IsrLintr,
-        Msi,
-    }
-    impl From<super::IntrMode> for IntrModeV1 {
-        fn from(inp: super::IntrMode) -> Self {
-            match inp {
-                super::IntrMode::IsrOnly => IntrModeV1::IsrOnly,
-                super::IntrMode::IsrLintr => IntrModeV1::IsrLintr,
-                super::IntrMode::Msi => IntrModeV1::Msi,
-            }
-        }
-    }
 
     #[derive(Deserialize, Serialize)]
     pub struct DeviceStateV1 {
@@ -790,8 +789,12 @@ pub mod migrate {
 
     #[derive(Deserialize, Serialize)]
     pub struct PciVirtioStateV1 {
-        pub pci: PciStateV1,
-        pub state: DeviceStateV1,
+        pub device: DeviceStateV1,
         pub queues: Vec<queue::migrate::VirtQueueV1>,
+    }
+    impl Schema<'_> for PciVirtioStateV1 {
+        fn id() -> SchemaId {
+            ("pci-virtio", 1)
+        }
     }
 }

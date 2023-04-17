@@ -10,7 +10,6 @@ use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
-use erased_serde::Serialize;
 use rfb::rfb::KeyEvent;
 
 use super::keyboard::KeyEventRep;
@@ -595,15 +594,19 @@ impl Entity for PS2Ctrl {
         PS2Ctrl::reset(self);
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Custom(self)
+        Migrator::Single(self)
     }
 }
-impl Migrate for PS2Ctrl {
-    fn export(&self, _ctx: &MigrateCtx) -> Box<dyn Serialize> {
+impl MigrateSingle for PS2Ctrl {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
         let state = self.state.lock().unwrap();
         let kbd = &state.pri_port;
         let mouse = &state.aux_port;
-        Box::new(migrate::PS2CtrlV1 {
+
+        Ok(migrate::PS2CtrlV1 {
             ctrl: migrate::PS2CtrlStateV1 {
                 response: state.resp,
                 cmd_prefix: state.cmd_prefix,
@@ -626,20 +629,20 @@ impl Migrate for PS2Ctrl {
                 resolution: mouse.resolution,
                 sample_rate: mouse.sample_rate,
             },
-        })
+        }
+        .emit())
     }
 
     fn import(
         &self,
-        _dev: &str,
-        deserializer: &mut dyn erased_serde::Deserializer,
+        mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let migrate::PS2CtrlV1 {
             ctrl: saved_ctrl,
             kbd: saved_kbd,
             mouse: saved_mouse,
-        } = erased_serde::deserialize(deserializer)?;
+        } = offer.parse()?;
 
         let mut inner = self.state.lock().unwrap();
 
@@ -668,7 +671,7 @@ impl Migrate for PS2Ctrl {
         kbd.typematic = saved_kbd.typematic;
         kbd.scan_code_set = PS2ScanCodeSet::from_byte(saved_kbd.scan_code_set)
             .ok_or_else(|| {
-                MigrateStateError::ImportDeserialization(format!(
+                MigrateStateError::ImportFailed(format!(
                     "PS2 kbd scan code: failed to import value {}",
                     saved_kbd.scan_code_set
                 ))
@@ -679,7 +682,7 @@ impl Migrate for PS2Ctrl {
         mouse.cur_cmd = saved_mouse.current_cmd;
         mouse.status =
             PS2MStatus::from_bits(saved_mouse.status).ok_or_else(|| {
-                MigrateStateError::ImportDeserialization(format!(
+                MigrateStateError::ImportFailed(format!(
                     "PS2 mouse status: failed to import value {:#x}",
                     saved_mouse.status
                 ))
@@ -1079,6 +1082,8 @@ impl Default for PS2Mouse {
 }
 
 pub mod migrate {
+    use crate::migrate::*;
+
     use super::PS2C_RAM_LEN;
     use serde::{Deserialize, Serialize};
 
@@ -1088,6 +1093,12 @@ pub mod migrate {
         pub kbd: PS2KbdV1,
         pub mouse: PS2MouseV1,
     }
+    impl Schema<'_> for PS2CtrlV1 {
+        fn id() -> SchemaId {
+            ("ps2-ctrl", 1)
+        }
+    }
+
     #[derive(Deserialize, Serialize)]
     pub struct PS2CtrlStateV1 {
         pub response: Option<u8>,
