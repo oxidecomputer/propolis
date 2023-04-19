@@ -336,8 +336,9 @@ async fn test_stdin_to_websockets_task() {
 async fn serial(
     addr: SocketAddr,
     byte_offset: Option<i64>,
+    log: Logger,
 ) -> anyhow::Result<()> {
-    let mut ws_console = serial_connect(addr, byte_offset).await?;
+    let mut ws_console = serial_connect(addr, byte_offset, log).await?;
 
     let _raw_guard = RawTermiosGuard::stdio_guard()
         .with_context(|| anyhow!("failed to set raw mode"))?;
@@ -398,6 +399,7 @@ async fn serial(
 async fn serial_connect(
     addr: SocketAddr,
     byte_offset: Option<i64>,
+    log: Logger,
 ) -> anyhow::Result<InstanceSerialConsoleHelper> {
     let client = propolis_client::Client::new(&format!("http://{}", addr));
     let mut req = client.instance_serial();
@@ -412,7 +414,7 @@ async fn serial_connect(
         .await
         .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
         .into_inner();
-    Ok(InstanceSerialConsoleHelper::new(upgraded).await)
+    Ok(InstanceSerialConsoleHelper::new(upgraded, Some(log)).await)
 }
 
 async fn migrate_instance(
@@ -571,7 +573,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Get => get_instance(&client).await?,
         Command::State { state } => put_instance(&client, state).await?,
-        Command::Serial { byte_offset } => serial(addr, byte_offset).await?,
+        Command::Serial { byte_offset } => {
+            serial(addr, byte_offset, log).await?
+        }
         Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
             let dst_client = Client::new(dst_addr, log.clone());
