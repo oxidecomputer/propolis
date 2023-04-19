@@ -69,10 +69,18 @@ pub mod support {
     use crate::generated::Client as PropolisClient;
     use crate::handmade::api::InstanceSerialConsoleControlMessage;
     use futures::{SinkExt, StreamExt};
-    use reqwest::Upgraded;
+    use slog::Logger;
+    use tokio::io::{AsyncRead, AsyncWrite};
     use tokio_tungstenite::tungstenite::protocol::Role;
-    use tokio_tungstenite::tungstenite::{Error as WSError, Message};
-    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::{
+        Error as WSError, Message as WSMessage,
+    };
+    // re-export as an escape hatch for crate-version-matching problems
+    use self::tungstenite::http;
+    pub use tokio_tungstenite::{tungstenite, WebSocketStream};
+
+    trait SerialConsoleStream: AsyncRead + AsyncWrite + Unpin + Send {}
+    impl<T: AsyncRead + AsyncWrite + Unpin + Send> SerialConsoleStream for T {}
 
     /// This is a trivial abstraction wrapping the websocket connection
     /// returned by [crate::generated::Client::instance_serial], providing
@@ -80,40 +88,46 @@ pub mod support {
     /// when an instance is migrated (thus providing the illusion of the
     /// connection being seamlessly maintained through migration)
     pub struct InstanceSerialConsoleHelper {
-        ws_stream: WebSocketStream<Upgraded>,
+        ws_stream: WebSocketStream<Box<dyn SerialConsoleStream>>,
+        log: Option<Logger>,
     }
 
     impl InstanceSerialConsoleHelper {
-        /// Pass the [Upgraded] connection to the /instance/serial channel,
-        /// the value of `client.instance_serial().send().await?.into_inner()`.
-        pub async fn new(upgraded: Upgraded) -> Self {
+        /// Typical use: Pass the [reqwest::Upgraded] connection to the
+        /// /instance/serial channel, i.e. the value returned by
+        /// `client.instance_serial().send().await?.into_inner()`.
+        pub async fn new<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+            upgraded: T,
+            log: Option<Logger>,
+        ) -> Self {
+            let stream: Box<dyn SerialConsoleStream> = Box::new(upgraded);
             let ws_stream =
-                WebSocketStream::from_raw_socket(upgraded, Role::Client, None)
+                WebSocketStream::from_raw_socket(stream, Role::Client, None)
                     .await;
-            Self { ws_stream }
+            Self { ws_stream, log }
         }
 
-        /// Sends the given [Message] to the server.
-        /// To send character inputs for the console, send [Message::Binary].
-        pub async fn send(&mut self, input: Message) -> Result<(), WSError> {
+        /// Sends the given [WSMessage] to the server.
+        /// To send character inputs for the console, send [WSMessage::Binary].
+        pub async fn send(&mut self, input: WSMessage) -> Result<(), WSError> {
             self.ws_stream.send(input).await
         }
 
-        /// Receive the next [Message] from the server.
+        /// Receive the next [WSMessage] from the server.
         /// Returns [Option::None] if the connection has been terminated.
-        /// - [Message::Binary] are character output from the serial console.
-        /// - [Message::Close] is a close frame.
-        /// - [Message::Text] contain metadata, i.e. about a migration, which
+        /// - [WSMessage::Binary] are character output from the serial console.
+        /// - [WSMessage::Close] is a close frame.
+        /// - [WSMessage::Text] contain metadata, i.e. about a migration, which
         ///   this function still returns after connecting to the new server
         ///   in case the application needs to take further action (e.g. log
         ///   an event, or show a UI indicator that a migration has occurred).
         pub async fn recv(
             &mut self,
         ) -> Option<
-            Result<Message, Box<dyn std::error::Error + Send + Sync + 'static>>,
+            Result<WSMessage, WSError>, //Box<dyn std::error::Error + Send + Sync + 'static>>,
         > {
             let value = self.ws_stream.next().await;
-            if let Some(Ok(Message::Text(json))) = &value {
+            if let Some(Ok(WSMessage::Text(json))) = &value {
                 match serde_json::from_str(&json) {
                     Ok(InstanceSerialConsoleControlMessage::Migrating {
                         destination,
@@ -130,21 +144,85 @@ pub mod support {
                             .await
                         {
                             Ok(resp) => {
+                                let stream: Box<dyn SerialConsoleStream> =
+                                    Box::new(resp.into_inner());
                                 self.ws_stream =
                                     WebSocketStream::from_raw_socket(
-                                        resp.into_inner(),
+                                        stream,
                                         Role::Client,
                                         None,
                                     )
                                     .await;
                             }
-                            Err(e) => return Some(Err(e.to_string().into())),
+                            Err(e) => {
+                                return Some(Err(WSError::Http(
+                                    http::Response::new(Some(e.to_string())),
+                                )))
+                            }
                         }
                     }
-                    Err(e) => return Some(Err(e.into())),
+                    Err(e) => {
+                        if let Some(log) = &self.log {
+                            slog::warn!(
+                                log,
+                                "Unsupported control message {:?}: {:?}",
+                                json,
+                                e
+                            );
+                        }
+                        // don't return error, might be a future addition understood by consumer
+                    }
                 }
             }
             value.map(|x| x.map_err(Into::into))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::InstanceSerialConsoleControlMessage;
+        use super::InstanceSerialConsoleHelper;
+        use super::Role;
+        use super::WSError;
+        use super::WSMessage;
+        use super::WebSocketStream;
+        use futures::{SinkExt, StreamExt};
+        use std::net::SocketAddr;
+        #[tokio::test]
+        async fn test_connection_helper() {
+            let (client_conn, server_conn) = tokio::io::duplex(1024);
+
+            let mut client =
+                InstanceSerialConsoleHelper::new(client_conn, None).await;
+            let mut server = WebSocketStream::from_raw_socket(
+                server_conn,
+                Role::Server,
+                None,
+            )
+            .await;
+
+            let sent = WSMessage::Binary(vec![1, 3, 3, 7]);
+            client.send(sent.clone()).await.unwrap();
+            let received = server.next().await.unwrap().unwrap();
+            assert_eq!(sent, received);
+
+            let sent = WSMessage::Binary(vec![2, 4, 6, 8]);
+            server.send(sent.clone()).await.unwrap();
+            let received = client.recv().await.unwrap().unwrap();
+            assert_eq!(sent, received);
+
+            // just check that it *tries* to connect
+            let payload = serde_json::to_string(
+                &InstanceSerialConsoleControlMessage::Migrating {
+                    destination: SocketAddr::V4("0.0.0.0:0".parse().unwrap()),
+                    from_start: 0,
+                },
+            )
+            .unwrap();
+            let sent = WSMessage::Text(payload);
+            server.send(sent).await.unwrap();
+            let received = client.recv().await.unwrap().unwrap_err();
+            assert!(matches!(received, WSError::Http(_)));
         }
     }
 }
