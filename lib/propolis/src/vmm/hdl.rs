@@ -505,13 +505,8 @@ pub mod migrate {
         }
 
         pub(super) fn write(self, hdl: &VmmHdl) -> io::Result<()> {
-            let mut arch_entries: Vec<bhyve_api::vdi_field_entry_v1> = self
-                .arch_entries
-                .into_iter()
-                // TODO: Guest TSC frequency is not currently adjustable
-                .filter(|e| e.ident != bhyve_api::VAI_TSC_FREQ)
-                .map(From::from)
-                .collect();
+            let mut arch_entries: Vec<bhyve_api::vdi_field_entry_v1> =
+                self.arch_entries.into_iter().map(From::from).collect();
             vmm::data::write_many(
                 hdl,
                 -1,

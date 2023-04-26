@@ -21,6 +21,7 @@ pub const VDC_ATPIC: u16 = 9;
 pub const VDC_HPET: u16 = 10;
 pub const VDC_PM_TIMER: u16 = 11;
 pub const VDC_RTC: u16 = 12;
+pub const VDC_VMM_TIME: u16 = 13;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, Serialize, Deserialize)]
@@ -189,16 +190,23 @@ impl Default for vdi_rtc_v1 {
     }
 }
 
+// VDC_VMM_TIME v1 interface
+
+#[repr(C)]
+#[derive(Copy, Clone, Default, Serialize, Deserialize)]
+pub struct vdi_time_info_v1 {
+    pub vt_guest_freq: u64,
+    pub vt_guest_tsc: u64,
+    pub vt_boot_hrtime: i64,
+    pub vt_hrtime: i64,
+    pub vt_hres_sec: u64,
+    pub vt_hres_ns: u64,
+}
+
 // VDC_VMM_ARCH v1 data identifiers
 
 // VM-wide:
 
-/// Offset of guest TSC from system at time of boot
-pub const VAI_TSC_BOOT_OFFSET: u32 = 1;
-/// Time that guest (nominally) booted, as hrtime
-pub const VAI_BOOT_HRTIME: u32 = 2;
-/// Guest TSC frequency measured by hrtime (not effected by wall clock adj.)
-pub const VAI_TSC_FREQ: u32 = 3;
 /// Guest instance has been placed in paused state
 pub const VAI_VM_IS_PAUSED: u32 = 4;
 

@@ -258,6 +258,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(IntoPrimitive)]
 pub enum ApiVersion {
+    /// Add support for modifing guest time data via vmm-data interface
+    V11 = 11,
+
     /// Interrupt and exception state is properly saved/restored on VM
     /// pause/resume, and is exposed via vmm-data interface
     V10 = 10,
@@ -282,7 +285,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V10
+        Self::V11
     }
 }
 
