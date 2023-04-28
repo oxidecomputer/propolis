@@ -16,23 +16,12 @@ pub struct ProcessArgs {
     #[clap(subcommand)]
     pub command: Command,
 
-    /// If true, suppress the emission of terminal control codes in the runner's
-    /// log output.
-    #[clap(
-        long,
-        value_parser,
-        default_value = "false",
-        conflicts_with = "emit-bunyan"
-    )]
+    /// Suppress emission of terminal control codes in the runner's log output.
+    #[clap(long, conflicts_with = "emit_bunyan")]
     pub disable_ansi: bool,
 
-    /// If true, emit Bunyan-formatted logs.
-    #[clap(
-        long,
-        value_parser,
-        default_value = "false",
-        conflicts_with = "disable-ansi"
-    )]
+    /// Emit Bunyan-formatted logs.
+    #[clap(long)]
     pub emit_bunyan: bool,
 }
 
