@@ -56,13 +56,17 @@ ls $propolis
 
 # Disable errexit so that we still upload logs on failure
 set +e
+
+# TODO: reenable migration tests once all relevant OS changes have landed and
+# been deployed.
 (RUST_BACKTRACE=1 ptime -m pfexec $runner \
 	--emit-bunyan \
 	run \
 	--propolis-server-cmd $propolis \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir \
-	--artifact-directory $tmpdir | \
+	--artifact-directory $tmpdir \
+	--exclude-filter migrate | \
 	tee /tmp/phd-runner.log)
 failcount=$?
 set -e
