@@ -793,10 +793,8 @@ impl Inner {
         let _old_ctrl = self.sched_ctrl.lock().unwrap().replace(tctrl);
         assert!(_old_ctrl.is_none(), "driver already attached");
 
-        let wake_self = Arc::clone(self);
-        bdev.set_notifier(Some(Box::new(move |_bdev| {
-            wake_self.wake.notify_one()
-        })));
+        let wake_self = self.wake.clone();
+        bdev.set_notifier(Some(Box::new(move |_bdev| wake_self.notify_one())));
     }
 
     fn with_ctrl(&self, f: impl FnOnce(&mut TaskCtrl)) {
