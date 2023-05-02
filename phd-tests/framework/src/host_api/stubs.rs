@@ -2,6 +2,6 @@ use anyhow::{anyhow, Result};
 
 pub struct VmmStateWriteGuard;
 
-pub fn enable_vmm_state_writes() -> Result<VmmStateWriteGuard> {
-    Err(anyhow!("enable_vmm_state_writes requires illumos"))
+pub fn set_vmm_globals() -> Result<Vec<Box<dyn std::any::Any>>> {
+    Err(anyhow!("set_vmm_globals requires illumos"))
 }
