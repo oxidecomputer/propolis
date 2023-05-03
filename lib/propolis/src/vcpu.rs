@@ -562,19 +562,21 @@ pub mod migrate {
             );
             let gdtr = SegDescV1::from_raw(
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_GDTR)?,
+                // GDT has no selector register
                 0,
             );
             let idtr = SegDescV1::from_raw(
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_IDTR)?,
+                // IDT has no selector register
                 0,
             );
             let ldtr = SegDescV1::from_raw(
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_LDTR)?,
-                0,
+                vcpu.get_reg(vm_reg_name::VM_REG_GUEST_LDTR)? as u16,
             );
             let tr = SegDescV1::from_raw(
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_TR)?,
-                0,
+                vcpu.get_reg(vm_reg_name::VM_REG_GUEST_TR)? as u16,
             );
             Ok(Self { cs, ds, es, fs, gs, ss, gdtr, idtr, ldtr, tr })
         }
@@ -610,11 +612,13 @@ pub mod migrate {
             let (idtr, _) = self.idtr.into_raw();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_IDTR, &idtr)?;
 
-            let (ldtr, _) = self.ldtr.into_raw();
+            let (ldtr, ldtrs) = self.ldtr.into_raw();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_LDTR, &ldtr)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_LDTR, ldtrs.into())?;
 
-            let (tr, _) = self.tr.into_raw();
+            let (tr, trs) = self.tr.into_raw();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_TR, &tr)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_TR, trs.into())?;
             Ok(())
         }
     }
