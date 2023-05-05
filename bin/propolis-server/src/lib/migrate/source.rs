@@ -168,9 +168,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             vmm_ram_range
         );
 
-        // TODO: Ideally, both the pre-pause and post-pause phases would offer
-        // just dirty pages. To do this safely, the source must remember all
-        // the pages it has ever offered to any target so that they can be
+        // TODO(#387): Ideally, both the pre-pause and post-pause phases would
+        // offer just dirty pages. To do this safely, the source must remember
+        // all the pages it has ever offered to any target so that they can be
         // re-offered if migration fails and is later retried.
         //
         // Offering all pages before pausing guarantees that all modified pages
