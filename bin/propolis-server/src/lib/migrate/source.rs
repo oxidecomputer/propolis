@@ -20,6 +20,16 @@ use crate::migrate::{
 };
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
+/// Specifies which pages should be offered during a RAM transfer phase.
+#[derive(Debug)]
+enum RamOfferDiscipline {
+    /// Offer all pages irrespective of whether they are dirty.
+    OfferAll,
+
+    /// Offer only pages that the hypervisor are marked as dirty.
+    OfferDirty,
+}
+
 pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     vm_controller: Arc<VmController>,
     command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
@@ -96,7 +106,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let res = match step {
             MigratePhase::MigrateSync => self.sync().await,
             MigratePhase::Pause => self.pause().await,
-            MigratePhase::RamPush => self.ram_push().await,
+            MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
+                self.ram_push(&step).await
+            }
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
             MigratePhase::ServerState => self.server_state().await,
@@ -112,11 +124,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         info!(self.log(), "Entering Source Migration Task");
 
         self.run_phase(MigratePhase::MigrateSync).await?;
-
-        // TODO: Optimize RAM transfer so that most memory can be transferred
-        // prior to pausing.
+        self.run_phase(MigratePhase::RamPushPrePause).await?;
         self.run_phase(MigratePhase::Pause).await?;
-        self.run_phase(MigratePhase::RamPush).await?;
+        self.run_phase(MigratePhase::RamPushPostPause).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
         self.run_phase(MigratePhase::ServerState).await?;
@@ -137,17 +147,47 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.read_ok().await
     }
 
-    async fn ram_push(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::RamPush).await;
+    async fn ram_push(
+        &mut self,
+        phase: &MigratePhase,
+    ) -> Result<(), MigrateError> {
+        // Only publish the "RAM push" phase before pausing (so that the
+        // migration doesn't go from the "pause" state back to the "RAM push"
+        // state).
+        if matches!(phase, MigratePhase::RamPushPrePause) {
+            self.update_state(MigrationState::RamPush).await;
+        }
+
         let vmm_ram_range = self.vmm_ram_bounds().await?;
         let req_ram_range = self.read_mem_query().await?;
         info!(
             self.log(),
-            "ram_push: got query for range {:?}, vm range {:?}",
+            "ram_push ({:?}): got query for range {:?}, vm range {:?}",
+            phase,
             req_ram_range,
             vmm_ram_range
         );
-        self.offer_ram(vmm_ram_range, req_ram_range).await?;
+
+        // TODO: Ideally, both the pre-pause and post-pause phases would offer
+        // just dirty pages. To do this safely, the source must remember all
+        // the pages it has ever offered to any target so that they can be
+        // re-offered if migration fails and is later retried.
+        //
+        // Offering all pages before pausing guarantees that all modified pages
+        // will be transferred without having to do any extra tracking (but uses
+        // host CPU time and network bandwidth inefficiently).
+        self.offer_ram(
+            vmm_ram_range,
+            req_ram_range,
+            match phase {
+                MigratePhase::RamPushPrePause => RamOfferDiscipline::OfferAll,
+                MigratePhase::RamPushPostPause => {
+                    RamOfferDiscipline::OfferDirty
+                }
+                _ => unreachable!(),
+            },
+        )
+        .await?;
 
         loop {
             let m = self.read_msg().await?;
@@ -178,8 +218,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         &mut self,
         vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
+        offer_discipline: RamOfferDiscipline,
     ) -> Result<(), MigrateError> {
-        info!(self.log(), "offering ram");
+        info!(self.log(), "offering ram"; "discipline" => ?offer_discipline);
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
         let mut bits = [0u8; 4096];
@@ -202,10 +243,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         let step = bits.len() * 8 * 4096;
         for gpa in (start_gpa..end_gpa).step_by(step) {
+            // Call bhyve to get the dirty page mask irrespective of the offer
+            // discipline. This ensures that any pages that are dirty at this
+            // point will be marked clean when this call returns.
             self.track_dirty(GuestAddr(gpa), &mut bits).await?;
-            if bits.iter().all(|&b| b == 0) {
-                continue;
+            match offer_discipline {
+                RamOfferDiscipline::OfferAll => {
+                    for byte in bits.iter_mut() {
+                        *byte = 0xff;
+                    }
+                }
+                RamOfferDiscipline::OfferDirty => {
+                    if bits.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                }
             }
+
             let end = end_gpa.min(gpa + step as u64);
             self.send_msg(memx::make_mem_offer(gpa, end, &bits)).await?;
         }

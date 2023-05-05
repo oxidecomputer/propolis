@@ -101,8 +101,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
             // no pause step on the dest side
             MigratePhase::Pause => unreachable!(),
-
-            MigratePhase::RamPush => self.ram_push().await,
+            MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
+                self.ram_push(&step).await
+            }
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
             MigratePhase::ServerState => self.server_state().await,
@@ -118,7 +119,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Entering Destination Migration Task");
 
         self.run_phase(MigratePhase::MigrateSync).await?;
-        self.run_phase(MigratePhase::RamPush).await?;
+
+        // The RAM transfer phase runs twice, once before the source pauses and
+        // once after. There is no explicit pause phase on the destination,
+        // though, so that step does not appear here even though there are
+        // pre- and post-pause steps.
+        self.run_phase(MigratePhase::RamPushPrePause).await?;
+        self.run_phase(MigratePhase::RamPushPostPause).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
         self.run_phase(MigratePhase::ServerState).await?;
@@ -157,8 +164,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         self.send_msg(codec::Message::Okay).await
     }
 
-    async fn ram_push(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::RamPush).await;
+    async fn ram_push(
+        &mut self,
+        phase: &MigratePhase,
+    ) -> Result<(), MigrateError> {
+        // Move to the RamPush state only when receiving memory for the first
+        // time.
+        if matches!(phase, MigratePhase::RamPushPrePause) {
+            self.update_state(MigrationState::RamPush).await;
+        }
+
         let (dirty, highest) = self.query_ram().await?;
         for (k, region) in dirty.as_raw_slice().chunks(4096).enumerate() {
             if region.iter().all(|&b| b == 0) {
@@ -169,13 +184,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             let end = highest.min(end);
             self.send_msg(memx::make_mem_fetch(start, end, region)).await?;
             let m = self.read_msg().await?;
-            trace!(self.log(), "ram_push: source xfer phase recvd {:?}", m);
+            trace!(
+                self.log(),
+                "ram_push ({:?}): source xfer phase recvd {:?}",
+                m,
+                phase
+            );
             match m {
                 codec::Message::MemXfer(start, end, bits) => {
                     if !memx::validate_bitmap(start, end, &bits) {
                         error!(
                             self.log(),
-                            "ram_push: MemXfer received bad bitmap"
+                            "ram_push ({:?}): MemXfer received bad bitmap",
+                            phase
                         );
                         return Err(MigrateError::Phase);
                     }

@@ -57,10 +57,12 @@ pub enum MigrateRole {
     Destination,
 }
 
+#[derive(Debug)]
 enum MigratePhase {
     MigrateSync,
     Pause,
-    RamPush,
+    RamPushPrePause,
+    RamPushPostPause,
     DeviceState,
     RamPull,
     ServerState,
@@ -72,7 +74,8 @@ impl std::fmt::Display for MigratePhase {
         let s = match self {
             MigratePhase::MigrateSync => "Sync",
             MigratePhase::Pause => "Pause",
-            MigratePhase::RamPush => "RamPush",
+            MigratePhase::RamPushPrePause => "RamPushPrePause",
+            MigratePhase::RamPushPostPause => "RamPushPostPause",
             MigratePhase::DeviceState => "DeviceState",
             MigratePhase::RamPull => "RamPull",
             MigratePhase::ServerState => "ServerState",
