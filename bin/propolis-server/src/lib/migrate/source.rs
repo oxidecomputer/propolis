@@ -243,9 +243,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         let step = bits.len() * 8 * 4096;
         for gpa in (start_gpa..end_gpa).step_by(step) {
-            // Call bhyve to get the dirty page mask irrespective of the offer
-            // discipline. This ensures that any pages that are dirty at this
-            // point will be marked clean when this call returns.
+            // Always capture the dirty page mask even if the offer discipline
+            // says to offer all pages. This ensures that pages that are
+            // transferred now and not touched again will not be offered again.
             self.track_dirty(GuestAddr(gpa), &mut bits).await?;
             match offer_discipline {
                 RamOfferDiscipline::OfferAll => {
