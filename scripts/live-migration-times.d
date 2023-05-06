@@ -21,10 +21,20 @@
  *   arugment into the migrate_phase_{begin,end} probes. We use the name as
  *   a key for tracking the phase deltas. If those names change, or phases are
  *   added/removed, this script will break.
+ * - When calculating RAM transfer rates, the script assumes that the majority
+ *   of the time Propolis spends in a RAM copy phase is spent actually copying
+ *   guest memory and that the cost of other tasks in the phase (entering it,
+ *   leaving it, logging messages, Propolis control flow, etc.) is negligible
+ *   by comparison. If a RAM transfer phase copies very little memory (e.g.
+ *   because the VM is mostly idle and there's nothing to copy in the post-
+ *   pause phase), this assumption will not hold and the script will report
+ *   unusually low transfer rates.
  */
 
 #pragma D option quiet
 #pragma D option defaultargs
+
+inline uint64_t NS_PER_SEC = 1000000000;
 
 enum vm_paused {
 	VM_UNPAUSED = 0,
@@ -160,25 +170,31 @@ dtrace:::END
 		printf("%-25s %20d\n",
 				"NPAGES XFERED (unpaused)",
 				xfer_pages[VM_UNPAUSED]);
+
 		printf("%-25s %20d\n",
 				"NBYTES XFERED (unpaused)",
 				xfer_bytes[VM_UNPAUSED]);
+
 		if (this->d_rpush_pre != 0 && xfer_bytes[VM_UNPAUSED] != 0) {
-			printf("%-25s %20d\n", "KiB/SEC (unpaused)",
-					((xfer_bytes[VM_UNPAUSED] * 1000000000) / 1024) /
-						this->d_rpush_pre);
+			bytes_per_sec =
+				((xfer_bytes[VM_UNPAUSED] * NS_PER_SEC) / this->d_rpush_pre);
+
+			printf("%-25s %20d\n", "KiB/SEC (unpaused)", bytes_per_sec / 1024);
 		}
 
 		printf("%-25s %20d\n",
 				"NPAGES XFERED (paused)",
 				xfer_pages[VM_PAUSED]);
+
 		printf("%-25s %20d\n",
 				"NBYTES XFERED (paused)",
 				xfer_bytes[VM_PAUSED]);
+
 		if (this->d_rpush_post != 0 && xfer_bytes[VM_PAUSED] != 0) {
-			printf("%-25s %20d\n", "KiB/SEC (paused)",
-					((xfer_bytes[VM_PAUSED] * 1000000000) / 1024) /
-						this->d_rpush_post);
+			bytes_per_sec =
+				((xfer_bytes[VM_PAUSED] * NS_PER_SEC) / this->d_rpush_post);
+
+			printf("%-25s %20d\n", "KiB/SEC (paused)", bytes_per_sec / 1024);
 		}
 	}
 }
