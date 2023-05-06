@@ -57,6 +57,7 @@ pub enum MigrateRole {
     Destination,
 }
 
+// N.B. Keep in sync with scripts/live-migration-times.d.
 #[derive(Debug)]
 enum MigratePhase {
     MigrateSync,
@@ -404,5 +405,5 @@ impl<'a> Iterator for PageIter<'a> {
 mod probes {
     fn migrate_phase_begin(step_desc: &str) {}
     fn migrate_phase_end(step_desc: &str) {}
-    fn migrate_xfer_ram_page(addr: u64, size: u64) {}
+    fn migrate_xfer_ram_page(addr: u64, size: u64, paused: u8) {}
 }

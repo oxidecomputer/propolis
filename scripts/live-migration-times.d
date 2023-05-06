@@ -23,12 +23,16 @@
  *   added/removed, this script will break.
  */
 
-
 #pragma D option quiet
 #pragma D option defaultargs
 
-uint64_t xfer_pages;
-uint64_t xfer_bytes;
+enum vm_paused {
+	VM_UNPAUSED = 0,
+	VM_PAUSED = 1,
+};
+
+uint64_t xfer_pages[uint8_t];
+uint64_t xfer_bytes[uint8_t];
 
 dtrace:::BEGIN
 {
@@ -43,12 +47,14 @@ dtrace:::BEGIN
 	if ($$2 == "v") {
 		printf("%-12s %-10s %30s\n", "PHASE", "", "TIMESTAMP");
 	}
+
+	this->phase = "";
 }
 
 propolis$1:::migrate_xfer_ram_page
 {
-	xfer_pages++;
-	xfer_bytes += arg1;
+	xfer_pages[arg2]++;
+	xfer_bytes[arg2] += arg1;
 }
 
 propolis$1:::migrate_phase_begin
@@ -84,15 +90,17 @@ propolis$1:::migrate_phase_end
 dtrace:::END
 {
 	this->sync = "Sync";
+	this->rpush_pre = "RamPushPrePause";
 	this->pause = "Pause";
-	this->rpush = "RamPush";
+    this->rpush_post = "RamPushPostPause";
 	this->dev = "DeviceState";
 	this->rpull = "RamPull";
 	this->fin = "Finish";
 
 	this->d_sync = delta[this->sync];
+	this->d_rpush_pre = delta[this->rpush_pre];
 	this->d_pause = delta[this->pause];
-	this->d_rpush = delta[this->rpush];
+	this->d_rpush_post = delta[this->rpush_post];
 	this->d_dev = delta[this->dev];
 	this->d_rpull = delta[this->rpull];
 	this->d_fin = delta[this->fin];
@@ -107,27 +115,31 @@ dtrace:::END
 
 	/* Print the values of each phase, if they occurred */
 	if (this->d_sync != 0) {
-		printf("%-15s %30d\n", this->sync, this->d_sync / 1000);
+		printf("%-16s %29d\n", this->sync, this->d_sync / 1000);
 		this->total += this->d_sync;
 	}
+	if (this->d_rpush_pre != 0) {
+		printf("%-16s %29d\n", this->rpush_pre, this->d_rpush_pre / 1000);
+		this->total += this->d_rpush_pre;
+	}
 	if (this->d_pause != 0) {
-		printf("%-15s %30d\n", this->pause, this->d_pause / 1000);
+		printf("%-16s %29d\n", this->pause, this->d_pause / 1000);
 		this->total += this->d_pause;
 	}
-	if (this->d_rpush != 0) {
-		printf("%-15s %30d\n", this->rpush, this->d_rpush / 1000);
-		this->total += this->d_rpush;
+	if (this->d_rpush_post != 0) {
+		printf("%-16s %29d\n", this->rpush_post, this->d_rpush_post / 1000);
+		this->total += this->d_rpush_post;
 	}
 	if (this->d_dev != 0) {
-		printf("%-15s %30d\n", this->dev, this->d_dev / 1000);
+		printf("%-16s %29d\n", this->dev, this->d_dev / 1000);
 		this->total += this->d_dev;
 	}
 	if (this->d_rpull != 0) {
-		printf("%-15s %30d\n", this->rpull, this->d_rpull / 1000);
+		printf("%-16s %29d\n", this->rpull, this->d_rpull / 1000);
 		this->total += this->d_rpull;
 	}
 	if (this->d_fin != 0) {
-		printf("%-15s %30d\n", this->fin, this->d_fin / 1000);
+		printf("%-16s %29d\n", this->fin, this->d_fin / 1000);
 		this->total += this->d_fin;
 	}
 
@@ -137,13 +149,36 @@ dtrace:::END
 		printf("\n");
 	}
 
+	xfer_pages_total = xfer_pages[VM_PAUSED] + xfer_pages[VM_UNPAUSED];
+	xfer_bytes_total = xfer_bytes[VM_PAUSED] + xfer_bytes[VM_UNPAUSED];
+
 	/* Print summary of RAM pages transferred */
-	if ($$1 != "" && xfer_pages != 0) {
-		printf("%-15s %30d\n", "NPAGES XFERED", xfer_pages);
-		printf("%-15s %30d\n", "NBYTES XFERED", xfer_bytes);
-		if (this->d_rpush != 0) {
-			printf("%-15s %30d\n", "KiB/SEC",
-			    (xfer_bytes / 1024) / (this->d_rpush / 1000000000));
+	if ($$1 != "" && xfer_pages_total != 0) {
+		printf("%-25s %20d\n", "NPAGES XFERED (total)", xfer_pages_total);
+		printf("%-25s %20d\n", "NBYTES XFERED (total)", xfer_bytes_total);
+
+		printf("%-25s %20d\n",
+				"NPAGES XFERED (unpaused)",
+				xfer_pages[VM_UNPAUSED]);
+		printf("%-25s %20d\n",
+				"NBYTES XFERED (unpaused)",
+				xfer_bytes[VM_UNPAUSED]);
+		if (this->d_rpush_pre != 0 && xfer_bytes[VM_UNPAUSED] != 0) {
+			printf("%-25s %20d\n", "KiB/SEC (unpaused)",
+					((xfer_bytes[VM_UNPAUSED] * 1000000000) / 1024) /
+						this->d_rpush_pre);
+		}
+
+		printf("%-25s %20d\n",
+				"NPAGES XFERED (paused)",
+				xfer_pages[VM_PAUSED]);
+		printf("%-25s %20d\n",
+				"NBYTES XFERED (paused)",
+				xfer_bytes[VM_PAUSED]);
+		if (this->d_rpush_post != 0 && xfer_bytes[VM_PAUSED] != 0) {
+			printf("%-25s %20d\n", "KiB/SEC (paused)",
+					((xfer_bytes[VM_PAUSED] * 1000000000) / 1024) /
+						this->d_rpush_post);
 		}
 	}
 }
