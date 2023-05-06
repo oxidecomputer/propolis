@@ -18,6 +18,12 @@ use propolis_client::handmade::{
 use slog::{error, info, Logger};
 use uuid::Uuid;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn state_driver_pause() {}
+    fn state_driver_resume() {}
+}
+
 /// Tells the state driver whether or not to continue running after responding
 /// to an event.
 #[derive(Debug, PartialEq, Eq)]
@@ -30,6 +36,12 @@ enum HandleEventOutcome {
 enum VmStartReason {
     MigratedIn,
     ExplicitRequest,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PauseKernelVmm {
+    Yes,
+    No,
 }
 
 pub(super) struct StateDriver<
@@ -326,9 +338,7 @@ where
         // may be paused already if it is being torn down after a successful
         // migration out.
         if !self.paused {
-            self.vcpu_tasks.pause_all();
-            self.controller.pause_entities();
-            self.paused = true;
+            self.pause(PauseKernelVmm::No);
         }
 
         self.vcpu_tasks.exit_all();
@@ -445,10 +455,7 @@ where
                         ));
 
                         if self.paused {
-                            self.controller.resume_vm();
-                            self.controller.resume_entities();
-                            self.vcpu_tasks.resume_all();
-                            self.paused = false;
+                            self.resume();
                             self.publish_steady_state(
                                 ApiInstanceState::Running,
                             );
@@ -462,10 +469,7 @@ where
                         self.set_migration_state(migration_id, state);
                     }
                     MigrateSourceCommand::Pause => {
-                        self.vcpu_tasks.pause_all();
-                        self.controller.pause_entities();
-                        self.controller.pause_vm();
-                        self.paused = true;
+                        self.pause(PauseKernelVmm::Yes);
                         response_tx
                             .blocking_send(MigrateSourceResponse::Pause(Ok(())))
                             .unwrap();
@@ -502,6 +506,26 @@ where
                 }
             }
         }
+    }
+
+    fn pause(&mut self, pause_kernel: PauseKernelVmm) {
+        assert!(!self.paused);
+        probes::state_driver_pause!(|| ());
+        self.vcpu_tasks.pause_all();
+        self.controller.pause_entities();
+        if pause_kernel == PauseKernelVmm::Yes {
+            self.controller.pause_vm();
+        }
+        self.paused = true;
+    }
+
+    fn resume(&mut self) {
+        assert!(self.paused);
+        probes::state_driver_resume!(|| ());
+        self.controller.resume_vm();
+        self.controller.resume_entities();
+        self.vcpu_tasks.resume_all();
+        self.paused = false;
     }
 
     fn reset_vcpus(&self) {
