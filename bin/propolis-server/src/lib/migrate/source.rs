@@ -199,12 +199,27 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                         error!(self.log(), "invalid bitmap");
                         return Err(MigrateError::Phase);
                     }
+
                     // XXX: We should do stricter validation on the fetch
                     // request here.  For instance, we shouldn't "push" MMIO
                     // space or non-existent RAM regions.  While we de facto
                     // do not because of the way access is implemented, we
                     // should probably disallow it at the protocol level.
-                    self.xfer_ram(start, end, &bits, &phase).await?;
+                    self.xfer_ram(start, end, &bits).await?;
+                    probes::migrate_xfer_ram_region!(|| {
+                        use bitvec::prelude::{BitSlice, Lsb0};
+                        let bits = BitSlice::<_, Lsb0>::from_slice(&bits);
+                        let pages = bits.count_ones() as u64;
+                        (
+                            pages,
+                            pages * 4096,
+                            match phase {
+                                MigratePhase::RamPushPrePause => 0,
+                                MigratePhase::RamPushPostPause => 1,
+                                _ => unreachable!(),
+                            },
+                        )
+                    });
                 }
                 _ => return Err(MigrateError::UnexpectedMessage),
             };
@@ -271,7 +286,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         start: u64,
         end: u64,
         bits: &[u8],
-        phase: &MigratePhase,
     ) -> Result<(), MigrateError> {
         info!(self.log(), "ram_push: xfer RAM between {} and {}", start, end);
         self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
@@ -279,15 +293,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             let mut bytes = [0u8; 4096];
             self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
             self.send_msg(codec::Message::Page(bytes.into())).await?;
-            probes::migrate_xfer_ram_page!(|| (
-                addr,
-                4096,
-                match phase {
-                    MigratePhase::RamPushPrePause => 0,
-                    MigratePhase::RamPushPostPause => 1,
-                    _ => unreachable!(),
-                }
-            ));
+            probes::migrate_xfer_ram_page!(|| (addr, 4096));
         }
         Ok(())
     }

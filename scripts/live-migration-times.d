@@ -61,9 +61,9 @@ dtrace:::BEGIN
 	this->phase = "";
 }
 
-propolis$1:::migrate_xfer_ram_page
+propolis$1:::migrate_xfer_ram_region
 {
-	xfer_pages[arg2]++;
+	xfer_pages[arg2] += arg0;
 	xfer_bytes[arg2] += arg1;
 }
 
