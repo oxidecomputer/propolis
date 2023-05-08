@@ -157,12 +157,82 @@ which acts as a serial port. One such tool for accessing this serial port is
 [sercons](https://github.com/jclulow/vmware-sercons), though others (such as
 "screen") would also work.
 
-propolis-standalone also supports defining crucible-backed storage devices in
-the TOML config. It is somewhat inconvenient to do this without scripting,
-because `generation` must monotonically increase with each successive connection
-to the Downstairs datastore. So if you use this, you need to somehow
-monotonically bump up that number in the TOML file before re-launching the VM,
-unless you're also creating a new Downstairs region from scratch.
+### Quickstart to Alpine
+
+In the aforementioned config files, there are three major components
+that need to be supplied: The guest firmware (bootrom) image, the ISO, and the
+VNIC.
+
+Since this is a configuration file, you can supply whatever you'd like, but here
+are some options to get up-and-running quickly:
+
+#### Guest bootrom
+
+The current recommended and tested guest bootrom is available
+[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/6d92acf0a22718dd4175d7c64dbcf7aaec3740bd/OVMF_CODE.fd).
+
+Other UEFI firmware images built from the [Open Virtual Machine Firmware
+project](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) may also
+work, but these aren't regularly tested and your mileage may vary.
+
+#### ISO
+
+Although there are many options for ISOs, an easy option that
+should work is the [Alpine Linux distribution](https://alpinelinux.org/downloads/).
+
+These distributions are lightweight, and they have variants
+custom-built for virtual machines.
+
+A straightforward option to start with is the "virtual" `x86_64` image.
+
+The "extended" variant contains more useful tools, but will require a
+modification of the kernel arguments when booting to see the console on the
+serial port.  From Grub, this can be accomplished by pressing "e" (to edit),
+adding "console=ttyS0" to the line starting with "/boot/vmlinuz-lts", and
+pressing "Control + x" to boot with these parameters.
+
+#### VNIC
+
+To see your current network interfaces, you can use the following:
+
+```bash
+$ dladm show-link
+```
+
+To create a vnic, you can use one of your physical devices
+(like "e1000g0", if you have an ethernet connection) as a link
+for a VNIC. This can be done as follows:
+
+```bash
+NIC_NAME="vnic_prop0"
+NIC_MAC="02:08:20:ac:e9:16"
+NIC_LINK="e1000g0"
+
+if ! dladm show-vnic $NIC_NAME 2> /dev/null; then
+  dladm create-vnic -t -l $NIC_LINK -m $NIC_MAC $NIC_NAME
+fi
+```
+
+#### Running a VM
+
+After you've got the bootrom, an ISO, a VNIC, and a configuration file that
+points to them, you're ready to create and run your VM. To do so, make sure
+you've done the following:
+- [build propolis](#Building)
+- run the [propolis-server](#propolis-server)
+- create your VM, run it, and hop on the serial console using [propolis-cli](#propolis-cli)
+- login to the VM as root (no password)
+- optionally, run `setup-alpine` to configure the VM (including setting a root
+  password)
+
+## Crucible Storage With propolis-standalone
+
+propolis-standalone supports defining crucible-backed storage devices in the
+TOML config. It is somewhat inconvenient to do this without scripting, because
+`generation` must monotonically increase with each successive connection to the
+Downstairs datastore. So if you use this, you need to somehow monotonically bump
+up that number in the TOML file before re-launching the VM, unless you're also
+creating a new Downstairs region from scratch.
 
 All the crucible configuration options are crucible-specific, so future changes
 to crucible may result in changes to the config options here as well. Consult
@@ -237,74 +307,6 @@ generation = 1
 # read_only = false
 # === END OPTIONAL OPTIONS ===
 ```
-
-### Quickstart to Alpine
-
-In the aforementioned config files, there are three major components
-that need to be supplied: The guest firmware (bootrom) image, the ISO, and the
-VNIC.
-
-Since this is a configuration file, you can supply whatever you'd like, but here
-are some options to get up-and-running quickly:
-
-#### Guest bootrom
-
-The current recommended and tested guest bootrom is available
-[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/6d92acf0a22718dd4175d7c64dbcf7aaec3740bd/OVMF_CODE.fd).
-
-Other UEFI firmware images built from the [Open Virtual Machine Firmware
-project](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) may also
-work, but these aren't regularly tested and your mileage may vary.
-
-#### ISO
-
-Although there are many options for ISOs, an easy option that
-should work is the [Alpine Linux distribution](https://alpinelinux.org/downloads/).
-
-These distributions are lightweight, and they have variants
-custom-built for virtual machines.
-
-A straightforward option to start with is the "virtual" `x86_64` image.
-
-The "extended" variant contains more useful tools, but will require a
-modification of the kernel arguments when booting to see the console on the
-serial port.  From Grub, this can be accomplished by pressing "e" (to edit),
-adding "console=ttyS0" to the line starting with "/boot/vmlinuz-lts", and
-pressing "Control + x" to boot with these parameters.
-
-#### VNIC
-
-To see your current network interfaces, you can use the following:
-
-```bash
-$ dladm show-link
-```
-
-To create a vnic, you can use one of your physical devices
-(like "e1000g0", if you have an ethernet connection) as a link
-for a VNIC. This can be done as follows:
-
-```bash
-NIC_NAME="vnic_prop0"
-NIC_MAC="02:08:20:ac:e9:16"
-NIC_LINK="e1000g0"
-
-if ! dladm show-vnic $NIC_NAME 2> /dev/null; then
-  dladm create-vnic -t -l $NIC_LINK -m $NIC_MAC $NIC_NAME
-fi
-```
-
-#### Running a VM
-
-After you've got the bootrom, an ISO, a VNIC, and a configuration file that
-points to them, you're ready to create and run your VM. To do so, make sure
-you've done the following:
-- [build propolis](#Building)
-- run the [propolis-server](#propolis-server)
-- create your VM, run it, and hop on the serial console using [propolis-cli](#propolis-cli)
-- login to the VM as root (no password)
-- optionally, run `setup-alpine` to configure the VM (including setting a root
-  password)
 
 ## License
 

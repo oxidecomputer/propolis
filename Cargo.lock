@@ -3031,7 +3031,6 @@ dependencies = [
  "libc",
  "num_enum",
  "propolis",
- "propolis-client",
  "propolis-standalone-config",
  "serde",
  "serde_json",
