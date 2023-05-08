@@ -9,6 +9,7 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 backoff.workspace = true
+bhyve_api.workspace = true
 cfg-if.workspace = true
 errno.workspace = true
 futures.workspace = true

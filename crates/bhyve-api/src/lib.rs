@@ -307,6 +307,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(IntoPrimitive)]
 pub enum ApiVersion {
+    /// Writes via vmm-data interface are allowed by default
+    V13 = 13,
+
     /// Improved RTC emulation, including sub-second precision
     V12 = 12,
 
@@ -337,7 +340,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V12
+        Self::V13
     }
 }
 

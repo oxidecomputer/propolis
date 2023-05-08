@@ -2543,6 +2543,7 @@ dependencies = [
  "anyhow",
  "backoff",
  "base64 0.21.0",
+ "bhyve_api",
  "cfg-if",
  "crucible-client-types",
  "errno 0.2.8",

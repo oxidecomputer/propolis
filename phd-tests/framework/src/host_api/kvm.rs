@@ -1,6 +1,7 @@
 use std::{ffi::CString, fmt::Display};
 
 use anyhow::{anyhow, Result};
+use bhyve_api::ApiVersion;
 use errno::errno;
 use libc::{
     c_char, c_int, c_long, c_short, c_ushort, c_void, size_t, ssize_t,
@@ -297,14 +298,22 @@ impl<T: SizedKernelGlobal> Drop for KernelValueGuard<T> {
 pub fn set_vmm_globals() -> Result<Vec<Box<dyn std::any::Any>>> {
     let mut guards: Vec<Box<dyn std::any::Any>> = vec![];
 
-    let allow_state_writes =
-        KernelValueGuard::new("vmm_allow_state_writes", 1u32)?;
-    guards.push(Box::new(allow_state_writes));
+    let ver = bhyve_api::api_version()?;
 
-    // Enable global dirty tracking bit on systems where it exists.
-    // TODO(#255): Remove once CI has updated to include https://code.illumos.org/c/illumos-gate/+/2502
-    if let Ok(gpt_track_dirty) = KernelValueGuard::new("gpt_track_dirty", 1u8) {
-        guards.push(Box::new(gpt_track_dirty));
+    if ver < ApiVersion::V13.into() {
+        guards.push(Box::new(KernelValueGuard::new(
+            "vmm_allow_state_writes",
+            1u32,
+        )?));
+    }
+
+    if ver < ApiVersion::V8.into() {
+        // Enable global dirty tracking bit on systems where it exists.
+        if let Ok(gpt_track_dirty) =
+            KernelValueGuard::new("gpt_track_dirty", 1u8)
+        {
+            guards.push(Box::new(gpt_track_dirty));
+        }
     }
 
     Ok(guards)

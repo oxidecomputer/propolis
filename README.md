@@ -8,38 +8,13 @@ Given the current tight coupling of the `bhyve-api` component to the ioctl
 interface presented by the bhyve kernel component, running on recent illumos
 bits is required.
 
-To exercise the snapshot/restore or live migration functionality a build
-including [15236](https://www.illumos.org/issues/15236)
-([f2357d9](https://github.com/illumos/illumos-gate/commit/a26f9c149bc8e4c9206303674cdef16edec1ca70))
-is required.
+Propolis works best (and its CI tests run) on AMD hosts, but it can also be used
+to run VMs on Intel hosts. Live migration is primarily supported on AMD hosts
+but may work on Intel hosts as well.
 
 ### Minimum Supported Rust Version (MSRV)
 
 - Rust 1.64.0
-
-### System Configuration
-
-Simply running a VM requires no special host system configuration.
-
-Live migration and the propolis-standalone save/restore functionality require
-extra kernel switches to be enabled:
-
-```bash
-# Allow LM destinations to write VM state.
-pfexec mdb -kw -e "vmm_allow_state_writes ::write -l 1 1"
-
-# Ensure that all modified pages are tracked so that they can be transferred
-# during live migration.
-pfexec mdb -kw -e "gpt_track_dirty ::write -l 1 1"
-```
-
-**Note:** Setting `gpt_track_dirty` is unnecessary on builds including
-[14251](https://www.illumos.org/issues/14251)
-([4ac713d](https://github.com/illumos/illumos-gate/commit/4ac713da4ff2c45287699af975f8c98142bbd9d3)).
-
-Propolis works best (and its CI tests run) on AMD hosts, but it can also be used
-to run VMs on Intel hosts. Live migration is primarily supported on AMD hosts
-but may work on Intel hosts as well.
 
 ## Building
 
