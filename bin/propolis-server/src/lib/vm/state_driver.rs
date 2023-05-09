@@ -38,12 +38,6 @@ enum VmStartReason {
     ExplicitRequest,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum PauseKernelVmm {
-    Yes,
-    No,
-}
-
 pub(super) struct StateDriver<
     V: super::StateDriverVmController,
     C: VcpuTaskController,
@@ -338,7 +332,7 @@ where
         // may be paused already if it is being torn down after a successful
         // migration out.
         if !self.paused {
-            self.pause(PauseKernelVmm::No);
+            self.pause();
         }
 
         self.vcpu_tasks.exit_all();
@@ -469,7 +463,7 @@ where
                         self.set_migration_state(migration_id, state);
                     }
                     MigrateSourceCommand::Pause => {
-                        self.pause(PauseKernelVmm::Yes);
+                        self.pause();
                         response_tx
                             .blocking_send(MigrateSourceResponse::Pause(Ok(())))
                             .unwrap();
@@ -508,14 +502,12 @@ where
         }
     }
 
-    fn pause(&mut self, pause_kernel: PauseKernelVmm) {
+    fn pause(&mut self) {
         assert!(!self.paused);
         probes::state_driver_pause!(|| ());
         self.vcpu_tasks.pause_all();
         self.controller.pause_entities();
-        if pause_kernel == PauseKernelVmm::Yes {
-            self.controller.pause_vm();
-        }
+        self.controller.pause_vm();
         self.paused = true;
     }
 
