@@ -349,7 +349,7 @@ impl TestVm {
                     .map_err(|e| anyhow!("error during migration: {}", e))
             }
             VmState::Ensured { .. } => {
-                return Err(VmStateError::InstanceAlreadyEnsured.into());
+                Err(VmStateError::InstanceAlreadyEnsured.into())
             }
         }
     }
@@ -396,11 +396,8 @@ impl TestVm {
         );
 
         let wait_fn = || -> Result<(), backoff::Error<anyhow::Error>> {
-            let current = self
-                .get()
-                .map_err(|e| backoff::Error::Permanent(e.into()))?
-                .instance
-                .state;
+            let current =
+                self.get().map_err(backoff::Error::Permanent)?.instance.state;
             if current == target {
                 Ok(())
             } else {

@@ -22,7 +22,7 @@ fn smoke_test(ctx: &TestContext) {
         .new_vm_from_cloned_config("migration_smoke_target", &source)?;
 
     let serial_hist_pre = source.get_serial_console_history(0)?;
-    assert!(serial_hist_pre.data.len() > 0);
+    assert!(!serial_hist_pre.data.is_empty());
 
     let migration_id = Uuid::new_v4();
     target.migrate_from(&source, migration_id, Duration::from_secs(60))?;

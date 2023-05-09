@@ -196,8 +196,10 @@ impl ServiceProviders {
             );
         }
         if let Some(serial_task) = self.serial_task.lock().await.take() {
-            let _ =
-                serial_task.control_ch.send(SerialTaskControlMessage::Stopping);
+            let _ = serial_task
+                .control_ch
+                .send(SerialTaskControlMessage::Stopping)
+                .await;
             // Wait for the serial task to exit
             let _ = serial_task.task.await;
         }

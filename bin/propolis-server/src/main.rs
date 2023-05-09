@@ -66,6 +66,77 @@ pub fn run_openapi() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(not(feature = "mock-only"))]
+async fn run_server(
+    config_app: config::Config,
+    config_dropshot: dropshot::ConfigDropshot,
+    metrics_addr: Option<SocketAddr>,
+    vnc_addr: SocketAddr,
+    log: slog::Logger,
+) -> anyhow::Result<()> {
+    // Check that devices conform to expected API version
+    propolis::api_version::check().context("API version checks")?;
+
+    let vnc_server = setup_vnc(&log, vnc_addr);
+    let vnc_server_hdl = vnc_server.clone();
+    let use_reservoir = config::reservoir_decide(&log);
+
+    let config_metrics = metrics_addr.map(|addr| {
+        let imc =
+            MetricsEndpointConfig::new(config_dropshot.bind_address, addr);
+        info!(log, "Metrics server will use {:?}", imc);
+        imc
+    });
+
+    let context = server::DropshotEndpointContext::new(
+        config_app,
+        vnc_server,
+        use_reservoir,
+        log.new(slog::o!()),
+        config_metrics,
+    );
+
+    info!(log, "Starting server...");
+
+    let server = HttpServerStarter::new(
+        &config_dropshot,
+        server::api(),
+        Arc::new(context),
+        &log,
+    )
+    .map_err(|error| anyhow!("Failed to start server: {}", error))?
+    .start();
+
+    let server_res = join!(server, vnc_server_hdl.start()).0;
+
+    server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
+}
+
+#[cfg(feature = "mock-only")]
+async fn run_server(
+    config_app: config::Config,
+    config_dropshot: dropshot::ConfigDropshot,
+    _metrics_addr: Option<SocketAddr>,
+    _vnc_addr: SocketAddr,
+    log: slog::Logger,
+) -> anyhow::Result<()> {
+    let context = server::Context::new(config_app, log.new(slog::o!()));
+
+    info!(log, "Starting server...");
+
+    let server = HttpServerStarter::new(
+        &config_dropshot,
+        server::api(),
+        Arc::new(context),
+        &log,
+    )
+    .map_err(|error| anyhow!("Failed to start server: {}", error))?
+    .start();
+
+    let server_res = server.await;
+    server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
@@ -93,54 +164,8 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            let context;
-            cfg_if::cfg_if! {
-                if #[cfg(not(feature = "mock-only"))] {
-                    // Check that devices conform to expected API version
-                    propolis::api_version::check().context("API version checks")?;
-
-                    let vnc_server = setup_vnc(&log, vnc_addr);
-                    let vnc_server_hdl = vnc_server.clone();
-                    let use_reservoir = config::reservoir_decide(&log);
-
-                    let metric_config = metric_addr.map(|addr| {
-                        let imc = MetricsEndpointConfig::new(propolis_addr, addr);
-                        info!(log, "Metrics server will use {:?}", imc);
-                        imc
-                    });
-                    context = server::DropshotEndpointContext::new(
-                        config,
-                        vnc_server,
-                        use_reservoir,
-                        log.new(slog::o!()),
-                        metric_config,
-                    );
-                } else {
-                    context = server::Context::new(config, log.new(slog::o!()));
-                }
-            }
-
-            info!(log, "Starting server...");
-
-            let server = HttpServerStarter::new(
-                &config_dropshot,
-                server::api(),
-                Arc::new(context),
-                &log,
-            )
-            .map_err(|error| anyhow!("Failed to start server: {}", error))?
-            .start();
-
-            let server_res;
-            cfg_if::cfg_if! {
-                if #[cfg(not(feature = "mock-only"))] {
-                    server_res = join!(server, vnc_server_hdl.start()).0;
-                } else {
-                    server_res = server.await;
-                }
-            };
-            server_res
-                .map_err(|e| anyhow!("Server exited with an error: {}", e))
+            run_server(config, config_dropshot, metric_addr, vnc_addr, log)
+                .await
         }
     }
 }

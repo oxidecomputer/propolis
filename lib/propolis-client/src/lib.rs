@@ -128,7 +128,7 @@ pub mod support {
         > {
             let value = self.ws_stream.next().await;
             if let Some(Ok(WSMessage::Text(json))) = &value {
-                match serde_json::from_str(&json) {
+                match serde_json::from_str(json) {
                     Ok(InstanceSerialConsoleControlMessage::Migrating {
                         destination,
                         from_start,

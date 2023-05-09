@@ -41,6 +41,11 @@ impl FileBackedDisk {
         // read-only).
         let disk_file = std::fs::File::open(&disk_path)?;
         let mut permissions = disk_file.metadata()?.permissions();
+
+        // TODO: Clippy is upset that `set_readonly(false)` results in
+        // world-writable files on UNIX-like OSes.  Suppress the lint for now
+        // until someone gets around to a more specific solution.
+        #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         disk_file.set_permissions(permissions)?;
 

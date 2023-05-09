@@ -126,7 +126,7 @@ impl InstanceContext {
                     self.state_watcher_tx
                         .send(api::InstanceStateMonitorResponse {
                             gen: self.generation,
-                            state: self.state.clone(),
+                            state: self.state,
                             migration: None,
                         })
                         .map_err(|_| Error::TransitionSendFail)
@@ -223,7 +223,7 @@ async fn instance_ensure(
             ))
         })?;
         base64::engine::general_purpose::STANDARD
-            .decode(&cloud_init_bytes)
+            .decode(cloud_init_bytes)
             .map_err(|e| {
                 let err = IoError::new(ErrorKind::InvalidInput, e.to_string());
                 HttpError::for_internal_error(format!(
@@ -253,7 +253,7 @@ async fn instance_get(
     })?;
     let instance_info = api::Instance {
         properties: instance.properties.clone(),
-        state: instance.state.clone(),
+        state: instance.state,
         disks: vec![],
         nics: vec![],
     };
