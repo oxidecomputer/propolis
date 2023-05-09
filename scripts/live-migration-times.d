@@ -21,14 +21,12 @@
  *   arugment into the migrate_phase_{begin,end} probes. We use the name as
  *   a key for tracking the phase deltas. If those names change, or phases are
  *   added/removed, this script will break.
- * - When calculating RAM transfer rates, the script assumes that the majority
- *   of the time Propolis spends in a RAM copy phase is spent actually copying
- *   guest memory and that the cost of other tasks in the phase (entering it,
- *   leaving it, logging messages, Propolis control flow, etc.) is negligible
- *   by comparison. If a RAM transfer phase copies very little memory (e.g.
- *   because the VM is mostly idle and there's nothing to copy in the post-
- *   pause phase), this assumption will not hold and the script will report
- *   unusually low transfer rates.
+ * - If a VM's guest is mostly idle, the post-pause RAM transfer phase will
+ *   copy very few pages, which can make the transfer rate abnormally low (the
+ *   cost of entering and leaving the phase becomes significant relative to the
+ *   cost of transferring RAM). If the post-pause transfer rate for some
+ *   migration seems abnormally low, check to make sure there were actually
+ *   some pages to transfer!
  */
 
 #pragma D option quiet
