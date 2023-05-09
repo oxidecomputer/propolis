@@ -1,5 +1,5 @@
 use futures::{SinkExt, StreamExt};
-use propolis::common::GuestAddr;
+use propolis::common::{GuestAddr, PAGE_SIZE};
 use propolis::inventory::Order;
 use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info, trace};
@@ -215,7 +215,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                         let pages = bits.count_ones() as u64;
                         (
                             pages,
-                            pages * 4096,
+                            pages * PAGE_SIZE as u64,
                             match phase {
                                 MigratePhase::RamPushPrePause => 0,
                                 MigratePhase::RamPushPostPause => 1,
@@ -259,7 +259,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         assert!(end_gpa < u64::MAX);
         let end_gpa = end_gpa + 1;
 
-        let step = bits.len() * 8 * 4096;
+        let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (start_gpa..end_gpa).step_by(step) {
             // Always capture the dirty page mask even if the offer discipline
             // says to offer all pages. This ensures that pages that are
@@ -293,10 +293,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         info!(self.log(), "ram_push: xfer RAM between {} and {}", start, end);
         self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
         for addr in PageIter::new(start, end, bits) {
-            let mut bytes = [0u8; 4096];
+            let mut bytes = [0u8; PAGE_SIZE];
             self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
             self.send_msg(codec::Message::Page(bytes.into())).await?;
-            probes::migrate_xfer_ram_page!(|| (addr, 4096));
+            probes::migrate_xfer_ram_page!(|| (addr, PAGE_SIZE as u64));
         }
         Ok(())
     }
@@ -463,7 +463,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn read_mem_query(&mut self) -> Result<Range<u64>, MigrateError> {
         match self.read_msg().await? {
             codec::Message::MemQuery(start, end) => {
-                if start % 4096 != 0 || (end % 4096 != 0 && end != !0) {
+                if start % PAGE_SIZE as u64 != 0
+                    || (end % PAGE_SIZE as u64 != 0 && end != !0)
+                {
                     return Err(MigrateError::Phase);
                 }
                 Ok(start..end)

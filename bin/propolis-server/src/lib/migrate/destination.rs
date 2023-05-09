@@ -1,6 +1,6 @@
 use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
-use propolis::common::GuestAddr;
+use propolis::common::{GuestAddr, PAGE_SIZE};
 use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
@@ -183,8 +183,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             if region.iter().all(|&b| b == 0) {
                 continue;
             }
-            let start = (k * 4096 * 8 * 4096) as u64;
-            let end = start + (region.len() * 8 * 4096) as u64;
+
+            // This is an iteration over chunks of 4,096 bitmap bytes, so
+            // (k * 4096) is the offset (into the overall bitmap) of the first
+            // byte in the chunk. Multiply this by 8 bits/byte to get a number
+            // of bits, then multiply by PAGE_SIZE to get a physical address.
+            let start = (k * 4096 * 8 * PAGE_SIZE) as u64;
+            let end = start + (region.len() * 8 * PAGE_SIZE) as u64;
             let end = highest.min(end);
             self.send_msg(memx::make_mem_fetch(start, end, region)).await?;
             let m = self.read_msg().await?;
@@ -248,7 +253,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                     if end > highest {
                         highest = end;
                     }
-                    let start_bit_index = start as usize / 4096;
+                    let start_bit_index = start as usize / PAGE_SIZE;
                     if dirty.len() < start_bit_index {
                         dirty.resize(start_bit_index, false);
                     }
