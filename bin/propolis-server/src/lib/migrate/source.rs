@@ -416,7 +416,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         // VM to resume, which is forbidden at this point (see above).
         let vmm_range = self.vmm_ram_bounds().await.unwrap();
         let mut bits = [0u8; 4096];
-        let step = bits.len() * 8 * 4096;
+        let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
             self.track_dirty(GuestAddr(gpa), &mut bits).await.unwrap();
             assert!(bits.iter().all(|&b| b == 0));
