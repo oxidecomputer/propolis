@@ -168,10 +168,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         &mut self,
         phase: &MigratePhase,
     ) -> Result<(), MigrateError> {
-        // Move to the RamPush state only when receiving memory for the first
-        // time.
-        if matches!(phase, MigratePhase::RamPushPrePause) {
-            self.update_state(MigrationState::RamPush).await;
+        match phase {
+            MigratePhase::RamPushPrePause => {
+                self.update_state(MigrationState::RamPush).await
+            }
+            MigratePhase::RamPushPostPause => {
+                self.update_state(MigrationState::RamPushDirty).await
+            }
+            _ => unreachable!("should only push RAM in a RAM push phase"),
         }
 
         let (dirty, highest) = self.query_ram().await?;

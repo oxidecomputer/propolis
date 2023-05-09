@@ -151,11 +151,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         &mut self,
         phase: &MigratePhase,
     ) -> Result<(), MigrateError> {
-        // Only publish the "RAM push" phase before pausing (so that the
-        // migration doesn't go from the "pause" state back to the "RAM push"
-        // state).
-        if matches!(phase, MigratePhase::RamPushPrePause) {
-            self.update_state(MigrationState::RamPush).await;
+        match phase {
+            MigratePhase::RamPushPrePause => {
+                self.update_state(MigrationState::RamPush).await
+            }
+            MigratePhase::RamPushPostPause => {
+                self.update_state(MigrationState::RamPushDirty).await
+            }
+            _ => unreachable!("should only push RAM in a RAM push phase"),
         }
 
         let vmm_ram_range = self.vmm_ram_bounds().await?;
