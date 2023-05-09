@@ -791,6 +791,11 @@ mod tests {
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| ());
+        vm_ctrl
+            .expect_pause_vm()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|| ());
         vcpu_ctrl
             .expect_exit_all()
             .times(1)
