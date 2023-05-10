@@ -1,5 +1,5 @@
 use futures::{SinkExt, StreamExt};
-use propolis::common::GuestAddr;
+use propolis::common::{GuestAddr, PAGE_SIZE};
 use propolis::inventory::Order;
 use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info, trace};
@@ -19,6 +19,16 @@ use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
+
+/// Specifies which pages should be offered during a RAM transfer phase.
+#[derive(Debug)]
+enum RamOfferDiscipline {
+    /// Offer all pages irrespective of whether they are dirty.
+    OfferAll,
+
+    /// Offer only pages that the hypervisor are marked as dirty.
+    OfferDirty,
+}
 
 pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     vm_controller: Arc<VmController>,
@@ -96,7 +106,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let res = match step {
             MigratePhase::MigrateSync => self.sync().await,
             MigratePhase::Pause => self.pause().await,
-            MigratePhase::RamPush => self.ram_push().await,
+            MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
+                self.ram_push(&step).await
+            }
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
             MigratePhase::ServerState => self.server_state().await,
@@ -112,11 +124,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         info!(self.log(), "Entering Source Migration Task");
 
         self.run_phase(MigratePhase::MigrateSync).await?;
-
-        // TODO: Optimize RAM transfer so that most memory can be transferred
-        // prior to pausing.
+        self.run_phase(MigratePhase::RamPushPrePause).await?;
         self.run_phase(MigratePhase::Pause).await?;
-        self.run_phase(MigratePhase::RamPush).await?;
+        self.run_phase(MigratePhase::RamPushPostPause).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
         self.run_phase(MigratePhase::ServerState).await?;
@@ -137,17 +147,50 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.read_ok().await
     }
 
-    async fn ram_push(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::RamPush).await;
+    async fn ram_push(
+        &mut self,
+        phase: &MigratePhase,
+    ) -> Result<(), MigrateError> {
+        match phase {
+            MigratePhase::RamPushPrePause => {
+                self.update_state(MigrationState::RamPush).await
+            }
+            MigratePhase::RamPushPostPause => {
+                self.update_state(MigrationState::RamPushDirty).await
+            }
+            _ => unreachable!("should only push RAM in a RAM push phase"),
+        }
+
         let vmm_ram_range = self.vmm_ram_bounds().await?;
         let req_ram_range = self.read_mem_query().await?;
         info!(
             self.log(),
-            "ram_push: got query for range {:?}, vm range {:?}",
+            "ram_push ({:?}): got query for range {:?}, vm range {:?}",
+            phase,
             req_ram_range,
             vmm_ram_range
         );
-        self.offer_ram(vmm_ram_range, req_ram_range).await?;
+
+        // TODO(#387): Ideally, both the pre-pause and post-pause phases would
+        // offer just dirty pages. To do this safely, the source must remember
+        // all the pages it has ever offered to any target so that they can be
+        // re-offered if migration fails and is later retried.
+        //
+        // Offering all pages before pausing guarantees that all modified pages
+        // will be transferred without having to do any extra tracking (but uses
+        // host CPU time and network bandwidth inefficiently).
+        self.offer_ram(
+            vmm_ram_range,
+            req_ram_range,
+            match phase {
+                MigratePhase::RamPushPrePause => RamOfferDiscipline::OfferAll,
+                MigratePhase::RamPushPostPause => {
+                    RamOfferDiscipline::OfferDirty
+                }
+                _ => unreachable!(),
+            },
+        )
+        .await?;
 
         loop {
             let m = self.read_msg().await?;
@@ -159,12 +202,27 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                         error!(self.log(), "invalid bitmap");
                         return Err(MigrateError::Phase);
                     }
+
                     // XXX: We should do stricter validation on the fetch
                     // request here.  For instance, we shouldn't "push" MMIO
                     // space or non-existent RAM regions.  While we de facto
                     // do not because of the way access is implemented, we
                     // should probably disallow it at the protocol level.
                     self.xfer_ram(start, end, &bits).await?;
+                    probes::migrate_xfer_ram_region!(|| {
+                        use bitvec::prelude::{BitSlice, Lsb0};
+                        let bits = BitSlice::<_, Lsb0>::from_slice(&bits);
+                        let pages = bits.count_ones() as u64;
+                        (
+                            pages,
+                            pages * PAGE_SIZE as u64,
+                            match phase {
+                                MigratePhase::RamPushPrePause => 0,
+                                MigratePhase::RamPushPostPause => 1,
+                                _ => unreachable!(),
+                            },
+                        )
+                    });
                 }
                 _ => return Err(MigrateError::UnexpectedMessage),
             };
@@ -178,8 +236,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         &mut self,
         vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
+        offer_discipline: RamOfferDiscipline,
     ) -> Result<(), MigrateError> {
-        info!(self.log(), "offering ram");
+        info!(self.log(), "offering ram"; "discipline" => ?offer_discipline);
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
         let mut bits = [0u8; 4096];
@@ -200,12 +259,25 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         assert!(end_gpa < u64::MAX);
         let end_gpa = end_gpa + 1;
 
-        let step = bits.len() * 8 * 4096;
+        let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (start_gpa..end_gpa).step_by(step) {
+            // Always capture the dirty page mask even if the offer discipline
+            // says to offer all pages. This ensures that pages that are
+            // transferred now and not touched again will not be offered again.
             self.track_dirty(GuestAddr(gpa), &mut bits).await?;
-            if bits.iter().all(|&b| b == 0) {
-                continue;
+            match offer_discipline {
+                RamOfferDiscipline::OfferAll => {
+                    for byte in bits.iter_mut() {
+                        *byte = 0xff;
+                    }
+                }
+                RamOfferDiscipline::OfferDirty => {
+                    if bits.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                }
             }
+
             let end = end_gpa.min(gpa + step as u64);
             self.send_msg(memx::make_mem_offer(gpa, end, &bits)).await?;
         }
@@ -221,10 +293,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         info!(self.log(), "ram_push: xfer RAM between {} and {}", start, end);
         self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
         for addr in PageIter::new(start, end, bits) {
-            let mut bytes = [0u8; 4096];
+            let mut bytes = [0u8; PAGE_SIZE];
             self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
             self.send_msg(codec::Message::Page(bytes.into())).await?;
-            probes::migrate_xfer_ram_page!(|| (addr, 4096));
+            probes::migrate_xfer_ram_page!(|| (addr, PAGE_SIZE as u64));
         }
         Ok(())
     }
@@ -344,7 +416,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         // VM to resume, which is forbidden at this point (see above).
         let vmm_range = self.vmm_ram_bounds().await.unwrap();
         let mut bits = [0u8; 4096];
-        let step = bits.len() * 8 * 4096;
+        let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
             self.track_dirty(GuestAddr(gpa), &mut bits).await.unwrap();
             assert!(bits.iter().all(|&b| b == 0));
@@ -391,7 +463,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn read_mem_query(&mut self) -> Result<Range<u64>, MigrateError> {
         match self.read_msg().await? {
             codec::Message::MemQuery(start, end) => {
-                if start % 4096 != 0 || (end % 4096 != 0 && end != !0) {
+                if start % PAGE_SIZE as u64 != 0
+                    || (end % PAGE_SIZE as u64 != 0 && end != !0)
+                {
                     return Err(MigrateError::Phase);
                 }
                 Ok(start..end)

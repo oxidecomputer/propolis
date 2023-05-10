@@ -57,10 +57,13 @@ pub enum MigrateRole {
     Destination,
 }
 
+// N.B. Keep in sync with scripts/live-migration-times.d.
+#[derive(Debug)]
 enum MigratePhase {
     MigrateSync,
     Pause,
-    RamPush,
+    RamPushPrePause,
+    RamPushPostPause,
     DeviceState,
     RamPull,
     ServerState,
@@ -72,7 +75,8 @@ impl std::fmt::Display for MigratePhase {
         let s = match self {
             MigratePhase::MigrateSync => "Sync",
             MigratePhase::Pause => "Pause",
-            MigratePhase::RamPush => "RamPush",
+            MigratePhase::RamPushPrePause => "RamPushPrePause",
+            MigratePhase::RamPushPostPause => "RamPushPostPause",
             MigratePhase::DeviceState => "DeviceState",
             MigratePhase::RamPull => "RamPull",
             MigratePhase::ServerState => "ServerState",
@@ -401,5 +405,6 @@ impl<'a> Iterator for PageIter<'a> {
 mod probes {
     fn migrate_phase_begin(step_desc: &str) {}
     fn migrate_phase_end(step_desc: &str) {}
+    fn migrate_xfer_ram_region(pages: u64, size: u64, paused: u8) {}
     fn migrate_xfer_ram_page(addr: u64, size: u64) {}
 }

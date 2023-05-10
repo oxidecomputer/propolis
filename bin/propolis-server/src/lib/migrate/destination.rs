@@ -1,6 +1,6 @@
 use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
-use propolis::common::GuestAddr;
+use propolis::common::{GuestAddr, PAGE_SIZE};
 use propolis::migrate::{MigrateCtx, MigrateStateError, Migrator};
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
@@ -101,8 +101,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
             // no pause step on the dest side
             MigratePhase::Pause => unreachable!(),
-
-            MigratePhase::RamPush => self.ram_push().await,
+            MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
+                self.ram_push(&step).await
+            }
             MigratePhase::DeviceState => self.device_state().await,
             MigratePhase::RamPull => self.ram_pull().await,
             MigratePhase::ServerState => self.server_state().await,
@@ -118,7 +119,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Entering Destination Migration Task");
 
         self.run_phase(MigratePhase::MigrateSync).await?;
-        self.run_phase(MigratePhase::RamPush).await?;
+
+        // The RAM transfer phase runs twice, once before the source pauses and
+        // once after. There is no explicit pause phase on the destination,
+        // though, so that step does not appear here even though there are
+        // pre- and post-pause steps.
+        self.run_phase(MigratePhase::RamPushPrePause).await?;
+        self.run_phase(MigratePhase::RamPushPostPause).await?;
         self.run_phase(MigratePhase::DeviceState).await?;
         self.run_phase(MigratePhase::RamPull).await?;
         self.run_phase(MigratePhase::ServerState).await?;
@@ -157,25 +164,48 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         self.send_msg(codec::Message::Okay).await
     }
 
-    async fn ram_push(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::RamPush).await;
+    async fn ram_push(
+        &mut self,
+        phase: &MigratePhase,
+    ) -> Result<(), MigrateError> {
+        match phase {
+            MigratePhase::RamPushPrePause => {
+                self.update_state(MigrationState::RamPush).await
+            }
+            MigratePhase::RamPushPostPause => {
+                self.update_state(MigrationState::RamPushDirty).await
+            }
+            _ => unreachable!("should only push RAM in a RAM push phase"),
+        }
+
         let (dirty, highest) = self.query_ram().await?;
         for (k, region) in dirty.as_raw_slice().chunks(4096).enumerate() {
             if region.iter().all(|&b| b == 0) {
                 continue;
             }
-            let start = (k * 4096 * 8 * 4096) as u64;
-            let end = start + (region.len() * 8 * 4096) as u64;
+
+            // This is an iteration over chunks of 4,096 bitmap bytes, so
+            // (k * 4096) is the offset (into the overall bitmap) of the first
+            // byte in the chunk. Multiply this by 8 bits/byte to get a number
+            // of bits, then multiply by PAGE_SIZE to get a physical address.
+            let start = (k * 4096 * 8 * PAGE_SIZE) as u64;
+            let end = start + (region.len() * 8 * PAGE_SIZE) as u64;
             let end = highest.min(end);
             self.send_msg(memx::make_mem_fetch(start, end, region)).await?;
             let m = self.read_msg().await?;
-            trace!(self.log(), "ram_push: source xfer phase recvd {:?}", m);
+            trace!(
+                self.log(),
+                "ram_push ({:?}): source xfer phase recvd {:?}",
+                m,
+                phase
+            );
             match m {
                 codec::Message::MemXfer(start, end, bits) => {
                     if !memx::validate_bitmap(start, end, &bits) {
                         error!(
                             self.log(),
-                            "ram_push: MemXfer received bad bitmap"
+                            "ram_push ({:?}): MemXfer received bad bitmap",
+                            phase
                         );
                         return Err(MigrateError::Phase);
                     }
@@ -223,7 +253,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                     if end > highest {
                         highest = end;
                     }
-                    let start_bit_index = start as usize / 4096;
+                    let start_bit_index = start as usize / PAGE_SIZE;
                     if dirty.len() < start_bit_index {
                         dirty.resize(start_bit_index, false);
                     }
