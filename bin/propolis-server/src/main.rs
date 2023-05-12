@@ -1,6 +1,3 @@
-// Required for USDT
-#![cfg_attr(usdt_need_asm, feature(asm))]
-#![cfg_attr(all(target_os = "macos", usdt_need_asm_sym), feature(asm_sym))]
 #![cfg_attr(feature = "mock-only", allow(unused))]
 
 use anyhow::{anyhow, Context};

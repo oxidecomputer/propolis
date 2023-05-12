@@ -28,6 +28,5 @@ slog-term.workspace = true
 num_enum.workspace = true
 
 [features]
-default = ["dtrace-probes"]
-dtrace-probes = ["propolis/dtrace-probes"]
-crucible = ["propolis/crucible", "propolis/oximeter"]
+default = []
+crucible = ["propolis/crucible-full", "propolis/oximeter"]

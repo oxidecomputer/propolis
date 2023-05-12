@@ -18,7 +18,7 @@ bhyve_api.workspace = true
 dladm.workspace = true
 viona_api.workspace = true
 propolis_types.workspace = true
-usdt.workspace = true
+usdt = { workspace = true, features = ["asm"] }
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 anyhow.workspace = true
@@ -50,11 +50,7 @@ slog-term.workspace = true
 slog-async.workspace = true
 rand.workspace = true
 
-[build-dependencies]
-version_check.workspace = true
-
 [features]
-default = ["dtrace-probes"]
-dtrace-probes = ["usdt/asm"]
+default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter"]
 falcon = ["libloading", "p9ds", "dlpi", "p4rs", "ispf", "rand", "softnpu-lib"]

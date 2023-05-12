@@ -25,7 +25,7 @@ cfg-if.workspace = true
 chrono = { workspace = true, features = [ "serde" ] }
 clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
-dropshot.workspace = true
+dropshot = { workspace = true, features = ["usdt-probes"] }
 erased-serde.workspace = true
 futures.workspace = true
 hyper.workspace = true
@@ -60,12 +60,8 @@ slog = { workspace = true, features = [ "max_level_trace", "release_max_level_de
 expectorate.workspace = true
 mockall.workspace = true
 
-[build-dependencies]
-version_check.workspace = true
-
 [features]
-default = ["dtrace-probes", "propolis/crucible-full", "propolis/oximeter"]
-dtrace-probes = ["propolis/dtrace-probes", "dropshot/usdt-probes"]
+default = ["propolis/crucible-full", "propolis/oximeter"]
 falcon = ["propolis/falcon", "propolis-client/falcon"]
 # If selected, only build a mock server which does not actually spawn instances
 # (i.e. to test with a facsimile of the API on unsupported platforms)

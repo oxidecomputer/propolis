@@ -14,7 +14,7 @@ but may work on Intel hosts as well.
 
 ### Minimum Supported Rust Version (MSRV)
 
-- Rust 1.64.0
+- Rust 1.67.0
 
 ## Building
 
