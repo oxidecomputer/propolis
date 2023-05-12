@@ -463,11 +463,8 @@ fn import_global(hdl: &VmmHdl, state: &VmGlobalState) -> std::io::Result<()> {
 
         Ok(())
     } else {
-        let arch_entry = vdi_field_entry_v1 {
-            vfe_ident: VAI_BOOT_HRTIME,
-            vfe_value: state.boot_hrtime as u64,
-            ..Default::default()
-        };
+        let arch_entry =
+            vdi_field_entry_v1::new(VAI_BOOT_HRTIME, state.boot_hrtime as u64);
         vmm_data::write(hdl, -1, VDC_VMM_ARCH, 1, arch_entry)?;
         Ok(())
     }

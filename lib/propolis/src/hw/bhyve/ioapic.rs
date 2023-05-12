@@ -26,7 +26,7 @@ impl MigrateSingle for BhyveIoApic {
         &self,
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::BhyveIoApicV1::read(&self.hdl)?.emit())
+        Ok(migrate::BhyveIoApicV1::read(&self.hdl)?.into())
     }
 
     fn import(

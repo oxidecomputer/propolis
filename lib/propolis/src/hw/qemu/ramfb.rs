@@ -198,7 +198,7 @@ impl MigrateSingle for RamFb {
             height: state.height,
             stride: state.stride,
         }
-        .emit())
+        .into())
     }
 
     fn import(

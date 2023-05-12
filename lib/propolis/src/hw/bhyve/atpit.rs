@@ -26,7 +26,7 @@ impl MigrateSingle for BhyveAtPit {
         &self,
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::AtPitV1::read(&self.hdl)?.emit())
+        Ok(migrate::AtPitV1::read(&self.hdl)?.into())
     }
 
     fn import(

@@ -10,6 +10,7 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
+use migrate::VcpuReadWrite;
 
 /// A handle to a virtual CPU.
 pub struct Vcpu {
@@ -225,32 +226,60 @@ impl Entity for Vcpu {
         "bhyve-vcpu"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Single(self)
+        Migrator::Multi(self)
     }
 
     // The consumer is expected to handle run/pause/halt events directly, since
     // the vCPUs are mostly likely to be driven in manner separate from the
     // other emulated devices.
 }
-impl MigrateSingle for Vcpu {
+impl MigrateMulti for Vcpu {
     fn export(
         &self,
+        output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
-    ) -> std::result::Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::BhyveX86CpuV1::read(self)?.emit())
+    ) -> std::result::Result<(), MigrateStateError> {
+        output.push(migrate::VcpuRunStateV1::read(self)?.into())?;
+        output.push(migrate::VcpuGpRegsV1::read(self)?.into())?;
+        output.push(migrate::VcpuCtrlRegsV1::read(self)?.into())?;
+        output.push(migrate::VcpuDbgRegsV1::read(self)?.into())?;
+        output.push(migrate::VcpuSegRegsV1::read(self)?.into())?;
+        output.push(migrate::VcpuMsrsV1::read(self)?.into())?;
+        output.push(migrate::FpuStateV1::read(self)?.into())?;
+        output.push(migrate::LapicV1::read(self)?.into())?;
+
+        Ok(())
     }
 
     fn import(
         &self,
-        mut offer: PayloadOffer,
+        offer: &mut PayloadOffers,
         _ctx: &MigrateCtx,
     ) -> std::result::Result<(), MigrateStateError> {
-        offer.parse::<migrate::BhyveX86CpuV1>()?.write(self)?;
+        let run_state: migrate::VcpuRunStateV1 = offer.take()?;
+        let gp_regs: migrate::VcpuGpRegsV1 = offer.take()?;
+        let ctrl_regs: migrate::VcpuCtrlRegsV1 = offer.take()?;
+        let dbg_regs: migrate::VcpuDbgRegsV1 = offer.take()?;
+        let seg_regs: migrate::VcpuSegRegsV1 = offer.take()?;
+        let ms_regs: migrate::VcpuMsrsV1 = offer.take()?;
+        let fpu: migrate::FpuStateV1 = offer.take()?;
+        let lapic: migrate::LapicV1 = offer.take()?;
+
+        run_state.write(self)?;
+        gp_regs.write(self)?;
+        ctrl_regs.write(self)?;
+        dbg_regs.write(self)?;
+        seg_regs.write(self)?;
+        ms_regs.write(self)?;
+        fpu.write(self)?;
+        lapic.write(self)?;
+
         Ok(())
     }
 }
 
 pub mod migrate {
+    use std::io::Result;
     use std::{convert::TryInto, io};
 
     use super::Vcpu;
@@ -260,35 +289,30 @@ pub mod migrate {
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name};
     use serde::{Deserialize, Serialize};
 
-    #[derive(Clone, Default, Deserialize, Serialize)]
-    pub struct BhyveX86CpuV1 {
-        pub run_state: BhyveVcpuRunStateV1,
-        pub gp_regs: GpRegsV1,
-        pub ctrl_regs: CtrlRegsV1,
-        pub seg_regs: SegRegsV1,
-        pub fpu_state: FpuStateV1,
-        pub lapic: LapicV1,
-        pub ms_regs: Vec<MsrEntryV1>,
-    }
-    impl Schema<'_> for BhyveX86CpuV1 {
-        fn id() -> SchemaId {
-            ("bhyve-x86-cpu", 1)
-        }
+    pub(super) trait VcpuReadWrite: Sized {
+        fn read(vcpu: &Vcpu) -> Result<Self>;
+        fn write(self, vcpu: &Vcpu) -> Result<()>;
     }
 
     #[derive(Clone, Default, Deserialize, Serialize)]
-    pub struct BhyveVcpuRunStateV1 {
+    pub struct VcpuRunStateV1 {
         pub run_state: u32,
         pub sipi_vector: u8,
 
+        pub intr_shadow: bool,
         pub pending_nmi: bool,
         pub pending_extint: bool,
         pub pending_exception: u64,
         pub pending_intinfo: u64,
     }
+    impl Schema<'_> for VcpuRunStateV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-vcpu-runstate", 1)
+        }
+    }
 
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct GpRegsV1 {
+    pub struct VcpuGpRegsV1 {
         pub rax: u64,
         pub rcx: u64,
         pub rdx: u64,
@@ -309,44 +333,86 @@ pub mod migrate {
         pub rip: u64,
         pub rflags: u64,
     }
+    impl Schema<'_> for VcpuGpRegsV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-vcpu-gpregs", 1)
+        }
+    }
+
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct CtrlRegsV1 {
+    pub struct VcpuCtrlRegsV1 {
         pub cr0: u64,
         pub cr2: u64,
         pub cr3: u64,
         pub cr4: u64,
+        pub xcr0: u64,
+
+        /// EFER MSR contents
+        ///
+        /// We count it among the control registers, rather than the rest of the
+        /// MSRs, because of its involvement in configuring long mode.
+        pub efer: u64,
+    }
+    impl Schema<'_> for VcpuCtrlRegsV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-vcpu-ctrlregs", 1)
+        }
+    }
+
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
+    pub struct VcpuDbgRegsV1 {
         pub dr0: u64,
         pub dr1: u64,
         pub dr2: u64,
         pub dr3: u64,
         pub dr6: u64,
         pub dr7: u64,
-        pub xcr0: u64,
+        /// DEBUGCTL MSR
+        pub debugctl: u64,
+    }
+    impl Schema<'_> for VcpuDbgRegsV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-vcpu-dbgregs", 1)
+        }
     }
 
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct SegRegsV1 {
-        pub cs: SegDescV1,
-        pub ds: SegDescV1,
-        pub es: SegDescV1,
-        pub fs: SegDescV1,
-        pub gs: SegDescV1,
-        pub ss: SegDescV1,
-        pub gdtr: SegDescV1,
-        pub idtr: SegDescV1,
-        pub ldtr: SegDescV1,
-        pub tr: SegDescV1,
+    pub struct VcpuSegRegsV1 {
+        pub cs: SegDesc,
+        pub ds: SegDesc,
+        pub es: SegDesc,
+        pub fs: SegDesc,
+        pub gs: SegDesc,
+        pub ss: SegDesc,
+        pub gdtr: SegDesc,
+        pub idtr: SegDesc,
+        pub ldtr: SegDesc,
+        pub tr: SegDesc,
+    }
+    impl Schema<'_> for VcpuSegRegsV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-vcpu-segregs", 1)
+        }
     }
 
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct SegDescV1 {
+    pub struct SegDesc {
         pub base: u64,
         pub limit: u32,
         pub access: u32,
         pub selector: u16,
     }
+
+    #[derive(Clone, Default, Deserialize, Serialize)]
+    pub struct VcpuMsrsV1(Vec<MsrEntry>);
+    impl Schema<'_> for VcpuMsrsV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-cpu-msregs", 1)
+        }
+    }
+
     #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct MsrEntryV1 {
+    pub struct MsrEntry {
         pub ident: u32,
         pub value: u64,
     }
@@ -355,6 +421,11 @@ pub mod migrate {
     pub struct FpuStateV1 {
         pub blob: Vec<u8>,
     }
+    impl Schema<'_> for FpuStateV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-cpu-fpu", 1)
+        }
+    }
 
     #[derive(Clone, Default, Deserialize, Serialize)]
     pub struct LapicV1 {
@@ -362,6 +433,11 @@ pub mod migrate {
         pub msr_apicbase: u64,
         pub timer_target: i64,
         pub esr_pending: u32,
+    }
+    impl Schema<'_> for LapicV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-lapic", 1)
+        }
     }
 
     #[derive(Clone, Default, Deserialize, Serialize)]
@@ -389,8 +465,98 @@ pub mod migrate {
         pub dcr_timer: u32,
     }
 
-    impl BhyveVcpuRunStateV1 {
-        fn read(vcpu: &Vcpu) -> io::Result<Self> {
+    impl From<(bhyve_api::seg_desc, u16)> for SegDesc {
+        fn from(value: (bhyve_api::seg_desc, u16)) -> Self {
+            let (desc, selector) = value;
+            Self {
+                base: desc.base,
+                limit: desc.limit,
+                access: desc.access,
+                selector,
+            }
+        }
+    }
+    impl Into<(bhyve_api::seg_desc, u16)> for SegDesc {
+        fn into(self) -> (bhyve_api::seg_desc, u16) {
+            (
+                bhyve_api::seg_desc {
+                    base: self.base,
+                    limit: self.limit,
+                    access: self.access,
+                },
+                self.selector,
+            )
+        }
+    }
+
+    impl From<vdi_field_entry_v1> for MsrEntry {
+        fn from(raw: vdi_field_entry_v1) -> Self {
+            Self { ident: raw.vfe_ident, value: raw.vfe_value }
+        }
+    }
+    impl From<MsrEntry> for vdi_field_entry_v1 {
+        fn from(entry: MsrEntry) -> Self {
+            vdi_field_entry_v1::new(entry.ident, entry.value)
+        }
+    }
+
+    impl From<bhyve_api::vdi_lapic_page_v1> for LapicPageV1 {
+        fn from(value: bhyve_api::vdi_lapic_page_v1) -> Self {
+            Self {
+                id: value.vlp_id,
+                version: value.vlp_version,
+                tpr: value.vlp_tpr,
+                apr: value.vlp_apr,
+                ldr: value.vlp_ldr,
+                dfr: value.vlp_dfr,
+                svr: value.vlp_svr,
+                isr: value.vlp_isr,
+                tmr: value.vlp_tmr,
+                irr: value.vlp_irr,
+                esr: value.vlp_esr,
+                lvt_cmci: value.vlp_lvt_cmci,
+                icr: value.vlp_icr,
+                lvt_timer: value.vlp_lvt_timer,
+                lvt_thermal: value.vlp_lvt_thermal,
+                lvt_pcint: value.vlp_lvt_pcint,
+                lvt_lint0: value.vlp_lvt_lint0,
+                lvt_lint1: value.vlp_lvt_lint1,
+                lvt_error: value.vlp_lvt_error,
+                icr_timer: value.vlp_icr_timer,
+                dcr_timer: value.vlp_dcr_timer,
+            }
+        }
+    }
+    impl From<LapicPageV1> for bhyve_api::vdi_lapic_page_v1 {
+        fn from(value: LapicPageV1) -> Self {
+            bhyve_api::vdi_lapic_page_v1 {
+                vlp_id: value.id,
+                vlp_version: value.version,
+                vlp_tpr: value.tpr,
+                vlp_apr: value.apr,
+                vlp_ldr: value.ldr,
+                vlp_dfr: value.dfr,
+                vlp_svr: value.svr,
+                vlp_isr: value.isr,
+                vlp_tmr: value.tmr,
+                vlp_irr: value.irr,
+                vlp_esr: value.esr,
+                vlp_lvt_cmci: value.lvt_cmci,
+                vlp_icr: value.icr,
+                vlp_lvt_timer: value.lvt_timer,
+                vlp_lvt_thermal: value.lvt_thermal,
+                vlp_lvt_pcint: value.lvt_pcint,
+                vlp_lvt_lint0: value.lvt_lint0,
+                vlp_lvt_lint1: value.lvt_lint1,
+                vlp_lvt_error: value.lvt_error,
+                vlp_icr_timer: value.icr_timer,
+                vlp_dcr_timer: value.dcr_timer,
+            }
+        }
+    }
+
+    impl VcpuReadWrite for VcpuRunStateV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
             let run_state = vcpu.get_run_state()?;
 
             let vmm_arch: Vec<bhyve_api::vdi_field_entry_v1> =
@@ -427,10 +593,13 @@ pub mod migrate {
                     _ => {}
                 }
             }
+            let intr_shadow =
+                vcpu.get_reg(vm_reg_name::VM_REG_GUEST_INTR_SHADOW)? != 0;
 
             Ok(Self {
                 run_state: run_state.state,
                 sipi_vector: run_state.sipi_vector,
+                intr_shadow,
                 pending_nmi,
                 pending_extint,
                 pending_exception,
@@ -438,30 +607,30 @@ pub mod migrate {
             })
         }
 
-        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
             vcpu.set_run_state(self.run_state, Some(self.sipi_vector))?;
+            vcpu.set_reg(
+                vm_reg_name::VM_REG_GUEST_INTR_SHADOW,
+                self.intr_shadow as u64,
+            )?;
 
             let mut ents = [
-                vdi_field_entry_v1 {
-                    vfe_ident: bhyve_api::VAI_PEND_NMI,
-                    vfe_value: self.pending_nmi as u64,
-                    ..Default::default()
-                },
-                vdi_field_entry_v1 {
-                    vfe_ident: bhyve_api::VAI_PEND_EXTINT,
-                    vfe_value: self.pending_extint as u64,
-                    ..Default::default()
-                },
-                vdi_field_entry_v1 {
-                    vfe_ident: bhyve_api::VAI_PEND_EXCP,
-                    vfe_value: self.pending_exception,
-                    ..Default::default()
-                },
-                vdi_field_entry_v1 {
-                    vfe_ident: bhyve_api::VAI_PEND_INTINFO,
-                    vfe_value: self.pending_intinfo,
-                    ..Default::default()
-                },
+                vdi_field_entry_v1::new(
+                    bhyve_api::VAI_PEND_NMI,
+                    self.pending_nmi as u64,
+                ),
+                vdi_field_entry_v1::new(
+                    bhyve_api::VAI_PEND_EXTINT,
+                    self.pending_extint as u64,
+                ),
+                vdi_field_entry_v1::new(
+                    bhyve_api::VAI_PEND_EXCP,
+                    self.pending_exception,
+                ),
+                vdi_field_entry_v1::new(
+                    bhyve_api::VAI_PEND_INTINFO,
+                    self.pending_intinfo,
+                ),
             ];
 
             // Do not attempt to import interrupt/exception state unless there
@@ -484,14 +653,8 @@ pub mod migrate {
         }
     }
 
-    // VM_REG_GUEST_EFER,
-    // VM_REG_GUEST_PDPTE0,
-    // VM_REG_GUEST_PDPTE1,
-    // VM_REG_GUEST_PDPTE2,
-    // VM_REG_GUEST_PDPTE3,
-    // VM_REG_GUEST_INTR_SHADOW,
-    impl GpRegsV1 {
-        pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
+    impl VcpuReadWrite for VcpuGpRegsV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
             Ok(Self {
                 rax: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_RAX)?,
                 rcx: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_RCX)?,
@@ -514,7 +677,7 @@ pub mod migrate {
             })
         }
 
-        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RAX, self.rax)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RCX, self.rcx)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_RDX, self.rdx)?;
@@ -537,166 +700,212 @@ pub mod migrate {
         }
     }
 
-    impl CtrlRegsV1 {
-        pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
+    impl VcpuReadWrite for VcpuCtrlRegsV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
             Ok(Self {
                 cr0: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_CR0)?,
                 cr2: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_CR2)?,
                 cr3: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_CR3)?,
                 cr4: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_CR4)?,
+                efer: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_EFER)?,
+                xcr0: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_XCR0)?,
+            })
+        }
+
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR0, self.cr0)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR2, self.cr2)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR3, self.cr3)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR4, self.cr4)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_EFER, self.efer)?;
+            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_XCR0, self.xcr0)?;
+            Ok(())
+        }
+    }
+    impl VcpuReadWrite for VcpuDbgRegsV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
+            Ok(Self {
                 dr0: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR0)?,
                 dr1: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR1)?,
                 dr2: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR2)?,
                 dr3: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR3)?,
                 dr6: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR6)?,
                 dr7: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DR7)?,
-                xcr0: vcpu.get_reg(vm_reg_name::VM_REG_GUEST_XCR0)?,
+                // TODO: populate from MSR
+                debugctl: 0,
             })
         }
 
-        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
-            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR0, self.cr0)?;
-            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR2, self.cr2)?;
-            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR3, self.cr3)?;
-            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CR4, self.cr4)?;
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR0, self.dr0)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR1, self.dr1)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR2, self.dr2)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR3, self.dr3)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR6, self.dr6)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DR7, self.dr7)?;
-            vcpu.set_reg(vm_reg_name::VM_REG_GUEST_XCR0, self.xcr0)?;
+            // TODO: set debugctl MSR
             Ok(())
         }
     }
 
-    impl SegRegsV1 {
-        pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
-            let cs = SegDescV1::from_raw(
+    impl VcpuReadWrite for VcpuSegRegsV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
+            let cs = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_CS)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_CS)? as u16,
-            );
-            let ds = SegDescV1::from_raw(
+            ));
+            let ds = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_DS)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_DS)? as u16,
-            );
-            let es = SegDescV1::from_raw(
+            ));
+            let es = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_ES)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_ES)? as u16,
-            );
-            let fs = SegDescV1::from_raw(
+            ));
+            let fs = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_FS)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_FS)? as u16,
-            );
-            let gs = SegDescV1::from_raw(
+            ));
+            let gs = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_GS)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_GS)? as u16,
-            );
-            let ss = SegDescV1::from_raw(
+            ));
+            let ss = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_SS)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_SS)? as u16,
-            );
-            let gdtr = SegDescV1::from_raw(
+            ));
+            let gdtr = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_GDTR)?,
                 // GDT has no selector register
                 0,
-            );
-            let idtr = SegDescV1::from_raw(
+            ));
+            let idtr = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_IDTR)?,
                 // IDT has no selector register
                 0,
-            );
-            let ldtr = SegDescV1::from_raw(
+            ));
+            let ldtr = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_LDTR)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_LDTR)? as u16,
-            );
-            let tr = SegDescV1::from_raw(
+            ));
+            let tr = SegDesc::from((
                 vcpu.get_segreg(vm_reg_name::VM_REG_GUEST_TR)?,
                 vcpu.get_reg(vm_reg_name::VM_REG_GUEST_TR)? as u16,
-            );
+            ));
             Ok(Self { cs, ds, es, fs, gs, ss, gdtr, idtr, ldtr, tr })
         }
 
-        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
-            let (cs, css) = self.cs.into_raw();
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
+            let (cs, css) = self.cs.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_CS, &cs)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_CS, css.into())?;
 
-            let (ds, dss) = self.ds.into_raw();
+            let (ds, dss) = self.ds.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_DS, &ds)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_DS, dss.into())?;
 
-            let (es, ess) = self.es.into_raw();
+            let (es, ess) = self.es.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_ES, &es)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_ES, ess.into())?;
 
-            let (fs, fss) = self.fs.into_raw();
+            let (fs, fss) = self.fs.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_FS, &fs)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_FS, fss.into())?;
 
-            let (gs, gss) = self.gs.into_raw();
+            let (gs, gss) = self.gs.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_GS, &gs)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_GS, gss.into())?;
 
-            let (ss, sss) = self.ss.into_raw();
+            let (ss, sss) = self.ss.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_SS, &ss)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_SS, sss.into())?;
 
-            let (gdtr, _) = self.gdtr.into_raw();
+            let (gdtr, _) = self.gdtr.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_GDTR, &gdtr)?;
 
-            let (idtr, _) = self.idtr.into_raw();
+            let (idtr, _) = self.idtr.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_IDTR, &idtr)?;
 
-            let (ldtr, ldtrs) = self.ldtr.into_raw();
+            let (ldtr, ldtrs) = self.ldtr.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_LDTR, &ldtr)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_LDTR, ldtrs.into())?;
 
-            let (tr, trs) = self.tr.into_raw();
+            let (tr, trs) = self.tr.into();
             vcpu.set_segreg(vm_reg_name::VM_REG_GUEST_TR, &tr)?;
             vcpu.set_reg(vm_reg_name::VM_REG_GUEST_TR, trs.into())?;
             Ok(())
         }
     }
+    impl VcpuMsrsV1 {
+        const fn valid_msr(ident: u32) -> bool {
+            use super::bits::*;
 
-    impl SegDescV1 {
-        fn from_raw(inp: bhyve_api::seg_desc, selector: u16) -> Self {
-            Self {
-                base: inp.base,
-                limit: inp.limit,
-                access: inp.access,
-                selector,
-            }
-        }
-        fn into_raw(self) -> (bhyve_api::seg_desc, u16) {
-            (
-                bhyve_api::seg_desc {
-                    base: self.base,
-                    limit: self.limit,
-                    access: self.access,
-                },
-                self.selector,
-            )
-        }
-    }
+            match ident {
+                // EFER is held in CtrlRegs
+                MSR_EFER => false,
+                // DEBUGCTL is held in DbgRegs
+                MSR_DEBUGCTL => false,
 
-    impl From<vdi_field_entry_v1> for MsrEntryV1 {
-        fn from(raw: vdi_field_entry_v1) -> Self {
-            Self { ident: raw.vfe_ident, value: raw.vfe_value }
-        }
-    }
-    impl From<MsrEntryV1> for vdi_field_entry_v1 {
-        fn from(entry: MsrEntryV1) -> Self {
-            vdi_field_entry_v1 {
-                vfe_ident: entry.ident,
-                vfe_value: entry.value,
-                ..Default::default()
+                _ => true,
             }
         }
     }
 
-    impl FpuStateV1 {
-        pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
+    impl VcpuReadWrite for VcpuMsrsV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
+            let hdl = &vcpu.hdl;
+
+            let raw_msrs: Vec<bhyve_api::vdi_field_entry_v1> =
+                vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)?;
+
+            let mut filtered: Vec<MsrEntry> = raw_msrs
+                .into_iter()
+                .filter_map(|ent| {
+                    if Self::valid_msr(ent.vfe_ident) {
+                        Some(ent.into())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Sort the output to make it more readable in case someone happens
+            // to be inspecting the device payloads
+            filtered.sort_unstable_by_key(|v| v.ident);
+
+            Ok(Self(filtered))
+        }
+
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
+            let mut raw_msrs: Vec<bhyve_api::vdi_field_entry_v1> = self
+                .0
+                .into_iter()
+                .filter_map(|ent| {
+                    // belt-and-suspenders verification that provided MSRs are
+                    // acceptable for loading into the kernel vmm
+                    if Self::valid_msr(ent.ident) {
+                        Some(ent.into())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let hdl = &vcpu.hdl;
+            vmm::data::write_many(
+                hdl,
+                vcpu.id,
+                bhyve_api::VDC_MSR,
+                1,
+                &mut raw_msrs,
+            )?;
+
+            Ok(())
+        }
+    }
+
+    impl VcpuReadWrite for FpuStateV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
             let mut fpu_area_desc = bhyve_api::vm_fpu_desc::default();
 
             unsafe {
@@ -719,7 +928,7 @@ pub mod migrate {
             Ok(Self { blob: fpu })
         }
 
-        fn write(mut self, vcpu: &Vcpu) -> io::Result<()> {
+        fn write(mut self, vcpu: &Vcpu) -> Result<()> {
             let mut fpu_req = bhyve_api::vm_fpu_state {
                 vcpuid: vcpu.cpuid(),
                 buf: self.blob.as_mut_ptr() as *mut _,
@@ -736,26 +945,22 @@ pub mod migrate {
             Ok(())
         }
     }
-    impl LapicV1 {
-        fn read(vcpu: &Vcpu) -> io::Result<Self> {
+    impl VcpuReadWrite for LapicV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
             let hdl = &vcpu.hdl;
             let raw: bhyve_api::vdi_lapic_v1 =
                 vmm::data::read(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1)?;
 
-            let page = LapicPageV1::from_raw(&raw.vl_lapic);
-
             Ok(Self {
-                page,
+                page: raw.vl_lapic.into(),
                 msr_apicbase: raw.vl_msr_apicbase,
                 timer_target: raw.vl_timer_target,
                 esr_pending: raw.vl_esr_pending,
             })
         }
-        fn write(self, vcpu: &Vcpu) -> io::Result<()> {
-            let page = LapicPageV1::to_raw(&self.page);
-
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
             let raw = bhyve_api::vdi_lapic_v1 {
-                vl_lapic: page,
+                vl_lapic: self.page.into(),
                 vl_msr_apicbase: self.msr_apicbase,
                 vl_timer_target: self.timer_target,
                 vl_esr_pending: self.esr_pending,
@@ -767,94 +972,9 @@ pub mod migrate {
             Ok(())
         }
     }
-    impl LapicPageV1 {
-        fn from_raw(inp: &bhyve_api::vdi_lapic_page_v1) -> Self {
-            Self {
-                id: inp.vlp_id,
-                version: inp.vlp_version,
-                tpr: inp.vlp_tpr,
-                apr: inp.vlp_apr,
-                ldr: inp.vlp_ldr,
-                dfr: inp.vlp_dfr,
-                svr: inp.vlp_svr,
-                isr: inp.vlp_isr,
-                tmr: inp.vlp_tmr,
-                irr: inp.vlp_irr,
-                esr: inp.vlp_esr,
-                lvt_cmci: inp.vlp_lvt_cmci,
-                icr: inp.vlp_icr,
-                lvt_timer: inp.vlp_lvt_timer,
-                lvt_thermal: inp.vlp_lvt_thermal,
-                lvt_pcint: inp.vlp_lvt_pcint,
-                lvt_lint0: inp.vlp_lvt_lint0,
-                lvt_lint1: inp.vlp_lvt_lint1,
-                lvt_error: inp.vlp_lvt_error,
-                icr_timer: inp.vlp_icr_timer,
-                dcr_timer: inp.vlp_dcr_timer,
-            }
-        }
-        fn to_raw(&self) -> bhyve_api::vdi_lapic_page_v1 {
-            bhyve_api::vdi_lapic_page_v1 {
-                vlp_id: self.id,
-                vlp_version: self.version,
-                vlp_tpr: self.tpr,
-                vlp_apr: self.apr,
-                vlp_ldr: self.ldr,
-                vlp_dfr: self.dfr,
-                vlp_svr: self.svr,
-                vlp_isr: self.isr,
-                vlp_tmr: self.tmr,
-                vlp_irr: self.irr,
-                vlp_esr: self.esr,
-                vlp_lvt_cmci: self.lvt_cmci,
-                vlp_icr: self.icr,
-                vlp_lvt_timer: self.lvt_timer,
-                vlp_lvt_thermal: self.lvt_thermal,
-                vlp_lvt_pcint: self.lvt_pcint,
-                vlp_lvt_lint0: self.lvt_lint0,
-                vlp_lvt_lint1: self.lvt_lint1,
-                vlp_lvt_error: self.lvt_error,
-                vlp_icr_timer: self.icr_timer,
-                vlp_dcr_timer: self.dcr_timer,
-            }
-        }
-    }
+}
 
-    impl BhyveX86CpuV1 {
-        pub(super) fn read(vcpu: &Vcpu) -> io::Result<Self> {
-            let hdl = &vcpu.hdl;
-            let msrs: Vec<bhyve_api::vdi_field_entry_v1> =
-                vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)?;
-            let res = Self {
-                run_state: BhyveVcpuRunStateV1::read(vcpu)?,
-                gp_regs: GpRegsV1::read(vcpu)?,
-                ctrl_regs: CtrlRegsV1::read(vcpu)?,
-                seg_regs: SegRegsV1::read(vcpu)?,
-                fpu_state: FpuStateV1::read(vcpu)?,
-                lapic: LapicV1::read(vcpu)?,
-                ms_regs: msrs.into_iter().map(MsrEntryV1::from).collect(),
-            };
-            Ok(res)
-        }
-
-        pub(super) fn write(self, vcpu: &Vcpu) -> io::Result<()> {
-            let hdl = &vcpu.hdl;
-            let mut msrs: Vec<vdi_field_entry_v1> =
-                self.ms_regs.into_iter().map(From::from).collect();
-            vmm::data::write_many(
-                hdl,
-                vcpu.id,
-                bhyve_api::VDC_MSR,
-                1,
-                &mut msrs,
-            )?;
-            self.run_state.write(vcpu)?;
-            self.gp_regs.write(vcpu)?;
-            self.ctrl_regs.write(vcpu)?;
-            self.seg_regs.write(vcpu)?;
-            self.fpu_state.write(vcpu)?;
-            self.lapic.write(vcpu)?;
-            Ok(())
-        }
-    }
+mod bits {
+    pub const MSR_DEBUGCTL: u32 = 0x1d9;
+    pub const MSR_EFER: u32 = 0xc0000080;
 }

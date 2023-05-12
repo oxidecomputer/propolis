@@ -113,7 +113,7 @@ impl MigrateSingle for BhyveRtc {
         &self,
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::BhyveRtcV2::read(&self.hdl)?.emit())
+        Ok(migrate::BhyveRtcV2::read(&self.hdl)?.into())
     }
 
     fn import(

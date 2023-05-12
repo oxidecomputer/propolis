@@ -668,7 +668,7 @@ impl MigrateSingle for FwCfg {
             selector: state.selector,
             offset: state.offset,
         }
-        .emit())
+        .into())
     }
 
     fn import(

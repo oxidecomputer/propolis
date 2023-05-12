@@ -175,7 +175,7 @@ impl MigrateSingle for LpcUart {
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
         let state = self.state.lock().unwrap();
-        Ok(state.uart.export().emit())
+        Ok(state.uart.export().into())
     }
 
     fn import(

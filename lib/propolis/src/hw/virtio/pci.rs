@@ -509,7 +509,7 @@ impl MigrateMulti for PciVirtioState {
 
         let queues = self.queues.iter().map(|q| q.export()).collect();
 
-        output.push(migrate::PciVirtioStateV1 { device, queues }.emit())
+        output.push(migrate::PciVirtioStateV1 { device, queues }.into())
     }
 
     fn import(

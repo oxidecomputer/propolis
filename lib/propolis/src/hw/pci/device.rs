@@ -639,7 +639,7 @@ impl MigrateMulti for DeviceState {
         output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        output.push(self.export().emit())
+        output.push(self.export().into())
     }
 
     fn import(

@@ -26,7 +26,7 @@ impl MigrateSingle for BhyvePmTimer {
         &self,
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::BhyvePmTimerV1::read(&self.hdl)?.emit())
+        Ok(migrate::BhyvePmTimerV1::read(&self.hdl)?.into())
     }
 
     fn import(

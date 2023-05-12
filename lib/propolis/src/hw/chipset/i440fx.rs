@@ -218,7 +218,7 @@ impl MigrateSingle for I440Fx {
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
         Ok(migrate::I440FXChipsetV1 { pci_cfg_addr: self.pci_cfg.addr() }
-            .emit())
+            .into())
     }
 
     fn import(
@@ -536,7 +536,7 @@ impl MigrateMulti for Piix3Lpc {
                 pir_regs: *pir,
                 post_code: self.post_code.load(Ordering::Acquire),
             }
-            .emit(),
+            .into(),
         )?;
         drop(pir);
 
@@ -966,7 +966,7 @@ impl MigrateMulti for Piix3PM {
                 pm_ena: regs.pm_ena.bits(),
                 pm_ctrl: regs.pm_ctrl.bits(),
             }
-            .emit(),
+            .into(),
         )?;
 
         MigrateMulti::export(&self.pci_state, output, ctx)?;

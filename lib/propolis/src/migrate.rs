@@ -107,7 +107,7 @@ impl<'a> PayloadOffer<'a> {
     /// Attempt to parse the data in this payload if the offer matches the
     /// kind/version of a specified Schema
     pub fn parse<T: Schema<'a>>(&mut self) -> Result<T, MigrateStateError> {
-        if !T::matches(self.kind, self.version) {
+        if !self.matches::<T>() {
             return Err(MigrateStateError::UnexpectedPayload(
                 self.kind.into(),
                 self.version,
@@ -115,6 +115,13 @@ impl<'a> PayloadOffer<'a> {
         }
         let res = erased_serde::deserialize(&mut self.payload)?;
         Ok(res)
+    }
+
+    /// Returns `true` if the `kind` and `version` held in this `PayloadOffer`
+    /// match those defined for a provided Schema.
+    fn matches<'x, T: Schema<'x>>(&self) -> bool {
+        let id = T::id();
+        id.0 == self.kind && id.1 == self.version
     }
 }
 
@@ -232,18 +239,11 @@ pub trait Schema<'de>: Serialize + Deserialize<'de> + Sized + 'static {
     /// This would be `const` if such functions were allowed in traits without
     /// an unstable rust feature.
     fn id() -> SchemaId;
+}
 
-    /// Returns `true` if theprovided `kind` and `version` match those defined
-    /// for this Schema.
-    fn matches(kind: &str, version: u32) -> bool {
-        let id = Self::id();
-        id.0 == kind && id.1 == version
-    }
-
-    /// Emit a [`PayloadOutput`] with the `kind` and `version` set appropriately
-    /// for this Schema.
-    fn emit(self) -> PayloadOutput {
-        let id = Self::id();
-        PayloadOutput { kind: id.0, version: id.1, payload: Box::new(self) }
+impl<'a, T: Schema<'a>> From<T> for PayloadOutput {
+    fn from(value: T) -> Self {
+        let id = T::id();
+        PayloadOutput { kind: id.0, version: id.1, payload: Box::new(value) }
     }
 }

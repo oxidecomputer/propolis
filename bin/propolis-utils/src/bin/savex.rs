@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 
 use propolis_standalone_config::SnapshotTag;
 
@@ -52,6 +53,32 @@ fn print_globals(mut fp: File, len: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct InstPayload {
+    kind: String,
+    version: u32,
+    data: Vec<u8>,
+}
+#[derive(Serialize)]
+struct PrettyPayload {
+    kind: String,
+    version: u32,
+    data: serde_json::Value,
+}
+impl TryFrom<&InstPayload> for PrettyPayload {
+    type Error = serde_json::error::Error;
+
+    fn try_from(value: &InstPayload) -> Result<Self, Self::Error> {
+        let data = serde_json::from_slice::<serde_json::Value>(&value.data)?;
+        Ok(Self { kind: value.kind.clone(), version: value.version, data })
+    }
+}
+#[derive(Deserialize)]
+struct InstDevice {
+    instance_name: String,
+    payload: Vec<InstPayload>,
+}
+
 fn print_devs(
     mut fp: File,
     len: u64,
@@ -60,19 +87,28 @@ fn print_devs(
     let mut buf = vec![0u8; len as usize];
     fp.read_exact(&mut buf[..])?;
 
-    let data: Vec<(String, Vec<u8>)> = serde_json::from_slice(&buf)?;
+    let data: Vec<InstDevice> = serde_json::from_slice(&buf)?;
     println!("Devices:");
-    for (name, dev_json) in data.iter() {
+    for InstDevice { instance_name, payload } in data.iter() {
         if let Some(filter) = matches.as_ref() {
-            if !name.contains(filter) {
+            if !instance_name.contains(filter) {
                 continue;
             }
         }
-        println!("{}", name);
+        println!("{}", instance_name);
+
         // Parse and pretty-ify the data
-        let parsed: serde_json::Value = serde_json::from_slice(dev_json)?;
-        let pretty = serde_json::to_string_pretty(&parsed)?;
-        println!("{}", pretty);
+        for payload in payload.iter() {
+            match PrettyPayload::try_from(payload) {
+                Err(e) => {
+                    eprintln!("Failed to parse payload for device: {}", e);
+                }
+                Ok(data) => {
+                    let pretty = serde_json::to_string_pretty(&data)?;
+                    println!("{}", pretty);
+                }
+            }
+        }
     }
     Ok(())
 }

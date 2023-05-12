@@ -37,6 +37,15 @@ pub struct vdi_field_entry_v1 {
     pub _pad: u32,
     pub vfe_value: u64,
 }
+impl vdi_field_entry_v1 {
+    // Rather than push the duty of populating the `_pad` field on consumers,
+    // offer a constructor function here which deals with it.
+
+    /// Create a `vdi_field_entry_v1` from `ident` and `value`
+    pub const fn new(ident: u32, value: u64) -> Self {
+        Self { vfe_ident: ident, _pad: 0, vfe_value: value }
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]

@@ -26,7 +26,7 @@ impl MigrateSingle for BhyveAtPic {
         &self,
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::AtPicV1::read(&self.hdl)?.emit())
+        Ok(migrate::AtPicV1::read(&self.hdl)?.into())
     }
 
     fn import(

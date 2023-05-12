@@ -980,7 +980,7 @@ impl MigrateMulti for PciNvme {
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let ctrl = self.state.lock().unwrap();
-        output.push(ctrl.export().emit())?;
+        output.push(ctrl.export().into())?;
         drop(ctrl);
 
         MigrateMulti::export(&self.pci_state, output, ctx)?;

@@ -26,7 +26,7 @@ impl MigrateSingle for BhyveHpet {
         &self,
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::HpetV1::read(&self.hdl)?.emit())
+        Ok(migrate::HpetV1::read(&self.hdl)?.into())
     }
 
     fn import(

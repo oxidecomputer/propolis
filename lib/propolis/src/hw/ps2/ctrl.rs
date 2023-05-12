@@ -630,7 +630,7 @@ impl MigrateSingle for PS2Ctrl {
                 sample_rate: mouse.sample_rate,
             },
         }
-        .emit())
+        .into())
     }
 
     fn import(
