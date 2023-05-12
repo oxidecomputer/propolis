@@ -64,6 +64,7 @@ enum MigratePhase {
     Pause,
     RamPushPrePause,
     RamPushPostPause,
+    TimeData,
     DeviceState,
     RamPull,
     ServerState,
@@ -77,6 +78,7 @@ impl std::fmt::Display for MigratePhase {
             MigratePhase::Pause => "Pause",
             MigratePhase::RamPushPrePause => "RamPushPrePause",
             MigratePhase::RamPushPostPause => "RamPushPostPause",
+            MigratePhase::TimeData => "TimeData",
             MigratePhase::DeviceState => "DeviceState",
             MigratePhase::RamPull => "RamPull",
             MigratePhase::ServerState => "ServerState",
@@ -147,6 +149,10 @@ pub enum MigrateError {
     #[error("received out-of-phase message")]
     Phase,
 
+    /// Failed to export/import time data state
+    #[error("failed to migrate VMM time data: {0}")]
+    TimeData(String),
+
     /// Failed to export/import device state for migration
     #[error("failed to migrate device state: {0}")]
     DeviceState(String),
@@ -207,6 +213,7 @@ impl From<MigrateError> for HttpError {
             | MigrateError::UnexpectedMessage
             | MigrateError::SourcePause
             | MigrateError::Phase
+            | MigrateError::TimeData(_)
             | MigrateError::DeviceState(_)
             | MigrateError::RemoteError(_, _)
             | MigrateError::StateMachine(_) => {
@@ -422,4 +429,19 @@ mod probes {
     fn migrate_phase_end(step_desc: &str) {}
     fn migrate_xfer_ram_region(pages: u64, size: u64, paused: u8) {}
     fn migrate_xfer_ram_page(addr: u64, size: u64) {}
+    fn migrate_time_data_before(
+        src_guest_freq: u64,
+        src_guest_tsc: u64,
+        src_boot_hrtime: i64,
+    ) {
+    }
+    fn migrate_time_data_after(
+        dst_guest_freq: u64,
+        dst_guest_tsc: u64,
+        dst_boot_hrtime: i64,
+        guest_uptime: u64,
+        migrate_delta_ns: u64,
+        migrate_delta_negative: bool,
+    ) {
+    }
 }

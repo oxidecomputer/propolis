@@ -4,6 +4,7 @@ pub mod data;
 pub mod hdl;
 pub mod machine;
 pub mod mem;
+pub mod time;
 
 pub use hdl::*;
 pub use machine::*;

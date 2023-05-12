@@ -100,17 +100,21 @@ dtrace:::END
 	this->sync = "Sync";
 	this->rpush_pre = "RamPushPrePause";
 	this->pause = "Pause";
-    this->rpush_post = "RamPushPostPause";
+	this->rpush_post = "RamPushPostPause";
+	this->td = "TimeData";
 	this->dev = "DeviceState";
 	this->rpull = "RamPull";
+	this->sstate = "ServerState";
 	this->fin = "Finish";
 
 	this->d_sync = delta[this->sync];
 	this->d_rpush_pre = delta[this->rpush_pre];
 	this->d_pause = delta[this->pause];
 	this->d_rpush_post = delta[this->rpush_post];
+	this->d_td = delta[this->td];
 	this->d_dev = delta[this->dev];
 	this->d_rpull = delta[this->rpull];
+	this->d_sstate = delta[this->sstate];
 	this->d_fin = delta[this->fin];
 
 	this->total = 0;
@@ -138,6 +142,10 @@ dtrace:::END
 		printf("%-16s %29d\n", this->rpush_post, this->d_rpush_post / 1000);
 		this->total += this->d_rpush_post;
 	}
+	if (this->d_td != 0) {
+		printf("%-15s %30d\n", this->td, this->d_td / 1000);
+		this->total += this->d_td;
+	}
 	if (this->d_dev != 0) {
 		printf("%-16s %29d\n", this->dev, this->d_dev / 1000);
 		this->total += this->d_dev;
@@ -145,6 +153,10 @@ dtrace:::END
 	if (this->d_rpull != 0) {
 		printf("%-16s %29d\n", this->rpull, this->d_rpull / 1000);
 		this->total += this->d_rpull;
+	}
+	if (this->d_sstate != 0) {
+		printf("%-16s %29d\n", this->sstate, this->d_sstate / 1000);
+		this->total += this->d_sstate;
 	}
 	if (this->d_fin != 0) {
 		printf("%-16s %29d\n", this->fin, this->d_fin / 1000);

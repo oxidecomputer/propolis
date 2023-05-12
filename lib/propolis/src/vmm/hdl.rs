@@ -17,7 +17,6 @@ use std::time::Duration;
 use crate::common::PAGE_SIZE;
 use crate::vmm::mem::Prot;
 
-#[derive(Default, Copy, Clone)]
 /// Configurable options for VMM instance creation
 ///
 /// # Options:
@@ -26,6 +25,7 @@ use crate::vmm::mem::Prot;
 /// - `use_reservoir`: Allocate guest memory (only) from the VMM reservoir.  If
 /// this is enabled, and memory in excess of what is available from the
 /// reservoir is requested, creation of that guest memory resource will fail.
+#[derive(Default, Copy, Clone)]
 pub struct CreateOpts {
     pub force: bool,
     pub use_reservoir: bool,
@@ -418,7 +418,7 @@ impl VmmHdl {
 #[cfg(test)]
 impl VmmHdl {
     /// Build a VmmHdl instance suitable for unit tests, but nothing else, since
-    /// it will not be backed by any real vmm reousrces.
+    /// it will not be backed by any real vmm resources.
     pub(crate) fn new_test(mem_size: usize) -> Result<Self> {
         use tempfile::tempfile;
         let fp = tempfile()?;
