@@ -20,7 +20,10 @@ use propolis_client::handmade::{
 use propolis_client::support::InstanceSerialConsoleHelper;
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{
+    protocol::{frame::coding::CloseCode, CloseFrame},
+    Message,
+};
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -386,7 +389,34 @@ async fn serial(
                         stdout.write_all(&input).await?;
                         stdout.flush().await?;
                     }
-                    Some(Ok(Message::Close(..))) | None => break,
+                    Some(Ok(Message::Close(Some(CloseFrame {code, reason})))) => {
+                        eprint!("\r\nConnection closed: {:?}\r\n", code);
+                        match code {
+                            CloseCode::Abnormal
+                            | CloseCode::Error
+                            | CloseCode::Extension
+                            | CloseCode::Invalid
+                            | CloseCode::Policy
+                            | CloseCode::Protocol
+                            | CloseCode::Size
+                            | CloseCode::Unsupported => {
+                                anyhow::bail!("{}", reason);
+                            }
+                            _ => break,
+                        }
+                    }
+                    Some(Ok(Message::Close(None))) => {
+                        eprint!("\r\nConnection closed.\r\n");
+                        break;
+                    }
+                    None => {
+                        eprint!("\r\nConnection lost.\r\n");
+                        break;
+                    }
+                    // note: migration events via Message::Text are already
+                    // handled within ws_console.recv(), but would still be
+                    // available to match here if we want to indicate that it
+                    // happened to the user
                     _ => continue,
                 }
             }
