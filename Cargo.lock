@@ -5038,6 +5038,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap 4.2.4",
+ "serde_json",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

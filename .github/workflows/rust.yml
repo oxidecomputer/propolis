@@ -18,6 +18,14 @@ jobs:
       run: cargo fmt -- --version
     - name: Check style
       run: cargo fmt -- --check
+  check-clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Report clippy version
+      run: cargo clippy -- --version
+    - name: Check clippy
+      run: cargo xtask clippy --strict
   build-docs:
     runs-on: ubuntu-latest
     steps:
@@ -26,11 +34,7 @@ jobs:
     - name: Test build documentation
       run: cargo doc
   build-and-test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-22.04 ]
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
     - uses: dtolnay/rust-toolchain@stable

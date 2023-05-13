@@ -7,6 +7,7 @@ members = [
   "lib/*",
   "packaging/propolis-package",
   "phd-tests/*",
+  "xtask",
 ]
 
 default-members = [
@@ -16,6 +17,7 @@ default-members = [
   "bin/propolis-cli",
   "bin/propolis-server",
   "bin/propolis-standalone",
+  "xtask",
 ]
 
 exclude = [
