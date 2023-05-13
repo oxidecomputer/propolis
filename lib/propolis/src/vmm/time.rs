@@ -485,7 +485,7 @@ mod test {
 
         // error case: migrate delta overflows i64
         // (i64::MAX + 1) sec - 0 sec
-        let dst_wc = Duration::from_nanos(((i64::MAX as u64) + 1) as u64);
+        let dst_wc = Duration::from_nanos((i64::MAX as u64) + 1);
         let res = adjust_time_data(base_time_data(), 0, dst_wc);
         assert!(res.is_err());
         assert!(matches!(
@@ -659,7 +659,7 @@ mod test {
         let dst_wc = Duration::from_nanos(300);
 
         // expect: 1 day, 1 min, 200 ns
-        let expect = ((1 * SEC_PER_DAY + 60) * NS_PER_SEC) as i64 + 200;
+        let expect = ((SEC_PER_DAY + 60) * NS_PER_SEC) as i64 + 200;
         let res = adjust_time_data(src_td, dst_hrt, dst_wc);
         assert!(res.is_ok());
         assert_eq!(res.unwrap().0.boot_hrtime, expect);
@@ -693,7 +693,7 @@ mod test {
         let dst_wc = Duration::new(65, 500);
 
         // expect: - (1 day, 1 min, 200 ns)
-        let expect: i64 = -(((1 * SEC_PER_DAY + 60) * NS_PER_SEC) as i64 + 200);
+        let expect: i64 = -(((SEC_PER_DAY + 60) * NS_PER_SEC) as i64 + 200);
         let res = adjust_time_data(src_td, dst_hrt, dst_wc);
         assert!(res.is_ok());
         assert_eq!(res.unwrap().0.boot_hrtime, expect);

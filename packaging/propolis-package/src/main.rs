@@ -13,7 +13,7 @@ use std::fs::create_dir_all;
 use std::path::Path;
 use std::time::Duration;
 
-const PKG_NAME: &'static str = "propolis-server";
+const PKG_NAME: &str = "propolis-server";
 
 fn in_progress_style() -> ProgressStyle {
     ProgressStyle::default_bar()

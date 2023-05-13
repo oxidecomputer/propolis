@@ -259,7 +259,7 @@ mod encoder_tests {
 
     fn encode(m: Message) -> Vec<u8> {
         if let tungstenite::Message::Binary(bytes) = m.try_into().unwrap() {
-            return bytes;
+            bytes
         } else {
             panic!();
         }
