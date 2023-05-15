@@ -97,6 +97,7 @@ impl PartialOrd for CpuidKey {
     }
 }
 
+/// Query CPUID through bhyve-defined masks
 fn query_cpuid(vm: &VmmFd, eax: u32, ecx: u32) -> anyhow::Result<Cpuid> {
     let mut data = bhyve_api::vm_legacy_cpuid {
         vlc_eax: eax,
@@ -107,25 +108,45 @@ fn query_cpuid(vm: &VmmFd, eax: u32, ecx: u32) -> anyhow::Result<Cpuid> {
     Ok(Cpuid::from(&data))
 }
 
+/// Query CPUID directly from host CPU
+fn query_raw_cpuid(eax: u32, ecx: u32) -> Cpuid {
+    let mut res = Cpuid::default();
+
+    unsafe {
+        std::arch::asm!(
+            "push rbx",
+            "cpuid",
+            "mov {0:e}, ebx",
+            "pop rbx",
+            out(reg) res.ebx,
+            // select cpuid 0, also specify eax as clobbered
+            inout("eax") eax => res.eax,
+            inout("ecx") ecx => res.ecx,
+            out("edx") res.edx,
+        );
+    }
+    res
+}
+
 const STD_EAX_BASE: u32 = 0x0;
 const EXTD_EAX_BASE: u32 = 0x80000000;
 
 const CPU_FEAT_ECX_XSAVE: u32 = 1 << 26;
 
 fn collect_cpuid(
-    vm: &VmmFd,
+    query_cpuid: &impl Fn(u32, u32) -> anyhow::Result<Cpuid>,
     zero_elide: bool,
 ) -> anyhow::Result<BTreeMap<CpuidKey, Cpuid>> {
-    let std = query_cpuid(vm, STD_EAX_BASE, 0)?;
-    let extd = query_cpuid(vm, EXTD_EAX_BASE, 0)?;
+    let std = query_cpuid(STD_EAX_BASE, 0)?;
+    let extd = query_cpuid(EXTD_EAX_BASE, 0)?;
 
     let mut results: BTreeMap<CpuidKey, Cpuid> = BTreeMap::new();
 
     let mut xsave_supported = false;
     let is_amd = std.is_authentic_amd();
 
-    for eax in 0..std.eax {
-        let data = query_cpuid(vm, eax, 0)?;
+    for eax in 0..=std.eax {
+        let data = query_cpuid(eax, 0)?;
 
         if zero_elide && data.all_zeros() {
             continue;
@@ -156,7 +177,7 @@ fn collect_cpuid(
                 // XSAVE
                 let xcr0_bits = data.eax as u64 | data.edx as u64;
                 results.insert(CpuidKey::SubLeaf(eax, 0), data);
-                let data = query_cpuid(vm, eax, 1)?;
+                let data = query_cpuid(eax, 1)?;
                 let xss_bits = data.ecx as u64 | data.edx as u64;
                 results.insert(CpuidKey::SubLeaf(eax, 1), data);
 
@@ -165,7 +186,7 @@ fn collect_cpuid(
                     if (1 << ecx) & (xcr0_bits | xss_bits) == 0 {
                         continue;
                     }
-                    let data = query_cpuid(vm, eax, ecx)?;
+                    let data = query_cpuid(eax, ecx)?;
                     results.insert(CpuidKey::SubLeaf(eax, ecx), data);
                 }
                 // Default entry for invalid sub-leaf is all-zeroes
@@ -178,7 +199,7 @@ fn collect_cpuid(
     }
 
     for eax in EXTD_EAX_BASE..extd.eax {
-        let data = query_cpuid(vm, eax, 0)?;
+        let data = query_cpuid(eax, 0)?;
 
         if zero_elide && data.all_zeros() {
             continue;
@@ -230,14 +251,24 @@ struct Opts {
     /// Emit toml instead of text
     #[clap(short)]
     toml_output: bool,
+
+    /// Query CPU directly, rather that via bhyve masking
+    #[clap(short)]
+    raw_query: bool,
 }
 
 fn main() -> anyhow::Result<()> {
     let opts = Opts::parse();
 
-    let vm = create_vm()?;
+    let queryf: Box<dyn Fn(u32, u32) -> anyhow::Result<Cpuid>> =
+        if opts.raw_query {
+            Box::new(|eax, ecx| Ok(query_raw_cpuid(eax, ecx)))
+        } else {
+            let vm = create_vm()?;
+            Box::new(move |eax, ecx| query_cpuid(&vm, eax, ecx))
+        };
 
-    let results = collect_cpuid(&vm, opts.zero_elide)?;
+    let results = collect_cpuid(&queryf, opts.zero_elide)?;
 
     if opts.toml_output {
         print_toml(&results);
