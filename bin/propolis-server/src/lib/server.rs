@@ -69,6 +69,9 @@ pub struct StaticConfig {
     /// The configuration to use when setting up this server's Oximeter
     /// endpoint.
     metrics: Option<MetricsEndpointConfig>,
+
+    /// Address used by propolis server.
+    my_addr: SocketAddr,
 }
 
 /// The state of the current VM controller in this server, if there is one, or
@@ -225,12 +228,14 @@ impl DropshotEndpointContext {
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
+        my_addr: SocketAddr,
     ) -> Self {
         Self {
             static_config: StaticConfig {
                 vm: config,
                 use_reservoir,
                 metrics: metric_config,
+                my_addr,
             },
             services: Arc::new(ServiceProviders {
                 vm: Mutex::new(VmControllerState::NotCreated),
@@ -400,6 +405,7 @@ async fn instance_ensure_common(
     // admittedly a big kludge until this can be better refactored.
     let vm = {
         let properties = properties.clone();
+        let my_address = server_context.static_config.my_addr;
         let use_reservoir = server_context.static_config.use_reservoir;
         let bootrom = server_context.static_config.vm.bootrom.clone();
         let log = server_context.log.clone();
@@ -413,6 +419,7 @@ async fn instance_ensure_common(
                 use_reservoir,
                 bootrom,
                 producer_registry,
+                my_address,
                 log,
                 ctrl_hdl,
                 stop_ch,

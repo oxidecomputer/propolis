@@ -67,6 +67,7 @@ pub fn run_openapi() -> Result<(), String> {
 async fn run_server(
     config_app: config::Config,
     config_dropshot: dropshot::ConfigDropshot,
+    propolis_addr: SocketAddr,
     metrics_addr: Option<SocketAddr>,
     vnc_addr: SocketAddr,
     log: slog::Logger,
@@ -91,6 +92,7 @@ async fn run_server(
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
+        propolis_addr,
     );
 
     info!(log, "Starting server...");
@@ -113,6 +115,7 @@ async fn run_server(
 async fn run_server(
     config_app: config::Config,
     config_dropshot: dropshot::ConfigDropshot,
+    _propolis_addr: SocketAddr,
     _metrics_addr: Option<SocketAddr>,
     _vnc_addr: SocketAddr,
     log: slog::Logger,
@@ -161,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            run_server(config, config_dropshot, metric_addr, vnc_addr, log)
+            run_server(config, config_dropshot, propolis_addr, metric_addr, vnc_addr, log)
                 .await
         }
     }

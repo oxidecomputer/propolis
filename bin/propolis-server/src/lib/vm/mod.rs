@@ -384,6 +384,7 @@ impl VmController {
         use_reservoir: bool,
         bootrom: PathBuf,
         oximeter_registry: Option<ProducerRegistry>,
+        my_address: SocketAddr,
         log: Logger,
         runtime_hdl: tokio::runtime::Handle,
         stop_ch: oneshot::Sender<()>,
@@ -438,7 +439,8 @@ impl VmController {
         init.initialize_softnpu_ports(&chipset)?;
         #[cfg(feature = "falcon")]
         init.initialize_9pfs(&chipset)?;
-        let crucible_backends = init.initialize_storage_devices(&chipset)?;
+        let crucible_backends =
+            init.initialize_storage_devices(&chipset, my_address)?;
         let framebuffer_id =
             init.initialize_fwcfg(instance_spec.devices.board.cpus)?;
         let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);

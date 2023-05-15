@@ -33,6 +33,9 @@ once_cell.workspace = true
 crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }
+nexus-client.workspace = true
+internal-dns.workspace = true
+omicron-common.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }

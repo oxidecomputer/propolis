@@ -1,6 +1,7 @@
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -271,6 +272,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
+        my_address: SocketAddr,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
@@ -301,10 +303,39 @@ impl<'a> MachineInitializer<'a> {
                             self.log,
                             "Creating Crucible disk from request {:?}", req
                         );
+                        let cru_id = match req {
+                            VolumeConstructionRequest::Volume {
+                                id,
+                                block_size: _,
+                                sub_volumes: _,
+                                read_only_parent: _,
+                            } => id.to_string(),
+                            VolumeConstructionRequest::File {
+                                id,
+                                block_size: _,
+                                path: _,
+                            } => id.to_string(),
+                            VolumeConstructionRequest::Url {
+                                id,
+                                block_size: _,
+                                url: _,
+                            } => id.to_string(),
+                            VolumeConstructionRequest::Region {
+                                block_size: _,
+                                blocks_per_extent: _,
+                                extent_count: _,
+                                opts: _,
+                                gen: _,
+                            } => "Region".to_string(),
+                        };
                         let be = propolis::block::CrucibleBackend::create(
                             req.clone(),
                             backend_spec.readonly,
                             self.producer_registry.clone(),
+                            my_address,
+                            self.log.new(slog::o!( "component" => format!(
+                                "crucible-{cru_id}"
+                            ))),
                         )?;
                         let child = inventory::ChildRegister::new(
                             &be,
