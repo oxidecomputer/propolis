@@ -164,8 +164,15 @@ async fn main() -> anyhow::Result<()> {
                 |error| anyhow!("failed to create logger: {}", error),
             )?;
 
-            run_server(config, config_dropshot, propolis_addr, metric_addr, vnc_addr, log)
-                .await
+            run_server(
+                config,
+                config_dropshot,
+                propolis_addr,
+                metric_addr,
+                vnc_addr,
+                log,
+            )
+            .await
         }
     }
 }
