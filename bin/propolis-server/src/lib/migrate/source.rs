@@ -18,7 +18,7 @@ use crate::migrate::codec::Message;
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
-use crate::migrate::protocol::{Encoding, Protocol};
+use crate::migrate::protocol::Protocol;
 use crate::migrate::{
     Device, DevicePayload, MigrateError, MigratePhase, MigrateRole,
     MigrationState, PageIter,
@@ -44,10 +44,9 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
     let mut proto = match protocol {
-        Protocol { version: 0, encoding: Encoding::Ron } => {
+        Protocol::RonV0 => {
             SourceProtocol::new(vm_controller, command_tx, response_rx, conn)
         }
-        _ => panic!("selected a protocol {} with no implementation", protocol),
     };
 
     if let Err(err) = proto.run().await {

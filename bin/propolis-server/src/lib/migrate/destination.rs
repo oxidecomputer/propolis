@@ -23,7 +23,7 @@ use crate::migrate::{
 };
 use crate::vm::{MigrateTargetCommand, VmController};
 
-use super::protocol::{Encoding, Protocol};
+use super::protocol::Protocol;
 
 /// Launches an attempt to migrate into a supplied instance using the supplied
 /// source connection.
@@ -36,15 +36,12 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
     let mut proto = match protocol {
-        Protocol { version: 0, encoding: Encoding::Ron } => {
-            DestinationProtocol::new(
-                vm_controller,
-                command_tx,
-                conn,
-                local_addr,
-            )
-        }
-        _ => panic!("selected a protocol {} with no implementation", protocol),
+        Protocol::RonV0 => DestinationProtocol::new(
+            vm_controller,
+            command_tx,
+            conn,
+            local_addr,
+        ),
     };
 
     if let Err(err) = proto.run().await {
