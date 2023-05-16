@@ -2948,6 +2948,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "atty",
  "base64 0.21.0",
  "bit_field",
  "bitvec",
@@ -2979,6 +2980,10 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
+ "slog-term",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
@@ -3003,6 +3008,7 @@ name = "propolis-standalone"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atty",
  "bhyve_api",
  "clap 4.2.4",
  "ctrlc",
@@ -3016,6 +3022,8 @@ dependencies = [
  "serde_json",
  "slog",
  "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
  "slog-term",
  "tokio",
  "toml 0.5.11",
@@ -3723,9 +3731,9 @@ dependencies = [
 
 [[package]]
 name = "slog-dtrace"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a37d13a54955d22a120656475baa60bb10462646378fadeaad840fc5f7d396c"
+checksum = "ebb79013d51afb48c5159d62068658fa672772be3aeeadee0d2710fb3903f637"
 dependencies = [
  "chrono",
  "serde",

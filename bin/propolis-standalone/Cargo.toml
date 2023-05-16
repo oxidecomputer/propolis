@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+atty.workspace = true
 bhyve_api.workspace = true
 clap = { workspace = true, features = ["derive"] }
 ctrlc.workspace = true
@@ -24,6 +25,8 @@ erased-serde.workspace = true
 serde_json.workspace = true
 slog.workspace = true
 slog-async.workspace = true
+slog-dtrace.workspace = true
+slog-bunyan.workspace = true
 slog-term.workspace = true
 num_enum.workspace = true
 

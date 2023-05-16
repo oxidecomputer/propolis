@@ -16,6 +16,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+atty.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bit_field.workspace = true
@@ -43,6 +44,10 @@ serde.workspace = true
 serde_derive.workspace = true
 serde_json.workspace = true
 slog.workspace = true
+slog-async.workspace = true
+slog-bunyan.workspace = true
+slog-dtrace.workspace = true
+slog-term.workspace = true
 propolis.workspace = true
 propolis-client = { workspace = true, features = ["generated"] }
 propolis-server-config.workspace = true
