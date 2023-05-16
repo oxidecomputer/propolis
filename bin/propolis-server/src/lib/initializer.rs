@@ -305,28 +305,17 @@ impl<'a> MachineInitializer<'a> {
                         );
                         let cru_id = match req {
                             VolumeConstructionRequest::Volume {
-                                id,
-                                block_size: _,
-                                sub_volumes: _,
-                                read_only_parent: _,
+                                id, ..
                             } => id.to_string(),
-                            VolumeConstructionRequest::File {
-                                id,
-                                block_size: _,
-                                path: _,
-                            } => id.to_string(),
-                            VolumeConstructionRequest::Url {
-                                id,
-                                block_size: _,
-                                url: _,
-                            } => id.to_string(),
-                            VolumeConstructionRequest::Region {
-                                block_size: _,
-                                blocks_per_extent: _,
-                                extent_count: _,
-                                opts: _,
-                                gen: _,
-                            } => "Region".to_string(),
+                            VolumeConstructionRequest::File { id, .. } => {
+                                id.to_string()
+                            }
+                            VolumeConstructionRequest::Url { id, .. } => {
+                                id.to_string()
+                            }
+                            VolumeConstructionRequest::Region { .. } => {
+                                "Region".to_string()
+                            }
                         };
                         let be = propolis::block::CrucibleBackend::create(
                             req.clone(),

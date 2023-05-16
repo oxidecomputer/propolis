@@ -85,8 +85,10 @@ impl CrucibleBackend {
         my_address: SocketAddr,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        // If provided an address for propolis server, figure out if it
-        // is IPv6 and if so, store that address for possible later use.
+        // Should this backend try to contact Nexus, and if so how should it
+        // obtain Nexus's address.  If we are running inside a rack, we
+        // can make use of our own address to determine what the address
+        // for Nexus is.
         let address = match my_address {
             SocketAddr::V6(my_address) => Some(*my_address.ip()),
             SocketAddr::V4(_) => None,
