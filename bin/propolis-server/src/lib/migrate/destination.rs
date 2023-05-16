@@ -23,6 +23,8 @@ use crate::migrate::{
 };
 use crate::vm::{MigrateTargetCommand, VmController};
 
+use super::protocol::{Encoding, Protocol};
+
 /// Launches an attempt to migrate into a supplied instance using the supplied
 /// source connection.
 pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
@@ -30,10 +32,20 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
     conn: WebSocketStream<T>,
     local_addr: SocketAddr,
+    protocol: Protocol,
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
-    let mut proto =
-        DestinationProtocol::new(vm_controller, command_tx, conn, local_addr);
+    let mut proto = match protocol {
+        Protocol { version: 0, encoding: Encoding::Ron } => {
+            DestinationProtocol::new(
+                vm_controller,
+                command_tx,
+                conn,
+                local_addr,
+            )
+        }
+        _ => panic!("selected a protocol {} with no implementation", protocol),
+    };
 
     if let Err(err) = proto.run().await {
         err_tx

@@ -31,6 +31,7 @@ futures.workspace = true
 hyper.workspace = true
 num_enum.workspace = true
 omicron-common.workspace = true
+once_cell.workspace = true
 oximeter-producer.workspace = true
 oximeter.workspace = true
 ron.workspace = true

@@ -2965,6 +2965,7 @@ dependencies = [
  "mockall",
  "num_enum",
  "omicron-common",
+ "once_cell",
  "oximeter",
  "oximeter-producer",
  "propolis",
