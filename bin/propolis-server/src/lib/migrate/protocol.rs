@@ -26,10 +26,10 @@ pub enum Protocol {
 }
 
 impl Protocol {
-    /// Converts a protocol variant into an offer string that can be sent to a
-    /// migration counterpart to offer this protocol version.
-    pub fn to_offer(&self) -> String {
-        ProtocolParts::from(*self).to_offer()
+    /// Yields the offer string for this protocol variant. This can be sent to
+    /// a migration counterpart to offer this protocol version.
+    pub fn offer_string(&self) -> String {
+        ProtocolParts::from(*self).offer_string()
     }
 }
 
@@ -126,7 +126,7 @@ struct ProtocolParts {
 }
 
 impl ProtocolParts {
-    fn to_offer(&self) -> String {
+    fn offer_string(&self) -> String {
         format!(
             "{PREFIX}{}{ENCODING_VERSION_SEPARATOR}{}",
             self.encoding, self.version
@@ -182,14 +182,13 @@ static PROTOCOL_PARTS: Lazy<BTreeSet<ProtocolParts>> = Lazy::new(|| {
 
 /// Constructs a protocol offer string from a peekable protocol iterator.
 fn make_protocol_offers_from_parts<
-    'a,
     T: std::iter::Iterator<Item = ProtocolParts>,
 >(
     mut iter: Peekable<T>,
 ) -> String {
     let mut s = String::new();
     while let Some(p) = iter.next() {
-        s.push_str(&p.to_offer());
+        s.push_str(&p.offer_string());
         if iter.peek().is_some() {
             s.push(DELIMITER);
         }
@@ -201,9 +200,7 @@ fn make_protocol_offers_from_parts<
 /// Constructs a protocol offer string from the static supported protocol set.
 pub(super) fn make_protocol_offer() -> String {
     make_protocol_offers_from_parts(
-        enum_iterator::all::<Protocol>()
-            .map(|p| ProtocolParts::from(p))
-            .peekable(),
+        enum_iterator::all::<Protocol>().map(ProtocolParts::from).peekable(),
     )
 }
 
@@ -217,7 +214,7 @@ fn parse_protocol_offer(
         let protocol: ProtocolParts = o.parse()?;
         if !parsed.insert(protocol) {
             return Err(ProtocolParseError::DuplicateProtocolInOffer(
-                protocol.to_offer(),
+                protocol.offer_string(),
             ));
         }
     }

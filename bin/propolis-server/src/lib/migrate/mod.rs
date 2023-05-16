@@ -253,8 +253,10 @@ pub async fn source_start<
             match protocol::select_protocol_from_offer(&dst_protocols) {
                 Ok(Some(selected)) => {
                     info!(log, "selected protocol {:?}", selected);
-                    conn.send(tungstenite::Message::Text(selected.to_offer()))
-                        .await?;
+                    conn.send(tungstenite::Message::Text(
+                        selected.offer_string(),
+                    ))
+                    .await?;
                     selected
                 }
                 Ok(None) => {
