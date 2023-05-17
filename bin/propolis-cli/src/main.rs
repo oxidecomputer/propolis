@@ -3,7 +3,6 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
-    os::unix::prelude::AsRawFd,
     time::Duration,
 };
 
@@ -19,7 +18,7 @@ use propolis_client::handmade::{
 };
 use propolis_client::support::InstanceSerialConsoleHelper;
 use slog::{o, Drain, Level, Logger};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use thouart::EscapeSequence;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
@@ -89,6 +88,28 @@ enum Command {
         /// Defaults to the most recent 16 KiB of console output (-16384).
         #[clap(long, short)]
         byte_offset: Option<i64>,
+
+        /// If this sequence of bytes is typed, the client will exit.
+        /// Defaults to "^]^C" (Ctrl+], Ctrl+C). Note that the string passed
+        /// for this argument must be valid UTF-8, and is used verbatim without
+        /// any parsing; in most shells, if you wish to include a special
+        /// character (such as Enter or a Ctrl+letter combo), you can insert
+        /// the character by preceding it with Ctrl+V at the command line.
+        /// To disable the escape string altogether, provide an empty string to
+        /// this flag (and to exit in such a case, use pkill or similar).
+        #[clap(long, short, default_value = "\x1d\x03")]
+        escape_string: String,
+
+        /// The number of bytes from the beginning of the escape string to pass
+        /// to the VM before beginning to buffer inputs until a mismatch.
+        /// Defaults to 0, such that input matching the escape string does not
+        /// get sent to the VM at all until a non-matching character is typed.
+        /// For example, to mimic the escape sequence for exiting SSH ("\n~."),
+        /// you may pass `-e '^M~.' --escape-prefix-length=1` such that newline
+        /// gets sent to the VM immediately while still continuing to match the
+        /// rest of the sequence.
+        #[clap(long, default_value = "0")]
+        escape_prefix_length: usize,
     },
 
     /// Migrate instance to new propolis-server
@@ -221,160 +242,24 @@ async fn put_instance(
     Ok(())
 }
 
-async fn stdin_to_websockets_task(
-    mut stdinrx: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    wstx: tokio::sync::mpsc::Sender<Vec<u8>>,
-) {
-    // next_raw must live outside loop, because Ctrl-A should work across
-    // multiple inbuf reads.
-    let mut next_raw = false;
-
-    loop {
-        let inbuf = if let Some(inbuf) = stdinrx.recv().await {
-            inbuf
-        } else {
-            continue;
-        };
-
-        // Put bytes from inbuf to outbuf, but don't send Ctrl-A unless
-        // next_raw is true.
-        let mut outbuf = Vec::with_capacity(inbuf.len());
-
-        let mut exit = false;
-        for c in inbuf {
-            match c {
-                // Ctrl-A means send next one raw
-                b'\x01' => {
-                    if next_raw {
-                        // Ctrl-A Ctrl-A should be sent as Ctrl-A
-                        outbuf.push(c);
-                        next_raw = false;
-                    } else {
-                        next_raw = true;
-                    }
-                }
-                b'\x03' => {
-                    if !next_raw {
-                        // Exit on non-raw Ctrl-C
-                        exit = true;
-                        break;
-                    } else {
-                        // Otherwise send Ctrl-C
-                        outbuf.push(c);
-                        next_raw = false;
-                    }
-                }
-                _ => {
-                    outbuf.push(c);
-                    next_raw = false;
-                }
-            }
-        }
-
-        // Send what we have, even if there's a Ctrl-C at the end.
-        if !outbuf.is_empty() {
-            wstx.send(outbuf).await.unwrap();
-        }
-
-        if exit {
-            break;
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_stdin_to_websockets_task() {
-    use tokio::sync::mpsc::error::TryRecvError;
-
-    let (stdintx, stdinrx) = tokio::sync::mpsc::channel(16);
-    let (wstx, mut wsrx) = tokio::sync::mpsc::channel(16);
-
-    tokio::spawn(async move { stdin_to_websockets_task(stdinrx, wstx).await });
-
-    // send characters, receive characters
-    stdintx
-        .send("test post please ignore".chars().map(|c| c as u8).collect())
-        .await
-        .unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "test post please ignore");
-
-    // don't send ctrl-a
-    stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
-    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
-
-    // the "t" here is sent "raw" because of last ctrl-a but that doesn't change anything
-    stdintx.send("test".chars().map(|c| c as u8).collect()).await.unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "test");
-
-    // ctrl-a ctrl-c = only ctrl-c sent
-    stdintx.send("\x01\x03".chars().map(|c| c as u8).collect()).await.unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
-
-    // same as above, across two messages
-    stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
-    stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
-    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
-
-    // ctrl-a ctrl-a = only ctrl-a sent
-    stdintx.send("\x01\x01".chars().map(|c| c as u8).collect()).await.unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "\x01");
-
-    // ctrl-c on its own means exit
-    stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
-    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
-
-    // channel is closed
-    assert!(wsrx.recv().await.is_none());
-}
-
 async fn serial(
     addr: SocketAddr,
     byte_offset: Option<i64>,
     log: Logger,
+    escape: Option<EscapeSequence>,
 ) -> anyhow::Result<()> {
+    // handles following live migrations
     let mut ws_console = serial_connect(addr, byte_offset, log).await?;
 
-    let _raw_guard = RawTermiosGuard::stdio_guard()
-        .with_context(|| anyhow!("failed to set raw mode"))?;
-
-    let mut stdout = tokio::io::stdout();
-
-    // https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html#method.read_exact
-    // is not cancel safe! Meaning reads from tokio::io::stdin are not cancel
-    // safe. Spawn a separate task to read and put bytes onto this channel.
-    let (stdintx, stdinrx) = tokio::sync::mpsc::channel(16);
-    let (wstx, mut wsrx) = tokio::sync::mpsc::channel(16);
-
-    tokio::spawn(async move {
-        let mut stdin = tokio::io::stdin();
-        let mut inbuf = [0u8; 1024];
-
-        loop {
-            let n = match stdin.read(&mut inbuf).await {
-                Err(_) | Ok(0) => break,
-                Ok(n) => n,
-            };
-
-            stdintx.send(inbuf[0..n].to_vec()).await.unwrap();
-        }
-    });
-
-    tokio::spawn(async move { stdin_to_websockets_task(stdinrx, wstx).await });
+    // handles raw mode and escape sequence state tracking
+    let mut tty_console = thouart::Console::new_stdio(escape).await?;
 
     loop {
         tokio::select! {
-            c = wsrx.recv() => {
+            c = tty_console.read_stdin() => {
                 match c {
-                    None => {
-                        // channel is closed
-                        break;
-                    }
+                    // channel is closed
+                    None => break,
                     Some(c) => {
                         ws_console.send(Message::Binary(c)).await?;
                     },
@@ -383,8 +268,7 @@ async fn serial(
             msg = ws_console.recv() => {
                 match msg {
                     Some(Ok(Message::Binary(input))) => {
-                        stdout.write_all(&input).await?;
-                        stdout.flush().await?;
+                        tty_console.write_stdout(&input).await?;
                     }
                     Some(Ok(Message::Close(..))) | None => break,
                     _ => continue,
@@ -392,6 +276,7 @@ async fn serial(
             }
         }
     }
+    ws_console.send(Message::Close(None)).await?;
 
     Ok(())
 }
@@ -573,8 +458,18 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Get => get_instance(&client).await?,
         Command::State { state } => put_instance(&client, state).await?,
-        Command::Serial { byte_offset } => {
-            serial(addr, byte_offset, log).await?
+        Command::Serial {
+            byte_offset,
+            escape_string,
+            escape_prefix_length,
+        } => {
+            let escape = if escape_string.is_empty() {
+                None
+            } else {
+                let escape_vector = escape_string.into_bytes();
+                Some(EscapeSequence::new(escape_vector, escape_prefix_length)?)
+            };
+            serial(addr, byte_offset, log, escape).await?
         }
         Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
@@ -592,40 +487,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Guard object that will set the terminal to raw mode and restore it
-/// to its previous state when it's dropped
-struct RawTermiosGuard(libc::c_int, libc::termios);
-
-impl RawTermiosGuard {
-    fn stdio_guard() -> Result<RawTermiosGuard, std::io::Error> {
-        let fd = std::io::stdout().as_raw_fd();
-        let termios = unsafe {
-            let mut curr_termios = std::mem::zeroed();
-            let r = libc::tcgetattr(fd, &mut curr_termios);
-            if r == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            curr_termios
-        };
-        let guard = RawTermiosGuard(fd, termios);
-        unsafe {
-            let mut raw_termios = termios;
-            libc::cfmakeraw(&mut raw_termios);
-            let r = libc::tcsetattr(fd, libc::TCSAFLUSH, &raw_termios);
-            if r == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-        }
-        Ok(guard)
-    }
-}
-impl Drop for RawTermiosGuard {
-    fn drop(&mut self) {
-        let r = unsafe { libc::tcsetattr(self.0, libc::TCSADRAIN, &self.1) };
-        if r == -1 {
-            Err::<(), _>(std::io::Error::last_os_error()).unwrap();
-        }
-    }
 }
