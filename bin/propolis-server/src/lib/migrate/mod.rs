@@ -77,7 +77,7 @@ pub enum MigrateError {
     Initiate,
 
     #[error("failed to parse the offered protocol list ({0}): {1}")]
-    ProtocolParse(String, protocol::ProtocolParseError),
+    ProtocolParse(String, String),
 
     /// The source and destination instances are not compatible
     #[error("the source ({0}) and destination ({1}) instances have no common protocol")]
@@ -276,7 +276,10 @@ pub async fn source_start<
                     error!(log, "failed to parse destination protocol offer";
                            "dst_protocols" => &dst_protocols,
                            "error" => %e);
-                    return Err(MigrateError::ProtocolParse(dst_protocols, e));
+                    return Err(MigrateError::ProtocolParse(
+                        dst_protocols,
+                        e.to_string(),
+                    ));
                 }
             }
         }
@@ -357,7 +360,7 @@ pub(crate) async fn dest_initiate(
 
                     return Err(MigrateError::ProtocolParse(
                         selected_protocol,
-                        e,
+                        e.to_string(),
                     ));
                 }
             }
