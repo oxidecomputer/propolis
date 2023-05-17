@@ -27,9 +27,11 @@ chrono = { workspace = true, features = [ "serde" ] }
 clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
 dropshot = { workspace = true, features = ["usdt-probes"] }
+enum-iterator.workspace = true
 erased-serde.workspace = true
 futures.workspace = true
 hyper.workspace = true
+lazy_static.workspace = true
 num_enum.workspace = true
 omicron-common.workspace = true
 oximeter-producer.workspace = true

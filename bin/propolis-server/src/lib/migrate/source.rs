@@ -18,6 +18,7 @@ use crate::migrate::codec::Message;
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
+use crate::migrate::protocol::Protocol;
 use crate::migrate::{
     Device, DevicePayload, MigrateError, MigratePhase, MigrateRole,
     MigrationState, PageIter,
@@ -39,10 +40,14 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
     response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
     conn: WebSocketStream<T>,
+    protocol: super::protocol::Protocol,
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
-    let mut proto =
-        SourceProtocol::new(vm_controller, command_tx, response_rx, conn);
+    let mut proto = match protocol {
+        Protocol::RonV0 => {
+            SourceProtocol::new(vm_controller, command_tx, response_rx, conn)
+        }
+    };
 
     if let Err(err) = proto.run().await {
         err_tx
