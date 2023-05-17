@@ -8,13 +8,10 @@
 //! sequence specified by the version number and encoded using the encoding
 //! in the string.
 
-use std::{
-    collections::BTreeSet, fmt::Display, iter::Peekable, num::ParseIntError,
-    str::FromStr,
-};
+use std::{fmt::Display, iter::Peekable, num::ParseIntError, str::FromStr};
 
 use enum_iterator::Sequence;
-use once_cell::sync::Lazy;
+use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -128,8 +125,8 @@ struct ProtocolParts {
 impl ProtocolParts {
     fn offer_string(&self) -> String {
         format!(
-            "{PREFIX}{}{ENCODING_VERSION_SEPARATOR}{}",
-            self.encoding, self.version
+            "{}{}{}{}",
+            PREFIX, self.encoding, ENCODING_VERSION_SEPARATOR, self.version
         )
     }
 }
@@ -168,17 +165,10 @@ impl FromStr for ProtocolParts {
     }
 }
 
-/// The set of protocol variants supported by this migration library, expressed
-/// as a set of parts.
-static PROTOCOL_PARTS: Lazy<BTreeSet<ProtocolParts>> = Lazy::new(|| {
-    let mut set = BTreeSet::new();
-    for p in enum_iterator::all::<Protocol>() {
-        let _added = set.insert(ProtocolParts::from(p));
-        assert!(_added);
-    }
-
-    set
-});
+lazy_static! {
+    static ref PROTOCOL_PARTS: Vec<ProtocolParts> =
+        enum_iterator::all::<Protocol>().map(ProtocolParts::from).collect();
+}
 
 /// Constructs a protocol offer string from a peekable protocol iterator.
 fn make_protocol_offers_from_parts<
@@ -207,26 +197,32 @@ pub(super) fn make_protocol_offer() -> String {
 /// Parses an incoming protocol offer string into a set of protocol descriptors.
 fn parse_protocol_offer(
     offer: &str,
-) -> Result<BTreeSet<ProtocolParts>, ProtocolParseError> {
-    let mut parsed = BTreeSet::new();
+) -> Result<Vec<ProtocolParts>, ProtocolParseError> {
+    let mut parsed = Vec::new();
     let offers = offer.split(DELIMITER);
     for o in offers {
         let protocol: ProtocolParts = o.parse()?;
-        if !parsed.insert(protocol) {
+        if parsed.contains(&protocol) {
             return Err(ProtocolParseError::DuplicateProtocolInOffer(
                 protocol.offer_string(),
             ));
         }
+
+        parsed.push(protocol);
     }
 
+    parsed.sort_unstable();
     Ok(parsed)
 }
 
 /// Selects the first protocol from `offered` that appears in `supported`.
+/// The caller must ensure that `offered` is sorted ascending.
 fn select_compatible_protocol(
-    offered: &BTreeSet<ProtocolParts>,
-    supported: &BTreeSet<ProtocolParts>,
+    offered: &[ProtocolParts],
+    supported: &[ProtocolParts],
 ) -> Option<ProtocolParts> {
+    assert!(offered.windows(2).all(|subslice| subslice[0] <= subslice[1]));
+
     for o in offered.iter().rev() {
         if supported.contains(o) {
             return Some(*o);
@@ -259,42 +255,48 @@ pub(super) fn select_protocol_from_offer(
 mod tests {
     use super::*;
 
+    // N.B. The test protocol lists are sorted by version to meet the
+    //      requirements of `select_compatible_protocol`.
     const PROTOCOLS_V1: [ProtocolParts; 3] = [
-        ProtocolParts { version: 2, encoding: Encoding::Ron },
         ProtocolParts { version: 0, encoding: Encoding::Ron },
         ProtocolParts { version: 1, encoding: Encoding::Ron },
+        ProtocolParts { version: 2, encoding: Encoding::Ron },
     ];
 
     const PROTOCOLS_V2: [ProtocolParts; 5] = [
-        ProtocolParts { version: 3, encoding: Encoding::Ron },
         ProtocolParts { version: 0, encoding: Encoding::Ron },
-        ProtocolParts { version: 2, encoding: Encoding::Ron },
-        ProtocolParts { version: 4, encoding: Encoding::Ron },
         ProtocolParts { version: 1, encoding: Encoding::Ron },
+        ProtocolParts { version: 2, encoding: Encoding::Ron },
+        ProtocolParts { version: 3, encoding: Encoding::Ron },
+        ProtocolParts { version: 4, encoding: Encoding::Ron },
     ];
-
-    fn build_protocol_set_from_slice(
-        slice: &[ProtocolParts],
-    ) -> BTreeSet<ProtocolParts> {
-        let mut set = BTreeSet::new();
-        for p in slice {
-            let _new = set.insert(*p);
-            assert!(_new);
-        }
-        set
-    }
 
     #[test]
     fn negotiation_selects_newest_version() {
-        let v1 = build_protocol_set_from_slice(&PROTOCOLS_V2);
-        let v2 = build_protocol_set_from_slice(&PROTOCOLS_V1);
-        let selected = select_compatible_protocol(&v1, &v2).unwrap();
+        let selected =
+            select_compatible_protocol(&PROTOCOLS_V1, &PROTOCOLS_V2).unwrap();
         assert_eq!(selected.version, 2);
         assert_eq!(selected.encoding, Encoding::Ron);
 
-        let selected = select_compatible_protocol(&v2, &v1).unwrap();
+        let selected =
+            select_compatible_protocol(&PROTOCOLS_V1, &PROTOCOLS_V2).unwrap();
         assert_eq!(selected.version, 2);
         assert_eq!(selected.encoding, Encoding::Ron);
+    }
+
+    #[test]
+    fn parse_sorts_offered_protocols() {
+        let parts_str = "propolis-migrate-ron/42,\
+            propolis-migrate-ron/65,\
+            propolis-migrate-ron/0,\
+            propolis-migrate-ron/27";
+
+        let offered = parse_protocol_offer(parts_str).unwrap();
+        let expected_versions = [0, 27, 42, 65];
+        assert_eq!(
+            offered.iter().map(|parts| parts.version).collect::<Vec<u32>>(),
+            expected_versions
+        );
     }
 
     #[test]
@@ -303,7 +305,7 @@ mod tests {
             PROTOCOLS_V2.iter().map(Clone::clone).peekable(),
         );
         let set = parse_protocol_offer(&offer).unwrap();
-        assert_eq!(set, build_protocol_set_from_slice(&PROTOCOLS_V2));
+        assert_eq!(set, PROTOCOLS_V2);
     }
 
     #[test]
