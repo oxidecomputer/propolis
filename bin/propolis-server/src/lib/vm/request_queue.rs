@@ -112,7 +112,8 @@ pub enum RequestDeniedReason {
 /// future requests to the queue.
 #[derive(Copy, Clone, Debug)]
 pub enum InstanceStateChange {
-    Running,
+    StartedRunning,
+    Rebooted,
     Stopped,
     Failed,
 }
@@ -349,8 +350,8 @@ impl ExternalRequestQueue {
                 }
             }
 
-            // Requests to reboot don't affect whether other operations can be
-            // performed.
+            // Requests to reboot prevent additional reboot requests from being
+            // queued, but do not affect other operations.
             ChangeReason::ApiRequest(ExternalRequest::Reboot) => {
                 assert!(matches!(self.allowed.start, Disposition::Ignore));
                 assert!(!matches!(
@@ -358,7 +359,7 @@ impl ExternalRequestQueue {
                     Disposition::Enqueue
                 ));
 
-                self.allowed
+                AllowedRequests { reboot: Disposition::Ignore, ..self.allowed }
             }
 
             // Requests to stop the instance block other requests from being
@@ -379,7 +380,7 @@ impl ExternalRequestQueue {
 
             // When an instance begins running, requests to migrate out of it or
             // to reboot it become valid.
-            ChangeReason::StateChange(InstanceStateChange::Running) => {
+            ChangeReason::StateChange(InstanceStateChange::StartedRunning) => {
                 AllowedRequests {
                     migrate_as_target: self.allowed.migrate_as_target,
                     start: self.allowed.start,
@@ -387,6 +388,20 @@ impl ExternalRequestQueue {
                     reboot: Disposition::Enqueue,
                     stop: self.allowed.stop,
                 }
+            }
+
+            // When an instance finishes rebooting, allow new reboot requests to
+            // be queued again, unless reboot requests began to be denied in the
+            // meantime.
+            ChangeReason::StateChange(InstanceStateChange::Rebooted) => {
+                let new_reboot =
+                    if let Disposition::Ignore = self.allowed.reboot {
+                        Disposition::Enqueue
+                    } else {
+                        self.allowed.reboot
+                    };
+
+                AllowedRequests { reboot: new_reboot, ..self.allowed }
             }
 
             // When an instance stops or fails, requests to do anything other
@@ -477,7 +492,7 @@ mod tests {
             queue.pop_front(),
             Some(ExternalRequest::MigrateAsTarget { .. })
         ));
-        queue.notify_instance_state_change(InstanceStateChange::Running);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Because the instance was started via migration in, future requests
         // to migrate in should be allowed.
@@ -489,7 +504,7 @@ mod tests {
     async fn migrate_as_target_is_forbidden_after_cold_boot() {
         let mut queue = ExternalRequestQueue::new(test_logger());
         assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        queue.notify_instance_state_change(InstanceStateChange::Running);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         assert!(queue.migrate_as_target_will_enqueue().is_err());
         assert!(queue.try_queue(make_migrate_as_target_request()).is_err());
@@ -501,7 +516,7 @@ mod tests {
         let mut queue = ExternalRequestQueue::new(test_logger());
         assert!(queue.try_queue(ExternalRequest::Start).is_ok());
         assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
-        queue.notify_instance_state_change(InstanceStateChange::Running);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Requests to migrate out should be allowed.
         assert!(queue.migrate_as_source_will_enqueue().unwrap());
@@ -524,7 +539,7 @@ mod tests {
             queue.pop_front(),
             Some(ExternalRequest::MigrateAsSource { .. })
         ));
-        queue.notify_instance_state_change(InstanceStateChange::Running);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
         assert!(queue.migrate_as_source_will_enqueue().unwrap());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
 
@@ -545,5 +560,41 @@ mod tests {
 
         assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
         assert!(matches!(queue.pop_front(), Some(ExternalRequest::Stop)));
+    }
+
+    #[tokio::test]
+    async fn reboot_requests_are_idempotent_except_when_stopping() {
+        let mut queue = ExternalRequestQueue::new(test_logger());
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+
+        // Once the instance is started, reboot requests should be allowed, but
+        // after the first, subsequent requests should be dropped for
+        // idempotency.
+        assert!(queue.is_empty());
+        for _ in 0..5 {
+            assert!(queue.try_queue(ExternalRequest::Reboot).is_ok());
+        }
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
+        assert!(queue.is_empty());
+
+        // Once the instance has rebooted, new requests can be queued.
+        queue.notify_instance_state_change(InstanceStateChange::Rebooted);
+        assert!(queue.try_queue(ExternalRequest::Reboot).is_ok());
+        assert!(!queue.is_empty());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
+        queue.notify_instance_state_change(InstanceStateChange::Rebooted);
+
+        // If a request to reboot is queued, and then a request to stop is
+        // queued, new requests to reboot should always fail, even after the
+        // instance finishes rebooting.
+        assert!(queue.try_queue(ExternalRequest::Reboot).is_ok());
+        assert!(!queue.is_empty());
+        assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
+        assert!(queue.try_queue(ExternalRequest::Reboot).is_err());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
+        queue.notify_instance_state_change(InstanceStateChange::Rebooted);
+        assert!(queue.try_queue(ExternalRequest::Reboot).is_err());
     }
 }

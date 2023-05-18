@@ -321,6 +321,12 @@ where
         self.controller.resume_entities();
         self.vcpu_tasks.resume_all();
 
+        // Notify the request queue that this reboot request was processed.
+        // This does not use the `publish_steady_state` path because the queue
+        // treats an instance's initial transition to "Running" as a one-time
+        // event that's different from a return to the running state from a
+        // transient intermediate state.
+        self.notify_request_queue(request_queue::InstanceStateChange::Rebooted);
         self.set_instance_state(ApiInstanceState::Running);
     }
 
@@ -532,7 +538,7 @@ where
     fn publish_steady_state(&mut self, state: ApiInstanceState) {
         let change = match state {
             ApiInstanceState::Running => {
-                request_queue::InstanceStateChange::Running
+                request_queue::InstanceStateChange::StartedRunning
             }
             ApiInstanceState::Stopped => {
                 request_queue::InstanceStateChange::Stopped
@@ -546,14 +552,20 @@ where
             ),
         };
 
+        self.notify_request_queue(change);
+        self.set_instance_state(state);
+    }
+
+    fn notify_request_queue(
+        &self,
+        queue_change: request_queue::InstanceStateChange,
+    ) {
         self.shared_state
             .inner
             .lock()
             .unwrap()
             .external_request_queue
-            .notify_instance_state_change(change);
-
-        self.set_instance_state(state);
+            .notify_instance_state_change(queue_change);
     }
 }
 
