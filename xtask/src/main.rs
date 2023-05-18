@@ -60,6 +60,10 @@ fn cmd_clippy(strict: bool) -> Result<()> {
     // Everything in the workspace (including tests, etc)
     failed |= run_clippy(&["--workspace", "--all-targets"])?;
 
+    // Check the server as it is built for production
+    failed |=
+        run_clippy(&["-p", "propolis-server", "--features", "omicron-build"])?;
+
     // Check the Falcon bits
     failed |= run_clippy(&["-p", "propolis-server", "--features", "falcon"])?;
 

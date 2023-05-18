@@ -64,10 +64,12 @@ fn blockdev_backend(
     }
 }
 
-// Automatically enable use of the memory reservoir (rather than transient
-// allocations) for guest memory if it meets some arbitrary size threshold.
-const RESERVOIR_THRESH_MB: usize = 512;
+#[cfg(not(feature = "omicron-build"))]
 pub fn reservoir_decide(log: &slog::Logger) -> bool {
+    // Automatically enable use of the memory reservoir (rather than transient
+    // allocations) for guest memory if it meets some arbitrary size threshold.
+    const RESERVOIR_THRESH_MB: usize = 512;
+
     match propolis::vmm::query_reservoir() {
         Err(e) => {
             slog::error!(log, "could not query reservoir {:?}", e);
@@ -93,4 +95,10 @@ pub fn reservoir_decide(log: &slog::Logger) -> bool {
             }
         }
     }
+}
+
+#[cfg(feature = "omicron-build")]
+pub fn reservoir_decide(_log: &slog::Logger) -> bool {
+    // Always use the reservoir in production
+    true
 }

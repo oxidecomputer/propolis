@@ -53,7 +53,7 @@ slog-async.workspace = true
 slog-bunyan.workspace = true
 slog-dtrace.workspace = true
 slog-term.workspace = true
-propolis.workspace = true
+propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
 propolis-client = { workspace = true, features = ["generated"] }
 propolis-server-config.workspace = true
 rfb.workspace = true
@@ -71,8 +71,15 @@ expectorate.workspace = true
 mockall.workspace = true
 
 [features]
-default = ["propolis/crucible-full", "propolis/oximeter"]
-falcon = ["propolis/falcon", "propolis-client/falcon"]
+default = []
+
+# When building to be packaged for inclusion in the production ramdisk
+# (nominally an Omicron package), certain code is compiled in or out.
+omicron-build = []
+
 # If selected, only build a mock server which does not actually spawn instances
 # (i.e. to test with a facsimile of the API on unsupported platforms)
 mock-only = []
+
+# Falcon builds require corresponding bits turned on in the dependency libs
+falcon = ["propolis/falcon", "propolis-client/falcon"]

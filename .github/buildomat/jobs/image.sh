@@ -27,7 +27,10 @@ cargo --version
 rustc --version
 
 banner build
-ptime -m cargo build --release --verbose -p propolis-server
+
+# Enable the "omicron-build" feature to indicate this is an artifact destined
+# for production use on an appropriately configured Oxide machine
+ptime -m cargo build --release --verbose -p propolis-server --features omicron-build
 
 banner image
 ptime -m cargo run -p propolis-package
