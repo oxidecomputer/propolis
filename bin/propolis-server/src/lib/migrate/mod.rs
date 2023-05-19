@@ -23,33 +23,8 @@ mod codec;
 pub mod destination;
 mod memx;
 mod preamble;
+pub mod protocol;
 pub mod source;
-
-/// Our migration protocol version
-const MIGRATION_PROTOCOL_VERSION: usize = 0;
-
-/// Our migration protocol encoding
-const MIGRATION_PROTOCOL_ENCODING: ProtocolEncoding = ProtocolEncoding::Ron;
-
-/// The concatenated migration protocol-encoding-version string
-const MIGRATION_PROTOCOL_STR: &str = const_format::concatcp!(
-    "propolis-migrate-",
-    encoding_str(MIGRATION_PROTOCOL_ENCODING),
-    "/",
-    MIGRATION_PROTOCOL_VERSION
-);
-
-/// Supported encoding formats
-enum ProtocolEncoding {
-    Ron,
-}
-
-/// Small helper function to stringify ProtocolEncoding
-const fn encoding_str(e: ProtocolEncoding) -> &'static str {
-    match e {
-        ProtocolEncoding::Ron => "ron",
-    }
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MigrateRole {
@@ -101,9 +76,12 @@ pub enum MigrateError {
     #[error("couldn't establish migration connection to source instance")]
     Initiate,
 
+    #[error("failed to parse the offered protocol list ({0}): {1}")]
+    ProtocolParse(String, String),
+
     /// The source and destination instances are not compatible
-    #[error("the source ({0}) and destination ({1}) instances are incompatible for migration")]
-    Incompatible(String, String),
+    #[error("the source ({0}) and destination ({1}) instances have no common protocol")]
+    NoMatchingProtocol(String, String),
 
     /// Incomplete WebSocket upgrade request
     #[error("expected connection upgrade")]
@@ -166,12 +144,6 @@ pub enum MigrateError {
     RemoteError(MigrateRole, String),
 }
 
-impl MigrateError {
-    fn incompatible(src: &str, dst: &str) -> MigrateError {
-        MigrateError::Incompatible(src.to_string(), dst.to_string())
-    }
-}
-
 impl From<tokio_tungstenite::tungstenite::Error> for MigrateError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> MigrateError {
         MigrateError::Websocket(err.to_string())
@@ -206,7 +178,8 @@ impl From<MigrateError> for HttpError {
         match &err {
             MigrateError::Websocket(_)
             | MigrateError::Initiate
-            | MigrateError::Incompatible(_, _)
+            | MigrateError::ProtocolParse(_, _)
+            | MigrateError::NoMatchingProtocol(_, _)
             | MigrateError::InstanceNotInitialized
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
@@ -274,27 +247,41 @@ pub async fn source_start<
     )
     .map_err(|_| MigrateError::InstanceNotInitialized)?;
 
-    let src_protocol = MIGRATION_PROTOCOL_STR;
-
-    match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(dst_protocol))) => {
-            // TODO: improve "negotiation"
-            if !dst_protocol.eq_ignore_ascii_case(src_protocol) {
-                error!(
-                    log,
-                    "incompatible with destination instance provided protocol ({})",
-                    dst_protocol
-                );
-                return Err(MigrateError::incompatible(
-                    src_protocol,
-                    &dst_protocol,
-                ));
+    let selected = match conn.next().await {
+        Some(Ok(tungstenite::Message::Text(dst_protocols))) => {
+            info!(log, "destination offered protocols: {}", dst_protocols);
+            match protocol::select_protocol_from_offer(&dst_protocols) {
+                Ok(Some(selected)) => {
+                    info!(log, "selected protocol {:?}", selected);
+                    conn.send(tungstenite::Message::Text(
+                        selected.offer_string(),
+                    ))
+                    .await?;
+                    selected
+                }
+                Ok(None) => {
+                    let src_protocols = protocol::make_protocol_offer();
+                    error!(
+                        log,
+                        "no compatible destination protocols";
+                        "dst_protocols" => &dst_protocols,
+                        "src_protocols" => &src_protocols,
+                    );
+                    return Err(MigrateError::NoMatchingProtocol(
+                        src_protocols,
+                        dst_protocols,
+                    ));
+                }
+                Err(e) => {
+                    error!(log, "failed to parse destination protocol offer";
+                           "dst_protocols" => &dst_protocols,
+                           "error" => %e);
+                    return Err(MigrateError::ProtocolParse(
+                        dst_protocols,
+                        e.to_string(),
+                    ));
+                }
             }
-
-            // Complete the negotiation with our own version string so that the
-            // destination knows we're ready
-            conn.send(tungstenite::Message::Text(src_protocol.to_string()))
-                .await?;
         }
         x => {
             conn.send(tungstenite::Message::Close(Some(CloseFrame {
@@ -302,12 +289,17 @@ pub async fn source_start<
                 reason: "did not begin with version handshake.".into(),
             })))
             .await?;
-            error!(log, "destination side did not begin migration version handshake: {:?}", x);
+            error!(
+                log,
+                "destination side did not begin migration version handshake: \
+                 {:?}",
+                x
+            );
             return Err(MigrateError::Initiate);
         }
-    }
+    };
 
-    controller.request_migration_from(migration_id, conn)?;
+    controller.request_migration_from(migration_id, conn, selected)?;
     Ok(())
 }
 
@@ -344,21 +336,33 @@ pub(crate) async fn dest_initiate(
     let (mut conn, _) =
         tokio_tungstenite::connect_async(src_migrate_url).await?;
 
-    let dst_protocol = MIGRATION_PROTOCOL_STR;
-    conn.send(tungstenite::Message::Text(dst_protocol.to_string())).await?;
-    match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(src_protocol))) => {
-            // TODO: improve "negotiation"
-            if !src_protocol.eq_ignore_ascii_case(dst_protocol) {
-                error!(
-                    log,
-                    "incompatible with source's provided protocol ({})",
-                    src_protocol
-                );
-                return Err(MigrateError::incompatible(
-                    &src_protocol,
-                    dst_protocol,
-                ));
+    let dst_protocols = protocol::make_protocol_offer();
+    conn.send(tungstenite::Message::Text(dst_protocols)).await?;
+    let selected = match conn.next().await {
+        Some(Ok(tungstenite::Message::Text(selected_protocol))) => {
+            info!(log, "source negotiated protocol {}", selected_protocol);
+            match protocol::select_protocol_from_offer(&selected_protocol) {
+                Ok(Some(selected)) => selected,
+                Ok(None) => {
+                    let offered = protocol::make_protocol_offer();
+                    error!(log, "source selected protocol not on offer";
+                           "offered" => &offered,
+                           "selected" => &selected_protocol);
+
+                    return Err(MigrateError::NoMatchingProtocol(
+                        selected_protocol,
+                        offered,
+                    ));
+                }
+                Err(e) => {
+                    error!(log, "source selected protocol failed to parse";
+                           "selected" => &selected_protocol);
+
+                    return Err(MigrateError::ProtocolParse(
+                        selected_protocol,
+                        e.to_string(),
+                    ));
+                }
             }
         }
         x => {
@@ -373,7 +377,7 @@ pub(crate) async fn dest_initiate(
             );
             return Err(MigrateError::Initiate);
         }
-    }
+    };
     let local_addr = rqctx.server.local_addr;
     tokio::runtime::Handle::current()
         .spawn_blocking(move || -> Result<(), MigrateError> {
@@ -382,6 +386,7 @@ pub(crate) async fn dest_initiate(
                 migration_id,
                 conn,
                 local_addr,
+                selected,
             )?;
             Ok(())
         })

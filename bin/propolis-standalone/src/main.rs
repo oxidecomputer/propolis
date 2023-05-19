@@ -642,11 +642,37 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
     }
 }
 
-fn build_log() -> (slog::Logger, slog_async::AsyncGuard) {
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
-    let (drain, guard) = slog_async::Async::new(drain).build_with_guard();
-    (slog::Logger::root(drain.fuse(), o!()), guard)
+fn build_log() -> slog::Logger {
+    let main_drain = if atty::is(atty::Stream::Stdout) {
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+        slog_async::Async::new(drain)
+            .overflow_strategy(slog_async::OverflowStrategy::Block)
+            .build_no_guard()
+    } else {
+        let drain =
+            slog_bunyan::with_name("propolis-standalone", std::io::stdout())
+                .build()
+                .fuse();
+        slog_async::Async::new(drain)
+            .overflow_strategy(slog_async::OverflowStrategy::Block)
+            .build_no_guard()
+    };
+
+    let (dtrace_drain, probe_reg) = slog_dtrace::Dtrace::new();
+
+    let filtered_main = slog::LevelFilter::new(main_drain, slog::Level::Info);
+
+    let log = slog::Logger::root(
+        slog::Duplicate::new(filtered_main.fuse(), dtrace_drain.fuse()).fuse(),
+        o!(),
+    );
+
+    if let slog_dtrace::ProbeRegistration::Failed(err) = probe_reg {
+        slog::error!(&log, "Error registering slog-dtrace probes: {:?}", err);
+    }
+
+    log
 }
 
 fn populate_rom(
@@ -908,7 +934,7 @@ fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
     register_probes().context("Failed to setup USDT probes")?;
 
-    let (log, _log_async_guard) = build_log();
+    let log = build_log();
 
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;

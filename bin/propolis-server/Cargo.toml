@@ -16,6 +16,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+atty.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bit_field.workspace = true
@@ -26,10 +27,12 @@ chrono = { workspace = true, features = [ "serde" ] }
 clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
 dropshot = { workspace = true, features = ["usdt-probes"] }
+enum-iterator.workspace = true
 erased-serde.workspace = true
 futures.workspace = true
 hyper.workspace = true
 internal-dns.workspace = true
+lazy_static.workspace = true
 nexus-client.workspace = true
 num_enum.workspace = true
 omicron-common.workspace = true
@@ -45,6 +48,10 @@ serde.workspace = true
 serde_derive.workspace = true
 serde_json.workspace = true
 slog.workspace = true
+slog-async.workspace = true
+slog-bunyan.workspace = true
+slog-dtrace.workspace = true
+slog-term.workspace = true
 propolis.workspace = true
 propolis-client = { workspace = true, features = ["generated"] }
 propolis-server-config.workspace = true

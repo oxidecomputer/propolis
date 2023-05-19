@@ -2,9 +2,7 @@
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
-use dropshot::{
-    ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HttpServerStarter,
-};
+use dropshot::{ConfigDropshot, HttpServerStarter};
 use futures::join;
 use propolis::usdt::register_probes;
 use slog::info;
@@ -134,6 +132,41 @@ async fn run_server(
     server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
 }
 
+fn build_logger() -> slog::Logger {
+    use slog::Drain;
+
+    let main_drain = if atty::is(atty::Stream::Stdout) {
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        slog_async::Async::new(drain)
+            .overflow_strategy(slog_async::OverflowStrategy::Block)
+            .build_no_guard()
+    } else {
+        let drain =
+            slog_bunyan::with_name("propolis-server", std::io::stdout())
+                .build()
+                .fuse();
+        slog_async::Async::new(drain)
+            .overflow_strategy(slog_async::OverflowStrategy::Block)
+            .build_no_guard()
+    };
+
+    let (dtrace_drain, probe_reg) = slog_dtrace::Dtrace::new();
+
+    let filtered_main = slog::LevelFilter::new(main_drain, slog::Level::Info);
+
+    let log = slog::Logger::root(
+        slog::Duplicate::new(filtered_main.fuse(), dtrace_drain.fuse()).fuse(),
+        slog::o!(),
+    );
+
+    if let slog_dtrace::ProbeRegistration::Failed(err) = probe_reg {
+        slog::error!(&log, "Error registering slog-dtrace probes: {:?}", err);
+    }
+
+    log
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
@@ -154,12 +187,8 @@ async fn main() -> anyhow::Result<()> {
                 request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 ..Default::default()
             };
-            let config_logging = ConfigLogging::StderrTerminal {
-                level: ConfigLoggingLevel::Info,
-            };
-            let log = config_logging.to_logger("propolis-server").map_err(
-                |error| anyhow!("failed to create logger: {}", error),
-            )?;
+
+            let log = build_logger();
 
             run_server(config, config_dropshot, metric_addr, vnc_addr, log)
                 .await

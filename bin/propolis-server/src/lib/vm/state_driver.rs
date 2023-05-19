@@ -389,6 +389,10 @@ where
                             ApiMigrationState::Error
                         ));
 
+                        // Resume the kernel VM so that if this state driver is
+                        // asked to halt, the pause resulting therefrom won't
+                        // observe that the VM is already paused.
+                        self.controller.resume_vm();
                         self.publish_steady_state(ApiInstanceState::Failed);
                     };
 
@@ -1081,7 +1085,7 @@ mod tests {
         vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
         vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
         vm_ctrl.expect_pause_vm().times(1).returning(|| ());
-        vm_ctrl.expect_resume_vm().never();
+        vm_ctrl.expect_resume_vm().times(1).returning(|| ());
         let mut driver = make_state_driver(test_objects);
 
         // The state driver expects to run on an OS thread outside the async

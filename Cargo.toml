@@ -40,6 +40,7 @@ panic = "unwind"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1.53"
+atty = "0.2.14"
 backoff = "0.4.0"
 backtrace = "0.3.66"
 base64 = "0.21"
@@ -62,6 +63,7 @@ ctrlc = "3.2"
 dladm = { path = "crates/dladm" }
 dlpi = { git = "https://github.com/oxidecomputer/dlpi-sys", branch = "main" }
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
+enum-iterator = "1.4.1"
 erased-serde = "0.3"
 errno = "0.2.8"
 expectorate = "1.0.5"
@@ -110,6 +112,8 @@ serde_json = "1.0"
 serde_test = "1.0.138"
 slog = "2.7"
 slog-async = "2.7"
+slog-bunyan = "2.4.0"
+slog-dtrace = "0.2.3"
 slog-term = "2.8"
 softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", branch = "main", package = "softnpu" }
 syn = "1.0"

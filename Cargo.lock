@@ -159,7 +159,7 @@ source = "git+https://github.com/oxidecomputer/omicron?branch=main#09fe4714d4520
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -205,7 +205,7 @@ checksum = "0e97ce7de6cf12de5d7226c73f5ba9811622f4db3a5b91b55c53e987e5f91cba"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -227,7 +227,7 @@ checksum = "16e62a023e7c117e27523144c5d2459f4397fcc3cab0085af8e2224f643a0193"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -238,7 +238,7 @@ checksum = "b9ccdd8f2a161be9bd5c023df56f1b2a0bd1d83872ae53b71a84a12c9bf6e842"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -540,7 +540,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -1047,7 +1047,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_tokenstream 0.2.0",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -1098,6 +1098,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.107",
+]
+
+[[package]]
+name = "enum-iterator"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7add3873b5dd076766ee79c8e406ad1a472c385476b9e38849f8eec24f1be689"
+dependencies = [
+ "enum-iterator-derive",
+]
+
+[[package]]
+name = "enum-iterator-derive"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eecf8589574ce9b895052fa12d69af7a233f99e6107f5cb8dd1044f2a17bfdcb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -1321,7 +1341,7 @@ checksum = "89ca545a94061b6365f2c7355b4b32bd20df3ff95f02da9329b34ccc3bd6ee72"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -2438,7 +2458,7 @@ source = "git+https://github.com/oxidecomputer/omicron?branch=main#09fe4714d4520
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -2614,7 +2634,7 @@ dependencies = [
  "pest_meta",
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -2939,7 +2959,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "syn 2.0.13",
+ "syn 2.0.16",
  "thiserror",
  "typify",
  "unicode-ident",
@@ -2959,7 +2979,7 @@ dependencies = [
  "serde_json",
  "serde_tokenstream 0.2.0",
  "serde_yaml",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -3073,6 +3093,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "atty",
  "base64 0.21.0",
  "bit_field",
  "bitvec",
@@ -3082,12 +3103,14 @@ dependencies = [
  "clap 4.2.4",
  "const_format",
  "dropshot",
+ "enum-iterator",
  "erased-serde",
  "expectorate",
  "futures",
  "hex",
  "hyper",
  "internal-dns",
+ "lazy_static",
  "mockall",
  "nexus-client",
  "num_enum",
@@ -3106,6 +3129,10 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
+ "slog-term",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
@@ -3130,6 +3157,7 @@ name = "propolis-standalone"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atty",
  "bhyve_api",
  "clap 4.2.4",
  "ctrlc",
@@ -3143,6 +3171,8 @@ dependencies = [
  "serde_json",
  "slog",
  "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
  "slog-term",
  "tokio",
  "toml 0.5.11",
@@ -3667,7 +3697,7 @@ checksum = "291a097c63d8497e00160b166a967a4a79c64f3facdd01cbd7502231688d77df"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -3759,7 +3789,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -3919,9 +3949,9 @@ dependencies = [
 
 [[package]]
 name = "slog-dtrace"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a37d13a54955d22a120656475baa60bb10462646378fadeaad840fc5f7d396c"
+checksum = "ebb79013d51afb48c5159d62068658fa672772be3aeeadee0d2710fb3903f637"
 dependencies = [
  "chrono",
  "serde",
@@ -4148,9 +4178,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.13"
+version = "2.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c9da457c5285ac1f936ebd076af6dac17a61cfe7826f2076b4d015cf47bc8ec"
+checksum = "a6f671d4b5ffdb8eadec19c0ae67fe2639df8684bd7bc4b83d986b8db549cf01"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4254,7 +4284,7 @@ checksum = "f9456a42c5b0d803c8cd86e73dd7cc9edd429499f37a3550d286d5e86720569f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -4359,7 +4389,7 @@ checksum = "61a573bdc87985e9d6ddeed1b3d864e8a302c847e40d647746df2f1de209d1ce"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.13",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -4705,7 +4735,7 @@ dependencies = [
  "regress",
  "schemars",
  "serde_json",
- "syn 2.0.13",
+ "syn 2.0.16",
  "thiserror",
  "unicode-ident",
 ]
@@ -4721,7 +4751,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_tokenstream 0.2.0",
- "syn 2.0.13",
+ "syn 2.0.16",
  "typify-impl",
 ]
 

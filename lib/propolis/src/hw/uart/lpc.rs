@@ -15,6 +15,10 @@ struct UartState {
     uart: Uart,
     irq_pin: Box<dyn IntrPin>,
     auto_discard: bool,
+
+    // In the absence of better interfaces for chardev save/restore behavior,
+    // allow the device to be coarsely paused (dropping all reads and writes).
+    paused: bool,
 }
 
 impl UartState {
@@ -40,6 +44,7 @@ impl LpcUart {
                 uart: Uart::new(),
                 irq_pin,
                 auto_discard: true,
+                paused: false,
             }),
             notify_readable: NotifierCell::new(),
             notify_writable: NotifierCell::new(),
@@ -96,6 +101,11 @@ impl LpcUart {
 impl Sink for LpcUart {
     fn write(&self, data: u8) -> bool {
         let mut state = self.state.lock().unwrap();
+
+        if state.paused {
+            return false;
+        }
+
         let res = state.uart.data_write(data);
         state.sync_intr_pin();
         res
@@ -107,6 +117,11 @@ impl Sink for LpcUart {
 impl Source for LpcUart {
     fn read(&self) -> Option<u8> {
         let mut state = self.state.lock().unwrap();
+
+        if state.paused {
+            return None;
+        }
+
         let res = state.uart.data_read();
         state.sync_intr_pin();
         res
@@ -142,6 +157,16 @@ impl Entity for LpcUart {
     }
     fn migrate(&self) -> Migrator {
         Migrator::Single(self)
+    }
+
+    fn pause(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.paused = true;
+    }
+
+    fn resume(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.paused = false;
     }
 }
 impl MigrateSingle for LpcUart {

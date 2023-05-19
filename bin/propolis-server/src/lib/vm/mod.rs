@@ -583,6 +583,7 @@ impl VmController {
         &self,
         migration_id: Uuid,
         conn: WebSocketStream<T>,
+        protocol: crate::migrate::protocol::Protocol,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
 
@@ -593,7 +594,7 @@ impl VmController {
         }
 
         let migration_request =
-            self.launch_source_migration_task(migration_id, conn);
+            self.launch_source_migration_task(migration_id, conn, protocol);
 
         // Unwrap is safe because the queue state was checked under the lock.
         inner.external_request_queue.try_queue(migration_request).unwrap();
@@ -610,6 +611,7 @@ impl VmController {
         &self,
         migration_id: Uuid,
         conn: WebSocketStream<T>,
+        protocol: crate::migrate::protocol::Protocol,
     ) -> ExternalRequest {
         let log_for_task =
             self.log.new(slog::o!("component" => "migrate_source_task"));
@@ -631,6 +633,7 @@ impl VmController {
                 command_tx,
                 response_rx,
                 conn,
+                protocol,
             )
             .await
             {
@@ -670,6 +673,7 @@ impl VmController {
         migration_id: Uuid,
         conn: WebSocketStream<T>,
         local_addr: SocketAddr,
+        protocol: crate::migrate::protocol::Protocol,
     ) -> Result<(), VmControllerError> {
         let mut inner = self.worker_state.inner.lock().unwrap();
         if !inner.external_request_queue.migrate_as_target_will_enqueue()? {
@@ -678,8 +682,12 @@ impl VmController {
 
         // Check that the request can be enqueued before setting up the
         // migration task.
-        let migration_request =
-            self.launch_target_migration_task(migration_id, conn, local_addr);
+        let migration_request = self.launch_target_migration_task(
+            migration_id,
+            conn,
+            local_addr,
+            protocol,
+        );
 
         // Unwrap is safe because the queue state was checked under the lock.
         inner.external_request_queue.try_queue(migration_request).unwrap();
@@ -697,6 +705,7 @@ impl VmController {
         migration_id: Uuid,
         conn: WebSocketStream<T>,
         local_addr: SocketAddr,
+        protocol: crate::migrate::protocol::Protocol,
     ) -> ExternalRequest {
         let log_for_task =
             self.log.new(slog::o!("component" => "migrate_source_task"));
@@ -717,6 +726,7 @@ impl VmController {
                 command_tx,
                 conn,
                 local_addr,
+                protocol,
             )
             .await
             {

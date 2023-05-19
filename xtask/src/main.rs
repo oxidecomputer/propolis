@@ -57,11 +57,8 @@ fn cmd_clippy(strict: bool) -> Result<()> {
 
     let mut failed = false;
 
-    // Everything in the workspace
-    failed |= run_clippy(&["--workspace"])?;
-
-    // And try with tests too
-    failed |= run_clippy(&["--workspace", "--tests"])?;
+    // Everything in the workspace (including tests, etc)
+    failed |= run_clippy(&["--workspace", "--all-targets"])?;
 
     // Check the Falcon bits
     failed |= run_clippy(&["-p", "propolis-server", "--features", "falcon"])?;
