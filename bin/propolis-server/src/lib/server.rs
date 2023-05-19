@@ -25,7 +25,7 @@ use propolis_client::{
 };
 use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
-use slog::{error, o, Logger, warn};
+use slog::{error, o, warn, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
@@ -34,9 +34,9 @@ use tokio_tungstenite::WebSocketStream;
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
-pub use nexus_client::Client as NexusClient;
 use internal_dns::resolver::{ResolveError, Resolver};
 use internal_dns::ServiceName;
+pub use nexus_client::Client as NexusClient;
 use std::net::Ipv6Addr;
 use std::net::SocketAddrV6;
 
@@ -384,29 +384,23 @@ impl LazyNexusClient {
 // Return that endpoint if successful.
 async fn find_local_nexus_client(
     local_addr: SocketAddr,
-    log: Logger
+    log: Logger,
 ) -> Option<NexusClient> {
     // At the moment, we only support converting an IPv6 address into a
     // Nexus endpoint.
     let address = match local_addr {
-        SocketAddr::V6(my_address) => {
-            *my_address.ip()
-        }
-        SocketAddr::V4(_) => {
-            return None
-        }
+        SocketAddr::V6(my_address) => *my_address.ip(),
+        SocketAddr::V4(_) => return None,
     };
 
     // We have an IPv6 address, so could be in a rack.  See if there is a
     // Nexus at the expected location.
     match LazyNexusClient::new(log.clone(), address) {
-        Ok(lnc) => {
-            match lnc.get().await {
-                Ok(client) => Some(client),
-                Err(e) => {
-                    warn!(log, "Failed to determine Nexus: endpoint {}", e);
-                    None
-                }
+        Ok(lnc) => match lnc.get().await {
+            Ok(client) => Some(client),
+            Err(e) => {
+                warn!(log, "Failed to determine Nexus: endpoint {}", e);
+                None
             }
         },
         Err(e) => {
@@ -415,7 +409,6 @@ async fn find_local_nexus_client(
         }
     }
 }
-
 
 async fn instance_ensure_common(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
@@ -478,10 +471,9 @@ async fn instance_ensure_common(
 
     // Use our current address to generate the expected Nexus client endpoint
     // address.
-    let nexus_client = find_local_nexus_client(
-        rqctx.server.local_addr,
-        rqctx.log.clone()
-    ).await;
+    let nexus_client =
+        find_local_nexus_client(rqctx.server.local_addr, rqctx.log.clone())
+            .await;
 
     // Parts of VM initialization (namely Crucible volume attachment) make use
     // of async processing, which itself is turned synchronous with `block_on`

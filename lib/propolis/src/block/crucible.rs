@@ -35,7 +35,6 @@ impl CrucibleBackend {
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
             CrucibleBackend::_create(
@@ -77,7 +76,9 @@ impl CrucibleBackend {
                             );
 
                             Self::remove_read_only_parent(
-                                &volume_id, nexus_client, log,
+                                &volume_id,
+                                nexus_client,
+                                log,
                             )
                             .await;
                         } else {
@@ -123,17 +124,13 @@ impl CrucibleBackend {
         nexus_client: NexusClient,
         log: slog::Logger,
     ) {
-
         // Notify Nexus of the state change.
-        match nexus_client
-            .cpapi_disk_remove_read_only_parent(&volume_id)
-            .await
+        match nexus_client.cpapi_disk_remove_read_only_parent(&volume_id).await
         {
             Ok(_) => {
                 info!(
                     log,
-                    "Submitted removal for read only parent on {}",
-                    volume_id,
+                    "Submitted removal for read only parent on {}", volume_id,
                 );
             }
             Err(e) => {
@@ -142,10 +139,7 @@ impl CrucibleBackend {
                 // means we will re-do a scrub the next time this
                 // volume is attached, it won't result in any harm to
                 // the volume or data.
-                error!(
-                    log,
-                    "Failed removal of read only parent: {}", e,
-                );
+                error!(log, "Failed removal of read only parent: {}", e,);
             }
         }
     }
