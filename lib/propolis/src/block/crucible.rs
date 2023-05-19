@@ -11,61 +11,11 @@ use crate::vmm::MemCtx;
 use crucible::{BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume};
 use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
-use slog::{error, info, Logger};
+use slog::{error, info};
 use thiserror::Error;
 use uuid::Uuid;
 
-use internal_dns::resolver::{ResolveError, Resolver};
-use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
-use omicron_common::address::NEXUS_INTERNAL_PORT;
-use std::net::Ipv6Addr;
-use std::net::SocketAddr;
-
-// For communicating to nexus once the scrubber is done.
-struct Inner {
-    log: Logger,
-    resolver: Resolver,
-}
-
-/// Wrapper around a [`NexusClient`] object, which allows deferring
-/// the DNS lookup until accessed.
-///
-/// Without the assistance of OS-level DNS lookups, the [`NexusClient`]
-/// interface requires knowledge of the target service IP address.
-/// For some services, like Nexus, this can be painful, as the IP address
-/// may not have even been allocated when the Sled Agent starts.
-///
-/// This structure allows clients to access the client on-demand, performing
-/// the DNS lookup only once it is actually needed.
-#[derive(Clone)]
-pub struct LazyNexusClient {
-    inner: Arc<Inner>,
-}
-
-impl LazyNexusClient {
-    pub fn new(log: Logger, addr: Ipv6Addr) -> Result<Self, ResolveError> {
-        Ok(Self {
-            inner: Arc::new(Inner {
-                log: log.clone(),
-                resolver: Resolver::new_from_ip(log, addr)?,
-            }),
-        })
-    }
-
-    pub async fn get_ip(&self) -> Result<Ipv6Addr, ResolveError> {
-        self.inner.resolver.lookup_ipv6(ServiceName::Nexus).await
-    }
-
-    pub async fn get(&self) -> Result<NexusClient, ResolveError> {
-        let address = self.get_ip().await?;
-
-        Ok(NexusClient::new(
-            &format!("http://[{}]:{}", address, NEXUS_INTERNAL_PORT),
-            self.inner.log.clone(),
-        ))
-    }
-}
 
 pub struct CrucibleBackend {
     tokio_rt: tokio::runtime::Handle,
@@ -82,17 +32,9 @@ impl CrucibleBackend {
         request: VolumeConstructionRequest,
         read_only: bool,
         producer_registry: Option<ProducerRegistry>,
-        my_address: SocketAddr,
+        nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        // Should this backend try to contact Nexus, and if so how should it
-        // obtain Nexus's address.  If we are running inside a rack, we
-        // can make use of our own address to determine what the address
-        // for Nexus is.
-        let address = match my_address {
-            SocketAddr::V6(my_address) => Some(*my_address.ip()),
-            SocketAddr::V4(_) => None,
-        };
 
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
@@ -100,7 +42,7 @@ impl CrucibleBackend {
                 request,
                 read_only,
                 producer_registry,
-                address,
+                nexus_client,
                 log,
             )
             .await
@@ -112,7 +54,7 @@ impl CrucibleBackend {
         request: VolumeConstructionRequest,
         read_only: bool,
         producer_registry: Option<ProducerRegistry>,
-        my_address: Option<Ipv6Addr>,
+        nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
         // Construct the volume.
@@ -127,7 +69,7 @@ impl CrucibleBackend {
                 // This does the actual scrub.
                 match vclone.scrub(&log, Some(120), Some(25)).await {
                     Ok(()) => {
-                        if let Some(my_address) = my_address {
+                        if let Some(nexus_client) = nexus_client {
                             info!(
                                 log,
                                 "Scrub of volume {} completed, remove parent",
@@ -135,11 +77,11 @@ impl CrucibleBackend {
                             );
 
                             Self::remove_read_only_parent(
-                                &volume_id, my_address, log,
+                                &volume_id, nexus_client, log,
                             )
                             .await;
                         } else {
-                            // No contact address was provided, so just log
+                            // No nexus contact was provided, so just log
                             // a message.
                             info!(
                                 log,
@@ -178,44 +120,32 @@ impl CrucibleBackend {
     // the given volume id.
     async fn remove_read_only_parent(
         volume_id: &Uuid,
-        my_address: Ipv6Addr,
+        nexus_client: NexusClient,
         log: slog::Logger,
     ) {
-        // Attempt to contact nexus, report error and return if we fail.
-        let lazy_nexus_client = {
-            match LazyNexusClient::new(log.clone(), my_address) {
-                Ok(lnc) => lnc,
-                Err(e) => {
-                    error!(log, "Failed to contact Nexus: {}", e);
-                    return;
-                }
-            }
-        };
 
         // Notify Nexus of the state change.
-        match lazy_nexus_client.get().await {
-            Ok(client) => {
-                match client
-                    .cpapi_disk_remove_read_only_parent(&volume_id)
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            log,
-                            "Submitted removal for read only parent on {}",
-                            volume_id,
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            log,
-                            "Failed removal of read only parent: {}", e,
-                        );
-                    }
-                }
+        match nexus_client
+            .cpapi_disk_remove_read_only_parent(&volume_id)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    log,
+                    "Submitted removal for read only parent on {}",
+                    volume_id,
+                );
             }
             Err(e) => {
-                error!(log, "Failed to connect to Nexus: {}", e);
+                // We finished the scrub, but can't tell Nexus to remove
+                // the read only parent. While this is not ideal, as it
+                // means we will re-do a scrub the next time this
+                // volume is attached, it won't result in any harm to
+                // the volume or data.
+                error!(
+                    log,
+                    "Failed removal of read only parent: {}", e,
+                );
             }
         }
     }

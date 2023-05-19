@@ -29,6 +29,8 @@ dropshot = { workspace = true, features = ["usdt-probes"] }
 erased-serde.workspace = true
 futures.workspace = true
 hyper.workspace = true
+internal-dns.workspace = true
+nexus-client.workspace = true
 num_enum.workspace = true
 omicron-common.workspace = true
 oximeter-producer.workspace = true

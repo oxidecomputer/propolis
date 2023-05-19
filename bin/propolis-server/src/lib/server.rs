@@ -25,7 +25,7 @@ use propolis_client::{
 };
 use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
-use slog::{error, o, Logger};
+use slog::{error, o, Logger, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
@@ -34,6 +34,11 @@ use tokio_tungstenite::WebSocketStream;
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
+pub use nexus_client::Client as NexusClient;
+use internal_dns::resolver::{ResolveError, Resolver};
+use internal_dns::ServiceName;
+use std::net::Ipv6Addr;
+use std::net::SocketAddrV6;
 
 pub(crate) type CrucibleBackendMap =
     BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
@@ -332,6 +337,86 @@ async fn register_oximeter(
     Ok(registry)
 }
 
+/// Wrapper around a [`NexusClient`] object, which allows deferring
+/// the DNS lookup until accessed.
+///
+/// Without the assistance of OS-level DNS lookups, the [`NexusClient`]
+/// interface requires knowledge of the target service IP address.
+/// For some services, like Nexus, this can be painful, as the IP address
+/// may not have even been allocated when the Sled Agent starts.
+///
+/// This structure allows clients to access the client on-demand, performing
+/// the DNS lookup only once it is actually needed.
+struct Inner {
+    log: Logger,
+    resolver: Resolver,
+}
+#[derive(Clone)]
+pub struct LazyNexusClient {
+    inner: Arc<Inner>,
+}
+
+impl LazyNexusClient {
+    pub fn new(log: Logger, addr: Ipv6Addr) -> Result<Self, ResolveError> {
+        Ok(Self {
+            inner: Arc::new(Inner {
+                log: log.clone(),
+                resolver: Resolver::new_from_ip(log, addr)?,
+            }),
+        })
+    }
+
+    pub async fn get_ip(&self) -> Result<SocketAddrV6, ResolveError> {
+        self.inner.resolver.lookup_socket_v6(ServiceName::Nexus).await
+    }
+
+    pub async fn get(&self) -> Result<NexusClient, ResolveError> {
+        let address = self.get_ip().await?;
+
+        Ok(NexusClient::new(
+            &format!("http://{}", address),
+            self.inner.log.clone(),
+        ))
+    }
+}
+
+// Use our local address as basis for calculating a Nexus endpoint,
+// Return that endpoint if successful.
+async fn find_local_nexus_client(
+    local_addr: SocketAddr,
+    log: Logger
+) -> Option<NexusClient> {
+    // At the moment, we only support converting an IPv6 address into a
+    // Nexus endpoint.
+    let address = match local_addr {
+        SocketAddr::V6(my_address) => {
+            *my_address.ip()
+        }
+        SocketAddr::V4(_) => {
+            return None
+        }
+    };
+
+    // We have an IPv6 address, so could be in a rack.  See if there is a
+    // Nexus at the expected location.
+    match LazyNexusClient::new(log.clone(), address) {
+        Ok(lnc) => {
+            match lnc.get().await {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    warn!(log, "Failed to determine Nexus: endpoint {}", e);
+                    None
+                }
+            }
+        },
+        Err(e) => {
+            warn!(log, "Failed to get Nexus client: {}", e);
+            None
+        }
+    }
+}
+
+
 async fn instance_ensure_common(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: api::InstanceSpecEnsureRequest,
@@ -391,6 +476,13 @@ async fn instance_ensure_common(
 
     let (stop_ch, stop_recv) = oneshot::channel();
 
+    // Use our current address to generate the expected Nexus client endpoint
+    // address.
+    let nexus_client = find_local_nexus_client(
+        rqctx.server.local_addr,
+        rqctx.log.clone()
+    ).await;
+
     // Parts of VM initialization (namely Crucible volume attachment) make use
     // of async processing, which itself is turned synchronous with `block_on`
     // calls to the Tokio runtime.
@@ -400,7 +492,6 @@ async fn instance_ensure_common(
     // admittedly a big kludge until this can be better refactored.
     let vm = {
         let properties = properties.clone();
-        let my_address = rqctx.server.local_addr;
         let use_reservoir = server_context.static_config.use_reservoir;
         let bootrom = server_context.static_config.vm.bootrom.clone();
         let log = server_context.log.clone();
@@ -414,7 +505,7 @@ async fn instance_ensure_common(
                 use_reservoir,
                 bootrom,
                 producer_registry,
-                my_address,
+                nexus_client,
                 log,
                 ctrl_hdl,
                 stop_ch,

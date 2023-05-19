@@ -62,6 +62,7 @@ use crate::{
 };
 
 use self::request_queue::{ExternalRequestQueue, RequestDeniedReason};
+pub use nexus_client::Client as NexusClient;
 
 mod request_queue;
 mod state_driver;
@@ -384,7 +385,7 @@ impl VmController {
         use_reservoir: bool,
         bootrom: PathBuf,
         oximeter_registry: Option<ProducerRegistry>,
-        my_address: SocketAddr,
+        nexus_client: Option<NexusClient>,
         log: Logger,
         runtime_hdl: tokio::runtime::Handle,
         stop_ch: oneshot::Sender<()>,
@@ -440,7 +441,7 @@ impl VmController {
         #[cfg(feature = "falcon")]
         init.initialize_9pfs(&chipset)?;
         let crucible_backends =
-            init.initialize_storage_devices(&chipset, my_address)?;
+            init.initialize_storage_devices(&chipset, nexus_client)?;
         let framebuffer_id =
             init.initialize_fwcfg(instance_spec.devices.board.cpus)?;
         let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);

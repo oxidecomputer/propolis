@@ -1,7 +1,6 @@
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +26,7 @@ use slog::info;
 
 use crate::serial::Serial;
 use crate::server::CrucibleBackendMap;
+pub use nexus_client::Client as NexusClient;
 
 use anyhow::Result;
 
@@ -272,7 +272,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
-        my_address: SocketAddr,
+        nexus_client: Option<NexusClient>,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
@@ -321,7 +321,7 @@ impl<'a> MachineInitializer<'a> {
                             req.clone(),
                             backend_spec.readonly,
                             self.producer_registry.clone(),
-                            my_address,
+                            nexus_client.clone(),
                             self.log.new(slog::o!( "component" => format!(
                                 "crucible-{cru_id}"
                             ))),
