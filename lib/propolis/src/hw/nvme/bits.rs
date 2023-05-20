@@ -867,7 +867,7 @@ pub struct IdentifyController {
     /// See NVMe 1.0e Section 4.2, Figure 8 Command Format - Admin and NVM Vendor Specific Commands (Optional)
     pub avscc: u8,
     /// Reserved
-    pub _resv2: [u8; 246],
+    pub _resv2: [u8; 247],
 
     // bytes 512-2047 - NVM Command Set Attributes
     /// Submission Queue Entry Size (SQES)
@@ -988,7 +988,7 @@ impl Default for IdentifyController {
             vs: [0; 1024],
 
             _resv1: [0; 178],
-            _resv2: [0; 246],
+            _resv2: [0; 247],
             _resv3: [0; 2],
             _resv4: [0; 173],
             _resv5: [0; 1344],

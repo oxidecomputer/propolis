@@ -900,9 +900,20 @@ impl PciNvme {
                 AdminCmd::SetFeatures(cmd) => state.acmd_set_features(&cmd),
                 AdminCmd::DeleteIOCompQ(cqid) => state.acmd_delete_io_cq(cqid),
                 AdminCmd::DeleteIOSubQ(sqid) => state.acmd_delete_io_sq(sqid),
+                AdminCmd::AsyncEventReq => {
+                    // async event requests do not appear to be an optional
+                    // feature but are not yet supported. The only
+                    // command-specific error we could return is "async event
+                    // limit exceeded".
+                    //
+                    // qemu's emulated NVMe also does not support async events
+                    // but returns invalid opcode with the do-not-retry flag
+                    // set. Do the same so that guest drivers that check for
+                    // this can detect it and stop posting async events.
+                    cmds::Completion::generic_err_dnr(bits::STS_INVAL_OPC)
+                }
                 AdminCmd::Abort
                 | AdminCmd::GetFeatures
-                | AdminCmd::AsyncEventReq
                 | AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
