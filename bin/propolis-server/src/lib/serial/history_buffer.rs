@@ -118,6 +118,7 @@ impl HistoryBuffer {
             self.beginning.extend(drain);
         }
         self.total_bytes += data.len();
+        super::probes::serial_buffer_size!(|| self.total_bytes);
     }
 
     /// Returns a tuple containing:

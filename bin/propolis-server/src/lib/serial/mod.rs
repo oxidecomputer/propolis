@@ -39,6 +39,7 @@ mod probes {
     fn serial_uart_read(n: usize) {}
     fn serial_inject_uart() {}
     fn serial_ws_recv() {}
+    fn serial_buffer_size(n: usize) {}
 }
 
 /// Errors which may occur during the course of a serial connection.
