@@ -733,7 +733,7 @@ impl Completion {
             status: Self::status_field(
                 StatusCodeType::Generic,
                 bits::STS_SUCCESS,
-                0,
+                false,
             ),
         }
     }
@@ -745,7 +745,7 @@ impl Completion {
             status: Self::status_field(
                 StatusCodeType::Generic,
                 bits::STS_SUCCESS,
-                0,
+                false,
             ),
         }
     }
@@ -755,7 +755,7 @@ impl Completion {
         // success doesn't belong in an error
         assert_ne!(status, bits::STS_SUCCESS);
 
-        Self { dw0: 0, status: Self::status_field(sct, status, 0) }
+        Self { dw0: 0, status: Self::status_field(sct, status, false) }
     }
 
     /// Create a generic error Completion result with a specific status
@@ -765,7 +765,7 @@ impl Completion {
 
         Self {
             dw0: 0,
-            status: Self::status_field(StatusCodeType::Generic, status, 0),
+            status: Self::status_field(StatusCodeType::Generic, status, false),
         }
     }
 
@@ -777,12 +777,12 @@ impl Completion {
 
         Self {
             dw0: 0,
-            status: Self::status_field(StatusCodeType::Generic, status, 1),
+            status: Self::status_field(StatusCodeType::Generic, status, true),
         }
     }
 
     /// Helper method to combine StatusCodeType and status code
-    fn status_field(sct: StatusCodeType, sc: u8, dnr: u8) -> u16 {
+    fn status_field(sct: StatusCodeType, sc: u8, dnr: bool) -> u16 {
         (sc as u16) << 1 | ((sct as u8) as u16) << 9 | (dnr as u16) << 15
         // | (more as u16) << 14
     }
