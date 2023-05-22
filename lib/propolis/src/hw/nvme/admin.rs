@@ -258,13 +258,20 @@ impl NvmeCtrl {
                 // `ncqa`/`nsqa` are 0-based values so subtract 1
                 cmds::Completion::success_val((ncqa - 1) << 16 | (nsqa - 1))
             }
+            cmds::FeatureIdent::VolatileWriteCache => {
+                // NVMe 1.0e Figure 66 Identify - Identify Controller Data
+                // Structure "If a volatile write cache [VWC] is present, then
+                // the host may ... control whether it is enabled with Set
+                // Features specifying the Volatile Write Cache feature
+                // identifier."
+                cmds::Completion::success()
+            }
             cmds::FeatureIdent::Reserved
             | cmds::FeatureIdent::Arbitration
             | cmds::FeatureIdent::PowerManagement
             | cmds::FeatureIdent::LbaRangeType
             | cmds::FeatureIdent::TemperatureThreshold
             | cmds::FeatureIdent::ErrorRecovery
-            | cmds::FeatureIdent::VolatileWriteCache
             | cmds::FeatureIdent::InterruptCoalescing
             | cmds::FeatureIdent::InterruptVectorConfiguration
             | cmds::FeatureIdent::WriteAtomicity

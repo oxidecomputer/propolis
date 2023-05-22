@@ -6,7 +6,7 @@ use bitstruct::bitstruct;
 ///
 /// See NVMe 1.0e Section 4.2 Submission Queue Entry - Command Format
 #[derive(Debug, Default, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct RawSubmission {
     /// Command Dword 0 (CDW0)
     ///
@@ -101,7 +101,7 @@ impl RawSubmission {
 ///
 /// See NVMe 1.0e Section 4.5 Completion Queue Entry
 #[derive(Debug, Default, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct RawCompletion {
     /// Dword 0 (DW0)
     ///
@@ -690,7 +690,7 @@ pub enum StatusCodeType {
 ///
 /// See NVMe 1.0e Section 5.11, Figure 67 Identify - Power State Descriptor Data Structure
 #[derive(Default, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct PowerStateDescriptor {
     /// Maximum Power
     ///
@@ -769,7 +769,7 @@ bitstruct! {
 ///
 /// See NVMe 1.0e Section 5.11, Figure 66 Identify - Identify Controller Data Structure
 #[derive(Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct IdentifyController {
     // bytes 0-255 - Controller Capabilities and Features
     /// PCI Vendor ID (VID)
@@ -867,7 +867,7 @@ pub struct IdentifyController {
     /// See NVMe 1.0e Section 4.2, Figure 8 Command Format - Admin and NVM Vendor Specific Commands (Optional)
     pub avscc: u8,
     /// Reserved
-    pub _resv2: [u8; 246],
+    pub _resv2: [u8; 247],
 
     // bytes 512-2047 - NVM Command Set Attributes
     /// Submission Queue Entry Size (SQES)
@@ -988,7 +988,7 @@ impl Default for IdentifyController {
             vs: [0; 1024],
 
             _resv1: [0; 178],
-            _resv2: [0; 246],
+            _resv2: [0; 247],
             _resv3: [0; 2],
             _resv4: [0; 173],
             _resv5: [0; 1344],
@@ -1001,7 +1001,7 @@ impl Default for IdentifyController {
 /// Describes a specific Logical Block Address (LBA) format.
 /// See NVMe 1.0e Section 5.11, Figure 69 Identify - LBA Format Data Structure, NVM Command Set Specific
 #[derive(Default, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct LbaFormat {
     /// Metadata Size (MS)
     ///
@@ -1030,7 +1030,7 @@ pub struct LbaFormat {
 ///
 /// See NVMe 1.0e Section 5.11, Figure 68 Identify - Identify Namespace Data Structure, NVM Command Set Specific
 #[derive(Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed(1))]
 pub struct IdentifyNamespace {
     /// Namespace Size (NSZE)
     ///
