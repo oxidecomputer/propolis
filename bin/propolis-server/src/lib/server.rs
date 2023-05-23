@@ -6,6 +6,8 @@
 //! controller) for processing.
 
 use std::convert::TryFrom;
+use std::net::Ipv6Addr;
+use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
@@ -18,6 +20,9 @@ use dropshot::{
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
+use internal_dns::resolver::{ResolveError, Resolver};
+use internal_dns::ServiceName;
+pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_client::{
     handmade::api,
@@ -34,11 +39,6 @@ use tokio_tungstenite::WebSocketStream;
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
-use internal_dns::resolver::{ResolveError, Resolver};
-use internal_dns::ServiceName;
-pub use nexus_client::Client as NexusClient;
-use std::net::Ipv6Addr;
-use std::net::SocketAddrV6;
 
 pub(crate) type CrucibleBackendMap =
     BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
@@ -390,7 +390,10 @@ async fn find_local_nexus_client(
     // Nexus endpoint.
     let address = match local_addr {
         SocketAddr::V6(my_address) => *my_address.ip(),
-        SocketAddr::V4(_) => return None,
+        SocketAddr::V4(_) => {
+            warn!(log, "Unable to determine Nexus endpoint for IPv4 addresses");
+            return None;
+        }
     };
 
     // We have an IPv6 address, so could be in a rack.  See if there is a

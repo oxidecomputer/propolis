@@ -33,9 +33,7 @@ once_cell.workspace = true
 crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }
-nexus-client.workspace = true
-internal-dns.workspace = true
-omicron-common.workspace = true
+nexus-client = { workspace = true, optional = true }
 
 # falcon
 libloading = { workspace = true, optional = true }
@@ -55,5 +53,5 @@ rand.workspace = true
 
 [features]
 default = []
-crucible-full = ["crucible", "crucible-client-types", "oximeter"]
+crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
 falcon = ["libloading", "p9ds", "dlpi", "p4rs", "ispf", "rand", "softnpu-lib"]
