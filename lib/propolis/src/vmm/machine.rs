@@ -11,9 +11,14 @@ use crate::pio::PioBus;
 use crate::vcpu::Vcpu;
 use crate::vmm::{create_vm, CreateOpts, PhysMap, VmmHdl};
 
-// XXX: Arbitrary limits for now
-pub const MAX_PHYSMEM: usize = 0x80_0000_0000;
-pub const MAX_SYSMEM: usize = 0x40_0000_0000;
+/// Arbitrary limit for the top of the physical memory map.
+///
+/// For now it corresponds to the top address described by the DSDT in the
+/// static tables shipped in the "blessed" OVMF ROM shipping with propolis.
+///
+/// When MMIO and the physmap in general is made more robust, this should be
+/// eliminated completely.
+pub const MAX_PHYSMEM: usize = 0x100_0000_0000;
 
 /// Devices emulated (at least in part) by the kernel portion of the VMM, and
 /// not explicitly handled by other parts of the userspace emulation.

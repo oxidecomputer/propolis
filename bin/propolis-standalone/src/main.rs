@@ -612,15 +612,20 @@ fn build_instance(
     .add_mem_region(0, lowmem, "lowmem")?
     .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
     .add_mmio_region(0xc000_0000, 0x2000_0000, "dev32")?
-    .add_mmio_region(0xe000_0000, 0x1000_0000, "pcicfg")?
-    .add_mmio_region(
-        vmm::MAX_SYSMEM,
-        vmm::MAX_PHYSMEM - vmm::MAX_SYSMEM,
+    .add_mmio_region(0xe000_0000, 0x1000_0000, "pcicfg")?;
+
+    let highmem_start = 0x1_0000_0000;
+    if highmem > 0 {
+        builder = builder.add_mem_region(highmem_start, highmem, "highmem")?;
+    }
+
+    let dev64_start = highmem_start + highmem;
+    builder = builder.add_mmio_region(
+        dev64_start,
+        vmm::MAX_PHYSMEM - dev64_start,
         "dev64",
     )?;
-    if highmem > 0 {
-        builder = builder.add_mem_region(0x1_0000_0000, highmem, "highmem")?;
-    }
+
     Ok(propolis::Instance::create(builder.finalize()?))
 }
 
