@@ -307,6 +307,10 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(IntoPrimitive)]
 pub enum ApiVersion {
+    /// Reading specific MSRs via vmm-data is fixed.  Access to DEBUGCTL and
+    /// LBR-related MSR state is possible (on AMD).
+    V14 = 14,
+
     /// Writes via vmm-data interface are allowed by default
     V13 = 13,
 
@@ -340,7 +344,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V13
+        Self::V14
     }
 }
 
