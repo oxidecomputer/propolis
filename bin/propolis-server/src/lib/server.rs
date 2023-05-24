@@ -347,19 +347,19 @@ async fn register_oximeter(
 ///
 /// This structure allows clients to access the client on-demand, performing
 /// the DNS lookup only once it is actually needed.
-struct Inner {
+struct LazyNexusClientInner {
     log: Logger,
     resolver: Resolver,
 }
 #[derive(Clone)]
 pub struct LazyNexusClient {
-    inner: Arc<Inner>,
+    inner: Arc<LazyNexusClientInner>,
 }
 
 impl LazyNexusClient {
     pub fn new(log: Logger, addr: Ipv6Addr) -> Result<Self, ResolveError> {
         Ok(Self {
-            inner: Arc::new(Inner {
+            inner: Arc::new(LazyNexusClientInner {
                 log: log.clone(),
                 resolver: Resolver::new_from_ip(log, addr)?,
             }),
