@@ -11,8 +11,11 @@ use crate::vmm::MemCtx;
 use crucible::{BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume};
 use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
+use slog::{error, info};
 use thiserror::Error;
 use uuid::Uuid;
+
+pub use nexus_client::Client as NexusClient;
 
 pub struct CrucibleBackend {
     tokio_rt: tokio::runtime::Handle,
@@ -29,11 +32,19 @@ impl CrucibleBackend {
         request: VolumeConstructionRequest,
         read_only: bool,
         producer_registry: Option<ProducerRegistry>,
+        nexus_client: Option<NexusClient>,
+        log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
-            CrucibleBackend::_create(request, read_only, producer_registry)
-                .await
+            CrucibleBackend::_create(
+                request,
+                read_only,
+                producer_registry,
+                nexus_client,
+                log,
+            )
+            .await
         })
         .map_err(CrucibleError::into)
     }
@@ -42,8 +53,53 @@ impl CrucibleBackend {
         request: VolumeConstructionRequest,
         read_only: bool,
         producer_registry: Option<ProducerRegistry>,
+        nexus_client: Option<NexusClient>,
+        log: slog::Logger,
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
+        // Construct the volume.
         let volume = Volume::construct(request, producer_registry).await?;
+
+        // Decide if we need to scrub this volume or not.
+        if volume.has_read_only_parent() {
+            let vclone = volume.clone();
+            tokio::spawn(async move {
+                let volume_id = vclone.get_uuid().await.unwrap();
+
+                // This does the actual scrub.
+                match vclone.scrub(&log, Some(120), Some(25)).await {
+                    Ok(()) => {
+                        if let Some(nexus_client) = nexus_client {
+                            info!(
+                                log,
+                                "Scrub of volume {} completed, remove parent",
+                                volume_id
+                            );
+
+                            Self::remove_read_only_parent(
+                                &volume_id,
+                                nexus_client,
+                                log,
+                            )
+                            .await;
+                        } else {
+                            // No nexus contact was provided, so just log
+                            // a message.
+                            info!(
+                                log,
+                                "Scrub of volume {} completed", volume_id
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            log,
+                            "Scrub of volume {} failed: {}", volume_id, e
+                        );
+                        // TODO: Report error to nexus that scrub failed
+                    }
+                }
+            });
+        }
 
         // After active negotiation, set sizes
         let block_size = volume.get_block_size().await?;
@@ -59,6 +115,33 @@ impl CrucibleBackend {
             block_size,
             sectors,
         }))
+    }
+
+    // Communicate to Nexus that we can remove the read only parent for
+    // the given volume id.
+    async fn remove_read_only_parent(
+        volume_id: &Uuid,
+        nexus_client: NexusClient,
+        log: slog::Logger,
+    ) {
+        // Notify Nexus of the state change.
+        match nexus_client.cpapi_disk_remove_read_only_parent(&volume_id).await
+        {
+            Ok(_) => {
+                info!(
+                    log,
+                    "Submitted removal for read only parent on {}", volume_id,
+                );
+            }
+            Err(e) => {
+                // We finished the scrub, but can't tell Nexus to remove
+                // the read only parent. While this is not ideal, as it
+                // means we will re-do a scrub the next time this
+                // volume is attached, it won't result in any harm to
+                // the volume or data.
+                error!(log, "Failed removal of read only parent: {}", e,);
+            }
+        }
     }
 
     /// Retrieve the UUID identifying this Crucible backend.

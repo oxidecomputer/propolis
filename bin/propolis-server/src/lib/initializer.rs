@@ -26,6 +26,7 @@ use slog::info;
 
 use crate::serial::Serial;
 use crate::server::CrucibleBackendMap;
+pub use nexus_client::Client as NexusClient;
 
 use anyhow::Result;
 
@@ -271,6 +272,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_storage_devices(
         &self,
         chipset: &RegisteredChipset,
+        nexus_client: Option<NexusClient>,
     ) -> Result<CrucibleBackendMap, Error> {
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
@@ -301,10 +303,28 @@ impl<'a> MachineInitializer<'a> {
                             self.log,
                             "Creating Crucible disk from request {:?}", req
                         );
+                        let cru_id = match req {
+                            VolumeConstructionRequest::Volume {
+                                id, ..
+                            } => id.to_string(),
+                            VolumeConstructionRequest::File { id, .. } => {
+                                id.to_string()
+                            }
+                            VolumeConstructionRequest::Url { id, .. } => {
+                                id.to_string()
+                            }
+                            VolumeConstructionRequest::Region { .. } => {
+                                "Region".to_string()
+                            }
+                        };
                         let be = propolis::block::CrucibleBackend::create(
                             req.clone(),
                             backend_spec.readonly,
                             self.producer_registry.clone(),
+                            nexus_client.clone(),
+                            self.log.new(slog::o!( "component" => format!(
+                                "crucible-{cru_id}"
+                            ))),
                         )?;
                         let child = inventory::ChildRegister::new(
                             &be,
