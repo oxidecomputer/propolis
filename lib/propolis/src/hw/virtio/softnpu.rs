@@ -25,8 +25,8 @@ use super::{
     VirtioDevice,
 };
 
-use p4rs::{packet_in, packet_out, Pipeline};
 use softnpu_lib::mgmt::ManagementRequest;
+use softnpu_lib::p4rs::{self, packet_in, packet_out, Pipeline};
 
 use crate::hw::virtio::p9fs::{write_error, P9Handler, PciVirtio9pfs};
 use dlpi::sys::dlpi_recvinfo_t;
