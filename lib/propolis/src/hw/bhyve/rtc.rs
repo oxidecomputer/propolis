@@ -140,27 +140,40 @@ pub mod migrate {
         pub cmos: [u8; 128],
         pub addr: u8,
     }
-
-    impl BhyveRtcV2 {
-        pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
-            let vdi: bhyve_api::vdi_rtc_v2 =
-                vmm::data::read(hdl, -1, bhyve_api::VDC_RTC, 2).unwrap();
-            Ok(Self {
-                base_clock: vdi.vr_base_clock,
-                last_period: vdi.vr_last_period,
-                cmos: vdi.vr_content,
-                addr: vdi.vr_addr,
-            })
+    impl From<bhyve_api::vdi_rtc_v2> for BhyveRtcV2 {
+        fn from(value: bhyve_api::vdi_rtc_v2) -> Self {
+            Self {
+                base_clock: value.vr_base_clock,
+                last_period: value.vr_last_period,
+                cmos: value.vr_content,
+                addr: value.vr_addr,
+            }
         }
-
-        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
-            let vdi = bhyve_api::vdi_rtc_v2 {
+    }
+    impl Into<bhyve_api::vdi_rtc_v2> for BhyveRtcV2 {
+        fn into(self) -> bhyve_api::vdi_rtc_v2 {
+            bhyve_api::vdi_rtc_v2 {
                 vr_base_clock: self.base_clock,
                 vr_last_period: self.last_period,
                 vr_content: self.cmos,
                 vr_addr: self.addr,
-            };
-            vmm::data::write(hdl, -1, bhyve_api::VDC_RTC, 2, vdi)?;
+            }
+        }
+    }
+
+    impl BhyveRtcV2 {
+        pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
+            let vdi = hdl
+                .data_op(bhyve_api::VDC_RTC, 2)
+                .read::<bhyve_api::vdi_rtc_v2>()?;
+
+            Ok(vdi.into())
+        }
+
+        pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
+            hdl.data_op(bhyve_api::VDC_RTC, 2)
+                .write::<bhyve_api::vdi_rtc_v2>(&self.into())?;
+
             Ok(())
         }
     }

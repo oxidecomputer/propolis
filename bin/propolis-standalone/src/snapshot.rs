@@ -22,7 +22,6 @@ use bhyve_api::{
     vdi_field_entry_v1, vdi_time_info_v1, ApiVersion, VAI_BOOT_HRTIME,
     VDC_VMM_ARCH, VDC_VMM_TIME,
 };
-use propolis::vmm::data as vmm_data;
 use propolis::{
     chardev::UDSock,
     common::{GuestAddr, GuestRegion},
@@ -439,12 +438,12 @@ pub struct VmGlobalState {
 
 fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
     if hdl.api_version()? > ApiVersion::V11.into() {
-        let info: vdi_time_info_v1 = vmm_data::read(hdl, -1, VDC_VMM_TIME, 1)?;
+        let info = hdl.data_op(VDC_VMM_TIME, 1).read::<vdi_time_info_v1>()?;
 
         Ok(VmGlobalState { boot_hrtime: info.vt_boot_hrtime })
     } else {
         let arch_entries: Vec<bhyve_api::vdi_field_entry_v1> =
-            vmm_data::read_many(hdl, -1, VDC_VMM_ARCH, 1)?;
+            hdl.data_op(VDC_VMM_ARCH, 1).read_all()?;
         let boot_ent = arch_entries
             .iter()
             .find(|ent| ent.vfe_ident == VAI_BOOT_HRTIME)
@@ -455,17 +454,17 @@ fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
 }
 fn import_global(hdl: &VmmHdl, state: &VmGlobalState) -> std::io::Result<()> {
     if hdl.api_version()? > ApiVersion::V11.into() {
-        let mut info: vdi_time_info_v1 =
-            vmm_data::read(hdl, -1, VDC_VMM_TIME, 1)?;
+        let mut info =
+            hdl.data_op(VDC_VMM_TIME, 1).read::<vdi_time_info_v1>()?;
 
         info.vt_boot_hrtime = state.boot_hrtime;
-        vmm_data::write(hdl, -1, VDC_VMM_TIME, 1, info)?;
+        hdl.data_op(VDC_VMM_TIME, 1).write(&info)?;
 
         Ok(())
     } else {
         let arch_entry =
             vdi_field_entry_v1::new(VAI_BOOT_HRTIME, state.boot_hrtime as u64);
-        vmm_data::write(hdl, -1, VDC_VMM_ARCH, 1, arch_entry)?;
+        hdl.data_op(VDC_VMM_ARCH, 1).write(&arch_entry)?;
         Ok(())
     }
 }

@@ -51,8 +51,9 @@ pub mod migrate {
     }
     impl BhyvePmTimerV1 {
         pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
-            let vdi: bhyve_api::vdi_pm_timer_v1 =
-                vmm::data::read(hdl, -1, bhyve_api::VDC_PM_TIMER, 1)?;
+            let vdi = hdl
+                .data_op(bhyve_api::VDC_PM_TIMER, 1)
+                .read::<bhyve_api::vdi_pm_timer_v1>()?;
 
             Ok(Self {
                 // vdi_pm_timer_v1 also carries the ioport to which the pmtimer
@@ -67,7 +68,7 @@ pub mod migrate {
                 vpt_time_base: self.start_time,
                 vpt_ioport: 0, // TODO: is this right?
             };
-            vmm::data::write(hdl, -1, bhyve_api::VDC_PM_TIMER, 1, vdi)?;
+            hdl.data_op(bhyve_api::VDC_PM_TIMER, 1).write(&vdi)?;
             Ok(())
         }
     }

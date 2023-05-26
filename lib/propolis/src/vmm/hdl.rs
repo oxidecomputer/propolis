@@ -413,6 +413,10 @@ impl VmmHdl {
             enable_autodestruct as usize,
         )
     }
+
+    pub fn data_op(&self, class: u16, version: u16) -> bhyve_api::VmmDataOp {
+        self.inner.data_op(class, version)
+    }
 }
 
 #[cfg(test)]

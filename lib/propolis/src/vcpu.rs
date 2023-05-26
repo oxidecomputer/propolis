@@ -379,7 +379,6 @@ pub mod migrate {
 
     use super::Vcpu;
     use crate::migrate::*;
-    use crate::vmm;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name};
     use serde::{Deserialize, Serialize};
@@ -595,6 +594,26 @@ pub mod migrate {
         }
     }
 
+    impl From<bhyve_api::vdi_lapic_v1> for LapicV1 {
+        fn from(value: bhyve_api::vdi_lapic_v1) -> Self {
+            Self {
+                page: value.vl_lapic.into(),
+                msr_apicbase: value.vl_msr_apicbase,
+                timer_target: value.vl_timer_target,
+                esr_pending: value.vl_esr_pending,
+            }
+        }
+    }
+    impl From<LapicV1> for bhyve_api::vdi_lapic_v1 {
+        fn from(value: LapicV1) -> Self {
+            bhyve_api::vdi_lapic_v1 {
+                vl_lapic: value.page.into(),
+                vl_msr_apicbase: value.msr_apicbase,
+                vl_timer_target: value.timer_target,
+                vl_esr_pending: value.esr_pending,
+            }
+        }
+    }
     impl From<bhyve_api::vdi_lapic_page_v1> for LapicPageV1 {
         fn from(value: bhyve_api::vdi_lapic_page_v1) -> Self {
             Self {
@@ -654,13 +673,11 @@ pub mod migrate {
         fn read(vcpu: &Vcpu) -> Result<Self> {
             let run_state = vcpu.get_run_state()?;
 
-            let vmm_arch: Vec<bhyve_api::vdi_field_entry_v1> =
-                vmm::data::read_many(
-                    vcpu.hdl.as_ref(),
-                    vcpu.id,
-                    bhyve_api::VDC_VMM_ARCH,
-                    1,
-                )?;
+            let vmm_arch: Vec<bhyve_api::vdi_field_entry_v1> = vcpu
+                .hdl
+                .data_op(bhyve_api::VDC_VMM_ARCH, 1)
+                .for_vcpu(vcpu.id)
+                .read_all()?;
 
             // Load all of the pending interrupt/exception state
             //
@@ -709,7 +726,7 @@ pub mod migrate {
                 self.intr_shadow as u64,
             )?;
 
-            let mut ents = [
+            let ents = [
                 vdi_field_entry_v1::new(
                     bhyve_api::VAI_PEND_NMI,
                     self.pending_nmi as u64,
@@ -735,13 +752,10 @@ pub mod migrate {
             // overall required version for propolis can grow to encompass V10
             // and this check can be elided.
             if bhyve_api::api_version()? >= bhyve_api::ApiVersion::V10 as u32 {
-                vmm::data::write_many(
-                    vcpu.hdl.as_ref(),
-                    vcpu.id,
-                    bhyve_api::VDC_VMM_ARCH,
-                    1,
-                    &mut ents,
-                )?;
+                vcpu.hdl
+                    .data_op(bhyve_api::VDC_VMM_ARCH, 1)
+                    .for_vcpu(vcpu.id)
+                    .write_many(&ents)?;
             }
 
             Ok(())
@@ -948,10 +962,11 @@ pub mod migrate {
 
     impl VcpuReadWrite for VcpuMsrsV1 {
         fn read(vcpu: &Vcpu) -> Result<Self> {
-            let hdl = &vcpu.hdl;
-
-            let raw_msrs: Vec<bhyve_api::vdi_field_entry_v1> =
-                vmm::data::read_many(hdl, vcpu.id, bhyve_api::VDC_MSR, 1)?;
+            let raw_msrs: Vec<bhyve_api::vdi_field_entry_v1> = vcpu
+                .hdl
+                .data_op(bhyve_api::VDC_MSR, 1)
+                .for_vcpu(vcpu.id)
+                .read_all()?;
 
             let mut filtered: Vec<MsrEntry> = raw_msrs
                 .into_iter()
@@ -972,7 +987,7 @@ pub mod migrate {
         }
 
         fn write(self, vcpu: &Vcpu) -> Result<()> {
-            let mut raw_msrs: Vec<bhyve_api::vdi_field_entry_v1> = self
+            let raw_msrs: Vec<bhyve_api::vdi_field_entry_v1> = self
                 .0
                 .into_iter()
                 .filter_map(|ent| {
@@ -986,14 +1001,10 @@ pub mod migrate {
                 })
                 .collect();
 
-            let hdl = &vcpu.hdl;
-            vmm::data::write_many(
-                hdl,
-                vcpu.id,
-                bhyve_api::VDC_MSR,
-                1,
-                &mut raw_msrs,
-            )?;
+            vcpu.hdl
+                .data_op(bhyve_api::VDC_MSR, 1)
+                .for_vcpu(vcpu.id)
+                .write_many(&raw_msrs)?;
 
             Ok(())
         }
@@ -1042,27 +1053,19 @@ pub mod migrate {
     }
     impl VcpuReadWrite for LapicV1 {
         fn read(vcpu: &Vcpu) -> Result<Self> {
-            let hdl = &vcpu.hdl;
-            let raw: bhyve_api::vdi_lapic_v1 =
-                vmm::data::read(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1)?;
+            let vdi = vcpu
+                .hdl
+                .data_op(bhyve_api::VDC_LAPIC, 1)
+                .for_vcpu(vcpu.id)
+                .read::<bhyve_api::vdi_lapic_v1>()?;
 
-            Ok(Self {
-                page: raw.vl_lapic.into(),
-                msr_apicbase: raw.vl_msr_apicbase,
-                timer_target: raw.vl_timer_target,
-                esr_pending: raw.vl_esr_pending,
-            })
+            Ok(vdi.into())
         }
         fn write(self, vcpu: &Vcpu) -> Result<()> {
-            let raw = bhyve_api::vdi_lapic_v1 {
-                vl_lapic: self.page.into(),
-                vl_msr_apicbase: self.msr_apicbase,
-                vl_timer_target: self.timer_target,
-                vl_esr_pending: self.esr_pending,
-            };
-
-            let hdl = &vcpu.hdl;
-            vmm::data::write(hdl, vcpu.id, bhyve_api::VDC_LAPIC, 1, raw)?;
+            vcpu.hdl
+                .data_op(bhyve_api::VDC_LAPIC, 1)
+                .for_vcpu(vcpu.id)
+                .write::<bhyve_api::vdi_lapic_v1>(&self.into())?;
 
             Ok(())
         }

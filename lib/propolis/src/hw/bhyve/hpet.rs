@@ -54,6 +54,28 @@ pub mod migrate {
 
         pub timers: [HpetTimerV1; 8],
     }
+    impl From<bhyve_api::vdi_hpet_v1> for HpetV1 {
+        fn from(value: bhyve_api::vdi_hpet_v1) -> Self {
+            Self {
+                config: value.vh_config,
+                isr: value.vh_isr,
+                count_base: value.vh_count_base,
+                time_base: value.vh_time_base,
+                timers: value.vh_timers.map(Into::into),
+            }
+        }
+    }
+    impl From<HpetV1> for bhyve_api::vdi_hpet_v1 {
+        fn from(value: HpetV1) -> Self {
+            Self {
+                vh_config: value.config,
+                vh_isr: value.isr,
+                vh_count_base: value.count_base,
+                vh_time_base: value.time_base,
+                vh_timers: value.timers.map(Into::into),
+            }
+        }
+    }
 
     #[derive(Copy, Clone, Default, Serialize, Deserialize)]
     pub struct HpetTimerV1 {
@@ -63,66 +85,42 @@ pub mod migrate {
         pub comp_rate: u32,
         pub time_target: i64,
     }
-
-    impl HpetV1 {
-        fn from_raw(inp: &bhyve_api::vdi_hpet_v1) -> Self {
-            let mut res = Self {
-                config: inp.vh_config,
-                isr: inp.vh_isr,
-                count_base: inp.vh_count_base,
-                time_base: inp.vh_time_base,
-                ..Default::default()
-            };
-            for (n, timer) in res.timers.iter_mut().enumerate() {
-                *timer = HpetTimerV1::from_raw(&inp.vh_timers[n]);
+    impl From<bhyve_api::vdi_hpet_timer_v1> for HpetTimerV1 {
+        fn from(value: bhyve_api::vdi_hpet_timer_v1) -> Self {
+            Self {
+                config: value.vht_config,
+                msi: value.vht_msi,
+                comp_val: value.vht_comp_val,
+                comp_rate: value.vht_comp_rate,
+                time_target: value.vht_time_target,
             }
-            res
-        }
-        fn to_raw(&self) -> bhyve_api::vdi_hpet_v1 {
-            let mut res = bhyve_api::vdi_hpet_v1 {
-                vh_config: self.config,
-                vh_isr: self.isr,
-                vh_count_base: self.count_base,
-                vh_time_base: self.time_base,
-                ..Default::default()
-            };
-            for (n, timer) in res.vh_timers.iter_mut().enumerate() {
-                *timer = HpetTimerV1::to_raw(&self.timers[n]);
-            }
-            res
         }
     }
-    impl HpetTimerV1 {
-        fn from_raw(inp: &bhyve_api::vdi_hpet_timer_v1) -> Self {
+    impl From<HpetTimerV1> for bhyve_api::vdi_hpet_timer_v1 {
+        fn from(value: HpetTimerV1) -> Self {
             Self {
-                config: inp.vht_config,
-                msi: inp.vht_msi,
-                comp_val: inp.vht_comp_val,
-                comp_rate: inp.vht_comp_rate,
-                time_target: inp.vht_time_target,
-            }
-        }
-        fn to_raw(&self) -> bhyve_api::vdi_hpet_timer_v1 {
-            bhyve_api::vdi_hpet_timer_v1 {
-                vht_config: self.config,
-                vht_msi: self.msi,
-                vht_comp_val: self.comp_val,
-                vht_comp_rate: self.comp_rate,
-                vht_time_target: self.time_target,
+                vht_config: value.config,
+                vht_msi: value.msi,
+                vht_comp_val: value.comp_val,
+                vht_comp_rate: value.comp_rate,
+                vht_time_target: value.time_target,
             }
         }
     }
 
     impl HpetV1 {
         pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
-            let vdi: bhyve_api::vdi_hpet_v1 =
-                vmm::data::read(hdl, -1, bhyve_api::VDC_HPET, 1)?;
+            let vdi = hdl
+                .data_op(bhyve_api::VDC_HPET, 1)
+                .read::<bhyve_api::vdi_hpet_v1>()?;
 
-            Ok(Self::from_raw(&vdi))
+            Ok(vdi.into())
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
-            vmm::data::write(hdl, -1, bhyve_api::VDC_HPET, 1, self.to_raw())?;
+            hdl.data_op(bhyve_api::VDC_HPET, 1)
+                .write::<bhyve_api::vdi_hpet_v1>(&self.into())?;
+
             Ok(())
         }
     }

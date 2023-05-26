@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
+use std::mem::{size_of, size_of_val};
 use std::os::fd::*;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
@@ -221,6 +222,12 @@ impl VmmFd {
         }
     }
 
+    /// Build a [`VmmDataOp`] with specified `class` and `version` to read or
+    /// write data from the in-kernel vmm.
+    pub fn data_op(&self, class: u16, version: u16) -> VmmDataOp<'_> {
+        VmmDataOp::new(self, class, version)
+    }
+
     /// Check VMM ioctl command against those known to not require any
     /// copyin/copyout to function.
     const fn ioctl_usize_safe(cmd: i32) -> bool {
@@ -238,6 +245,224 @@ impl VmmFd {
 impl AsRawFd for VmmFd {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
+    }
+}
+
+pub type VmmDataResult<T> = std::result::Result<T, VmmDataError>;
+
+/// Encompasses the configuration and context to perform a vmm-data operation
+/// (read or write) against an instance.  The `class` and `version` for the
+/// vmm-data operation are established with the parameters passed to
+/// [`VmmFd::data_op`].
+pub struct VmmDataOp<'a> {
+    fd: &'a VmmFd,
+    class: u16,
+    version: u16,
+    vcpuid: Option<i32>,
+}
+
+impl<'a> VmmDataOp<'a> {
+    pub fn new(fd: &'a VmmFd, class: u16, version: u16) -> Self {
+        Self { fd, class, version, vcpuid: None }
+    }
+}
+
+impl VmmDataOp<'_> {
+    /// Dictate that the vmm-data operation be performed in the context of a
+    /// specific vCPU, rather than against the VM as a whole.
+    pub fn for_vcpu(mut self, vcpuid: i32) -> Self {
+        self.vcpuid = Some(vcpuid);
+        self
+    }
+
+    /// Read item of data, returning the result.
+    pub fn read<T: Sized + Copy + Default>(self) -> VmmDataResult<T> {
+        let mut item = T::default();
+        self.do_read_single(
+            &mut item as *mut T as *mut libc::c_void,
+            size_of::<T>() as u32,
+            false,
+        )?;
+        Ok(item)
+    }
+
+    /// Read item of data into provided buffer
+    pub fn read_into<T: Sized>(self, data: &mut T) -> VmmDataResult<()> {
+        self.do_read_single(
+            data as *mut T as *mut libc::c_void,
+            size_of::<T>() as u32,
+            false,
+        )
+    }
+
+    /// Read item of data, specified by identifier existing in provided buffer
+    pub fn read_item<T: Sized>(self, data: &mut T) -> VmmDataResult<()> {
+        self.do_read_single(
+            data as *mut T as *mut libc::c_void,
+            size_of::<T>() as u32,
+            true,
+        )
+    }
+
+    fn do_read_single(
+        self,
+        data: *mut libc::c_void,
+        read_len: u32,
+        do_copyin: bool,
+    ) -> VmmDataResult<()> {
+        let mut xfer = self.xfer_base(read_len, data);
+
+        if do_copyin {
+            xfer.vdx_flags |= VDX_FLAG_READ_COPYIN;
+        }
+
+        let bytes_read = self.do_read(&mut xfer)?;
+        assert_eq!(bytes_read, read_len);
+        Ok(())
+    }
+
+    /// Read data items, specified by identifiers existing in provided buffer
+    pub fn read_many<T: Sized>(self, data: &mut [T]) -> VmmDataResult<()> {
+        let read_len = size_of_val(data) as u32;
+        let mut xfer =
+            self.xfer_base(read_len, data.as_mut_ptr() as *mut libc::c_void);
+
+        // When reading multiple items, it is expected that identifiers will be
+        // passed into the kernel to select the entries which will be read (as
+        // opposed to read-all, which is indiscriminate).
+        //
+        // As such, a copyin-before-read is implied to provide said identifiers.
+        xfer.vdx_flags |= VDX_FLAG_READ_COPYIN;
+
+        let bytes_read = self.do_read(&mut xfer)?;
+        assert_eq!(bytes_read, read_len);
+        Ok(())
+    }
+
+    /// Read all data items offered by this class/version
+    pub fn read_all<T: Sized>(self) -> VmmDataResult<Vec<T>> {
+        let mut xfer = self.xfer_base(0, std::ptr::null_mut());
+        let total_len = match self.do_read(&mut xfer) {
+            Err(VmmDataError::SpaceNeeded(sz)) => Ok(sz),
+            Err(e) => Err(e),
+            Ok(_) => panic!("unexpected success"),
+        }?;
+        let item_len = size_of::<T>() as u32;
+        assert!(total_len >= item_len, "item size exceeds total data size");
+
+        let item_count = total_len / item_len;
+        assert_eq!(
+            total_len,
+            item_count * item_len,
+            "per-item sizing does not match total data size"
+        );
+
+        let mut data: Vec<T> = Vec::with_capacity(item_count as usize);
+        let mut xfer =
+            self.xfer_base(total_len, data.as_mut_ptr() as *mut libc::c_void);
+
+        let bytes_read = self.do_read(&mut xfer)?;
+        assert!(bytes_read <= total_len);
+
+        // SAFETY: Data is populated by the ioctl
+        unsafe {
+            data.set_len((bytes_read / item_len) as usize);
+        }
+        Ok(data)
+    }
+
+    /// Write item of data
+    pub fn write<T: Sized>(self, data: &T) -> VmmDataResult<()> {
+        let write_len = size_of::<T>() as u32;
+        let mut xfer = self.xfer_base(
+            write_len,
+            data as *const T as *mut T as *mut libc::c_void,
+        );
+
+        let bytes_written = self.do_write(&mut xfer)?;
+        assert_eq!(bytes_written, write_len);
+        Ok(())
+    }
+
+    /// Write data items
+    pub fn write_many<T: Sized>(self, data: &[T]) -> VmmDataResult<()> {
+        let write_len = size_of_val(data) as u32;
+        let mut xfer = self
+            .xfer_base(write_len, data.as_ptr() as *mut T as *mut libc::c_void);
+
+        let bytes_written = self.do_write(&mut xfer)?;
+        assert_eq!(bytes_written, write_len);
+        Ok(())
+    }
+
+    /// Build a [`vm_data_xfer`] struct based on parameters established for this
+    /// data operation.
+    fn xfer_base(&self, len: u32, data: *mut libc::c_void) -> vm_data_xfer {
+        vm_data_xfer {
+            vdx_vcpuid: self.vcpuid.unwrap_or(-1),
+            vdx_class: self.class,
+            vdx_version: self.version,
+            vdx_len: len,
+            vdx_data: data,
+            ..Default::default()
+        }
+    }
+
+    fn do_read(
+        &self,
+        xfer: &mut vm_data_xfer,
+    ) -> std::result::Result<u32, VmmDataError> {
+        self.do_ioctl(VM_DATA_READ, xfer)
+    }
+
+    fn do_write(
+        &self,
+        xfer: &mut vm_data_xfer,
+    ) -> std::result::Result<u32, VmmDataError> {
+        // If logic is added to VM_DATA_WRITE which actually makes use of
+        // [`VDX_FLAG_WRITE_COPYOUT`], then the fact that [`write`] and
+        // [`write_many`] accept const references for the data input will need
+        // to be revisited.
+        self.do_ioctl(VM_DATA_WRITE, xfer)
+    }
+
+    /// Execute a vmm-data transfer, translating the ENOSPC error, if emitted
+    fn do_ioctl(
+        &self,
+        op: i32,
+        xfer: &mut vm_data_xfer,
+    ) -> std::result::Result<u32, VmmDataError> {
+        match unsafe { self.fd.ioctl(op, xfer) } {
+            Err(e) => match e.raw_os_error() {
+                Some(errno) if errno == libc::ENOSPC => {
+                    Err(VmmDataError::SpaceNeeded(xfer.vdx_result_len))
+                }
+                _ => Err(VmmDataError::IoError(e)),
+            },
+            Ok(_) => Ok(xfer.vdx_result_len),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum VmmDataError {
+    IoError(Error),
+    SpaceNeeded(u32),
+}
+
+impl From<VmmDataError> for Error {
+    fn from(err: VmmDataError) -> Self {
+        match err {
+            VmmDataError::IoError(e) => e,
+            VmmDataError::SpaceNeeded(c) => {
+                // ErrorKind::StorageFull would more accurately match the underlying ENOSPC
+                // but that variant is unstable still
+                Error::new(
+                    ErrorKind::Other,
+                    format!("operation requires {} bytes", c),
+                )
+            }
+        }
     }
 }
 

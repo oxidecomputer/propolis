@@ -78,16 +78,17 @@ pub fn import_time_data(
     time_info: VmTimeData,
 ) -> std::io::Result<()> {
     let raw = bhyve_api::vdi_time_info_v1::from(time_info);
-    crate::vmm::data::write(hdl, -1, bhyve_api::VDC_VMM_TIME, 1, raw)?;
+    hdl.data_op(bhyve_api::VDC_VMM_TIME, 1).write(&raw)?;
 
     Ok(())
 }
 
 pub fn export_time_data(hdl: &VmmHdl) -> std::io::Result<VmTimeData> {
-    let time_info: bhyve_api::vdi_time_info_v1 =
-        crate::vmm::data::read(hdl, -1, bhyve_api::VDC_VMM_TIME, 1)?;
+    let raw = hdl
+        .data_op(bhyve_api::VDC_VMM_TIME, 1)
+        .read::<bhyve_api::vdi_time_info_v1>()?;
 
-    Ok(VmTimeData::from(time_info))
+    Ok(VmTimeData::from(raw))
 }
 
 /// Returns the current host hrtime and wall clock time

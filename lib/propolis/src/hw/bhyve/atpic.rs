@@ -61,60 +61,61 @@ pub mod migrate {
         pub elc: u8,
         pub level: [u32; 8],
     }
-    impl AtPicV1 {
-        fn from_raw(inp: &bhyve_api::vdi_atpic_v1) -> Self {
-            Self {
-                chips: [
-                    AtPicChipV1::from_raw(&inp.va_chip[0]),
-                    AtPicChipV1::from_raw(&inp.va_chip[1]),
-                ],
-            }
+    impl From<bhyve_api::vdi_atpic_v1> for AtPicV1 {
+        fn from(value: bhyve_api::vdi_atpic_v1) -> Self {
+            Self { chips: [value.va_chip[0].into(), value.va_chip[1].into()] }
         }
-        fn to_raw(&self) -> bhyve_api::vdi_atpic_v1 {
-            bhyve_api::vdi_atpic_v1 {
-                va_chip: [self.chips[0].to_raw(), self.chips[1].to_raw()],
+    }
+    impl From<AtPicV1> for bhyve_api::vdi_atpic_v1 {
+        fn from(value: AtPicV1) -> Self {
+            Self { va_chip: [value.chips[0].into(), value.chips[1].into()] }
+        }
+    }
+
+    impl From<bhyve_api::vdi_atpic_chip_v1> for AtPicChipV1 {
+        fn from(value: bhyve_api::vdi_atpic_chip_v1) -> Self {
+            Self {
+                icw_state: value.vac_icw_state,
+                status: value.vac_status,
+                reg_irr: value.vac_reg_irr,
+                reg_isr: value.vac_reg_isr,
+                reg_imr: value.vac_reg_imr,
+                irq_base: value.vac_irq_base,
+                lowprio: value.vac_lowprio,
+                elc: value.vac_elc,
+                level: value.vac_level,
             }
         }
     }
-    impl AtPicChipV1 {
-        fn from_raw(inp: &bhyve_api::vdi_atpic_chip_v1) -> Self {
+    impl From<AtPicChipV1> for bhyve_api::vdi_atpic_chip_v1 {
+        fn from(value: AtPicChipV1) -> Self {
             Self {
-                icw_state: inp.vac_icw_state,
-                status: inp.vac_status,
-                reg_irr: inp.vac_reg_irr,
-                reg_isr: inp.vac_reg_isr,
-                reg_imr: inp.vac_reg_imr,
-                irq_base: inp.vac_irq_base,
-                lowprio: inp.vac_lowprio,
-                elc: inp.vac_elc,
-                level: inp.vac_level,
-            }
-        }
-        fn to_raw(&self) -> bhyve_api::vdi_atpic_chip_v1 {
-            bhyve_api::vdi_atpic_chip_v1 {
-                vac_icw_state: self.icw_state,
-                vac_status: self.status,
-                vac_reg_irr: self.reg_irr,
-                vac_reg_isr: self.reg_isr,
-                vac_reg_imr: self.reg_imr,
-                vac_irq_base: self.irq_base,
-                vac_lowprio: self.lowprio,
-                vac_elc: self.elc,
-                vac_level: self.level,
+                vac_icw_state: value.icw_state,
+                vac_status: value.status,
+                vac_reg_irr: value.reg_irr,
+                vac_reg_isr: value.reg_isr,
+                vac_reg_imr: value.reg_imr,
+                vac_irq_base: value.irq_base,
+                vac_lowprio: value.lowprio,
+                vac_elc: value.elc,
+                vac_level: value.level,
             }
         }
     }
 
     impl AtPicV1 {
         pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
-            let vdi: bhyve_api::vdi_atpic_v1 =
-                vmm::data::read(hdl, -1, bhyve_api::VDC_ATPIC, 1)?;
+            let vdi = hdl
+                .data_op(bhyve_api::VDC_ATPIC, 1)
+                .read::<bhyve_api::vdi_atpic_v1>()?;
 
-            Ok(Self::from_raw(&vdi))
+            Ok(vdi.into())
         }
 
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
-            vmm::data::write(hdl, -1, bhyve_api::VDC_ATPIC, 1, self.to_raw())?;
+            hdl.data_op(bhyve_api::VDC_ATPIC, 1)
+                .write::<bhyve_api::vdi_atpic_v1>(&self.into())?;
+
             Ok(())
         }
     }
