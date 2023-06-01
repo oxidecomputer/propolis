@@ -305,7 +305,7 @@ version = "0.0.0"
 dependencies = [
  "bhyve_api_sys",
  "libc",
- "num_enum",
+ "num_enum 0.5.11",
 ]
 
 [[package]]
@@ -313,7 +313,7 @@ name = "bhyve_api_sys"
 version = "0.0.0"
 dependencies = [
  "libc",
- "num_enum",
+ "num_enum 0.5.11",
 ]
 
 [[package]]
@@ -674,7 +674,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9f69deab230079a5bae4a10a099d7fc1f3d29df7#9f69deab230079a5bae4a10a099d7fc1f3d29df7"
+source = "git+https://github.com/oxidecomputer/crucible?rev=8757b3fb55a1763382ad7111144bc60ec72af23d#8757b3fb55a1763382ad7111144bc60ec72af23d"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -717,7 +717,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9f69deab230079a5bae4a10a099d7fc1f3d29df7#9f69deab230079a5bae4a10a099d7fc1f3d29df7"
+source = "git+https://github.com/oxidecomputer/crucible?rev=8757b3fb55a1763382ad7111144bc60ec72af23d#8757b3fb55a1763382ad7111144bc60ec72af23d"
 dependencies = [
  "base64 0.21.0",
  "schemars",
@@ -729,15 +729,21 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9f69deab230079a5bae4a10a099d7fc1f3d29df7#9f69deab230079a5bae4a10a099d7fc1f3d29df7"
+source = "git+https://github.com/oxidecomputer/crucible?rev=8757b3fb55a1763382ad7111144bc60ec72af23d#8757b3fb55a1763382ad7111144bc60ec72af23d"
 dependencies = [
  "anyhow",
+ "atty",
  "nix",
  "rusqlite",
  "rustls-pemfile",
  "schemars",
  "serde",
  "serde_json",
+ "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
+ "slog-term",
  "tempfile",
  "thiserror",
  "tokio-rustls 0.23.4",
@@ -750,13 +756,13 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9f69deab230079a5bae4a10a099d7fc1f3d29df7#9f69deab230079a5bae4a10a099d7fc1f3d29df7"
+source = "git+https://github.com/oxidecomputer/crucible?rev=8757b3fb55a1763382ad7111144bc60ec72af23d#8757b3fb55a1763382ad7111144bc60ec72af23d"
 dependencies = [
  "anyhow",
  "bincode",
  "bytes",
  "crucible-common",
- "num_enum",
+ "num_enum 0.6.1",
  "serde",
  "tokio-util",
  "uuid",
@@ -892,7 +898,7 @@ name = "devinfo"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/devinfo-sys?branch=main#b1a9fb8533abbae9dd6e78714fe068079227bf74"
 dependencies = [
- "num_enum",
+ "num_enum 0.5.11",
 ]
 
 [[package]]
@@ -900,7 +906,7 @@ name = "devinfo"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/devinfo-sys#b1a9fb8533abbae9dd6e78714fe068079227bf74"
 dependencies = [
- "num_enum",
+ "num_enum 0.5.11",
 ]
 
 [[package]]
@@ -946,7 +952,7 @@ name = "dladm"
 version = "0.0.0"
 dependencies = [
  "libc",
- "num_enum",
+ "num_enum 0.5.11",
 ]
 
 [[package]]
@@ -956,7 +962,7 @@ source = "git+https://github.com/oxidecomputer/dlpi-sys?branch=main#1d587ea98cf2
 dependencies = [
  "libc",
  "libdlpi-sys",
- "num_enum",
+ "num_enum 0.5.11",
  "pretty-hex",
  "thiserror",
  "tokio",
@@ -1624,15 +1630,15 @@ dependencies = [
 
 [[package]]
 name = "hyper-rustls"
-version = "0.23.2"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788965e61b367cd03a62950836d5cd41560c3577d90e40e0819373194d1661c"
+checksum = "0646026eb1b3eea4cd9ba47912ea5ce9cc07713d105b1a14698f4e6433d348b7"
 dependencies = [
  "http",
  "hyper",
- "rustls 0.20.8",
+ "rustls 0.21.0",
  "tokio",
- "tokio-rustls 0.23.4",
+ "tokio-rustls 0.24.0",
 ]
 
 [[package]]
@@ -2253,7 +2259,16 @@ version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f646caf906c20226733ed5b1374287eb97e3c2a5c227ce668c1f2ce20ae57c9"
 dependencies = [
- "num_enum_derive",
+ "num_enum_derive 0.5.11",
+]
+
+[[package]]
+name = "num_enum"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a015b430d3c108a207fd776d2e2196aaf8b1cf8cf93253e3a097ff3085076a1"
+dependencies = [
+ "num_enum_derive 0.6.1",
 ]
 
 [[package]]
@@ -2266,6 +2281,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.107",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96667db765a921f7b295ffee8b60472b686a51d4f21c2ee4ffdb94c7013b65a6"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.16",
 ]
 
 [[package]]
@@ -2504,7 +2531,7 @@ version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/p9fs?branch=main#7251cbb06fedb4117cae61f853cd4bfc95774f93"
 dependencies = [
  "ispf",
- "num_enum",
+ "num_enum 0.5.11",
  "serde",
  "serde_repr",
  "thiserror",
@@ -2516,7 +2543,7 @@ version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/p9fs#7251cbb06fedb4117cae61f853cd4bfc95774f93"
 dependencies = [
  "ispf",
- "num_enum",
+ "num_enum 0.5.11",
  "serde",
  "serde_repr",
  "thiserror",
@@ -3009,7 +3036,7 @@ dependencies = [
  "libc",
  "libloading",
  "nexus-client",
- "num_enum",
+ "num_enum 0.5.11",
  "once_cell",
  "oximeter",
  "p9ds 0.1.0 (git+https://github.com/oxidecomputer/p9fs)",
@@ -3110,7 +3137,7 @@ dependencies = [
  "lazy_static",
  "mockall",
  "nexus-client",
- "num_enum",
+ "num_enum 0.5.11",
  "omicron-common",
  "oximeter",
  "oximeter-producer",
@@ -3161,7 +3188,7 @@ dependencies = [
  "erased-serde",
  "futures",
  "libc",
- "num_enum",
+ "num_enum 0.5.11",
  "propolis",
  "propolis-standalone-config",
  "serde",
@@ -3179,7 +3206,7 @@ dependencies = [
 name = "propolis-standalone-config"
 version = "0.0.0"
 dependencies = [
- "num_enum",
+ "num_enum 0.5.11",
  "serde",
  "serde_derive",
  "toml 0.5.11",
@@ -3326,9 +3353,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.11.16"
+version = "0.11.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b71749df584b7f4cac2c426c127a7c785a5106cc98f7a8feb044115f0fa254"
+checksum = "cde824a14b7c14f85caff81225f411faacc04a2013f41670f41443742b1c1c55"
 dependencies = [
  "base64 0.21.0",
  "bytes",
@@ -3349,14 +3376,14 @@ dependencies = [
  "once_cell",
  "percent-encoding",
  "pin-project-lite",
- "rustls 0.20.8",
+ "rustls 0.21.0",
  "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "tokio",
  "tokio-native-tls",
- "tokio-rustls 0.23.4",
+ "tokio-rustls 0.24.0",
  "tokio-util",
  "tower-service",
  "url",
@@ -4362,9 +4389,9 @@ checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
 name = "tokio"
-version = "1.27.0"
+version = "1.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0de47a4eecbe11f498978a9b29d792f0d2692d1dd003650c24c76510e3bc001"
+checksum = "94d7b1cfd2aa4011f2de74c2c4c63665e27a71006b0a192dcd2710272e73dfa2"
 dependencies = [
  "autocfg",
  "bytes",
@@ -4376,14 +4403,14 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
- "windows-sys 0.45.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
 name = "tokio-macros"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61a573bdc87985e9d6ddeed1b3d864e8a302c847e40d647746df2f1de209d1ce"
+checksum = "630bdcf245f78637c13ec01ffae6187cca34625e8c63150d424b59e55af2675e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4950,7 +4977,7 @@ name = "viona_api"
 version = "0.0.0"
 dependencies = [
  "libc",
- "num_enum",
+ "num_enum 0.5.11",
  "viona_api_sys",
 ]
 

@@ -237,7 +237,7 @@ impl From<crucible_client_types::CrucibleOpts> for crate::types::CrucibleOpts {
             id,
             target: target.into_iter().map(|t| t.to_string()).collect(),
             lossy,
-            flush_timeout,
+            flush_timeout: flush_timeout.map(|x| x.into()),
             key,
             cert_pem,
             key_pem,
