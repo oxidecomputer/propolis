@@ -258,7 +258,8 @@ impl DropshotEndpointContext {
             VmControllerState::as_controller,
         )
         .map_err(|_| {
-            HttpError::for_internal_error(
+            HttpError::for_not_found(
+                None,
                 "Server not initialized (no instance)".to_string(),
             )
         })
@@ -432,15 +433,19 @@ async fn instance_ensure_common(
     {
         let existing_properties = existing.properties();
         if existing_properties.id != properties.id {
-            return Err(HttpError::for_internal_error(format!(
-                "Server already initialized with ID {}",
-                existing_properties.id
-            )));
+            return Err(HttpError::for_status(
+                Some(format!(
+                    "Server already initialized with ID {}",
+                    existing_properties.id
+                )),
+                http::status::StatusCode::CONFLICT,
+            ));
         }
 
         if *existing_properties != properties {
-            return Err(HttpError::for_internal_error(
-                "Cannot update running server".to_string(),
+            return Err(HttpError::for_status(
+                Some("Cannot update running server".to_string()),
+                http::status::StatusCode::CONFLICT,
             ));
         }
 
@@ -640,7 +645,8 @@ async fn instance_get_common(
 ) -> Result<(api::Instance, InstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(HttpError::for_internal_error(
+        VmControllerState::NotCreated => Err(HttpError::for_not_found(
+            None,
             "Server not initialized (no instance)".to_string(),
         )),
         VmControllerState::Created(vm) => {
@@ -716,7 +722,8 @@ async fn instance_state_monitor(
         let vm_state = ctx.services.vm.lock().await;
         match &*vm_state {
             VmControllerState::NotCreated => {
-                return Err(HttpError::for_internal_error(
+                return Err(HttpError::for_not_found(
+                    None,
                     "Server not initialized (no instance)".to_string(),
                 ));
             }
@@ -738,12 +745,12 @@ async fn instance_state_monitor(
         // means it will never reach the number the client wants it to reach.
         // Inform the client of this condition so it doesn't wait forever.
         state_watcher.changed().await.map_err(|_| {
-            HttpError::for_unavail(
-                None,
-                format!(
+            HttpError::for_status(
+                Some(format!(
                     "No instance present; will never reach generation {}",
                     gen
-                ),
+                )),
+                http::status::StatusCode::GONE,
             )
         })?;
     }
@@ -891,7 +898,8 @@ async fn instance_migrate_status(
     let migration_id = path_params.into_inner().migration_id;
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(HttpError::for_internal_error(
+        VmControllerState::NotCreated => Err(HttpError::for_not_found(
+            None,
             "Server not initialized (no instance)".to_string(),
         )),
         VmControllerState::Created(vm) => {

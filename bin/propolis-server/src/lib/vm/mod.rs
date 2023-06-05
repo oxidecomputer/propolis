@@ -119,9 +119,9 @@ impl From<VmControllerError> for dropshot::HttpError {
             | VmControllerError::InstanceNotActive
             | VmControllerError::InstanceHaltPending
             | VmControllerError::MigrationTargetPreviouslyCompleted => {
-                HttpError::for_bad_request(
-                    None,
-                    format!("Instance operation failed: {}", vm_error),
+                HttpError::for_status(
+                    Some(format!("Instance operation failed: {}", vm_error)),
+                    http::status::StatusCode::FORBIDDEN,
                 )
             }
             VmControllerError::MigrationProtocolError(_)
