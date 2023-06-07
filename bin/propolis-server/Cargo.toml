@@ -30,6 +30,7 @@ dropshot = { workspace = true, features = ["usdt-probes"] }
 enum-iterator.workspace = true
 erased-serde.workspace = true
 futures.workspace = true
+http.workspace = true
 hyper.workspace = true
 internal-dns.workspace = true
 lazy_static.workspace = true

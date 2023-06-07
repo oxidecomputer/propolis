@@ -33,16 +33,16 @@ fn instance_stop_causes_destroy_test(ctx: &TestContext) {
     vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))?;
 
     assert!(matches!(
-        vm.run().unwrap_err().status().map(|x| x.as_u16()),
-        Some(500)
+        vm.run().unwrap_err().status().unwrap(),
+        http::status::StatusCode::NOT_FOUND
     ));
     assert!(matches!(
-        vm.stop().unwrap_err().status().map(|x| x.as_u16()),
-        Some(500)
+        vm.stop().unwrap_err().status().unwrap(),
+        http::status::StatusCode::NOT_FOUND
     ));
     assert!(matches!(
-        vm.reset().unwrap_err().status().map(|x| x.as_u16()),
-        Some(500)
+        vm.reset().unwrap_err().status().unwrap(),
+        http::status::StatusCode::NOT_FOUND
     ));
 }
 

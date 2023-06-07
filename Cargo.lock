@@ -2767,6 +2767,7 @@ dependencies = [
 name = "phd-tests"
 version = "0.1.0"
 dependencies = [
+ "http",
  "phd-testcase",
  "propolis-client",
  "tracing",
@@ -3138,6 +3139,7 @@ dependencies = [
  "expectorate",
  "futures",
  "hex",
+ "http",
  "hyper",
  "internal-dns",
  "lazy_static",
