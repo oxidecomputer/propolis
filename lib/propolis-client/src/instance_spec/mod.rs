@@ -329,8 +329,7 @@ mod test {
             memory_mb: 8192,
             chipset: Chipset::I440Fx { enable_pcie: false },
         };
-        let b2 = b1.clone();
-        assert!(b1.can_migrate_from_element(&b2).is_ok());
+        assert!(b1.can_migrate_from_element(&b1).is_ok());
     }
 
     #[test]
@@ -341,22 +340,20 @@ mod test {
             chipset: Chipset::I440Fx { enable_pcie: true },
         };
 
-        let mut b2 = b1.clone();
-        b2.cpus = 8;
+        let b2 = Board { cpus: 8, ..b1 };
         assert!(matches!(
             b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::CpuCount(4, 8))
         ));
-        b2.cpus = b1.cpus;
 
-        b2.memory_mb = b1.memory_mb * 2;
+        let b2 = Board { memory_mb: b1.memory_mb * 2, ..b1 };
         assert!(matches!(
             b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::MemorySize(4096, 8192))
         ));
-        b2.memory_mb = b1.memory_mb;
 
-        b2.chipset = Chipset::I440Fx { enable_pcie: false };
+        let b2 =
+            Board { chipset: Chipset::I440Fx { enable_pcie: false }, ..b1 };
         assert!(matches!(
             b1.can_migrate_from_element(&b2),
             Err(ElementCompatibilityError::PcieEnablement(true, false))
@@ -370,8 +367,7 @@ mod test {
             backend_name: "storage_backend".to_string(),
             pci_path: PciPath::new(0, 5, 0).unwrap(),
         };
-        let d2 = d1.clone();
-        assert!(d1.can_migrate_from_element(&d2).is_ok());
+        assert!(d1.can_migrate_from_element(&d1).is_ok());
     }
 
     #[test]
@@ -382,8 +378,7 @@ mod test {
             pci_path: PciPath::new(0, 5, 0).unwrap(),
         };
 
-        let mut d2 = d1.clone();
-        d2.kind = StorageDeviceKind::Nvme;
+        let d2 = StorageDevice { kind: StorageDeviceKind::Nvme, ..d1.clone() };
         assert!(matches!(
             d1.can_migrate_from_element(&d2),
             Err(ElementCompatibilityError::StorageDeviceKind(
@@ -391,16 +386,20 @@ mod test {
                 StorageDeviceKind::Nvme
             ))
         ));
-        d2.kind = d1.kind;
 
-        d2.backend_name = "other_storage_backend".to_string();
+        let d2 = StorageDevice {
+            backend_name: "other_storage_backend".to_string(),
+            ..d1
+        };
         assert!(matches!(
             d1.can_migrate_from_element(&d2),
             Err(ElementCompatibilityError::StorageDeviceBackend(_, _))
         ));
-        d2.backend_name = d1.backend_name.clone();
 
-        d2.pci_path = PciPath::new(0, 6, 0).unwrap();
+        let d2 = StorageDevice {
+            pci_path: PciPath::new(0, 6, 0).unwrap(),
+            ..d1.clone()
+        };
         assert!(matches!(
             d1.can_migrate_from_element(&d2),
             Err(ElementCompatibilityError::PciPath(_, _))
@@ -413,8 +412,7 @@ mod test {
             backend_name: "net_backend".to_string(),
             pci_path: PciPath::new(0, 7, 0).unwrap(),
         };
-        let n2 = n1.clone();
-        assert!(n1.can_migrate_from_element(&n2).is_ok());
+        assert!(n1.can_migrate_from_element(&n1).is_ok());
     }
 
     #[test]
@@ -423,16 +421,20 @@ mod test {
             backend_name: "net_backend".to_string(),
             pci_path: PciPath::new(0, 7, 0).unwrap(),
         };
-        let mut n2 = n1.clone();
 
-        n2.backend_name = "other_net_backend".to_string();
+        let n2 = NetworkDevice {
+            backend_name: "other_net_backend".to_string(),
+            ..n1
+        };
         assert!(matches!(
             n1.can_migrate_from_element(&n2),
             Err(ElementCompatibilityError::NetworkDeviceBackend(_, _))
         ));
-        n2.backend_name = n1.backend_name.clone();
 
-        n2.pci_path = PciPath::new(0, 8, 1).unwrap();
+        let n2 = NetworkDevice {
+            pci_path: PciPath::new(0, 8, 1).unwrap(),
+            ..n1.clone()
+        };
         assert!(matches!(
             n1.can_migrate_from_element(&n2),
             Err(ElementCompatibilityError::PciPath(_, _))

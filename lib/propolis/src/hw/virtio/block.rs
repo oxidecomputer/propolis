@@ -219,8 +219,7 @@ impl Entity for PciVirtioBlock {
         self.notifier.resume();
     }
     fn paused(&self) -> BoxFuture<'static, ()> {
-        let block_paused = self.notifier.paused();
-        Box::pin(async move { block_paused.await })
+        Box::pin(self.notifier.paused())
     }
     fn migrate(&self) -> Migrator {
         Migrator::Multi(self)

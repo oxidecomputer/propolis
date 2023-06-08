@@ -1039,8 +1039,7 @@ impl Entity for PciNvme {
         let ctrl = self.state.lock().unwrap();
         assert!(ctrl.paused);
 
-        let block_paused = self.notifier.paused();
-        Box::pin(async move { block_paused.await })
+        Box::pin(self.notifier.paused())
     }
 
     fn migrate(&self) -> Migrator {

@@ -132,7 +132,7 @@ pub fn write_many<T: Sized>(
     version: u16,
     data: &mut [T],
 ) -> Result<(), VmmDataError> {
-    let write_len = (std::mem::size_of::<T>() * data.len()) as u32;
+    let write_len = std::mem::size_of_val(data) as u32;
     let mut xfer = vm_data_xfer {
         vdx_vcpuid: vcpuid,
         vdx_class: class,
