@@ -53,8 +53,6 @@ pub struct I440Fx {
     dev_hb: Arc<Piix4HostBridge>,
     dev_lpc: Arc<Piix3Lpc>,
     dev_pm: Arc<Piix3PM>,
-
-    pm_timer: Arc<BhyvePmTimer>,
     // TODO: could attach the PCI topology as part of chipset
     // acc_mem: MemAccessor,
     // acc_msi: MsiAccessor,
@@ -85,9 +83,7 @@ impl I440Fx {
 
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
-            dev_pm: Piix3PM::create(hdl.clone(), power_pin, log),
-
-            pm_timer: BhyvePmTimer::create(hdl),
+            dev_pm: Piix3PM::create(hdl, power_pin, log),
         });
 
         this.pci_attach(
@@ -241,7 +237,6 @@ impl Entity for I440Fx {
             inventory::ChildRegister::new(&self.dev_hb, None),
             inventory::ChildRegister::new(&self.dev_lpc, None),
             inventory::ChildRegister::new(&self.dev_pm, None),
-            inventory::ChildRegister::new(&self.pm_timer, None),
         ])
     }
     fn migrate(&self) -> Migrator {
@@ -707,6 +702,7 @@ bitflags! {
 // Offset within PMBASE region corresponding to PmTmr register
 const PM_TMR_OFFSET: u16 = 0x8;
 
+#[derive(Clone, Copy)]
 struct PMRegs {
     pm_base: u16,
     pm_status: PmSts,
@@ -727,25 +723,56 @@ impl PMRegs {
     fn reset(&mut self) {
         *self = Self::default();
     }
+    fn pmtimer_port(&self) -> u16 {
+        self.pm_base.checked_add(PM_TMR_OFFSET).unwrap()
+    }
 }
 
-struct Piix3PMInner {
-    regs: PMRegs,
-    pmtmr_located: bool,
+impl From<PMRegs> for migrate::Piix3PmV1 {
+    fn from(value: PMRegs) -> Self {
+        Self {
+            pm_base: value.pm_base,
+            pm_status: value.pm_status.bits(),
+            pm_ena: value.pm_ena.bits(),
+            pm_ctrl: value.pm_ctrl.bits(),
+        }
+    }
 }
+impl TryFrom<migrate::Piix3PmV1> for PMRegs {
+    type Error = MigrateStateError;
 
-impl Piix3PMInner {
-    fn reset(&mut self) {
-        self.regs.reset();
-        self.pmtmr_located = false;
+    fn try_from(value: migrate::Piix3PmV1) -> Result<Self, Self::Error> {
+        let mut regs = Self::default();
+
+        regs.pm_base = value.pm_base;
+        regs.pm_status =
+            PmSts::from_bits(value.pm_status).ok_or_else(|| {
+                MigrateStateError::ImportFailed(format!(
+                    "PIIX3 pm_status: failed to import saved value {:#x}",
+                    value.pm_status,
+                ))
+            })?;
+        regs.pm_ena = PmEn::from_bits(value.pm_ena).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "PIIX3 pm_ena: failed to import saved value {:#x}",
+                value.pm_ena,
+            ))
+        })?;
+        regs.pm_ctrl = PmCntrl::from_bits(value.pm_ctrl).ok_or_else(|| {
+            MigrateStateError::ImportFailed(format!(
+                "PIIX3 pm_ctrl: failed to import saved value {:#x}",
+                value.pm_ctrl,
+            ))
+        })?;
+        Ok(regs)
     }
 }
 
 pub struct Piix3PM {
     pci_state: pci::DeviceState,
-    inner: Mutex<Piix3PMInner>,
+    regs: Mutex<PMRegs>,
+    timer: Arc<BhyvePmTimer>,
     power_pin: Arc<dyn IntrPin>,
-    hdl: Arc<VmmHdl>,
     log: slog::Logger,
 }
 impl Piix3PM {
@@ -771,14 +798,14 @@ impl Piix3PM {
         .add_lintr()
         .finish();
 
+        let regs = PMRegs::default();
+        let timer = BhyvePmTimer::create(hdl, regs.pmtimer_port());
+
         Arc::new(Self {
             pci_state,
-            inner: Mutex::new(Piix3PMInner {
-                regs: PMRegs::default(),
-                pmtmr_located: false,
-            }),
+            regs: Mutex::new(regs),
+            timer,
             power_pin,
-            hdl,
             log,
         })
     }
@@ -789,7 +816,6 @@ impl Piix3PM {
         let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
             as Arc<PioFn>;
         pio.register(PMBASE_DEFAULT, PMBASE_LEN, piofn).unwrap();
-        self.hdl.pmtmr_locate(PMBASE_DEFAULT + PM_TMR_OFFSET).unwrap();
     }
 
     fn pio_rw(&self, _port: u16, mut rwo: RWOp) {
@@ -806,7 +832,7 @@ impl Piix3PM {
                 ro.write_u8(0x1);
             }
             PmCfg::PmBase => {
-                let regs = &self.inner.lock().unwrap().regs;
+                let regs = self.regs.lock().unwrap();
 
                 // LSB hardwired to 1 to indicate PMBase in IO space
                 ro.write_u32(regs.pm_base as u32 | 0x1);
@@ -825,7 +851,7 @@ impl Piix3PM {
             "offset" => _wo.offset(), "register" => ?id);
     }
     fn pmreg_read(&self, id: &PmReg, ro: &mut ReadOp) {
-        let regs = &self.inner.lock().unwrap().regs;
+        let regs = &self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
                 ro.write_u16(regs.pm_status.bits());
@@ -861,7 +887,7 @@ impl Piix3PM {
         }
     }
     fn pmreg_write(&self, id: &PmReg, wo: &mut WriteOp) {
-        let regs = &mut self.inner.lock().unwrap().regs;
+        let mut regs = self.regs.lock().unwrap();
         match id {
             PmReg::PmSts => {
                 let val = PmSts::from_bits_truncate(wo.read_u16());
@@ -903,19 +929,6 @@ impl Piix3PM {
             PmReg::Reserved => {}
         }
     }
-
-    /// Ensures that the PM timer's I/O port registration is set if it is
-    /// invalid (either because the PM timer device hasn't started yet or
-    /// because it was reset).
-    fn ensure_pmtmr_located(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.pmtmr_located {
-            // Make sure PM timer is attached to the right IO port
-            // TODO: error handling?
-            self.hdl.pmtmr_locate(inner.regs.pm_base + PM_TMR_OFFSET).unwrap();
-            inner.pmtmr_located = true;
-        }
-    }
 }
 impl pci::Device for Piix3PM {
     fn device_state(&self) -> &pci::DeviceState {
@@ -934,23 +947,16 @@ impl Entity for Piix3PM {
     fn type_name(&self) -> &'static str {
         "pci-piix3-pm"
     }
+    fn child_register(&self) -> Option<Vec<inventory::ChildRegister>> {
+        Some(vec![inventory::ChildRegister::new(&self.timer, None)])
+    }
     fn reset(&self) {
         self.pci_state.reset(self);
 
-        // Denote that the PM timer I/O port may have moved. The `resume`
-        // callout will establish its new location. (That can't be done here
-        // because the state driver may not have reinitialized the machine yet,
-        // but it is guaranteed to have done so by the time `resume` is called.)
-        let mut inner = self.inner.lock().unwrap();
-        inner.reset();
-    }
-    fn resume(&self) {
-        // If the machine was reset
-        self.ensure_pmtmr_located();
-    }
-    fn start(&self) -> anyhow::Result<()> {
-        self.ensure_pmtmr_located();
-        Ok(())
+        // Reset PM-specific registers.  If/when modifications to `pm_base` are
+        // allowed, it will need to be more cognizant of the state inside the
+        // BhyvePmTimer entity.
+        self.regs.lock().unwrap().reset();
     }
     fn migrate(&self) -> Migrator {
         Migrator::Multi(self)
@@ -962,16 +968,8 @@ impl MigrateMulti for Piix3PM {
         output: &mut PayloadOutputs,
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let regs = &self.inner.lock().unwrap().regs;
-        output.push(
-            migrate::Piix3PmV1 {
-                pm_base: regs.pm_base,
-                pm_status: regs.pm_status.bits(),
-                pm_ena: regs.pm_ena.bits(),
-                pm_ctrl: regs.pm_ctrl.bits(),
-            }
-            .into(),
-        )?;
+        let regs = self.regs.lock().unwrap();
+        output.push(Into::<migrate::Piix3PmV1>::into(*regs).into())?;
 
         MigrateMulti::export(&self.pci_state, output, ctx)?;
 
@@ -984,27 +982,9 @@ impl MigrateMulti for Piix3PM {
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let data: migrate::Piix3PmV1 = offer.take()?;
+        let xlated_regs: PMRegs = data.try_into()?;
 
-        let regs = &mut self.inner.lock().unwrap().regs;
-        regs.pm_base = data.pm_base;
-        regs.pm_status = PmSts::from_bits(data.pm_status).ok_or_else(|| {
-            MigrateStateError::ImportFailed(format!(
-                "PIIX3 pm_status: failed to import saved value {:#x}",
-                data.pm_status,
-            ))
-        })?;
-        regs.pm_ena = PmEn::from_bits(data.pm_ena).ok_or_else(|| {
-            MigrateStateError::ImportFailed(format!(
-                "PIIX3 pm_ena: failed to import saved value {:#x}",
-                data.pm_ena,
-            ))
-        })?;
-        regs.pm_ctrl = PmCntrl::from_bits(data.pm_ctrl).ok_or_else(|| {
-            MigrateStateError::ImportFailed(format!(
-                "PIIX3 pm_ctrl: failed to import saved value {:#x}",
-                data.pm_ctrl,
-            ))
-        })?;
+        *self.regs.lock().unwrap() = xlated_regs;
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
 

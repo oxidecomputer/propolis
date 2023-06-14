@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::inventory::Entity;
 use crate::migrate::*;
@@ -6,10 +6,38 @@ use crate::vmm::VmmHdl;
 
 pub struct BhyvePmTimer {
     hdl: Arc<VmmHdl>,
+    inner: Mutex<Inner>,
+}
+struct Inner {
+    ioport: u16,
+    attached_ioport: Option<u16>,
 }
 impl BhyvePmTimer {
-    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
-        Arc::new(Self { hdl })
+    pub fn create(hdl: Arc<VmmHdl>, ioport: u16) -> Arc<Self> {
+        Arc::new(Self {
+            hdl,
+            inner: Mutex::new(Inner { ioport, attached_ioport: None }),
+        })
+    }
+    fn update_attachment(&self) {
+        let mut inner = self.inner.lock().unwrap();
+
+        let target = inner.ioport;
+        let exists = inner.attached_ioport.as_ref();
+        if matches!(exists, Some(p) if *p == target) {
+            // Attachment is already correct
+            return;
+        }
+
+        match self.hdl.pmtmr_locate(target) {
+            Ok(()) => {
+                inner.attached_ioport = Some(target);
+            }
+            Err(_e) => {
+                inner.attached_ioport = None;
+                // TODO: squawk about it?
+            }
+        }
     }
 }
 
@@ -17,24 +45,44 @@ impl Entity for BhyvePmTimer {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-pmtimer"
     }
+    fn reset(&self) {
+        // When the instance is reset, in-kernel attachment of the PM timer IO
+        // port may change.
+        //
+        // We clear `atttached_ioport` here so that a subsequent call of
+        // `update_attachement()` during instance start will force the in-kernel
+        // configuration of the port to match expectations.
+        self.inner.lock().unwrap().attached_ioport = None;
+    }
+    fn resume(&self) {
+        // If the machine was reset
+        self.update_attachment();
+    }
+    fn start(&self) -> anyhow::Result<()> {
+        self.update_attachment();
+        Ok(())
+    }
     fn migrate(&self) -> Migrator {
-        Migrator::Single(self)
+        Migrator::Multi(self)
     }
 }
-impl MigrateSingle for BhyvePmTimer {
+impl MigrateMulti for BhyvePmTimer {
     fn export(
         &self,
+        output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
-    ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::BhyvePmTimerV1::read(&self.hdl)?.into())
+    ) -> Result<(), MigrateStateError> {
+        output.push(migrate::PmTimerV1::read(&self.hdl)?.into())
     }
 
     fn import(
         &self,
-        mut offer: PayloadOffer,
+        offer: &mut PayloadOffers,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        offer.parse::<migrate::BhyvePmTimerV1>()?.write(&self.hdl)?;
+        let data: migrate::PmTimerV1 = offer.take()?;
+
+        data.write(&self.hdl)?;
         Ok(())
     }
 }
@@ -46,10 +94,10 @@ pub mod migrate {
     use serde::{Deserialize, Serialize};
 
     #[derive(Default, Deserialize, Serialize)]
-    pub struct BhyvePmTimerV1 {
+    pub struct PmTimerV1 {
         pub start_time: i64,
     }
-    impl BhyvePmTimerV1 {
+    impl PmTimerV1 {
         pub(super) fn read(hdl: &vmm::VmmHdl) -> std::io::Result<Self> {
             let vdi = hdl
                 .data_op(bhyve_api::VDC_PM_TIMER, 1)
@@ -66,15 +114,16 @@ pub mod migrate {
         pub(super) fn write(self, hdl: &vmm::VmmHdl) -> std::io::Result<()> {
             let vdi = bhyve_api::vdi_pm_timer_v1 {
                 vpt_time_base: self.start_time,
-                vpt_ioport: 0, // TODO: is this right?
+                // The IO-port field is ignored for writes
+                vpt_ioport: 0,
             };
             hdl.data_op(bhyve_api::VDC_PM_TIMER, 1).write(&vdi)?;
             Ok(())
         }
     }
-    impl Schema<'_> for BhyvePmTimerV1 {
+    impl Schema<'_> for PmTimerV1 {
         fn id() -> SchemaId {
-            ("bhyve-atpic", 1)
+            ("bhyve-pmtimer", 1)
         }
     }
 }

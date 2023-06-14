@@ -172,6 +172,8 @@ pub struct vdi_hpet_v1 {
 #[derive(Copy, Clone, Default)]
 pub struct vdi_pm_timer_v1 {
     pub vpt_time_base: i64,
+    /// During vmm-data reads, `vpt_ioport` carries the IO-port at which the PM
+    /// timer is attached.  The field is ignored for vmm-data writes.
     pub vpt_ioport: u16,
 }
 
