@@ -113,21 +113,50 @@ pub mod support {
             self.ws_stream.send(input).await
         }
 
-        /// Receive the next [WSMessage] from the server.
+        /// Receives the next [WSMessage] from the server, holding it in
+        /// abeyance until it is processed.
+        ///
         /// Returns [Option::None] if the connection has been terminated.
+        ///
+        /// # Cancel safety
+        ///
+        /// This method is cancel-safe and can be safely used in a `select!`
+        /// loop. However, to , and that portion is not cancel-safe.
+        pub async fn recv(
+            &mut self,
+        ) -> Option<Result<InstanceSerialConsoleMessage<'_>, WSError>> {
+            let message = self.ws_stream.next().await?;
+            match message {
+                Ok(message) => Some(Ok(InstanceSerialConsoleMessage {
+                    helper: self,
+                    message,
+                })),
+                Err(error) => Some(Err(error.into())),
+            }
+        }
+    }
+
+    /// A [`WSMessage`] that has been received but not processed yet.
+    pub struct InstanceSerialConsoleMessage<'a> {
+        helper: &'a mut InstanceSerialConsoleHelper,
+        message: WSMessage,
+    }
+
+    impl<'a> InstanceSerialConsoleMessage<'a> {
+        /// Processes this [WSMessage].
+        ///
         /// - [WSMessage::Binary] are character output from the serial console.
         /// - [WSMessage::Close] is a close frame.
         /// - [WSMessage::Text] contain metadata, i.e. about a migration, which
-        ///   this function still returns after connecting to the new server
-        ///   in case the application needs to take further action (e.g. log
-        ///   an event, or show a UI indicator that a migration has occurred).
-        pub async fn recv(
-            &mut self,
-        ) -> Option<
-            Result<WSMessage, WSError>, //Box<dyn std::error::Error + Send + Sync + 'static>>,
-        > {
-            let value = self.ws_stream.next().await;
-            if let Some(Ok(WSMessage::Text(json))) = &value {
+        ///   this function still returns after connecting to the new server in
+        ///   case the application needs to take further action (e.g. log an
+        ///   event, or show a UI indicator that a migration has occurred).
+        ///
+        /// # Cancel safety
+        ///
+        /// This method is *not* cancel-safe.
+        pub async fn process(self) -> Result<WSMessage, WSError> {
+            if let WSMessage::Text(json) = &self.message {
                 match serde_json::from_str(json) {
                     Ok(InstanceSerialConsoleControlMessage::Migrating {
                         destination,
@@ -146,7 +175,7 @@ pub mod support {
                             Ok(resp) => {
                                 let stream: Box<dyn SerialConsoleStream> =
                                     Box::new(resp.into_inner());
-                                self.ws_stream =
+                                self.helper.ws_stream =
                                     WebSocketStream::from_raw_socket(
                                         stream,
                                         Role::Client,
@@ -155,14 +184,14 @@ pub mod support {
                                     .await;
                             }
                             Err(e) => {
-                                return Some(Err(WSError::Http(
-                                    http::Response::new(Some(e.to_string())),
+                                return Err(WSError::Http(http::Response::new(
+                                    Some(e.to_string()),
                                 )))
                             }
                         }
                     }
                     Err(e) => {
-                        if let Some(log) = &self.log {
+                        if let Some(log) = &self.helper.log {
                             slog::warn!(
                                 log,
                                 "Unsupported control message {:?}: {:?}",
@@ -174,7 +203,8 @@ pub mod support {
                     }
                 }
             }
-            value.map(|x| x.map_err(Into::into))
+
+            Ok(self.message)
         }
     }
 
@@ -208,7 +238,8 @@ pub mod support {
 
             let sent = WSMessage::Binary(vec![2, 4, 6, 8]);
             server.send(sent.clone()).await.unwrap();
-            let received = client.recv().await.unwrap().unwrap();
+            let received =
+                client.recv().await.unwrap().unwrap().process().await.unwrap();
             assert_eq!(sent, received);
 
             // just check that it *tries* to connect
@@ -221,7 +252,14 @@ pub mod support {
             .unwrap();
             let sent = WSMessage::Text(payload);
             server.send(sent).await.unwrap();
-            let received = client.recv().await.unwrap().unwrap_err();
+            let received = client
+                .recv()
+                .await
+                .unwrap()
+                .unwrap()
+                .process()
+                .await
+                .unwrap_err();
             assert!(matches!(received, WSError::Http(_)));
         }
     }

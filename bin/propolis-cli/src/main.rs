@@ -385,38 +385,43 @@ async fn serial(
             }
             msg = ws_console.recv() => {
                 match msg {
-                    Some(Ok(Message::Binary(input))) => {
-                        stdout.write_all(&input).await?;
-                        stdout.flush().await?;
-                    }
-                    Some(Ok(Message::Close(Some(CloseFrame {code, reason})))) => {
-                        eprint!("\r\nConnection closed: {:?}\r\n", code);
-                        match code {
-                            CloseCode::Abnormal
-                            | CloseCode::Error
-                            | CloseCode::Extension
-                            | CloseCode::Invalid
-                            | CloseCode::Policy
-                            | CloseCode::Protocol
-                            | CloseCode::Size
-                            | CloseCode::Unsupported => {
-                                anyhow::bail!("{}", reason);
+                    Some(Ok(msg)) => {
+                        match msg.process().await {
+                            Ok(Message::Binary(input)) => {
+                                stdout.write_all(&input).await?;
+                                stdout.flush().await?;
                             }
-                            _ => break,
+                            Ok(Message::Close(Some(CloseFrame {code, reason}))) => {
+                                eprint!("\r\nConnection closed: {:?}\r\n", code);
+                                match code {
+                                    CloseCode::Abnormal
+                                    | CloseCode::Error
+                                    | CloseCode::Extension
+                                    | CloseCode::Invalid
+                                    | CloseCode::Policy
+                                    | CloseCode::Protocol
+                                    | CloseCode::Size
+                                    | CloseCode::Unsupported => {
+                                        anyhow::bail!("{}", reason);
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            Ok(Message::Close(None)) => {
+                                eprint!("\r\nConnection closed.\r\n");
+                                break;
+                            }
+                            // note: migration events via Message::Text are
+                            // already handled within ws_console.recv(), but
+                            // would still be available to match here if we want
+                            // to indicate that it happened to the user
+                            _ => continue,
                         }
-                    }
-                    Some(Ok(Message::Close(None))) => {
-                        eprint!("\r\nConnection closed.\r\n");
-                        break;
                     }
                     None => {
                         eprint!("\r\nConnection lost.\r\n");
                         break;
                     }
-                    // note: migration events via Message::Text are already
-                    // handled within ws_console.recv(), but would still be
-                    // available to match here if we want to indicate that it
-                    // happened to the user
                     _ => continue,
                 }
             }
