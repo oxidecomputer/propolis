@@ -1,6 +1,8 @@
 use futures::future::{self, BoxFuture};
 use std::any::Any;
-use std::collections::{btree_set, hash_map, BTreeMap, BTreeSet, HashMap};
+use std::collections::{
+    btree_set, hash_map, BTreeMap, BTreeSet, HashMap, VecDeque,
+};
 use std::io::{Error as IoError, ErrorKind};
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
@@ -108,12 +110,20 @@ impl Inventory {
         parent_id: EntityID,
     ) -> Result<EntityID, RegistrationError> {
         let mut inv = self.inner.lock().unwrap();
-        inv.register_inner(
+
+        let child_children = reg.ent.child_register();
+        let id = inv.register_inner(
             reg.ent,
             reg.ent_any,
             reg.instance_name,
             Some(parent_id),
-        )
+        )?;
+
+        if let Some(children) = child_children {
+            inv.register_children(id, children);
+        }
+
+        Ok(id)
     }
 
     /// Access the concrete type of an entity by ID.
@@ -235,24 +245,47 @@ impl InventoryInner {
     ) -> Result<EntityID, RegistrationError> {
         let any = Arc::clone(ent) as Arc<dyn Any + Send + Sync>;
         let dyn_ent = Arc::clone(ent) as Arc<dyn Entity>;
-        let children_to_register = ent.child_register();
 
+        let ent_children = ent.child_register();
         let id = self.register_inner(dyn_ent, any, instance_name, None)?;
 
-        if let Some(children) = children_to_register {
+        if let Some(children) = ent_children {
+            self.register_children(id, children);
+        }
+
+        Ok(id)
+    }
+
+    /// Register children for a specified entity, recursively adding any
+    /// subsequent children as those registrations are processed.
+    fn register_children(
+        &mut self,
+        parent_id: EntityID,
+        children: Vec<ChildRegister>,
+    ) {
+        let mut items = VecDeque::<(EntityID, Vec<ChildRegister>)>::new();
+        items.push_back((parent_id, children));
+
+        while let Some((parent, children)) = items.pop_front() {
             for child in children {
-                // Since the parent successfully registered, the children should
-                // have no issues.
-                self.register_inner(
-                    child.ent,
-                    child.ent_any,
-                    child.instance_name,
-                    Some(id),
-                )
-                .unwrap();
+                let next_children = child.ent.child_register();
+
+                // Since the parent successfully registered, the children
+                // should have no issues.
+                let next_parent = self
+                    .register_inner(
+                        child.ent,
+                        child.ent_any,
+                        child.instance_name,
+                        Some(parent),
+                    )
+                    .unwrap();
+
+                if let Some(more_children) = next_children {
+                    items.push_back((next_parent, more_children));
+                }
             }
         }
-        Ok(id)
     }
 
     /// Internal interface to register new entity with the inventory.
