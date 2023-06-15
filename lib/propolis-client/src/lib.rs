@@ -71,6 +71,7 @@ pub mod support {
     use futures::{SinkExt, StreamExt};
     use slog::Logger;
     use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::task::JoinHandle;
     use tokio_tungstenite::tungstenite::protocol::Role;
     use tokio_tungstenite::tungstenite::{
         Error as WSError, Message as WSMessage,
@@ -89,6 +90,7 @@ pub mod support {
     /// connection being seamlessly maintained through migration)
     pub struct InstanceSerialConsoleHelper {
         ws_stream: WebSocketStream<Box<dyn SerialConsoleStream>>,
+        migration_task: Option<SerialMigrationTask>,
         log: Option<Logger>,
     }
 
@@ -104,7 +106,7 @@ pub mod support {
             let ws_stream =
                 WebSocketStream::from_raw_socket(stream, Role::Client, None)
                     .await;
-            Self { ws_stream, log }
+            Self { ws_stream, migration_task: None, log }
         }
 
         /// Sends the given [WSMessage] to the server.
@@ -113,70 +115,156 @@ pub mod support {
             self.ws_stream.send(input).await
         }
 
-        /// Receive the next [WSMessage] from the server.
-        /// Returns [Option::None] if the connection has been terminated.
+        /// Receive the next [WSMessage] from the server. Returns [Option::None]
+        /// if the connection has been terminated.
         /// - [WSMessage::Binary] are character output from the serial console.
         /// - [WSMessage::Close] is a close frame.
         /// - [WSMessage::Text] contain metadata, i.e. about a migration, which
-        ///   this function still returns after connecting to the new server
-        ///   in case the application needs to take further action (e.g. log
-        ///   an event, or show a UI indicator that a migration has occurred).
+        ///   this function still returns after connecting to the new server in
+        ///   case the application needs to take further action (e.g. log an
+        ///   event, or show a UI indicator that a migration has occurred).
+        ///
+        /// # Cancel safety
+        ///
+        /// This method is cancel-safe. This means that it can be used directly
+        /// as an arm in a select loop, without any messages being lost along
+        /// the way.
         pub async fn recv(
             &mut self,
         ) -> Option<
             Result<WSMessage, WSError>, //Box<dyn std::error::Error + Send + Sync + 'static>>,
         > {
-            let value = self.ws_stream.next().await;
-            if let Some(Ok(WSMessage::Text(json))) = &value {
-                match serde_json::from_str(json) {
-                    Ok(InstanceSerialConsoleControlMessage::Migrating {
-                        destination,
-                        from_start,
-                    }) => {
-                        let client = PropolisClient::new(&format!(
-                            "http://{}",
-                            destination
-                        ));
-                        match client
-                            .instance_serial()
-                            .from_start(from_start)
-                            .send()
-                            .await
-                        {
-                            Ok(resp) => {
-                                let stream: Box<dyn SerialConsoleStream> =
-                                    Box::new(resp.into_inner());
-                                self.ws_stream =
-                                    WebSocketStream::from_raw_socket(
-                                        stream,
-                                        Role::Client,
-                                        None,
-                                    )
-                                    .await;
-                            }
-                            Err(e) => {
-                                return Some(Err(WSError::Http(
-                                    http::Response::new(Some(e.to_string())),
-                                )))
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(log) = &self.log {
-                            slog::warn!(
-                                log,
-                                "Unsupported control message {:?}: {:?}",
-                                json,
-                                e
-                            );
-                        }
-                        // don't return error, might be a future addition understood by consumer
+            if self.migration_task.is_some() {
+                return Some(self.await_migration_task().await);
+            }
+
+            let value = self.ws_stream.next().await?;
+            // Everything after this point must be written in a cancel-safe
+            // fashion (i.e. we must not drop the message on the floor.) We do
+            // that by spawning a task if more awaits are necessary (currently
+            // only for migrations).
+            match value {
+                Ok(message) => {
+                    if let WSMessage::Text(_) = &message {
+                        let migration_task = SerialMigrationTask::spawn(
+                            message,
+                            self.log.clone(),
+                        );
+                        self.migration_task = Some(migration_task);
+                        Some(self.await_migration_task().await)
+                    } else {
+                        Some(Ok(message))
                     }
                 }
+                Err(error) => Some(Err(error.into())),
             }
-            value.map(|x| x.map_err(Into::into))
+        }
+
+        /// Prerequisite: self.migration_task must be Some.
+        async fn await_migration_task(&mut self) -> Result<WSMessage, WSError> {
+            let Some(task) = &mut self.migration_task else {
+                panic!("self.migration_task must be Some");
+            };
+
+            let task_result = task.await_completion().await;
+            // Reset the migration task before returning so it can't be polled again.
+            self.migration_task = None;
+            let (message, ws_stream) = task_result?;
+            if let Some(ws_stream) = ws_stream {
+                self.ws_stream = ws_stream;
+            }
+            Ok(message)
         }
     }
+
+    struct SerialMigrationTask {
+        handle: JoinHandle<MigrationTaskResult>,
+    }
+
+    impl SerialMigrationTask {
+        /// Spawns a task to perform a websocket migration.
+        ///
+        /// WSMessage must be of type [`WSMessage::Text`].
+        fn spawn(message: WSMessage, log: Option<Logger>) -> Self {
+            let handle = tokio::spawn(Self::spawn_impl(message, log));
+            Self { handle }
+        }
+
+        async fn spawn_impl(
+            message: WSMessage,
+            log: Option<Logger>,
+        ) -> MigrationTaskResult {
+            let WSMessage::Text(json) = &message else {
+            panic!("message {message:?} is not of type WSMessage::Text")
+        };
+
+            let ws_stream = match serde_json::from_str(json) {
+                Ok(InstanceSerialConsoleControlMessage::Migrating {
+                    destination,
+                    from_start,
+                }) => {
+                    let client =
+                        PropolisClient::new(&format!("http://{}", destination));
+                    match client
+                        .instance_serial()
+                        .from_start(from_start)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            let stream: Box<dyn SerialConsoleStream> =
+                                Box::new(resp.into_inner());
+
+                            Some(
+                                WebSocketStream::from_raw_socket(
+                                    stream,
+                                    Role::Client,
+                                    None,
+                                )
+                                .await,
+                            )
+                        }
+                        Err(e) => {
+                            return Err(WSError::Http(http::Response::new(
+                                Some(e.to_string()),
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Some(log) = &log {
+                        slog::warn!(
+                            log,
+                            "Unsupported control message {:?}: {:?}",
+                            json,
+                            e
+                        );
+                    }
+                    // don't return error, might be a future addition understood by consumer
+                    None
+                }
+            };
+
+            Ok((message, ws_stream))
+        }
+
+        async fn await_completion(&mut self) -> MigrationTaskResult {
+            let handle = &mut self.handle;
+            let task_result = handle.await;
+            match task_result {
+                Ok(Ok((message, ws_stream))) => Ok((message, ws_stream)),
+                Ok(Err(error)) => Err(error),
+                Err(error) => Err(WSError::Http(http::Response::new(Some(
+                    error.to_string(),
+                )))),
+            }
+        }
+    }
+
+    type MigrationTaskResult = Result<
+        (WSMessage, Option<WebSocketStream<Box<dyn SerialConsoleStream>>>),
+        WSError,
+    >;
 
     #[cfg(test)]
     mod tests {
