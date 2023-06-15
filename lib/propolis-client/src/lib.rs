@@ -156,10 +156,13 @@ pub mod support {
                         Some(Ok(message))
                     }
                 }
-                Err(error) => Some(Err(error.into())),
+                Err(error) => Some(Err(error)),
             }
         }
 
+        /// Awaits a running migration task, and performs cleanup and sets
+        /// values on self if the task completes.
+        ///
         /// Prerequisite: self.migration_task must be Some.
         async fn await_migration_task(&mut self) -> Result<WSMessage, WSError> {
             let Some(task) = &mut self.migration_task else {
@@ -167,7 +170,8 @@ pub mod support {
             };
 
             let task_result = task.await_completion().await;
-            // Reset the migration task before returning so it can't be polled again.
+            // Reset the migration task before returning so it can't be polled
+            // again.
             self.migration_task = None;
             let (message, ws_stream) = task_result?;
             if let Some(ws_stream) = ws_stream {
