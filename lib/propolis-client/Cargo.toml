@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 propolis_types.workspace = true
+async-trait.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 base64.workspace = true
 futures = { workspace = true, optional = true }
@@ -22,6 +23,9 @@ progenitor = { workspace = true, optional = true }
 tokio = { workspace = true, features = [ "net" ], optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 crucible-client-types.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 default = []

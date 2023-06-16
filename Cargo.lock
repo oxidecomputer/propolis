@@ -3090,6 +3090,7 @@ dependencies = [
 name = "propolis-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.21.2",
  "crucible-client-types",
  "futures",
