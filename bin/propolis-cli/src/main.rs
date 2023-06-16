@@ -17,7 +17,7 @@ use propolis_client::handmade::{
     },
     Client,
 };
-use propolis_client::support::InstanceSerialConsoleHelper;
+use propolis_client::support::{InstanceSerialConsoleHelper, WSClientOffset};
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -436,20 +436,13 @@ async fn serial_connect(
     byte_offset: Option<i64>,
     log: Logger,
 ) -> anyhow::Result<InstanceSerialConsoleHelper> {
-    let client = propolis_client::Client::new(&format!("http://{}", addr));
-    let mut req = client.instance_serial();
+    let offset = match byte_offset {
+        Some(x) if x >= 0 => WSClientOffset::FromStart(x as u64),
+        Some(x) => WSClientOffset::MostRecent(-x as u64),
+        None => WSClientOffset::MostRecent(16384),
+    };
 
-    match byte_offset {
-        Some(x) if x >= 0 => req = req.from_start(x as u64),
-        Some(x) => req = req.most_recent(-x as u64),
-        None => req = req.most_recent(16384),
-    }
-    let upgraded = req
-        .send()
-        .await
-        .map_err(|e| anyhow!("Failed to upgrade connection: {}", e))?
-        .into_inner();
-    Ok(InstanceSerialConsoleHelper::new(upgraded, Some(log)).await)
+    Ok(InstanceSerialConsoleHelper::new(addr, offset, Some(log)).await?)
 }
 
 async fn migrate_instance(
