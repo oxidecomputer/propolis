@@ -9,7 +9,7 @@ use propolis::{
     bhyve_api,
     exits::{self, VmExitKind},
     vcpu::Vcpu,
-    VmEntry, VmError,
+    VmEntry,
 };
 use slog::{debug, error, info};
 use thiserror::Error;
@@ -82,76 +82,88 @@ impl VcpuTasks {
     ) {
         info!(log, "Starting vCPU thread");
         let mut entry = VmEntry::Run;
+        let mut exit = propolis::exits::VmExit::default();
         let mut local_gen = 0;
         loop {
             use propolis::tasks::Event;
+
+            let mut force_exit_when_consistent = false;
             match task.pending_event() {
                 Some(Event::Hold) => {
-                    info!(log, "vCPU paused");
-                    task.hold();
-                    info!(log, "vCPU released from hold");
+                    if !exit.kind.is_consistent() {
+                        // Before the vCPU task can enter the held state, its
+                        // associated in-kernel state must be driven to a point
+                        // where it is consistent.
+                        force_exit_when_consistent = true;
+                    } else {
+                        info!(log, "vCPU paused");
+                        task.hold();
+                        info!(log, "vCPU released from hold");
 
-                    // If the VM was reset while the CPU was paused, clear out
-                    // any re-entry reasons from the exit that occurred prior to
-                    // the pause.
-                    let current_gen = generation.load(Ordering::Acquire);
-                    if local_gen != current_gen {
-                        entry = VmEntry::Run;
-                        local_gen = current_gen;
+                        // If the VM was reset while the CPU was paused, clear out
+                        // any re-entry reasons from the exit that occurred prior to
+                        // the pause.
+                        let current_gen = generation.load(Ordering::Acquire);
+                        if local_gen != current_gen {
+                            entry = VmEntry::Run;
+                            local_gen = current_gen;
+                        }
+
+                        // This hold might have been satisfied by a request for the
+                        // CPU to exit. Check for other pending events before
+                        // re-entering the guest.
+                        continue;
                     }
-
-                    // This hold might have been satisfied by a request for the
-                    // CPU to exit. Check for other pending events before
-                    // re-entering the guest.
-                    continue;
                 }
                 Some(Event::Exit) => break,
                 None => {}
             }
 
-            entry = match propolis::vcpu_process(vcpu, &entry, &log) {
-                Ok(next_entry) => next_entry,
-                Err(e) => match e {
-                    VmError::Unhandled(exit) => match exit.kind {
-                        VmExitKind::Inout(pio) => {
-                            debug!(&log, "Unhandled pio {:?}", pio;
-                                   "rip" => exit.rip);
-                            VmEntry::InoutFulfill(
-                                exits::InoutRes::emulate_failed(&pio),
-                            )
-                        }
-                        VmExitKind::Mmio(mmio) => {
-                            debug!(&log, "Unhandled mmio {:?}", mmio;
-                                   "rip" => exit.rip);
-                            VmEntry::MmioFulfill(
-                                exits::MmioRes::emulate_failed(&mmio),
-                            )
-                        }
-                        VmExitKind::Rdmsr(msr) => {
-                            debug!(&log, "Unhandled rdmsr {:x}", msr;
-                                   "rip" => exit.rip);
-                            let _ = vcpu.set_reg(
-                                bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
-                                0,
-                            );
-                            let _ = vcpu.set_reg(
-                                bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
-                                0,
-                            );
-                            VmEntry::Run
-                        }
-                        VmExitKind::Wrmsr(msr, val) => {
-                            debug!(&log, "Unhandled wrmsr {:x}", msr;
-                                   "val" => val,
-                                   "rip" => exit.rip);
-                            VmEntry::Run
-                        }
-                        _ => {
-                            event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
-                            VmEntry::Run
-                        }
-                    },
-                    VmError::Suspended(suspend) => {
+            exit = match vcpu.run(&entry, force_exit_when_consistent) {
+                Err(e) => {
+                    event_handler.io_error_event(vcpu.id, e);
+                    entry = VmEntry::Run;
+                    continue;
+                }
+                Ok(exit) => exit,
+            };
+
+            entry = vcpu.process_vmexit(&exit).unwrap_or_else(|| {
+                match exit.kind {
+                    VmExitKind::Inout(pio) => {
+                        debug!(&log, "Unhandled pio {:?}", pio;
+                                       "rip" => exit.rip);
+                        VmEntry::InoutFulfill(exits::InoutRes::emulate_failed(
+                            &pio,
+                        ))
+                    }
+                    VmExitKind::Mmio(mmio) => {
+                        debug!(&log, "Unhandled mmio {:?}", mmio;
+                                       "rip" => exit.rip);
+                        VmEntry::MmioFulfill(exits::MmioRes::emulate_failed(
+                            &mmio,
+                        ))
+                    }
+                    VmExitKind::Rdmsr(msr) => {
+                        debug!(&log, "Unhandled rdmsr {:x}", msr;
+                                       "rip" => exit.rip);
+                        let _ = vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            0,
+                        );
+                        let _ = vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            0,
+                        );
+                        VmEntry::Run
+                    }
+                    VmExitKind::Wrmsr(msr, val) => {
+                        debug!(&log, "Unhandled wrmsr {:x}", msr;
+                                       "val" => val,
+                                       "rip" => exit.rip);
+                        VmEntry::Run
+                    }
+                    VmExitKind::Suspended(suspend) => {
                         match suspend {
                             exits::Suspend::Halt => {
                                 event_handler.suspend_halt_event(vcpu.id);
@@ -170,19 +182,20 @@ impl VcpuTasks {
                         // suspend condition, so hold the task until it does so.
                         // Note that this blocks the task immediately.
                         //
-                        // N.B. This usage assumes that it is safe for the VM
-                        //      controller to ask the task to hold again (which
-                        //      may occur if a separate pausing event is
-                        //      serviced in parallel on the state worker).
+                        // N.B.
+                        // This usage assumes that it is safe for the VM
+                        // controller to ask the task to hold again (which may
+                        // occur if a separate pausing event is serviced in
+                        // parallel on the state worker).
                         task.force_hold();
                         VmEntry::Run
                     }
-                    VmError::Io(e) => {
-                        event_handler.io_error_event(vcpu.id, e);
+                    _ => {
+                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
                         VmEntry::Run
                     }
-                },
-            }
+                }
+            });
         }
         info!(log, "Exiting vCPU thread for CPU {}", vcpu.id);
     }

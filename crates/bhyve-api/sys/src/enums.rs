@@ -98,6 +98,7 @@ pub enum vm_entry_cmds {
     VEC_DISCARD_INSTR,
     VEC_FULFILL_MMIO,
     VEC_FULFILL_INOUT,
+    VEC_FLAG_EXIT_CONSISTENT = 1 << 31,
 }
 
 #[repr(i32)]

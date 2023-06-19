@@ -59,6 +59,15 @@ impl InstEvent {
         self.priority() >= comp.priority()
     }
 }
+impl From<propolis::exits::Suspend> for InstEvent {
+    fn from(value: propolis::exits::Suspend) -> Self {
+        match value {
+            exits::Suspend::Halt => Self::Halt,
+            exits::Suspend::Reset => Self::Reset,
+            exits::Suspend::TripleFault => Self::TripleFault,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum EventCtx {
@@ -434,94 +443,104 @@ impl Instance {
         log: slog::Logger,
     ) {
         use propolis::exits::VmExitKind;
+        use propolis::tasks::Event;
 
         let mut entry = VmEntry::Run;
+        let mut exit = VmExit::default();
         let mut local_gen = 0;
         loop {
-            use propolis::tasks::Event;
+            let mut exit_when_consistent = false;
             match task.pending_event() {
                 Some(Event::Hold) => {
-                    task.hold();
+                    if !exit.kind.is_consistent() {
+                        // Before the vCPU task can enter the held state, its
+                        // associated in-kernel state must be driven to a point
+                        // where it is consistent.
+                        exit_when_consistent = true;
+                    } else {
+                        task.hold();
 
-                    // Check if the instance was reinitialized while task was held.
-                    let cur_gen = inner.boot_gen.load(Ordering::Acquire);
-                    if local_gen != cur_gen {
-                        // Reset occurred, discard any existing entry details.
-                        entry = VmEntry::Run;
-                        local_gen = cur_gen;
+                        // Check if the instance was reinitialized while task was held.
+                        let cur_gen = inner.boot_gen.load(Ordering::Acquire);
+                        if local_gen != cur_gen {
+                            // Reset occurred, discard any existing entry details.
+                            entry = VmEntry::Run;
+                            local_gen = cur_gen;
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 Some(Event::Exit) => {
                     return;
                 }
                 None => {}
             }
-            entry = match propolis::vcpu_process(vcpu, &entry, &log) {
-                Ok(ent) => ent,
-                Err(e) => match e {
-                    VmError::Unhandled(exit) => match exit.kind {
-                        VmExitKind::Inout(pio) => {
-                            slog::error!(
-                                &log,
-                                "Unhandled pio {:?}", pio; "rip" => exit.rip
-                            );
-                            VmEntry::InoutFulfill(
-                                exits::InoutRes::emulate_failed(&pio),
-                            )
-                        }
-                        VmExitKind::Mmio(mmio) => {
-                            slog::error!(
-                                &log,
-                                "Unhandled mmio {:?}", mmio; "rip" => exit.rip
-                            );
-                            VmEntry::MmioFulfill(
-                                exits::MmioRes::emulate_failed(&mmio),
-                            )
-                        }
-                        VmExitKind::Rdmsr(msr) => {
-                            slog::error!(
-                                &log,
-                                "Unhandled rdmsr {:x}", msr; "rip" => exit.rip
-                            );
-                            let _ = vcpu.set_reg(
-                                bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
-                                0,
-                            );
-                            let _ = vcpu.set_reg(
-                                bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
-                                0,
-                            );
-                            VmEntry::Run
-                        }
-                        VmExitKind::Wrmsr(msr, val) => {
-                            slog::error!(
-                                &log,
-                                "Unhandled wrmsr {:x} <- {:x}", msr, val;
-                                "rip" => exit.rip
-                            );
-                            VmEntry::Run
-                        }
-                        _ => {
-                            slog::error!(
-                                &log,
-                                "Unhandled exit @rip:{:08x} {:?}",
-                                exit.rip,
-                                exit.kind
-                            );
-                            todo!()
-                        }
-                    },
-                    VmError::Suspended(suspend) => {
-                        let ctx = EventCtx::Vcpu(vcpu.id);
-                        let ev = match suspend {
-                            exits::Suspend::Halt => InstEvent::Halt,
-                            exits::Suspend::Reset => InstEvent::Reset,
-                            exits::Suspend::TripleFault => {
-                                InstEvent::TripleFault
-                            }
-                        };
-                        inner.eq.push(ev, ctx);
+
+            exit = match vcpu.run(&entry, exit_when_consistent) {
+                Err(e) => {
+                    slog::error!(&log, "VM entry error {:?}", e);
+
+                    inner.eq.push(
+                        InstEvent::Halt,
+                        EventCtx::Other(format!(
+                            "error {:?} on vcpu {}",
+                            e.raw_os_error().unwrap_or(0),
+                            vcpu.id
+                        )),
+                    );
+                    task.force_hold();
+
+                    entry = VmEntry::Run;
+                    continue;
+                }
+                Ok(exit) => exit,
+            };
+
+            entry = vcpu.process_vmexit(&exit).unwrap_or_else(|| {
+                match exit.kind {
+                    VmExitKind::Inout(pio) => {
+                        slog::error!(
+                            &log,
+                            "Unhandled pio {:?}", pio; "rip" => exit.rip
+                        );
+                        VmEntry::InoutFulfill(exits::InoutRes::emulate_failed(
+                            &pio,
+                        ))
+                    }
+                    VmExitKind::Mmio(mmio) => {
+                        slog::error!(
+                            &log,
+                            "Unhandled mmio {:?}", mmio; "rip" => exit.rip
+                        );
+                        VmEntry::MmioFulfill(exits::MmioRes::emulate_failed(
+                            &mmio,
+                        ))
+                    }
+                    VmExitKind::Rdmsr(msr) => {
+                        slog::error!(
+                            &log,
+                            "Unhandled rdmsr {:x}", msr; "rip" => exit.rip
+                        );
+                        let _ = vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            0,
+                        );
+                        let _ = vcpu.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            0,
+                        );
+                        VmEntry::Run
+                    }
+                    VmExitKind::Wrmsr(msr, val) => {
+                        slog::error!(
+                            &log,
+                            "Unhandled wrmsr {:x} <- {:x}", msr, val;
+                            "rip" => exit.rip
+                        );
+                        VmEntry::Run
+                    }
+                    VmExitKind::Suspended(suspend) => {
+                        inner.eq.push(suspend.into(), EventCtx::Vcpu(vcpu.id));
                         task.force_hold();
 
                         // The next entry is unimportant as we have queued a
@@ -529,23 +548,17 @@ impl Instance {
                         // expectation that it will be acted upon soon.
                         VmEntry::Run
                     }
-                    VmError::Io(e) => {
-                        slog::error!(&log, "VM entry error {:?}", e,);
-
-                        inner.eq.push(
-                            InstEvent::Halt,
-                            EventCtx::Other(format!(
-                                "error {:?} on vcpu {}",
-                                e.raw_os_error().unwrap_or(0),
-                                vcpu.id
-                            )),
+                    _ => {
+                        slog::error!(
+                            &log,
+                            "Unhandled exit @rip:{:08x} {:?}",
+                            exit.rip,
+                            exit.kind
                         );
-                        task.force_hold();
-
-                        VmEntry::Run
+                        todo!()
                     }
-                },
-            };
+                }
+            });
         }
     }
 

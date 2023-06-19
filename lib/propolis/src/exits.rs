@@ -18,6 +18,11 @@ pub struct VmExit {
     /// Describes the reason for triggering an exit.
     pub kind: VmExitKind,
 }
+impl Default for VmExit {
+    fn default() -> Self {
+        Self { rip: 0, inst_len: 0, kind: VmExitKind::Bogus }
+    }
+}
 impl From<&vm_exit> for VmExit {
     fn from(exit: &vm_exit) -> Self {
         VmExit {
@@ -58,13 +63,13 @@ pub enum MmioReq {
     Write(MmioWriteReq),
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct SvmDetail {
     pub exit_code: u64,
     pub info1: u64,
     pub info2: u64,
 }
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct VmxDetail {
     pub status: i32,
     pub exit_reason: u32,
@@ -111,7 +116,7 @@ pub enum Suspend {
     TripleFault,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum VmExitKind {
     Bogus,
     ReqIdle,
@@ -128,7 +133,8 @@ pub enum VmExitKind {
     Unknown(i32),
 }
 impl VmExitKind {
-    pub fn code(&self) -> i32 {
+    /// Get the raw `VM_EXITCODE` corresponding to this exit kind
+    pub const fn code(&self) -> i32 {
         match self {
             VmExitKind::Bogus => vm_exitcode::VM_EXITCODE_BOGUS as i32,
             VmExitKind::ReqIdle => vm_exitcode::VM_EXITCODE_REQIDLE as i32,
@@ -147,6 +153,43 @@ impl VmExitKind {
             VmExitKind::Debug => vm_exitcode::VM_EXITCODE_DEBUG as i32,
             VmExitKind::Paging(_, _) => vm_exitcode::VM_EXITCODE_PAGING as i32,
             VmExitKind::Unknown(code) => *code,
+        }
+    }
+
+    /// Is the vCPU in a consistent (for save/restore or migration) state at the
+    /// point when this VM-exit was taken?
+    pub const fn is_consistent(&self) -> bool {
+        match self {
+            // These exitcodes represent conditions unrelated to behavior of the
+            // guest vCPU itself, but rather conditions of the host VMM, such as
+            // scheduler contention for the CPU, or other software requests that
+            // the thread exit to userspace.
+            //
+            // The checks which would emit such codes are performed only after
+            // the rest of the vCPU state is made consistent prior to entry into
+            // VM context.
+            VmExitKind::Bogus | VmExitKind::ReqIdle | VmExitKind::Debug => true,
+
+            // When the vCPU(s) enter the suspended state, no further forward
+            // progress can be made until the instance is reset.
+            VmExitKind::Suspended(_) => true,
+
+            // The instruction emulation exits, by their nature, leave the vCPU
+            // in an inconsistent state until they can be completed
+            VmExitKind::Inout(_)
+            | VmExitKind::Mmio(_)
+            | VmExitKind::Rdmsr(_)
+            | VmExitKind::Wrmsr(_, _)
+            | VmExitKind::InstEmul(_) => false,
+
+            // Unhandled paging exits are likely terminal for the instance.
+            VmExitKind::Paging(_, _) => true,
+
+            // Unhandled errors or exit codes indicate a terminal state for the
+            // entire instance.
+            VmExitKind::VmxError(_)
+            | VmExitKind::SvmError(_)
+            | VmExitKind::Unknown(_) => true,
         }
     }
 }

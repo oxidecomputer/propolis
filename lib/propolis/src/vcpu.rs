@@ -3,7 +3,7 @@
 use std::io::Result;
 use std::sync::Arc;
 
-use crate::exits::{VmEntry, VmExit};
+use crate::exits::*;
 use crate::inventory::Entity;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
@@ -11,6 +11,12 @@ use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
 use migrate::VcpuReadWrite;
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn vm_entry(vcpuid: u32) {}
+    fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
+}
 
 /// A handle to a virtual CPU.
 pub struct Vcpu {
@@ -180,10 +186,33 @@ impl Vcpu {
     ///
     /// Blocks the calling thread until the vCPU returns execution,
     /// and returns the reason for exiting ([`VmExit`]).
-    pub fn run(&self, entry: &VmEntry) -> Result<VmExit> {
+    ///
+    /// When `exit_when_consistent` is asserted, it will instruct the in-kernel
+    /// logic to force a [`VmExitKind::Bogus`] exit when the vCPU reaches a
+    /// consistent state.  Other exit conditions, such as pending instruction
+    /// emulation will take precedence until they are resolved.
+    pub fn run(
+        &self,
+        entry: &VmEntry,
+        exit_when_consistent: bool,
+    ) -> Result<VmExit> {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);
+
+        if exit_when_consistent {
+            if self.hdl.api_version()? >= bhyve_api::ApiVersion::V15.into() {
+                entry.cmd |=
+                    bhyve_api::vm_entry_cmds::VEC_FLAG_EXIT_CONSISTENT as u32;
+            } else {
+                // On older platforms without EXIT_CONSISTENT, we may spend more
+                // time inside VM_RUN than desired, but there is little else
+                // that can be done.
+            }
+        }
+        probes::vm_entry!(|| (self.id as u32));
         let _res = unsafe { self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)? };
+        probes::vm_exit!(|| (self.id as u32, exit.rip, exit.exitcode as u32));
+
         Ok(VmExit::from(&exit))
     }
 
@@ -218,6 +247,72 @@ impl Vcpu {
     pub fn inject_nmi(&self) -> Result<()> {
         let mut vm_nmi = bhyve_api::vm_nmi { cpuid: self.cpuid() };
         unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
+    }
+
+    /// Process [`VmExit`] in the context of this vCPU, emitting a [`VmEntry`]
+    /// if the parameters of the exit were such that they could be handled.
+    pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
+        match exit.kind {
+            VmExitKind::Bogus => Some(VmEntry::Run),
+            VmExitKind::ReqIdle => {
+                // another thread came in to use this vCPU it is likely to push
+                // us out for a barrier
+                Some(VmEntry::Run)
+            }
+            VmExitKind::Inout(io) => match io {
+                InoutReq::Out(io, val) => self
+                    .bus_pio
+                    .handle_out(io.port, io.bytes, val)
+                    .map(|_| VmEntry::InoutFulfill(InoutRes::Out(io)))
+                    .ok(),
+                InoutReq::In(io) => self
+                    .bus_pio
+                    .handle_in(io.port, io.bytes)
+                    .map(|val| VmEntry::InoutFulfill(InoutRes::In(io, val)))
+                    .ok(),
+            },
+            VmExitKind::Mmio(mmio) => match mmio {
+                MmioReq::Read(read) => self
+                    .bus_mmio
+                    .handle_read(read.addr as usize, read.bytes)
+                    .map(|val| {
+                        VmEntry::MmioFulfill(MmioRes::Read(MmioReadRes {
+                            addr: read.addr,
+                            bytes: read.bytes,
+                            data: val,
+                        }))
+                    })
+                    .ok(),
+                MmioReq::Write(write) => self
+                    .bus_mmio
+                    .handle_write(write.addr as usize, write.bytes, write.data)
+                    .map(|_| {
+                        VmEntry::MmioFulfill(MmioRes::Write(MmioWriteRes {
+                            addr: write.addr,
+                            bytes: write.bytes,
+                        }))
+                    })
+                    .ok(),
+            },
+            VmExitKind::Rdmsr(_) | VmExitKind::Wrmsr(_, _) => {
+                // Leave it to the caller to emulate MSRs unhandled by the kernel
+                None
+            }
+            VmExitKind::Debug => {
+                // Until there is an interface to delay until a vCPU is no
+                // longer under control of the debugger, we have no choice but
+                // attempt reentry (and probably spin until the debugger is
+                // detached from this vCPU).
+                Some(VmEntry::Run)
+            }
+            VmExitKind::Suspended(_) => None,
+
+            VmExitKind::InstEmul(_)
+            | VmExitKind::Paging(_, _)
+            | VmExitKind::VmxError(_)
+            | VmExitKind::SvmError(_) => None,
+            _ => None,
+        }
     }
 }
 

@@ -307,6 +307,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(IntoPrimitive)]
 pub enum ApiVersion {
+    /// Add flag for exit-when-consistent as part of `VM_RUN`
+    V15 = 15,
+
     /// Reading specific MSRs via vmm-data is fixed.  Access to DEBUGCTL and
     /// LBR-related MSR state is possible (on AMD).
     V14 = 14,
@@ -344,7 +347,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V14
+        Self::V15
     }
 }
 
