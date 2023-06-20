@@ -92,8 +92,8 @@ chrono = "0.4.19"
 clap = "4.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "0c92d208edb8f2b40716bd3c0bcf248147158315" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "0c92d208edb8f2b40716bd3c0bcf248147158315" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "df7e274edf0a1df287770e9567b27676f3ae4cc5" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "df7e274edf0a1df287770e9567b27676f3ae4cc5" }
 ctrlc = "3.2"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 enum-iterator = "1.4.1"
