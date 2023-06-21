@@ -68,11 +68,13 @@ mod _compat_impls {
 pub mod support {
     use std::collections::HashMap;
     use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
     use crate::generated::Client as PropolisClient;
     use crate::handmade::api::InstanceSerialConsoleControlMessage;
-    use futures::{SinkExt, StreamExt};
+    use futures::{Sink, SinkExt, StreamExt};
     use slog::Logger;
     use tokio::io::{AsyncRead, AsyncWrite};
     use tokio_tungstenite::tungstenite::protocol::Role;
@@ -197,11 +199,17 @@ pub mod support {
         MostRecent(u64),
     }
 
-    /// This is a trivial abstraction wrapping the websocket connection
-    /// returned by [crate::generated::Client::instance_serial], providing
-    /// the additional functionality of connecting to the new propolis-server
-    /// when an instance is migrated (thus providing the illusion of the
-    /// connection being seamlessly maintained through migration)
+    /// This is a trivial abstraction wrapping the websocket connection returned
+    /// by [crate::generated::Client::instance_serial], providing the additional
+    /// functionality of connecting to the new propolis-server when an instance
+    /// is migrated (thus providing the illusion of the connection being
+    /// seamlessly maintained through migration)
+    ///
+    /// # `Sink` implementation
+    ///
+    /// `InstanceSerialConsoleHelper` implements [`Sink`]`<`[`WSMessage`]`>` to
+    /// write data over the websocket connection. To send character inputs for
+    /// the console, use [`WSMessage::Binary`].
     pub struct InstanceSerialConsoleHelper {
         stream_builder: Box<dyn SerialConsoleStreamBuilder>,
         ws_stream: WebSocketStream<Box<dyn SerialConsoleStream>>,
@@ -276,12 +284,6 @@ pub mod support {
             })
         }
 
-        /// Sends the given [WSMessage] to the server.
-        /// To send character inputs for the console, send [WSMessage::Binary].
-        pub async fn send(&mut self, input: WSMessage) -> Result<(), WSError> {
-            self.ws_stream.send(input).await
-        }
-
         /// Receives the next [WSMessage] from the server, holding it in
         /// abeyance until it is processed.
         ///
@@ -313,6 +315,38 @@ pub mod support {
                 })),
                 Err(error) => Some(Err(error)),
             }
+        }
+    }
+
+    impl Sink<WSMessage> for InstanceSerialConsoleHelper {
+        type Error = WSError;
+
+        fn poll_ready(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.ws_stream.poll_ready_unpin(cx)
+        }
+
+        fn start_send(
+            mut self: Pin<&mut Self>,
+            item: WSMessage,
+        ) -> Result<(), Self::Error> {
+            self.ws_stream.start_send_unpin(item)
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.ws_stream.poll_flush_unpin(cx)
+        }
+
+        fn poll_close(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.ws_stream.poll_close_unpin(cx)
         }
     }
 
