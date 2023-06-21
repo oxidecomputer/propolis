@@ -90,7 +90,7 @@ pub mod support {
 
     /// Represents a way to build a serial console stream.
     #[async_trait::async_trait]
-    pub(crate) trait SerialConsoleStreamBuilder {
+    pub(crate) trait SerialConsoleStreamBuilder: Send {
         async fn build(
             &mut self,
             address: SocketAddr,
@@ -560,5 +560,13 @@ pub mod support {
         {
             WebSocketStream::from_raw_socket(conn, Role::Server, None).await
         }
+    }
+
+    #[allow(dead_code)]
+    fn assert_send<T: Send>() {}
+
+    fn _assert_impls() {
+        assert_send::<InstanceSerialConsoleHelper>();
+        assert_send::<InstanceSerialConsoleMessage>();
     }
 }
