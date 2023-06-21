@@ -66,7 +66,9 @@ mod _compat_impls {
 
 #[cfg(feature = "generated")]
 pub mod support {
+    use std::collections::HashMap;
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     use crate::generated::Client as PropolisClient;
     use crate::handmade::api::InstanceSerialConsoleControlMessage;
@@ -141,6 +143,55 @@ pub mod support {
         }
     }
 
+    /// A serial console builder for tests.
+    ///
+    /// This works by mapping `SocketAddr`s to streams, inserting an optional
+    /// delay in the middle.
+    ///
+    /// Primarily intended for testing.
+    pub struct TestSerialBuilder<St> {
+        client_conns_and_delays: HashMap<SocketAddr, (Duration, St)>,
+    }
+
+    impl<St: SerialConsoleStream> TestSerialBuilder<St> {
+        fn new(
+            client_conns_and_delays: impl IntoIterator<
+                Item = (SocketAddr, Duration, St),
+            >,
+        ) -> Self {
+            Self {
+                client_conns_and_delays: client_conns_and_delays
+                    .into_iter()
+                    .map(|(address, delay, stream)| (address, (delay, stream)))
+                    .collect(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl<St: SerialConsoleStream + 'static> SerialConsoleStreamBuilder
+        for TestSerialBuilder<St>
+    {
+        async fn build(
+            &mut self,
+            address: SocketAddr,
+            // offset is currently unused by this builder. Worth testing in
+            // the future.
+            _offset: WSClientOffset,
+        ) -> Result<Box<dyn SerialConsoleStream>, WSError> {
+            if let Some((delay, stream)) =
+                self.client_conns_and_delays.remove(&address)
+            {
+                tokio::time::sleep(delay).await;
+                Ok(Box::new(stream))
+            } else {
+                Err(WSError::Http(http::Response::new(Some(format!(
+                    "no duplex connection found for address {address}"
+                )))))
+            }
+        }
+    }
+
     pub enum WSClientOffset {
         FromStart(u64),
         MostRecent(u64),
@@ -168,6 +219,42 @@ pub mod support {
             log: Option<Logger>,
         ) -> Result<Self, WSError> {
             let stream_builder = PropolisSerialBuilder::new();
+            Self::new_with_builder(stream_builder, address, offset, log).await
+        }
+
+        /// Creates a new serial console helper for testing.
+        ///
+        /// The `connections` parameter represents a mapping from addresses to
+        /// streams. The `SocketAddr` passed in is arbitrary, and is only used
+        /// as a map key.
+        pub async fn new_test<St: SerialConsoleStream + 'static>(
+            connections: impl IntoIterator<Item = (SocketAddr, St)>,
+            address: SocketAddr,
+            offset: WSClientOffset,
+            log: Option<Logger>,
+        ) -> Result<Self, WSError> {
+            let stream_builder = TestSerialBuilder::new(
+                connections
+                    .into_iter()
+                    .map(|(addr, stream)| (addr, Duration::ZERO, stream)),
+            );
+            Self::new_with_builder(stream_builder, address, offset, log).await
+        }
+
+        /// Creates a new serial console helper for testing, with delays before
+        /// connecting.
+        ///
+        /// This is similar to [`Self::new_test`], except before each connection
+        /// starts an artificial delay can be introduced.
+        ///
+        /// Primarily intended for advanced testing scenarios.
+        pub async fn new_test_with_delays<St: SerialConsoleStream + 'static>(
+            connections: impl IntoIterator<Item = (SocketAddr, Duration, St)>,
+            address: SocketAddr,
+            offset: WSClientOffset,
+            log: Option<Logger>,
+        ) -> Result<Self, WSError> {
+            let stream_builder = TestSerialBuilder::new(connections);
             Self::new_with_builder(stream_builder, address, offset, log).await
         }
 
@@ -338,81 +425,30 @@ pub mod support {
 
     #[cfg(test)]
     mod tests {
-        use super::tungstenite::http;
         use super::InstanceSerialConsoleControlMessage;
         use super::InstanceSerialConsoleHelper;
         use super::Role;
-        use super::SerialConsoleStream;
-        use super::SerialConsoleStreamBuilder;
         use super::WSClientOffset;
         use super::WSError;
         use super::WSMessage;
         use super::WebSocketStream;
         use futures::{SinkExt, StreamExt};
-        use std::collections::HashMap;
         use std::net::IpAddr;
         use std::net::Ipv6Addr;
         use std::net::SocketAddr;
         use std::time::Duration;
         use tokio::io::AsyncRead;
         use tokio::io::AsyncWrite;
-        use tokio::io::DuplexStream;
         use tokio::time::Instant;
-
-        struct DuplexBuilder {
-            client_conns_and_delays:
-                HashMap<SocketAddr, (Duration, DuplexStream)>,
-        }
-
-        impl DuplexBuilder {
-            pub fn new(
-                client_conns_and_delays: impl IntoIterator<
-                    Item = (SocketAddr, Duration, DuplexStream),
-                >,
-            ) -> Self {
-                Self {
-                    client_conns_and_delays: client_conns_and_delays
-                        .into_iter()
-                        .map(|(address, delay, stream)| {
-                            (address, (delay, stream))
-                        })
-                        .collect(),
-                }
-            }
-        }
-
-        #[async_trait::async_trait]
-        impl SerialConsoleStreamBuilder for DuplexBuilder {
-            async fn build(
-                &mut self,
-                address: SocketAddr,
-                // offset is currently unused by this builder. Worth testing in
-                // the future.
-                _offset: WSClientOffset,
-            ) -> Result<Box<dyn SerialConsoleStream>, WSError> {
-                if let Some((delay, stream)) =
-                    self.client_conns_and_delays.remove(&address)
-                {
-                    tokio::time::sleep(delay).await;
-                    Ok(Box::new(stream))
-                } else {
-                    Err(WSError::Http(http::Response::new(Some(format!(
-                        "no duplex connection found for address {address}"
-                    )))))
-                }
-            }
-        }
 
         #[tokio::test]
         async fn test_connection_helper() {
             let address =
                 SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 12000);
             let (client_conn, server_conn) = tokio::io::duplex(1024);
-            let stream_builder =
-                DuplexBuilder::new([(address, Duration::ZERO, client_conn)]);
 
-            let mut client = InstanceSerialConsoleHelper::new_with_builder(
-                stream_builder,
+            let mut client = InstanceSerialConsoleHelper::new_test(
+                [(address, client_conn)],
                 address,
                 WSClientOffset::FromStart(0),
                 None,
@@ -466,14 +502,12 @@ pub mod support {
             let (client_conn_1, server_conn_1) = tokio::io::duplex(1024);
             let (client_conn_2, server_conn_2) = tokio::io::duplex(1024);
 
-            let stream_builder = DuplexBuilder::new([
-                (address_1, Duration::ZERO, client_conn_1),
-                // Add a delay before connecting to client 2 to test cancel safety.
-                (address_2, Duration::from_secs(1), client_conn_2),
-            ]);
-
-            let mut client = InstanceSerialConsoleHelper::new_with_builder(
-                stream_builder,
+            let mut client = InstanceSerialConsoleHelper::new_test_with_delays(
+                [
+                    (address_1, Duration::ZERO, client_conn_1),
+                    // Add a delay before connecting to client 2 to test cancel safety.
+                    (address_2, Duration::from_secs(1), client_conn_2),
+                ],
                 address_1,
                 WSClientOffset::FromStart(0),
                 None,
