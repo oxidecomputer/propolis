@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
-use futures::future;
+use futures::{future, SinkExt};
 use propolis_client::handmade::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
