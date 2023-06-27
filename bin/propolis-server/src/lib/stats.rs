@@ -3,10 +3,9 @@
 // Copyright 2022 Oxide Computer Company
 
 use anyhow::anyhow;
-use dropshot::ConfigDropshot;
-use dropshot::ConfigLogging;
-use dropshot::ConfigLoggingLevel;
-use dropshot::HandlerTaskMode;
+use dropshot::{
+    ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HandlerTaskMode,
+};
 use omicron_common::api::internal::nexus::ProducerEndpoint;
 use oximeter::{
     types::{Cumulative, Sample},

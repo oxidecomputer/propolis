@@ -2,9 +2,7 @@
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
-use dropshot::ConfigDropshot;
-use dropshot::HandlerTaskMode;
-use dropshot::HttpServerStarter;
+use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
 use futures::join;
 use propolis::usdt::register_probes;
 use slog::info;
