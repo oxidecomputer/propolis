@@ -362,7 +362,8 @@ impl Piix4HostBridge {
             device_id: PIIX4_HB_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PIIX4_HB_SUB_DEV_ID,
-            class: 0x06,
+            class: pci::bits::CLASS_BRIDGE,
+            subclass: pci::bits::SUBCLASS_BRIDGE_HOST,
             ..Default::default()
         })
         .finish();
@@ -416,8 +417,8 @@ impl Piix3Lpc {
             device_id: PIIX3_ISA_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PIIX3_ISA_SUB_DEV_ID,
-            class: 0x06,
-            subclass: 0x01,
+            class: pci::bits::CLASS_BRIDGE,
+            subclass: pci::bits::SUBCLASS_BRIDGE_ISA,
             ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
@@ -758,8 +759,11 @@ impl Piix3PM {
             device_id: PIIX4_PM_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PIIX4_PM_SUB_DEV_ID,
-            class: 0x06,
-            subclass: 0x80,
+            class: pci::bits::CLASS_BRIDGE,
+            subclass: pci::bits::SUBCLASS_BRIDGE_OTHER,
+            // Linux will complain about the PM-timer being potentially slow if
+            // it detects the ACPI device exposing a revision prior to 0x3.
+            revision_id: 0x3,
             ..Default::default()
         })
         .add_custom_cfg(PMCFG_OFFSET as u8, PMCFG_LEN as u8)
