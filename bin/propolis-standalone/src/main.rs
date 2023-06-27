@@ -616,10 +616,15 @@ fn build_instance(
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
+    use_reservoir: bool,
 ) -> Result<propolis::Instance> {
     let mut builder = Builder::new(
         name,
-        propolis::vmm::CreateOpts { force: true, ..Default::default() },
+        propolis::vmm::CreateOpts {
+            force: true,
+            use_reservoir,
+            ..Default::default()
+        },
     )?
     .max_cpus(max_cpu)?
     .add_mem_region(0, lowmem, "lowmem")?
@@ -729,9 +734,27 @@ fn setup_instance(
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
 
+    let use_reservoir = config.main.use_reservoir.unwrap_or(false);
+    if use_reservoir {
+        // Do a quick check of the reservoir size if asked to use it
+        //
+        // The actual VM create can TOCTOU race, but we can at least raise the
+        // issue nicely if things are way off.
+        let ctl = propolis::bhyve_api::VmmCtlFd::open()?;
+        let resv_info = ctl.reservoir_query()?;
+        if resv_info.vrq_free_sz < memsize {
+            slog::warn!(
+                log,
+                "Reservoir lacks free capacity ({}MiB < {}MiB)",
+                resv_info.vrq_free_sz / MB,
+                memsize / MB
+            );
+        }
+    }
+
     slog::info!(log, "Creating VM with {} vCPUs, {} lowmem, {} highmem",
         cpus, lowmem, highmem;);
-    let pinst = build_instance(vm_name, cpus, lowmem, highmem)
+    let pinst = build_instance(vm_name, cpus, lowmem, highmem, use_reservoir)
         .context("Failed to create VM Instance")?;
     let inst = Instance::new(pinst, config.clone(), from_restore, log.clone());
     slog::info!(log, "VM created"; "name" => vm_name);

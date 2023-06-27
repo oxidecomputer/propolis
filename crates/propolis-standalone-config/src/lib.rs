@@ -30,6 +30,7 @@ pub struct Main {
     pub cpus: u8,
     pub bootrom: String,
     pub memory: usize,
+    pub use_reservoir: Option<bool>,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally
