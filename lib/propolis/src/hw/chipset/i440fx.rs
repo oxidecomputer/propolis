@@ -560,6 +560,8 @@ const PMCFG_LEN: usize = 0x98;
 
 const PMBASE_DEFAULT: u16 = 0xb000;
 const PMBASE_LEN: u16 = 0x40;
+const SMBBASE_DEFAULT: u16 = 0xb100;
+// const SMBBASE_LEN: u16 = 0x40;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum PmCfg {
@@ -696,6 +698,36 @@ bitflags! {
         const SUS_TYP = 0b111 << 10;
         const SUS_EN = 1 << 13;
 
+    }
+}
+
+bitflags! {
+    #[derive(Default)]
+    struct DevResA: u32 {
+        // Enable bus decodes for keyboard controller
+        const KBC_EN_DEV11 = 1 << 28;
+    }
+}
+bitflags! {
+    #[derive(Default)]
+    struct DevResB: u32 {
+        // PCI access to keyboard controller
+        const KBC_EIO_EN = 1 << 30;
+        // PCI access to FDC
+        const EIO_EN_DEV5 = 1 << 29;
+    }
+}
+bitflags! {
+    #[derive(Default)]
+    struct DevResC: u32 {
+        // PCI access to ttyb
+        const EIO_EN_DEV7 = 1 << 31;
+        // Configure ttyb for COM2 port
+        const COMB_DEC_SEL_COM2 = 0b001 << 28;
+        // PCI access to ttya
+        const EIO_EN_DEV6 = 1 << 27;
+        // Configure ttya for COM1 port
+        const COMA_DEC_SEL_COM1 = 0b000 << 24;
     }
 }
 
@@ -836,6 +868,36 @@ impl Piix3PM {
 
                 // LSB hardwired to 1 to indicate PMBase in IO space
                 ro.write_u32(regs.pm_base as u32 | 0x1);
+            }
+            PmCfg::SmbusBase => {
+                // LSB hardwired to 1 to indicate PMBase in IO space
+                ro.write_u32(SMBBASE_DEFAULT as u32 | 0x1);
+            }
+            PmCfg::DevResA => {
+                ro.write_u32(DevResA::KBC_EN_DEV11.bits());
+            }
+            PmCfg::DevResB => {
+                ro.write_u32(
+                    (DevResB::KBC_EIO_EN | DevResB::EIO_EN_DEV5).bits(),
+                );
+            }
+            PmCfg::DevResC => {
+                ro.write_u32(
+                    (DevResC::EIO_EN_DEV7
+                        | DevResC::COMB_DEC_SEL_COM2
+                        | DevResC::EIO_EN_DEV6
+                        | DevResC::COMA_DEC_SEL_COM1)
+                        .bits(),
+                );
+            }
+            PmCfg::DevResD
+            | PmCfg::DevResE
+            | PmCfg::DevResF
+            | PmCfg::DevResG
+            | PmCfg::DevResH
+            | PmCfg::DevResI
+            | PmCfg::DevResJ => {
+                ro.write_u32(0);
             }
             _ => {
                 // XXX: report everything else as zeroed
