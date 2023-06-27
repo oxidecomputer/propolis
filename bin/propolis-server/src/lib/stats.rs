@@ -3,7 +3,10 @@
 // Copyright 2022 Oxide Computer Company
 
 use anyhow::anyhow;
-use dropshot::{ConfigDropshot, ConfigLogging, ConfigLoggingLevel};
+use dropshot::ConfigDropshot;
+use dropshot::ConfigLogging;
+use dropshot::ConfigLoggingLevel;
+use dropshot::HandlerTaskMode;
 use omicron_common::api::internal::nexus::ProducerEndpoint;
 use oximeter::{
     types::{Cumulative, Sample},
@@ -115,6 +118,7 @@ pub async fn start_oximeter_server(
     let dropshot_config = ConfigDropshot {
         bind_address: my_address,
         request_body_max_bytes: 2048,
+        default_handler_task_mode: HandlerTaskMode::Detached,
     };
 
     let logging_config =
