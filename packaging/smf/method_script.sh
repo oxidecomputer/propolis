@@ -17,6 +17,7 @@ if [[ $DATALINK == unknown ]] || [[ $GATEWAY == unknown ]]; then
     exit "$SMF_EXIT_ERR_CONFIG"
 fi
 
+ipadm delete-if "$DATALINK" || true
 ipadm show-addr "$DATALINK/ll" || ipadm create-addr -t -T addrconf "$DATALINK/ll"
 ipadm show-addr "$DATALINK/omicron6"  || ipadm create-addr -t -T static -a "$LISTEN_ADDR" "$DATALINK/omicron6"
 route get -inet6 default -inet6 "$GATEWAY" || route add -inet6 default -inet6 "$GATEWAY"
