@@ -4,6 +4,7 @@
 <service_bundle type='manifest' name='propolis-server'>
 
 <service name='system/illumos/propolis-server' type='service' version='1'>
+  <create_default_instance enabled='true' />
   <dependency name='network' grouping='require_all' restart_on='none'
     type='service'>
   <service_fmri value='svc:/milestone/network:default' />
