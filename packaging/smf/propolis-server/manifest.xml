@@ -4,6 +4,7 @@
 <service_bundle type='manifest' name='propolis-server'>
 
 <service name='system/illumos/propolis-server' type='service' version='1'>
+  <create_default_instance enabled='true' />
   <dependency name='network' grouping='require_all' restart_on='none'
     type='service'>
   <service_fmri value='svc:/milestone/network:default' />
@@ -23,7 +24,7 @@
     <propval name='datalink' type='astring' value='unknown' />
     <propval name='gateway' type='astring' value='unknown' />
     <propval name='listen_addr' type='astring' value='127.0.0.1' />
-    <propval name='listen_port' type='astring' value='17000' />
+    <propval name='listen_port' type='astring' value='12400' />
     <propval name='metric_addr' type='astring' value='127.0.0.1' />
   </property_group>
 
