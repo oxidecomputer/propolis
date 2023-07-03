@@ -5,6 +5,7 @@ source.rust.binary_names = ["propolis-server"]
 source.rust.release = true
 source.paths = [
     { from = "packaging/smf/propolis-server", to = "/var/svc/manifest/site/propolis-server" },
+    { from = "packaging/smf/method_script.sh", to = "/opt/oxide/lib/svc/manifest/propolis/propolis.sh" },
 ]
 source.blobs = [ "alpine.iso" ]
 output.type = "zone"
