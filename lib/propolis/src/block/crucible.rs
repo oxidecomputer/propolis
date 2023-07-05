@@ -57,7 +57,9 @@ impl CrucibleBackend {
         log: slog::Logger,
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
         // Construct the volume.
-        let volume = Volume::construct(request, producer_registry).await?;
+        let volume =
+            Volume::construct(request, producer_registry, Some(log.clone()))
+                .await?;
 
         // Decide if we need to scrub this volume or not.
         if volume.has_read_only_parent() {
