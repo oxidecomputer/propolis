@@ -44,7 +44,7 @@ pub struct CreateOpts {
 pub(crate) fn create_vm(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
     let ctl = bhyve_api::VmmCtlFd::open()?;
 
-    let mut req = bhyve_api::vm_create_req::new(name);
+    let mut req = bhyve_api::vm_create_req::new(name.as_bytes())?;
     if opts.use_reservoir {
         req.flags |= bhyve_api::VCF_RESERVOIR_MEM;
     }
@@ -58,12 +58,10 @@ pub(crate) fn create_vm(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
         }
 
         // try to nuke(!) the existing vm
-        let mut dreq = bhyve_api::vm_destroy_req::new(name);
-        let _ = unsafe { ctl.ioctl(bhyve_api::VMM_DESTROY_VM, &mut dreq) }
-            .or_else(|e| match e.kind() {
-                ErrorKind::NotFound => Ok(0),
-                _ => Err(e),
-            })?;
+        ctl.vm_destroy(name.as_bytes()).or_else(|e| match e.kind() {
+            ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        })?;
 
         // now attempt to create in its presumed absence
         let _ = unsafe { ctl.ioctl(bhyve_api::VMM_CREATE_VM, &mut req) }?;
@@ -80,18 +78,6 @@ pub(crate) fn create_vm(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
         #[cfg(test)]
         is_test_hdl: false,
     })
-}
-
-/// Destroys the virtual machine matching the provided `name`.
-fn destroy_vm_impl(name: &str) -> Result<()> {
-    let ctl = bhyve_api::VmmCtlFd::open()?;
-    let mut dreq = bhyve_api::vm_destroy_req::new(name);
-    let _ = unsafe { ctl.ioctl(bhyve_api::VMM_DESTROY_VM, &mut dreq) }
-        .or_else(|e| match e.kind() {
-            ErrorKind::NotFound => Ok(0),
-            _ => Err(e),
-        })?;
-    Ok(())
 }
 
 /// A wrapper around a file which must uphold the guarantee that the underlying
@@ -403,7 +389,11 @@ impl VmmHdl {
         // If that failed (which may occur on older platforms without
         // self-destruction), then fall back to performing the destroy through
         // the vmmctl device.
-        destroy_vm_impl(&self.name)
+        let ctl = bhyve_api::VmmCtlFd::open()?;
+        ctl.vm_destroy(self.name.as_bytes()).or_else(|e| match e.kind() {
+            ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        })
     }
 
     /// Set whether instance should auto-destruct when closed

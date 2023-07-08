@@ -103,6 +103,13 @@ impl VmmCtlFd {
         Ok(req)
     }
 
+    /// Destroy VM instance
+    pub fn vm_destroy(&self, name: &[u8]) -> Result<()> {
+        let mut req = vm_destroy_req::new(name)?;
+        unsafe { self.ioctl(ioctls::VMM_DESTROY_VM, &mut req)? };
+        Ok(())
+    }
+
     /// Check VMM ioctl command against those known to not require any
     /// copyin/copyout to function.
     const fn ioctl_usize_safe(cmd: i32) -> bool {

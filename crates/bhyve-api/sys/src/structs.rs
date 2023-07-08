@@ -1,3 +1,4 @@
+use std::io::{Error, ErrorKind, Result};
 use std::os::raw::{c_int, c_uint, c_void};
 
 use libc::size_t;
@@ -430,11 +431,20 @@ pub struct vm_legacy_cpuid {
 pub const VM_MAX_NAMELEN: usize = 128;
 pub const VM_MAX_SEG_NAMELEN: usize = 128;
 
-// Copy VM name, paying no heed to whether a trailing NUL is left in the
-// destination byte slice.  The kernel will do that error handling.
-fn copy_name(field: &mut [u8], name: &str) {
-    let copy_len = name.len().min(field.len());
-    field[..copy_len].copy_from_slice(name.as_bytes());
+/// Copy VM name into array appropriately sized for create/destroy request.
+/// Advanced checks are left to the kernel logic consuming that value.
+fn validate_name(value: &[u8]) -> Result<[u8; VM_MAX_NAMELEN]> {
+    let mut buf = [0u8; VM_MAX_NAMELEN];
+
+    if value.len() > buf.len() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "name length exceeds VM_MAX_NAMELEN",
+        ));
+    }
+
+    buf[..(value.len())].copy_from_slice(value);
+    Ok(buf)
 }
 
 #[repr(C)]
@@ -449,10 +459,8 @@ impl Default for vm_create_req {
     }
 }
 impl vm_create_req {
-    pub fn new(name: &str) -> Self {
-        let mut res = Self::default();
-        copy_name(&mut res.name, name);
-        res
+    pub fn new(name: &[u8]) -> Result<Self> {
+        Ok(Self { name: validate_name(name)?, flags: 0 })
     }
 }
 
@@ -476,10 +484,8 @@ impl Default for vm_destroy_req {
     }
 }
 impl vm_destroy_req {
-    pub fn new(name: &str) -> Self {
-        let mut res = Self::default();
-        copy_name(&mut res.name, name);
-        res
+    pub fn new(name: &[u8]) -> Result<Self> {
+        Ok(Self { name: validate_name(name)? })
     }
 }
 

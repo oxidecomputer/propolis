@@ -6,15 +6,15 @@ use clap::Parser;
 
 fn create_vm() -> anyhow::Result<VmmFd> {
     let name = format!("cpuid-gen-{}", std::process::id());
-    let mut req = bhyve_api::vm_create_req::new(&name);
+    let mut req =
+        bhyve_api::vm_create_req::new(name.as_bytes()).expect("valid VM name");
 
     let ctl = VmmCtlFd::open()?;
     let _ = unsafe { ctl.ioctl(bhyve_api::VMM_CREATE_VM, &mut req) }?;
 
     let vm = VmmFd::open(&name).map_err(|e| {
         // Attempt to manually destroy the VM if we cannot open it
-        let mut destroy = bhyve_api::vm_destroy_req::new(&name);
-        let _ = unsafe { ctl.ioctl(bhyve_api::VMM_DESTROY_VM, &mut destroy) };
+        let _ = ctl.vm_destroy(name.as_bytes());
         e
     })?;
 
