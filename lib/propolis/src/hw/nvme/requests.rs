@@ -12,11 +12,23 @@ use super::{cmds::NvmCmd, queue::CompQueueEntryPermit, PciNvme};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_read_enqueue(cid: u16, off: u64, sz: u64) {}
-    fn nvme_read_complete(cid: u16) {}
+    fn nvme_read_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
+    fn nvme_read_complete(cid: u16, res: u8) {}
 
-    fn nvme_write_enqueue(cid: u16, off: u64, sz: u64) {}
-    fn nvme_write_complete(cid: u16) {}
+    fn nvme_write_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
+    fn nvme_write_complete(cid: u16, res: u8) {}
+
+    fn nvme_flush_enqueue(qid: u16, idx: u16, cid: u16) {}
+    fn nvme_flush_complete(cid: u16, res: u8) {}
+
+    fn nvme_raw_cmd(
+        qid: u16,
+        cdw0nsid: u64,
+        prp1: u64,
+        prp2: u64,
+        cdw10cdw11: u64,
+    ) {
+    }
 }
 
 impl block::Device for PciNvme {
@@ -58,7 +70,17 @@ impl PciNvme {
         // Go through all the queues (skip admin as we just want I/O queues)
         // looking for a request to service
         for sq in state.sqs.iter().skip(1).flatten() {
-            while let Some((sub, cqe_permit)) = sq.pop(&mem) {
+            while let Some((sub, cqe_permit, idx)) = sq.pop(&mem) {
+                let qid = sq.id();
+                probes::nvme_raw_cmd!(|| {
+                    (
+                        qid,
+                        sub.cdw0 as u64 | ((sub.nsid as u64) << 32),
+                        sub.prp1,
+                        sub.prp2,
+                        (sub.cdw10 as u64 | ((sub.cdw11 as u64) << 32)),
+                    )
+                });
                 let cmd = NvmCmd::parse(sub);
                 let cid = sub.cid();
                 match cmd {
@@ -72,7 +94,9 @@ impl PciNvme {
                     Ok(NvmCmd::Write(cmd)) => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
                         let size = state.nlb_to_size(cmd.nlb as usize) as u64;
-                        probes::nvme_write_enqueue!(|| (cid, off, size));
+                        probes::nvme_write_enqueue!(|| (
+                            qid, idx, cid, off, size
+                        ));
 
                         let bufs = cmd.data(size, &mem).collect();
                         let req = Request::new_write(
@@ -86,7 +110,9 @@ impl PciNvme {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
                         let size = state.nlb_to_size(cmd.nlb as usize) as u64;
 
-                        probes::nvme_read_enqueue!(|| (cid, off, size));
+                        probes::nvme_read_enqueue!(|| (
+                            qid, idx, cid, off, size
+                        ));
 
                         let bufs = cmd.data(size, &mem).collect();
                         let req = Request::new_read(
@@ -97,6 +123,7 @@ impl PciNvme {
                         return Some(req);
                     }
                     Ok(NvmCmd::Flush) => {
+                        probes::nvme_flush_enqueue!(|| (qid, idx, cid));
                         let req = Request::new_flush(
                             0,
                             0, // TODO: is 0 enough or do we pass total size?
@@ -130,14 +157,21 @@ impl PciNvme {
             payload.cqe_permit.take().expect("permit must be present");
         let cid = payload.cid;
 
+        let resnum: u8 = match &res {
+            BlockResult::Success => 0,
+            BlockResult::Failure => 1,
+            BlockResult::Unsupported => 2,
+        };
         match op {
             Operation::Read(..) => {
-                probes::nvme_read_complete!(|| (cid));
+                probes::nvme_read_complete!(|| (cid, resnum));
             }
             Operation::Write(..) => {
-                probes::nvme_write_complete!(|| (cid));
+                probes::nvme_write_complete!(|| (cid, resnum));
             }
-            _ => {}
+            Operation::Flush(..) => {
+                probes::nvme_flush_complete!(|| (cid, resnum));
+            }
         }
 
         let mem = self.mem_access();
