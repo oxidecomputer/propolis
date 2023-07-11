@@ -3,9 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Weak};
+use std::fmt::Debug;
+use std::mem::size_of;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
-use super::bits::{self, RawCompletion, RawSubmission};
+use super::bits::{CompletionQueueEntry, SubmissionQueueEntry};
 use super::cmds::Completion;
 use crate::common::*;
 use crate::hw::pci;
@@ -49,22 +51,6 @@ pub const ADMIN_QUEUE_ID: QueueId = 0;
 /// Completion Queue State
 #[derive(Debug)]
 struct CompQueueState {
-    /// The Queue Head entry pointer.
-    ///
-    /// The consumer of entries on a queue uses the current Head entry pointer
-    /// to identify the next entry to be pulled off the queue.
-    ///
-    /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
-    head: u16,
-
-    /// The Queue Tail entry pointer.
-    ///
-    /// The submitter of entries to a queue uses the current Tail entry pointer
-    /// to identify the next open queue entry space.
-    ///
-    /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
-    tail: u16,
-
     /// Number of entries that are available for use.
     ///
     /// Starts off as queue size - 1 and gets decremented for each corresponding
@@ -79,16 +65,72 @@ struct CompQueueState {
     /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
     phase: bool,
 
-    /// Whether the CQ should kick its SQs due to no permits being available previously.
+    /// Whether the CQ should kick its SQs due to no permits being available
+    /// previously.
     ///
-    /// One may only pop something off the SQ if there's at least one space available in
-    /// the corresponding CQ. If there isn't, we set the kick flag.
+    /// One may only pop something off the SQ if there's at least one space
+    /// available in the corresponding CQ. If there isn't, we set the kick flag.
     kick: bool,
 }
 
 /// Submission Queue State
 #[derive(Debug)]
-struct SubQueueState {
+struct SubQueueState();
+
+/// Helper for manipulating Completion/Submission Queues
+///
+/// The type parameter `QS` is used to constrain the set of methods exposed
+/// based on whether the queue in question is a Completion or Submission queue.
+///
+/// Use either [CompQueueState] or [SubQueueState].
+#[derive(Debug)]
+struct QueueState<QS: Debug> {
+    /// The size of the queue in question.
+    ///
+    /// See NVMe 1.0e Section 4.1.3 Queue Size
+    size: u32,
+
+    /// The actual queue state that is updated during the normal course of
+    /// operation.
+    ///
+    /// Either `CompQueueState` for a Completion Queue or
+    /// a `SubQueueState` for a Submission Queue.
+    inner: Mutex<QueueInner<QS>>,
+}
+impl<QS: Debug> QueueState<QS> {
+    fn new(size: u32, inner: QS) -> Self {
+        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
+        Self { size, inner: Mutex::new(QueueInner { head: 0, tail: 0, inner }) }
+    }
+    fn lock(&self) -> QueueGuard<QS> {
+        QueueGuard { size: &self.size, state: self.inner.lock().unwrap() }
+    }
+}
+
+fn wrap_add(size: u32, idx: u16, off: u16) -> u16 {
+    debug_assert!((idx as u32) < size);
+    debug_assert!((off as u32) < size);
+
+    let res = idx as u32 + off as u32;
+    if res >= size {
+        (res - size) as u16
+    } else {
+        res as u16
+    }
+}
+fn wrap_sub(size: u32, idx: u16, off: u16) -> u16 {
+    debug_assert!((idx as u32) < size);
+    debug_assert!((off as u32) < size);
+
+    if off > idx {
+        ((idx as u32 + size) - off as u32) as u16
+    } else {
+        idx - off
+    }
+}
+
+#[derive(Debug)]
+struct QueueInner<QS: Debug> {
     /// The Queue Head entry pointer.
     ///
     /// The consumer of entries on a queue uses the current Head entry pointer
@@ -104,118 +146,83 @@ struct SubQueueState {
     ///
     /// See NVMe 1.0e Section 4.1 Submission Queue & Completion Queue Definition
     tail: u16,
+
+    /// Additional state specific to the queue type (completion or submission)
+    inner: QS,
 }
 
-/// Helper for manipulating Completion/Submission Queues
-///
-/// The type parameter `QT` is used to constrain the set of
-/// methods exposed based on whether the queue in question
-/// is a Completion or Submission queue. Use either
-/// `CompletionQueueType` or `SubmissionQueueType`.
-#[derive(Debug)]
-struct QueueState<QS> {
-    /// The size of the queue in question.
-    ///
-    /// See NVMe 1.0e Section 4.1.3 Queue Size
-    size: u32,
-
-    /// The actual queue state that gets updated during the normal course of operation.
-    ///
-    /// Either `CompQueueState` for a Completion Queue or
-    /// a `SubQueueState` for a Submission Queue.
-    inner: Mutex<QS>,
+struct QueueGuard<'a, QS: Debug> {
+    state: MutexGuard<'a, QueueInner<QS>>,
+    size: &'a u32,
 }
-
-impl<QS> QueueState<QS> {
-    /// Returns if the queue is currently empty with the given head and tail pointers.
+impl<'a, QS: Debug> QueueGuard<'a, QS> {
+    /// Returns if the queue is currently empty with the given head and tail
+    /// pointers.
     ///
-    /// A queue is empty when the Head entry pointer equals the Tail entry pointer.
+    /// A queue is empty when the Head entry pointer equals the Tail entry
+    /// pointer.
     ///
     /// See: NVMe 1.0e Section 4.1.1 Empty Queue
-    fn is_empty(&self, head: u16, tail: u16) -> bool {
-        head == tail
+    fn is_empty(&self) -> bool {
+        self.state.head == self.state.tail
     }
 
-    /// Returns if the queue is currently full with the given head and tail pointers.
+    /// Returns if the queue is currently full with the given head and tail
+    /// pointers.
     ///
-    /// The queue is full when the Head entry pointer equals one more than the Tail
-    /// entry pointer. The number of entries in a queue will always be 1 less than
-    /// the queue size.
+    /// The queue is full when the Head entry pointer equals one more than the
+    /// Tail entry pointer. The number of entries in a queue will always be 1
+    /// less than the queue size.
     ///
     /// See: NVMe 1.0e Section 4.1.2 Full Queue
-    fn is_full(&self, head: u16, tail: u16) -> bool {
-        (head > 0 && tail == (head - 1))
-            || (head == 0 && tail == (self.size - 1) as u16)
+    fn is_full(&self) -> bool {
+        let state = &self.state;
+
+        (state.head > 0 && state.tail == (state.head - 1))
+            || (state.head == 0 && state.tail == (*self.size - 1) as u16)
+    }
+
+    fn head(&self) -> u16 {
+        self.state.head
     }
 
     /// Helper method to calculate a positive offset for a given index, wrapping at
-    //// the size of the queue.
-    fn wrap_add(&self, idx: u16, off: u16) -> u16 {
-        debug_assert!((idx as u32) < self.size);
-        debug_assert!((off as u32) < self.size);
-
-        let res = idx as u32 + off as u32;
-        if res >= self.size {
-            (res - self.size) as u16
-        } else {
-            res as u16
-        }
+    /// the size of the queue.
+    fn idx_add(&self, idx: u16, off: u16) -> u16 {
+        wrap_add(*self.size, idx, off)
     }
 
     /// Helper method to calculate a negative offset for a given index, wrapping at
     /// the size of the queue.
-    fn wrap_sub(&self, idx: u16, off: u16) -> u16 {
-        debug_assert!((idx as u32) < self.size);
-        debug_assert!((off as u32) < self.size);
-
-        if off > idx {
-            ((idx as u32 + self.size) - off as u32) as u16
-        } else {
-            idx - off
-        }
+    fn idx_sub(&self, idx: u16, off: u16) -> u16 {
+        wrap_sub(*self.size, idx, off)
     }
 }
-
-impl QueueState<CompQueueState> {
-    /// Create a new `QueueState` for a Completion Queue
-    fn new_completion_state(size: u32) -> QueueState<CompQueueState> {
-        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
-        // As the device side, we start with our phase tag as asserted (1)
-        // as the host side (VM) will create all the Completion Queue entries
-        // with the phase initially zeroed out.
-        let inner = CompQueueState {
-            head: 0,
-            tail: 0,
-            avail: (size - 1) as u16,
-            phase: true,
-            kick: false,
-        };
-        Self { size, inner: Mutex::new(inner) }
-    }
-
+impl<'a> QueueGuard<'a, CompQueueState> {
     /// Attempt to return the Tail entry pointer and then move it forward by 1.
     ///
     /// If the queue is full this method returns [`None`].
     /// Otherwise, this method returns the current Tail entry pointer and then
     /// increments the Tail entry pointer by 1 (wrapping if necessary).
-    fn push_tail(&self) -> Option<u16> {
-        let mut state = self.inner.lock().unwrap();
-        if self.is_full(state.head, state.tail) {
+    fn push_tail(&mut self) -> Option<(u16, bool)> {
+        if self.is_full() {
             return None;
         }
-        if state.tail as u32 + 1 >= self.size {
-            // We wrapped so flip phase
-            state.phase = !state.phase;
+        let tail = self.state.tail;
+        let phase = self.state.inner.phase;
+
+        self.state.tail = self.idx_add(tail, 1);
+        if self.state.tail < tail {
+            // We wrapped, so flip phase
+            self.state.inner.phase = !self.state.inner.phase;
         }
-        let old_tail = state.tail;
-        state.tail = self.wrap_add(old_tail, 1);
-        Some(old_tail)
+        Some((tail, phase))
     }
 
     /// How many slots are occupied between the head and the tail i.e., how
     /// many entries can we read from the queue currently.
-    fn avail_occupied(&self, head: u16, tail: u16) -> u16 {
-        self.wrap_sub(tail, head)
+    fn avail_occupied(&self) -> u16 {
+        self.idx_sub(self.state.tail, self.state.head)
     }
 
     /// Attempt to move the Head entry pointer forward to the given index.
@@ -224,29 +231,77 @@ impl QueueState<CompQueueState> {
     /// must have enough occupied slots otherwise we return an error.
     /// Conceptually this method indicates some entries have been consumed
     /// from the queue.
-    fn pop_head_to(&self, idx: u16) -> Result<(), QueueUpdateError> {
-        if idx as u32 >= self.size {
+    fn pop_head_to(&mut self, idx: u16) -> Result<(), QueueUpdateError> {
+        if idx as u32 >= *self.size {
             return Err(QueueUpdateError::InvalidEntry);
         }
-        let mut state = self.inner.lock().unwrap();
-        let pop_count = self.wrap_sub(idx, state.head);
-        if pop_count > self.avail_occupied(state.head, state.tail) {
+        let pop_count = self.idx_sub(idx, self.state.head);
+        if pop_count > self.avail_occupied() {
             return Err(QueueUpdateError::TooManyEntries);
         }
         // Replace head with given idx and update the number of available slots
-        state.head = idx;
-        state.avail += pop_count;
+        self.state.head = idx;
+        self.state.inner.avail += pop_count;
 
         Ok(())
     }
+
+    fn take_avail(&mut self) -> bool {
+        if let Some(avail) = self.state.inner.avail.checked_sub(1) {
+            self.state.inner.avail = avail;
+            true
+        } else {
+            // Make sure we kick the SQs when we have space available again
+            self.state.inner.kick = true;
+            false
+        }
+    }
+
+    fn release_avail(&mut self) {
+        if let Some(avail) = self.state.inner.avail.checked_add(1) {
+            assert!(
+                (avail as u32) < *self.size,
+                "attempted to overflow CQ available size"
+            );
+            self.state.inner.avail = avail;
+        } else {
+            panic!("attempted to overflow CQ available");
+        }
+    }
+
+    fn kick(&mut self) -> bool {
+        std::mem::replace(&mut self.state.inner.kick, false)
+    }
 }
 
-impl QueueState<SubQueueState> {
+impl CompQueueState {
+    /// Create a new `QueueState` for a Completion Queue
+    fn new(size: u32) -> QueueState<CompQueueState> {
+        QueueState::new(
+            size,
+            CompQueueState {
+                avail: (size - 1) as u16,
+                // As the device side, we start with our phase tag as asserted (1)
+                // since the host side (VM) will create all the Completion Queue
+                // entries with the phase initially zeroed out.
+                phase: true,
+                kick: false,
+            },
+        )
+    }
+}
+
+impl SubQueueState {
     /// Create a new `QueueState` for a Submission Queue
-    fn new_submission_state(size: u32) -> QueueState<SubQueueState> {
-        assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
-        let inner = SubQueueState { head: 0, tail: 0 };
-        Self { size, inner: Mutex::new(inner) }
+    fn new(size: u32) -> QueueState<SubQueueState> {
+        QueueState::new(size, SubQueueState())
+    }
+}
+impl<'a> QueueGuard<'a, SubQueueState> {
+    /// How many slots are empty between the tail and the head i.e., how many
+    /// entries can we write to the queue currently.
+    fn avail_empty(&self) -> u16 {
+        self.idx_sub(self.idx_sub(self.state.head, 1), self.state.tail)
     }
 
     /// Attempt to return the Head entry pointer and then move it forward by 1.
@@ -254,39 +309,32 @@ impl QueueState<SubQueueState> {
     /// If the queue is empty this method returns [`None`].
     /// Otherwise, this method returns the current Head entry pointer and then
     /// increments the Head entry pointer by 1 (wrapping if necessary).
-    fn pop_head(&self) -> Option<u16> {
-        let mut state = self.inner.lock().unwrap();
-        if self.is_empty(state.head, state.tail) {
+    fn pop_head(&mut self) -> Option<u16> {
+        if self.is_empty() {
             return None;
+        } else {
+            let old_head = self.state.head;
+            self.state.head = self.idx_add(old_head, 1);
+            Some(old_head)
         }
-        let old_head = state.head;
-        state.head = self.wrap_add(old_head, 1);
-        Some(old_head)
-    }
-
-    /// How many slots are empty between the tail and the head i.e., how many
-    /// entries can we write to the queue currently.
-    fn avail_empty(&self, head: u16, tail: u16) -> u16 {
-        self.wrap_sub(self.wrap_sub(head, 1), tail)
     }
 
     /// Attempt to move the Tail entry pointer forward to the given index.
     ///
-    /// The given index must be less than the size of the queue. The queue
-    /// must have enough empty slots available otherwise we return an error.
+    /// The given index must be less than the size of the queue. The queue must
+    /// have enough empty slots available otherwise we return an error.
     /// Conceptually this method indicates new entries have been added to the
     /// queue.
-    fn push_tail_to(&self, idx: u16) -> Result<(), QueueUpdateError> {
-        if idx as u32 >= self.size {
+    fn push_tail_to(&mut self, idx: u16) -> Result<(), QueueUpdateError> {
+        if idx as u32 >= *self.size {
             return Err(QueueUpdateError::InvalidEntry);
         }
-        let mut state = self.inner.lock().unwrap();
-        let push_count = self.wrap_sub(idx, state.tail);
-        if push_count > self.avail_empty(state.head, state.tail) {
+        let push_count = self.idx_sub(idx, self.state.tail);
+        if push_count > self.avail_empty() {
             return Err(QueueUpdateError::TooManyEntries);
         }
         // Replace tail with given idx
-        state.tail = idx;
+        self.state.tail = idx;
 
         Ok(())
     }
@@ -355,12 +403,8 @@ impl SubQueue {
     ) -> Result<Arc<Self>, QueueCreateErr> {
         use std::collections::hash_map::Entry;
         Self::validate(id, base, size, mem)?;
-        let sq = Arc::new(Self {
-            id,
-            cq,
-            state: QueueState::new_submission_state(size),
-            base,
-        });
+        let sq =
+            Arc::new(Self { id, cq, state: SubQueueState::new(size), base });
         // Associate this SQ with the given CQ
         let mut cq_sqs = sq.cq.sqs.lock().unwrap();
         match cq_sqs.entry(id) {
@@ -377,31 +421,31 @@ impl SubQueue {
 
     /// Attempt to move the Tail entry pointer forward to the given index.
     pub fn notify_tail(&self, idx: u16) -> Result<(), QueueUpdateError> {
-        self.state.push_tail_to(idx)
+        let mut state = self.state.lock();
+        state.push_tail_to(idx)
     }
 
     /// Returns the next entry off of the Queue or [`None`] if it is empty.
     pub fn pop(
         self: &Arc<SubQueue>,
         mem: &MemCtx,
-    ) -> Option<(bits::RawSubmission, CompQueueEntryPermit, u16)> {
+    ) -> Option<(SubmissionQueueEntry, Permit, u16)> {
         // Attempt to reserve an entry on the Completion Queue
-        let cqe_permit = self.cq.reserve_entry(self.clone())?;
-        if let Some(idx) = self.state.pop_head() {
-            let ent: Option<RawSubmission> = mem.read(self.entry_addr(idx));
+        let permit = self.cq.reserve_entry(&self)?;
+        let mut state = self.state.lock();
+        if let Some(idx) = state.pop_head() {
+            let addr = self.base.offset::<SubmissionQueueEntry>(idx as usize);
+            let ent = mem.read::<SubmissionQueueEntry>(addr);
             // XXX: handle a guest addr that becomes unmapped later
-            ent.map(|ent| (ent, cqe_permit, idx))
+            ent.map(|ent| (ent, permit.promote(ent.cid()), idx))
         } else {
+            // Drop lock on SQ before releasing permit (which locks CQ)
+            drop(state);
+
             // No Submission Queue entry, so return the CQE permit
-            cqe_permit.remit();
+            permit.remit();
             None
         }
-    }
-
-    /// Returns the current Head entry pointer.
-    fn head(&self) -> u16 {
-        let state = self.state.inner.lock().unwrap();
-        state.head
     }
 
     /// Returns the ID of this Submission Queue.
@@ -409,16 +453,15 @@ impl SubQueue {
         self.id
     }
 
-    /// Returns the corresponding [`GuestAddr`] for a given entry in
-    /// the Submission Queue.
-    fn entry_addr(&self, idx: u16) -> GuestAddr {
-        let res = self.base.0
-            + idx as u64 * std::mem::size_of::<RawSubmission>() as u64;
-        GuestAddr(res)
+    /// Annotate a CQE with data (ID and head index) from this SQ
+    fn annotate_completion(&self, cqe: &mut CompletionQueueEntry) {
+        let state = self.state.lock();
+        cqe.sqid = self.id;
+        cqe.sqhd = state.head();
     }
 
-    /// Validates whether the given parameters may be used to create
-    /// a Submission Queue object.
+    /// Validates whether the given parameters may be used to create a
+    /// Submission Queue object.
     fn validate(
         id: QueueId,
         base: GuestAddr,
@@ -436,8 +479,7 @@ impl SubQueue {
         if size < MIN_QUEUE_SIZE || size > max {
             return Err(QueueCreateErr::InvalidSize);
         }
-        let queue_size =
-            size as usize * std::mem::size_of::<bits::RawSubmission>();
+        let queue_size = size as usize * size_of::<SubmissionQueueEntry>();
         let region = mem.readable_region(&GuestRegion(base, queue_size));
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
@@ -511,7 +553,7 @@ impl CompQueue {
         Ok(Self {
             id,
             iv,
-            state: QueueState::new_completion_state(size),
+            state: CompQueueState::new(size),
             base,
             hdl,
             sqs: Mutex::new(HashMap::new()),
@@ -520,27 +562,27 @@ impl CompQueue {
 
     /// Attempt to move the Head entry pointer forward to the given index.
     pub fn notify_head(&self, idx: u16) -> Result<(), QueueUpdateError> {
-        self.state.pop_head_to(idx)
+        self.state.lock().pop_head_to(idx)
     }
 
     /// Fires an interrupt to the guest with the associated interrupt vector
     /// if the queue is not currently empty.
     pub fn fire_interrupt(&self) {
-        let state = self.state.inner.lock().unwrap();
-        if !self.state.is_empty(state.head, state.tail) {
+        let state = self.state.lock();
+        if !state.is_empty() {
             self.hdl.fire(self.iv);
         }
     }
 
-    /// Returns whether the SQ's should be kicked due to no permits being available previously.
+    /// Returns whether the SQs should be kicked due to no permits being
+    /// available previously.
     ///
     /// If the value was true, it will also get reset to false.
     pub fn kick(&self) -> bool {
-        let mut state = self.state.inner.lock().unwrap();
-        std::mem::replace(&mut state.kick, false)
+        self.state.lock().kick()
     }
 
-    /// Returns the number of SQ's associated with this Completion Queue.
+    /// Returns the number of SQs associated with this Completion Queue.
     pub fn associated_sqs(&self) -> usize {
         let sqs = self.sqs.lock().unwrap();
         sqs.len()
@@ -551,63 +593,55 @@ impl CompQueue {
     /// An entry permit allows the user to push onto the Completion Queue.
     fn reserve_entry(
         self: &Arc<Self>,
-        sq: Arc<SubQueue>,
-    ) -> Option<CompQueueEntryPermit> {
-        let mut state = self.state.inner.lock().unwrap();
-        // No more spots available
-        if state.avail == 0 {
-            // Make sure we kick the SQ's when we have space available again
-            state.kick = true;
-
-            None
+        sq: &Arc<SubQueue>,
+    ) -> Option<ProtoPermit> {
+        let mut state = self.state.lock();
+        if state.take_avail() {
+            Some(ProtoPermit::new(self, sq))
         } else {
-            // Otherwise claim a spot
-            state.avail -= 1;
-
-            Some(CompQueueEntryPermit {
-                cq: Arc::downgrade(self),
-                sq: Arc::downgrade(&sq),
-            })
+            // No more spots available.
+            None
         }
     }
 
-    /// Add a new entry to the Completion Queue while consuming a `CompQueueEntryPermit`.
+    /// Add a new entry to the Completion Queue while consuming a `Permit`.
     fn push(
         &self,
-        _permit: CompQueueEntryPermit,
-        entry: RawCompletion,
+        comp: Completion,
+        permit: Permit,
+        sq: &SubQueue,
         mem: &MemCtx,
     ) {
-        // Since we have a permit, there should always be at least
-        // one space in the queue and this unwrap shouldn't fail.
-        let idx = self.state.push_tail().unwrap();
-        probes::nvme_cqe!(|| (self.id, idx, (entry.status_phase & 1) as u8));
-        let addr = self.entry_addr(idx);
-        mem.write(addr, &entry);
+        let mut cqe = CompletionQueueEntry::new(comp, permit.cid);
+        sq.annotate_completion(&mut cqe);
+
+        let mut guard = self.state.lock();
+        let (idx, phase) = guard
+            .push_tail()
+            .expect("CQ should have available space for assigned permit");
+
+        probes::nvme_cqe!(|| (self.id, idx, phase as u8));
+
+        // The only definite indicator that a CQE has become valid is the phase
+        // bit being toggled.  Since the interface for writing to guest memory
+        // cannot ensure that the other bits of the CQE are written before the
+        // phase bit, we must proceed carefully:
+        //
+        // The CQE is first written with the opposite phase set, so it appears
+        // to the guest OS as a to-be-filled entry.  With that write complete,
+        // ensuring that all fields of the CQE are visible to the host, we write
+        // it again, with the phase bit correctly set.
+        //
         // XXX: handle a guest addr that becomes unmapped later
+        let addr = self.base.offset::<CompletionQueueEntry>(idx as usize);
+        cqe.set_phase(!phase);
+        mem.write(addr, &cqe);
+        cqe.set_phase(phase);
+        mem.write(addr, &cqe);
     }
 
-    /// Returns the current Phase Tag bit.
-    ///
-    /// The current Phase Tag to identify to the host (VM) that a Completion
-    /// entry is new. Flips every time the Tail entry pointer wraps around.
-    ///
-    /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
-    fn phase(&self) -> u16 {
-        let state = self.state.inner.lock().unwrap();
-        state.phase as u16
-    }
-
-    /// Returns the corresponding [`GuestAddr`] for a given entry in
-    /// the Completion Queue.
-    fn entry_addr(&self, idx: u16) -> GuestAddr {
-        let res = self.base.0
-            + idx as u64 * std::mem::size_of::<RawCompletion>() as u64;
-        GuestAddr(res)
-    }
-
-    /// Validates whether the given parameters may be used to create
-    /// a Completion Queue object.
+    /// Validates whether the given parameters may be used to create a
+    /// Completion Queue object.
     fn validate(
         id: QueueId,
         base: GuestAddr,
@@ -625,22 +659,21 @@ impl CompQueue {
         if size < MIN_QUEUE_SIZE || size > max {
             return Err(QueueCreateErr::InvalidSize);
         }
-        let queue_size =
-            size as usize * std::mem::size_of::<bits::RawSubmission>();
+        let queue_size = size as usize * size_of::<CompletionQueueEntry>();
         let region = mem.writable_region(&GuestRegion(base, queue_size));
 
         region.map(|_| ()).ok_or(QueueCreateErr::InvalidBaseAddr)
     }
 
     pub(super) fn export(&self) -> migrate::NvmeCompQueueV1 {
-        let inner = self.state.inner.lock().unwrap();
+        let guard = self.state.lock();
         migrate::NvmeCompQueueV1 {
             id: self.id,
             size: self.state.size,
-            head: inner.head,
-            tail: inner.tail,
-            avail: inner.avail,
-            phase: inner.phase,
+            head: guard.state.head,
+            tail: guard.state.tail,
+            avail: guard.state.inner.avail,
+            phase: guard.state.inner.phase,
             base: self.base.0,
             iv: self.iv,
         }
@@ -656,55 +689,92 @@ impl CompQueue {
         assert_eq!(self.base.0, state.base);
         assert_eq!(self.state.size, state.size);
 
-        let mut inner = self.state.inner.lock().unwrap();
-        inner.head = state.head;
-        inner.tail = state.tail;
-        inner.avail = state.avail;
-        inner.phase = state.phase;
+        let mut guard = self.state.lock();
+        guard.state.head = state.head;
+        guard.state.tail = state.tail;
+        guard.state.inner.avail = state.avail;
+        guard.state.inner.phase = state.phase;
 
         Ok(())
     }
 }
 
-/// A type which allows pushing a Completion Entry onto the Completion Queue.
-#[derive(Debug)]
-pub struct CompQueueEntryPermit {
+/// "Proto" permit for a Completion Queue Entry.
+///
+/// This guarantees the holder capacity in the associated Completion Queue to
+/// push their CQE.  A `ProtoPermit` is either promoted to a full [Permit] via
+/// [promote()](Self::promote), or if no submissions were found to be available
+/// after reserving the `ProtoPermit`, discarded to release its reservation via
+/// [remit()](Self::remit).
+pub struct ProtoPermit {
     /// The corresponding Completion Queue for which we have a permit.
     cq: Weak<CompQueue>,
 
     /// The Submission Queue for which this entry is reserved.
     sq: Weak<SubQueue>,
 }
+impl ProtoPermit {
+    fn new(cq: &Arc<CompQueue>, sq: &Arc<SubQueue>) -> Self {
+        Self { cq: Arc::downgrade(cq), sq: Arc::downgrade(sq) }
+    }
 
-impl CompQueueEntryPermit {
+    /// Promote a "proto" permit to a [Permit].
+    ///
+    /// Once an entry has been read from the Submission Queue, the holder of a
+    /// `ProtoPermit` promotes it to `Permit`, committing to use the reserved
+    /// CQE capacity when the submission is processed.
+    pub fn promote(self, cid: u16) -> Permit {
+        Permit { cq: self.cq, sq: self.sq, cid, completed: false }
+    }
+
+    /// Return the permit without having actually used it.
+    ///
+    /// Frees up the space for someone else to grab it via
+    /// `CompQueue::reserve_entry`.
+    fn remit(self) {
+        if let Some(cq) = self.cq.upgrade() {
+            let mut state = cq.state.lock();
+            state.release_avail();
+        }
+    }
+}
+
+/// A permit reserving capacity to push a [CompletionQueueEntry] into a
+/// Completion Queue for a command submitted to the device.
+#[derive(Debug)]
+pub struct Permit {
+    /// The corresponding Completion Queue for which we have a permit.
+    cq: Weak<CompQueue>,
+
+    /// The Submission Queue for which this entry is reserved.
+    sq: Weak<SubQueue>,
+
+    /// ID of command holding this permit.  Used to populate `cid` field in
+    /// Completion Queue Entry.
+    cid: u16,
+
+    /// Track that `complete()` was actually called
+    completed: bool,
+}
+
+impl Permit {
     /// Consume the permit by placing an entry into the Completion Queue.
-    pub fn push_completion(
-        self,
-        cid: u16,
-        comp: Completion,
-        mem: Option<&MemCtx>,
-    ) {
+    pub fn complete(mut self, comp: Completion, mem: Option<&MemCtx>) {
+        assert!(!self.completed);
+        self.completed = true;
+
         let cq = match self.cq.upgrade() {
             Some(cq) => cq,
             None => {
                 // The CQ has since been deleted so no way to complete this
                 // request nor to return the permit.
-                assert!(self.sq.upgrade().is_none());
+                debug_assert!(self.sq.upgrade().is_none());
                 return;
             }
         };
 
         if let (Some(sq), Some(mem)) = (self.sq.upgrade(), mem) {
-            let completion = bits::RawCompletion {
-                dw0: comp.dw0,
-                rsvd: 0,
-                sqhd: sq.head(),
-                sqid: sq.id(),
-                cid,
-                status_phase: comp.status | cq.phase(),
-            };
-
-            cq.push(self, completion, mem);
+            cq.push(comp, self, &sq, mem);
 
             // TODO: should this be done here?
             cq.fire_interrupt();
@@ -713,32 +783,46 @@ impl CompQueueEntryPermit {
             // implicitly been aborted by the prior Delete Queue command) or
             // the device currently lacks access to guest memory.
             //
-            // Just make sure we return the permit
-            self.remit();
+            // Just make sure we return the "avail hold" from the permit
+            let mut state = cq.state.lock();
+            state.release_avail();
         }
+    }
+
+    /// Get the ID of the submitted command associated with this permit.
+    pub fn cid(&self) -> u16 {
+        self.cid
     }
 
     /// Consume the permit by placing an entry into the Completion Queue.
     ///
-    /// This is a simpler version of `CompQueueEntryPermit::push_completion`
-    /// just for testing purposes that doesn't require passing in the actual
-    /// completion data. Meant just for excercising the Submission & Completion
-    /// Queues in unit tests.
+    /// This is a simpler version of [Self::complete()] for testing purposes
+    /// which does not require passing in the actual completion data.  It is
+    /// only to be used for excercising the Submission and Completion Queues in
+    /// unit tests.
     #[cfg(test)]
-    fn push_completion_test(self, mem: &MemCtx) {
+    fn test_complete(mut self, sq: &SubQueue, mem: &MemCtx) {
+        self.completed = true;
         if let Some(cq) = self.cq.upgrade() {
-            cq.push(self, bits::RawCompletion::default(), mem);
+            cq.push(Completion::success(), self, sq, mem);
         }
     }
 
-    /// Return the permit without having actually used it.
-    ///
-    /// Frees up the space for someone else to grab it via `CompQueue::reserve_entry`.
-    fn remit(self) {
-        if let Some(cq) = self.cq.upgrade() {
-            let mut state = cq.state.inner.lock().unwrap();
-            state.avail += 1;
-        }
+    /// Some of the tests which to acquire Permit entries with no intent to
+    /// drive them through to completion.  Allow them to bypass the
+    /// ensure-this-permit-is-completed check in [`Drop`].
+    #[cfg(test)]
+    fn ignore(mut self) -> Self {
+        self.completed = true;
+        self
+    }
+}
+impl Drop for Permit {
+    fn drop(&mut self) {
+        assert!(
+            self.completed,
+            "permit was dropped without calling complete()"
+        );
     }
 }
 
@@ -933,13 +1017,13 @@ mod tests {
         // Replicate guest VM notifying us things were pushed to the SQ
         let mut sq_tail = 0;
         for _ in 0..sq.state.size - 1 {
-            sq_tail = sq.state.wrap_add(sq_tail, 1);
+            sq_tail = wrap_add(sq.state.size, sq_tail, 1);
             // These should all succeed
             assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
         }
 
         // But anything more should fail
-        sq_tail = sq.state.wrap_add(sq_tail, 1);
+        sq_tail = wrap_add(sq.state.size, sq_tail, 1);
         assert!(matches!(
             sq.notify_tail(sq_tail),
             Err(QueueUpdateError::TooManyEntries)
@@ -953,19 +1037,19 @@ mod tests {
 
         // Now pop those SQ items and complete them in the CQ
         while let Some((_, permit, _)) = sq.pop(&mem) {
-            permit.push_completion_test(&mem);
+            permit.test_complete(&sq, &mem);
         }
 
         // Replicate guest VM notifying us things were consumed off the CQ
         let mut cq_head = 0;
         for _ in 0..sq.state.size - 1 {
-            cq_head = cq.state.wrap_add(cq_head, 1);
+            cq_head = wrap_add(cq.state.size, cq_head, 1);
             // These should all succeed
             assert!(matches!(cq.notify_head(cq_head), Ok(_)));
         }
 
         // There's nothing else to pop so this should fail
-        cq_head = cq.state.wrap_add(cq_head, 1);
+        cq_head = wrap_add(cq.state.size, cq_head, 1);
         assert!(matches!(
             cq.notify_head(cq_head),
             Err(QueueUpdateError::TooManyEntries)
@@ -1000,7 +1084,7 @@ mod tests {
         // Replicate guest VM notifying us things were pushed to the SQ
         let mut sq_tail = 0;
         for _ in 0..sq.state.size - 1 {
-            sq_tail = sq.state.wrap_add(sq_tail, 1);
+            sq_tail = wrap_add(sq.state.size, sq_tail, 1);
             assert!(matches!(sq.notify_tail(sq_tail), Ok(_)));
         }
 
@@ -1010,7 +1094,7 @@ mod tests {
             assert!(matches!(pop, Some(_)));
 
             // Complete these in the CQ (but note guest won't have acknowledged them yet)
-            pop.unwrap().1.push_completion_test(&mem);
+            pop.unwrap().1.test_complete(&sq, &mem);
         }
 
         // But we can't pop anymore due to no more CQ space to reserve
@@ -1023,7 +1107,13 @@ mod tests {
         assert!(cq.kick());
 
         // We should have one more space now and should be able to pop 1 more
-        assert!(matches!(sq.pop(&mem), Some(_)));
+        assert!(matches!(
+            sq.pop(&mem).map(|(_sub, permit, _idx)| {
+                // ignore permit so it can be discarded when done
+                permit.ignore()
+            }),
+            Some(_)
+        ));
 
         Ok(())
     }
@@ -1074,7 +1164,7 @@ mod tests {
             loop {
                 match doorbell_rx.recv() {
                     Ok(Doorbell::Cq(n)) => {
-                        cq_head = doorbell_cq.state.wrap_add(cq_head, n);
+                        cq_head = wrap_add(doorbell_cq.state.size, cq_head, n);
                         assert!(matches!(
                             doorbell_cq.notify_head(cq_head),
                             Ok(_)
@@ -1084,7 +1174,7 @@ mod tests {
                         }
                     }
                     Ok(Doorbell::Sq(n)) => {
-                        sq_tail = doorbell_sq.state.wrap_add(sq_tail, n);
+                        sq_tail = wrap_add(doorbell_sq.state.size, sq_tail, n);
                         // The "doorbell" was rung and so let's have the SQ
                         // update its internal state before poking the workers
                         assert!(matches!(
@@ -1130,7 +1220,7 @@ mod tests {
                             // some work before we complete the IO
                             sleep(Duration::from_micros(rng.gen_range(0..500)));
 
-                            cqe_permit.push_completion_test(&mem);
+                            cqe_permit.test_complete(&worker_sq, &mem);
 
                             // Signal "guest" side of completion handler
                             assert!(worker_comp_tx.send(()).is_ok());

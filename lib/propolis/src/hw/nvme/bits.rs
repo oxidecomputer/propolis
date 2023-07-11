@@ -11,7 +11,7 @@ use bitstruct::bitstruct;
 /// See NVMe 1.0e Section 4.2 Submission Queue Entry - Command Format
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C, packed(1))]
-pub struct RawSubmission {
+pub struct SubmissionQueueEntry {
     /// Command Dword 0 (CDW0)
     ///
     /// Field common to all commands and defined as:
@@ -86,7 +86,7 @@ pub struct RawSubmission {
     pub cdw15: u32,
 }
 
-impl RawSubmission {
+impl SubmissionQueueEntry {
     /// Returns the Identifier (CID) of this Submission Queue Entry.
     ///
     /// The command identifier along with the Submission Queue ID
@@ -106,7 +106,7 @@ impl RawSubmission {
 /// See NVMe 1.0e Section 4.5 Completion Queue Entry
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C, packed(1))]
-pub struct RawCompletion {
+pub struct CompletionQueueEntry {
     /// Dword 0 (DW0)
     ///
     /// A command specific value.
@@ -155,6 +155,24 @@ pub struct RawCompletion {
     /// See NVMe 1.0e Section 4.5.1 Status Field Definition
     /// See NVMe 1.0e Section 4.5, Figure 14 Completion Queue Entry: DW 3
     pub status_phase: u16,
+}
+impl CompletionQueueEntry {
+    pub fn new(comp: super::cmds::Completion, cid: u16) -> Self {
+        Self {
+            dw0: comp.dw0,
+            rsvd: 0,
+            sqhd: 0,
+            sqid: 0,
+            cid,
+            status_phase: comp.status,
+        }
+    }
+    pub fn set_phase(&mut self, phase: bool) {
+        match phase {
+            true => self.status_phase |= 0b1,
+            false => self.status_phase &= !0b1,
+        }
+    }
 }
 
 // Register bits
@@ -1143,8 +1161,8 @@ mod test {
 
     #[test]
     fn entry_sizing() {
-        assert_eq!(size_of::<RawSubmission>(), 64);
-        assert_eq!(size_of::<RawCompletion>(), 16);
+        assert_eq!(size_of::<SubmissionQueueEntry>(), 64);
+        assert_eq!(size_of::<CompletionQueueEntry>(), 16);
         assert_eq!(size_of::<PowerStateDescriptor>(), 32);
         assert_eq!(size_of::<IdentifyController>(), 4096);
         assert_eq!(size_of::<LbaFormat>(), 4);
