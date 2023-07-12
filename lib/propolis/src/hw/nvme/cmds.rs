@@ -602,12 +602,12 @@ impl PrpIter<'_> {
         assert!(self.error.is_none());
 
         // PRP Entry Layout
-        // | 63 . . . . . . . . . . . . . . . . . . . n + 1 | n . . . . . . 2 | 1 0 |
-        // |         page base address                      |      offset     | 0 0 |
+        // | 63 . . . . . . . . . . . . . . . n + 1 | n . . . . . . 2 | 1 0 |
+        // |       page base address                |      offset     | 0 0 |
         let (addr, size, next) = match self.next {
             PrpNext::Prp1 => {
-                // The first PRP entry contained within the command may have a non-zero offset
-                // within the memory page.
+                // The first PRP entry contained within the command may have a
+                // non-zero offset within the memory page.
                 let offset = self.prp1 & PAGE_OFFSET as u64;
                 let size = u64::min(PAGE_SIZE as u64 - offset, self.remain);
                 let after = self.remain - size;
@@ -618,7 +618,8 @@ impl PrpIter<'_> {
                     // entry which should be present in PRP2
                     PrpNext::Prp2
                 } else {
-                    // If the remaining length is larger than the page size, PRP2 points to a list.
+                    // If the remaining length is larger than the page size,
+                    // PRP2 points to a list.
                     //
                     // The first PRP List entry:
                     // - shall be Qword aligned, and
@@ -627,9 +628,10 @@ impl PrpIter<'_> {
                         return Err("PRP2 not Qword aligned!");
                     }
 
-                    // PRP2 is allowed a non-zero offset into the page, meaning this operation's
-                    // PRP list could start in the middle of the page. For example, idx below could
-                    // be anywhere from 0 to PRP_LIST_MAX:
+                    // PRP2 is allowed a non-zero offset into the page, meaning
+                    // this operation's PRP list could start in the middle of
+                    // the page. For example, idx below could be anywhere from 0
+                    // to PRP_LIST_MAX:
                     //
                     //                | idx
                     //  --------------| ---
@@ -640,9 +642,10 @@ impl PrpIter<'_> {
                     //  PRP List base | PRP_LIST_MAX - 1
                     //  PRP List base | PRP_LIST_MAX
                     //
-                    // Note that lists cannot cross page boundaries. If idx = PRP_LIST_MAX is
-                    // reached, the last entry will point to another list (unless the remaining
-                    // size is satisfied by the end of the list).
+                    // Note that lists cannot cross page boundaries. If idx =
+                    // PRP_LIST_MAX is reached, the last entry will point to
+                    // another list (unless the remaining size is satisfied by
+                    // the end of the list).
                     let base = self.prp2 & (PAGE_MASK as u64);
                     let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
                     PrpNext::List(base, idx as u16)
@@ -673,25 +676,18 @@ impl PrpIter<'_> {
 
                 if self.remain <= PAGE_SIZE as u64 {
                     (entry, self.remain, PrpNext::Done)
+                } else if idx != PRP_LIST_MAX {
+                    (entry, PAGE_SIZE as u64, PrpNext::List(base, idx + 1))
                 } else {
-                    if idx != PRP_LIST_MAX {
-                        (entry, PAGE_SIZE as u64, PrpNext::List(base, idx + 1))
-                    } else {
-                        // Chase the PRP to the next PRP list and read the first entry from it to
-                        // use as the next result.
-                        let next_entry: u64 =
-                            self.mem.read(GuestAddr(entry)).ok_or_else(
-                                || "Unable to read PRP list entry",
-                            )?;
-                        if next_entry & PAGE_OFFSET as u64 != 0 {
-                            return Err("Inappropriate PRP list entry offset");
-                        }
-                        (next_entry, PAGE_SIZE as u64, PrpNext::List(entry, 1))
-                    }
+                    // The last PRP in this list chains to another
+                    // (page-aligned) list with the next PRP.
+                    self.next = PrpNext::List(entry, 0);
+                    return self.get_next();
                 }
             }
             PrpNext::Done => {
-                // prior checks of self.remain should prevent us from ever reaching this
+                // prior checks of self.remain should prevent us from ever
+                // reaching this
                 panic!()
             }
         };
@@ -828,5 +824,204 @@ impl From<block::Result> for Completion {
                 bits::STS_READ_CONFLICTING_ATTRS,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use crate::common::*;
+    use crate::vmm::mem::{MemCtx, PhysMap};
+
+    use super::PrpIter;
+
+    const VM_SIZE: usize = 256 * PAGE_SIZE;
+    const PRP_PER_PAGE: usize = PAGE_SIZE / 8;
+
+    fn setup() -> (PhysMap, Arc<MemCtx>) {
+        let mut pmap = PhysMap::new_test(VM_SIZE);
+        pmap.add_test_mem("lowmem".to_string(), 0, VM_SIZE)
+            .expect("lowmem seg creation should succeed");
+
+        let memctx = pmap.memctx();
+        (pmap, memctx)
+    }
+
+    // Simple helpers to make math below more terse
+    const fn region(addr: u64, sz: u64) -> GuestRegion {
+        GuestRegion(GuestAddr(addr), sz as usize)
+    }
+    const fn pages(c: u64) -> u64 {
+        PAGE_SIZE as u64 * c
+    }
+
+    #[test]
+    fn test_prp_single() {
+        let (_pmap, memctx) = setup();
+
+        // Basic single page
+        let mut iter = PrpIter::new(pages(1), 0x1000, 0, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000, pages(1))));
+        assert_eq!(iter.next(), None);
+
+        // Sub-single page
+        let sub = 0x200;
+        let mut iter = PrpIter::new(pages(1) - sub, 0x1000, 0, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000, pages(1) - sub)));
+        assert_eq!(iter.next(), None);
+
+        // Sub-single page (with offset)
+        let mut iter = PrpIter::new(pages(1) - sub, 0x1000 + sub, 0, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000 + sub, pages(1) - sub)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_prp_dual() {
+        let (_pmap, memctx) = setup();
+
+        // Basic dual page
+        let mut iter = PrpIter::new(pages(2), 0x1000, 0x2000, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x2000, pages(1))));
+        assert_eq!(iter.next(), None);
+
+        // single page, split by offset
+        let sub = 0x200;
+        let mut iter = PrpIter::new(pages(1), 0x1000 + sub, 0x2000, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000 + sub, pages(1) - sub)));
+        assert_eq!(iter.next(), Some(region(0x2000, sub)));
+        assert_eq!(iter.next(), None);
+
+        // less than single page, split by offset
+        let sz = pages(1) - 0x200;
+        let off = 0x400;
+        let mut iter = PrpIter::new(sz, 0x1000 + off, 0x2000, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000 + off, pages(1) - off)));
+        assert_eq!(iter.next(), Some(region(0x2000, sz - (pages(1) - off))));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_prp_list() {
+        // Basic triple page (aligned prplist)
+        let (_pmap, memctx) = setup();
+        let listprps: [u64; 2] = [0x2000, 0x3000];
+        let listaddr = 0x80000;
+        memctx.write(GuestAddr(listaddr), &listprps);
+        let mut iter = PrpIter::new(pages(3), 0x1000, listaddr, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x2000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x3000, pages(1))));
+        assert_eq!(iter.next(), None);
+
+        // Basic triple page (offset prplist)
+        let (_pmap, memctx) = setup();
+        let listprps: [u64; 2] = [0x2000, 0x3000];
+        let listaddr = 0x80010;
+        memctx.write(GuestAddr(listaddr), &listprps);
+        let mut iter = PrpIter::new(pages(3), 0x1000, listaddr, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x2000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x3000, pages(1))));
+        assert_eq!(iter.next(), None);
+
+        // Offset triple page
+        let (_pmap, memctx) = setup();
+        let listprps: [u64; 3] = [0x2000, 0x3000, 0x4000];
+        let listaddr = 0x80000;
+        let off = 0x200;
+        memctx.write(GuestAddr(listaddr), &listprps);
+        let mut iter = PrpIter::new(pages(3), 0x1000 + off, listaddr, &memctx);
+        assert_eq!(iter.next(), Some(region(0x1000 + off, pages(1) - off)));
+        assert_eq!(iter.next(), Some(region(0x2000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x3000, pages(1))));
+        assert_eq!(iter.next(), Some(region(0x4000, off)));
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_prp_list_offset_last() {
+        // List with offset, where last entry covers less than one page
+        let (_pmap, memctx) = setup();
+        let listaddr = 0x80000u64;
+        let mut prps: Vec<u64> = Vec::with_capacity(PRP_PER_PAGE);
+        let mut bufaddr = 0x2000u64;
+        for _idx in 0..PRP_PER_PAGE {
+            prps.push(bufaddr);
+            bufaddr += pages(1);
+        }
+        memctx.write_many(GuestAddr(listaddr), &prps);
+        let off = 0x200;
+        let mut iter = PrpIter::new(
+            pages(PRP_PER_PAGE as u64),
+            0x1000 + off,
+            listaddr,
+            &memctx,
+        );
+        assert_eq!(
+            iter.next(),
+            Some(region(0x1000 + off, pages(1) - off)),
+            "prp1 entry incorrect"
+        );
+
+        let mut bufaddr = 0x2000u64;
+        for idx in 0..(PRP_PER_PAGE - 1) {
+            assert_eq!(
+                iter.next(),
+                Some(region(bufaddr, pages(1))),
+                "bad prp at idx: {idx}"
+            );
+            bufaddr += pages(1);
+        }
+        // last prplist entry should be the remaining bytes left over from
+        // offsetting the prp1 entry
+        assert_eq!(iter.next(), Some(region(bufaddr, off)));
+    }
+
+    #[test]
+    fn test_prp_multiple() {
+        // Basic multiple-page prplist
+        let (_pmap, memctx) = setup();
+        let listaddrs = [0x80000u64, 0x81000u64];
+        let mut prps: Vec<u64> = Vec::with_capacity(PRP_PER_PAGE);
+        let mut bufaddr = 0x2000u64;
+
+        let entries_first = PRP_PER_PAGE - 1;
+        for _idx in 0..entries_first {
+            prps.push(bufaddr);
+            bufaddr += pages(1);
+        }
+        // Link to the next list page
+        prps.push(listaddrs[1]);
+        memctx.write_many(GuestAddr(listaddrs[0]), &prps[..]);
+
+        // populate a few more entries in the next prplist
+        let entries_second = 4;
+        for idx in 0..entries_second {
+            prps[idx] = bufaddr;
+            bufaddr += pages(1);
+        }
+        memctx.write_many(GuestAddr(listaddrs[1]), &prps[..entries_second]);
+
+        let total_entries = 1 + entries_first + entries_second;
+        let mut iter = PrpIter::new(
+            pages(total_entries as u64),
+            0x1000,
+            listaddrs[0],
+            &memctx,
+        );
+
+        let mut bufaddr = 0x1000u64;
+        for idx in 0..total_entries {
+            assert_eq!(
+                iter.next(),
+                Some(region(bufaddr, pages(1))),
+                "bad prp at idx: {idx}"
+            );
+            bufaddr += pages(1);
+        }
+        assert_eq!(iter.next(), None);
     }
 }

@@ -6,7 +6,7 @@
 
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::ops::RangeInclusive;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr::{copy_nonoverlapping, NonNull};
@@ -197,6 +197,12 @@ impl PhysMap {
 
 #[cfg(test)]
 impl PhysMap {
+    pub(crate) fn new_test(size: usize) -> Self {
+        let hdl =
+            VmmHdl::new_test(size).expect("create tempfile backed test hdl");
+        Self::new(size, Arc::new(hdl))
+    }
+
     /// Create "memory" region on an instance backed with a fake VmmHdl
     pub(crate) fn add_test_mem(
         &mut self,
@@ -451,14 +457,27 @@ impl<'a> SubMapping<'a> {
         Ok(self)
     }
 
+    /// Emit appropriate error if mapping does not allow writes
+    fn check_write_access(&self) -> Result<()> {
+        if !self.prot.contains(Prot::WRITE) {
+            Err(Error::new(ErrorKind::PermissionDenied, "No write access"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Emit appropriate error if mapping does not allow reads
+    fn check_read_access(&self) -> Result<()> {
+        if !self.prot.contains(Prot::READ) {
+            Err(Error::new(ErrorKind::PermissionDenied, "No read access"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Reads a `T` object from the mapping.
     pub fn read<T: Copy>(&self) -> Result<T> {
-        if !self.prot.contains(Prot::READ) {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No read access",
-            ));
-        }
+        self.check_read_access()?;
         let typed = self.ptr.as_ptr() as *const T;
         if self.len < std::mem::size_of::<T>() {
             return Err(Error::new(ErrorKind::InvalidData, "Buffer too small"));
@@ -470,29 +489,46 @@ impl<'a> SubMapping<'a> {
         Ok(unsafe { typed.read_unaligned() })
     }
 
-    /// Reads a buffer of bytes from the mapping.
-    pub fn read_bytes(&self, buf: &mut [u8]) -> Result<usize> {
-        if !self.prot.contains(Prot::READ) {
+    /// Read `values` from the mapping.
+    pub fn read_many<T: Copy>(&self, values: &mut [T]) -> Result<()> {
+        self.check_read_access()?;
+        let copy_len = size_of_val(values);
+        if self.len < copy_len {
             return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No read access",
+                ErrorKind::InvalidInput,
+                "Value larger than mapping",
             ));
         }
-        let to_copy = usize::min(buf.len(), self.len);
-        let src = self.ptr.as_ptr();
-        let dst = buf.as_mut_ptr();
 
-        // Safety:
-        // - src must be valid for reads of to_copy * size_of::<u8>() bytes.
-        // - dst must be valid for writes of count * size_of::<u8>() bytes.
-        // - Both src and dst must be properly aligned.
-        // - The region of memory beginning at src with a size of count *
-        // size_of::<u8>() bytes must not overlap with the region of memory beginning
-        // at dst with the same size.
+        // We know that the `values` reference is properly aligned, but that is
+        // not guaranteed for the source pointer.  Cast it down to a u8, which
+        // will appease those alignment concerns
+        let src = self.ptr.as_ptr() as *const u8;
+        let dst = values.as_mut_ptr() as *mut u8;
+
+        // Safety
+        // - `src` is valid for read for the `copy_len` as checked above
+        // - `src` is valid for writes for its entire length, since it is from a
+        // valid mutable reference passed in to us
+        // - both are aligned for a `u8` copy
+        // - `dst` cannot be overlapped by `src`, since the former came from a
+        //   valid reference, and references to guest mappings are not allowed
         unsafe {
-            copy_nonoverlapping(src, dst, to_copy);
+            copy_nonoverlapping(src, dst, copy_len);
         }
-        Ok(to_copy)
+        Ok(())
+    }
+
+    /// Reads a buffer of bytes from the mapping.
+    ///
+    /// If `buf` is larger than the SubMapping, the read will be truncated to
+    /// length of the SubMapping.
+    ///
+    /// Returns the number of bytes read.
+    pub fn read_bytes(&self, buf: &mut [u8]) -> Result<usize> {
+        let read_len = usize::min(buf.len(), self.len);
+        self.read_many(&mut buf[..read_len])?;
+        Ok(read_len)
     }
 
     /// Pread from `file` into the mapping.
@@ -502,13 +538,7 @@ impl<'a> SubMapping<'a> {
         length: usize,
         offset: i64,
     ) -> Result<usize> {
-        if !self.prot.contains(Prot::WRITE) {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No write access",
-            ));
-        }
-
+        self.check_write_access()?;
         let to_read = usize::min(length, self.len);
         let read = unsafe {
             libc::pread(
@@ -526,12 +556,7 @@ impl<'a> SubMapping<'a> {
 
     /// Writes `value` into the mapping.
     pub fn write<T: Copy>(&self, value: &T) -> Result<()> {
-        if !self.prot.contains(Prot::WRITE) {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No write access",
-            ));
-        }
+        self.check_write_access()?;
         let typed = self.ptr.as_ptr() as *mut T;
         unsafe {
             typed.write_unaligned(*value);
@@ -539,40 +564,51 @@ impl<'a> SubMapping<'a> {
         Ok(())
     }
 
-    /// Writes a buffer of bytes into the mapping.
-    pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
-        if !self.prot.contains(Prot::WRITE) {
+    /// Writes `values` into the mapping.
+    pub fn write_many<T: Copy>(&self, values: &[T]) -> Result<()> {
+        self.check_write_access()?;
+        let copy_len = size_of_val(values);
+        if self.len < copy_len {
             return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No write access",
+                ErrorKind::InvalidInput,
+                "Value larger than mapping",
             ));
         }
 
-        let to_copy = usize::min(buf.len(), self.len);
-        let src = buf.as_ptr();
-        let dst = self.ptr.as_ptr();
+        // We know that the `values` reference is properly aligned, but that is
+        // not guaranteed for the destination pointer.  Cast it down to a u8,
+        // which will appease those alignment concerns
+        let src = values.as_ptr() as *const u8;
+        let dst = self.ptr.as_ptr() as *mut u8;
 
-        // Safety:
-        // - src must be valid for reads of count * size_of::<T>() bytes.
-        // - dst must be valid for writes of count * size_of::<T>() bytes.
-        // - Both src and dst must be properly aligned.
-        // - The region of memory beginning at src with a size of count *
-        // size_of::<T>() bytes must not overlap with the region of memory beginning
-        // at dst with the same size.
+        // Safety
+        // - `src` is valid for reads for its entire length, since it is from a
+        //   valid reference passed in to us
+        // - `dst` is valid for writes for the `copy_len` as checked above
+        // - both are aligned for a `u8` copy
+        // - `dst` cannot be overlapped by `src`, since the latter came from a
+        //   valid reference, and references to guest mappings are not allowed
         unsafe {
-            copy_nonoverlapping(src, dst, to_copy);
+            copy_nonoverlapping(src, dst, copy_len);
         }
-        Ok(to_copy)
+        Ok(())
+    }
+
+    /// Writes a buffer of bytes into the mapping.
+    ///
+    /// If `buf` is larger than the SubMapping, the write will be truncated to
+    /// length of the SubMapping.
+    ///
+    /// Returns the number of bytes read.
+    pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
+        let write_len = usize::min(buf.len(), self.len);
+        self.write_many(&buf[..write_len])?;
+        Ok(write_len)
     }
 
     /// Writes a single byte `val` to the mapping, `count` times.
     pub fn write_byte(&self, val: u8, count: usize) -> Result<usize> {
-        if !self.prot.contains(Prot::WRITE) {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No write access",
-            ));
-        }
+        self.check_write_access()?;
         let to_copy = usize::min(count, self.len);
         unsafe {
             self.ptr.as_ptr().write_bytes(val, to_copy);
@@ -587,13 +623,7 @@ impl<'a> SubMapping<'a> {
         length: usize,
         offset: i64,
     ) -> Result<usize> {
-        if !self.prot.contains(Prot::READ) {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                "No write access",
-            ));
-        }
-
+        self.check_read_access()?;
         let to_write = usize::min(length, self.len);
         let written = unsafe {
             libc::pwrite(
@@ -822,6 +852,19 @@ impl MemCtx {
             false
         }
     }
+    /// Write multiple values to guest memory
+    ///
+    /// If the memory offset and value(s) size would result in the copy crossing
+    /// vmm memory segments, this will fail.
+    pub fn write_many<T: Copy>(&self, addr: GuestAddr, val: &[T]) -> bool {
+        if let Some(mapping) =
+            self.region_covered(addr, size_of_val(val), Prot::WRITE)
+        {
+            mapping.write_many(val).is_ok()
+        } else {
+            false
+        }
+    }
 
     pub fn writable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
         let mapping = self.region_covered(region.0, region.1, Prot::WRITE)?;
@@ -1011,6 +1054,15 @@ pub mod tests {
 
         let mut buf: [u8; TEST_LEN + 1] = [0; TEST_LEN + 1];
         assert_eq!(TEST_LEN, mapping.read_bytes(&mut buf).unwrap());
+    }
+
+    #[test]
+    fn mapping_shortens_write_bytes_beyond_end() {
+        let (_hdl, base) = test_setup(Prot::RW);
+        let mapping = SubMapping::new_base_test(base);
+
+        let mut buf: [u8; TEST_LEN + 1] = [0; TEST_LEN + 1];
+        assert_eq!(TEST_LEN, mapping.write_bytes(&mut buf).unwrap());
     }
 
     #[test]

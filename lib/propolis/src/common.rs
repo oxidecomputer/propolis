@@ -336,11 +336,11 @@ impl RWOp<'_, '_> {
 }
 
 /// An address within a guest VM.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GuestAddr(pub u64);
 
 /// A region of memory within a guest VM.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GuestRegion(pub GuestAddr, pub usize);
 
 impl Add<usize> for GuestAddr {
