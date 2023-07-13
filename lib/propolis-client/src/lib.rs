@@ -457,6 +457,14 @@ pub mod support {
         }
     }
 
+    #[allow(dead_code)]
+    fn assert_send<T: Send>() {}
+
+    fn _assert_impls() {
+        assert_send::<InstanceSerialConsoleHelper>();
+        assert_send::<InstanceSerialConsoleMessage>();
+    }
+
     #[cfg(test)]
     mod tests {
         use super::InstanceSerialConsoleControlMessage;
@@ -628,13 +636,5 @@ pub mod support {
         {
             WebSocketStream::from_raw_socket(conn, Role::Server, None).await
         }
-    }
-
-    #[allow(dead_code)]
-    fn assert_send<T: Send>() {}
-
-    fn _assert_impls() {
-        assert_send::<InstanceSerialConsoleHelper>();
-        assert_send::<InstanceSerialConsoleMessage>();
     }
 }

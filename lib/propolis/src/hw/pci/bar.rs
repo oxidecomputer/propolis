@@ -141,7 +141,7 @@ impl Bars {
             }
             EntryKind::Mmio64High => {
                 assert!(idx > 0);
-                let mut ent = &mut self.entries[idx - 1];
+                let ent = &mut self.entries[idx - 1];
                 let size = match ent.kind {
                     EntryKind::Mmio64(sz) => sz,
                     _ => panic!(),
