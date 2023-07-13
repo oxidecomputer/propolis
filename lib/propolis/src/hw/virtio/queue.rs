@@ -455,7 +455,7 @@ impl Chain {
         }
     }
     fn push_buf(&mut self, buf: ChainBuf) {
-        let (mut stat, len) = match buf {
+        let (stat, len) = match buf {
             ChainBuf::Readable(_, len) => (&mut self.read_stat, len),
             ChainBuf::Writable(_, len) => (&mut self.write_stat, len),
         };

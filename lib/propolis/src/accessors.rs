@@ -174,10 +174,10 @@ impl<T> NodeInner<T> {
 
     fn guard(&self) -> Option<Guard<'_, T>> {
         let local = self.local.lock().unwrap();
-        local.resource.as_ref().map(|res| Guard {
-            inner: res.clone(),
-            _pd: PhantomData::default(),
-        })
+        local
+            .resource
+            .as_ref()
+            .map(|res| Guard { inner: res.clone(), _pd: PhantomData })
     }
 
     fn poison(&self) -> Option<Arc<T>> {
