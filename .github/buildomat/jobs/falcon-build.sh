@@ -2,7 +2,7 @@
 #:
 #: name = "falcon"
 #: variety = "basic"
-#: target = "helios-latest"
+#: target = "helios-2.0"
 #: rust_toolchain = "stable"
 #: output_rules = [
 #:   "/work/release/*",
