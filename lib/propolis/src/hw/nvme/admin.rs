@@ -1,8 +1,7 @@
 use std::cmp::min;
 use std::mem::size_of;
 
-use crate::common::GuestAddr;
-use crate::common::PAGE_SIZE;
+use crate::common::{GuestAddr, GuestRegion, PAGE_SIZE};
 use crate::vmm::MemCtx;
 
 use super::bits::*;
@@ -186,14 +185,19 @@ impl NvmeCtrl {
         cmd: &cmds::GetLogPageCmd,
         mem: &MemCtx,
     ) -> cmds::Completion {
-        assert!((cmd.len as usize) < PAGE_SIZE);
-        let buf = cmd
+        if let Some(regions) = cmd
             .data(mem)
-            .next()
-            .expect("missing prp entry for log page response");
-        // TODO: actually keep a log that we can write back instead of all zeros
-        assert!(mem.write_byte(buf.0, 0, cmd.len as usize));
-        cmds::Completion::success()
+            .map(|r| mem.writable_region(&r))
+            .collect::<Option<Vec<_>>>()
+        {
+            // TODO: Keep a log to write back instead of 0s
+            for region in regions {
+                let _ = region.write_byte(0, region.len());
+            }
+            cmds::Completion::success()
+        } else {
+            cmds::Completion::generic_err(STS_DATA_XFER_ERR)
+        }
     }
 
     /// Service Identify command.
@@ -208,12 +212,16 @@ impl NvmeCtrl {
             IDENT_CNS_NAMESPACE => match cmd.nsid {
                 1 => {
                     assert!(size_of::<IdentifyNamespace>() <= PAGE_SIZE);
-                    let buf = cmd
-                        .data(mem)
-                        .next()
-                        .expect("missing prp entry for ident response");
-                    assert!(mem.write(buf.0, &self.ns_ident));
-                    cmds::Completion::success()
+                    match Self::write_admin_result(
+                        cmd.data(mem),
+                        &self.ns_ident,
+                        mem,
+                    ) {
+                        Some(_) => cmds::Completion::success(),
+                        None => {
+                            cmds::Completion::generic_err(STS_DATA_XFER_ERR)
+                        }
+                    }
                 }
                 // 0 is not a valid NSID (See NVMe 1.0e, Section 6.1 Namespaces)
                 // We also don't currently support namespace management
@@ -224,12 +232,15 @@ impl NvmeCtrl {
             },
             IDENT_CNS_CONTROLLER => {
                 assert!(size_of::<IdentifyController>() <= PAGE_SIZE);
-                let buf = cmd
-                    .data(mem)
-                    .next()
-                    .expect("missing prp entry for ident response");
-                assert!(mem.write(buf.0, &self.ctrl_ident));
-                cmds::Completion::success()
+
+                match Self::write_admin_result(
+                    cmd.data(mem),
+                    &self.ctrl_ident,
+                    mem,
+                ) {
+                    Some(_) => cmds::Completion::success(),
+                    None => cmds::Completion::generic_err(STS_DATA_XFER_ERR),
+                }
             }
             // We currently present NVMe version 1.0 in which CNS is a 1-bit field
             // and hence only need to support the NAMESPACE and CONTROLLER cases
@@ -280,6 +291,60 @@ impl NvmeCtrl {
             | cmds::FeatureIdent::Vendor(_) => {
                 cmds::Completion::generic_err(STS_INVAL_FIELD)
             }
+        }
+    }
+
+    /// Write result data from an admin command into host memory
+    ///
+    /// The `data` type must be `repr(packed(1))`
+    ///
+    /// Returns `Some(())` if successful, else None
+    fn write_admin_result<T: Copy>(
+        prp: cmds::PrpIter,
+        data: &T,
+        mem: &MemCtx,
+    ) -> Option<()> {
+        let bufs: Vec<GuestRegion> = prp.collect();
+        if size_of::<T>() > bufs.iter().map(|r| r.1).sum::<usize>() {
+            // Not enough space
+            return None;
+        }
+        let regions = bufs
+            .into_iter()
+            .map(|r| mem.writable_region(&r))
+            .collect::<Option<Vec<_>>>()?;
+        if regions.len() == 1 {
+            // Can be copied to one contiguous page
+            regions[0].write(data).ok()?;
+            Some(())
+        } else {
+            // Split across multiple pages
+
+            // Safety:
+            //
+            // We expect and demand that the resulting structs written through
+            // this function are packed, such that there is no padding to risk
+            // UB through the [u8] slice creation.
+            let mut raw = unsafe {
+                std::slice::from_raw_parts(
+                    data as *const T as *const u8,
+                    size_of::<T>(),
+                )
+            };
+            let mut copied = 0;
+            for region in regions {
+                let write_len = usize::min(region.len(), raw.len());
+
+                let to_copy;
+                (to_copy, raw) = raw.split_at(write_len);
+                copied += region.write_bytes(&to_copy).ok()?;
+
+                if raw.is_empty() {
+                    break;
+                }
+            }
+            assert_eq!(copied, size_of::<T>());
+            Some(())
         }
     }
 }

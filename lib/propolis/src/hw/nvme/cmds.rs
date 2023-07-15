@@ -244,9 +244,13 @@ pub struct GetLogPageCmd {
 }
 
 impl GetLogPageCmd {
-    /// Returns an Iterator that yields [`GuestRegion`]'s to write the log page data to.
+    /// Returns an Iterator that yields [`GuestRegion`]'s to write the log page
+    /// data to.
+    ///
+    /// The expected size of the memory covered by the PRPs is defined by
+    /// `NUMD`, stored as bytes (rather than number Dwords) in [`Self::len`]
     pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
-        PrpIter::new(PAGE_SIZE as u64, self.prp1, self.prp2, mem)
+        PrpIter::new(self.len as u64, self.prp1, self.prp2, mem)
     }
 }
 
