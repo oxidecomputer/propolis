@@ -8,56 +8,13 @@
 //! guest environment configuration supplied by the Propolis VMM. RFD 283
 //! contains more details about how specs are used throughout the Oxide stack.
 //!
-//! # Spec format
+//! # Module layout
 //!
-//! Instance specs are divided into two parts:
+//! TODO(gjc)
 //!
-//! - The "device" half describes the VM components and interfaces that guest
-//!   software can observe directly. Device configuration generally can't change
-//!   at runtime without the guest's cooperation.
-//! - The "backend" half describes how the VM connects to services (provided by
-//!   the host OS or other parts of the rack) that supply functions the devices
-//!   need to provide their abstractions to guests.
+//! # Versioning & compatibility
 //!
-//! For example, to expose a virtual NVMe disk to a guest, a spec defines an
-//! NVMe device (expressing that the VMM should create a PCI device exposing an
-//! NVMe-conforming interface at a specific bus/device/function) and connects it
-//! to a storage backend (expressing that I/O to the virtual disk should be
-//! serviced by a local file, or by the Crucible storage service, or by a buffer
-//! in the VMM's memory).
-//!
-//! # Instance specs and the VM lifecycle
-//!
-//! Instance specs are used to initialize new VMs and during live migration.
-//! VM initialization uses specs to determine what components to create. Live
-//! migration uses the [`MigrationElement`] trait to determine if components
-//! between two specs would, if realized, be incompatible with one another.
-//!
-//! # Verification
-//!
-//! This module has few opinions about what constitues a valid, usable spec: if
-//! something deserializes, then as far as this module is concerned, it
-//! describes a valid spec. Spec consumers, of course, will generally be more
-//! discriminating, e.g. a Propolis server may refuse to start a VM that has
-//! a device that names a nonexistent backend.
-//!
-//! # Versioning
-//!
-//! NOTE: Instance spec versioning is not fully formalized yet; see RFD 283.
-//!
-//! What versioning requirements exist today are enforced through serde
-//! attributes:
-//!
-//! - All components in an instance spec and the spec itself are marked
-//! `#[serde(deny_unknown_fields)]`. This ensures that if spec version 2 adds a
-//! new field, then it will not be interpreted by library version 1 as a v1 spec
-//! unless library v2 removes the extra fields.
-//! - New spec fields that have backward-compatible default values should have
-//! the `#[serde(default)]` attribute so that previous spec versions can be
-//! compatibly deserialized into new versions. If this isn't possible, the old
-//! spec definition should be preserved so that library v2 can decide if it can
-//! accept a v1 spec despite not being able to supply a default value for a new
-//! field.
+//! TODO(gjc)
 
 #![allow(rustdoc::private_intra_doc_links)]
 
@@ -70,8 +27,11 @@ use thiserror::Error;
 pub use crucible_client_types::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
+pub mod v0;
+
 mod backends;
 mod builder;
+mod components;
 mod devices;
 
 // If this module was built with a generated OpenAPI client, also build in some
