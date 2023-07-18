@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 /// IO port and IRQ definitions for standard IBM PC hardware
 
 pub const PORT_COM1: u16 = 0x3f8;

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 pub const VIRTIO_DEV_NET: u16 = 0x1000;
 pub const VIRTIO_DEV_BLOCK: u16 = 0x1001;
 pub const VIRTIO_DEV_9P: u16 = 0x1009;

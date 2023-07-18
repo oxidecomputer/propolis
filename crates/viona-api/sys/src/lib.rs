@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 pub mod ioctls {
     const VNA_IOC: i32 = ((b'V' as i32) << 16) | ((b'C' as i32) << 8);
 

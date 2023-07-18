@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Handles requests to change a Propolis server's state via the external API.
 //!
 //! An instance accepts or rejects requests to change state based on a

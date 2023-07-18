@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Routines and types for saving and restoring a snapshot of a VM.
 //!
 //! TODO(luqmana) do this in a more structed way, it's a fun mess of
