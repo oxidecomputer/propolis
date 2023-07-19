@@ -2,8 +2,10 @@
 //! its components to talk to other services supplied by the host OS or the
 //! larger rack.
 
+use crate::instance_spec::migration::MigrationElement;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// A Crucible storage backend.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
@@ -23,6 +25,28 @@ pub struct CrucibleStorageBackend {
     pub readonly: bool,
 }
 
+impl MigrationElement for CrucibleStorageBackend {
+    fn kind(&self) -> &'static str {
+        "CrucibleStorageBackend"
+    }
+
+    fn can_migrate_from_element(
+        &self,
+        other: &Self,
+    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
+    {
+        if self.readonly != other.readonly {
+            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
+                "read-only mismatch (self: {}, other: {})",
+                self.readonly, other.readonly,
+            ))
+            .into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// A storage backend backed by a file in the host system's file system.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -32,6 +56,28 @@ pub struct FileStorageBackend {
 
     /// Indicates whether the storage is read-only.
     pub readonly: bool,
+}
+
+impl MigrationElement for FileStorageBackend {
+    fn kind(&self) -> &'static str {
+        "FileStorageBackend"
+    }
+
+    fn can_migrate_from_element(
+        &self,
+        other: &Self,
+    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
+    {
+        if self.readonly != other.readonly {
+            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
+                "read-only mismatch (self: {}, other: {})",
+                self.readonly, other.readonly,
+            ))
+            .into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// A storage backend backed by an in-memory buffer in the Propolis process.
@@ -45,12 +91,48 @@ pub struct InMemoryStorageBackend {
     pub readonly: bool,
 }
 
+impl MigrationElement for InMemoryStorageBackend {
+    fn kind(&self) -> &'static str {
+        "InMemoryStorageBackend"
+    }
+
+    fn can_migrate_from_element(
+        &self,
+        other: &Self,
+    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
+    {
+        if self.readonly != other.readonly {
+            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
+                "read-only mismatch (self: {}, other: {})",
+                self.readonly, other.readonly,
+            ))
+            .into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// A network backend associated with a virtio-net (viona) VNIC on the host.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VirtioNetworkBackend {
     /// The name of the viona VNIC to use as a backend.
-    vnic_name: String,
+    pub vnic_name: String,
+}
+
+impl MigrationElement for VirtioNetworkBackend {
+    fn kind(&self) -> &'static str {
+        "VirtioNetworkBackend"
+    }
+
+    fn can_migrate_from_element(
+        &self,
+        _other: &Self,
+    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
+    {
+        Ok(())
+    }
 }
 
 /// A network backend associated with a DLPI VNIC on the host.
@@ -58,5 +140,25 @@ pub struct VirtioNetworkBackend {
 #[serde(deny_unknown_fields)]
 pub struct DlpiNetworkBackend {
     /// The name of the VNIC to use as a backend.
-    vnic_name: String,
+    pub vnic_name: String,
+}
+
+impl MigrationElement for DlpiNetworkBackend {
+    fn kind(&self) -> &'static str {
+        "DlpiNetworkBackend"
+    }
+
+    fn can_migrate_from_element(
+        &self,
+        _other: &Self,
+    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
+    {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum MigrationCompatibilityError {
+    #[error("component configurations incompatible: {0}")]
+    ComponentConfiguration(String),
 }

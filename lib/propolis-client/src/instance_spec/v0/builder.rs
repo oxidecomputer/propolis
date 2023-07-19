@@ -38,7 +38,9 @@ impl SpecBuilder {
         let board = components::board::Board {
             cpus,
             memory_mb,
-            chipset: components::board::Chipset::I440Fx { enable_pcie },
+            chipset: components::board::Chipset::I440Fx(
+                components::board::I440Fx { enable_pcie },
+            ),
         };
 
         Self {

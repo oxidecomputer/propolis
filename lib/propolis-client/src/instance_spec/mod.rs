@@ -33,6 +33,7 @@ mod backends;
 mod builder;
 mod components;
 mod devices;
+mod migration;
 
 // If this module was built with a generated OpenAPI client, also build in some
 // `From` impls that convert from native instance spec types to the generated
@@ -141,7 +142,7 @@ pub enum MigrationCompatibilityError {
 }
 
 /// Implementors of this trait are individual devices or VMM components who can
-/// describe inconsistencies using a [`SpecElementMismatchDetails`] variant.
+/// describe inconsistencies using an [`ElementCompatibilityError`] variant.
 trait MigrationElement {
     /// Returns true if `self` and `other` describe spec elements that are
     /// similar enough to permit migration of this element from one VMM to
