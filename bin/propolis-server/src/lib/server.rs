@@ -30,7 +30,7 @@ pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_client::{
     handmade::api,
-    instance_spec::{self, InstanceSpec},
+    instance_spec::{self, VersionedInstanceSpec},
 };
 use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
@@ -106,7 +106,7 @@ pub enum VmControllerState {
         //
         // TODO: Merge this into `api::Instance` when the migration to generated
         // types is complete.
-        last_instance_spec: Box<InstanceSpec>,
+        last_instance_spec: Box<VersionedInstanceSpec>,
 
         /// A clone of the receiver side of the server's state watcher, used to
         /// serve subsequent `instance_state_monitor` requests. Note that an
@@ -281,7 +281,7 @@ enum SpecCreationError {
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<InstanceSpec, SpecCreationError> {
+) -> Result<VersionedInstanceSpec, SpecCreationError> {
     let mut spec_builder =
         ServerSpecBuilder::new(&request.properties, toml_config)?;
 
@@ -299,17 +299,17 @@ fn instance_spec_from_request(
 
     spec_builder.add_devices_from_config(toml_config)?;
     for port in [
-        instance_spec::SerialPortNumber::Com1,
-        instance_spec::SerialPortNumber::Com2,
-        instance_spec::SerialPortNumber::Com3,
+        instance_spec::components::devices::SerialPortNumber::Com1,
+        instance_spec::components::devices::SerialPortNumber::Com2,
+        instance_spec::components::devices::SerialPortNumber::Com3,
         // SoftNpu uses this port for ASIC management.
         #[cfg(not(feature = "falcon"))]
-        instance_spec::SerialPortNumber::Com4,
+        instance_spec::components::devices::SerialPortNumber::Com4,
     ] {
         spec_builder.add_serial_port(port)?;
     }
 
-    Ok(spec_builder.finish())
+    Ok(VersionedInstanceSpec::V0(spec_builder.finish()))
 }
 
 /// Attempts to register an Oximeter server reporting metrics from a new
@@ -646,7 +646,7 @@ async fn instance_spec_ensure(
 
 async fn instance_get_common(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<(api::Instance, InstanceSpec), HttpError> {
+) -> Result<(api::Instance, VersionedInstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
         VmControllerState::NotCreated => Err(HttpError::for_not_found(

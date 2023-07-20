@@ -9,7 +9,14 @@ use std::str::FromStr;
 use propolis_client::handmade::api::{
     self, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
-use propolis_client::instance_spec::*;
+use propolis_client::instance_spec::{
+    components,
+    v0::{
+        builder::{SpecBuilder, SpecBuilderError},
+        *,
+    },
+    PciPath,
+};
 
 use thiserror::Error;
 
@@ -40,6 +47,9 @@ pub enum ServerSpecBuilderError {
 
     #[error("Error in server config TOML: {0}")]
     ConfigTomlError(String),
+
+    #[error("Error serializing {0} into spec element: {1}")]
+    SerializationError(String, serde_json::error::Error),
 }
 
 /// A type of PCI device. Device numbers on the PCI bus are partitioned by slot
@@ -89,10 +99,10 @@ fn pci_path_to_nic_names(path: PciPath) -> (String, String) {
 fn make_storage_backend_from_config(
     name: &str,
     backend: &config::BlockDevice,
-) -> Result<StorageBackend, ServerSpecBuilderError> {
-    let backend_spec = StorageBackend {
-        kind: match backend.bdtype.as_str() {
-            "file" => StorageBackendKind::File {
+) -> Result<StorageBackendV0, ServerSpecBuilderError> {
+    let backend_spec = match backend.bdtype.as_str() {
+        "file" => {
+            StorageBackendV0::File(components::backends::FileStorageBackend {
                 path: backend
                     .options
                     .get("path")
@@ -110,19 +120,19 @@ fn make_storage_backend_from_config(
                         ))
                     })?
                     .to_string(),
-            },
-            _ => {
-                return Err(ServerSpecBuilderError::UnrecognizedStorageBackend(
-                    backend.bdtype.to_string(),
-                ))
-            }
-        },
-        readonly: match backend.options.get("readonly") {
-            Some(toml::Value::Boolean(ro)) => Some(*ro),
-            Some(toml::Value::String(v)) => v.parse().ok(),
-            _ => None,
+                readonly: match backend.options.get("readonly") {
+                    Some(toml::Value::Boolean(ro)) => Some(*ro),
+                    Some(toml::Value::String(v)) => v.parse().ok(),
+                    _ => None,
+                }
+                .unwrap_or(false),
+            })
         }
-        .unwrap_or(false),
+        _ => {
+            return Err(ServerSpecBuilderError::UnrecognizedStorageBackend(
+                backend.bdtype.clone(),
+            ));
+        }
     };
 
     Ok(backend_spec)
@@ -130,9 +140,24 @@ fn make_storage_backend_from_config(
 
 fn make_storage_device_from_config(
     name: &str,
-    kind: StorageDeviceKind,
     device: &config::Device,
-) -> Result<StorageDevice, ServerSpecBuilderError> {
+) -> Result<StorageDeviceV0, ServerSpecBuilderError> {
+    enum DeviceInterface {
+        Virtio,
+        Nvme,
+    }
+
+    let interface = match device.driver.as_str() {
+        "pci-virtio-block" => DeviceInterface::Virtio,
+        "pci-nvme" => DeviceInterface::Nvme,
+        _ => {
+            return Err(ServerSpecBuilderError::ConfigTomlError(format!(
+                "storage device {} has invalid driver {}",
+                name, device.driver
+            )))
+        }
+    };
+
     let backend_name = device
         .options
         .get("block_dev")
@@ -148,7 +173,8 @@ fn make_storage_device_from_config(
                 "Couldn't parse block_dev for storage device {}",
                 name
             ))
-        })?;
+        })?
+        .to_owned();
 
     let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
         ServerSpecBuilderError::ConfigTomlError(format!(
@@ -157,7 +183,20 @@ fn make_storage_device_from_config(
         ))
     })?;
 
-    Ok(StorageDevice { kind, backend_name: backend_name.to_string(), pci_path })
+    Ok(match interface {
+        DeviceInterface::Virtio => {
+            StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
+                backend_name,
+                pci_path,
+            })
+        }
+        DeviceInterface::Nvme => {
+            StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
+                backend_name,
+                pci_path,
+            })
+        }
+    })
 }
 
 /// A helper for building instance specs out of component parts.
@@ -200,13 +239,16 @@ impl ServerSpecBuilder {
         let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
         let device_spec =
-            NetworkDevice { backend_name: backend_name.clone(), pci_path };
+            NetworkDeviceV0::VirtioNic(components::devices::VirtioNic {
+                backend_name: backend_name.clone(),
+                pci_path,
+            });
 
-        let backend_spec = NetworkBackend {
-            kind: NetworkBackendKind::Virtio {
+        let backend_spec = NetworkBackendV0::Virtio(
+            components::backends::VirtioNetworkBackend {
                 vnic_name: nic.name.to_string(),
             },
-        };
+        );
 
         self.builder.add_network_device(
             device_name,
@@ -226,28 +268,41 @@ impl ServerSpecBuilder {
     ) -> Result<(), ServerSpecBuilderError> {
         let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
         let backend_name = disk.name.clone();
-        let backend_spec = StorageBackend {
-            kind: StorageBackendKind::Crucible {
-                req: disk.volume_construction_request.clone(),
+
+        let backend_spec = StorageBackendV0::Crucible(
+            components::backends::CrucibleStorageBackend {
+                request_json: serde_json::to_string(
+                    &disk.volume_construction_request,
+                )
+                .map_err(|e| {
+                    ServerSpecBuilderError::SerializationError(
+                        disk.name.clone(),
+                        e,
+                    )
+                })?,
+                readonly: disk.read_only,
             },
-            readonly: disk.read_only,
-        };
+        );
 
         let device_name = disk.name.clone();
-        let device_spec = StorageDevice {
-            kind: match disk.device.as_ref() {
-                "virtio" => StorageDeviceKind::Virtio,
-                "nvme" => StorageDeviceKind::Nvme,
-                _ => {
-                    return Err(
-                        ServerSpecBuilderError::UnrecognizedStorageDevice(
-                            disk.device.clone(),
-                        ),
-                    );
-                }
-            },
-            backend_name: disk.name.to_string(),
-            pci_path,
+        let device_spec = match disk.device.as_ref() {
+            "virtio" => {
+                StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
+                    backend_name: disk.name.to_string(),
+                    pci_path,
+                })
+            }
+            "nvme" => {
+                StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
+                    backend_name: disk.name.to_string(),
+                    pci_path,
+                })
+            }
+            _ => {
+                return Err(ServerSpecBuilderError::UnrecognizedStorageDevice(
+                    disk.device.clone(),
+                ))
+            }
         };
 
         self.builder.add_storage_device(
@@ -269,17 +324,19 @@ impl ServerSpecBuilder {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         let backend_name = name.to_string();
-        let backend_spec = StorageBackend {
-            kind: StorageBackendKind::InMemory { base64 },
-            readonly: true,
-        };
+        let backend_spec = StorageBackendV0::InMemory(
+            components::backends::InMemoryStorageBackend {
+                base64,
+                readonly: true,
+            },
+        );
 
         let device_name = name.to_string();
-        let device_spec = StorageDevice {
-            kind: StorageDeviceKind::Virtio,
-            backend_name: name.to_string(),
-            pci_path,
-        };
+        let device_spec =
+            StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
+                backend_name: name.to_string(),
+                pci_path,
+            });
 
         self.builder.add_storage_device(
             device_name,
@@ -311,14 +368,17 @@ impl ServerSpecBuilder {
         })?;
 
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
-        let backend_spec = NetworkBackend {
-            kind: NetworkBackendKind::Virtio {
+        let backend_spec = NetworkBackendV0::Virtio(
+            components::backends::VirtioNetworkBackend {
                 vnic_name: vnic_name.to_string(),
             },
-        };
+        );
 
         let device_spec =
-            NetworkDevice { backend_name: backend_name.clone(), pci_path };
+            NetworkDeviceV0::VirtioNic(components::devices::VirtioNic {
+                backend_name: backend_name.clone(),
+                pci_path,
+            });
 
         self.builder.add_network_device(
             device_name,
@@ -341,7 +401,10 @@ impl ServerSpecBuilder {
 
         self.builder.add_pci_bridge(
             name,
-            PciPciBridge { downstream_bus: bridge.downstream_bus, pci_path },
+            components::devices::PciPciBridge {
+                downstream_bus: bridge.downstream_bus,
+                pci_path,
+            },
         )?;
 
         Ok(())
@@ -359,34 +422,33 @@ impl ServerSpecBuilder {
                 // If this is a storage device, parse its "block_dev" property
                 // to get the name of its corresponding backend.
                 "pci-virtio-block" | "pci-nvme" => {
-                    let device_kind = match driver {
-                        "pci-virtio-block" => StorageDeviceKind::Virtio,
-                        "pci-nvme" => StorageDeviceKind::Nvme,
-                        _ => unreachable!(),
-                    };
+                    let device_spec =
+                        make_storage_device_from_config(device_name, device)?;
 
-                    let device_spec = make_storage_device_from_config(
-                        device_name,
-                        device_kind,
-                        device,
-                    )?;
+                    let backend_name = match &device_spec {
+                        StorageDeviceV0::VirtioDisk(disk) => {
+                            disk.backend_name.clone()
+                        }
+                        StorageDeviceV0::NvmeDisk(disk) => {
+                            disk.backend_name.clone()
+                        }
+                    };
 
                     let backend_config = config
                         .block_devs
-                        .get(&device_spec.backend_name)
+                        .get(&backend_name)
                         .ok_or_else(|| {
-                            ServerSpecBuilderError::DeviceMissingBackend(
-                                device_name.clone(),
-                                device_spec.backend_name.clone(),
-                            )
-                        })?;
+                        ServerSpecBuilderError::DeviceMissingBackend(
+                            device_name.clone(),
+                            backend_name.clone(),
+                        )
+                    })?;
 
                     let backend_spec = make_storage_backend_from_config(
-                        &device_spec.backend_name,
+                        &backend_name,
                         backend_config,
                     )?;
 
-                    let backend_name = device_spec.backend_name.clone();
                     self.builder.add_storage_device(
                         device_name.clone(),
                         device_spec,
@@ -523,13 +585,13 @@ impl ServerSpecBuilder {
     /// Adds a serial port specification to the spec under construction.
     pub fn add_serial_port(
         &mut self,
-        port: SerialPortNumber,
+        port: components::devices::SerialPortNumber,
     ) -> Result<(), ServerSpecBuilderError> {
         self.builder.add_serial_port(port)?;
         Ok(())
     }
 
-    pub fn finish(self) -> InstanceSpec {
+    pub fn finish(self) -> InstanceSpecV0 {
         self.builder.finish()
     }
 }
@@ -538,6 +600,7 @@ impl ServerSpecBuilder {
 mod test {
     use std::{collections::BTreeMap, path::PathBuf};
 
+    use crucible_client_types::VolumeConstructionRequest;
     use propolis_client::handmade::api::Slot;
     use uuid::Uuid;
 
@@ -613,6 +676,8 @@ mod test {
 
     #[test]
     fn duplicate_serial_port() {
+        use components::devices::SerialPortNumber;
+
         let mut builder = default_spec_builder().unwrap();
         assert!(builder.add_serial_port(SerialPortNumber::Com1).is_ok());
         assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());

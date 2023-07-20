@@ -12,6 +12,7 @@ use crate::serial::SerialConsole;
 
 use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
+use propolis_client::instance_spec::VersionedInstanceSpec;
 use propolis_client::types::{
     InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
     InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
@@ -152,9 +153,11 @@ impl TestVm {
             vcpus,
         };
 
+        let versioned_spec =
+            VersionedInstanceSpec::V0(self.config.instance_spec().to_owned());
         let ensure_req = InstanceSpecEnsureRequest {
             properties,
-            instance_spec: From::from(self.config.instance_spec().to_owned()),
+            instance_spec: versioned_spec,
             migrate,
         };
 

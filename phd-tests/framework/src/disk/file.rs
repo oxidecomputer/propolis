@@ -6,7 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use propolis_client::instance_spec::{StorageBackend, StorageBackendKind};
+use propolis_client::instance_spec::{
+    components::backends::FileStorageBackend, v0::StorageBackendV0,
+};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -58,13 +60,11 @@ impl FileBackedDisk {
 }
 
 impl super::DiskConfig for FileBackedDisk {
-    fn backend_spec(&self) -> StorageBackend {
-        StorageBackend {
-            kind: StorageBackendKind::File {
-                path: self.disk_path.to_string_lossy().to_string(),
-            },
+    fn backend_spec(&self) -> StorageBackendV0 {
+        StorageBackendV0::File(FileStorageBackend {
+            path: self.disk_path.to_string_lossy().to_string(),
             readonly: false,
-        }
+        })
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {

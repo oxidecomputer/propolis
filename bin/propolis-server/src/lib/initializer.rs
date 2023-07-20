@@ -9,6 +9,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
@@ -25,7 +26,7 @@ use propolis::hw::{nvme, virtio};
 use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
-use propolis_client::instance_spec::{self, *};
+use propolis_client::instance_spec::{self, v0::InstanceSpecV0};
 use slog::info;
 
 use crate::serial::Serial;
@@ -56,7 +57,7 @@ fn open_bootrom<P: AsRef<std::path::Path>>(path: P) -> Result<(File, usize)> {
     }
 }
 
-fn get_spec_guest_ram_limits(spec: &InstanceSpec) -> (usize, usize) {
+fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
     const MB: usize = 1024 * 1024;
     const GB: usize = 1024 * 1024 * 1024;
     let memsize = spec.devices.board.memory_mb as usize * MB;
@@ -67,7 +68,7 @@ fn get_spec_guest_ram_limits(spec: &InstanceSpec) -> (usize, usize) {
 
 pub fn build_instance(
     name: &str,
-    spec: &InstanceSpec,
+    spec: &InstanceSpecV0,
     use_reservoir: bool,
     _log: slog::Logger,
 ) -> Result<Instance> {
@@ -116,7 +117,7 @@ pub struct MachineInitializer<'a> {
     log: slog::Logger,
     machine: &'a Machine,
     inv: &'a Inventory,
-    spec: &'a InstanceSpec,
+    spec: &'a InstanceSpecV0,
     producer_registry: Option<ProducerRegistry>,
 }
 
@@ -125,7 +126,7 @@ impl<'a> MachineInitializer<'a> {
         log: slog::Logger,
         machine: &'a Machine,
         inv: &'a Inventory,
-        spec: &'a InstanceSpec,
+        spec: &'a InstanceSpecV0,
         producer_registry: Option<ProducerRegistry>,
     ) -> Self {
         MachineInitializer { log, machine, inv, spec, producer_registry }
@@ -187,7 +188,7 @@ impl<'a> MachineInitializer<'a> {
         let pci_topology = pci_builder.finish(self.inv, self.machine)?;
 
         match self.spec.devices.board.chipset {
-            instance_spec::Chipset::I440Fx { enable_pcie } => {
+            instance_spec::components::board::Chipset::I440Fx(i440fx) => {
                 let power_ref = Arc::downgrade(event_handler);
                 let reset_ref = Arc::downgrade(event_handler);
                 let power_pin = Arc::new(propolis::intr_pins::FuncPin::new(
@@ -215,7 +216,7 @@ impl<'a> MachineInitializer<'a> {
                     i440fx::Opts {
                         power_pin: Some(power_pin),
                         reset_pin: Some(reset_pin),
-                        enable_pcie,
+                        enable_pcie: i440fx.enable_pcie,
                     },
                     self.log.new(slog::o!("dev" => "chipset")),
                 );
@@ -229,6 +230,8 @@ impl<'a> MachineInitializer<'a> {
         &self,
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
+        use instance_spec::components::devices::SerialPortNumber;
+
         let mut com1 = None;
         for (name, serial_spec) in &self.spec.devices.serial_ports {
             let (irq, port) = match serial_spec.num {
@@ -272,6 +275,104 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
+    fn create_storage_backend_from_spec(
+        &self,
+        backend_spec: &instance_spec::v0::StorageBackendV0,
+        backend_name: &str,
+        nexus_client: &Option<NexusClient>,
+    ) -> Result<StorageBackendInstance, Error> {
+        match backend_spec {
+            instance_spec::v0::StorageBackendV0::Crucible(spec) => {
+                info!(self.log, "Creating Crucible disk";
+                      "serialized_vcr" => &spec.request_json);
+
+                let vcr: VolumeConstructionRequest =
+                    serde_json::from_str(&spec.request_json)?;
+
+                let cru_id = match vcr {
+                    VolumeConstructionRequest::Volume { id, .. } => {
+                        id.to_string()
+                    }
+                    VolumeConstructionRequest::File { id, .. } => {
+                        id.to_string()
+                    }
+                    VolumeConstructionRequest::Url { id, .. } => id.to_string(),
+                    VolumeConstructionRequest::Region { .. } => {
+                        "Region".to_string()
+                    }
+                };
+
+                let be = propolis::block::CrucibleBackend::create(
+                    vcr,
+                    spec.readonly,
+                    self.producer_registry.clone(),
+                    nexus_client.clone(),
+                    self.log.new(
+                        slog::o!("component" => format!("crucible-{cru_id}")),
+                    ),
+                )?;
+
+                let child = inventory::ChildRegister::new(
+                    &be,
+                    Some(be.get_uuid()?.to_string()),
+                );
+
+                let crucible = Some((be.get_uuid()?, be.clone()));
+                Ok(StorageBackendInstance { be, child, crucible })
+            }
+            instance_spec::v0::StorageBackendV0::File(spec) => {
+                info!(self.log, "Creating file disk backend";
+                      "path" => &spec.path);
+
+                let nworkers = NonZeroUsize::new(8).unwrap();
+                let be = propolis::block::FileBackend::create(
+                    &spec.path,
+                    spec.readonly,
+                    nworkers,
+                    self.log.new(
+                        slog::o!("component" => format!("file-{}", spec.path)),
+                    ),
+                )?;
+
+                let child =
+                    inventory::ChildRegister::new(&be, Some(spec.path.clone()));
+                Ok(StorageBackendInstance { be, child, crucible: None })
+            }
+            instance_spec::v0::StorageBackendV0::InMemory(spec) => {
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &spec.base64,
+                )
+                .map_err(|e| {
+                    Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "failed to decode base64 contents of in-memory \
+                                disk: {}",
+                            e
+                        ),
+                    )
+                })?;
+
+                info!(self.log, "Creating in-memory disk backend";
+                      "len" => bytes.len());
+
+                let be = propolis::block::InMemoryBackend::create(
+                    bytes.clone(),
+                    spec.readonly,
+                    512,
+                )?;
+
+                let child = inventory::ChildRegister::new(
+                    &be,
+                    Some(backend_name.to_string()),
+                );
+
+                Ok(StorageBackendInstance { be, child, crucible: None })
+            }
+        }
+    }
+
     /// Initializes the storage devices and backends listed in this
     /// initializer's instance spec.
     ///
@@ -282,130 +383,64 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
     ) -> Result<CrucibleBackendMap, Error> {
+        enum DeviceInterface {
+            Virtio,
+            Nvme,
+        }
+
         let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
             info!(
                 self.log,
-                "Creating storage device {} of kind {:?}",
+                "Creating storage device {} with properties {:?}",
                 name,
-                device_spec.kind
+                device_spec
             );
+
+            let (device_interface, backend_name, pci_path) = match device_spec {
+                instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
+                    (DeviceInterface::Virtio, &disk.backend_name, disk.pci_path)
+                }
+                instance_spec::v0::StorageDeviceV0::NvmeDisk(disk) => {
+                    (DeviceInterface::Nvme, &disk.backend_name, disk.pci_path)
+                }
+            };
+
             let backend_spec = self
                 .spec
                 .backends
                 .storage_backends
-                .get(&device_spec.backend_name)
+                .get(backend_name)
                 .ok_or_else(|| {
                     Error::new(
                         ErrorKind::InvalidInput,
                         format!(
                             "Backend {} not found for storage device {}",
-                            device_spec.backend_name, name
+                            backend_name, name
                         ),
                     )
                 })?;
-            let StorageBackendInstance { be: backend, child, crucible } =
-                match &backend_spec.kind {
-                    StorageBackendKind::Crucible { req } => {
-                        info!(
-                            self.log,
-                            "Creating Crucible disk from request {:?}", req
-                        );
-                        let cru_id = match req {
-                            VolumeConstructionRequest::Volume {
-                                id, ..
-                            } => id.to_string(),
-                            VolumeConstructionRequest::File { id, .. } => {
-                                id.to_string()
-                            }
-                            VolumeConstructionRequest::Url { id, .. } => {
-                                id.to_string()
-                            }
-                            VolumeConstructionRequest::Region { .. } => {
-                                "Region".to_string()
-                            }
-                        };
-                        let be = propolis::block::CrucibleBackend::create(
-                            req.clone(),
-                            backend_spec.readonly,
-                            self.producer_registry.clone(),
-                            nexus_client.clone(),
-                            self.log.new(slog::o!( "component" => format!(
-                                "crucible-{cru_id}"
-                            ))),
-                        )?;
-                        let child = inventory::ChildRegister::new(
-                            &be,
-                            Some(be.get_uuid()?.to_string()),
-                        );
-                        let crucible = Some((be.get_uuid()?, be.clone()));
-                        StorageBackendInstance { be, child, crucible }
-                    }
-                    StorageBackendKind::File { path } => {
-                        info!(
-                            self.log,
-                            "Creating file disk backend using path {}", path
-                        );
-                        let nworkers = NonZeroUsize::new(8).unwrap();
-                        let be = propolis::block::FileBackend::create(
-                            path,
-                            backend_spec.readonly,
-                            nworkers,
-                            self.log.new(slog::o!("component" =>
-                                              format!("file-{}", path))),
-                        )?;
-                        let child = inventory::ChildRegister::new(
-                            &be,
-                            Some(path.to_string()),
-                        );
-                        StorageBackendInstance { be, child, crucible: None }
-                    }
-                    StorageBackendKind::InMemory { base64 } => {
-                        let bytes = base64::Engine::decode(
-                            &base64::engine::general_purpose::STANDARD,
-                            base64,
-                        )
-                        .map_err(|e| {
-                            Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!(
-                                    "failed to decode base64 contents of \
-                                     in-memory disk: {}",
-                                    e
-                                ),
-                            )
-                        })?;
-                        info!(
-                            self.log,
-                            "Creating in-memory disk backend from {} bytes",
-                            bytes.len()
-                        );
-                        let be = propolis::block::InMemoryBackend::create(
-                            bytes.clone(),
-                            backend_spec.readonly,
-                            512,
-                        )?;
-                        let child = inventory::ChildRegister::new(
-                            &be,
-                            Some(name.to_string()),
-                        );
-                        StorageBackendInstance { be, child, crucible: None }
-                    }
-                };
 
-            let bdf: pci::Bdf =
-                device_spec.pci_path.try_into().map_err(|e| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Couldn't get PCI BDF for storage device {}: {}",
-                            name, e
-                        ),
-                    )
-                })?;
+            let StorageBackendInstance { be: backend, child, crucible } = self
+                .create_storage_backend_from_spec(
+                    backend_spec,
+                    &backend_name,
+                    &nexus_client,
+                )?;
+
+            let bdf: pci::Bdf = pci_path.try_into().map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "Couldn't get PCI BDF for storage device {}: {}",
+                        name, e
+                    ),
+                )
+            })?;
+
             let be_info = backend.info();
-            match device_spec.kind {
-                StorageDeviceKind::Virtio => {
+            match device_interface {
+                DeviceInterface::Virtio => {
                     let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
                     let id =
                         self.inv.register_instance(&vioblk, bdf.to_string())?;
@@ -413,7 +448,7 @@ impl<'a> MachineInitializer<'a> {
                     backend.attach(vioblk.clone())?;
                     chipset.device().pci_attach(bdf, vioblk);
                 }
-                StorageDeviceKind::Nvme => {
+                DeviceInterface::Nvme => {
                     let nvme = nvme::PciNvme::create(
                         name.to_string(),
                         be_info,
@@ -447,6 +482,9 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         for (name, vnic_spec) in &self.spec.devices.network_devices {
             info!(self.log, "Creating vNIC {}", name);
+            let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
+                vnic_spec;
+
             let backend_spec = self
                 .spec
                 .backends
@@ -467,9 +505,12 @@ impl<'a> MachineInitializer<'a> {
                     format!("Couldn't get PCI BDF for vNIC {}: {}", name, e),
                 )
             })?;
-            let vnic_name = match &backend_spec.kind {
-                NetworkBackendKind::Virtio { vnic_name } => vnic_name,
-                _ => {
+
+            let vnic_name = match backend_spec {
+                instance_spec::v0::NetworkBackendV0::Virtio(spec) => {
+                    &spec.vnic_name
+                }
+                instance_spec::v0::NetworkBackendV0::Dlpi(_) => {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
                         format!(
@@ -479,6 +520,7 @@ impl<'a> MachineInitializer<'a> {
                     ));
                 }
             };
+
             let viona = virtio::PciVirtioViona::new(
                 vnic_name,
                 0x100,
