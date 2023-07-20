@@ -133,7 +133,7 @@ impl DeviceSpecV0 {
         self.board.can_migrate_from_element(&other.board).map_err(|e| {
             MigrationCompatibilityError::ElementMismatch(
                 "board".to_string(),
-                e.into(),
+                e,
             )
         })?;
 

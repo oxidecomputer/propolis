@@ -124,7 +124,7 @@ impl MigrationElement for Board {
         } else if let Err(e) =
             self.chipset.can_migrate_from_element(&other.chipset)
         {
-            Err(e.into())
+            Err(e)
         } else {
             Ok(())
         }

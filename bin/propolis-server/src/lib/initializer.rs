@@ -424,7 +424,7 @@ impl<'a> MachineInitializer<'a> {
             let StorageBackendInstance { be: backend, child, crucible } = self
                 .create_storage_backend_from_spec(
                     backend_spec,
-                    &backend_name,
+                    backend_name,
                     &nexus_client,
                 )?;
 

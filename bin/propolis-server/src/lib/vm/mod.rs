@@ -407,7 +407,7 @@ impl VmController {
         let VersionedInstanceSpec::V0(v0_spec) = &instance_spec;
         let instance = build_instance(
             &properties.id.to_string(),
-            &v0_spec,
+            v0_spec,
             use_reservoir,
             vmm_log,
         )?;
@@ -432,7 +432,7 @@ impl VmController {
             log.clone(),
             machine,
             inv,
-            &v0_spec,
+            v0_spec,
             oximeter_registry,
         );
 
