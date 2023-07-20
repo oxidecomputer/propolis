@@ -547,7 +547,7 @@ impl<'a> MachineInitializer<'a> {
             return Ok(());
         }
 
-        let ports: Vec<&SoftNpuPort> =
+        let ports: Vec<&instance_spec::components::devices::SoftNpuPort> =
             self.spec.devices.softnpu_ports.values().collect();
 
         let mut data_links: Vec<String> = Vec::new();
@@ -567,8 +567,10 @@ impl<'a> MachineInitializer<'a> {
                     )
                 })?;
 
-            let vnic = match &backend.kind {
-                NetworkBackendKind::Dlpi { vnic_name } => vnic_name,
+            let vnic = match &backend {
+                instance_spec::v0::NetworkBackendV0::Dlpi(dlpi) => {
+                    &dlpi.vnic_name
+                }
                 _ => {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
