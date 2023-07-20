@@ -157,7 +157,7 @@ impl TestVm {
             VersionedInstanceSpec::V0(self.config.instance_spec().to_owned());
         let ensure_req = InstanceSpecEnsureRequest {
             properties,
-            instance_spec: versioned_spec,
+            instance_spec: versioned_spec.into(),
             migrate,
         };
 
