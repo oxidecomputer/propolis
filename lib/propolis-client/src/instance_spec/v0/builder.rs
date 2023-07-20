@@ -194,9 +194,9 @@ impl SpecBuilder {
     ) -> Result<&Self, SpecBuilderError> {
         let _old = self.spec.backends.network_backends.insert(
             port.backend_name.clone(),
-            components::backends::DlpiNetworkBackend {
+            NetworkBackendV0::Dlpi(components::backends::DlpiNetworkBackend {
                 vnic_name: port.backend_name.clone(),
-            },
+            }),
         );
         assert!(_old.is_none());
         if self.spec.devices.softnpu_ports.insert(key, port.clone()).is_some() {
@@ -219,7 +219,7 @@ impl SpecBuilder {
     #[cfg(feature = "falcon")]
     pub fn set_p9fs(
         &mut self,
-        p9fs: componentes::devices::P9fs,
+        p9fs: components::devices::P9fs,
     ) -> Result<&Self, SpecBuilderError> {
         self.register_pci_device(p9fs.pci_path)?;
         self.spec.devices.p9fs = Some(p9fs);

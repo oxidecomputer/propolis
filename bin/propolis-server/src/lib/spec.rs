@@ -503,7 +503,8 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_p9(SoftNpuP9 { pci_path })?;
+        self.builder
+            .set_softnpu_p9(components::devices::SoftNpuP9 { pci_path })?;
         Ok(())
     }
 
@@ -520,7 +521,9 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_pci_port(SoftNpuPciPort { pci_path })?;
+        self.builder.set_softnpu_pci_port(
+            components::devices::SoftNpuPciPort { pci_path },
+        )?;
 
         Ok(())
     }
@@ -540,7 +543,7 @@ impl ServerSpecBuilder {
 
         self.builder.add_softnpu_port(
             name.to_string(),
-            SoftNpuPort {
+            components::devices::SoftNpuPort {
                 name: name.to_string(),
                 backend_name: vnic_name.to_string(),
             },
@@ -577,7 +580,12 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_p9fs(P9fs { source, target, chunk_size, pci_path })?;
+        self.builder.set_p9fs(components::devices::P9fs {
+            source,
+            target,
+            chunk_size,
+            pci_path,
+        })?;
 
         Ok(())
     }
