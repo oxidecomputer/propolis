@@ -131,10 +131,7 @@ impl DeviceSpecV0 {
         other: &Self,
     ) -> Result<(), MigrationCompatibilityError> {
         self.board.can_migrate_from_element(&other.board).map_err(|e| {
-            MigrationCompatibilityError::ElementMismatch(
-                "board".to_string(),
-                e,
-            )
+            MigrationCompatibilityError::ElementMismatch("board".to_string(), e)
         })?;
 
         self.storage_devices
