@@ -394,6 +394,12 @@ impl VmController {
         runtime_hdl: tokio::runtime::Handle,
         stop_ch: oneshot::Sender<()>,
     ) -> anyhow::Result<Arc<Self>> {
+        info!(log, "initializing new VM";
+              "spec" => #?instance_spec,
+              "properties" => #?properties,
+              "use_reservoir" => use_reservoir,
+              "bootrom" => %bootrom.display());
+
         let vmm_log = log.new(slog::o!("component" => "vmm"));
 
         // Set up the 'shell' instance into which the rest of this routine will
