@@ -1426,6 +1426,7 @@
         ]
       },
       "VersionedInstanceSpec": {
+        "description": "A versioned instance spec.",
         "oneOf": [
           {
             "type": "object",

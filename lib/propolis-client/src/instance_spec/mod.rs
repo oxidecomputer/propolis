@@ -99,6 +99,10 @@
 //! and PCI path fields:
 //!
 //! ```
+//! # use serde::{Serialize, Deserialize};
+//! # use schemars::JsonSchema;
+//! # use propolis_types::PciPath;
+//!
 //! #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 //! #[serde(deny_unknown_fields)]
 //! struct VirtioComponent {
@@ -112,6 +116,10 @@
 //! follows:
 //!
 //! ```
+//! # use serde::{Serialize, Deserialize};
+//! # use schemars::JsonSchema;
+//! # use propolis_types::PciPath;
+//!
 //! #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 //! #[serde(deny_unknown_fields)]
 //! struct VirtioComponent {
