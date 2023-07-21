@@ -8,5 +8,7 @@ header:
       file, You can obtain one at https://mozilla.org/MPL/2.0/.
   paths:
     - '**/*.rs'
+  paths-ignore:
+    - 'target/**/*.rs'
 
   comment: on-failure
