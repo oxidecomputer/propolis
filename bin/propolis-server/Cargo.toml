@@ -76,7 +76,7 @@ default = []
 
 # When building to be packaged for inclusion in the production ramdisk
 # (nominally an Omicron package), certain code is compiled in or out.
-omicron-build = []
+omicron-build = ["propolis/omicron-build"]
 
 # If selected, only build a mock server which does not actually spawn instances
 # (i.e. to test with a facsimile of the API on unsupported platforms)

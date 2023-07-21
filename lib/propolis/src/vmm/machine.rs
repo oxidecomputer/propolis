@@ -12,7 +12,7 @@ use crate::accessors::*;
 use crate::hw;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
-use crate::vcpu::Vcpu;
+use crate::vcpu::{Vcpu, MAXCPU};
 use crate::vmm::{create_vm, CreateOpts, PhysMap, VmmHdl};
 
 /// Arbitrary limit for the top of the physical memory map.
@@ -249,7 +249,7 @@ impl Builder {
     }
     /// Sets the maximum number of CPUs for the machine.
     pub fn max_cpus(mut self, max: u8) -> Result<Self> {
-        if max == 0 || max > bhyve_api::VM_MAXCPU as u8 {
+        if max == 0 || max > MAXCPU as u8 {
             Err(Error::new(ErrorKind::InvalidInput, "maxcpu out of range"))
         } else {
             self.max_cpu = max;

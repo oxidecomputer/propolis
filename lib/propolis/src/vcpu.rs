@@ -22,6 +22,13 @@ mod probes {
     fn vm_exit(vcpuid: u32, rip: u64, code: u32) {}
 }
 
+#[cfg(not(feature = "omicron-build"))]
+pub const MAXCPU: usize = bhyve_api::VM_MAXCPU;
+
+// Helios (stlouis) is built with an expanded limit of 64
+#[cfg(feature = "omicron-build")]
+pub const MAXCPU: usize = 64;
+
 /// A handle to a virtual CPU.
 pub struct Vcpu {
     hdl: Arc<VmmHdl>,
