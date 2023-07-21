@@ -2,8 +2,7 @@
 //!
 //! Test cases create disks using the [`DiskFactory`] in their test contexts.
 //! They can then pass these disks to the VM factory to connect them to a
-//! specific guest VM. See the documentation for [`DiskFactory::create_disk`]
-//! for more information.
+//! specific guest VM.
 
 use std::{
     path::{Path, PathBuf},

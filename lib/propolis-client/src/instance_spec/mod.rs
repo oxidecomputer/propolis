@@ -26,9 +26,8 @@
 //!
 //! Instance specs are used to initialize new VMs and during live migration.
 //! VM initialization uses specs to determine what components to create. Live
-//! migration uses the [`MigrationCompatible`] trait to determine whether two
-//! specs would, if realized, create VMs that are sufficiently compatible to
-//! allow one VM to migrate to the other.
+//! migration uses the [`MigrationElement`] trait to determine if components
+//! between two specs would, if realized, be incompatible with one another.
 //!
 //! # Verification
 //!
@@ -55,6 +54,8 @@
 //! spec definition should be preserved so that library v2 can decide if it can
 //! accept a v1 spec despite not being able to supply a default value for a new
 //! field.
+
+#![allow(rustdoc::private_intra_doc_links)]
 
 use std::collections::{HashMap, HashSet};
 

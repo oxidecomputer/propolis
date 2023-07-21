@@ -194,7 +194,7 @@ impl TaskHdl {
     ///
     /// Places the task in the `held` state while the future is pending.
     ///
-    /// The future will become [ready](Poll::ready) when the task is requested
+    /// The future will become [Ready](Poll::Ready) when the task is requested
     /// to exit, or the hold request is cleared.
     pub async fn wait_held(&mut self) {
         Held::new(self).await

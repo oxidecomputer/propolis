@@ -184,8 +184,8 @@ impl<'a> Iterator for Remaining<'a> {
 /// Device state payload (of a given kind/version) output as part of the export
 /// logic for that device during a migration.
 ///
-/// Easiest to safely instantiate via [`Schema::emit`] to ensure that the
-/// kind/version matches the serialized payload.
+/// Easiest to safely instantiate via the [`From`] trait implemented for
+/// [`Schema`] to ensure that the kind/version matches the serialized payload.
 pub struct PayloadOutput {
     pub kind: &'static str,
     pub version: u32,

@@ -32,7 +32,7 @@ jobs:
     - uses: actions/checkout@v2
     - uses: dtolnay/rust-toolchain@stable
     - name: Test build documentation
-      run: cargo doc
+      run: cargo doc --workspace --no-deps
   build-and-test:
     runs-on: ubuntu-latest
     steps:
