@@ -1,6 +1,7 @@
 #!/bin/bash
 #:
 #: name = "phd-run"
+#: enable = false
 #: variety = "basic"
 #: target = "lab-2.0"
 #: output_rules = [

@@ -1,6 +1,7 @@
 #!/bin/bash
 #:
 #: name = "phd-build"
+#: enable = false
 #: variety = "basic"
 #: target = "helios-2.0"
 #: rust_toolchain = "stable"
