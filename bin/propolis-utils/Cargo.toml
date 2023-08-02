@@ -6,12 +6,18 @@ edition = "2021"
 
 [[bin]]
 name = "savex"
+test = false
+doctest = false
 
 [[bin]]
 name = "cpuid-gen"
+test = false
+doctest = false
 
 [[bin]]
 name = "rsrvrctl"
+test = false
+doctest = false
 
 [dependencies]
 anyhow.workspace = true

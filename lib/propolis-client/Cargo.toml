@@ -3,7 +3,8 @@ name = "propolis-client"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+doctest = false
 
 [dependencies]
 propolis_types.workspace = true
@@ -25,7 +26,7 @@ tokio-tungstenite = { workspace = true, optional = true }
 crucible-client-types.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [features]
 default = []

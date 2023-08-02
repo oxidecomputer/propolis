@@ -4,6 +4,11 @@ version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
 
+[[bin]]
+name = "phd-runner"
+test = false
+doctest = false
+
 [dependencies]
 anyhow.workspace = true
 backtrace.workspace = true

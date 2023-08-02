@@ -3,12 +3,12 @@ name = "phd-testcase-macros"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+proc_macro = true
+test = false
+doctest = false
 
 [dependencies]
 proc-macro2.workspace = true
 quote.workspace = true
 syn = { workspace = true, features = ["full"] }
-
-[lib]
-proc_macro = true

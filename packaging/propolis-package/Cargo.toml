@@ -3,6 +3,11 @@ name = "propolis-package"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "propolis-package"
+test = false
+doctest = false
+
 [dependencies]
 anyhow.workspace = true
 indicatif.workspace = true
