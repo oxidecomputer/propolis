@@ -8,7 +8,7 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use crate::accessors::{Guard as AccessorGuard, MemAccessor};
 use crate::common::*;
@@ -16,7 +16,6 @@ use crate::tasks::*;
 use crate::vmm::{MemCtx, SubMapping};
 
 use futures::future::BoxFuture;
-use once_cell::sync::OnceCell;
 use tokio::sync::{Mutex as TokioMutex, Notify, Semaphore};
 
 mod file;
@@ -420,8 +419,8 @@ impl Driver {
     ) -> Self {
         Self {
             inner: Arc::new(DriverInner {
-                bdev: OnceCell::new(),
-                acc_mem: OnceCell::new(),
+                bdev: OnceLock::new(),
+                acc_mem: OnceLock::new(),
                 queue: Mutex::new(VecDeque::new()),
                 cv: Condvar::new(),
                 idle_threads: Semaphore::new(0),
@@ -529,10 +528,10 @@ impl DriverCtrls {
 
 struct DriverInner {
     /// The block device providing the requests to be serviced
-    bdev: OnceCell<Arc<dyn Device>>,
+    bdev: OnceLock<Arc<dyn Device>>,
 
     /// Memory accessor through the underlying device
-    acc_mem: OnceCell<MemAccessor>,
+    acc_mem: OnceLock<MemAccessor>,
 
     /// Queue of I/O requests from the device ready to be serviced by the backend
     queue: Mutex<VecDeque<Request>>,
@@ -738,13 +737,13 @@ impl WorkerHdl {
 
 struct Inner {
     /// The block device providing the requests to be serviced
-    bdev: OnceCell<Arc<dyn Device>>,
+    bdev: OnceLock<Arc<dyn Device>>,
 
     /// Task control for work-scheduling task
     sched_ctrl: Mutex<Option<TaskCtrl>>,
 
     /// Memory accessor through the underlying device
-    acc_mem: OnceCell<MemAccessor>,
+    acc_mem: OnceLock<MemAccessor>,
 
     /// Notifier used to both respond to the block frontend when it has requests
     /// available for processing, as well as internally when waiting for workers
@@ -767,8 +766,8 @@ struct Inner {
 impl Inner {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            bdev: OnceCell::new(),
-            acc_mem: OnceCell::new(),
+            bdev: OnceLock::new(),
+            acc_mem: OnceLock::new(),
             sched_ctrl: Mutex::new(None),
 
             queue: TokioMutex::new(VecDeque::new()),

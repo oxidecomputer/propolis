@@ -3,6 +3,7 @@ name = "propolis"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
+rust-version = "1.70"
 
 [dependencies]
 libc.workspace = true
@@ -27,7 +28,6 @@ serde_arrays.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-once_cell.workspace = true
 crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }

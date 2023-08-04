@@ -12,10 +12,6 @@ Propolis works best (and its CI tests run) on AMD hosts, but it can also be used
 to run VMs on Intel hosts. Live migration is primarily supported on AMD hosts
 but may work on Intel hosts as well.
 
-### Minimum Supported Rust Version (MSRV)
-
-- Rust 1.67.0
-
 ## Building
 
 To build, run:
