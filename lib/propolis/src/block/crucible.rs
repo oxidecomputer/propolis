@@ -5,6 +5,7 @@
 //! Implement a virtual block device backed by Crucible
 
 use std::io;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use super::DeviceInfo;
@@ -29,45 +30,54 @@ pub struct CrucibleBackend {
     read_only: bool,
     block_size: u64,
     sectors: u64,
+
+    task_count: NonZeroUsize,
+}
+
+/// If [CreateOptions] does not specify a `task_count`, this value will be used.
+pub const DEFAULT_TASK_COUNT: NonZeroUsize =
+    unsafe { NonZeroUsize::new_unchecked(64) };
+
+pub struct CreateOptions {
+    pub request: VolumeConstructionRequest,
+    pub read_only: bool,
+    pub producer_registry: Option<ProducerRegistry>,
+    pub nexus_client: Option<NexusClient>,
+
+    /// Number of worker tasks to spawn for this backend
+    ///
+    /// This is an upper bound on the number of in-flight IOs possible, since
+    /// each task can handle on IO at any given time.  If [None] is specified,
+    /// then [DEFAULT_TASK_COUNT] will be used.
+    pub task_count: Option<NonZeroUsize>,
 }
 
 impl CrucibleBackend {
     pub fn create(
-        request: VolumeConstructionRequest,
-        read_only: bool,
-        producer_registry: Option<ProducerRegistry>,
-        nexus_client: Option<NexusClient>,
+        opts: CreateOptions,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
         let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move {
-            CrucibleBackend::_create(
-                request,
-                read_only,
-                producer_registry,
-                nexus_client,
-                log,
-            )
-            .await
-        })
-        .map_err(CrucibleError::into)
+        rt.block_on(async move { CrucibleBackend::_create(opts, log).await })
+            .map_err(CrucibleError::into)
     }
 
     async fn _create(
-        request: VolumeConstructionRequest,
-        read_only: bool,
-        producer_registry: Option<ProducerRegistry>,
-        nexus_client: Option<NexusClient>,
+        opts: CreateOptions,
         log: slog::Logger,
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
         // Construct the volume.
-        let volume =
-            Volume::construct(request, producer_registry, Some(log.clone()))
-                .await?;
+        let volume = Volume::construct(
+            opts.request,
+            opts.producer_registry,
+            Some(log.clone()),
+        )
+        .await?;
 
         // Decide if we need to scrub this volume or not.
         if volume.has_read_only_parent() {
             let vclone = volume.clone();
+            let nexus_client = opts.nexus_client;
             tokio::spawn(async move {
                 let volume_id = vclone.get_uuid().await.unwrap();
 
@@ -112,14 +122,18 @@ impl CrucibleBackend {
         let total_size = volume.total_size().await?;
         let sectors = total_size / block_size;
 
+        let task_count = opts.task_count.unwrap_or(DEFAULT_TASK_COUNT);
+
         Ok(Arc::new(Self {
             tokio_rt: tokio::runtime::Handle::current(),
             block_io: Arc::new(volume),
             scheduler: block::Scheduler::new(),
 
-            read_only,
+            read_only: opts.read_only,
             block_size,
             sectors,
+
+            task_count,
         }))
     }
 
@@ -184,10 +198,7 @@ impl block::Backend for CrucibleBackend {
     fn attach(&self, dev: Arc<dyn block::Device>) -> io::Result<()> {
         self.scheduler.attach(dev);
 
-        // TODO: make this tunable?
-        let worker_count = 8;
-
-        for _n in 0..worker_count {
+        for _n in 0..self.task_count.get() {
             let bdev = self.block_io.clone();
             let ro = self.read_only;
             let mut worker = self.scheduler.worker();

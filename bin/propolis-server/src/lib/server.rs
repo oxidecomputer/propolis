@@ -11,13 +11,10 @@
 
 use std::convert::TryFrom;
 use std::net::Ipv6Addr;
+use std::net::SocketAddr;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
-use std::{collections::BTreeMap, net::SocketAddr};
 
-use crate::migrate::MigrateError;
-use crate::serial::history_buffer::SerialHistoryOffset;
-use crate::serial::SerialTaskControlMessage;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
@@ -40,12 +37,12 @@ use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
+use crate::migrate::MigrateError;
+use crate::serial::history_buffer::SerialHistoryOffset;
+use crate::serial::SerialTaskControlMessage;
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
-
-pub(crate) type CrucibleBackendMap =
-    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
 
 /// Configuration used to set this server up to provide Oximeter metrics.
 #[derive(Debug, Clone)]

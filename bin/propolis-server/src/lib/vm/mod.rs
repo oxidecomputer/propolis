@@ -41,6 +41,7 @@ use std::{
 
 use oximeter::types::ProducerRegistry;
 use propolis::{
+    block::crucible::CrucibleBackend,
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     Instance,
 };
@@ -70,6 +71,8 @@ pub use nexus_client::Client as NexusClient;
 
 mod request_queue;
 mod state_driver;
+
+pub(crate) type CrucibleBackendMap = BTreeMap<Uuid, Arc<CrucibleBackend>>;
 
 #[derive(Debug, Error)]
 pub enum VmControllerError {
@@ -163,7 +166,7 @@ pub(crate) struct VmObjects {
     ps2ctrl: Option<Arc<PS2Ctrl>>,
 
     /// A map of the instance's active Crucible backends.
-    crucible_backends: BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>,
+    crucible_backends: CrucibleBackendMap,
 
     /// A notification receiver to which the state worker publishes the most
     /// recent instance state information.
@@ -535,9 +538,7 @@ impl VmController {
         self.vm_objects.ps2ctrl.as_ref()
     }
 
-    pub fn crucible_backends(
-        &self,
-    ) -> &BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>> {
+    pub fn crucible_backends(&self) -> &BTreeMap<Uuid, Arc<CrucibleBackend>> {
         &self.vm_objects.crucible_backends
     }
 

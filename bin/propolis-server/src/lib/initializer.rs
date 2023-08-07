@@ -9,8 +9,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use oximeter::types::ProducerRegistry;
-use propolis::block;
+use propolis::block::{self, crucible::CrucibleBackend};
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::PAGE_SIZE;
 use propolis::hw::chipset::i440fx;
@@ -26,13 +25,14 @@ use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
 use propolis_client::instance_spec::{self, *};
-use slog::info;
 
 use crate::serial::Serial;
-use crate::server::CrucibleBackendMap;
-pub use nexus_client::Client as NexusClient;
+use crate::vm::CrucibleBackendMap;
 
 use anyhow::Result;
+pub use nexus_client::Client as NexusClient;
+use oximeter::types::ProducerRegistry;
+use slog::info;
 
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -109,7 +109,7 @@ impl RegisteredChipset {
 struct StorageBackendInstance {
     be: Arc<dyn block::Backend>,
     child: inventory::ChildRegister,
-    crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
+    crucible: Option<(uuid::Uuid, Arc<CrucibleBackend>)>,
 }
 
 pub struct MachineInitializer<'a> {
@@ -325,11 +325,17 @@ impl<'a> MachineInitializer<'a> {
                                 "Region".to_string()
                             }
                         };
-                        let be = propolis::block::CrucibleBackend::create(
-                            req.clone(),
-                            backend_spec.readonly,
-                            self.producer_registry.clone(),
-                            nexus_client.clone(),
+                        let be = CrucibleBackend::create(
+                            block::crucible::CreateOptions {
+                                request: req.clone(),
+                                read_only: backend_spec.readonly,
+                                producer_registry: self
+                                    .producer_registry
+                                    .clone(),
+                                nexus_client: nexus_client.clone(),
+                                // Use default task count
+                                task_count: None,
+                            },
                             self.log.new(slog::o!( "component" => format!(
                                 "crucible-{cru_id}"
                             ))),
