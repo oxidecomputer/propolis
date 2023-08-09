@@ -1,7 +1,6 @@
 #!/bin/bash
 #:
 #: name = "phd-run"
-#: enable = false
 #: variety = "basic"
 #: target = "lab-2.0"
 #: output_rules = [
@@ -48,8 +47,6 @@ banner 'Tests'
 runner="$phddir/phd-runner"
 artifacts="$phddir/artifacts.toml"
 propolis="$phddir/propolis-server"
-
-# TODO: Leverage ZFS artifact support in PHD.
 
 ls $runner
 ls $artifacts
