@@ -16,7 +16,9 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 
 // Re-export types that are of a public struct
-pub use crucible_client_types::VolumeConstructionRequest;
+pub use crucible_client_types::{
+    VcrFile, VcrRegion, VcrUrl, VcrVolume, VolumeConstructionRequest,
+};
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceNameParams {

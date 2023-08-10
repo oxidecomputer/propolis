@@ -25,6 +25,7 @@ use propolis::hw::{nvme, virtio};
 use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
+use propolis_client::handmade::api::{VcrFile, VcrRegion, VcrUrl, VcrVolume};
 use propolis_client::instance_spec::{self, *};
 use slog::info;
 
@@ -312,18 +313,21 @@ impl<'a> MachineInitializer<'a> {
                             "Creating Crucible disk from request {:?}", req
                         );
                         let cru_id = match req {
-                            VolumeConstructionRequest::Volume {
-                                id, ..
-                            } => id.to_string(),
-                            VolumeConstructionRequest::File { id, .. } => {
-                                id.to_string()
-                            }
-                            VolumeConstructionRequest::Url { id, .. } => {
-                                id.to_string()
-                            }
-                            VolumeConstructionRequest::Region { .. } => {
-                                "Region".to_string()
-                            }
+                            VolumeConstructionRequest::Volume(VcrVolume {
+                                id,
+                                ..
+                            }) => id.to_string(),
+                            VolumeConstructionRequest::File(VcrFile {
+                                id,
+                                ..
+                            }) => id.to_string(),
+                            VolumeConstructionRequest::Url(VcrUrl {
+                                id,
+                                ..
+                            }) => id.to_string(),
+                            VolumeConstructionRequest::Region(VcrRegion {
+                                ..
+                            }) => "Region".to_string(),
                         };
                         let be = propolis::block::CrucibleBackend::create(
                             req.clone(),

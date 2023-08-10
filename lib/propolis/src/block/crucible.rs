@@ -62,8 +62,7 @@ impl CrucibleBackend {
     ) -> Result<Arc<Self>, crucible::CrucibleError> {
         // Construct the volume.
         let volume =
-            Volume::construct(request, producer_registry, Some(log.clone()))
-                .await?;
+            Volume::construct(request, producer_registry, log.clone()).await?;
 
         // Decide if we need to scrub this volume or not.
         if volume.has_read_only_parent() {
@@ -72,7 +71,7 @@ impl CrucibleBackend {
                 let volume_id = vclone.get_uuid().await.unwrap();
 
                 // This does the actual scrub.
-                match vclone.scrub(&log, Some(120), Some(25)).await {
+                match vclone.scrub(Some(120), Some(25)).await {
                     Ok(()) => {
                         if let Some(nexus_client) = nexus_client {
                             info!(
