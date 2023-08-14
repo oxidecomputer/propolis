@@ -3198,6 +3198,7 @@ dependencies = [
  "atty",
  "bhyve_api",
  "clap 4.3.0",
+ "crucible-client-types",
  "ctrlc",
  "erased-serde",
  "futures",
@@ -3214,6 +3215,7 @@ dependencies = [
  "slog-term",
  "tokio",
  "toml 0.5.11",
+ "uuid",
 ]
 
 [[package]]
