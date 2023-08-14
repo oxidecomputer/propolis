@@ -11,9 +11,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crucible_client_types::{
-    CrucibleOpts, VcrFile, VcrRegion, VcrVolume, VolumeConstructionRequest,
-};
+use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -242,41 +240,37 @@ impl super::DiskConfig for CrucibleDisk {
         propolis_client::instance_spec::StorageBackend {
             kind:
                 propolis_client::instance_spec::StorageBackendKind::Crucible {
-                    req: VolumeConstructionRequest::Volume(VcrVolume {
+                    req: VolumeConstructionRequest::Volume {
                         id: self.id,
                         block_size: self.block_size.bytes(),
-                        sub_volumes: vec![VolumeConstructionRequest::Region(
-                            VcrRegion {
-                                block_size: self.block_size.bytes(),
-                                blocks_per_extent: self.blocks_per_extent,
-                                extent_count: self.extent_count,
-                                opts: CrucibleOpts {
-                                    id: Uuid::new_v4(),
-                                    target: downstairs_addrs,
-                                    lossy: false,
-                                    flush_timeout: None,
-                                    key: Some(self.encryption_key.clone()),
-                                    cert_pem: None,
-                                    key_pem: None,
-                                    root_cert_pem: None,
-                                    control: None,
-                                    read_only: false,
-                                },
-                                gen,
+                        sub_volumes: vec![VolumeConstructionRequest::Region {
+                            block_size: self.block_size.bytes(),
+                            blocks_per_extent: self.blocks_per_extent,
+                            extent_count: self.extent_count,
+                            opts: CrucibleOpts {
+                                id: Uuid::new_v4(),
+                                target: downstairs_addrs,
+                                lossy: false,
+                                flush_timeout: None,
+                                key: Some(self.encryption_key.clone()),
+                                cert_pem: None,
+                                key_pem: None,
+                                root_cert_pem: None,
+                                control: None,
+                                read_only: false,
                             },
-                        )],
+                            gen,
+                        }],
                         read_only_parent: self.read_only_parent.as_ref().map(
                             |p| {
-                                Box::new(VolumeConstructionRequest::File(
-                                    VcrFile {
-                                        id: Uuid::new_v4(),
-                                        block_size: self.block_size.bytes(),
-                                        path: p.to_string_lossy().to_string(),
-                                    },
-                                ))
+                                Box::new(VolumeConstructionRequest::File {
+                                    id: Uuid::new_v4(),
+                                    block_size: self.block_size.bytes(),
+                                    path: p.to_string_lossy().to_string(),
+                                })
                             },
                         ),
-                    }),
+                    },
                 },
             readonly: false,
         }
