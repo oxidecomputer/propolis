@@ -133,7 +133,7 @@ fn create_crucible_backend(
         be.options.get("lossy").map(|x| x.as_bool().unwrap()).unwrap_or(false);
 
     let flush_timeout =
-        be.options.get("flush_timeout").map(|x| x.as_integer().unwrap() as u32);
+        be.options.get("flush_timeout").map(|x| x.as_integer().unwrap() as f32);
 
     let key = be
         .options
@@ -190,8 +190,14 @@ fn create_crucible_backend(
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
-    let be =
-        block::CrucibleBackend::create(req.clone(), read_only, None).unwrap();
+    let be = block::CrucibleBackend::create(
+        req.clone(),
+        read_only,
+        None,
+        None,
+        log.clone(),
+    )
+    .unwrap();
     let creg =
         ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
     (be, creg)
