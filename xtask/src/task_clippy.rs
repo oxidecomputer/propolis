@@ -39,6 +39,10 @@ pub(crate) fn cmd_clippy(strict: bool) -> Result<()> {
     failed |=
         run_clippy(&["-p", "propolis-server", "--features", "mock-only"])?;
 
+    // Check standalone with crucible enabled
+    failed |=
+        run_clippy(&["-p", "propolis-standalone", "--features", "crucible"])?;
+
     if failed {
         bail!("Clippy failures detected")
     }
