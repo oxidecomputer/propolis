@@ -538,7 +538,7 @@ impl ServerSpecBuilder {
 mod test {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use propolis_client::handmade::api::{Slot, VcrFile};
+    use propolis_client::handmade::api::Slot;
     use uuid::Uuid;
 
     use crate::config::{self, Config};
@@ -583,13 +583,11 @@ mod test {
                 slot: Slot(0),
                 read_only: true,
                 device: "nvme".to_string(),
-                volume_construction_request: VolumeConstructionRequest::File(
-                    VcrFile {
-                        id: Uuid::new_v4(),
-                        block_size: 512,
-                        path: "disk1.img".to_string()
-                    }
-                ),
+                volume_construction_request: VolumeConstructionRequest::File {
+                    id: Uuid::new_v4(),
+                    block_size: 512,
+                    path: "disk1.img".to_string()
+                },
             })
             .is_ok());
         assert!(matches!(
@@ -600,11 +598,11 @@ mod test {
                     read_only: true,
                     device: "virtio".to_string(),
                     volume_construction_request:
-                        VolumeConstructionRequest::File(VcrFile {
+                        VolumeConstructionRequest::File {
                             id: Uuid::new_v4(),
                             block_size: 512,
                             path: "disk2.img".to_string()
-                        }),
+                        },
                 })
                 .err(),
             Some(ServerSpecBuilderError::InnerBuilderError(
@@ -639,11 +637,11 @@ mod test {
                     read_only: true,
                     device: "virtio-scsi".to_string(),
                     volume_construction_request:
-                        VolumeConstructionRequest::File(VcrFile {
+                        VolumeConstructionRequest::File {
                             id: Uuid::new_v4(),
                             block_size: 512,
                             path: "disk3.img".to_string()
-                        }),
+                        },
                 })
                 .err(),
             Some(ServerSpecBuilderError::UnrecognizedStorageDevice(_))

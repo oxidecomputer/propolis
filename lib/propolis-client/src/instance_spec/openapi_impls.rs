@@ -184,40 +184,39 @@ impl From<PciPath> for api::PciPath {
 
 use crate::types::VolumeConstructionRequest as GenVCR;
 use crucible_client_types::VolumeConstructionRequest as CrucibleVCR;
-use crucible_client_types::{VcrFile, VcrRegion, VcrUrl, VcrVolume};
 
 impl From<CrucibleVCR> for GenVCR {
     fn from(vcr: CrucibleVCR) -> Self {
         match vcr {
-            CrucibleVCR::Volume(VcrVolume {
+            CrucibleVCR::Volume {
                 id,
                 block_size,
                 sub_volumes,
                 read_only_parent,
-            }) => GenVCR::Volume {
+            } => GenVCR::Volume {
                 id,
                 block_size,
                 sub_volumes: sub_volumes.into_iter().map(Into::into).collect(),
                 read_only_parent: read_only_parent
                     .map(|rop| Box::new((*rop).into())),
             },
-            CrucibleVCR::Url(VcrUrl { id, block_size, url }) => {
+            CrucibleVCR::Url { id, block_size, url } => {
                 GenVCR::Url { id, block_size, url }
             }
-            CrucibleVCR::Region(VcrRegion {
+            CrucibleVCR::Region {
                 block_size,
                 blocks_per_extent,
                 extent_count,
                 opts,
                 gen,
-            }) => GenVCR::Region {
+            } => GenVCR::Region {
                 block_size,
                 blocks_per_extent,
                 extent_count,
                 opts: opts.into(),
                 gen,
             },
-            CrucibleVCR::File(VcrFile { id, block_size, path }) => {
+            CrucibleVCR::File { id, block_size, path } => {
                 GenVCR::File { id, block_size, path }
             }
         }
@@ -256,7 +255,6 @@ impl From<crucible_client_types::CrucibleOpts> for crate::types::CrucibleOpts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible_client_types::VcrRegion;
 
     #[test]
     fn device_specs_are_convertible() {
@@ -272,7 +270,7 @@ mod tests {
                 "disk1_be".to_string(),
                 StorageBackend {
                     kind: StorageBackendKind::Crucible {
-                        req: VolumeConstructionRequest::Region(VcrRegion {
+                        req: VolumeConstructionRequest::Region {
                             block_size: 512,
                             blocks_per_extent: 20,
                             extent_count: 40,
@@ -289,7 +287,7 @@ mod tests {
                                 read_only: true,
                             },
                             gen: 1,
-                        }),
+                        },
                     },
                     readonly: true,
                 },
