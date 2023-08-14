@@ -45,10 +45,7 @@ pub fn block_backend(
             let creg = ChildRegister::new(&be, Some(path.to_string()));
             (be, creg)
         }
-        #[cfg(feature = "crucible")]
         "crucible" => create_crucible_backend(log, be),
-        #[cfg(not(feature = "crucible"))]
-        "crucible" => panic!("crucible device specified in VM config, but propolis-standalone was not built with crucible support. rebuild propolis-standalone with the `crucible` feature enabled, or remove all crucible devices from your VM config"),
         _ => {
             panic!("unrecognized block dev type {}!", be.bdtype);
         }
@@ -201,4 +198,15 @@ fn create_crucible_backend(
     let creg =
         ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
     (be, creg)
+}
+
+#[cfg(not(feature = "crucible"))]
+fn create_crucible_backend(
+    _log: &slog::Logger,
+    _be: &propolis_standalone_config::BlockDevice,
+) -> (Arc<dyn block::Backend>, ChildRegister) {
+    panic!(
+        "Rebuild propolis-standalone with 'crucible' feature enabled in \
+           order to use the crucible block backend"
+    );
 }
