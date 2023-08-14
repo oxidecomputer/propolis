@@ -6,21 +6,18 @@ crucible disks.
 ## Background: Why standalone?
 
 In the product, the userspace VMM component for instances is
-[propolis-server](https://github.com/oxidecomputer/propolis/tree/master/bin/propolis-server),
-which exposes API endpoints for the rest of the control plane to manage
-instances. One can run propolis-server in isolation, such as for development,
-and interact with its endpoints using a
-client such as the [propolis
-CLI](https://github.com/oxidecomputer/propolis/tree/master/bin/propolis-cli).
+[propolis-server](../bin/propolis-server), which exposes API endpoints for the
+rest of the control plane to manage instances. One can run propolis-server in
+isolation, such as for development, and interact with its endpoints using a
+client such as the [propolis CLI](../bin/propolis-cli).
 
 
-The
-[standalone](https://github.com/oxidecomputer/propolis/tree/master/bin/propolis-standalone#propolis-standalone)
-version of propolis is useful development tool to a VM up and running quickly
-without having to hit any API endpoints. It takes an input a single TOML file,
-sets up a unix domain socket that is connected to a VM's uart, and starts the
-guests when the user connects to the socket. It also cleans up the VM gracefully
-when the user sends CTRL+C to the running `propolis-standalone` program.
+The [standalone](../bin/propolis-standalone) version of propolis is useful
+development tool to a VM up and running quickly without having to hit any API
+endpoints. It takes an input a single TOML file, sets up a unix domain socket
+that is connected to a VM's uart, and starts the guests when the user connects
+to the socket. It also cleans up the VM gracefully when the user sends CTRL+C
+to the running `propolis-standalone` program.
 
 Beyond these differences, there are some differences in the state machine
 related to the instance lifecycle as well as the emulation.
@@ -49,6 +46,7 @@ TODO:
 ### Onetime setup on the gimlet.
 
 Setup for a virtual NIC to be used by the VM.
+
 ```
 dladm create-vnic -t -l igb0 -m 02:08:20:ac:e9:16 vnic_prop0
 ```
@@ -109,7 +107,7 @@ standalone toml example
 This example file assumes you have used the above settings for block
 size, extent size, and extent count.
 
-```
+```toml
 [main]
 name = "testvm"
 cpus = 4
@@ -151,6 +149,7 @@ pci-path = "0.6.0"
 ```
 
 Start propolis-standalone like this:
+
 ```
 propolis-standalone standalone.toml
 ```
