@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
+use serde::Deserialize;
 
 use propolis::block;
 use propolis::hw::pci::Bdf;
@@ -14,6 +16,31 @@ use propolis::inventory::ChildRegister;
 
 use propolis_standalone_config::Device;
 pub use propolis_standalone_config::{Config, SnapshotTag};
+
+#[derive(Deserialize)]
+struct FileConfig {
+    path: String,
+    readonly: Option<bool>,
+    workers: Option<usize>,
+}
+#[derive(Deserialize)]
+struct MemAsyncConfig {
+    size: usize,
+    block_size: usize,
+    readonly: Option<bool>,
+    workers: Option<usize>,
+}
+
+// Try to turn unmatched flattened options into a config struct
+fn opt_deser<'de, T: Deserialize<'de>>(
+    value: &BTreeMap<String, toml::Value>,
+) -> Result<T, anyhow::Error> {
+    let map = toml::map::Map::from_iter(value.clone().into_iter());
+    let config = map.try_into::<T>()?;
+    Ok(config)
+}
+
+const DEFAULT_WORKER_COUNT: usize = 8;
 
 pub fn block_backend(
     config: &Config,
@@ -25,27 +52,40 @@ pub fn block_backend(
 
     match &be.bdtype as &str {
         "file" => {
-            let path = be.options.get("path").unwrap().as_str().unwrap();
-
-            let readonly = (match be.options.get("readonly") {
-                Some(toml::Value::Boolean(read_only)) => Some(*read_only),
-                Some(toml::Value::String(v)) => v.parse().ok(),
-                _ => None,
-            })
-            .unwrap_or(false);
+            let parsed: FileConfig = opt_deser(&be.options).unwrap();
 
             let be = block::FileBackend::create(
-                path,
-                readonly,
-                NonZeroUsize::new(8).unwrap(),
+                &parsed.path,
+                parsed.readonly.unwrap_or(false),
+                NonZeroUsize::new(
+                    parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
+                )
+                .unwrap(),
                 log.clone(),
             )
             .unwrap();
 
-            let creg = ChildRegister::new(&be, Some(path.to_string()));
+            let creg = ChildRegister::new(&be, Some(parsed.path));
             (be, creg)
         }
         "crucible" => create_crucible_backend(log, be),
+        "mem-async" => {
+            let parsed: MemAsyncConfig = opt_deser(&be.options).unwrap();
+
+            let be = block::MemAsyncBackend::create(
+                parsed.size,
+                parsed.readonly.unwrap_or(false),
+                parsed.block_size,
+                NonZeroUsize::new(
+                    parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+            let creg = ChildRegister::new(&be, None);
+            (be, creg)
+        }
         _ => {
             panic!("unrecognized block dev type {}!", be.bdtype);
         }

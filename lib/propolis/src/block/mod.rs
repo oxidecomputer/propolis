@@ -29,6 +29,9 @@ pub use self::crucible::CrucibleBackend;
 mod in_memory;
 pub use in_memory::InMemoryBackend;
 
+mod mem_async;
+pub use mem_async::MemAsyncBackend;
+
 pub type ByteOffset = usize;
 pub type ByteLen = usize;
 
