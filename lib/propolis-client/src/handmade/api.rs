@@ -19,6 +19,12 @@ use uuid::Uuid;
 pub use crucible_client_types::VolumeConstructionRequest;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceVCRReplace {
+    pub name: String,
+    pub vcr: VolumeConstructionRequest,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceNameParams {
     pub instance_id: String,
 }
@@ -365,4 +371,9 @@ pub enum NetworkInterfaceAttachmentState {
 pub struct SnapshotRequestPathParams {
     pub id: Uuid,
     pub snapshot_id: Uuid,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct VCRRequestPathParams {
+    pub id: Uuid,
 }

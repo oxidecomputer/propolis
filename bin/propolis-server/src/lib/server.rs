@@ -30,8 +30,9 @@ pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_client::{
     handmade::api,
-    instance_spec::{self, InstanceSpec},
+    instance_spec::{self, InstanceSpec, StorageBackend, StorageBackendKind},
 };
+
 use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
 use slog::{error, o, warn, Logger};
@@ -131,7 +132,7 @@ impl VmControllerState {
 
     /// Takes the active `VmController` if one is present and replaces it with
     /// `VmControllerState::Destroyed`.
-    pub fn take_controller(&mut self) -> Option<Arc<VmController>> {
+    pub async fn take_controller(&mut self) -> Option<Arc<VmController>> {
         if let VmControllerState::Created(vm) = self {
             let state = vm.state_watcher().borrow().state;
             let last_instance = api::Instance {
@@ -140,7 +141,7 @@ impl VmControllerState {
                 disks: vec![],
                 nics: vec![],
             };
-            let last_instance_spec = vm.instance_spec().clone();
+            let last_instance_spec = vm.instance_spec().await.clone();
 
             // Preserve the state watcher so that subsequent updates to the VM's
             // state are visible to calls to query/monitor that state. Note that
@@ -198,7 +199,7 @@ impl ServiceProviders {
         // Stop the VNC server
         self.vnc_server.stop().await;
 
-        if let Some(vm) = self.vm.lock().await.take_controller() {
+        if let Some(vm) = self.vm.lock().await.take_controller().await {
             slog::info!(log, "Dropping server's VM controller reference";
                 "strong_refs" => Arc::strong_count(&vm),
                 "weak_refs" => Arc::weak_count(&vm),
@@ -645,7 +646,7 @@ async fn instance_spec_ensure(
 }
 
 async fn instance_get_common(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<(api::Instance, InstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
@@ -668,7 +669,7 @@ async fn instance_get_common(
                     // (i.e., has the device faulted, etc).
                     nics: vec![],
                 },
-                vm.instance_spec().clone(),
+                vm.instance_spec().await.clone(),
             ))
         }
         VmControllerState::Destroyed {
@@ -692,7 +693,7 @@ async fn instance_get_common(
 async fn instance_spec_get(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-    let (instance, spec) = instance_get_common(rqctx).await?;
+    let (instance, spec) = instance_get_common(&rqctx).await?;
     Ok(HttpResponseOk(api::InstanceSpecGetResponse {
         properties: instance.properties,
         state: instance.state,
@@ -707,7 +708,7 @@ async fn instance_spec_get(
 async fn instance_get(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    let (instance, _) = instance_get_common(rqctx).await?;
+    let (instance, _) = instance_get_common(&rqctx).await?;
     Ok(HttpResponseOk(api::InstanceGetResponse { instance }))
 }
 
@@ -953,6 +954,85 @@ async fn instance_issue_crucible_snapshot_request(
     Ok(HttpResponseOk(()))
 }
 
+/// Issues a volume_construction_request replace to a crucible backend.
+#[endpoint {
+    method = PUT,
+    path = "/instance/disk/{id}/vcr",
+}]
+async fn instance_issue_crucible_vcr_request(
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    path_params: Path<api::VCRRequestPathParams>,
+    request: TypedBody<api::InstanceVCRReplace>,
+) -> Result<HttpResponseOk<()>, HttpError> {
+    let path_params = path_params.into_inner();
+    let request = request.into_inner();
+    let new_vcr = request.vcr;
+    let disk_name = request.name;
+    let log = rqctx.log.clone();
+
+    // Get the instance spec for storage backend from the disk name.  We use
+    // the VCR stored there to send to crucible along with the new VCR we want
+    // to replace it.
+    let vm_controller = rqctx.context().vm().await?;
+    let mut spec = vm_controller.instance_spec().await;
+
+    let (readonly, old_vcr) = {
+        let bes = &spec.backends.storage_backends.get(&disk_name);
+        if let Some(bes) = bes {
+            let readonly = bes.readonly;
+            match &bes.kind {
+                StorageBackendKind::Crucible { req } => (readonly, req),
+                x => {
+                    let s = format!(
+                        "Invalid StorageBackendKind for VCR replacement: {:?}",
+                        x
+                    );
+                    return Err(HttpError::for_not_found(Some(s.clone()), s));
+                }
+            }
+        } else {
+            let s = format!("Storage Backend for {:?} not found", disk_name);
+            return Err(HttpError::for_not_found(Some(s.clone()), s));
+        }
+    };
+
+    // Get the crucible backend so we can call the replacement method on it.
+    let crucible_backends = vm_controller.crucible_backends();
+    let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
+        let s = format!("No crucible backend for id {}", path_params.id);
+        HttpError::for_not_found(Some(s.clone()), s)
+    })?;
+
+    slog::info!(
+        log,
+        "{:?} {:?} replace {:?} with {:?}",
+        disk_name,
+        path_params.id,
+        old_vcr,
+        new_vcr,
+    );
+
+    // Try the replacement.
+    // Crucible does the heavy lifting here to verify that the old/new
+    // VCRs are different in just the correct way and will return error
+    // if there is any mismatch.
+    backend.vcr_replace(old_vcr.clone(), new_vcr.clone()).await.map_err(
+        |e| HttpError::for_bad_request(Some(e.to_string()), e.to_string()),
+    )?;
+
+    // Our replacement request was accepted.  We now need to update the
+    // spec stored in propolis so it matches what the downstairs now has.
+    let new_storage_backend: StorageBackend = StorageBackend {
+        kind: StorageBackendKind::Crucible { req: new_vcr },
+        readonly,
+    };
+    spec.backends.storage_backends.insert(disk_name, new_storage_backend);
+
+    slog::info!(log, "Replaced the VCR in backend of {:?}", path_params.id);
+
+    Ok(HttpResponseOk(()))
+}
+
 /// Issues an NMI to the instance.
 #[endpoint {
     method = POST,
@@ -981,6 +1061,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
     api.register(instance_issue_crucible_snapshot_request).unwrap();
+    api.register(instance_issue_crucible_vcr_request).unwrap();
     api.register(instance_issue_nmi).unwrap();
 
     api

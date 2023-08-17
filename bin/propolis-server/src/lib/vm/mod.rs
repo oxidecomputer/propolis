@@ -150,7 +150,7 @@ pub(crate) struct VmObjects {
     properties: InstanceProperties,
 
     /// The instance spec used to create this controller's VM.
-    spec: InstanceSpec,
+    spec: tokio::sync::Mutex<InstanceSpec>,
 
     /// A wrapper around the instance's first COM port, suitable for providing a
     /// connection to a guest's serial console.
@@ -462,7 +462,7 @@ impl VmController {
             vm_objects: VmObjects {
                 instance: Some(instance),
                 properties,
-                spec: instance_spec,
+                spec: tokio::sync::Mutex::new(instance_spec),
                 com1,
                 framebuffer,
                 ps2ctrl,
@@ -519,8 +519,10 @@ impl VmController {
             .expect("VM controller always has a valid instance")
     }
 
-    pub fn instance_spec(&self) -> &InstanceSpec {
-        &self.vm_objects.spec
+    pub async fn instance_spec(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, InstanceSpec> {
+        self.vm_objects.spec.lock().await
     }
 
     pub fn com1(&self) -> &Arc<Serial<LpcUart>> {

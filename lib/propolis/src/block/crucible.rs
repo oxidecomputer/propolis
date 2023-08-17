@@ -165,6 +165,18 @@ impl CrucibleBackend {
             .await
             .map_err(CrucibleError::into)
     }
+
+    /// Issue a VolumeConstructionRequest replacement
+    pub async fn vcr_replace(
+        &self,
+        old_vcr: VolumeConstructionRequest,
+        new_vcr: VolumeConstructionRequest,
+    ) -> io::Result<()> {
+        self.block_io
+            .target_replace(old_vcr, new_vcr)
+            .await
+            .map_err(CrucibleError::into)
+    }
 }
 
 impl block::Backend for CrucibleBackend {

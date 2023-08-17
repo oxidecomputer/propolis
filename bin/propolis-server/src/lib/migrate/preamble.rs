@@ -6,6 +6,7 @@ use propolis_client::instance_spec::{
     BackendNames, DeviceSpec, InstanceSpec, MigrationCompatibilityError,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::MutexGuard;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub(crate) struct Preamble {
@@ -25,7 +26,7 @@ impl Preamble {
 
     pub fn is_migration_compatible(
         &self,
-        other_spec: &InstanceSpec,
+        other_spec: MutexGuard<'_, InstanceSpec>,
     ) -> Result<(), MigrationCompatibilityError> {
         self.device_spec.can_migrate_devices_from(&other_spec.devices)?;
         let other_keys = BackendNames::from(&other_spec.backends);
