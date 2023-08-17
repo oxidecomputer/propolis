@@ -17,6 +17,9 @@ mod probes {
 
     fn nvme_write_enqueue(cid: u16, off: u64, sz: u64) {}
     fn nvme_write_complete(cid: u16) {}
+
+    fn nvme_flush_enqueue(cid: u16) {}
+    fn nvme_flush_complete(cid: u16) {}
 }
 
 impl block::Device for PciNvme {
@@ -97,6 +100,8 @@ impl PciNvme {
                         return Some(req);
                     }
                     Ok(NvmCmd::Flush) => {
+                        probes::nvme_flush_enqueue!(|| (cid));
+
                         let req = Request::new_flush(
                             0,
                             0, // TODO: is 0 enough or do we pass total size?
@@ -137,7 +142,9 @@ impl PciNvme {
             Operation::Write(..) => {
                 probes::nvme_write_complete!(|| (cid));
             }
-            _ => {}
+            Operation::Flush(..) => {
+                probes::nvme_flush_complete!(|| (cid));
+            }
         }
 
         let mem = self.mem_access();
