@@ -10,6 +10,31 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+fn backend_name_matches(
+    this: &str,
+    other: &str,
+) -> Result<(), MigrationCompatibilityError> {
+    if this != other {
+        Err(MigrationCompatibilityError::BackendNameMismatch(
+            this.to_owned(),
+            other.to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn pci_path_matches(
+    this: &PciPath,
+    other: &PciPath,
+) -> Result<(), MigrationCompatibilityError> {
+    if this != other {
+        Err(MigrationCompatibilityError::PciPath(*this, *other))
+    } else {
+        Ok(())
+    }
+}
+
 /// A disk that presents a virtio-block interface to the guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -31,21 +56,9 @@ impl MigrationElement for VirtioDisk {
         other: &Self,
     ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
     {
-        if self.backend_name != other.backend_name {
-            Err(MigrationCompatibilityError::BackendNameMismatch(
-                self.backend_name.clone(),
-                other.backend_name.clone(),
-            )
-            .into())
-        } else if self.pci_path != other.pci_path {
-            Err(MigrationCompatibilityError::PciPath(
-                self.pci_path,
-                other.pci_path,
-            )
-            .into())
-        } else {
-            Ok(())
-        }
+        backend_name_matches(&self.backend_name, &other.backend_name)?;
+        pci_path_matches(&self.pci_path, &other.pci_path)?;
+        Ok(())
     }
 }
 
@@ -70,21 +83,9 @@ impl MigrationElement for NvmeDisk {
         other: &Self,
     ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
     {
-        if self.backend_name != other.backend_name {
-            Err(MigrationCompatibilityError::BackendNameMismatch(
-                self.backend_name.clone(),
-                other.backend_name.clone(),
-            )
-            .into())
-        } else if self.pci_path != other.pci_path {
-            Err(MigrationCompatibilityError::PciPath(
-                self.pci_path,
-                other.pci_path,
-            )
-            .into())
-        } else {
-            Ok(())
-        }
+        backend_name_matches(&self.backend_name, &other.backend_name)?;
+        pci_path_matches(&self.pci_path, &other.pci_path)?;
+        Ok(())
     }
 }
 
@@ -109,21 +110,9 @@ impl MigrationElement for VirtioNic {
         other: &Self,
     ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
     {
-        if self.backend_name != other.backend_name {
-            Err(MigrationCompatibilityError::BackendNameMismatch(
-                self.backend_name.clone(),
-                other.backend_name.clone(),
-            )
-            .into())
-        } else if self.pci_path != other.pci_path {
-            Err(MigrationCompatibilityError::PciPath(
-                self.pci_path,
-                other.pci_path,
-            )
-            .into())
-        } else {
-            Ok(())
-        }
+        backend_name_matches(&self.backend_name, &other.backend_name)?;
+        pci_path_matches(&self.pci_path, &other.pci_path)?;
+        Ok(())
     }
 }
 
@@ -197,17 +186,12 @@ impl MigrationElement for PciPciBridge {
         other: &Self,
     ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
     {
+        pci_path_matches(&self.pci_path, &other.pci_path)?;
         if self.downstream_bus != other.downstream_bus {
             Err(MigrationCompatibilityError::ComponentConfiguration(format!(
                 "bridge downstream bus mismatch (self: {0}, other: {1})",
                 self.downstream_bus, other.downstream_bus
             ))
-            .into())
-        } else if self.pci_path != other.pci_path {
-            Err(MigrationCompatibilityError::PciPath(
-                self.pci_path,
-                other.pci_path,
-            )
             .into())
         } else {
             Ok(())

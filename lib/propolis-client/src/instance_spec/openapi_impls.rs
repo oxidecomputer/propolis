@@ -89,10 +89,10 @@ impl From<StorageBackendV0> for api::StorageBackendV0 {
     }
 }
 
-impl From<super::components::backends::CrucibleStorageBackend>
+impl From<components::backends::CrucibleStorageBackend>
     for api::CrucibleStorageBackend
 {
-    fn from(be: super::components::backends::CrucibleStorageBackend) -> Self {
+    fn from(be: components::backends::CrucibleStorageBackend) -> Self {
         api::CrucibleStorageBackend {
             request_json: be.request_json,
             readonly: be.readonly,
@@ -100,18 +100,18 @@ impl From<super::components::backends::CrucibleStorageBackend>
     }
 }
 
-impl From<super::components::backends::FileStorageBackend>
+impl From<components::backends::FileStorageBackend>
     for api::FileStorageBackend
 {
-    fn from(be: super::components::backends::FileStorageBackend) -> Self {
+    fn from(be: components::backends::FileStorageBackend) -> Self {
         api::FileStorageBackend { path: be.path, readonly: be.readonly }
     }
 }
 
-impl From<super::components::backends::InMemoryStorageBackend>
+impl From<components::backends::InMemoryStorageBackend>
     for api::InMemoryStorageBackend
 {
-    fn from(be: super::components::backends::InMemoryStorageBackend) -> Self {
+    fn from(be: components::backends::InMemoryStorageBackend) -> Self {
         api::InMemoryStorageBackend { base64: be.base64, readonly: be.readonly }
     }
 }
@@ -129,34 +129,33 @@ impl From<NetworkBackendV0> for api::NetworkBackendV0 {
     }
 }
 
-impl From<super::components::backends::VirtioNetworkBackend>
+impl From<components::backends::VirtioNetworkBackend>
     for api::VirtioNetworkBackend
 {
-    fn from(be: super::components::backends::VirtioNetworkBackend) -> Self {
+    fn from(be: components::backends::VirtioNetworkBackend) -> Self {
         api::VirtioNetworkBackend { vnic_name: be.vnic_name }
     }
 }
 
-impl From<super::components::backends::DlpiNetworkBackend>
+impl From<components::backends::DlpiNetworkBackend>
     for api::DlpiNetworkBackend
 {
-    fn from(be: super::components::backends::DlpiNetworkBackend) -> Self {
+    fn from(be: components::backends::DlpiNetworkBackend) -> Self {
         api::DlpiNetworkBackend { vnic_name: be.vnic_name }
     }
 }
 
-impl From<super::components::board::Board> for api::Board {
-    fn from(board: super::components::board::Board) -> Self {
-        let super::components::board::Board { cpus, memory_mb, chipset } =
-            board;
+impl From<components::board::Board> for api::Board {
+    fn from(board: components::board::Board) -> Self {
+        let components::board::Board { cpus, memory_mb, chipset } = board;
         api::Board { cpus, memory_mb, chipset: chipset.into() }
     }
 }
 
-impl From<super::components::board::Chipset> for api::Chipset {
-    fn from(chipset: super::components::board::Chipset) -> Self {
+impl From<components::board::Chipset> for api::Chipset {
+    fn from(chipset: components::board::Chipset) -> Self {
         match chipset {
-            super::components::board::Chipset::I440Fx(i440fx) => {
+            components::board::Chipset::I440Fx(i440fx) => {
                 api::Chipset::I440Fx(api::I440Fx {
                     enable_pcie: i440fx.enable_pcie,
                 })
@@ -178,8 +177,8 @@ impl From<StorageDeviceV0> for api::StorageDeviceV0 {
     }
 }
 
-impl From<super::components::devices::VirtioDisk> for api::VirtioDisk {
-    fn from(disk: super::components::devices::VirtioDisk) -> Self {
+impl From<components::devices::VirtioDisk> for api::VirtioDisk {
+    fn from(disk: components::devices::VirtioDisk) -> Self {
         api::VirtioDisk {
             backend_name: disk.backend_name,
             pci_path: disk.pci_path.into(),
@@ -187,8 +186,8 @@ impl From<super::components::devices::VirtioDisk> for api::VirtioDisk {
     }
 }
 
-impl From<super::components::devices::NvmeDisk> for api::NvmeDisk {
-    fn from(disk: super::components::devices::NvmeDisk) -> Self {
+impl From<components::devices::NvmeDisk> for api::NvmeDisk {
+    fn from(disk: components::devices::NvmeDisk) -> Self {
         api::NvmeDisk {
             backend_name: disk.backend_name,
             pci_path: disk.pci_path.into(),
@@ -206,8 +205,8 @@ impl From<NetworkDeviceV0> for api::NetworkDeviceV0 {
     }
 }
 
-impl From<super::components::devices::VirtioNic> for api::VirtioNic {
-    fn from(nic: super::components::devices::VirtioNic) -> Self {
+impl From<components::devices::VirtioNic> for api::VirtioNic {
+    fn from(nic: components::devices::VirtioNic) -> Self {
         api::VirtioNic {
             backend_name: nic.backend_name,
             pci_path: nic.pci_path.into(),
@@ -215,8 +214,8 @@ impl From<super::components::devices::VirtioNic> for api::VirtioNic {
     }
 }
 
-impl From<super::components::devices::PciPciBridge> for api::PciPciBridge {
-    fn from(bridge: super::components::devices::PciPciBridge) -> Self {
+impl From<components::devices::PciPciBridge> for api::PciPciBridge {
+    fn from(bridge: components::devices::PciPciBridge) -> Self {
         api::PciPciBridge {
             downstream_bus: bridge.downstream_bus,
             pci_path: bridge.pci_path.into(),
@@ -224,27 +223,25 @@ impl From<super::components::devices::PciPciBridge> for api::PciPciBridge {
     }
 }
 
-impl From<super::components::devices::SerialPort> for api::SerialPort {
-    fn from(port: super::components::devices::SerialPort) -> Self {
+impl From<components::devices::SerialPort> for api::SerialPort {
+    fn from(port: components::devices::SerialPort) -> Self {
         api::SerialPort { num: port.num.into() }
     }
 }
 
-impl From<super::components::devices::SerialPortNumber>
-    for api::SerialPortNumber
-{
-    fn from(num: super::components::devices::SerialPortNumber) -> Self {
+impl From<components::devices::SerialPortNumber> for api::SerialPortNumber {
+    fn from(num: components::devices::SerialPortNumber) -> Self {
         match num {
-            super::components::devices::SerialPortNumber::Com1 => {
+            components::devices::SerialPortNumber::Com1 => {
                 api::SerialPortNumber::Com1
             }
-            super::components::devices::SerialPortNumber::Com2 => {
+            components::devices::SerialPortNumber::Com2 => {
                 api::SerialPortNumber::Com2
             }
-            super::components::devices::SerialPortNumber::Com3 => {
+            components::devices::SerialPortNumber::Com3 => {
                 api::SerialPortNumber::Com3
             }
-            super::components::devices::SerialPortNumber::Com4 => {
+            components::devices::SerialPortNumber::Com4 => {
                 api::SerialPortNumber::Com4
             }
         }

@@ -23,15 +23,14 @@ use std::collections::HashMap;
 
 use crate::instance_spec::{
     components,
-    migration::{MigrationCollection, MigrationElement},
+    migration::{
+        ElementCompatibilityError, MigrationCollection,
+        MigrationCompatibilityError, MigrationElement,
+    },
     PciPath, SpecKey,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-use super::migration::{
-    ElementCompatibilityError, MigrationCompatibilityError,
-};
 
 pub mod builder;
 
