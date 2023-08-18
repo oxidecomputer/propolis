@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-use propolis_client::instance_spec::StorageBackend;
+use propolis_client::instance_spec::v0::StorageBackendV0;
 use thiserror::Error;
 
 use crate::{
@@ -65,7 +65,7 @@ impl BlockSize {
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
 pub trait DiskConfig: std::fmt::Debug {
     /// Yields the backend spec for this disk's storage backend.
-    fn backend_spec(&self) -> StorageBackend;
+    fn backend_spec(&self) -> StorageBackendV0;
 
     /// Yields the guest OS kind of the guest image the disk was created from,
     /// or `None` if the disk was not created from a guest image.

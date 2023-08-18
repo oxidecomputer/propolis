@@ -23,6 +23,7 @@ reqwest = { workspace = true, features = ["blocking"] }
 ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_derive.workspace = true
+serde_json.workspace = true
 slog.workspace = true
 slog-async.workspace = true
 slog-term.workspace = true

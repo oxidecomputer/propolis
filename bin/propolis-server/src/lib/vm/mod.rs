@@ -50,7 +50,7 @@ use propolis_client::handmade::{
     api::InstanceStateRequested as ApiInstanceStateRequested,
     api::MigrationState as ApiMigrationState,
 };
-use propolis_client::instance_spec::InstanceSpec;
+use propolis_client::instance_spec::VersionedInstanceSpec;
 use slog::{error, info, Logger};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -150,7 +150,7 @@ pub(crate) struct VmObjects {
     properties: InstanceProperties,
 
     /// The instance spec used to create this controller's VM.
-    spec: InstanceSpec,
+    spec: VersionedInstanceSpec,
 
     /// A wrapper around the instance's first COM port, suitable for providing a
     /// connection to a guest's serial console.
@@ -384,7 +384,7 @@ impl ChipsetEventHandler for SharedVmState {
 impl VmController {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        instance_spec: InstanceSpec,
+        instance_spec: VersionedInstanceSpec,
         properties: InstanceProperties,
         use_reservoir: bool,
         bootrom: PathBuf,
@@ -394,13 +394,20 @@ impl VmController {
         runtime_hdl: tokio::runtime::Handle,
         stop_ch: oneshot::Sender<()>,
     ) -> anyhow::Result<Arc<Self>> {
+        info!(log, "initializing new VM";
+              "spec" => #?instance_spec,
+              "properties" => #?properties,
+              "use_reservoir" => use_reservoir,
+              "bootrom" => %bootrom.display());
+
         let vmm_log = log.new(slog::o!("component" => "vmm"));
 
         // Set up the 'shell' instance into which the rest of this routine will
         // add components.
+        let VersionedInstanceSpec::V0(v0_spec) = &instance_spec;
         let instance = build_instance(
             &properties.id.to_string(),
-            &instance_spec,
+            v0_spec,
             use_reservoir,
             vmm_log,
         )?;
@@ -425,7 +432,7 @@ impl VmController {
             log.clone(),
             machine,
             inv,
-            &instance_spec,
+            v0_spec,
             oximeter_registry,
         );
 
@@ -447,7 +454,7 @@ impl VmController {
         let crucible_backends =
             init.initialize_storage_devices(&chipset, nexus_client)?;
         let framebuffer_id =
-            init.initialize_fwcfg(instance_spec.devices.board.cpus)?;
+            init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
         let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);
         init.initialize_cpus()?;
         let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
@@ -519,7 +526,7 @@ impl VmController {
             .expect("VM controller always has a valid instance")
     }
 
-    pub fn instance_spec(&self) -> &InstanceSpec {
+    pub fn instance_spec(&self) -> &VersionedInstanceSpec {
         &self.vm_objects.spec
     }
 
