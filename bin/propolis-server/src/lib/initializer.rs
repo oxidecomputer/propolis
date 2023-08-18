@@ -338,7 +338,7 @@ impl<'a> MachineInitializer<'a> {
                     inventory::ChildRegister::new(&be, Some(spec.path.clone()));
                 Ok(StorageBackendInstance { be, child, crucible: None })
             }
-            instance_spec::v0::StorageBackendV0::InMemory(spec) => {
+            instance_spec::v0::StorageBackendV0::Blob(spec) => {
                 let bytes = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
                     &spec.base64,

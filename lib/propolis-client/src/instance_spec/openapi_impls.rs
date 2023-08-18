@@ -82,8 +82,8 @@ impl From<StorageBackendV0> for api::StorageBackendV0 {
             StorageBackendV0::File(spec) => {
                 api::StorageBackendV0::File(spec.into())
             }
-            StorageBackendV0::InMemory(spec) => {
-                api::StorageBackendV0::InMemory(spec.into())
+            StorageBackendV0::Blob(spec) => {
+                api::StorageBackendV0::Blob(spec.into())
             }
         }
     }
@@ -109,10 +109,10 @@ impl From<components::backends::FileStorageBackend>
 }
 
 impl From<components::backends::BlobStorageBackend>
-    for api::InMemoryStorageBackend
+    for api::BlobStorageBackend
 {
     fn from(be: components::backends::BlobStorageBackend) -> Self {
-        api::InMemoryStorageBackend { base64: be.base64, readonly: be.readonly }
+        api::BlobStorageBackend { base64: be.base64, readonly: be.readonly }
     }
 }
 

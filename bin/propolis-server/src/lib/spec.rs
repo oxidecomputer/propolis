@@ -322,9 +322,11 @@ impl ServerSpecBuilder {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         let backend_name = name.to_string();
-        let backend_spec = StorageBackendV0::InMemory(
-            components::backends::BlobStorageBackend { base64, readonly: true },
-        );
+        let backend_spec =
+            StorageBackendV0::Blob(components::backends::BlobStorageBackend {
+                base64,
+                readonly: true,
+            });
 
         let device_name = name.to_string();
         let device_spec =

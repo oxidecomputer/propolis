@@ -178,7 +178,7 @@ impl DeviceSpecV0 {
 pub enum StorageBackendV0 {
     Crucible(components::backends::CrucibleStorageBackend),
     File(components::backends::FileStorageBackend),
-    InMemory(components::backends::BlobStorageBackend),
+    Blob(components::backends::BlobStorageBackend),
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]

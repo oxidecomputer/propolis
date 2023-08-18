@@ -1371,7 +1371,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "InMemory"
+                  "Blob"
                 ]
               }
             },
