@@ -108,10 +108,10 @@ impl From<components::backends::FileStorageBackend>
     }
 }
 
-impl From<components::backends::InMemoryStorageBackend>
+impl From<components::backends::BlobStorageBackend>
     for api::InMemoryStorageBackend
 {
-    fn from(be: components::backends::InMemoryStorageBackend) -> Self {
+    fn from(be: components::backends::BlobStorageBackend) -> Self {
         api::InMemoryStorageBackend { base64: be.base64, readonly: be.readonly }
     }
 }

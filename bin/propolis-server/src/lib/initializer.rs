@@ -284,7 +284,7 @@ impl<'a> MachineInitializer<'a> {
         match backend_spec {
             instance_spec::v0::StorageBackendV0::Crucible(spec) => {
                 info!(self.log, "Creating Crucible disk";
-                      "serialized_vcr" => &spec.request_json);
+                      "backend_name" => backend_name);
 
                 let vcr: VolumeConstructionRequest =
                     serde_json::from_str(&spec.request_json)?;

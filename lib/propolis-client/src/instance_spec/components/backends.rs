@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A Crucible storage backend.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CrucibleStorageBackend {
     /// A serialized `[crucible_client_types::VolumeConstructionRequest]`. This
@@ -51,6 +51,17 @@ impl MigrationElement for CrucibleStorageBackend {
     }
 }
 
+impl std::fmt::Debug for CrucibleStorageBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact the contents of the VCR since they may contain volume
+        // encryption keys.
+        f.debug_struct("CrucibleStorageBackend")
+            .field("request_json", &"<redacted>".to_string())
+            .field("readonly", &self.readonly)
+            .finish()
+    }
+}
+
 /// A storage backend backed by a file in the host system's file system.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -84,20 +95,30 @@ impl MigrationElement for FileStorageBackend {
     }
 }
 
-/// A storage backend backed by an in-memory buffer in the Propolis process.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+/// A storage backend for a disk whose initial contents are given explicitly
+/// by the specification.
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct InMemoryStorageBackend {
-    /// The initial contents of the in-memory disk.
+pub struct BlobStorageBackend {
+    /// The disk's initial contents, encoded as a base64 string.
     pub base64: String,
 
     /// Indicates whether the storage is read-only.
     pub readonly: bool,
 }
 
-impl MigrationElement for InMemoryStorageBackend {
+impl std::fmt::Debug for BlobStorageBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlobStorageBackend")
+            .field("base64", &"<redacted>".to_string())
+            .field("readonly", &self.readonly)
+            .finish()
+    }
+}
+
+impl MigrationElement for BlobStorageBackend {
     fn kind(&self) -> &'static str {
-        "InMemoryStorageBackend"
+        "BlobStorageBackend"
     }
 
     fn can_migrate_from_element(

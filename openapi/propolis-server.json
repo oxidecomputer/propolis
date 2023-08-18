@@ -421,6 +421,25 @@
           "storage_backends"
         ]
       },
+      "BlobStorageBackend": {
+        "description": "A storage backend for a disk whose initial contents are given explicitly by the specification.",
+        "type": "object",
+        "properties": {
+          "base64": {
+            "description": "The disk's initial contents, encoded as a base64 string.",
+            "type": "string"
+          },
+          "readonly": {
+            "description": "Indicates whether the storage is read-only.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "base64",
+          "readonly"
+        ],
+        "additionalProperties": false
+      },
       "Board": {
         "description": "A VM's mainboard.",
         "type": "object",
@@ -726,25 +745,6 @@
         },
         "required": [
           "enable_pcie"
-        ],
-        "additionalProperties": false
-      },
-      "InMemoryStorageBackend": {
-        "description": "A storage backend backed by an in-memory buffer in the Propolis process.",
-        "type": "object",
-        "properties": {
-          "base64": {
-            "description": "The initial contents of the in-memory disk.",
-            "type": "string"
-          },
-          "readonly": {
-            "description": "Indicates whether the storage is read-only.",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "base64",
-          "readonly"
         ],
         "additionalProperties": false
       },
@@ -1366,7 +1366,7 @@
             "type": "object",
             "properties": {
               "component": {
-                "$ref": "#/components/schemas/InMemoryStorageBackend"
+                "$ref": "#/components/schemas/BlobStorageBackend"
               },
               "type": {
                 "type": "string",

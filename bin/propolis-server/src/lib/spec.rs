@@ -6,6 +6,7 @@
 
 use std::str::FromStr;
 
+use crate::config;
 use propolis_client::handmade::api::{
     self, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
@@ -17,10 +18,7 @@ use propolis_client::instance_spec::{
     },
     PciPath,
 };
-
 use thiserror::Error;
-
-use crate::config;
 
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -325,10 +323,7 @@ impl ServerSpecBuilder {
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         let backend_name = name.to_string();
         let backend_spec = StorageBackendV0::InMemory(
-            components::backends::InMemoryStorageBackend {
-                base64,
-                readonly: true,
-            },
+            components::backends::BlobStorageBackend { base64, readonly: true },
         );
 
         let device_name = name.to_string();
