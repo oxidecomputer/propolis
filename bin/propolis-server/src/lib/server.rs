@@ -28,11 +28,10 @@ use internal_dns::resolver::{ResolveError, Resolver};
 use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
+use propolis_client::instance_spec::components::backends::CrucibleStorageBackend;
 use propolis_client::{
     handmade::api,
-    instance_spec::{
-        self, StorageBackend, StorageBackendKind, VersionedInstanceSpec,
-    },
+    instance_spec::{self, v0::StorageBackendV0, VersionedInstanceSpec},
 };
 
 use propolis_server_config::Config as VmTomlConfig;
@@ -977,23 +976,15 @@ async fn instance_issue_crucible_vcr_request(
     // to replace it.
     let vm_controller = rqctx.context().vm().await?;
     let mut spec = vm_controller.instance_spec().await;
+    let VersionedInstanceSpec::V0(v0_spec) = &mut *spec;
 
     let (readonly, old_vcr) = {
-        let bes = &spec.backends.storage_backends.get(&disk_name);
-        if let Some(bes) = bes {
+        let bes = &v0_spec.backends.storage_backends.get(&disk_name);
+        if let Some(StorageBackendV0::Crucible(bes)) = bes {
             let readonly = bes.readonly;
-            match &bes.kind {
-                StorageBackendKind::Crucible { req } => (readonly, req),
-                x => {
-                    let s = format!(
-                        "Invalid StorageBackendKind for VCR replacement: {:?}",
-                        x
-                    );
-                    return Err(HttpError::for_not_found(Some(s.clone()), s));
-                }
-            }
+            (readonly, &bes.request_json)
         } else {
-            let s = format!("Storage Backend for {:?} not found", disk_name);
+            let s = format!("Crucible backend for {:?} not found", disk_name);
             return Err(HttpError::for_not_found(Some(s.clone()), s));
         }
     };
@@ -1018,17 +1009,18 @@ async fn instance_issue_crucible_vcr_request(
     // Crucible does the heavy lifting here to verify that the old/new
     // VCRs are different in just the correct way and will return error
     // if there is any mismatch.
-    backend.vcr_replace(old_vcr.clone(), new_vcr.clone()).await.map_err(
-        |e| HttpError::for_bad_request(Some(e.to_string()), e.to_string()),
-    )?;
+    backend.vcr_replace(&old_vcr, new_vcr.clone()).await.map_err(|e| {
+        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+    })?;
 
     // Our replacement request was accepted.  We now need to update the
     // spec stored in propolis so it matches what the downstairs now has.
-    let new_storage_backend: StorageBackend = StorageBackend {
-        kind: StorageBackendKind::Crucible { req: new_vcr },
-        readonly,
-    };
-    spec.backends.storage_backends.insert(disk_name, new_storage_backend);
+    let new_storage_backend: StorageBackendV0 =
+        StorageBackendV0::Crucible(CrucibleStorageBackend {
+            readonly,
+            request_json: serde_json::to_string(&new_vcr).expect("TODO gjc"),
+        });
+    v0_spec.backends.storage_backends.insert(disk_name, new_storage_backend);
 
     slog::info!(log, "Replaced the VCR in backend of {:?}", path_params.id);
 

@@ -42,7 +42,7 @@ impl Preamble {
         &self,
         other_spec: MutexGuard<'_, VersionedInstanceSpec>,
     ) -> Result<(), MigrationCompatibilityError> {
-        let VersionedInstanceSpec::V0(other_spec) = other_spec;
+        let VersionedInstanceSpec::V0(other_spec) = &*other_spec;
         self.device_spec.can_migrate_devices_from(&other_spec.devices)?;
         let other_keys = get_spec_backend_keys(other_spec);
         if self.backend_keys.len() != other_keys.len() {
