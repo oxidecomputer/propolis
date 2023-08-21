@@ -29,6 +29,14 @@ mod requests;
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn nvme_doorbell(off: u64, qid: u16, is_cq: u8, val: u16) {}
+    fn nvme_doorbell_admin_cq(val: u16) {}
+    fn nvme_doorbell_admin_sq(val: u16) {}
+    fn nvme_admin_cmd(opcode: u8, prp1: u64, prp2: u64) {}
+}
+
 /// The max number of MSI-X interrupts we support
 const NVME_MSIX_COUNT: u16 = 1024;
 
@@ -757,6 +765,7 @@ impl PciNvme {
             CtrlrReg::DoorBellAdminSQ => {
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
+                probes::nvme_doorbell_admin_sq!(|| (val));
                 let state = self.state.lock().unwrap();
 
                 if !state.ctrl.cc.enabled() {
@@ -778,6 +787,7 @@ impl PciNvme {
             CtrlrReg::DoorBellAdminCQ => {
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
+                probes::nvme_doorbell_admin_cq!(|| (val));
                 let state = self.state.lock().unwrap();
 
                 if !state.ctrl.cc.enabled() {
@@ -833,6 +843,7 @@ impl PciNvme {
 
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
+                probes::nvme_doorbell!(|| (off as u64, qid, is_cq as u8, val));
                 if is_cq {
                     // Completion Queue y Head Doorbell
                     let cq = state.get_cq(qid)?;
@@ -881,7 +892,7 @@ impl PciNvme {
         }
         let mem = mem.unwrap();
 
-        while let Some((sub, cqe_permit)) = sq.pop(&mem) {
+        while let Some((sub, cqe_permit, _idx)) = sq.pop(&mem) {
             use cmds::AdminCmd;
 
             let parsed = AdminCmd::parse(sub);
@@ -889,6 +900,7 @@ impl PciNvme {
                 // XXX: set controller error state?
                 continue;
             }
+            probes::nvme_admin_cmd!(|| (sub.opcode(), sub.prp1, sub.prp2));
             let cmd = parsed.unwrap();
             let comp = match cmd {
                 AdminCmd::CreateIOCompQ(cmd) => {

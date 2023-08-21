@@ -55,7 +55,10 @@ pub fn block_backend(
 pub fn parse(path: &str) -> anyhow::Result<Config> {
     let file_data =
         std::fs::read(path).context("Failed to read given config.toml")?;
-    Ok(toml::from_slice::<Config>(&file_data)?)
+    Ok(toml::from_str::<Config>(
+        std::str::from_utf8(&file_data)
+            .context("config should be valid utf-8")?,
+    )?)
 }
 
 pub fn parse_bdf(v: &str) -> Option<Bdf> {

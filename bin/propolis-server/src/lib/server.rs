@@ -28,9 +28,10 @@ use internal_dns::resolver::{ResolveError, Resolver};
 use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
+use propolis_client::instance_spec::components::backends::CrucibleStorageBackend;
 use propolis_client::{
     handmade::api,
-    instance_spec::{self, InstanceSpec, StorageBackend, StorageBackendKind},
+    instance_spec::{self, v0::StorageBackendV0, VersionedInstanceSpec},
 };
 
 use propolis_server_config::Config as VmTomlConfig;
@@ -107,7 +108,7 @@ pub enum VmControllerState {
         //
         // TODO: Merge this into `api::Instance` when the migration to generated
         // types is complete.
-        last_instance_spec: Box<InstanceSpec>,
+        last_instance_spec: Box<VersionedInstanceSpec>,
 
         /// A clone of the receiver side of the server's state watcher, used to
         /// serve subsequent `instance_state_monitor` requests. Note that an
@@ -282,7 +283,7 @@ enum SpecCreationError {
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<InstanceSpec, SpecCreationError> {
+) -> Result<VersionedInstanceSpec, SpecCreationError> {
     let mut spec_builder =
         ServerSpecBuilder::new(&request.properties, toml_config)?;
 
@@ -300,17 +301,17 @@ fn instance_spec_from_request(
 
     spec_builder.add_devices_from_config(toml_config)?;
     for port in [
-        instance_spec::SerialPortNumber::Com1,
-        instance_spec::SerialPortNumber::Com2,
-        instance_spec::SerialPortNumber::Com3,
+        instance_spec::components::devices::SerialPortNumber::Com1,
+        instance_spec::components::devices::SerialPortNumber::Com2,
+        instance_spec::components::devices::SerialPortNumber::Com3,
         // SoftNpu uses this port for ASIC management.
         #[cfg(not(feature = "falcon"))]
-        instance_spec::SerialPortNumber::Com4,
+        instance_spec::components::devices::SerialPortNumber::Com4,
     ] {
         spec_builder.add_serial_port(port)?;
     }
 
-    Ok(spec_builder.finish())
+    Ok(VersionedInstanceSpec::V0(spec_builder.finish()))
 }
 
 /// Attempts to register an Oximeter server reporting metrics from a new
@@ -647,7 +648,7 @@ async fn instance_spec_ensure(
 
 async fn instance_get_common(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<(api::Instance, InstanceSpec), HttpError> {
+) -> Result<(api::Instance, VersionedInstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
         VmControllerState::NotCreated => Err(HttpError::for_not_found(
@@ -966,7 +967,7 @@ async fn instance_issue_crucible_vcr_request(
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let path_params = path_params.into_inner();
     let request = request.into_inner();
-    let new_vcr = request.vcr;
+    let new_vcr_json = request.vcr_json;
     let disk_name = request.name;
     let log = rqctx.log.clone();
 
@@ -975,23 +976,14 @@ async fn instance_issue_crucible_vcr_request(
     // to replace it.
     let vm_controller = rqctx.context().vm().await?;
     let mut spec = vm_controller.instance_spec().await;
+    let VersionedInstanceSpec::V0(v0_spec) = &mut *spec;
 
-    let (readonly, old_vcr) = {
-        let bes = &spec.backends.storage_backends.get(&disk_name);
-        if let Some(bes) = bes {
-            let readonly = bes.readonly;
-            match &bes.kind {
-                StorageBackendKind::Crucible { req } => (readonly, req),
-                x => {
-                    let s = format!(
-                        "Invalid StorageBackendKind for VCR replacement: {:?}",
-                        x
-                    );
-                    return Err(HttpError::for_not_found(Some(s.clone()), s));
-                }
-            }
+    let (readonly, old_vcr_json) = {
+        let bes = &v0_spec.backends.storage_backends.get(&disk_name);
+        if let Some(StorageBackendV0::Crucible(bes)) = bes {
+            (bes.readonly, &bes.request_json)
         } else {
-            let s = format!("Storage Backend for {:?} not found", disk_name);
+            let s = format!("Crucible backend for {:?} not found", disk_name);
             return Err(HttpError::for_not_found(Some(s.clone()), s));
         }
     };
@@ -1008,25 +1000,26 @@ async fn instance_issue_crucible_vcr_request(
         "{:?} {:?} replace {:?} with {:?}",
         disk_name,
         path_params.id,
-        old_vcr,
-        new_vcr,
+        old_vcr_json,
+        new_vcr_json,
     );
 
     // Try the replacement.
     // Crucible does the heavy lifting here to verify that the old/new
     // VCRs are different in just the correct way and will return error
     // if there is any mismatch.
-    backend.vcr_replace(old_vcr.clone(), new_vcr.clone()).await.map_err(
-        |e| HttpError::for_bad_request(Some(e.to_string()), e.to_string()),
-    )?;
+    backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(|e| {
+        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+    })?;
 
     // Our replacement request was accepted.  We now need to update the
     // spec stored in propolis so it matches what the downstairs now has.
-    let new_storage_backend: StorageBackend = StorageBackend {
-        kind: StorageBackendKind::Crucible { req: new_vcr },
-        readonly,
-    };
-    spec.backends.storage_backends.insert(disk_name, new_storage_backend);
+    let new_storage_backend: StorageBackendV0 =
+        StorageBackendV0::Crucible(CrucibleStorageBackend {
+            readonly,
+            request_json: new_vcr_json,
+        });
+    v0_spec.backends.storage_backends.insert(disk_name, new_storage_backend);
 
     slog::info!(log, "Replaced the VCR in backend of {:?}", path_params.id);
 

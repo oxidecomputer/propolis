@@ -14,6 +14,11 @@ use crate::vmm::MemCtx;
 
 use thiserror::Error;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn nvme_cqe(qid: u16, idx: u16, phase: u8) {}
+}
+
 /// Each queue is identified by a 16-bit ID.
 ///
 /// See NVMe 1.0e Section 4.1.4 Queue Identifier
@@ -379,13 +384,13 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
         mem: &MemCtx,
-    ) -> Option<(bits::RawSubmission, CompQueueEntryPermit)> {
+    ) -> Option<(bits::RawSubmission, CompQueueEntryPermit, u16)> {
         // Attempt to reserve an entry on the Completion Queue
         let cqe_permit = self.cq.reserve_entry(self.clone())?;
         if let Some(idx) = self.state.pop_head() {
             let ent: Option<RawSubmission> = mem.read(self.entry_addr(idx));
             // XXX: handle a guest addr that becomes unmapped later
-            ent.map(|ent| (ent, cqe_permit))
+            ent.map(|ent| (ent, cqe_permit, idx))
         } else {
             // No Submission Queue entry, so return the CQE permit
             cqe_permit.remit();
@@ -400,7 +405,7 @@ impl SubQueue {
     }
 
     /// Returns the ID of this Submission Queue.
-    fn id(&self) -> QueueId {
+    pub(super) fn id(&self) -> QueueId {
         self.id
     }
 
@@ -576,6 +581,7 @@ impl CompQueue {
         // Since we have a permit, there should always be at least
         // one space in the queue and this unwrap shouldn't fail.
         let idx = self.state.push_tail().unwrap();
+        probes::nvme_cqe!(|| (self.id, idx, (entry.status_phase & 1) as u8));
         let addr = self.entry_addr(idx);
         mem.write(addr, &entry);
         // XXX: handle a guest addr that becomes unmapped later
@@ -946,7 +952,7 @@ mod tests {
         ));
 
         // Now pop those SQ items and complete them in the CQ
-        while let Some((_, permit)) = sq.pop(&mem) {
+        while let Some((_, permit, _)) = sq.pop(&mem) {
             permit.push_completion_test(&mem);
         }
 
@@ -1116,7 +1122,8 @@ mod tests {
 
                     let mut rng = rand::thread_rng();
                     while let Ok(()) = worker_rx.recv() {
-                        while let Some((_, cqe_permit)) = worker_sq.pop(&mem) {
+                        while let Some((_, cqe_permit, _)) = worker_sq.pop(&mem)
+                        {
                             submissions += 1;
 
                             // Sleep for a bit to mimic actually doing

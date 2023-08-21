@@ -5,7 +5,7 @@
 //! Conversions from native instance spec types to Progenitor-generated API
 //! types.
 
-use super::*;
+use super::{v0::*, *};
 use crate::types as api;
 
 // Convenience macro for converting from a HashMap<K, A> to a HashMap<K, B>
@@ -17,26 +17,39 @@ macro_rules! convert_map {
     };
 }
 
-impl From<InstanceSpec> for api::InstanceSpec {
-    fn from(spec: super::InstanceSpec) -> Self {
-        let InstanceSpec { devices, backends } = spec;
-        api::InstanceSpec { backends: backends.into(), devices: devices.into() }
+impl From<VersionedInstanceSpec> for api::VersionedInstanceSpec {
+    fn from(spec: VersionedInstanceSpec) -> Self {
+        match spec {
+            VersionedInstanceSpec::V0(spec) => {
+                api::VersionedInstanceSpec::V0(spec.into())
+            }
+        }
     }
 }
 
-impl From<BackendSpec> for api::BackendSpec {
-    fn from(spec: BackendSpec) -> Self {
-        let BackendSpec { storage_backends, network_backends } = spec;
-        api::BackendSpec {
+impl From<InstanceSpecV0> for api::InstanceSpecV0 {
+    fn from(spec: InstanceSpecV0) -> Self {
+        let InstanceSpecV0 { devices, backends } = spec;
+        api::InstanceSpecV0 {
+            backends: backends.into(),
+            devices: devices.into(),
+        }
+    }
+}
+
+impl From<BackendSpecV0> for api::BackendSpecV0 {
+    fn from(spec: BackendSpecV0) -> Self {
+        let BackendSpecV0 { storage_backends, network_backends } = spec;
+        api::BackendSpecV0 {
             storage_backends: convert_map!(storage_backends),
             network_backends: convert_map!(network_backends),
         }
     }
 }
 
-impl From<DeviceSpec> for api::DeviceSpec {
-    fn from(spec: DeviceSpec) -> Self {
-        let DeviceSpec {
+impl From<DeviceSpecV0> for api::DeviceSpecV0 {
+    fn from(spec: DeviceSpecV0) -> Self {
+        let DeviceSpecV0 {
             board,
             storage_devices,
             network_devices,
@@ -50,7 +63,7 @@ impl From<DeviceSpec> for api::DeviceSpec {
             ..
         } = spec;
 
-        api::DeviceSpec {
+        api::DeviceSpecV0 {
             board: board.into(),
             storage_devices: convert_map!(storage_devices),
             network_devices: convert_map!(network_devices),
@@ -60,112 +73,177 @@ impl From<DeviceSpec> for api::DeviceSpec {
     }
 }
 
-impl From<StorageBackend> for api::StorageBackend {
-    fn from(be: StorageBackend) -> Self {
-        let StorageBackend { kind, readonly } = be;
-        api::StorageBackend { kind: kind.into(), readonly }
-    }
-}
-
-impl From<StorageBackendKind> for api::StorageBackendKind {
-    fn from(kind: StorageBackendKind) -> Self {
-        match kind {
-            StorageBackendKind::Crucible { req } => {
-                api::StorageBackendKind::Crucible { req: req.into() }
+impl From<StorageBackendV0> for api::StorageBackendV0 {
+    fn from(be: StorageBackendV0) -> Self {
+        match be {
+            StorageBackendV0::Crucible(spec) => {
+                api::StorageBackendV0::Crucible(spec.into())
             }
-            StorageBackendKind::File { path } => {
-                api::StorageBackendKind::File { path }
+            StorageBackendV0::File(spec) => {
+                api::StorageBackendV0::File(spec.into())
             }
-            StorageBackendKind::InMemory { base64 } => {
-                api::StorageBackendKind::InMemory { base64 }
+            StorageBackendV0::Blob(spec) => {
+                api::StorageBackendV0::Blob(spec.into())
             }
         }
     }
 }
 
-impl From<NetworkBackend> for api::NetworkBackend {
-    fn from(be: NetworkBackend) -> Self {
-        api::NetworkBackend { kind: be.kind.into() }
+impl From<components::backends::CrucibleStorageBackend>
+    for api::CrucibleStorageBackend
+{
+    fn from(be: components::backends::CrucibleStorageBackend) -> Self {
+        api::CrucibleStorageBackend {
+            request_json: be.request_json,
+            readonly: be.readonly,
+        }
     }
 }
 
-impl From<NetworkBackendKind> for api::NetworkBackendKind {
-    fn from(kind: NetworkBackendKind) -> Self {
-        match kind {
-            NetworkBackendKind::Virtio { vnic_name } => {
-                api::NetworkBackendKind::Virtio { vnic_name }
+impl From<components::backends::FileStorageBackend>
+    for api::FileStorageBackend
+{
+    fn from(be: components::backends::FileStorageBackend) -> Self {
+        api::FileStorageBackend { path: be.path, readonly: be.readonly }
+    }
+}
+
+impl From<components::backends::BlobStorageBackend>
+    for api::BlobStorageBackend
+{
+    fn from(be: components::backends::BlobStorageBackend) -> Self {
+        api::BlobStorageBackend { base64: be.base64, readonly: be.readonly }
+    }
+}
+
+impl From<NetworkBackendV0> for api::NetworkBackendV0 {
+    fn from(be: NetworkBackendV0) -> Self {
+        match be {
+            NetworkBackendV0::Virtio(spec) => {
+                api::NetworkBackendV0::Virtio(spec.into())
             }
-            NetworkBackendKind::Dlpi { vnic_name } => {
-                api::NetworkBackendKind::Dlpi { vnic_name }
+            NetworkBackendV0::Dlpi(spec) => {
+                api::NetworkBackendV0::Dlpi(spec.into())
             }
         }
     }
 }
 
-impl From<Board> for api::Board {
-    fn from(board: Board) -> Self {
-        let Board { cpus, memory_mb, chipset } = board;
+impl From<components::backends::VirtioNetworkBackend>
+    for api::VirtioNetworkBackend
+{
+    fn from(be: components::backends::VirtioNetworkBackend) -> Self {
+        api::VirtioNetworkBackend { vnic_name: be.vnic_name }
+    }
+}
+
+impl From<components::backends::DlpiNetworkBackend>
+    for api::DlpiNetworkBackend
+{
+    fn from(be: components::backends::DlpiNetworkBackend) -> Self {
+        api::DlpiNetworkBackend { vnic_name: be.vnic_name }
+    }
+}
+
+impl From<components::board::Board> for api::Board {
+    fn from(board: components::board::Board) -> Self {
+        let components::board::Board { cpus, memory_mb, chipset } = board;
         api::Board { cpus, memory_mb, chipset: chipset.into() }
     }
 }
 
-impl From<Chipset> for api::Chipset {
-    fn from(chipset: Chipset) -> Self {
+impl From<components::board::Chipset> for api::Chipset {
+    fn from(chipset: components::board::Chipset) -> Self {
         match chipset {
-            Chipset::I440Fx { enable_pcie } => {
-                api::Chipset::I440Fx { enable_pcie }
+            components::board::Chipset::I440Fx(i440fx) => {
+                api::Chipset::I440Fx(api::I440Fx {
+                    enable_pcie: i440fx.enable_pcie,
+                })
             }
         }
     }
 }
 
-impl From<StorageDevice> for api::StorageDevice {
-    fn from(device: StorageDevice) -> Self {
-        let StorageDevice { kind, backend_name, pci_path } = device;
-        api::StorageDevice {
-            kind: kind.into(),
-            backend_name,
-            pci_path: pci_path.into(),
+impl From<StorageDeviceV0> for api::StorageDeviceV0 {
+    fn from(device: StorageDeviceV0) -> Self {
+        match device {
+            StorageDeviceV0::VirtioDisk(disk) => {
+                api::StorageDeviceV0::VirtioDisk(disk.into())
+            }
+            StorageDeviceV0::NvmeDisk(disk) => {
+                api::StorageDeviceV0::NvmeDisk(disk.into())
+            }
         }
     }
 }
 
-impl From<StorageDeviceKind> for api::StorageDeviceKind {
-    fn from(kind: StorageDeviceKind) -> Self {
-        match kind {
-            StorageDeviceKind::Virtio => api::StorageDeviceKind::Virtio,
-            StorageDeviceKind::Nvme => api::StorageDeviceKind::Nvme,
+impl From<components::devices::VirtioDisk> for api::VirtioDisk {
+    fn from(disk: components::devices::VirtioDisk) -> Self {
+        api::VirtioDisk {
+            backend_name: disk.backend_name,
+            pci_path: disk.pci_path.into(),
         }
     }
 }
 
-impl From<NetworkDevice> for api::NetworkDevice {
-    fn from(device: NetworkDevice) -> Self {
-        let NetworkDevice { backend_name, pci_path } = device;
-        api::NetworkDevice { backend_name, pci_path: pci_path.into() }
+impl From<components::devices::NvmeDisk> for api::NvmeDisk {
+    fn from(disk: components::devices::NvmeDisk) -> Self {
+        api::NvmeDisk {
+            backend_name: disk.backend_name,
+            pci_path: disk.pci_path.into(),
+        }
     }
 }
 
-impl From<PciPciBridge> for api::PciPciBridge {
-    fn from(bridge: PciPciBridge) -> Self {
-        let PciPciBridge { downstream_bus, pci_path } = bridge;
-        api::PciPciBridge { downstream_bus, pci_path: pci_path.into() }
+impl From<NetworkDeviceV0> for api::NetworkDeviceV0 {
+    fn from(device: NetworkDeviceV0) -> Self {
+        match device {
+            NetworkDeviceV0::VirtioNic(nic) => {
+                api::NetworkDeviceV0::VirtioNic(nic.into())
+            }
+        }
     }
 }
 
-impl From<SerialPort> for api::SerialPort {
-    fn from(port: SerialPort) -> Self {
+impl From<components::devices::VirtioNic> for api::VirtioNic {
+    fn from(nic: components::devices::VirtioNic) -> Self {
+        api::VirtioNic {
+            backend_name: nic.backend_name,
+            pci_path: nic.pci_path.into(),
+        }
+    }
+}
+
+impl From<components::devices::PciPciBridge> for api::PciPciBridge {
+    fn from(bridge: components::devices::PciPciBridge) -> Self {
+        api::PciPciBridge {
+            downstream_bus: bridge.downstream_bus,
+            pci_path: bridge.pci_path.into(),
+        }
+    }
+}
+
+impl From<components::devices::SerialPort> for api::SerialPort {
+    fn from(port: components::devices::SerialPort) -> Self {
         api::SerialPort { num: port.num.into() }
     }
 }
 
-impl From<SerialPortNumber> for api::SerialPortNumber {
-    fn from(num: SerialPortNumber) -> Self {
+impl From<components::devices::SerialPortNumber> for api::SerialPortNumber {
+    fn from(num: components::devices::SerialPortNumber) -> Self {
         match num {
-            SerialPortNumber::Com1 => api::SerialPortNumber::Com1,
-            SerialPortNumber::Com2 => api::SerialPortNumber::Com2,
-            SerialPortNumber::Com3 => api::SerialPortNumber::Com3,
-            SerialPortNumber::Com4 => api::SerialPortNumber::Com4,
+            components::devices::SerialPortNumber::Com1 => {
+                api::SerialPortNumber::Com1
+            }
+            components::devices::SerialPortNumber::Com2 => {
+                api::SerialPortNumber::Com2
+            }
+            components::devices::SerialPortNumber::Com3 => {
+                api::SerialPortNumber::Com3
+            }
+            components::devices::SerialPortNumber::Com4 => {
+                api::SerialPortNumber::Com4
+            }
         }
     }
 }
@@ -254,23 +332,22 @@ impl From<crucible_client_types::CrucibleOpts> for crate::types::CrucibleOpts {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{v0::builder::SpecBuilder, *};
 
     #[test]
     fn device_specs_are_convertible() {
         let mut builder = SpecBuilder::new(4, 4096, false);
-        builder
-            .add_storage_device(
-                "disk1".to_string(),
-                StorageDevice {
-                    kind: StorageDeviceKind::Nvme,
-                    backend_name: "disk1_be".to_string(),
-                    pci_path: PciPath::new(0, 16, 0).unwrap(),
-                },
-                "disk1_be".to_string(),
-                StorageBackend {
-                    kind: StorageBackendKind::Crucible {
-                        req: VolumeConstructionRequest::Region {
+        builder.add_storage_device(
+            "disk1".to_string(),
+            StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
+                backend_name: "disk1_be".to_string(),
+                pci_path: PciPath::new(0, 16, 0).unwrap(),
+            }),
+            "disk1_be".to_string(),
+            StorageBackendV0::Crucible(
+                components::backends::CrucibleStorageBackend {
+                    request_json: serde_json::to_string(
+                        &crucible_client_types::VolumeConstructionRequest::Region {
                             block_size: 512,
                             blocks_per_extent: 20,
                             extent_count: 40,
@@ -288,14 +365,15 @@ mod tests {
                             },
                             gen: 1,
                         },
-                    },
+                    )
+                    .unwrap(),
                     readonly: true,
                 },
-            )
-            .unwrap();
+            ),
+        ).unwrap();
 
         let spec = builder.finish();
-        let api_spec: api::InstanceSpec = spec.into();
+        let api_spec: api::InstanceSpecV0 = spec.into();
         assert_eq!(api_spec.devices.storage_devices.len(), 1);
     }
 }

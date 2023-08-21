@@ -12,6 +12,7 @@ use std::{
 };
 
 use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
+use propolis_client::instance_spec;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -232,48 +233,48 @@ impl CrucibleDisk {
 }
 
 impl super::DiskConfig for CrucibleDisk {
-    fn backend_spec(&self) -> propolis_client::instance_spec::StorageBackend {
+    fn backend_spec(&self) -> instance_spec::v0::StorageBackendV0 {
         let gen = self.generation.load(Ordering::Relaxed);
         let downstairs_addrs =
             self.downstairs_instances.iter().map(|ds| ds.address).collect();
 
-        propolis_client::instance_spec::StorageBackend {
-            kind:
-                propolis_client::instance_spec::StorageBackendKind::Crucible {
-                    req: VolumeConstructionRequest::Volume {
-                        id: self.id,
-                        block_size: self.block_size.bytes(),
-                        sub_volumes: vec![VolumeConstructionRequest::Region {
-                            block_size: self.block_size.bytes(),
-                            blocks_per_extent: self.blocks_per_extent,
-                            extent_count: self.extent_count,
-                            opts: CrucibleOpts {
-                                id: Uuid::new_v4(),
-                                target: downstairs_addrs,
-                                lossy: false,
-                                flush_timeout: None,
-                                key: Some(self.encryption_key.clone()),
-                                cert_pem: None,
-                                key_pem: None,
-                                root_cert_pem: None,
-                                control: None,
-                                read_only: false,
-                            },
-                            gen,
-                        }],
-                        read_only_parent: self.read_only_parent.as_ref().map(
-                            |p| {
-                                Box::new(VolumeConstructionRequest::File {
-                                    id: Uuid::new_v4(),
-                                    block_size: self.block_size.bytes(),
-                                    path: p.to_string_lossy().to_string(),
-                                })
-                            },
-                        ),
-                    },
+        let vcr = VolumeConstructionRequest::Volume {
+            id: self.id,
+            block_size: self.block_size.bytes(),
+            sub_volumes: vec![VolumeConstructionRequest::Region {
+                block_size: self.block_size.bytes(),
+                blocks_per_extent: self.blocks_per_extent,
+                extent_count: self.extent_count,
+                opts: CrucibleOpts {
+                    id: Uuid::new_v4(),
+                    target: downstairs_addrs,
+                    lossy: false,
+                    flush_timeout: None,
+                    key: Some(self.encryption_key.clone()),
+                    cert_pem: None,
+                    key_pem: None,
+                    root_cert_pem: None,
+                    control: None,
+                    read_only: false,
                 },
-            readonly: false,
-        }
+                gen,
+            }],
+            read_only_parent: self.read_only_parent.as_ref().map(|p| {
+                Box::new(VolumeConstructionRequest::File {
+                    id: Uuid::new_v4(),
+                    block_size: self.block_size.bytes(),
+                    path: p.to_string_lossy().to_string(),
+                })
+            }),
+        };
+
+        instance_spec::v0::StorageBackendV0::Crucible(
+            instance_spec::components::backends::CrucibleStorageBackend {
+                request_json: serde_json::to_string(&vcr)
+                    .expect("VolumeConstructionRequest should serialize"),
+                readonly: false,
+            },
+        )
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {

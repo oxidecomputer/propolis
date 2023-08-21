@@ -11,7 +11,10 @@ use std::{
     sync::Arc,
 };
 
-use propolis_client::instance_spec::{InstanceSpec, StorageDeviceKind};
+use propolis_client::instance_spec::{
+    components as spec_components,
+    v0::{InstanceSpecV0, StorageDeviceV0},
+};
 use propolis_server_config as config;
 use propolis_types::PciPath;
 use thiserror::Error;
@@ -36,15 +39,6 @@ pub enum VmConfigError {
 pub enum DiskInterface {
     Virtio,
     Nvme,
-}
-
-impl From<DiskInterface> for StorageDeviceKind {
-    fn from(interface: DiskInterface) -> Self {
-        match interface {
-            DiskInterface::Virtio => StorageDeviceKind::Virtio,
-            DiskInterface::Nvme => StorageDeviceKind::Nvme,
-        }
-    }
 }
 
 /// Parameters used to initialize a guest disk.
@@ -121,23 +115,34 @@ impl ConfigRequest {
             return Err(VmConfigError::NoBootDisk.into());
         };
 
-        let mut spec_builder = propolis_client::instance_spec::SpecBuilder::new(
-            self.cpus,
-            self.memory_mib,
-            false,
-        );
+        let mut spec_builder =
+            propolis_client::instance_spec::v0::builder::SpecBuilder::new(
+                self.cpus,
+                self.memory_mib,
+                false,
+            );
 
         let mut disk_handles = Vec::new();
         for (disk_idx, disk_req) in self.all_disks().enumerate() {
             let device_name = format!("disk-device{}", disk_idx);
             let backend_name = format!("storage-backend{}", disk_idx);
-            let device_spec = propolis_client::instance_spec::StorageDevice {
-                kind: disk_req.interface.into(),
-                backend_name: backend_name.clone(),
-                pci_path: PciPath::new(0, disk_req.pci_device_num, 0)?,
+            let pci_path = PciPath::new(0, disk_req.pci_device_num, 0).unwrap();
+            let device_spec = match disk_req.interface {
+                DiskInterface::Virtio => StorageDeviceV0::VirtioDisk(
+                    spec_components::devices::VirtioDisk {
+                        backend_name: backend_name.clone(),
+                        pci_path,
+                    },
+                ),
+                DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(
+                    spec_components::devices::NvmeDisk {
+                        backend_name: backend_name.clone(),
+                        pci_path,
+                    },
+                ),
             };
-            let backend_spec = disk_req.disk.backend_spec();
 
+            let backend_spec = disk_req.disk.backend_spec();
             spec_builder.add_storage_device(
                 device_name,
                 device_spec,
@@ -149,7 +154,7 @@ impl ConfigRequest {
         }
 
         spec_builder.add_serial_port(
-            propolis_client::instance_spec::SerialPortNumber::Com1,
+            spec_components::devices::SerialPortNumber::Com1,
         )?;
 
         let instance_spec = spec_builder.finish();
@@ -193,14 +198,14 @@ impl ConfigRequest {
 
 #[derive(Clone, Debug)]
 pub struct VmConfig {
-    instance_spec: InstanceSpec,
+    instance_spec: InstanceSpecV0,
     _disk_handles: Vec<Arc<dyn disk::DiskConfig>>,
     guest_os_kind: GuestOsKind,
     server_toml_path: PathBuf,
 }
 
 impl VmConfig {
-    pub fn instance_spec(&self) -> &InstanceSpec {
+    pub fn instance_spec(&self) -> &InstanceSpecV0 {
         &self.instance_spec
     }
 

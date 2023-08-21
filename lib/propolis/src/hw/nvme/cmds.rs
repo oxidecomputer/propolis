@@ -10,6 +10,13 @@ use crate::vmm::MemCtx;
 
 use thiserror::Error;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn nvme_prp_entry(iter: u64, prp: u64) {}
+    fn nvme_prp_list(iter: u64, prp: u64, idx: u16) {}
+    fn nvme_prp_error(err: &'static str) {}
+}
+
 /// Errors that may be encounted during command parsing.
 #[derive(Debug, Error)]
 pub enum ParseErr {
@@ -608,6 +615,10 @@ impl PrpIter<'_> {
             PrpNext::Prp1 => {
                 // The first PRP entry contained within the command may have a
                 // non-zero offset within the memory page.
+                probes::nvme_prp_entry!(|| (
+                    self as *const Self as u64,
+                    self.prp1
+                ));
                 let offset = self.prp1 & PAGE_OFFSET as u64;
                 let size = u64::min(PAGE_SIZE as u64 - offset, self.remain);
                 let after = self.remain - size;
@@ -648,6 +659,11 @@ impl PrpIter<'_> {
                     // the end of the list).
                     let base = self.prp2 & (PAGE_MASK as u64);
                     let idx = (self.prp2 & PAGE_OFFSET as u64) / 8;
+                    probes::nvme_prp_list!(|| (
+                        self as *const Self as u64,
+                        base,
+                        idx as u16,
+                    ));
                     PrpNext::List(base, idx as u16)
                 };
                 (self.prp1, size, next)
@@ -658,6 +674,10 @@ impl PrpIter<'_> {
                 if self.prp2 & PAGE_OFFSET as u64 != 0 {
                     return Err("Inappropriate PRP2 offset");
                 }
+                probes::nvme_prp_entry!(|| (
+                    self as *const Self as u64,
+                    self.prp2
+                ));
                 let size = self.remain;
                 assert!(size <= PAGE_SIZE as u64);
                 (self.prp2, size, PrpNext::Done)
@@ -669,6 +689,9 @@ impl PrpIter<'_> {
                     .mem
                     .read(GuestAddr(entry_addr))
                     .ok_or_else(|| "Unable to read PRP list entry")?;
+                probes::nvme_prp_entry!(
+                    || (self as *const Self as u64, entry,)
+                );
 
                 if entry & PAGE_OFFSET as u64 != 0 {
                     return Err("Inappropriate PRP list entry offset");
@@ -682,6 +705,11 @@ impl PrpIter<'_> {
                     // The last PRP in this list chains to another
                     // (page-aligned) list with the next PRP.
                     self.next = PrpNext::List(entry, 0);
+                    probes::nvme_prp_list!(|| (
+                        self as *const Self as u64,
+                        entry,
+                        0,
+                    ));
                     return self.get_next();
                 }
             }
@@ -713,6 +741,7 @@ impl Iterator for PrpIter<'_> {
         match self.get_next() {
             Ok(res) => Some(res),
             Err(e) => {
+                probes::nvme_prp_error!(|| (e));
                 self.error = Some(e);
                 None
             }

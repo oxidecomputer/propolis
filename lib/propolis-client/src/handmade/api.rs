@@ -8,7 +8,7 @@
 //! and sled agent (within omicron-common), they are intentionally
 //! decoupled so the interfaces may evolve independently, as necessary.
 
-use crate::instance_spec::InstanceSpec;
+use crate::instance_spec::VersionedInstanceSpec;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ pub use crucible_client_types::VolumeConstructionRequest;
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceVCRReplace {
     pub name: String,
-    pub vcr: VolumeConstructionRequest,
+    pub vcr_json: String,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -53,7 +53,7 @@ pub struct InstanceEnsureRequest {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceSpecEnsureRequest {
     pub properties: InstanceProperties,
-    pub instance_spec: InstanceSpec,
+    pub instance_spec: VersionedInstanceSpec,
     pub migrate: Option<InstanceMigrateInitiateRequest>,
 }
 
@@ -124,7 +124,7 @@ pub struct InstanceGetResponse {
 pub struct InstanceSpecGetResponse {
     pub properties: InstanceProperties,
     pub state: InstanceState,
-    pub spec: InstanceSpec,
+    pub spec: VersionedInstanceSpec,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
