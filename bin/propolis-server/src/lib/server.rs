@@ -981,8 +981,7 @@ async fn instance_issue_crucible_vcr_request(
     let (readonly, old_vcr_json) = {
         let bes = &v0_spec.backends.storage_backends.get(&disk_name);
         if let Some(StorageBackendV0::Crucible(bes)) = bes {
-            let readonly = bes.readonly;
-            (readonly, &bes.request_json)
+            (bes.readonly, &bes.request_json)
         } else {
             let s = format!("Crucible backend for {:?} not found", disk_name);
             return Err(HttpError::for_not_found(Some(s.clone()), s));
