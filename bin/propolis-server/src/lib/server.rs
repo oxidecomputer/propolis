@@ -1009,7 +1009,7 @@ async fn instance_issue_crucible_vcr_request(
     // Crucible does the heavy lifting here to verify that the old/new
     // VCRs are different in just the correct way and will return error
     // if there is any mismatch.
-    backend.vcr_replace(&old_vcr_json, &new_vcr_json).await.map_err(|e| {
+    backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(|e| {
         HttpError::for_bad_request(Some(e.to_string()), e.to_string())
     })?;
 
