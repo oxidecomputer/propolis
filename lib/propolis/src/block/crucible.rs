@@ -170,9 +170,10 @@ impl CrucibleBackend {
     pub async fn vcr_replace(
         &self,
         old_vcr_json: &str,
-        new_vcr: VolumeConstructionRequest,
+        new_vcr_json: &str,
     ) -> io::Result<()> {
         let old_vcr = serde_json::from_str(old_vcr_json)?;
+        let new_vcr = serde_json::from_str(new_vcr_json)?;
         self.block_io
             .target_replace(old_vcr, new_vcr)
             .await

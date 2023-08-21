@@ -967,7 +967,7 @@ async fn instance_issue_crucible_vcr_request(
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let path_params = path_params.into_inner();
     let request = request.into_inner();
-    let new_vcr = request.vcr;
+    let new_vcr_json = request.vcr_json;
     let disk_name = request.name;
     let log = rqctx.log.clone();
 
@@ -978,7 +978,7 @@ async fn instance_issue_crucible_vcr_request(
     let mut spec = vm_controller.instance_spec().await;
     let VersionedInstanceSpec::V0(v0_spec) = &mut *spec;
 
-    let (readonly, old_vcr) = {
+    let (readonly, old_vcr_json) = {
         let bes = &v0_spec.backends.storage_backends.get(&disk_name);
         if let Some(StorageBackendV0::Crucible(bes)) = bes {
             let readonly = bes.readonly;
@@ -1001,15 +1001,15 @@ async fn instance_issue_crucible_vcr_request(
         "{:?} {:?} replace {:?} with {:?}",
         disk_name,
         path_params.id,
-        old_vcr,
-        new_vcr,
+        old_vcr_json,
+        new_vcr_json,
     );
 
     // Try the replacement.
     // Crucible does the heavy lifting here to verify that the old/new
     // VCRs are different in just the correct way and will return error
     // if there is any mismatch.
-    backend.vcr_replace(&old_vcr, new_vcr.clone()).await.map_err(|e| {
+    backend.vcr_replace(&old_vcr_json, &new_vcr_json).await.map_err(|e| {
         HttpError::for_bad_request(Some(e.to_string()), e.to_string())
     })?;
 
@@ -1018,7 +1018,7 @@ async fn instance_issue_crucible_vcr_request(
     let new_storage_backend: StorageBackendV0 =
         StorageBackendV0::Crucible(CrucibleStorageBackend {
             readonly,
-            request_json: serde_json::to_string(&new_vcr).expect("TODO gjc"),
+            request_json: new_vcr_json,
         });
     v0_spec.backends.storage_backends.insert(disk_name, new_storage_backend);
 

@@ -21,7 +21,7 @@ pub use crucible_client_types::VolumeConstructionRequest;
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceVCRReplace {
     pub name: String,
-    pub vcr: VolumeConstructionRequest,
+    pub vcr_json: String,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

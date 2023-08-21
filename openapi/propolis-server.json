@@ -1136,13 +1136,13 @@
           "name": {
             "type": "string"
           },
-          "vcr": {
-            "$ref": "#/components/schemas/VolumeConstructionRequest"
+          "vcr_json": {
+            "type": "string"
           }
         },
         "required": [
           "name",
-          "vcr"
+          "vcr_json"
         ]
       },
       "MigrationState": {
