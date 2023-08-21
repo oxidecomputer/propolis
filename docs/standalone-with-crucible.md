@@ -32,7 +32,9 @@ TODO: document the following
 - How to build each of propolis and crucible
 - Assuming we are running on bench gimlets, which files to copy
   * propolis-standalone
-  * crucible binaries
+  * crucible release binaries
+    - target/release/dsc
+    - target/release/crucible-downstairs
   * VM Image file
   * VM OVMF file
   * standalone.toml
@@ -74,15 +76,27 @@ mkdir /pool/disk2/region
 ### Create the crucible downstairs regions
 
 With three pools created, you can now create the three downstairs crucible
-regions where your data will live:
+regions where your data will live.  The values you specify here for
+extent_size, extent_count, and block_size will decide how big your region
+is as well as can change the performance characteristics of the region.
+
+Omicron's current defaults are to have a 64 MiB extent size:
+```
+pub const EXTENT_SIZE: u64 = 64_u64 << 20;
+```
+
+Which ends up like this:
+For 512 byte blocks, 131072 is the extent size.
+For 4096 byte blocks, 16384 is the extent size.
 
 ```
 ./target/release/dsc create \
   --ds-bin ./target/release/crucible-downstairs \
   --cleanup \
-  --extent-size 131072 \
-  --extent-count 128 \
+  --extent-size 16384 \
+  --extent-count 512 \
   --block-size 4096 \
+  --encrypted \
   --region-dir /pool/disk0/region \
   --region-dir /pool/disk1/region \
   --region-dir /pool/disk2/region
@@ -136,6 +150,9 @@ targets = [
 ]
 generation = 5
 upstairs_id = "e4396bd0-ede1-48d7-ac14-3d2094dfba5b"
+
+# Create your own key (openssl rand -base64 32) Or use this.
+encryption_key = "tCw7zw0hAsPuxMOTWwnPEFYjBK9qJRtYyGdEXKEnrg0="
 
 [dev.block1]
 driver = "pci-nvme"

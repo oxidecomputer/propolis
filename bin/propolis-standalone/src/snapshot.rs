@@ -236,7 +236,10 @@ pub(crate) async fn restore(
         let config_len = file.read_u64().await?;
         let mut config_buf = vec![0; config_len.try_into()?];
         file.read_exact(&mut config_buf).await?;
-        toml::from_slice(&config_buf)?
+        toml::from_str(
+            std::str::from_utf8(&config_buf)
+                .context("config should be valid utf-8")?,
+        )?
     };
 
     // We have enough to create the instance so let's do that first

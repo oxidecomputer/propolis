@@ -6,486 +6,171 @@
 //!
 //! An instance spec describes a VM's virtual devices, backends, and other
 //! guest environment configuration supplied by the Propolis VMM. RFD 283
-//! contains more details about how specs are used throughout the Oxide stack.
+//! contains more details about how specs are used throughout the Oxide stack
+//! and about the versioning considerations described below.
 //!
-//! # Spec format
+//! # Module layout
 //!
-//! Instance specs are divided into two parts:
+//! The data types in this module are taxonomized into "components" and
+//! versioned "spec structures." Components are the "leaves" of a spec; each
+//! component specifies an individual component or piece of functionality that
+//! can be added to a VM. The strongly versioned structure types arrange these
+//! components in a specific way; each organization is a version of the overall
+//! instance spec structure.
 //!
-//! - The "device" half describes the VM components and interfaces that guest
-//!   software can observe directly. Device configuration generally can't change
-//!   at runtime without the guest's cooperation.
-//! - The "backend" half describes how the VM connects to services (provided by
-//!   the host OS or other parts of the rack) that supply functions the devices
-//!   need to provide their abstractions to guests.
+//! # Versioning & compatibility
 //!
-//! For example, to expose a virtual NVMe disk to a guest, a spec defines an
-//! NVMe device (expressing that the VMM should create a PCI device exposing an
-//! NVMe-conforming interface at a specific bus/device/function) and connects it
-//! to a storage backend (expressing that I/O to the virtual disk should be
-//! serviced by a local file, or by the Crucible storage service, or by a buffer
-//! in the VMM's memory).
+//! Instance specs may be sent between Propolises, sled agents, and Nexus
+//! processes that use different versions of this library, so the library needs
+//! to provide a versioning scheme that allows specs to be extended over time.
+//! Such scheme must balance safety against developer toil. Strongly versioning
+//! data types--requiring a new API endpoint or type definition every time
+//! something changes--minimizes the risk that a data structure will be
+//! misinterpreted, but is very toilsome to maintain, since changing one
+//! structure may require many other structures to be revised and
+//! `From`/`TryFrom` impls to be added for all the new version combinations.
+//! Weaker versioning schemes require less toil to maintain but run the risk
+//! that a spec user will be too permissive and will misconfigure a VM because
+//! it missed some important context in a
+//! spec that it was passed.
 //!
-//! # Instance specs and the VM lifecycle
+//! This module balances these concerns as follows:
 //!
-//! Instance specs are used to initialize new VMs and during live migration.
-//! VM initialization uses specs to determine what components to create. Live
-//! migration uses the [`MigrationElement`] trait to determine if components
-//! between two specs would, if realized, be incompatible with one another.
+//! - **Components** are versionless but are allowed to be extended in backward-
+//!   compatible ways (i.e., such that a spec produced by an old library can be
+//!   interpreted correctly by a newer library). Breaking changes to components
+//!   are not allowed and require a new component to be defined.
+//! - **Spec structures** are strongly versioned. Backward-compatible changes to
+//!   an existing version are technically allowed, but completely restructuring
+//!   a spec requires a new spec version and a corresponding variant in the
+//!   `VersionedInstanceSpec` structure.
 //!
-//! # Verification
+//! This scheme assumes that (a) components are likely to be added or changed
+//! much more frequently than the spec structure itself will be revised, and (b)
+//! most changes to existing components can easily be made backward-compatible
+//! (e.g. by wrapping new functionality in an `Option` and taking a `None` value
+//! to mean "do what all previous versions did").
 //!
-//! This module has few opinions about what constitues a valid, usable spec: if
-//! something deserializes, then as far as this module is concerned, it
-//! describes a valid spec. Spec consumers, of course, will generally be more
-//! discriminating, e.g. a Propolis server may refuse to start a VM that has
-//! a device that names a nonexistent backend.
+//! ## Compatibility rules & breaking changes
 //!
-//! # Versioning
+//! Changes to existing data types must be backward compatible with older spec
+//! versions: a spec produced by an old version of the library must always be
+//! deserializable by a new version of the library.
 //!
-//! NOTE: Instance spec versioning is not fully formalized yet; see RFD 283.
+//! The following component changes are not backward compatible:
 //!
-//! What versioning requirements exist today are enforced through serde
-//! attributes:
+//! - Adding a new required field to a struct or enum variant
+//! - Removing a field from a struct or enum variant
+//! - Renaming structs, enums, or their fields or variants
 //!
-//! - All components in an instance spec and the spec itself are marked
-//! `#[serde(deny_unknown_fields)]`. This ensures that if spec version 2 adds a
-//! new field, then it will not be interpreted by library version 1 as a v1 spec
-//! unless library v2 removes the extra fields.
-//! - New spec fields that have backward-compatible default values should have
-//! the `#[serde(default)]` attribute so that previous spec versions can be
-//! compatibly deserialized into new versions. If this isn't possible, the old
-//! spec definition should be preserved so that library v2 can decide if it can
-//! accept a v1 spec despite not being able to supply a default value for a new
-//! field.
+//! Adding new *optional* fields to a struct or enum variant is OK provided that
+//! the default value's semantics match the semantics expected by users of older
+//! specs that don't provide the optional data.
+//!
+//! Forward compatibility--writing the library so that old versions can
+//! interpret specs generated by new versions--is not generally guaranteed.
+//! Where possible, however, spec components should be written so that it is
+//! possible to downgrade from a newer spec version to an older one if a
+//! component's configuration can be represented in both versions.
+//!
+//! ## Serde attributes
+//!
+//! This module doesn't directly verify that a specific Propolis version can
+//! support all of the features in any particular specification. However, users
+//! can generally expect that if Propolis is willing to deserialize a spec, then
+//! it should be able (in at least some circumstances) to support all of the
+//! features that can be expressed in that spec. To help guarantee this property
+//! (i.e., if Propolis can deserialize it, then it's at least well-formed), this
+//! module uses a few common `serde` attributes.
+//!
+//! Structs and enums in this module should be tagged with the
+//! `#[serde(deny_unknown_fields)]` attribute to reduce the risk that old code
+//! will silently drop information from a spec produced by newer code with more
+//! available fields.
+//!
+//! New optional fields should use the `#[serde(default)]` field attribute to
+//! provide backward compatibility to old specs. They can also use the
+//! `#[serde(skip_serializing_if)]` attribute to avoid serializing new fields
+//! that have their default values.
+//!
+//! ### Example
+//!
+//! As an example, consider a (hypothetical) virtio device that has backend name
+//! and PCI path fields:
+//!
+//! ```
+//! # use serde::{Serialize, Deserialize};
+//! # use schemars::JsonSchema;
+//! # use propolis_types::PciPath;
+//!
+//! #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+//! #[serde(deny_unknown_fields)]
+//! struct VirtioComponent {
+//!     backend_name: String,
+//!     pci_path: PciPath
+//! }
+//! ```
+//!
+//! Suppose Propolis then adds support for configuring the number of virtqueues
+//! this device exposes to the guest. This can be expressed compatibly as
+//! follows:
+//!
+//! ```
+//! # use serde::{Serialize, Deserialize};
+//! # use schemars::JsonSchema;
+//! # use propolis_types::PciPath;
+//!
+//! #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+//! #[serde(deny_unknown_fields)]
+//! struct VirtioComponent {
+//!     backend_name: String,
+//!     pci_path: PciPath,
+//!
+//!     #[serde(default, skip_serializing_if = "Option::is_none")]
+//!     num_virtqueues: Option<usize>
+//! }
+//! ```
+//!
+//! Old component specs will continue to deserialize with `num_virtqueues` set
+//! to `None`. In this case Propolis ensures that the device gets the default
+//! number of virtqueues it had before this configuration option was added. If
+//! this spec is serialized again, the `num_virtqueues` option is omitted, so
+//! the spec can be deserialized by downlevel versions of the library. Note
+//! again that the former behavior (new library accepts old spec) is required,
+//! while the latter behavior (old library accepts new spec) is nice to have and
+//! may not always be possible to provide (e.g. if the value is `Some`).
+//!
+//! ## Naming of versioned structures
+//!
+//! Dropshot's OpenAPI schema generator has a known limitation. If a type or one
+//! of its dependent types appears in an API, Dropshot adds to the API's schema
+//! an object type with the type's name. If two separate types with the same
+//! name but *different module paths* appear in the API, Dropshot chooses one
+//! to include and silently ignores the rest. This issue is
+//! [dropshot#383](https://github.com/oxidecomputer/dropshot/issues/383). To
+//! avoid it, strongly versioned types in this module use a "V#" suffix in their
+//! names, even though they may reside in separate versioned modules.
 
 #![allow(rustdoc::private_intra_doc_links)]
 
-use std::collections::{HashMap, HashSet};
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-pub use crucible_client_types::VolumeConstructionRequest;
 pub use propolis_types::PciPath;
 
-mod backends;
-mod builder;
-mod devices;
+pub mod components;
+pub mod migration;
+pub mod v0;
 
-// If this module was built with a generated OpenAPI client, also build in some
-// `From` impls that convert from native instance spec types to the generated
-// types.
-#[cfg(any(feature = "generated", feature = "generated-migration"))]
+#[cfg(feature = "generated")]
 mod openapi_impls;
-
-pub use backends::*;
-pub use builder::*;
-pub use devices::*;
 
 /// Type alias for keys in the instance spec's maps.
 type SpecKey = String;
 
-/// An error type describing mismatches between two spec elements--i.e.,
-/// descriptions of individual devices or components--that block migration.
-#[derive(Debug, Error)]
-pub enum ElementCompatibilityError {
-    #[error(
-        "Spec elements have different PCI paths (self: {0:?}, other: {1:?})"
-    )]
-    PciPath(PciPath, PciPath),
-
-    #[error("Specs have different CPU counts (self: {0}, other: {1})")]
-    CpuCount(u8, u8),
-
-    #[error("Specs have different memory amounts (self: {0}, other: {1})")]
-    MemorySize(u64, u64),
-
-    #[error("Specs have different chipset types (self: {0:?}, other: {1:?})")]
-    ChipsetType(Chipset, Chipset),
-
-    #[error(
-        "Specs have different PCIe chipset settings (self: {0}, other: {1})"
-    )]
-    PcieEnablement(bool, bool),
-
-    #[error(
-        "Storage backends have different kinds (self: {0:?}, other: {1:?})"
-    )]
-    StorageBackendKind(StorageBackendKind, StorageBackendKind),
-
-    #[error(
-        "Storage backends have different read-only settings \
-        (self: {0}, other: {1})"
-    )]
-    StorageBackendReadonly(bool, bool),
-
-    #[error(
-        "Storage devices have different kinds (self: {0:?}, other: {1:?})"
-    )]
-    StorageDeviceKind(StorageDeviceKind, StorageDeviceKind),
-
-    #[error(
-        "Storage devices have different backend names (self: {0}, other: {1})"
-    )]
-    StorageDeviceBackend(String, String),
-
-    #[error(
-        "Network backends have different kinds (self: {0:?}, other: {1:?})"
-    )]
-    NetworkBackendKind(NetworkBackendKind, NetworkBackendKind),
-
-    #[error(
-        "Network devices have different backend names (self: {0}, other: {1})"
-    )]
-    NetworkDeviceBackend(String, String),
-
-    #[error("Serial ports have different numbers (self: {0:?}, other: {1:?})")]
-    SerialPortNumber(SerialPortNumber, SerialPortNumber),
-
-    #[error(
-        "PCI bridges have different downstream buses (self: {0}, other: {1})"
-    )]
-    PciBridgeDownstreamBus(u8, u8),
-
-    #[cfg(test)]
-    #[error("Test components differ")]
-    TestComponents(),
-}
-
-/// An error type describing a mismatch between collections of elements that
-/// blocks migration.
-#[derive(Debug, Error)]
-pub enum CollectionCompatibilityError {
-    #[error(
-        "Specs have collections with different lengths (self: {0}, other: {1})"
-    )]
-    CollectionSize(usize, usize),
-
-    #[error("Collection key {0} present in self but absent from other")]
-    CollectionKeyAbsent(SpecKey),
-
-    #[error("Spec element {0} mismatched: {1:?}")]
-    SpecElementMismatch(String, ElementCompatibilityError),
-}
-
-/// The top-level migration compatibility error type.
-#[derive(Debug, Error)]
-pub enum MigrationCompatibilityError {
-    #[error("Collection {0} not compatible: {1}")]
-    CollectionMismatch(String, CollectionCompatibilityError),
-
-    #[error("Spec element {0} not compatible: {1}")]
-    ElementMismatch(String, ElementCompatibilityError),
-}
-
-/// Implementors of this trait are individual devices or VMM components who can
-/// describe inconsistencies using a [`SpecElementMismatchDetails`] variant.
-trait MigrationElement {
-    /// Returns true if `self` and `other` describe spec elements that are
-    /// similar enough to permit migration of this element from one VMM to
-    /// another.
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), ElementCompatibilityError>;
-}
-
-/// This trait implements migration compatibility checks for collection types,
-/// which can be incompatible either because of a problem with the collection
-/// itself or because of problems with one of the collection's members.
-trait MigrationCollection {
-    fn can_migrate_from_collection(
-        &self,
-        other: &Self,
-    ) -> Result<(), CollectionCompatibilityError>;
-}
-
-impl<T: MigrationElement> MigrationCollection for HashMap<SpecKey, T> {
-    // Two keyed maps of components are compatible if they contain all the same
-    // keys and if, for each key, the corresponding values are
-    // migration-compatible.
-    fn can_migrate_from_collection(
-        &self,
-        other: &Self,
-    ) -> Result<(), CollectionCompatibilityError> {
-        // If the two maps have different sizes, then they have different key
-        // sets.
-        if self.len() != other.len() {
-            return Err(CollectionCompatibilityError::CollectionSize(
-                self.len(),
-                other.len(),
-            ));
-        }
-
-        // Each key in `self`'s map must be present in `other`'s map, and the
-        // corresponding values must be compatible with one another.
-        for (key, this_val) in self.iter() {
-            let other_val = other.get(key).ok_or_else(|| {
-                CollectionCompatibilityError::CollectionKeyAbsent(key.clone())
-            })?;
-
-            this_val.can_migrate_from_element(other_val).map_err(|e| {
-                CollectionCompatibilityError::SpecElementMismatch(
-                    key.clone(),
-                    e,
-                )
-            })?;
-        }
-
-        Ok(())
-    }
-}
-
-impl MigrationCollection for HashSet<SpecKey> {
-    // Two sets of spec keys are compatible if they have all the same members.
-    fn can_migrate_from_collection(
-        &self,
-        other: &Self,
-    ) -> Result<(), CollectionCompatibilityError> {
-        if self.len() != other.len() {
-            return Err(CollectionCompatibilityError::CollectionSize(
-                self.len(),
-                other.len(),
-            ));
-        }
-
-        for key in self.iter() {
-            if !other.contains(key) {
-                return Err(CollectionCompatibilityError::CollectionKeyAbsent(
-                    key.clone(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-}
-
-/// A full instance specification. See the documentation for individual
-/// elements for more information about the fields in this structure.
-#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InstanceSpec {
-    pub devices: DeviceSpec,
-    pub backends: BackendSpec,
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum TestComponent {
-        Widget,
-        Gizmo,
-        Contraption,
-    }
-
-    impl MigrationElement for TestComponent {
-        fn can_migrate_from_element(
-            &self,
-            other: &Self,
-        ) -> Result<(), ElementCompatibilityError> {
-            if self != other {
-                Err(ElementCompatibilityError::TestComponents())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    // Verifies that the generic compatibility check for <key, component> maps
-    // works correctly with a simple test type.
-    #[test]
-    fn generic_map_compatibility() {
-        let m1: HashMap<SpecKey, TestComponent> = HashMap::from([
-            ("widget".to_string(), TestComponent::Widget),
-            ("gizmo".to_string(), TestComponent::Gizmo),
-            ("contraption".to_string(), TestComponent::Contraption),
-        ]);
-
-        let mut m2 = m1.clone();
-        assert!(m1.can_migrate_from_collection(&m2).is_ok());
-
-        // Mismatched key counts make two maps incompatible.
-        m2.insert("second_widget".to_string(), TestComponent::Widget);
-        assert!(m1.can_migrate_from_collection(&m2).is_err());
-        m2.remove("second_widget");
-
-        // Two maps are incompatible if their keys refer to components that are
-        // not compatible with each other.
-        *m2.get_mut("gizmo").unwrap() = TestComponent::Contraption;
-        assert!(m1.can_migrate_from_collection(&m2).is_err());
-        *m2.get_mut("gizmo").unwrap() = TestComponent::Gizmo;
-
-        // Two maps are incompatible if they have the same number of keys and
-        // values, but different sets of key names.
-        m2.remove("gizmo");
-        m2.insert("other_gizmo".to_string(), TestComponent::Gizmo);
-        assert!(m1.can_migrate_from_collection(&m2).is_err());
-    }
-
-    #[test]
-    fn compatible_boards() {
-        let b1 = Board {
-            cpus: 8,
-            memory_mb: 8192,
-            chipset: Chipset::I440Fx { enable_pcie: false },
-        };
-        assert!(b1.can_migrate_from_element(&b1).is_ok());
-    }
-
-    #[test]
-    fn incompatible_boards() {
-        let b1 = Board {
-            cpus: 4,
-            memory_mb: 4096,
-            chipset: Chipset::I440Fx { enable_pcie: true },
-        };
-
-        let b2 = Board { cpus: 8, ..b1 };
-        assert!(matches!(
-            b1.can_migrate_from_element(&b2),
-            Err(ElementCompatibilityError::CpuCount(4, 8))
-        ));
-
-        let b2 = Board { memory_mb: b1.memory_mb * 2, ..b1 };
-        assert!(matches!(
-            b1.can_migrate_from_element(&b2),
-            Err(ElementCompatibilityError::MemorySize(4096, 8192))
-        ));
-
-        let b2 =
-            Board { chipset: Chipset::I440Fx { enable_pcie: false }, ..b1 };
-        assert!(matches!(
-            b1.can_migrate_from_element(&b2),
-            Err(ElementCompatibilityError::PcieEnablement(true, false))
-        ));
-    }
-
-    #[test]
-    fn compatible_storage_devices() {
-        let d1 = StorageDevice {
-            kind: StorageDeviceKind::Virtio,
-            backend_name: "storage_backend".to_string(),
-            pci_path: PciPath::new(0, 5, 0).unwrap(),
-        };
-        assert!(d1.can_migrate_from_element(&d1).is_ok());
-    }
-
-    #[test]
-    fn incompatible_storage_devices() {
-        let d1 = StorageDevice {
-            kind: StorageDeviceKind::Virtio,
-            backend_name: "storage_backend".to_string(),
-            pci_path: PciPath::new(0, 5, 0).unwrap(),
-        };
-
-        let d2 = StorageDevice { kind: StorageDeviceKind::Nvme, ..d1.clone() };
-        assert!(matches!(
-            d1.can_migrate_from_element(&d2),
-            Err(ElementCompatibilityError::StorageDeviceKind(
-                StorageDeviceKind::Virtio,
-                StorageDeviceKind::Nvme
-            ))
-        ));
-
-        let d2 = StorageDevice {
-            backend_name: "other_storage_backend".to_string(),
-            ..d1
-        };
-        assert!(matches!(
-            d1.can_migrate_from_element(&d2),
-            Err(ElementCompatibilityError::StorageDeviceBackend(_, _))
-        ));
-
-        let d2 = StorageDevice {
-            pci_path: PciPath::new(0, 6, 0).unwrap(),
-            ..d1.clone()
-        };
-        assert!(matches!(
-            d1.can_migrate_from_element(&d2),
-            Err(ElementCompatibilityError::PciPath(_, _))
-        ));
-    }
-
-    #[test]
-    fn compatible_network_devices() {
-        let n1 = NetworkDevice {
-            backend_name: "net_backend".to_string(),
-            pci_path: PciPath::new(0, 7, 0).unwrap(),
-        };
-        assert!(n1.can_migrate_from_element(&n1).is_ok());
-    }
-
-    #[test]
-    fn incompatible_network_devices() {
-        let n1 = NetworkDevice {
-            backend_name: "net_backend".to_string(),
-            pci_path: PciPath::new(0, 7, 0).unwrap(),
-        };
-
-        let n2 = NetworkDevice {
-            backend_name: "other_net_backend".to_string(),
-            ..n1
-        };
-        assert!(matches!(
-            n1.can_migrate_from_element(&n2),
-            Err(ElementCompatibilityError::NetworkDeviceBackend(_, _))
-        ));
-
-        let n2 = NetworkDevice {
-            pci_path: PciPath::new(0, 8, 1).unwrap(),
-            ..n1.clone()
-        };
-        assert!(matches!(
-            n1.can_migrate_from_element(&n2),
-            Err(ElementCompatibilityError::PciPath(_, _))
-        ));
-    }
-
-    #[test]
-    fn serial_port_compatibility() {
-        assert!((SerialPort { num: SerialPortNumber::Com1 })
-            .can_migrate_from_element(&SerialPort {
-                num: SerialPortNumber::Com1
-            })
-            .is_ok());
-        assert!(matches!(
-            (SerialPort { num: SerialPortNumber::Com2 })
-                .can_migrate_from_element(&SerialPort {
-                    num: SerialPortNumber::Com3
-                }),
-            Err(ElementCompatibilityError::SerialPortNumber(
-                SerialPortNumber::Com2,
-                SerialPortNumber::Com3
-            ))
-        ));
-    }
-
-    #[test]
-    fn pci_bridge_compatibility() {
-        let b1 = PciPciBridge {
-            downstream_bus: 1,
-            pci_path: PciPath::new(1, 2, 3).unwrap(),
-        };
-
-        let mut b2 = b1;
-        assert!(b1.can_migrate_from_element(&b2).is_ok());
-
-        b2.downstream_bus += 1;
-        assert!(matches!(
-            b1.can_migrate_from_element(&b2),
-            Err(ElementCompatibilityError::PciBridgeDownstreamBus(1, 2))
-        ));
-        b2.downstream_bus = b1.downstream_bus;
-
-        b2.pci_path = PciPath::new(4, 5, 6).unwrap();
-        assert!(matches!(
-            b1.can_migrate_from_element(&b2),
-            Err(ElementCompatibilityError::PciPath(_, _))
-        ));
-    }
+/// A versioned instance spec.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "version", content = "spec")]
+pub enum VersionedInstanceSpec {
+    V0(v0::InstanceSpecV0),
 }
