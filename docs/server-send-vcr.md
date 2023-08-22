@@ -122,42 +122,18 @@ to create our crucible disk, but with two things different.
 1. The generation number has increased by one.
 2. One (and only one) of the `target`s has changed to a different IP:Port.
 
-The `.json` file we use for this looks similar to our previous one, here
-is an example file:
+The `.json` file we use for this looks similar to our previous one, but
+because the replacement VCR is now considered a string input to propolis,
+we have to stuff our new VCR into a string.
 
+This means, take a valid VCR, put it all on one line, and put a \\ in front
+of all quotes.
+
+here is an example file:
 ```
 {
     "name": "block2",
-    "vcr": {
-        "type": "volume",
-        "block_size": 4096,
-        "id": "0cedae45-3d6e-4d90-b2cb-56f1a1a42a89",
-        "read_only_parent": null,
-        "sub_volumes": [
-            {
-                "type": "region",
-                "block_size": 4096,
-                "blocks_per_extent": 16384,
-                "extent_count": 128,
-                "gen": 2,
-                "opts": {
-                    "cert_pem": null,
-                    "control": null,
-                    "flush_timeout": null,
-                    "id": "0cedae45-3d6e-4d90-b2cb-56f1a1a42a89",
-                    "key": null,
-                    "key_pem": null,
-                    "lossy": false,
-                    "read_only": false,
-                    "root_cert_pem": null,
-                    "target": ["127.0.0.1:8810",
-                             "127.0.0.1:8820",
-                             "127.0.0.1:8840"
-                    ]
-                }
-            }
-        ]
-    }
+    "vcr_json": "{ \"type\": \"volume\", \"block_size\": 4096, \"id\": \"0cedae45-3d6e-4d90-b2cb-56f1a1a42a89\", \"read_only_parent\": null, \"sub_volumes\": [ { \"type\": \"region\", \"block_size\": 4096, \"blocks_per_extent\": 16384, \"extent_count\": 128, \"gen\": 7, \"opts\": { \"cert_pem\": null, \"control\": null, \"flush_timeout\": null, \"id\": \"0cedae45-3d6e-4d90-b2cb-56f1a1a42a89\", \"key\": null, \"key_pem\": null, \"lossy\": false, \"read_only\": false, \"root_cert_pem\": null, \"target\": [\"127.0.0.1:8810\", \"127.0.0.1:8820\", \"127.0.0.1:8840\" ] } } ] }"
 }
 ```
 

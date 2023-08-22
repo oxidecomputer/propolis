@@ -997,11 +997,9 @@ async fn instance_issue_crucible_vcr_request(
 
     slog::info!(
         log,
-        "{:?} {:?} replace {:?} with {:?}",
+        "{:?} {:?} vcr replace requested",
         disk_name,
         path_params.id,
-        old_vcr_json,
-        new_vcr_json,
     );
 
     // Try the replacement.
