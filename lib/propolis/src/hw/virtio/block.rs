@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::num::NonZeroU16;
+use std::sync::atomic::AtomicU16;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -30,6 +32,10 @@ pub struct PciVirtioBlock {
 
     info: block::DeviceInfo,
     notifier: block::Notifier,
+
+    /// Atomic counter to assign IDs for I/O requests sent to backend.
+    /// Used primarly for diagnostics.
+    next_request_id: AtomicU16,
 }
 impl PciVirtioBlock {
     pub fn new(queue_size: u16, info: block::DeviceInfo) -> Arc<Self> {
@@ -51,7 +57,15 @@ impl PciVirtioBlock {
         );
 
         let notifier = block::Notifier::new();
-        Arc::new(Self { pci_state, virtio_state, info, notifier })
+        let next_request_id = AtomicU16::new(0);
+
+        Arc::new(Self {
+            pci_state,
+            virtio_state,
+            info,
+            notifier,
+            next_request_id,
+        })
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
@@ -76,6 +90,15 @@ impl PciVirtioBlock {
         }
     }
 
+    /// Return a combined queue + request id for associating an I/O
+    /// request with its subsequent completion.
+    ///
+    /// Note: this is only used for debugging purposes.
+    fn next_req_id(&self) -> u32 {
+        // We only support a single queue today
+        (0 << 16) | self.next_request_id.fetch_add(1, Ordering::Relaxed) as u32
+    }
+
     fn next_req(&self) -> Option<block::Request> {
         let vq = &self.virtio_state.queues[0];
         let mem = self.pci_state.acc_mem.access()?;
@@ -87,15 +110,22 @@ impl PciVirtioBlock {
         if !chain.read(&mut breq, &mem) {
             todo!("error handling");
         }
+        let off = breq.sector as usize * SECTOR_SZ;
         let req = match breq.rtype {
             VIRTIO_BLK_T_IN => {
                 // should be (blocksize * 512) + 1 remaining writable byte for status
                 // TODO: actually enforce block size
                 let blocks = (chain.remain_write_bytes() - 1) / SECTOR_SZ;
+                let sz = blocks * SECTOR_SZ;
 
-                if let Some(regions) = chain.writable_bufs(blocks * SECTOR_SZ) {
+                if let Some(regions) = chain.writable_bufs(sz) {
+                    let rid = self.next_req_id();
+                    probes::vioblk_read_enqueue!(|| (
+                        rid as u16, off as u64, sz as u64
+                    ));
                     Ok(block::Request::new_read(
-                        breq.sector as usize * SECTOR_SZ,
+                        rid,
+                        off,
                         regions,
                         Box::new(chain),
                     ))
@@ -106,10 +136,16 @@ impl PciVirtioBlock {
             VIRTIO_BLK_T_OUT => {
                 // should be (blocksize * 512) remaining read bytes
                 let blocks = chain.remain_read_bytes() / SECTOR_SZ;
+                let sz = blocks * SECTOR_SZ;
 
-                if let Some(regions) = chain.readable_bufs(blocks * SECTOR_SZ) {
+                if let Some(regions) = chain.readable_bufs(sz) {
+                    let rid = self.next_req_id();
+                    probes::vioblk_write_enqueue!(|| (
+                        rid as u16, off as u64, sz as u64
+                    ));
                     Ok(block::Request::new_write(
-                        breq.sector as usize * SECTOR_SZ,
+                        rid,
+                        off,
                         regions,
                         Box::new(chain),
                     ))
@@ -134,18 +170,32 @@ impl PciVirtioBlock {
         }
     }
 
-    fn complete_req(&self, res: block::Result, chain: &mut Chain) {
+    fn complete_req(
+        &self,
+        id: u32,
+        op: block::Operation,
+        res: block::Result,
+        chain: &mut Chain,
+    ) {
+        // See `next_req_id()`
+        let rid = id as u16;
         let vq = self.virtio_state.queues.get(0).expect("vq must exist");
         if let Some(mem) = vq.acc_mem.access() {
-            let _ = match res {
-                block::Result::Success => chain.write(&VIRTIO_BLK_S_OK, &mem),
-                block::Result::Failure => {
-                    chain.write(&VIRTIO_BLK_S_IOERR, &mem)
-                }
-                block::Result::Unsupported => {
-                    chain.write(&VIRTIO_BLK_S_UNSUPP, &mem)
-                }
+            let resnum = match res {
+                block::Result::Success => VIRTIO_BLK_S_OK,
+                block::Result::Failure => VIRTIO_BLK_S_IOERR,
+                block::Result::Unsupported => VIRTIO_BLK_S_UNSUPP,
             };
+            match op {
+                block::Operation::Read(..) => {
+                    probes::vioblk_read_complete!(|| (rid, resnum));
+                }
+                block::Operation::Write(..) => {
+                    probes::vioblk_write_complete!(|| (rid, resnum));
+                }
+                block::Operation::Flush(..) => {}
+            }
+            chain.write(&resnum, &mem);
             vq.push_used(chain, &mem);
         }
     }
@@ -192,13 +242,14 @@ impl block::Device for PciVirtioBlock {
 
     fn complete(
         &self,
-        _op: block::Operation,
+        rid: u32,
+        op: block::Operation,
         res: block::Result,
         payload: Box<block::BlockPayload>,
     ) {
         let mut chain: Box<Chain> =
             payload.downcast().expect("payload must be correct type");
-        self.complete_req(res, &mut chain);
+        self.complete_req(rid, op, res, &mut chain);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
@@ -323,4 +374,13 @@ mod bits {
     pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
     pub const VIRTIO_BLK_CFG_SIZE: usize = 0x3c;
+}
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn vioblk_read_enqueue(id: u16, off: u64, sz: u64) {}
+    fn vioblk_read_complete(id: u16, res: u8) {}
+
+    fn vioblk_write_enqueue(id: u16, off: u64, sz: u64) {}
+    fn vioblk_write_complete(id: u16, res: u8) {}
 }
