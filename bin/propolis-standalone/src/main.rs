@@ -938,6 +938,10 @@ fn setup_instance(
 fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
     match api_version::check() {
         Err(api_version::Error::Io(e)) => {
+            if e.kind() == ErrorKind::NotFound {
+                slog::error!(log, "Failed to open /dev/vmmctl");
+            }
+
             // IO errors _are_ fatal
             Err(e)
         }

@@ -73,8 +73,18 @@ async fn run_server(
     vnc_addr: SocketAddr,
     log: slog::Logger,
 ) -> anyhow::Result<()> {
+    use propolis::api_version;
+
     // Check that devices conform to expected API version
-    propolis::api_version::check().context("API version checks")?;
+    if let Err(e) = api_version::check() {
+        if let api_version::Error::Io(ioe) = &e {
+            if ioe.kind() == std::io::ErrorKind::NotFound {
+                slog::error!(log, "Failed to open /dev/vmmctl");
+            }
+        }
+
+        Err(e).context("API version checks")?;
+    }
 
     let vnc_server = setup_vnc(&log, vnc_addr);
     let vnc_server_hdl = vnc_server.clone();
