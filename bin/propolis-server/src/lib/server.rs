@@ -975,6 +975,12 @@ async fn instance_issue_crucible_vcr_request(
     // the VCR stored there to send to crucible along with the new VCR we want
     // to replace it.
     let vm_controller = rqctx.context().vm().await?;
+
+    // TODO(#205): Mutating a VM's configuration should be a first-class
+    // operation in the VM controller that synchronizes with ongoing migrations
+    // and other attempts to mutate the VM. For the time being, use the instance
+    // spec lock to exclude other concurrent attempts to reconfigure this
+    // backend.
     let mut spec = vm_controller.instance_spec().await;
     let VersionedInstanceSpec::V0(v0_spec) = &mut *spec;
 
