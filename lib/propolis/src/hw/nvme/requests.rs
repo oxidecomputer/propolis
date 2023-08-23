@@ -42,9 +42,10 @@ impl block::Device for PciNvme {
         res: BlockResult,
         payload: Box<BlockPayload>,
     ) {
-        let mut payload: Box<CompletionPayload> =
+        let payload: Box<CompletionPayload> =
             payload.downcast().expect("payload must be correct type");
-        self.complete_req(op, res, &mut payload);
+        let CompletionPayload { qid, cid, cqe_permit } = *payload;
+        self.complete_req(qid, cid, op, res, cqe_permit);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
@@ -149,16 +150,12 @@ impl PciNvme {
     /// Completion Queue.
     fn complete_req(
         &self,
+        qid: u16,
+        cid: u16,
         op: Operation,
         res: BlockResult,
-        payload: &mut CompletionPayload,
+        cqe_permit: CompQueueEntryPermit,
     ) {
-        let cqe_permit =
-            payload.cqe_permit.take().expect("permit must be present");
-
-        let qid = payload.qid;
-        let cid = payload.cid;
-
         let resnum: u8 = match &res {
             BlockResult::Success => 0,
             BlockResult::Failure => 1,
@@ -186,8 +183,8 @@ struct CompletionPayload {
     qid: u16,
     /// The Command ID of the original request.
     cid: u16,
-    /// Entry permit for the CQ. An option so we can `take()` it out of the `Box`
-    cqe_permit: Option<CompQueueEntryPermit>,
+    /// Entry permit for the CQ.
+    cqe_permit: CompQueueEntryPermit,
 }
 impl CompletionPayload {
     pub(super) fn new(
@@ -195,6 +192,6 @@ impl CompletionPayload {
         cid: u16,
         cqe_permit: CompQueueEntryPermit,
     ) -> Box<Self> {
-        Box::new(Self { qid, cid, cqe_permit: Some(cqe_permit) })
+        Box::new(Self { qid, cid, cqe_permit })
     }
 }
