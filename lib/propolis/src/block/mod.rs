@@ -57,9 +57,6 @@ pub type BlockPayload = dyn Any + Send + Sync + 'static;
 
 /// Block device operation request
 pub struct Request {
-    /// A device specific value identifying this request.
-    id: u32,
-
     /// The type of operation requested by the block device
     op: Operation,
 
@@ -79,44 +76,35 @@ pub struct Request {
 }
 impl Request {
     pub fn new_read(
-        id: u32,
         off: usize,
         regions: Vec<GuestRegion>,
         payload: Box<BlockPayload>,
     ) -> Self {
         let op = Operation::Read(off);
-        Self { id, op, regions, payload: Some(payload), outstanding: None }
+        Self { op, regions, payload: Some(payload), outstanding: None }
     }
 
     pub fn new_write(
-        id: u32,
         off: usize,
         regions: Vec<GuestRegion>,
         payload: Box<BlockPayload>,
     ) -> Self {
         let op = Operation::Write(off);
-        Self { id, op, regions, payload: Some(payload), outstanding: None }
+        Self { op, regions, payload: Some(payload), outstanding: None }
     }
 
     pub fn new_flush(
-        id: u32,
         off: usize,
         len: usize,
         payload: Box<BlockPayload>,
     ) -> Self {
         let op = Operation::Flush(off, len);
         Self {
-            id,
             op,
             regions: Vec::new(),
             payload: Some(payload),
             outstanding: None,
         }
-    }
-
-    /// Device specific request ID.
-    pub fn id(&self) -> u32 {
-        self.id
     }
 
     /// Type of operation being issued.
@@ -154,7 +142,7 @@ impl Request {
     /// Indiciate disposition of completed request
     pub fn complete(mut self, res: Result, dev: &dyn Device) {
         let payload = self.payload.take().unwrap();
-        dev.complete(self.id, self.op, res, payload);
+        dev.complete(self.op, res, payload);
 
         // Update the outstanding I/O count
         self.outstanding
@@ -194,13 +182,7 @@ pub trait Device: Send + Sync + 'static {
     fn next(&self) -> Option<Request>;
 
     /// Complete processing of result
-    fn complete(
-        &self,
-        req_id: u32,
-        op: Operation,
-        res: Result,
-        payload: Box<BlockPayload>,
-    );
+    fn complete(&self, op: Operation, res: Result, payload: Box<BlockPayload>);
 
     /// Get an accessor to guest memory via the underlying device
     fn accessor_mem(&self) -> MemAccessor;

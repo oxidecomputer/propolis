@@ -26,6 +26,13 @@ use lazy_static::lazy_static;
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
 
+struct CompletionPayload {
+    /// ID of original request.
+    rid: u16,
+    /// VirtIO chain in which we indicate the result.
+    chain: Chain,
+}
+
 pub struct PciVirtioBlock {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
@@ -90,13 +97,12 @@ impl PciVirtioBlock {
         }
     }
 
-    /// Return a combined queue + request id for associating an I/O
+    /// Return a request id for associating an I/O
     /// request with its subsequent completion.
     ///
     /// Note: this is only used for debugging purposes.
-    fn next_req_id(&self) -> u32 {
-        // We only support a single queue today
-        (0 << 16) | self.next_request_id.fetch_add(1, Ordering::Relaxed) as u32
+    fn next_req_id(&self) -> u16 {
+        self.next_request_id.fetch_add(1, Ordering::Relaxed)
     }
 
     fn next_req(&self) -> Option<block::Request> {
@@ -124,10 +130,9 @@ impl PciVirtioBlock {
                         rid as u16, off as u64, sz as u64
                     ));
                     Ok(block::Request::new_read(
-                        rid,
                         off,
                         regions,
-                        Box::new(chain),
+                        Box::new(CompletionPayload { rid, chain }),
                     ))
                 } else {
                     Err(chain)
@@ -144,10 +149,9 @@ impl PciVirtioBlock {
                         rid as u16, off as u64, sz as u64
                     ));
                     Ok(block::Request::new_write(
-                        rid,
                         off,
                         regions,
-                        Box::new(chain),
+                        Box::new(CompletionPayload { rid, chain }),
                     ))
                 } else {
                     Err(chain)
@@ -156,7 +160,11 @@ impl PciVirtioBlock {
             VIRTIO_BLK_T_FLUSH => {
                 let rid = self.next_req_id();
                 probes::vioblk_flush_enqueue!(|| (rid as u16));
-                Ok(block::Request::new_flush(rid, 0, 0, Box::new(chain)))
+                Ok(block::Request::new_flush(
+                    0,
+                    0,
+                    Box::new(CompletionPayload { rid, chain }),
+                ))
             }
             _ => Err(chain),
         };
@@ -177,13 +185,11 @@ impl PciVirtioBlock {
 
     fn complete_req(
         &self,
-        id: u32,
+        rid: u16,
         op: block::Operation,
         res: block::Result,
         chain: &mut Chain,
     ) {
-        // See `next_req_id()`
-        let rid = id as u16;
         let vq = self.virtio_state.queues.get(0).expect("vq must exist");
         if let Some(mem) = vq.acc_mem.access() {
             let resnum = match res {
@@ -250,14 +256,14 @@ impl block::Device for PciVirtioBlock {
 
     fn complete(
         &self,
-        rid: u32,
         op: block::Operation,
         res: block::Result,
         payload: Box<block::BlockPayload>,
     ) {
-        let mut chain: Box<Chain> =
+        let mut payload: Box<CompletionPayload> =
             payload.downcast().expect("payload must be correct type");
-        self.complete_req(rid, op, res, &mut chain);
+        let CompletionPayload { rid, ref mut chain } = *payload;
+        self.complete_req(rid, op, res, chain);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
