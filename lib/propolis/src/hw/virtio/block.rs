@@ -153,6 +153,11 @@ impl PciVirtioBlock {
                     Err(chain)
                 }
             }
+            VIRTIO_BLK_T_FLUSH => {
+                let rid = self.next_req_id();
+                probes::vioblk_flush_enqueue!(|| (rid as u16));
+                Ok(block::Request::new_flush(rid, 0, 0, Box::new(chain)))
+            }
             _ => Err(chain),
         };
         match req {
@@ -193,7 +198,9 @@ impl PciVirtioBlock {
                 block::Operation::Write(..) => {
                     probes::vioblk_write_complete!(|| (rid, resnum));
                 }
-                block::Operation::Flush(..) => {}
+                block::Operation::Flush(..) => {
+                    probes::vioblk_flush_complete!(|| (rid, resnum));
+                }
             }
             chain.write(&resnum, &mem);
             vq.push_used(chain, &mem);
@@ -213,6 +220,7 @@ impl VirtioDevice for PciVirtioBlock {
     fn get_features(&self) -> u32 {
         let mut feat = VIRTIO_BLK_F_BLK_SIZE;
         feat |= VIRTIO_BLK_F_SEG_MAX;
+        feat |= VIRTIO_BLK_F_FLUSH;
 
         if !self.info.writable {
             feat |= VIRTIO_BLK_F_RO;
@@ -383,4 +391,7 @@ mod probes {
 
     fn vioblk_write_enqueue(id: u16, off: u64, sz: u64) {}
     fn vioblk_write_complete(id: u16, res: u8) {}
+
+    fn vioblk_flush_enqueue(id: u16) {}
+    fn vioblk_flush_complete(id: u16, res: u8) {}
 }
