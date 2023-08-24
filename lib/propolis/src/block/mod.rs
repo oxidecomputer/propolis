@@ -48,7 +48,7 @@ pub enum Operation {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Result {
-    Success,
+    Success = 0,
     Failure,
     Unsupported,
 }

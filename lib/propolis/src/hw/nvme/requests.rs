@@ -85,11 +85,21 @@ impl PciNvme {
                 let cmd = NvmCmd::parse(sub);
                 let cid = sub.cid();
                 match cmd {
-                    Ok(NvmCmd::Write(_)) if !state.binfo.writable => {
+                    Ok(NvmCmd::Write(cmd)) if !state.binfo.writable => {
+                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
+                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
+                        probes::nvme_write_enqueue!(|| (
+                            qid, idx, cid, off, size
+                        ));
                         let comp = Completion::specific_err(
                             bits::StatusCodeType::CmdSpecific,
                             bits::STS_WRITE_READ_ONLY_RANGE,
                         );
+                        probes::nvme_write_complete!(|| (
+                            qid,
+                            cid,
+                            BlockResult::Failure as u8,
+                        ));
                         cqe_permit.push_completion(cid, comp, Some(&mem));
                     }
                     Ok(NvmCmd::Write(cmd)) => {
@@ -156,11 +166,7 @@ impl PciNvme {
         res: BlockResult,
         cqe_permit: CompQueueEntryPermit,
     ) {
-        let resnum: u8 = match &res {
-            BlockResult::Success => 0,
-            BlockResult::Failure => 1,
-            BlockResult::Unsupported => 2,
-        };
+        let resnum = res as u8;
         match op {
             Operation::Read(..) => {
                 probes::nvme_read_complete!(|| (qid, cid, resnum));
