@@ -135,21 +135,21 @@ impl VcpuTasks {
             entry = vcpu.process_vmexit(&exit).unwrap_or_else(|| {
                 match exit.kind {
                     VmExitKind::Inout(pio) => {
-                        debug!(&log, "Unhandled pio {:?}", pio;
+                        debug!(&log, "Unhandled pio {:x?}", pio;
                                        "rip" => exit.rip);
                         VmEntry::InoutFulfill(exits::InoutRes::emulate_failed(
                             &pio,
                         ))
                     }
                     VmExitKind::Mmio(mmio) => {
-                        debug!(&log, "Unhandled mmio {:?}", mmio;
+                        debug!(&log, "Unhandled mmio {:x?}", mmio;
                                        "rip" => exit.rip);
                         VmEntry::MmioFulfill(exits::MmioRes::emulate_failed(
                             &mmio,
                         ))
                     }
                     VmExitKind::Rdmsr(msr) => {
-                        debug!(&log, "Unhandled rdmsr {:x}", msr;
+                        debug!(&log, "Unhandled rdmsr {:08x}", msr;
                                        "rip" => exit.rip);
                         let _ = vcpu.set_reg(
                             bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
@@ -162,8 +162,7 @@ impl VcpuTasks {
                         VmEntry::Run
                     }
                     VmExitKind::Wrmsr(msr, val) => {
-                        debug!(&log, "Unhandled wrmsr {:x}", msr;
-                                       "val" => val,
+                        debug!(&log, "Unhandled wrmsr {:08x} <- {:08x}", msr, val;
                                        "rip" => exit.rip);
                         VmEntry::Run
                     }
