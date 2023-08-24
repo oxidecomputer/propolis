@@ -505,7 +505,7 @@ impl Instance {
                     VmExitKind::Inout(pio) => {
                         slog::error!(
                             &log,
-                            "Unhandled pio {:?}", pio; "rip" => exit.rip
+                            "Unhandled pio {:x?}", pio; "rip" => exit.rip
                         );
                         VmEntry::InoutFulfill(exits::InoutRes::emulate_failed(
                             &pio,
@@ -514,7 +514,7 @@ impl Instance {
                     VmExitKind::Mmio(mmio) => {
                         slog::error!(
                             &log,
-                            "Unhandled mmio {:?}", mmio; "rip" => exit.rip
+                            "Unhandled mmio {:x?}", mmio; "rip" => exit.rip
                         );
                         VmEntry::MmioFulfill(exits::MmioRes::emulate_failed(
                             &mmio,
@@ -523,7 +523,7 @@ impl Instance {
                     VmExitKind::Rdmsr(msr) => {
                         slog::error!(
                             &log,
-                            "Unhandled rdmsr {:x}", msr; "rip" => exit.rip
+                            "Unhandled rdmsr {:#08x}", msr; "rip" => exit.rip
                         );
                         let _ = vcpu.set_reg(
                             bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
@@ -538,8 +538,8 @@ impl Instance {
                     VmExitKind::Wrmsr(msr, val) => {
                         slog::error!(
                             &log,
-                            "Unhandled wrmsr {:x} <- {:x}", msr, val;
-                            "rip" => exit.rip
+                            "Unhandled wrmsr {:#08x} <- {:#08x}", msr, val;
+                            "rip" => #%exit.rip
                         );
                         VmEntry::Run
                     }
