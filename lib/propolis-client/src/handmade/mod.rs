@@ -209,6 +209,18 @@ impl Client {
         self.post(path, None).await
     }
 
+    /// Issue a VCR replace request to a crucible storage backend.
+    pub async fn instance_issue_crucible_vcr_request(
+        &self,
+        disk_id: Uuid,
+        disk_replace: api::InstanceVCRReplace,
+    ) -> Result<(), Error> {
+        let path =
+            format!("http://{}/instance/disk/{}/vcr", self.address, disk_id,);
+        let body = Body::from(serde_json::to_string(&disk_replace).unwrap());
+        self.put(path, Some(body)).await
+    }
+
     /// Send an Non Maskable Interrupt (NMI) to the instance.
     pub async fn instance_inject_nmi(&self) -> Result<(), Error> {
         let path = format!("http://{}/instance/nmi", self.address);
