@@ -160,11 +160,10 @@ impl PciVirtioBlock {
             VIRTIO_BLK_T_FLUSH => {
                 let rid = self.next_req_id();
                 probes::vioblk_flush_enqueue!(|| (rid as u16));
-                Ok(block::Request::new_flush(
-                    0,
-                    0,
-                    Box::new(CompletionPayload { rid, chain }),
-                ))
+                Ok(block::Request::new_flush(Box::new(CompletionPayload {
+                    rid,
+                    chain,
+                })))
             }
             _ => Err(chain),
         };
@@ -204,7 +203,7 @@ impl PciVirtioBlock {
                 block::Operation::Write(..) => {
                     probes::vioblk_write_complete!(|| (rid, resnum));
                 }
-                block::Operation::Flush(..) => {
+                block::Operation::Flush => {
                     probes::vioblk_flush_complete!(|| (rid, resnum));
                 }
             }

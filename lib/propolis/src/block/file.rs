@@ -103,7 +103,7 @@ impl FileBackend {
                     ));
                 }
             }
-            block::Operation::Flush(_off, _len) => {
+            block::Operation::Flush => {
                 self.fp.sync_data()?;
             }
         }

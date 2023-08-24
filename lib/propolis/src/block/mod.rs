@@ -42,8 +42,8 @@ pub enum Operation {
     Read(ByteOffset),
     /// Write to offset
     Write(ByteOffset),
-    /// Flush buffer(s) for [offset, offset + len)
-    Flush(ByteOffset, ByteLen),
+    /// Flush buffer(s)
+    Flush,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -93,12 +93,8 @@ impl Request {
         Self { op, regions, payload: Some(payload), outstanding: None }
     }
 
-    pub fn new_flush(
-        off: usize,
-        len: usize,
-        payload: Box<BlockPayload>,
-    ) -> Self {
-        let op = Operation::Flush(off, len);
+    pub fn new_flush(payload: Box<BlockPayload>) -> Self {
+        let op = Operation::Flush;
         Self {
             op,
             regions: Vec::new(),
@@ -125,7 +121,7 @@ impl Request {
             Operation::Write(_) => {
                 self.regions.iter().map(|r| mem.readable_region(r)).collect()
             }
-            Operation::Flush(_, _) => None,
+            Operation::Flush => None,
         }
     }
 
@@ -135,7 +131,7 @@ impl Request {
             Operation::Read(_) | Operation::Write(_) => {
                 self.regions.iter().map(|r| r.1).sum()
             }
-            Operation::Flush(_, len) => *len,
+            Operation::Flush => 0,
         }
     }
 

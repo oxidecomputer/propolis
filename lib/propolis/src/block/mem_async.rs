@@ -117,7 +117,7 @@ fn process_request(
                 };
             }
         }
-        block::Operation::Flush(_off, _len) => {
+        block::Operation::Flush => {
             // nothing to do
         }
     }

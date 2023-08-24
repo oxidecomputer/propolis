@@ -135,11 +135,9 @@ impl PciNvme {
                     }
                     Ok(NvmCmd::Flush) => {
                         probes::nvme_flush_enqueue!(|| (qid, idx, cid));
-                        let req = Request::new_flush(
-                            0,
-                            0, // TODO: is 0 enough or do we pass total size?
-                            CompletionPayload::new(qid, cid, cqe_permit),
-                        );
+                        let req = Request::new_flush(CompletionPayload::new(
+                            qid, cid, cqe_permit,
+                        ));
                         return Some(req);
                     }
                     Ok(NvmCmd::Unknown(_)) | Err(_) => {
@@ -174,7 +172,7 @@ impl PciNvme {
             Operation::Write(..) => {
                 probes::nvme_write_complete!(|| (qid, cid, resnum));
             }
-            Operation::Flush(..) => {
+            Operation::Flush => {
                 probes::nvme_flush_complete!(|| (qid, cid, resnum));
             }
         }
