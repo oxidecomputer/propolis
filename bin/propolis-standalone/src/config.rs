@@ -230,14 +230,9 @@ fn create_crucible_backend(
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
-    let be = block::CrucibleBackend::create(
-        req.clone(),
-        read_only,
-        None,
-        None,
-        log.clone(),
-    )
-    .unwrap();
+    let be =
+        block::CrucibleBackend::create(req, read_only, None, None, log.clone())
+            .unwrap();
     let creg =
         ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
     (be, creg)

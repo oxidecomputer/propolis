@@ -127,7 +127,7 @@ impl PciVirtioBlock {
                 if let Some(regions) = chain.writable_bufs(sz) {
                     let rid = self.next_req_id();
                     probes::vioblk_read_enqueue!(|| (
-                        rid as u16, off as u64, sz as u64
+                        rid, off as u64, sz as u64
                     ));
                     Ok(block::Request::new_read(
                         off,
@@ -146,7 +146,7 @@ impl PciVirtioBlock {
                 if let Some(regions) = chain.readable_bufs(sz) {
                     let rid = self.next_req_id();
                     probes::vioblk_write_enqueue!(|| (
-                        rid as u16, off as u64, sz as u64
+                        rid, off as u64, sz as u64
                     ));
                     Ok(block::Request::new_write(
                         off,
@@ -159,7 +159,7 @@ impl PciVirtioBlock {
             }
             VIRTIO_BLK_T_FLUSH => {
                 let rid = self.next_req_id();
-                probes::vioblk_flush_enqueue!(|| (rid as u16));
+                probes::vioblk_flush_enqueue!(|| (rid));
                 Ok(block::Request::new_flush(Box::new(CompletionPayload {
                     rid,
                     chain,
