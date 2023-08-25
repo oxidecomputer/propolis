@@ -63,8 +63,7 @@ impl VqAvail {
                 self.cur_avail_idx += Wrapping(1);
 
                 fence(Ordering::Acquire);
-                let addr = self.gpa_ring
-                    + (avail_idx as usize * mem::size_of::<u16>());
+                let addr = self.gpa_ring.offset::<u16>(avail_idx as usize);
                 return mem
                     .read(addr)
                     .map(|desc_idx| VqReq { desc_idx, avail_idx });
@@ -79,7 +78,7 @@ impl VqAvail {
         mem: &MemCtx,
     ) -> Option<VqdDesc> {
         assert!(id < rsize);
-        let addr = self.gpa_desc + (id as usize * mem::size_of::<VqdDesc>());
+        let addr = self.gpa_desc.offset::<VqdDesc>(id as usize);
         mem.read::<VqdDesc>(addr)
     }
     fn reset(&mut self) {
@@ -117,8 +116,7 @@ impl VqUsed {
 
         let idx = self.used_idx.0 & (rsize - 1);
         self.used_idx += Wrapping(1);
-        let desc_addr =
-            self.gpa_ring + (idx as usize * mem::size_of::<VqdUsed>());
+        let desc_addr = self.gpa_ring.offset::<VqdUsed>(idx as usize);
 
         let used = VqdUsed { id: id as u32, len };
         mem.write(desc_addr, &used);
