@@ -3,8 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::num::NonZeroU16;
-use std::sync::atomic::AtomicU16;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -39,10 +37,6 @@ pub struct PciVirtioBlock {
 
     info: block::DeviceInfo,
     notifier: block::Notifier,
-
-    /// Atomic counter to assign IDs for I/O requests sent to backend.
-    /// Used primarly for diagnostics.
-    next_request_id: AtomicU16,
 }
 impl PciVirtioBlock {
     pub fn new(queue_size: u16, info: block::DeviceInfo) -> Arc<Self> {
@@ -64,15 +58,7 @@ impl PciVirtioBlock {
         );
 
         let notifier = block::Notifier::new();
-        let next_request_id = AtomicU16::new(0);
-
-        Arc::new(Self {
-            pci_state,
-            virtio_state,
-            info,
-            notifier,
-            next_request_id,
-        })
+        Arc::new(Self { pci_state, virtio_state, info, notifier })
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
@@ -97,20 +83,16 @@ impl PciVirtioBlock {
         }
     }
 
-    /// Return a request id for associating an I/O
-    /// request with its subsequent completion.
-    ///
-    /// Note: this is only used for debugging purposes.
-    fn next_req_id(&self) -> u16 {
-        self.next_request_id.fetch_add(1, Ordering::Relaxed)
-    }
-
     fn next_req(&self) -> Option<block::Request> {
         let vq = &self.virtio_state.queues[0];
         let mem = self.pci_state.acc_mem.access()?;
 
         let mut chain = Chain::with_capacity(4);
-        let _clen = vq.pop_avail(&mut chain, &mem)?;
+        // Pop a request off the queue if there's one available.
+        // For debugging purposes, we'll also use the returned index
+        // as a psuedo-id for the request to associate it with its
+        // subsequent completion
+        let (rid, _clen) = vq.pop_avail(&mut chain, &mem)?;
 
         let mut breq = VbReq::default();
         if !chain.read(&mut breq, &mem) {
@@ -125,7 +107,6 @@ impl PciVirtioBlock {
                 let sz = blocks * SECTOR_SZ;
 
                 if let Some(regions) = chain.writable_bufs(sz) {
-                    let rid = self.next_req_id();
                     probes::vioblk_read_enqueue!(|| (
                         rid, off as u64, sz as u64
                     ));
@@ -144,7 +125,6 @@ impl PciVirtioBlock {
                 let sz = blocks * SECTOR_SZ;
 
                 if let Some(regions) = chain.readable_bufs(sz) {
-                    let rid = self.next_req_id();
                     probes::vioblk_write_enqueue!(|| (
                         rid, off as u64, sz as u64
                     ));
@@ -158,7 +138,6 @@ impl PciVirtioBlock {
                 }
             }
             VIRTIO_BLK_T_FLUSH => {
-                let rid = self.next_req_id();
                 probes::vioblk_flush_enqueue!(|| (rid));
                 Ok(block::Request::new_flush(Box::new(CompletionPayload {
                     rid,

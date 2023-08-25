@@ -32,6 +32,12 @@ struct VqdUsed {
     len: u32,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct VqReq {
+    desc_idx: u16,
+    avail_idx: u16,
+}
+
 pub struct VqAvail {
     /// Is populated with a valid physical address(es) for its contents
     valid: bool,
@@ -44,20 +50,24 @@ pub struct VqAvail {
     gpa_desc: GuestAddr,
 }
 impl VqAvail {
-    fn read_next_avail(&mut self, rsize: u16, mem: &MemCtx) -> Option<u16> {
+    /// If there's a request ready, pop it off the queue and return the
+    /// corresponding descriptor and available ring indicies.
+    fn read_next_avail(&mut self, rsize: u16, mem: &MemCtx) -> Option<VqReq> {
         if !self.valid {
             return None;
         }
         if let Some(idx) = mem.read::<u16>(self.gpa_idx) {
             let ndesc = Wrapping(idx) - self.cur_avail_idx;
             if ndesc.0 != 0 && ndesc.0 < rsize {
-                let read_idx = self.cur_avail_idx.0 & (rsize - 1);
+                let avail_idx = self.cur_avail_idx.0 & (rsize - 1);
                 self.cur_avail_idx += Wrapping(1);
 
                 fence(Ordering::Acquire);
-                let addr =
-                    self.gpa_ring + (read_idx as usize * mem::size_of::<u16>());
-                return mem.read(addr);
+                let addr = self.gpa_ring
+                    + (avail_idx as usize * mem::size_of::<u16>());
+                return mem
+                    .read(addr)
+                    .map(|desc_idx| VqReq { desc_idx, avail_idx });
             }
         }
         None
@@ -239,17 +249,25 @@ impl VirtQueue {
         avail.cur_avail_idx = Wrapping(info.avail_idx);
         used.used_idx = Wrapping(info.used_idx);
     }
-    pub fn pop_avail(&self, chain: &mut Chain, mem: &MemCtx) -> Option<u32> {
+    pub fn pop_avail(
+        &self,
+        chain: &mut Chain,
+        mem: &MemCtx,
+    ) -> Option<(u16, u32)> {
         assert!(chain.idx.is_none());
         let mut avail = self.avail.lock().unwrap();
-        let id = avail.read_next_avail(self.size, mem)?;
+        let req = avail.read_next_avail(self.size, mem)?;
 
-        let mut desc = avail.read_ring_descr(id, self.size, mem)?;
+        let mut desc = avail.read_ring_descr(req.desc_idx, self.size, mem)?;
         let mut flags = DescFlag::from_bits_truncate(desc.flags);
         let mut count = 0;
         let mut len = 0;
-        chain.idx = Some(id);
-        probes::virtio_vq_pop!(|| (self as *const VirtQueue as u64, id));
+        chain.idx = Some(req.desc_idx);
+        probes::virtio_vq_pop!(|| (
+            self as *const VirtQueue as u64,
+            req.desc_idx,
+            req.avail_idx,
+        ));
 
         // non-indirect descriptor(s)
         while !flags.contains(DescFlag::INDIRECT) {
@@ -273,10 +291,10 @@ impl VirtQueue {
                     desc = next;
                     flags = DescFlag::from_bits_truncate(desc.flags);
                 } else {
-                    return Some(len);
+                    return Some((req.avail_idx, len));
                 }
             } else {
-                return Some(len);
+                return Some((req.avail_idx, len));
             }
         }
         // XXX: skip indirect if not negotiated
@@ -313,7 +331,7 @@ impl VirtQueue {
                 }
             }
         }
-        Some(len)
+        Some((req.avail_idx, len))
     }
     pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx) {
         assert!(chain.idx.is_some());
