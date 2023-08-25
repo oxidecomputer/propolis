@@ -4,7 +4,6 @@
 
 //! Methods for starting an Oximeter endpoint and gathering server-level stats.
 
-use anyhow::anyhow;
 use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HandlerTaskMode,
 };
@@ -14,7 +13,7 @@ use oximeter::{
     Metric, MetricsError, Producer, Target,
 };
 use oximeter_producer::{Config, Server};
-use slog::{error, info, Logger};
+use slog::{error, info, warn, Logger};
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -100,17 +99,17 @@ impl Producer for ServerStatsOuter {
 ///   to this to query metrics.
 /// - `registration_address`: The address of the Oximeter server that will be
 ///   told how to connect to the metric server this routine starts.
-/// - `plog`: A logger to use when logging from this routine.
+/// - `log`: A logger to use when logging from this routine.
 pub async fn start_oximeter_server(
     id: Uuid,
     config: &MetricsEndpointConfig,
-    plog: Logger,
+    log: Logger,
 ) -> anyhow::Result<Server> {
     // Request an ephemeral port on which to serve metrics.
     let my_address = SocketAddr::new(config.propolis_addr.ip(), 0);
     let registration_address = config.metric_addr;
     info!(
-        plog,
+        log,
         "Attempt to register {:?} with Nexus/Oximeter at {:?}",
         my_address,
         registration_address
@@ -123,10 +122,7 @@ pub async fn start_oximeter_server(
     };
 
     let logging_config =
-        ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Error };
-    let log = logging_config
-        .to_logger("propolis-metric-server")
-        .map_err(|error| anyhow!("failed to create logger: {}", error))?;
+        ConfigLogging::StderrTerminal { level: ConfigLoggingLevel::Info };
 
     let server_info = ProducerEndpoint {
         id,
@@ -142,7 +138,9 @@ pub async fn start_oximeter_server(
         logging_config,
     };
 
-    let mut retry_print_timeout = 0;
+    const N_RETRY: u8 = 2;
+    const RETRY_WAIT_SEC: u64 = 1;
+    let mut attempts = 0;
     loop {
         let server = Server::start(&config).await;
         match server {
@@ -156,13 +154,27 @@ pub async fn start_oximeter_server(
                 return Ok(server);
             }
             Err(e) => {
-                if retry_print_timeout == 0 {
-                    error!(log, "Can't connect to oximeter server:\n{}", e);
-                    retry_print_timeout = 1;
+                if attempts >= N_RETRY {
+                    error!(
+                        log,
+                        "Could not connect to oximeter after {} retries",
+                        N_RETRY
+                    );
+                    return Err(e.into());
                 }
-                // Retry every 10 seconds, but only print once a minute
-                retry_print_timeout = (retry_print_timeout + 1) % 7;
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                attempts += 1;
+
+                warn!(
+                    log,
+                    "Could not connect to oximeter (retrying in {}s):\n{}",
+                    e,
+                    RETRY_WAIT_SEC
+                );
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    RETRY_WAIT_SEC,
+                ))
+                .await;
             }
         }
     }

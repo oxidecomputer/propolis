@@ -40,7 +40,7 @@ enum Args {
         #[clap(name = "PROPOLIS_IP:PORT", action)]
         propolis_addr: SocketAddr,
 
-        /// IP:Port for the Oximeter register address, which is Nexus.
+        /// IP:Port for the Oximeter register address
         #[clap(long, action)]
         metric_addr: Option<SocketAddr>,
 

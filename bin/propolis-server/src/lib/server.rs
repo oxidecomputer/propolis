@@ -460,26 +460,16 @@ async fn instance_ensure_common(
         }));
     }
 
-    let producer_registry =
-        if let Some(cfg) = server_context.static_config.metrics.as_ref() {
-            Some(
-                register_oximeter(
-                    server_context,
-                    cfg,
-                    properties.id,
-                    rqctx.log.clone(),
-                )
-                .await
-                .map_err(|e| {
-                    HttpError::for_internal_error(format!(
-                        "failed to register to produce metrics: {}",
-                        e
-                    ))
-                })?,
-            )
-        } else {
-            None
-        };
+    let producer_registry = if let Some(cfg) =
+        server_context.static_config.metrics.as_ref()
+    {
+        // TODO: issue ##
+        register_oximeter(server_context, cfg, properties.id, rqctx.log.clone())
+            .await
+            .ok()
+    } else {
+        None
+    };
 
     let (stop_ch, stop_recv) = oneshot::channel();
 
