@@ -465,8 +465,6 @@ async fn instance_ensure_common(
     let producer_registry = if let Some(cfg) =
         server_context.static_config.metrics.as_ref()
     {
-        let producer_registry =
-            if let Some(cfg) = server_context.static_config.metrics.as_ref() {
                 // TODO: Any errors in creating and registering the oximeter
                 // server here are swallowed, and we continue on without being
                 // able to serve metrics for this instance. It's a challenge
@@ -488,9 +486,6 @@ async fn instance_ensure_common(
             } else {
                 None
             };
-    } else {
-        None
-    };
 
     let (stop_ch, stop_recv) = oneshot::channel();
 
