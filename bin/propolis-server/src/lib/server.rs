@@ -465,27 +465,22 @@ async fn instance_ensure_common(
     let producer_registry = if let Some(cfg) =
         server_context.static_config.metrics.as_ref()
     {
-                // TODO: Any errors in creating and registering the oximeter
-                // server here are swallowed, and we continue on without being
-                // able to serve metrics for this instance. It's a challenge
-                // today to separate the creation of the producer registry from
-                // the registering of its server endpoint with the oximeter
-                // consumer, and in reality, the only error path here is if we
-                // could not contact the oximeter consumer (e.g., it is down for
-                // some reason).
-                //
-                // See omicron#3956 for tracking the longer term fix.
-                register_oximeter(
-                    server_context,
-                    cfg,
-                    properties.id,
-                    rqctx.log.clone(),
-                )
-                .await
-                .ok()
-            } else {
-                None
-            };
+        // TODO: Any errors in creating and registering the oximeter
+        // server here are swallowed, and we continue on without being
+        // able to serve metrics for this instance. It's a challenge
+        // today to separate the creation of the producer registry from
+        // the registering of its server endpoint with the oximeter
+        // consumer, and in reality, the only error path here is if we
+        // could not contact the oximeter consumer (e.g., it is down for
+        // some reason).
+        //
+        // See omicron#3956 for tracking the longer term fix.
+        register_oximeter(server_context, cfg, properties.id, rqctx.log.clone())
+            .await
+            .ok()
+    } else {
+        None
+    };
 
     let (stop_ch, stop_recv) = oneshot::channel();
 
