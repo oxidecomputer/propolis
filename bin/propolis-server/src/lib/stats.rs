@@ -156,8 +156,8 @@ pub async fn start_oximeter_server(
                 warn!(
                     log,
                     "Could not connect to oximeter (retrying in {}s):\n{}",
-                    e,
                     RETRY_WAIT_SEC
+                    e,
                 );
 
                 tokio::time::sleep(tokio::time::Duration::from_secs(
