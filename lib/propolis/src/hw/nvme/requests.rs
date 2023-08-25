@@ -8,7 +8,7 @@ use crate::{
     hw::nvme::{bits, cmds::Completion},
 };
 
-use super::{cmds::NvmCmd, queue::CompQueueEntryPermit, PciNvme};
+use super::{cmds::NvmCmd, queue::Permit, PciNvme};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -31,6 +31,8 @@ mod probes {
     }
 }
 
+type NvmeBlockPayload = Permit;
+
 impl block::Device for PciNvme {
     fn next(&self) -> Option<Request> {
         self.notifier.next_arming(|| self.next_req())
@@ -42,10 +44,9 @@ impl block::Device for PciNvme {
         res: BlockResult,
         payload: Box<BlockPayload>,
     ) {
-        let payload: Box<CompletionPayload> =
+        let payload: Box<NvmeBlockPayload> =
             payload.downcast().expect("payload must be correct type");
-        let CompletionPayload { qid, cid, cqe_permit } = *payload;
-        self.complete_req(qid, cid, op, res, cqe_permit);
+        self.complete_req(op, res, *payload);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
@@ -71,7 +72,7 @@ impl PciNvme {
         // Go through all the queues (skip admin as we just want I/O queues)
         // looking for a request to service
         for sq in state.sqs.iter().skip(1).flatten() {
-            while let Some((sub, cqe_permit, idx)) = sq.pop(&mem) {
+            while let Some((sub, permit, idx)) = sq.pop(&mem) {
                 let qid = sq.id();
                 probes::nvme_raw_cmd!(|| {
                     (
@@ -82,8 +83,9 @@ impl PciNvme {
                         (sub.cdw10 as u64 | ((sub.cdw11 as u64) << 32)),
                     )
                 });
-                let cmd = NvmCmd::parse(sub);
                 let cid = sub.cid();
+                let cmd = NvmCmd::parse(sub);
+
                 match cmd {
                     Ok(NvmCmd::Write(cmd)) if !state.binfo.writable => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
@@ -100,7 +102,7 @@ impl PciNvme {
                             cid,
                             BlockResult::Failure as u8,
                         ));
-                        cqe_permit.push_completion(cid, comp, Some(&mem));
+                        permit.complete(comp, Some(&mem));
                     }
                     Ok(NvmCmd::Write(cmd)) => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
@@ -113,7 +115,7 @@ impl PciNvme {
                         let req = Request::new_write(
                             off as usize,
                             bufs,
-                            CompletionPayload::new(qid, cid, cqe_permit),
+                            Box::new(permit),
                         );
                         return Some(req);
                     }
@@ -129,15 +131,13 @@ impl PciNvme {
                         let req = Request::new_read(
                             off as usize,
                             bufs,
-                            CompletionPayload::new(qid, cid, cqe_permit),
+                            Box::new(permit),
                         );
                         return Some(req);
                     }
                     Ok(NvmCmd::Flush) => {
                         probes::nvme_flush_enqueue!(|| (qid, idx, cid));
-                        let req = Request::new_flush(CompletionPayload::new(
-                            qid, cid, cqe_permit,
-                        ));
+                        let req = Request::new_flush(Box::new(permit));
                         return Some(req);
                     }
                     Ok(NvmCmd::Unknown(_)) | Err(_) => {
@@ -145,7 +145,7 @@ impl PciNvme {
                         // just immediately complete it with an error
                         let comp =
                             Completion::generic_err(bits::STS_INTERNAL_ERR);
-                        cqe_permit.push_completion(cid, comp, Some(&mem));
+                        permit.complete(comp, Some(&mem));
                     }
                 }
             }
@@ -156,14 +156,9 @@ impl PciNvme {
 
     /// Place the operation result (success or failure) onto the corresponding
     /// Completion Queue.
-    fn complete_req(
-        &self,
-        qid: u16,
-        cid: u16,
-        op: Operation,
-        res: BlockResult,
-        cqe_permit: CompQueueEntryPermit,
-    ) {
+    fn complete_req(&self, op: Operation, res: BlockResult, permit: Permit) {
+        let qid = permit.sqid();
+        let cid = permit.cid();
         let resnum = res as u8;
         match op {
             Operation::Read(..) => {
@@ -178,24 +173,6 @@ impl PciNvme {
         }
 
         let mem = self.mem_access();
-        cqe_permit.push_completion(cid, Completion::from(res), opt_guard(&mem));
-    }
-}
-
-struct CompletionPayload {
-    /// The Submission Queue ID the request was taken from.
-    qid: u16,
-    /// The Command ID of the original request.
-    cid: u16,
-    /// Entry permit for the CQ.
-    cqe_permit: CompQueueEntryPermit,
-}
-impl CompletionPayload {
-    pub(super) fn new(
-        qid: u16,
-        cid: u16,
-        cqe_permit: CompQueueEntryPermit,
-    ) -> Box<Self> {
-        Box::new(Self { qid, cid, cqe_permit })
+        permit.complete(Completion::from(res), opt_guard(&mem));
     }
 }

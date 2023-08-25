@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use super::bits::{self, RawSubmission, StatusCodeType};
+use super::bits::{self, StatusCodeType, SubmissionQueueEntry};
 use super::queue::{QueueCreateErr, QueueId};
 use crate::block;
 use crate::common::*;
@@ -17,10 +17,10 @@ mod probes {
     fn nvme_prp_error(err: &'static str) {}
 }
 
-/// Errors that may be encounted during command parsing.
+/// Errors that may be encountered during command parsing.
 #[derive(Debug, Error)]
 pub enum ParseErr {
-    /// Encounted a fused operation which we don't currently support.
+    /// We do not currently support fused operations
     #[error("Fused ops not supported")]
     Fused,
 
@@ -53,12 +53,12 @@ pub enum AdminCmd {
     /// Asynchronous Event Request Command
     AsyncEventReq,
     /// An unknown admin command
-    Unknown(RawSubmission),
+    Unknown(SubmissionQueueEntry),
 }
 
 impl AdminCmd {
-    /// Triy to parse an `AdminCmd` out of a raw Submission Entry.
-    pub fn parse(raw: RawSubmission) -> Result<Self, ParseErr> {
+    /// Try to parse an `AdminCmd` out of a raw Submission Entry.
+    pub fn parse(raw: SubmissionQueueEntry) -> Result<Self, ParseErr> {
         let cmd = match raw.opcode() {
             bits::ADMIN_OPC_DELETE_IO_SQ => {
                 AdminCmd::DeleteIOSubQ(raw.cdw10 as u16)
@@ -357,7 +357,7 @@ pub enum FeatureIdent {
     PowerManagement,
     /// LBA Range Type
     ///
-    /// Indicates the type and attribtues of LBA ranges that part of the specified namespace.
+    /// Indicates the type and attributes of LBA ranges that part of the specified namespace.
     LbaRangeType,
     /// Temperature Threshold
     ///
@@ -374,7 +374,7 @@ pub enum FeatureIdent {
     /// Number of Queues
     ///
     /// Indicates the number of queues requested to the controller.
-    /// Only allowed during initialization and canot change between resets.
+    /// Only allowed during initialization and cannot change between resets.
     NumberOfQueues {
         /// Number of I/O Completion Queues Requested (NCQR)
         ///
@@ -403,7 +403,7 @@ pub enum FeatureIdent {
     AsynchronousEventConfiguration,
     /// Software Progress Marker
     ///
-    /// This feature is persistnt across power states.
+    /// This feature is persistent across power states.
     /// See NVMe 1.0e Section 7.6.1.1 Software Progress Marker
     SoftwareProgressMarker,
     /// Vendor specific feature.
@@ -448,12 +448,12 @@ pub enum NvmCmd {
     /// Read data and metadata
     Read(ReadCmd),
     /// An unknown NVM command
-    Unknown(RawSubmission),
+    Unknown(SubmissionQueueEntry),
 }
 
 impl NvmCmd {
-    /// Triy to parse an `NvmCmd` out of a raw Submission Entry.
-    pub fn parse(raw: RawSubmission) -> Result<Self, ParseErr> {
+    /// Try to parse an `NvmCmd` out of a raw Submission Entry.
+    pub fn parse(raw: SubmissionQueueEntry) -> Result<Self, ParseErr> {
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
             0b00 => Ok(()),               // Normal (non-fused) operation
             0b01 => Err(ParseErr::Fused), // First fused op
@@ -814,7 +814,7 @@ impl Completion {
         }
     }
 
-    /// Helper method to combine StatusCodeType and status code
+    /// Helper method to combine [StatusCodeType] and status code
     fn status_field(sct: StatusCodeType, sc: u8, dnr: bool) -> u16 {
         (sc as u16) << 1 | ((sct as u8) as u16) << 9 | (dnr as u16) << 15
         // | (more as u16) << 14

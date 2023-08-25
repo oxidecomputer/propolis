@@ -507,10 +507,10 @@ impl PciNvme {
 
         // We have unit tests that these are 16 and 64 bytes, respectively
         // But just make sure as we specify these as powers of 2 in places
-        debug_assert!(size_of::<RawCompletion>().is_power_of_two());
-        debug_assert!(size_of::<RawSubmission>().is_power_of_two());
-        let cqes = size_of::<RawCompletion>().trailing_zeros() as u8;
-        let sqes = size_of::<RawSubmission>().trailing_zeros() as u8;
+        debug_assert!(size_of::<CompletionQueueEntry>().is_power_of_two());
+        debug_assert!(size_of::<SubmissionQueueEntry>().is_power_of_two());
+        let cqes = size_of::<CompletionQueueEntry>().trailing_zeros() as u8;
+        let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
         let sz = std::cmp::min(20, serial_number.len());
         let mut sn: [u8; 20] = [0u8; 20];
@@ -850,7 +850,7 @@ impl PciNvme {
                     cq.notify_head(val)?;
 
                     // We may have skipped pulling entries off some SQ due to this
-                    // CQ having no available entry slots. Since we've just free'd
+                    // CQ having no available entry slots. Since we've just freed
                     // up some slots, kick the SQs (excl. admin) here just in case.
                     // TODO: worth kicking only the SQs specifically associated
                     //       with this CQ?
@@ -892,16 +892,19 @@ impl PciNvme {
         }
         let mem = mem.unwrap();
 
-        while let Some((sub, cqe_permit, _idx)) = sq.pop(&mem) {
+        while let Some((sub, permit, _idx)) = sq.pop(&mem) {
             use cmds::AdminCmd;
 
-            let parsed = AdminCmd::parse(sub);
-            if parsed.is_err() {
-                // XXX: set controller error state?
-                continue;
-            }
             probes::nvme_admin_cmd!(|| (sub.opcode(), sub.prp1, sub.prp2));
-            let cmd = parsed.unwrap();
+            let cmd = AdminCmd::parse(sub).unwrap_or_else(|_e| {
+                // Since unknown admin commands are already parsed into
+                // AdminCmd::Unknown, we only need to worry about invalid field
+                // contents (such as the fuse bits being set).
+                //
+                // XXX: set the controller into an error state instead of
+                // reacting in the same manner as unknown command?
+                AdminCmd::Unknown(sub)
+            });
             let comp = match cmd {
                 AdminCmd::CreateIOCompQ(cmd) => {
                     state.acmd_create_io_cq(&cmd, &mem)
@@ -935,7 +938,7 @@ impl PciNvme {
                 }
             };
 
-            cqe_permit.push_completion(sub.cid(), comp, Some(&mem));
+            permit.complete(comp, Some(&mem));
         }
 
         // Notify for any newly added completions

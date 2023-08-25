@@ -339,6 +339,12 @@ impl RWOp<'_, '_> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GuestAddr(pub u64);
 
+impl GuestAddr {
+    pub fn offset<T: Sized>(&self, count: usize) -> Self {
+        Self(self.0 + (count * std::mem::size_of::<T>()) as u64)
+    }
+}
+
 /// A region of memory within a guest VM.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GuestRegion(pub GuestAddr, pub usize);

@@ -154,7 +154,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync).await;
         let preamble =
-            Preamble::new(self.vm_controller.instance_spec().clone());
+            Preamble::new(self.vm_controller.instance_spec().await.clone());
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;

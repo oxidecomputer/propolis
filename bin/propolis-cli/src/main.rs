@@ -17,7 +17,8 @@ use futures::{future, SinkExt};
 use propolis_client::handmade::{
     api::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceStateRequested, MigrationState,
+        InstanceProperties, InstanceStateRequested, InstanceVCRReplace,
+        MigrationState,
     },
     Client,
 };
@@ -122,6 +123,17 @@ enum Command {
 
     /// Inject an NMI into the instance
     InjectNmi,
+
+    /// Call the VolumeConstructionRequest replace endpoint
+    Vcr {
+        /// Uuid for the disk
+        #[clap(short = 'u', action)]
+        uuid: Uuid,
+
+        /// File with a JSON InstanceVCRReplace struct
+        #[clap(long, action)]
+        vcr_replace: PathBuf,
+    },
 }
 
 fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
@@ -201,6 +213,20 @@ async fn new_instance(
         .instance_ensure(&request)
         .await
         .with_context(|| anyhow!("failed to create instance"))?;
+
+    Ok(())
+}
+
+async fn replace_vcr(
+    client: &Client,
+    id: Uuid,
+    vcr_replace: InstanceVCRReplace,
+) -> anyhow::Result<()> {
+    // Try to call the endpoint
+    client
+        .instance_issue_crucible_vcr_request(id, vcr_replace)
+        .await
+        .with_context(|| anyhow!("failed to issue vcr request"))?;
 
     Ok(())
 }
@@ -621,6 +647,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Monitor => monitor(addr).await?,
         Command::InjectNmi => inject_nmi(&client).await?,
+        Command::Vcr { uuid, vcr_replace } => {
+            let replace: InstanceVCRReplace = parse_json_file(&vcr_replace)?;
+            replace_vcr(&client, uuid, replace).await?
+        }
     }
 
     Ok(())
