@@ -104,7 +104,7 @@ pub async fn start_oximeter_server(
     id: Uuid,
     config: &MetricsEndpointConfig,
     log: Logger,
-) -> anyhow::Result<Server> {
+) -> Option<Server> {
     // Request an ephemeral port on which to serve metrics.
     let my_address = SocketAddr::new(config.propolis_addr.ip(), 0);
     let registration_address = config.metric_addr;
@@ -140,8 +140,7 @@ pub async fn start_oximeter_server(
 
     const N_RETRY: u8 = 2;
     const RETRY_WAIT_SEC: u64 = 1;
-    let mut attempts = 0;
-    loop {
+    for _ in 0..N_RETRY {
         let server = Server::start(&config).await;
         match server {
             Ok(server) => {
@@ -151,19 +150,9 @@ pub async fn start_oximeter_server(
                     my_address,
                     registration_address
                 );
-                return Ok(server);
+                return Some(server);
             }
             Err(e) => {
-                if attempts >= N_RETRY {
-                    error!(
-                        log,
-                        "Could not connect to oximeter after {} retries",
-                        N_RETRY
-                    );
-                    return Err(e.into());
-                }
-                attempts += 1;
-
                 warn!(
                     log,
                     "Could not connect to oximeter (retrying in {}s):\n{}",
@@ -178,6 +167,9 @@ pub async fn start_oximeter_server(
             }
         }
     }
+    error!(log, "Could not connect to oximeter after {} retries", N_RETRY);
+
+    None
 }
 
 /// Creates and registers a set of server-level metrics for an instance.
