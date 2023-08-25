@@ -24,6 +24,13 @@ use lazy_static::lazy_static;
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
 
+struct CompletionPayload {
+    /// ID of original request.
+    rid: u16,
+    /// VirtIO chain in which we indicate the result.
+    chain: Chain,
+}
+
 pub struct PciVirtioBlock {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
@@ -81,23 +88,32 @@ impl PciVirtioBlock {
         let mem = self.pci_state.acc_mem.access()?;
 
         let mut chain = Chain::with_capacity(4);
-        let _clen = vq.pop_avail(&mut chain, &mem)?;
+        // Pop a request off the queue if there's one available.
+        // For debugging purposes, we'll also use the returned index
+        // as a psuedo-id for the request to associate it with its
+        // subsequent completion
+        let (rid, _clen) = vq.pop_avail(&mut chain, &mem)?;
 
         let mut breq = VbReq::default();
         if !chain.read(&mut breq, &mem) {
             todo!("error handling");
         }
+        let off = breq.sector as usize * SECTOR_SZ;
         let req = match breq.rtype {
             VIRTIO_BLK_T_IN => {
                 // should be (blocksize * 512) + 1 remaining writable byte for status
                 // TODO: actually enforce block size
                 let blocks = (chain.remain_write_bytes() - 1) / SECTOR_SZ;
+                let sz = blocks * SECTOR_SZ;
 
-                if let Some(regions) = chain.writable_bufs(blocks * SECTOR_SZ) {
+                if let Some(regions) = chain.writable_bufs(sz) {
+                    probes::vioblk_read_enqueue!(|| (
+                        rid, off as u64, sz as u64
+                    ));
                     Ok(block::Request::new_read(
-                        breq.sector as usize * SECTOR_SZ,
+                        off,
                         regions,
-                        Box::new(chain),
+                        Box::new(CompletionPayload { rid, chain }),
                     ))
                 } else {
                     Err(chain)
@@ -106,16 +122,27 @@ impl PciVirtioBlock {
             VIRTIO_BLK_T_OUT => {
                 // should be (blocksize * 512) remaining read bytes
                 let blocks = chain.remain_read_bytes() / SECTOR_SZ;
+                let sz = blocks * SECTOR_SZ;
 
-                if let Some(regions) = chain.readable_bufs(blocks * SECTOR_SZ) {
+                if let Some(regions) = chain.readable_bufs(sz) {
+                    probes::vioblk_write_enqueue!(|| (
+                        rid, off as u64, sz as u64
+                    ));
                     Ok(block::Request::new_write(
-                        breq.sector as usize * SECTOR_SZ,
+                        off,
                         regions,
-                        Box::new(chain),
+                        Box::new(CompletionPayload { rid, chain }),
                     ))
                 } else {
                     Err(chain)
                 }
+            }
+            VIRTIO_BLK_T_FLUSH => {
+                probes::vioblk_flush_enqueue!(|| (rid));
+                Ok(block::Request::new_flush(Box::new(CompletionPayload {
+                    rid,
+                    chain,
+                })))
             }
             _ => Err(chain),
         };
@@ -134,18 +161,32 @@ impl PciVirtioBlock {
         }
     }
 
-    fn complete_req(&self, res: block::Result, chain: &mut Chain) {
+    fn complete_req(
+        &self,
+        rid: u16,
+        op: block::Operation,
+        res: block::Result,
+        chain: &mut Chain,
+    ) {
         let vq = self.virtio_state.queues.get(0).expect("vq must exist");
         if let Some(mem) = vq.acc_mem.access() {
-            let _ = match res {
-                block::Result::Success => chain.write(&VIRTIO_BLK_S_OK, &mem),
-                block::Result::Failure => {
-                    chain.write(&VIRTIO_BLK_S_IOERR, &mem)
-                }
-                block::Result::Unsupported => {
-                    chain.write(&VIRTIO_BLK_S_UNSUPP, &mem)
-                }
+            let resnum = match res {
+                block::Result::Success => VIRTIO_BLK_S_OK,
+                block::Result::Failure => VIRTIO_BLK_S_IOERR,
+                block::Result::Unsupported => VIRTIO_BLK_S_UNSUPP,
             };
+            match op {
+                block::Operation::Read(..) => {
+                    probes::vioblk_read_complete!(|| (rid, resnum));
+                }
+                block::Operation::Write(..) => {
+                    probes::vioblk_write_complete!(|| (rid, resnum));
+                }
+                block::Operation::Flush => {
+                    probes::vioblk_flush_complete!(|| (rid, resnum));
+                }
+            }
+            chain.write(&resnum, &mem);
             vq.push_used(chain, &mem);
         }
     }
@@ -163,6 +204,7 @@ impl VirtioDevice for PciVirtioBlock {
     fn get_features(&self) -> u32 {
         let mut feat = VIRTIO_BLK_F_BLK_SIZE;
         feat |= VIRTIO_BLK_F_SEG_MAX;
+        feat |= VIRTIO_BLK_F_FLUSH;
 
         if !self.info.writable {
             feat |= VIRTIO_BLK_F_RO;
@@ -192,13 +234,14 @@ impl block::Device for PciVirtioBlock {
 
     fn complete(
         &self,
-        _op: block::Operation,
+        op: block::Operation,
         res: block::Result,
         payload: Box<block::BlockPayload>,
     ) {
-        let mut chain: Box<Chain> =
+        let mut payload: Box<CompletionPayload> =
             payload.downcast().expect("payload must be correct type");
-        self.complete_req(res, &mut chain);
+        let CompletionPayload { rid, ref mut chain } = *payload;
+        self.complete_req(rid, op, res, chain);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
@@ -323,4 +366,16 @@ mod bits {
     pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
     pub const VIRTIO_BLK_CFG_SIZE: usize = 0x3c;
+}
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn vioblk_read_enqueue(id: u16, off: u64, sz: u64) {}
+    fn vioblk_read_complete(id: u16, res: u8) {}
+
+    fn vioblk_write_enqueue(id: u16, off: u64, sz: u64) {}
+    fn vioblk_write_complete(id: u16, res: u8) {}
+
+    fn vioblk_flush_enqueue(id: u16) {}
+    fn vioblk_flush_complete(id: u16, res: u8) {}
 }

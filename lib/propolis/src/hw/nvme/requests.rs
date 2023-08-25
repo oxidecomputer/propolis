@@ -13,13 +13,13 @@ use super::{cmds::NvmCmd, queue::Permit, PciNvme};
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn nvme_read_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_read_complete(cid: u16, res: u8) {}
+    fn nvme_read_complete(qid: u16, cid: u16, res: u8) {}
 
     fn nvme_write_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_write_complete(cid: u16, res: u8) {}
+    fn nvme_write_complete(qid: u16, cid: u16, res: u8) {}
 
     fn nvme_flush_enqueue(qid: u16, idx: u16, cid: u16) {}
-    fn nvme_flush_complete(cid: u16, res: u8) {}
+    fn nvme_flush_complete(qid: u16, cid: u16, res: u8) {}
 
     fn nvme_raw_cmd(
         qid: u16,
@@ -31,7 +31,7 @@ mod probes {
     }
 }
 
-type NvmeBlockPayload = Option<Permit>;
+type NvmeBlockPayload = Permit;
 
 impl block::Device for PciNvme {
     fn next(&self) -> Option<Request> {
@@ -44,12 +44,9 @@ impl block::Device for PciNvme {
         res: BlockResult,
         payload: Box<BlockPayload>,
     ) {
-        let mut payload: Box<NvmeBlockPayload> =
+        let payload: Box<NvmeBlockPayload> =
             payload.downcast().expect("payload must be correct type");
-        let permit = payload
-            .take()
-            .expect("block request payload should contain permit");
-        self.complete_req(op, res, permit);
+        self.complete_req(op, res, *payload);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
@@ -90,11 +87,21 @@ impl PciNvme {
                 let cmd = NvmCmd::parse(sub);
 
                 match cmd {
-                    Ok(NvmCmd::Write(_)) if !state.binfo.writable => {
+                    Ok(NvmCmd::Write(cmd)) if !state.binfo.writable => {
+                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
+                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
+                        probes::nvme_write_enqueue!(|| (
+                            qid, idx, cid, off, size
+                        ));
                         let comp = Completion::specific_err(
                             bits::StatusCodeType::CmdSpecific,
                             bits::STS_WRITE_READ_ONLY_RANGE,
                         );
+                        probes::nvme_write_complete!(|| (
+                            qid,
+                            cid,
+                            BlockResult::Failure as u8,
+                        ));
                         permit.complete(comp, Some(&mem));
                     }
                     Ok(NvmCmd::Write(cmd)) => {
@@ -108,7 +115,7 @@ impl PciNvme {
                         let req = Request::new_write(
                             off as usize,
                             bufs,
-                            Box::new(Some(permit)),
+                            Box::new(permit),
                         );
                         return Some(req);
                     }
@@ -124,17 +131,13 @@ impl PciNvme {
                         let req = Request::new_read(
                             off as usize,
                             bufs,
-                            Box::new(Some(permit)),
+                            Box::new(permit),
                         );
                         return Some(req);
                     }
                     Ok(NvmCmd::Flush) => {
                         probes::nvme_flush_enqueue!(|| (qid, idx, cid));
-                        let req = Request::new_flush(
-                            0,
-                            0, // TODO: is 0 enough or do we pass total size?
-                            Box::new(Some(permit)),
-                        );
+                        let req = Request::new_flush(Box::new(permit));
                         return Some(req);
                     }
                     Ok(NvmCmd::Unknown(_)) | Err(_) => {
@@ -154,21 +157,18 @@ impl PciNvme {
     /// Place the operation result (success or failure) onto the corresponding
     /// Completion Queue.
     fn complete_req(&self, op: Operation, res: BlockResult, permit: Permit) {
+        let qid = permit.sqid();
         let cid = permit.cid();
-        let resnum: u8 = match &res {
-            BlockResult::Success => 0,
-            BlockResult::Failure => 1,
-            BlockResult::Unsupported => 2,
-        };
+        let resnum = res as u8;
         match op {
             Operation::Read(..) => {
-                probes::nvme_read_complete!(|| (cid, resnum));
+                probes::nvme_read_complete!(|| (qid, cid, resnum));
             }
             Operation::Write(..) => {
-                probes::nvme_write_complete!(|| (cid, resnum));
+                probes::nvme_write_complete!(|| (qid, cid, resnum));
             }
-            Operation::Flush(..) => {
-                probes::nvme_flush_complete!(|| (cid, resnum));
+            Operation::Flush => {
+                probes::nvme_flush_complete!(|| (qid, cid, resnum));
             }
         }
 

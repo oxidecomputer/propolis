@@ -324,7 +324,7 @@ async fn process_request(
             let offset = block.byte_offset_to_block(off as u64).await?;
             let _ = block.write(offset, crucible::Bytes::from(vec)).await?;
         }
-        block::Operation::Flush(_off, _len) => {
+        block::Operation::Flush => {
             // Send flush to crucible
             let _ = block.flush(None).await?;
         }

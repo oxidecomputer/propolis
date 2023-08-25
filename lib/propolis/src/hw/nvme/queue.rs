@@ -712,10 +712,14 @@ pub struct ProtoPermit {
 
     /// The Submission Queue for which this entry is reserved.
     sq: Weak<SubQueue>,
+
+    /// The Submission Queue's ID (stored separately to avoid going through
+    /// the Weak ref).
+    sqid: u16,
 }
 impl ProtoPermit {
     fn new(cq: &Arc<CompQueue>, sq: &Arc<SubQueue>) -> Self {
-        Self { cq: Arc::downgrade(cq), sq: Arc::downgrade(sq) }
+        Self { cq: Arc::downgrade(cq), sq: Arc::downgrade(sq), sqid: sq.id }
     }
 
     /// Promote a "proto" permit to a [Permit].
@@ -724,7 +728,13 @@ impl ProtoPermit {
     /// `ProtoPermit` promotes it to `Permit`, committing to use the reserved
     /// CQE capacity when the submission is processed.
     pub fn promote(self, cid: u16) -> Permit {
-        Permit { cq: self.cq, sq: self.sq, cid, completed: false }
+        Permit {
+            cq: self.cq,
+            sq: self.sq,
+            sqid: self.sqid,
+            cid,
+            completed: false,
+        }
     }
 
     /// Return the permit without having actually used it.
@@ -748,6 +758,9 @@ pub struct Permit {
 
     /// The Submission Queue for which this entry is reserved.
     sq: Weak<SubQueue>,
+
+    /// The Submission Queue ID the request came in on.
+    sqid: u16,
 
     /// ID of command holding this permit.  Used to populate `cid` field in
     /// Completion Queue Entry.
@@ -792,6 +805,12 @@ impl Permit {
     /// Get the ID of the submitted command associated with this permit.
     pub fn cid(&self) -> u16 {
         self.cid
+    }
+
+    /// Get the ID of the Submission Queue the command associated with this
+    /// permit was submitted on.
+    pub fn sqid(&self) -> u16 {
+        self.sqid
     }
 
     /// Consume the permit by placing an entry into the Completion Queue.

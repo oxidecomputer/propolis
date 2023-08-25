@@ -358,7 +358,7 @@ impl<'a> MachineInitializer<'a> {
                       "len" => bytes.len());
 
                 let be = propolis::block::InMemoryBackend::create(
-                    bytes.clone(),
+                    bytes,
                     spec.readonly,
                     512,
                 )?;

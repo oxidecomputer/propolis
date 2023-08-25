@@ -99,7 +99,7 @@ impl InMemoryBackend {
                     &maps,
                 )?;
             }
-            block::Operation::Flush(_off, _len) => {
+            block::Operation::Flush => {
                 // nothing to do
             }
         }

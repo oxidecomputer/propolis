@@ -209,7 +209,7 @@ pub trait P9Handler: Sync + Send + 'static {
         let mem = vq.acc_mem.access().unwrap();
 
         let mut chain = Chain::with_capacity(1);
-        let _clen = vq.pop_avail(&mut chain, &mem).unwrap() as usize;
+        let (_idx, _clen) = vq.pop_avail(&mut chain, &mem).unwrap();
 
         //TODO better as uninitialized?
         let mut data = Vec::new();
