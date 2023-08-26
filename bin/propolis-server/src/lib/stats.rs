@@ -156,7 +156,7 @@ pub async fn start_oximeter_server(
                 warn!(
                     log,
                     "Could not connect to oximeter (retrying in {}s):\n{}",
-                    RETRY_WAIT_SEC
+                    RETRY_WAIT_SEC,
                     e,
                 );
 
