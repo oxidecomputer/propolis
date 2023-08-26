@@ -138,9 +138,9 @@ pub async fn start_oximeter_server(
         logging_config,
     };
 
-    const N_RETRY: u8 = 2;
+    const N_ATTEMPTS: u8 = 2;
     const RETRY_WAIT_SEC: u64 = 1;
-    for _ in 0..N_RETRY {
+    for _ in 0..N_ATTEMPTS {
         let server = Server::start(&config).await;
         match server {
             Ok(server) => {
@@ -167,7 +167,7 @@ pub async fn start_oximeter_server(
             }
         }
     }
-    error!(log, "Could not connect to oximeter after {} retries", N_RETRY);
+    error!(log, "Could not connect to oximeter after {} attempts", N_ATTEMPTS);
 
     None
 }
