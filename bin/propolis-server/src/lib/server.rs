@@ -330,7 +330,9 @@ async fn register_oximeter(
         .await
         .is_none());
 
-    let server = crate::stats::start_oximeter_server(vm_id, cfg, log).await?;
+    let server = crate::stats::start_oximeter_server(vm_id, cfg, log)
+        .await
+        .ok_or(anyhow::anyhow!("failed to start server"))?;
     let stats = crate::stats::register_server_metrics(vm_id, &server)?;
     *server_context.services.oximeter_stats.lock().await = Some(stats);
     let registry = server.registry().clone();
@@ -460,26 +462,23 @@ async fn instance_ensure_common(
         }));
     }
 
-    let producer_registry =
-        if let Some(cfg) = server_context.static_config.metrics.as_ref() {
-            Some(
-                register_oximeter(
-                    server_context,
-                    cfg,
-                    properties.id,
-                    rqctx.log.clone(),
-                )
-                .await
-                .map_err(|e| {
-                    HttpError::for_internal_error(format!(
-                        "failed to register to produce metrics: {}",
-                        e
-                    ))
-                })?,
-            )
-        } else {
-            None
-        };
+    let producer_registry = if let Some(cfg) =
+        server_context.static_config.metrics.as_ref()
+    {
+        // TODO(#513): Any errors in creating and registering the oximeter
+        // server here are swallowed, and we continue on without being
+        // able to serve metrics for this instance. It's a challenge
+        // today to separate the creation of the producer registry from
+        // the registration of its server endpoint with the oximeter
+        // consumer, and in reality, the only error path here is if we
+        // could not contact the oximeter consumer (e.g., it is down for
+        // some reason).
+        register_oximeter(server_context, cfg, properties.id, rqctx.log.clone())
+            .await
+            .ok()
+    } else {
+        None
+    };
 
     let (stop_ch, stop_recv) = oneshot::channel();
 
