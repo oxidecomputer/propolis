@@ -82,10 +82,9 @@ impl Producer for ServerStatsOuter {
     fn produce(
         &mut self,
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
-        let mut data = Vec::with_capacity(1);
         let inner = self.server_stats_wrapped.lock().unwrap();
         let name = inner.stat_name;
-        data.push(Sample::new(&name, &inner.run_count));
+        let data = vec![Sample::new(&name, &inner.run_count)?];
         Ok(Box::new(data.into_iter()))
     }
 }
@@ -134,8 +133,8 @@ pub async fn start_oximeter_server(
     let config = Config {
         server_info,
         registration_address,
-        dropshot_config,
-        logging_config,
+        dropshot: dropshot_config,
+        log: oximeter_producer::LogConfig::Config(logging_config),
     };
 
     const N_ATTEMPTS: u8 = 2;

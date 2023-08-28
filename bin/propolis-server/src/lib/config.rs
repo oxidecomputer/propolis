@@ -45,13 +45,13 @@ fn blockdev_backend(
                     )
                 })?;
 
-            let readonly: bool = || -> Option<bool> {
+            let readonly = {
                 match dev.options.get("readonly") {
                     Some(toml::Value::Boolean(read_only)) => Some(*read_only),
                     Some(toml::Value::String(v)) => v.parse().ok(),
                     _ => None,
                 }
-            }()
+            }
             .unwrap_or(false);
             let nworkers = NonZeroUsize::new(8).unwrap();
             let be = propolis::block::FileBackend::create(

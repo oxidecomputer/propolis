@@ -321,7 +321,7 @@ impl PciVirtioSoftNpuPort {
         };
         let mut chain = Chain::with_capacity(1);
         let Some((_idx, _clen)) = vq.pop_avail(&mut chain, &mem) else {
-            return
+            return;
         };
 
         // only vq.push_used if we actually read something

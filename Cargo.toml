@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 
 members = [
   "crates/*",
@@ -92,8 +93,8 @@ chrono = "0.4.19"
 clap = "4.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "5dc77d87dec8bbf56a603821d67ad13f47f99f95" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "5dc77d87dec8bbf56a603821d67ad13f47f99f95" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "7ba88771215818d053bb64ae9e995f41ffb3c5a7" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "7ba88771215818d053bb64ae9e995f41ffb3c5a7" }
 ctrlc = "3.2"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 enum-iterator = "1.4.1"

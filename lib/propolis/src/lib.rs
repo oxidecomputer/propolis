@@ -4,6 +4,9 @@
 
 #![allow(clippy::style)]
 #![allow(clippy::drop_non_drop)]
+// Suppress errors about bad masks for now.  The bitflags macro will create
+// masks for 0-value items, which upsets clippy.
+#![allow(clippy::bad_bit_mask)]
 
 pub extern crate bhyve_api;
 pub extern crate usdt;

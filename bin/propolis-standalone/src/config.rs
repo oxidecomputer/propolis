@@ -35,7 +35,7 @@ struct MemAsyncConfig {
 fn opt_deser<'de, T: Deserialize<'de>>(
     value: &BTreeMap<String, toml::Value>,
 ) -> Result<T, anyhow::Error> {
-    let map = toml::map::Map::from_iter(value.clone().into_iter());
+    let map = toml::map::Map::from_iter(value.clone());
     let config = map.try_into::<T>()?;
     Ok(config)
 }

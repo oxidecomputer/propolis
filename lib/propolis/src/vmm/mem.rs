@@ -579,7 +579,7 @@ impl<'a> SubMapping<'a> {
         // not guaranteed for the destination pointer.  Cast it down to a u8,
         // which will appease those alignment concerns
         let src = values.as_ptr() as *const u8;
-        let dst = self.ptr.as_ptr() as *mut u8;
+        let dst = self.ptr.as_ptr();
 
         // Safety
         // - `src` is valid for reads for its entire length, since it is from a
@@ -679,7 +679,7 @@ impl<'a> SubMapping<'a> {
     /// - The caller may only write up to `len()` bytes.
     pub unsafe fn raw_writable(&self) -> Option<*mut u8> {
         if self.prot.contains(Prot::WRITE) {
-            Some(self.ptr.as_ptr() as *mut u8)
+            Some(self.ptr.as_ptr())
         } else {
             None
         }

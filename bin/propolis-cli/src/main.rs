@@ -687,7 +687,7 @@ impl Drop for RawTermiosGuard {
     fn drop(&mut self) {
         let r = unsafe { libc::tcsetattr(self.0, libc::TCSADRAIN, &self.1) };
         if r == -1 {
-            Err::<(), _>(std::io::Error::last_os_error()).unwrap();
+            panic!("{:?}", std::io::Error::last_os_error());
         }
     }
 }
