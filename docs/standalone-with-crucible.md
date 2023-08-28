@@ -26,26 +26,31 @@ TODO: flesh out more of these differences, and maybe capture them in a
 higher-level README.
 
 ## Requirements
+### Building `propolis-standalone`
+- Clone this repository on an illumos box (e.g. `atrium`)
+- In that folder, run
+  `cargo build --release -ppropolis-standalone --features=crucible`
+- This will produce a `propolis-standalone` binary in `target/release/`
+- Copy this binary to your target Gimlet
 
-TODO: document the following
+### Building `crucible`
+- Clone [`oxidecomputer/crucible`](https://github.com/oxidecomputer/crucible) on
+  an illumos box (e.g. `atrium`)
+- In that folder, run `cargo build --release -pcrucible-downstairs -pdsc`
+- This will produce `crucible-downstairs` and `dsc` binaries in `target/release`
+- Copy those files to your target Gimlet
 
-- How to build each of propolis and crucible
-- Assuming we are running on bench gimlets, which files to copy
-  * propolis-standalone
-  * crucible release binaries
-    - target/release/dsc
-    - target/release/crucible-downstairs
+### VM stuff
+See the [`propolis-standalone` README](../bin/propolis-standalone/README.md)
+for details on how to get
   * VM Image file
   * VM OVMF file
-  * standalone.toml
+
+Copy those files to your target Gimlet.
 
 ## Instructions
 
-### Copy over the required files.
-
-TODO:
-
-### Onetime setup on the gimlet.
+### Onetime setup on the Gimlet.
 
 Setup for a virtual NIC to be used by the VM.
 
@@ -56,11 +61,44 @@ dladm create-vnic -t -l igb0 -m 02:08:20:ac:e9:16 vnic_prop0
 Setup of a zpool on three SSDs.
 
 Crucible downstairs runs on top of a filesystem (ZFS in our case).
-On your bench gimlet, you should select three NVMe disks, and create a zpool
+On your bench Gimlet, you should select three NVMe disks, and create a zpool
 on each of them.  You can use an existing zpool.
 
+If you're creating new zpools, start by running `format` to list disk names:
 ```
-TODO: zfs pool create commands
+BRM42220012 # format
+Searching for disks...done
+
+
+AVAILABLE DISK SELECTIONS:
+       0. c1t00A0750130082207d0 <NVMe-Micron_7300_MTFDHBG1T9TDF-95420260-1.75TB>
+          /pci@0,0/pci1de,fff9@1,3/pci1344,3100@0/blkdev@w00A0750130082207,0
+       1. c2t0014EE81000BC481d0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@0,0/pci1de,fff9@3,2/pci1b96,0@0/blkdev@w0014EE81000BC481,0
+       2. c3t0014EE81000BC783d0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@0,0/pci1de,fff9@3,3/pci1b96,0@0/blkdev@w0014EE81000BC783,0
+       3. c4t0014EE81000BC78Fd0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@0,0/pci1de,fff9@3,4/pci1b96,0@0/blkdev@w0014EE81000BC78F,0
+       4. c5t0014EE81000BC37Dd0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@38,0/pci1de,fff9@1,2/pci1b96,0@0/blkdev@w0014EE81000BC37D,0
+       5. c6t0014EE81000BC28Ad0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@38,0/pci1de,fff9@1,3/pci1b96,0@0/blkdev@w0014EE81000BC28A,0
+       6. c7t00A0750130082248d0 <NVMe-Micron_7300_MTFDHBG1T9TDF-95420260-1.75TB>
+          /pci@38,0/pci1de,fff9@3,3/pci1344,3100@0/blkdev@w00A0750130082248,0
+       7. c8t0014EE81000BC39Bd0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@ab,0/pci1de,fff9@1,1/pci1b96,0@0/blkdev@w0014EE81000BC39B,0
+       8. c9t0014EE81000BC3C8d0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@ab,0/pci1de,fff9@1,2/pci1b96,0@0/blkdev@w0014EE81000BC3C8,0
+       9. c10t0014EE81000BC4CCd0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@ab,0/pci1de,fff9@1,3/pci1b96,0@0/blkdev@w0014EE81000BC4CC,0
+      10. c11t0014EE81000BC786d0 <NVMe-WUS4C6432DSP3X3-R2210000-2.91TB>
+          /pci@ab,0/pci1de,fff9@1,4/pci1b96,0@0/blkdev@w0014EE81000BC786,0`
+Specify disk (enter its number): ^C
+```
+
+Then, create zpools with your desired serial names, e.g.
+```
+zpool create -f -o ashift=12 -O atime=off -m /pool/disk0 cru0 c1t00A0750130082207d0
 ```
 
 On each zpool, create a directory where the crucible downstairs will live:
@@ -102,6 +140,9 @@ For 4096 byte blocks, 16384 is the extent size.
   --region-dir /pool/disk2/region
 ```
 
+(modify the `dsc` and `crucible-downstairs` paths based on where you put those
+binaries)
+
 ### Run the three downstairs
 
 Once the regions are created, you can start the three downstairs using the
@@ -115,10 +156,12 @@ Once the regions are created, you can start the three downstairs using the
   --region-dir /pool/disk2/region
 ```
 
-### Start propolis-standalone
+### Start `propolis-standalone`
 
-standalone toml example
-This example file assumes you have used the above settings for block
+To start `propolis-standalone`, you'll need a configuration file.  The specifics
+will depend on file paths, image type, etc.
+
+Here's an example TOML file, assuming you have used the above settings for block
 size, extent size, and extent count.
 
 ```toml
