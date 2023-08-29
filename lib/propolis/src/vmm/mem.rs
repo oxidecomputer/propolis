@@ -21,6 +21,7 @@ use crate::vmm::VmmHdl;
 
 bitflags! {
     /// Bitflags representing memory protections.
+    #[derive(Debug, Copy, Clone)]
     pub struct Prot: u8 {
         const NONE = 0;
         const READ = libc::PROT_READ as u8;

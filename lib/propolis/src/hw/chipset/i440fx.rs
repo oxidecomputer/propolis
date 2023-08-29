@@ -684,19 +684,19 @@ lazy_static! {
     };
 }
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Copy, Clone)]
     struct PmSts: u16 {
         const PWRBTN_STS = 1 << 8;
     }
 }
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Copy, Clone)]
     struct PmEn: u16 {
         const PWRBTN_EN = 1 << 8;
     }
 }
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Copy, Clone)]
     struct PmCntrl: u16 {
         const SCI_EN = 1;
         const SUS_TYP = 0b111 << 10;

@@ -11,6 +11,7 @@ pub const LEN_CFG_STD: usize = 0x40;
 pub const LEN_CFG_ECAM: usize = 0x1000;
 
 bitflags! {
+    #[derive(Copy, Clone)]
     pub struct RegCmd: u16 {
     const IO_EN = 1 << 0;
     const MMIO_EN = 1 << 1;

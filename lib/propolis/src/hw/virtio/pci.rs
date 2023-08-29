@@ -25,7 +25,7 @@ const VIRTIO_PCI_ISR_QUEUE: u8 = 1 << 0;
 const VIRTIO_PCI_ISR_CFG: u8 = 1 << 1;
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, PartialEq)]
     pub struct Status: u8 {
         const RESET = 0;
         const ACK = 1;
