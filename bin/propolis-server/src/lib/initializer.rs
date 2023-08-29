@@ -547,8 +547,12 @@ impl<'a> MachineInitializer<'a> {
             return Ok(());
         }
 
-        let ports: Vec<&instance_spec::components::devices::SoftNpuPort> =
+        let mut ports: Vec<&instance_spec::components::devices::SoftNpuPort> =
             self.spec.devices.softnpu_ports.values().collect();
+
+        // SoftNpu ports are named <topology>_<node>_vnic<N> by falcon, where
+        // <N> indicates the intended order.
+        ports.sort_by_key(|p| &p.name);
 
         let mut data_links: Vec<String> = Vec::new();
         for x in &ports {
