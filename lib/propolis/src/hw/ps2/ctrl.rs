@@ -207,7 +207,7 @@ bitflags! {
 
 bitflags! {
     /// Controller Output Port
-    #[derive(Default)]
+    #[derive(Default, Copy, Clone)]
     pub struct CtrlOutPort: u8 {
         // bit 0: system reset
         // should always be set to 1

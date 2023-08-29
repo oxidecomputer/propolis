@@ -22,7 +22,7 @@ pub struct RegMap<ID> {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     pub struct Flags: u8 {
         const DEFAULT = 0;
         const NO_READ_EXTEND = 0b00000001;
