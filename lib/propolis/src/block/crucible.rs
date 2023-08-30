@@ -26,15 +26,14 @@ pub struct CrucibleBackend {
     block_io: Arc<Volume>,
     scheduler: block::Scheduler,
 
-    read_only: bool,
-    block_size: u64,
-    sectors: u64,
+    info: block::DeviceInfo,
+    skip_flush: bool,
 }
 
 impl CrucibleBackend {
     pub fn create(
         request: VolumeConstructionRequest,
-        read_only: bool,
+        opts: block::BackendOpts,
         producer_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
@@ -43,7 +42,7 @@ impl CrucibleBackend {
         rt.block_on(async move {
             CrucibleBackend::_create(
                 request,
-                read_only,
+                opts,
                 producer_registry,
                 nexus_client,
                 log,
@@ -55,7 +54,7 @@ impl CrucibleBackend {
 
     async fn _create(
         request: VolumeConstructionRequest,
-        read_only: bool,
+        opts: block::BackendOpts,
         producer_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
@@ -116,9 +115,12 @@ impl CrucibleBackend {
             block_io: Arc::new(volume),
             scheduler: block::Scheduler::new(),
 
-            read_only,
-            block_size,
-            sectors,
+            info: block::DeviceInfo {
+                block_size: block_size as u32,
+                total_size: sectors,
+                read_only: opts.read_only.unwrap_or(false),
+            },
+            skip_flush: opts.skip_flush.unwrap_or(false),
         }))
     }
 
@@ -183,11 +185,7 @@ impl CrucibleBackend {
 
 impl block::Backend for CrucibleBackend {
     fn info(&self) -> DeviceInfo {
-        DeviceInfo {
-            block_size: self.block_size as u32,
-            total_size: self.sectors,
-            writable: !self.read_only,
-        }
+        self.info
     }
 
     fn process(&self, _req: &block::Request, _mem: &MemCtx) -> block::Result {
@@ -202,7 +200,8 @@ impl block::Backend for CrucibleBackend {
 
         for _n in 0..worker_count {
             let bdev = self.block_io.clone();
-            let ro = self.read_only;
+            let read_only = self.info.read_only;
+            let skip_flush = self.skip_flush;
             let mut worker = self.scheduler.worker();
             tokio::spawn(async move {
                 loop {
@@ -211,7 +210,8 @@ impl block::Backend for CrucibleBackend {
                         Some((req, mguard)) => {
                             match process_request(
                                 bdev.as_ref(),
-                                ro,
+                                read_only,
+                                skip_flush,
                                 req,
                                 &mguard,
                             )
@@ -273,6 +273,7 @@ pub enum Error {
 async fn process_request(
     block: &(dyn BlockIO + Send + Sync),
     read_only: bool,
+    skip_flush: bool,
     req: &block::Request,
     mem: &MemCtx,
 ) -> Result<(), Error> {
@@ -325,8 +326,10 @@ async fn process_request(
             let _ = block.write(offset, crucible::Bytes::from(vec)).await?;
         }
         block::Operation::Flush => {
-            // Send flush to crucible
-            let _ = block.flush(None).await?;
+            if !skip_flush {
+                // Send flush to crucible
+                let _ = block.flush(None).await?;
+            }
         }
     }
     Ok(())

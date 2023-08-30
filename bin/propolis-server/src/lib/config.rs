@@ -26,6 +26,11 @@ fn blockdev_backend(
     dev: &BlockDevice,
     log: slog::Logger,
 ) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError> {
+    let opts = propolis::block::BackendOpts {
+        block_size: dev.opts.block_size,
+        read_only: dev.opts.read_only,
+        skip_flush: dev.opts.skip_flush,
+    };
     match &dev.bdtype as &str {
         "file" => {
             let path = dev
@@ -45,17 +50,9 @@ fn blockdev_backend(
                     )
                 })?;
 
-            let readonly = {
-                match dev.options.get("readonly") {
-                    Some(toml::Value::Boolean(read_only)) => Some(*read_only),
-                    Some(toml::Value::String(v)) => v.parse().ok(),
-                    _ => None,
-                }
-            }
-            .unwrap_or(false);
             let nworkers = NonZeroUsize::new(8).unwrap();
             let be = propolis::block::FileBackend::create(
-                path, readonly, nworkers, log,
+                path, opts, nworkers, log,
             )?;
             let child =
                 inventory::ChildRegister::new(&be, Some(path.to_string()));

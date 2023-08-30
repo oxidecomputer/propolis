@@ -23,16 +23,15 @@ pub struct FileBackend {
     driver: block::Driver,
     log: slog::Logger,
 
-    read_only: bool,
-    block_size: usize,
-    sectors: usize,
+    info: block::DeviceInfo,
+    skip_flush: bool,
 }
 
 impl FileBackend {
     /// Creates a new block device from a device at `path`.
     pub fn create(
         path: impl AsRef<Path>,
-        readonly: bool,
+        opts: block::BackendOpts,
         worker_count: NonZeroUsize,
         log: slog::Logger,
     ) -> Result<Arc<Self>> {
@@ -45,10 +44,19 @@ impl FileBackend {
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;
-        let read_only = readonly || meta.permissions().readonly();
+        let read_only = match (opts.read_only, meta.permissions().readonly()) {
+            (Some(false), true) => Err(Error::new(
+                ErrorKind::Other,
+                "writeable backend with read-only file not allowed",
+            )),
+            (Some(ro), false) => Ok(ro),
+            (_, file_ro) => Ok(file_ro),
+        }?;
 
         let fp = OpenOptions::new().read(true).write(!read_only).open(p)?;
-        let len = fp.metadata().unwrap().len() as usize;
+        let len = fp.metadata().unwrap().len();
+        // TODO: attempt to query blocksize from underlying file/zvol
+        let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
         Ok(Arc::new_cyclic(|me| Self {
             fp: Arc::new(fp),
@@ -59,9 +67,12 @@ impl FileBackend {
             ),
             log,
 
-            read_only,
-            block_size: 512,
-            sectors: len / 512,
+            skip_flush: opts.skip_flush.unwrap_or(false),
+            info: block::DeviceInfo {
+                block_size,
+                total_size: len / block_size as u64,
+                read_only,
+            },
         }))
     }
     fn process_request(
@@ -84,7 +95,7 @@ impl FileBackend {
                 }
             }
             block::Operation::Write(off) => {
-                if self.read_only {
+                if self.info.read_only {
                     return Err(Error::new(
                         ErrorKind::PermissionDenied,
                         "backend is read-only",
@@ -104,7 +115,9 @@ impl FileBackend {
                 }
             }
             block::Operation::Flush => {
-                self.fp.sync_data()?;
+                if !self.skip_flush {
+                    self.fp.sync_data()?;
+                }
             }
         }
         Ok(())
@@ -113,11 +126,7 @@ impl FileBackend {
 
 impl block::Backend for FileBackend {
     fn info(&self) -> DeviceInfo {
-        DeviceInfo {
-            block_size: self.block_size as u32,
-            total_size: self.sectors as u64,
-            writable: !self.read_only,
-        }
+        self.info
     }
 
     fn attach(&self, dev: Arc<dyn block::Device>) -> Result<()> {

@@ -87,7 +87,7 @@ impl PciNvme {
                 let cmd = NvmCmd::parse(sub);
 
                 match cmd {
-                    Ok(NvmCmd::Write(cmd)) if !state.binfo.writable => {
+                    Ok(NvmCmd::Write(cmd)) if state.binfo.read_only => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
                         let size = state.nlb_to_size(cmd.nlb as usize) as u64;
                         probes::nvme_write_enqueue!(|| (

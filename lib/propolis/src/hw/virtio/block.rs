@@ -206,7 +206,7 @@ impl VirtioDevice for PciVirtioBlock {
         feat |= VIRTIO_BLK_F_SEG_MAX;
         feat |= VIRTIO_BLK_F_FLUSH;
 
-        if !self.info.writable {
+        if self.info.read_only {
             feat |= VIRTIO_BLK_F_RO;
         }
         feat

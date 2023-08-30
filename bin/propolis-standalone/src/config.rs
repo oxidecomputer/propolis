@@ -20,14 +20,11 @@ pub use propolis_standalone_config::{Config, SnapshotTag};
 #[derive(Deserialize)]
 struct FileConfig {
     path: String,
-    readonly: Option<bool>,
     workers: Option<usize>,
 }
 #[derive(Deserialize)]
 struct MemAsyncConfig {
-    size: usize,
-    block_size: usize,
-    readonly: Option<bool>,
+    size: u64,
     workers: Option<usize>,
 }
 
@@ -49,6 +46,11 @@ pub fn block_backend(
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
     let be = config.block_devs.get(backend_name).unwrap();
+    let opts = block::BackendOpts {
+        block_size: be.block_opts.block_size,
+        read_only: be.block_opts.read_only,
+        skip_flush: be.block_opts.skip_flush,
+    };
 
     match &be.bdtype as &str {
         "file" => {
@@ -56,7 +58,7 @@ pub fn block_backend(
 
             let be = block::FileBackend::create(
                 &parsed.path,
-                parsed.readonly.unwrap_or(false),
+                opts,
                 NonZeroUsize::new(
                     parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
                 )
@@ -68,14 +70,13 @@ pub fn block_backend(
             let creg = ChildRegister::new(&be, Some(parsed.path));
             (be, creg)
         }
-        "crucible" => create_crucible_backend(log, be),
+        "crucible" => create_crucible_backend(be, opts, log),
         "mem-async" => {
             let parsed: MemAsyncConfig = opt_deser(&be.options).unwrap();
 
             let be = block::MemAsyncBackend::create(
                 parsed.size,
-                parsed.readonly.unwrap_or(false),
-                parsed.block_size,
+                opts,
                 NonZeroUsize::new(
                     parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
                 )
@@ -120,11 +121,13 @@ pub fn parse_bdf(v: &str) -> Option<Bdf> {
 
 #[cfg(feature = "crucible")]
 fn create_crucible_backend(
-    log: &slog::Logger,
     be: &propolis_standalone_config::BlockDevice,
+    opts: block::BackendOpts,
+    log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
     use slog::info;
     use uuid::Uuid;
+
     info!(
         log,
         "Building a crucible VolumeConstructionRequest from options {:?}",
@@ -135,8 +138,8 @@ fn create_crucible_backend(
     // what block size the downstairs is using. A lot of things
     // default to 512, but it's best not to assume it'll always be
     // that way.
-    let block_size =
-        be.options.get("block_size").unwrap().as_integer().unwrap() as u64;
+    let block_size = opts.block_size.unwrap() as u64;
+    let read_only = opts.read_only.unwrap_or(false);
 
     let blocks_per_extent =
         be.options.get("blocks_per_extent").unwrap().as_integer().unwrap()
@@ -196,12 +199,6 @@ fn create_crucible_backend(
         .get("control_addr")
         .map(|target_val| target_val.as_str().unwrap().parse().unwrap());
 
-    let read_only = be
-        .options
-        .get("read_only")
-        .map(|x| x.as_bool().unwrap())
-        .unwrap_or(false);
-
     // This needs to increase monotonically with each successive
     // connection to the downstairs. As a hack, you can set it to
     // the current system time, and this will usually give us a newer
@@ -230,9 +227,8 @@ fn create_crucible_backend(
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
-    let be =
-        block::CrucibleBackend::create(req, read_only, None, None, log.clone())
-            .unwrap();
+    let be = block::CrucibleBackend::create(req, opts, None, None, log.clone())
+        .unwrap();
     let creg =
         ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
     (be, creg)
@@ -240,8 +236,9 @@ fn create_crucible_backend(
 
 #[cfg(not(feature = "crucible"))]
 fn create_crucible_backend(
-    _log: &slog::Logger,
     _be: &propolis_standalone_config::BlockDevice,
+    _opts: block::BackendOpts,
+    _log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
     panic!(
         "Rebuild propolis-standalone with 'crucible' feature enabled in \

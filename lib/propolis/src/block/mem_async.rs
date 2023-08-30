@@ -7,7 +7,6 @@ use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use super::DeviceInfo;
 use crate::block;
 use crate::inventory::Entity;
 use crate::vmm::MemCtx;
@@ -23,33 +22,20 @@ pub struct MemAsyncBackend {
     workers: NonZeroUsize,
     scheduler: block::Scheduler,
 
-    read_only: bool,
-    block_size: usize,
-    sectors: usize,
+    info: block::DeviceInfo,
 }
 
 impl MemAsyncBackend {
     pub fn create(
-        size: usize,
-        read_only: bool,
-        block_size: usize,
+        size: u64,
+        opts: block::BackendOpts,
         workers: NonZeroUsize,
     ) -> Result<Arc<Self>> {
-        match block_size {
-            512 | 4096 => {
-                // ok
-            }
-            _ => {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    format!("unsupported block size {}!", block_size,),
-                ));
-            }
-        }
+        let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
         if size == 0 {
             return Err(Error::new(ErrorKind::Other, "size cannot be 0"));
-        } else if (size % block_size) != 0 {
+        } else if (size % block_size as u64) != 0 {
             return Err(Error::new(
                 ErrorKind::Other,
                 format!(
@@ -59,7 +45,7 @@ impl MemAsyncBackend {
             ));
         }
 
-        let seg = MmapSeg::new(size)?;
+        let seg = MmapSeg::new(size as usize)?;
 
         Ok(Arc::new(Self {
             seg: Arc::new(seg),
@@ -67,9 +53,11 @@ impl MemAsyncBackend {
             workers,
             scheduler: block::Scheduler::new(),
 
-            read_only,
-            block_size,
-            sectors: size / block_size,
+            info: block::DeviceInfo {
+                block_size,
+                total_size: size / block_size as u64,
+                read_only: opts.read_only.unwrap_or(false),
+            },
         }))
     }
 }
@@ -173,12 +161,8 @@ unsafe impl Send for MmapSeg {}
 unsafe impl Sync for MmapSeg {}
 
 impl block::Backend for MemAsyncBackend {
-    fn info(&self) -> DeviceInfo {
-        DeviceInfo {
-            block_size: self.block_size as u32,
-            total_size: self.sectors as u64,
-            writable: !self.read_only,
-        }
+    fn info(&self) -> block::DeviceInfo {
+        self.info
     }
 
     fn attach(&self, dev: Arc<dyn block::Device>) -> Result<()> {
@@ -186,7 +170,7 @@ impl block::Backend for MemAsyncBackend {
 
         for _n in 0..self.workers.get() {
             let seg = self.seg.clone();
-            let ro = self.read_only;
+            let ro = self.info.read_only;
             let mut worker = self.scheduler.worker();
             tokio::spawn(async move {
                 loop {

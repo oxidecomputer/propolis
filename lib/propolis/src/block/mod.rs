@@ -35,6 +35,10 @@ pub use mem_async::MemAsyncBackend;
 pub type ByteOffset = usize;
 pub type ByteLen = usize;
 
+/// When `block_size` is not specified in [BackendOpts], and the backend itself
+/// is not choosing a block size, a default of 512B is used.
+pub const DEFAULT_BLOCK_SIZE: u32 = 512;
+
 /// Type of operations which may be issued to a virtual block device.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Operation {
@@ -168,8 +172,26 @@ pub struct DeviceInfo {
     pub block_size: u32,
     /// Device size in blocks (see above)
     pub total_size: u64,
-    /// Is the device writable
-    pub writable: bool,
+    /// Is the device read-only
+    pub read_only: bool,
+}
+
+/// Options to control behavior of block backend.
+///
+/// Values for omitted fields will be determined by the backend, likely by
+/// querying the underlying resource.  If values provided conflict with said
+/// resource, the backend may fail its initialization with an error.
+#[derive(Default, Copy, Clone)]
+pub struct BackendOpts {
+    /// Size (in bytes) per block
+    pub block_size: Option<u32>,
+
+    /// Disallow writes (returning errors if attempted) and report a
+    /// non-writable device (if frontend is capable)
+    pub read_only: Option<bool>,
+
+    /// Force flush requests to be skipped (turned into no-op)
+    pub skip_flush: Option<bool>,
 }
 
 /// API to access a virtualized block device.

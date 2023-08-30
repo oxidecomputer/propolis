@@ -6,7 +6,6 @@ use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, Weak};
 
-use super::DeviceInfo;
 use crate::block;
 use crate::inventory::Entity;
 use crate::vmm::{MemCtx, SubMapping};
@@ -15,36 +14,24 @@ pub struct InMemoryBackend {
     bytes: Mutex<Vec<u8>>,
     driver: block::Driver,
 
-    read_only: bool,
-    block_size: usize,
-    sectors: usize,
+    info: block::DeviceInfo,
 }
 
 impl InMemoryBackend {
     pub fn create(
         bytes: Vec<u8>,
-        read_only: bool,
-        block_size: usize,
+        opts: block::BackendOpts,
     ) -> Result<Arc<Self>> {
-        match block_size {
-            512 | 4096 => {
-                // ok
-            }
-            _ => {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    format!("unsupported block size {}!", block_size,),
-                ));
-            }
-        }
+        let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
         let len = bytes.len();
-
-        if (len % block_size) != 0 {
-            return Err(std::io::Error::new(
+        if len == 0 {
+            return Err(Error::new(ErrorKind::Other, "size cannot be 0"));
+        } else if (len % block_size as usize) != 0 {
+            return Err(Error::new(
                 ErrorKind::Other,
                 format!(
-                    "in-memory bytes length {} not multiple of block size {}!",
+                    "size {} not multiple of block size {}!",
                     len, block_size,
                 ),
             ));
@@ -59,9 +46,11 @@ impl InMemoryBackend {
                 NonZeroUsize::new(1).unwrap(),
             ),
 
-            read_only,
-            block_size,
-            sectors: len / block_size,
+            info: block::DeviceInfo {
+                block_size,
+                total_size: len as u64 / block_size as u64,
+                read_only: opts.read_only.unwrap_or(false),
+            },
         }))
     }
 
@@ -80,7 +69,7 @@ impl InMemoryBackend {
                 process_read_request(&bytes, off as u64, req.len(), &maps)?;
             }
             block::Operation::Write(off) => {
-                if self.read_only {
+                if self.info.read_only {
                     return Err(Error::new(
                         ErrorKind::PermissionDenied,
                         "backend is read-only",
@@ -109,12 +98,8 @@ impl InMemoryBackend {
 }
 
 impl block::Backend for InMemoryBackend {
-    fn info(&self) -> DeviceInfo {
-        DeviceInfo {
-            block_size: self.block_size as u32,
-            total_size: self.sectors as u64,
-            writable: !self.read_only,
-        }
+    fn info(&self) -> block::DeviceInfo {
+        self.info
     }
 
     fn attach(&self, dev: Arc<dyn block::Device>) -> Result<()> {

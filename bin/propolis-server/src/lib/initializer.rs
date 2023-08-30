@@ -304,7 +304,10 @@ impl<'a> MachineInitializer<'a> {
 
                 let be = propolis::block::CrucibleBackend::create(
                     vcr,
-                    spec.readonly,
+                    propolis::block::BackendOpts {
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
                     self.producer_registry.clone(),
                     nexus_client.clone(),
                     self.log.new(
@@ -327,7 +330,10 @@ impl<'a> MachineInitializer<'a> {
                 let nworkers = NonZeroUsize::new(8).unwrap();
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
-                    spec.readonly,
+                    propolis::block::BackendOpts {
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
                     nworkers,
                     self.log.new(
                         slog::o!("component" => format!("file-{}", spec.path)),
@@ -359,8 +365,11 @@ impl<'a> MachineInitializer<'a> {
 
                 let be = propolis::block::InMemoryBackend::create(
                     bytes,
-                    spec.readonly,
-                    512,
+                    propolis::block::BackendOpts {
+                        block_size: Some(512),
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
                 )?;
 
                 let child = inventory::ChildRegister::new(

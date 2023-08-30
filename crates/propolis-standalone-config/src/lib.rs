@@ -48,9 +48,19 @@ pub struct Device {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlockOpts {
+    pub block_size: Option<u32>,
+    pub read_only: Option<bool>,
+    pub skip_flush: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BlockDevice {
     #[serde(default, rename = "type")]
     pub bdtype: String,
+
+    #[serde(flatten)]
+    pub block_opts: BlockOpts,
 
     #[serde(flatten, default)]
     pub options: BTreeMap<String, toml::Value>,
