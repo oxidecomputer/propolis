@@ -247,15 +247,7 @@ impl Inner {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    fn prep() -> (Arc<PioBus>, Arc<MmioBus>, MemAccessor, MsiAccessor) {
-        (
-            Arc::new(PioBus::new()),
-            Arc::new(MmioBus::new(u32::MAX as usize)),
-            MemAccessor::new_orphan(),
-            MsiAccessor::new_orphan(),
-        )
-    }
+    use crate::hw::pci::test::Scaffold;
 
     #[derive(Default)]
     struct TestDev {
@@ -277,8 +269,8 @@ mod test {
 
     #[test]
     fn empty() {
-        let (pio, mmio, mem, msi) = prep();
-        let bus = Bus::new(&pio, &mmio, mem, msi);
+        let scaffold = Scaffold::new();
+        let bus = scaffold.create_bus();
 
         for slot in 0..31 {
             for func in 0..7 {
@@ -294,8 +286,8 @@ mod test {
 
     #[test]
     fn set_multifunc() {
-        let (pio, mmio, mem, msi) = prep();
-        let bus = Bus::new(&pio, &mmio, mem, msi);
+        let scaffold = Scaffold::new();
+        let bus = scaffold.create_bus();
 
         let first = Arc::new(TestDev::default());
         let other_slot = Arc::new(TestDev::default());

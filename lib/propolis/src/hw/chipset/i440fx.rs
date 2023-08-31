@@ -894,10 +894,11 @@ impl Piix3PM {
                         .bits(),
                 );
             }
-            PmCfg::DevResD
-            | PmCfg::DevResE
+            PmCfg::DevResD | PmCfg::DevResG => {
+                ro.write_u16(0);
+            }
+            PmCfg::DevResE
             | PmCfg::DevResF
-            | PmCfg::DevResG
             | PmCfg::DevResH
             | PmCfg::DevResI
             | PmCfg::DevResJ => {
@@ -1094,5 +1095,85 @@ mod migrate {
         fn id() -> SchemaId {
             ("piix3-pm", 1)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::hw::pci::device::test::*;
+    use crate::hw::pci::test::Scaffold;
+    use crate::hw::pci::Endpoint;
+    use crate::intr_pins::NoOpPin;
+    use crate::vmm::VmmHdl;
+
+    use slog::{Discard, Logger};
+
+    #[test]
+    fn hb_pci_cfg_read() {
+        let scaffold = Scaffold::new();
+
+        let hb = Piix4HostBridge::create();
+        let _bus = setup_cfg(&scaffold, hb.clone());
+
+        cfg_read(hb.as_ref() as &dyn Endpoint);
+    }
+
+    #[test]
+    fn hb_pci_cfg_write() {
+        let scaffold = Scaffold::new();
+
+        let hb = Piix4HostBridge::create();
+        let _bus = setup_cfg(&scaffold, hb.clone());
+
+        cfg_write(hb.as_ref() as &dyn Endpoint);
+    }
+
+    #[test]
+    fn lpc_pci_cfg_read() {
+        let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
+        let scaffold = Scaffold::new();
+
+        let lpc = Piix3Lpc::create(IrqConfig::create(hdl));
+        let _bus = setup_cfg(&scaffold, lpc.clone());
+
+        cfg_read(lpc.as_ref() as &dyn Endpoint);
+    }
+
+    #[test]
+    fn lpc_pci_cfg_write() {
+        let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
+        let scaffold = Scaffold::new();
+
+        let lpc = Piix3Lpc::create(IrqConfig::create(hdl));
+        let _bus = setup_cfg(&scaffold, lpc.clone());
+
+        cfg_write(lpc.as_ref() as &dyn Endpoint);
+    }
+
+    #[test]
+    fn pm_pci_cfg_read() {
+        let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
+        let scaffold = Scaffold::new();
+        let log = Logger::root(Discard, slog::o!());
+        let power_pin = Arc::new(NoOpPin {});
+
+        let pm = Piix3PM::create(hdl, power_pin, log);
+        let _bus = setup_cfg(&scaffold, pm.clone());
+
+        cfg_read(pm.as_ref() as &dyn Endpoint);
+    }
+
+    #[test]
+    fn pm_pci_cfg_write() {
+        let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
+        let scaffold = Scaffold::new();
+        let log = Logger::root(Discard, slog::o!());
+        let power_pin = Arc::new(NoOpPin {});
+
+        let pm = Piix3PM::create(hdl, power_pin, log);
+        let _bus = setup_cfg(&scaffold, pm.clone());
+
+        cfg_write(pm.as_ref() as &dyn Endpoint);
     }
 }

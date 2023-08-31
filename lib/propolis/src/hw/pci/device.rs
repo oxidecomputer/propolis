@@ -1253,8 +1253,10 @@ pub mod migrate {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
+    use crate::hw::pci::test::Scaffold;
+    use crate::hw::pci::{Bus, BusLocation};
 
     #[test]
     #[should_panic]
@@ -1275,5 +1277,42 @@ mod test {
         // 4k for entries + 4k PBA
         let (_cfg, bar_size) = MsixCfg::new(256, BarN::BAR1);
         assert_eq!(bar_size, 8192);
+    }
+
+    pub(crate) fn setup_cfg(
+        scaffold: &Scaffold,
+        dev: Arc<dyn Endpoint>,
+    ) -> Bus {
+        let bus = scaffold.create_bus();
+        // just attach at slot 0 func 0
+        bus.attach(BusLocation::new(0, 0).unwrap(), dev, None);
+        bus
+    }
+
+    /// For a given [Device], perform reads of the entire PCI cfg space, 4-bytes
+    /// at a time.
+    pub(crate) fn cfg_read(dev: &dyn Endpoint) {
+        // Read the whole config space for the device, 4 bytes at a time
+        let mut buf = [0u8; 4];
+
+        for off in (0..=255).step_by(4) {
+            let mut op = ReadOp::from_buf(off, &mut buf[..]);
+            dev.cfg_rw(RWOp::Read(&mut op));
+        }
+    }
+
+    /// For a given [Device], perform writes (of all-1s) of the entire PCI cfg
+    /// space, 4-bytes at a time.
+    ///
+    /// The device is not expected to function well in the face of such abusive
+    /// writes, but it should not blow any assertions.
+    pub(crate) fn cfg_write(dev: &dyn Endpoint) {
+        // Read the whole config space for the device, 4 bytes at a time
+        let buf = [0xffu8; 4];
+
+        for off in (0..=255).step_by(4) {
+            let mut op = WriteOp::from_buf(off, &buf[..]);
+            dev.cfg_rw(RWOp::Write(&mut op));
+        }
     }
 }
