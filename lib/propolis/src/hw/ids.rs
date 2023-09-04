@@ -34,6 +34,9 @@ pub mod pci {
     /// PCI Device ID for the PIIX3 ISA Controller.
     pub const PIIX3_ISA_DEV_ID: u16 = 0x7000;
 
+    /// PCI Device ID for the PIIX3 IDE Controller.
+    pub const PIIX3_IDE_DEV_ID: u16 = 0x7010;
+
     /// PCI Device ID for the PIIX4 ACPI PM Controller.
     pub const PIIX4_PM_DEV_ID: u16 = 0x7113;
 
@@ -53,6 +56,9 @@ pub mod pci {
 
     /// PCI Subsystem Device ID for the Propolis Virtio Block device.
     pub const VIRTIO_BLOCK_SUB_DEV_ID: u16 = 0xfffa;
+
+    /// PCI Subsystem Device ID for the PIIX3 IDE Controller as emulated by propolis.
+    pub const PIIX3_IDE_SUB_DEV_ID: u16 = 0xfff9;
 
     // Propolis-specific Device IDs
 

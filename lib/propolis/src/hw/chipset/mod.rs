@@ -8,6 +8,7 @@ use crate::hw::pci::{Bdf, Endpoint};
 use crate::intr_pins::IntrPin;
 
 pub mod i440fx;
+mod piix3_ide;
 
 pub trait Chipset {
     fn pci_attach(&self, bdf: Bdf, dev: Arc<dyn Endpoint>);

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::common::*;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::chipset::Chipset;
+use crate::hw::chipset::piix3_ide::Piix3IdeCtrl;
 use crate::hw::ibmpc;
 use crate::hw::ids::pci::{
     PIIX3_ISA_DEV_ID, PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID,
@@ -32,6 +33,8 @@ const HB_DEV: u8 = 0;
 const HB_FUNC: u8 = 0;
 const LPC_DEV: u8 = 1;
 const LPC_FUNC: u8 = 0;
+const IDE_DEV: u8 = 1;
+const IDE_FUNC: u8 = 1;
 const PM_DEV: u8 = 1;
 const PM_FUNC: u8 = 3;
 
@@ -56,6 +59,7 @@ pub struct I440Fx {
 
     dev_hb: Arc<Piix4HostBridge>,
     dev_lpc: Arc<Piix3Lpc>,
+    dev_ide: Arc<Piix3IdeCtrl>,
     dev_pm: Arc<Piix3PM>,
     // TODO: could attach the PCI topology as part of chipset
     // acc_mem: MemAccessor,
@@ -87,6 +91,7 @@ impl I440Fx {
 
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
+            dev_ide: Piix3IdeCtrl::create(),
             dev_pm: Piix3PM::create(hdl, power_pin, log),
         });
 
@@ -124,6 +129,16 @@ impl I440Fx {
             piofn,
         )
         .unwrap();
+
+        //if opts.enable_ide {
+            this.pci_attach(
+                Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(),
+                this.dev_ide.clone(),
+            );
+
+            this.dev_ide.attach_pio(pio);
+            this.dev_ide.attach_irq(&*this);
+        //}
 
         if opts.enable_pcie {
             let mmio = &machine.bus_mmio;

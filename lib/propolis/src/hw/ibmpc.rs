@@ -15,12 +15,19 @@ pub const IRQ_COM4: u8 = 3;
 
 pub const PORT_FAST_A20: u16 = 0x92;
 pub const PORT_POST_CODE: u16 = 0x80;
-
 pub const LEN_FAST_A20: u16 = 1;
 pub const LEN_POST_CODE: u16 = 1;
 
 pub const PORT_PS2_DATA: u16 = 0x60;
 pub const PORT_PS2_CMD_STATUS: u16 = 0x64;
-
 pub const IRQ_PS2_PRI: u8 = 1;
 pub const IRQ_PS2_AUX: u8 = 12;
+
+pub const PORT_ATA0_IO: u16 = 0x1f0;
+pub const PORT_ATA1_IO: u16 = 0x170;
+pub const PORT_ATA0_CTRL: u16 = 0x3f0;
+pub const PORT_ATA1_CTRL: u16 = 0x370;
+pub const LEN_ATA_IO: u16 = 8;
+pub const LEN_ATA_CTRL: u16 = 2;
+pub const IRQ_ATA0: u8 = 14;
+pub const IRQ_ATA1: u8 = 15;

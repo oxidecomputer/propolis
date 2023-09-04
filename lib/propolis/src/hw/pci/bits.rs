@@ -55,6 +55,7 @@ pub const CLASS_MEMORY: u8 = 5;
 pub const CLASS_BRIDGE: u8 = 6;
 
 // Sub-classes under CLASS_STORAGE
+pub const SUBCLASS_STORAGE_IDE: u8 = 1;
 pub const SUBCLASS_STORAGE_NVM: u8 = 8;
 
 // Sub-classes under CLASS_BRIDGE
@@ -65,6 +66,10 @@ pub const SUBCLASS_BRIDGE_OTHER: u8 = 0x80;
 pub const HEADER_TYPE_DEVICE: u8 = 0b0;
 pub const HEADER_TYPE_BRIDGE: u8 = 0b1;
 pub const HEADER_TYPE_MULTIFUNC: u8 = 0b1000_0000;
+
+pub const PROGIF_IDE_LEGACY_MODE: u8 = 0x0;
+pub const PROGIF_IDE_NATIVE_MODE: u8 = 0xf;
+pub const PROGIF_IDE_NATIVE_MODE_WITH_DMA: u8 = 0x7f;
 
 // Programming Interfaces for SUBCLASS_STORAGE_NVM
 pub const PROGIF_ENTERPRISE_NVME: u8 = 2;
