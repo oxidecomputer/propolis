@@ -23,11 +23,11 @@ pub const PORT_PS2_CMD_STATUS: u16 = 0x64;
 pub const IRQ_PS2_PRI: u8 = 1;
 pub const IRQ_PS2_AUX: u8 = 12;
 
-pub const PORT_ATA0_IO: u16 = 0x1f0;
-pub const PORT_ATA1_IO: u16 = 0x170;
-pub const PORT_ATA0_CTRL: u16 = 0x3f0;
-pub const PORT_ATA1_CTRL: u16 = 0x370;
-pub const LEN_ATA_IO: u16 = 8;
+pub const PORT_ATA0_CMD: u16 = 0x1f0;
+pub const PORT_ATA1_CMD: u16 = 0x170;
+pub const PORT_ATA0_CTRL: u16 = 0x3f6;
+pub const PORT_ATA1_CTRL: u16 = 0x376;
+pub const LEN_ATA_CMD: u16 = 8;
 pub const LEN_ATA_CTRL: u16 = 2;
 pub const IRQ_ATA0: u8 = 14;
 pub const IRQ_ATA1: u8 = 15;

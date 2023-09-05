@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use crate::hw::bhyve::BhyvePmTimer;
-use crate::hw::chipset::Chipset;
 use crate::hw::chipset::piix3_ide::Piix3IdeCtrl;
+use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::hw::ids::pci::{
     PIIX3_ISA_DEV_ID, PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID,
@@ -131,13 +131,13 @@ impl I440Fx {
         .unwrap();
 
         //if opts.enable_ide {
-            this.pci_attach(
-                Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(),
-                this.dev_ide.clone(),
-            );
+        this.pci_attach(
+            Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(),
+            this.dev_ide.clone(),
+        );
 
-            this.dev_ide.attach_pio(pio);
-            this.dev_ide.attach_irq(&*this);
+        this.dev_ide.attach_pio(pio);
+        this.dev_ide.attach_irq(&*this);
         //}
 
         if opts.enable_pcie {
