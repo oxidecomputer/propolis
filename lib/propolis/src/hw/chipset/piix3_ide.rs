@@ -85,14 +85,15 @@ impl Piix3IdeCtrl {
     }
 
     fn pio_rw(&self, port: u16, rwo: RWOp) {
-        let ata = self.ata_state.lock().unwrap();
+        let mut ata = self.ata_state.lock().unwrap();
 
         // Decode the ATA channel and request based on the port, operation
         // offset and selected device type. Then issue the request with the
         // ATA controller and respond to read operations.
         if port == ibmpc::PORT_ATA0_CMD || port == ibmpc::PORT_ATA1_CMD {
             let channel = if port == ibmpc::PORT_ATA0_CMD { 0 } else { 1 };
-            let device_type = ata.selected_device_type(channel);
+            let device_type =
+                ata.selected_device_type(channel).unwrap_or(DeviceType::Ata);
 
             match rwo {
                 RWOp::Read(op) => {
@@ -112,8 +113,7 @@ impl Piix3IdeCtrl {
                             (5, DeviceType::Atapi) => {
                                 CommandRead::ByteCountHigh
                             }
-                            (6, DeviceType::Ata) => CommandRead::Device,
-                            (6, DeviceType::Atapi) => CommandRead::DeviceSelect,
+                            (6, _) => CommandRead::Device,
                             (7, _) => CommandRead::Status,
                             (_, _) => CommandRead::Invalid(op.offset()),
                         },
@@ -125,7 +125,11 @@ impl Piix3IdeCtrl {
                         op.write_u16(response)
                     }
                 }
-                RWOp::Write(op) => ata.write_command_block(
+                RWOp::Write(op) =>
+                    let
+
+
+                ata.write_command_block(
                     channel,
                     match (op.offset(), device_type) {
                         (0, _) => CommandWrite::Data(op.read_u16()),
@@ -148,12 +152,7 @@ impl Piix3IdeCtrl {
                         (5, DeviceType::Atapi) => {
                             CommandWrite::ByteCountHigh(op.read_u8())
                         }
-                        (6, DeviceType::Ata) => {
-                            CommandWrite::Device(op.read_u8())
-                        }
-                        (6, DeviceType::Atapi) => {
-                            CommandWrite::DeviceSelect(op.read_u8())
-                        }
+                        (6, _) => CommandWrite::Device(Registers::Device::from_u8(op.read_u8()))
                         (7, _) => CommandWrite::Command(op.read_u8()),
                         (_, _) => CommandWrite::Invalid(op.offset()),
                     },
@@ -162,7 +161,8 @@ impl Piix3IdeCtrl {
         } else if port == ibmpc::PORT_ATA0_CTRL || port == ibmpc::PORT_ATA1_CTRL
         {
             let channel = if port == ibmpc::PORT_ATA0_CTRL { 0 } else { 1 };
-            let device_type = ata.selected_device_type(channel);
+            let device_type =
+                ata.selected_device_type(channel).unwrap_or(DeviceType::Ata);
 
             match rwo {
                 RWOp::Read(op) => {
@@ -190,6 +190,10 @@ impl Piix3IdeCtrl {
                 ),
             }
         }
+    }
+
+    fn parse_pio_command_block_read(rwo: RWOp) {
+
     }
 }
 
