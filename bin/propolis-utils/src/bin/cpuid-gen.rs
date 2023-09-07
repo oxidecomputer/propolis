@@ -39,6 +39,7 @@ struct Cpuid {
     edx: u32,
 }
 impl Cpuid {
+    #[allow(unused)]
     const fn is_authentic_amd(&self) -> bool {
         self.ebx == 0x68747541
             && self.ecx == 0x444d4163
@@ -63,14 +64,12 @@ impl From<&bhyve_api::vm_legacy_cpuid> for Cpuid {
 enum CpuidKey {
     Leaf(u32),
     SubLeaf(u32, u32),
-    LeafDefault(u32),
 }
 impl CpuidKey {
     const fn eax(&self) -> u32 {
         match self {
             CpuidKey::Leaf(eax) => *eax,
             CpuidKey::SubLeaf(eax, _) => *eax,
-            CpuidKey::LeafDefault(eax) => *eax,
         }
     }
 }
@@ -81,12 +80,8 @@ impl Ord for CpuidKey {
         }
         match self.eax().cmp(&other.eax()) {
             Ordering::Equal => match (self, other) {
-                (CpuidKey::Leaf(_), _) | (_, CpuidKey::LeafDefault(_)) => {
-                    Ordering::Greater
-                }
-                (CpuidKey::LeafDefault(_), _) | (_, CpuidKey::Leaf(_)) => {
-                    Ordering::Less
-                }
+                (CpuidKey::Leaf(_), _) => Ordering::Less,
+                (_, CpuidKey::Leaf(_)) => Ordering::Greater,
                 (CpuidKey::SubLeaf(_, ecx), CpuidKey::SubLeaf(_, oecx)) => {
                     ecx.cmp(oecx)
                 }
@@ -147,7 +142,6 @@ fn collect_cpuid(
     let mut results: BTreeMap<CpuidKey, Cpuid> = BTreeMap::new();
 
     let mut xsave_supported = false;
-    let is_amd = std.is_authentic_amd();
 
     for eax in 0..=std.eax {
         let data = query_cpuid(eax, 0)?;
@@ -169,13 +163,12 @@ fn collect_cpuid(
                 // TODO: handle more sub-leaf entries?
 
                 // Default entry for invalid sub-leaf is all-zeroes
-                results.insert(CpuidKey::LeafDefault(eax), Cpuid::default());
+                results.insert(CpuidKey::Leaf(eax), Cpuid::default());
             }
-            0xb if is_amd => {
+            0xb => {
                 // Extended topo
-
-                // TODO: AMD_specifc handling
-                results.insert(CpuidKey::Leaf(eax), data);
+                results.insert(CpuidKey::SubLeaf(eax, 0), data);
+                results.insert(CpuidKey::SubLeaf(eax, 1), query_cpuid(eax, 1)?);
             }
             0xd if xsave_supported => {
                 // XSAVE
@@ -194,7 +187,7 @@ fn collect_cpuid(
                     results.insert(CpuidKey::SubLeaf(eax, ecx), data);
                 }
                 // Default entry for invalid sub-leaf is all-zeroes
-                results.insert(CpuidKey::LeafDefault(eax), Cpuid::default());
+                results.insert(CpuidKey::Leaf(eax), Cpuid::default());
             }
             _ => {
                 results.insert(CpuidKey::Leaf(eax), data);
@@ -208,7 +201,24 @@ fn collect_cpuid(
         if zero_elide && data.all_zeros() {
             continue;
         }
-        results.insert(CpuidKey::Leaf(eax), data);
+        match eax {
+            0x8000001d => {
+                // AMD cache topo
+                for ecx in 0..u32::MAX {
+                    let data = query_cpuid(eax, ecx)?;
+                    // cache type of none indicates no more entries
+                    if data.eax & 0b11111 == 0 {
+                        break;
+                    }
+                    results.insert(CpuidKey::SubLeaf(eax, ecx), data);
+                }
+                // Default entry for invalid sub-leaf is all-zeroes
+                results.insert(CpuidKey::Leaf(eax), Cpuid::default());
+            }
+            _ => {
+                results.insert(CpuidKey::Leaf(eax), data);
+            }
+        }
     }
 
     Ok(results)
@@ -217,7 +227,7 @@ fn collect_cpuid(
 fn print_text(results: &BTreeMap<CpuidKey, Cpuid>) {
     for (key, value) in results.iter() {
         let header = match key {
-            CpuidKey::Leaf(eax) | CpuidKey::LeafDefault(eax) => {
+            CpuidKey::Leaf(eax) => {
                 format!("eax:{:x}\t\t", eax)
             }
             CpuidKey::SubLeaf(eax, ecx) => {
@@ -237,7 +247,6 @@ fn print_toml(results: &BTreeMap<CpuidKey, Cpuid>) {
         let key_name = match key {
             CpuidKey::Leaf(eax) => format!("{:x}", eax),
             CpuidKey::SubLeaf(eax, ecx) => format!("{:x}-{:x}", eax, ecx),
-            CpuidKey::LeafDefault(eax) => format!("{:x}-", eax),
         };
         println!(
             "\"{}\" = [0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}]",
