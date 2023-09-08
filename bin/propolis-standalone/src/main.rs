@@ -14,6 +14,7 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
+use propolis::hw::ata::{AtaCtrl, AtaDevice};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -786,6 +787,10 @@ fn setup_instance(
             .expect("system time precedes UNIX epoch"),
     )?;
 
+    let ata_ctrl = Arc::new(Mutex::new(AtaCtrl::new()));
+    let ata_drive_0 = AtaDevice::create(log.new(slog::o!("dev" => "ata-device-0")));
+    ata_ctrl.lock().unwrap().attach_device(0, 0, ata_drive_0);
+
     let (power_pin, reset_pin) = inst.generate_pins();
     let pci_topo =
         propolis::hw::pci::topology::Builder::new().finish(inv, machine)?;
@@ -795,6 +800,7 @@ fn setup_instance(
         i440fx::Opts {
             power_pin: Some(power_pin),
             reset_pin: Some(reset_pin),
+            ata_ctrl: Some(ata_ctrl.clone()),
             ..Default::default()
         },
         log.new(slog::o!("dev" => "chipset")),

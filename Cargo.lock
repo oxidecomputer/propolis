@@ -3021,6 +3021,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bhyve_api",
+ "bit_field",
  "bitflags 2.4.0",
  "bitstruct",
  "byteorder",

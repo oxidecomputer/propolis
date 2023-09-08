@@ -6,32 +6,33 @@ edition = "2021"
 rust-version = "1.70"
 
 [dependencies]
-libc.workspace = true
+anyhow.workspace = true
+bhyve_api.workspace = true
+bit_field.workspace = true
 bitflags.workspace = true
 bitstruct.workspace = true
 byteorder.workspace = true
-lazy_static.workspace = true
-num_enum.workspace = true
-thiserror.workspace = true
-bhyve_api.workspace = true
-dladm.workspace = true
-viona_api.workspace = true
-propolis_types.workspace = true
-usdt = { workspace = true, features = ["asm"] }
-tokio = { workspace = true, features = ["full"] }
-futures.workspace = true
-anyhow.workspace = true
-rfb.workspace = true
-slog.workspace = true
-serde.workspace = true
-serde_arrays.workspace = true
-erased-serde.workspace = true
-serde_json.workspace = true
-uuid.workspace = true
-crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
-oximeter = { workspace = true, optional = true }
+crucible-client-types = { workspace = true, optional = true }
+dladm.workspace = true
+erased-serde.workspace = true
+futures.workspace = true
+lazy_static.workspace = true
+libc.workspace = true
 nexus-client = { workspace = true, optional = true }
+num_enum.workspace = true
+oximeter = { workspace = true, optional = true }
+propolis_types.workspace = true
+rfb.workspace = true
+serde_arrays.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+slog.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+usdt = { workspace = true, features = ["asm"] }
+uuid.workspace = true
+viona_api.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }

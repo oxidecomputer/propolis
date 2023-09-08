@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
+use crate::hw::ata::AtaCtrl;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::chipset::piix3_ide::Piix3IdeCtrl;
 use crate::hw::chipset::Chipset;
@@ -46,6 +47,7 @@ pub struct Opts {
     pub enable_pcie: bool,
     pub power_pin: Option<Arc<dyn IntrPin>>,
     pub reset_pin: Option<Arc<dyn IntrPin>>,
+    pub ata_ctrl: Option<Arc<Mutex<AtaCtrl>>>,
 }
 
 pub struct I440Fx {
@@ -59,7 +61,7 @@ pub struct I440Fx {
 
     dev_hb: Arc<Piix4HostBridge>,
     dev_lpc: Arc<Piix3Lpc>,
-    dev_ide: Arc<Piix3IdeCtrl>,
+    dev_ide: Option<Arc<Piix3IdeCtrl>>,
     dev_pm: Arc<Piix3PM>,
     // TODO: could attach the PCI topology as part of chipset
     // acc_mem: MemAccessor,
@@ -91,7 +93,7 @@ impl I440Fx {
 
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
-            dev_ide: Piix3IdeCtrl::create(),
+            dev_ide: opts.ata_ctrl.map(|c| Piix3IdeCtrl::create(c)),
             dev_pm: Piix3PM::create(hdl, power_pin, log),
         });
 
@@ -130,15 +132,13 @@ impl I440Fx {
         )
         .unwrap();
 
-        //if opts.enable_ide {
-        this.pci_attach(
-            Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(),
-            this.dev_ide.clone(),
-        );
+        // Attach the IDE controller if present.
+        this.dev_ide.clone().map(|ide| {
+            ide.attach_pio(pio);
+            ide.attach_irq(&*this);
 
-        this.dev_ide.attach_pio(pio);
-        this.dev_ide.attach_irq(&*this);
-        //}
+            this.pci_attach(Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(), ide)
+        });
 
         if opts.enable_pcie {
             let mmio = &machine.bus_mmio;

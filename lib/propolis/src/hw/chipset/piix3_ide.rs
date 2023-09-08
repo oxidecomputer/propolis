@@ -15,16 +15,14 @@ use crate::pio::{PioBus, PioFn};
 
 pub struct Piix3IdeCtrl {
     /// IDE state
-    ata_state: Mutex<AtaCtrl>,
+    ata_state: Arc<Mutex<AtaCtrl>>,
 
     /// PCI device state
     pci_state: pci::DeviceState,
 }
 
 impl Piix3IdeCtrl {
-    pub fn create() -> Arc<Self> {
-        let ata_state = AtaCtrl::new();
-
+    pub fn create(ata_state: Arc<Mutex<AtaCtrl>>) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: ids::pci::VENDOR_INTEL,
             device_id: ids::pci::PIIX3_IDE_DEV_ID,
@@ -41,7 +39,7 @@ impl Piix3IdeCtrl {
         .add_bar_io(pci::BarN::BAR3, ibmpc::LEN_ATA_CTRL * 2)
         .finish();
 
-        Arc::new(Self { ata_state: Mutex::new(ata_state), pci_state })
+        Arc::new(Self { ata_state, pci_state })
     }
 
     pub fn attach_pio(self: &Arc<Self>, pio: &PioBus) {
@@ -114,7 +112,7 @@ impl Piix3IdeCtrl {
                 RWOp::Write(op) => {
                     let (r, val) = match op.offset() {
                         0 => (Registers::Data, op.read_u16()),
-                        1 => (Registers::Error, op.read_u8().into()),
+                        1 => (Registers::Features, op.read_u8().into()),
                         2 => (Registers::SectorCount, op.read_u8().into()),
                         3 => (Registers::LbaLow, op.read_u8().into()),
                         4 => (Registers::LbaMid, op.read_u8().into()),
@@ -129,7 +127,7 @@ impl Piix3IdeCtrl {
             }
         } else if port == ibmpc::PORT_ATA0_CTRL || port == ibmpc::PORT_ATA1_CTRL
         {
-            let channel = if port == ibmpc::PORT_ATA0_CMD { 0 } else { 1 };
+            let channel = if port == ibmpc::PORT_ATA0_CTRL { 0 } else { 1 };
 
             match rwo {
                 RWOp::Read(op) => {
