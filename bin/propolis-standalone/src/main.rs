@@ -788,7 +788,7 @@ fn setup_instance(
     )?;
 
     let ata_controller = Arc::new(Mutex::new(AtaController::create()));
-    let ata_drive = AtaDevice::create();
+    let ata_drive = AtaDevice::create(10 * 1024 * 1024 * 1024);
     ata_controller.lock().unwrap().attach_device(0, 0, ata_drive);
 
     let (power_pin, reset_pin) = inst.generate_pins();

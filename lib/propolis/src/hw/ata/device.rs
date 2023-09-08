@@ -4,24 +4,28 @@
 
 #![allow(dead_code)]
 
-use crate::hw::ata::AtaError;
 use crate::hw::ata::bits::*;
+use crate::hw::ata::AtaError;
 
 pub struct AtaDevice {
     sector: [u16; 256],
     sector_ptr: usize,
     registers: DeviceRegisters,
+    geometry: Geometry,
     irq: bool,
     pub id: usize,
 }
 
 impl AtaDevice {
-    pub fn create() -> Self {
+    const BLOCK_SIZE: usize = 512;
+
+    pub fn create(n_bytes: u64) -> Self {
         // Execute Power on Reset, ATA/ATAPI-6, 9.1.
         Self {
             sector: [0u16; 256],
             sector_ptr: 0,
             registers: DeviceRegisters::default_ata(),
+            geometry: Geometry::new(n_bytes),
             irq: false,
             // Id will be updated when the device is attached.
             id: 0,
@@ -56,35 +60,36 @@ impl AtaDevice {
             return Err(AtaError::DeviceNotReady);
         }
 
-        self.irq = self.irq || match c {
-            // EXECUTE DEVICE DIAGNOSTICS, ATA/ATAPI-6, 8.11.
-            Commands::ExecuteDeviceDiagnostics => {
-                // Set the diagnostics passed. code. For a non-existent device
-                // the channel will default to a value of 0x0.
-                self.registers.error.0 = 0x1;
-                self.set_signature();
-                // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
-                self.complete_with_data_ready(false)
-            }
+        self.irq = self.irq
+            || match c {
+                // EXECUTE DEVICE DIAGNOSTICS, ATA/ATAPI-6, 8.11.
+                Commands::ExecuteDeviceDiagnostics => {
+                    // Set the diagnostics passed. code. For a non-existent device
+                    // the channel will default to a value of 0x0.
+                    self.registers.error.0 = 0x1;
+                    self.set_signature();
+                    // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
+                    self.complete_with_data_ready(false)
+                }
 
-            // IDENTIFY DEVICE, see ATA/ATAPI-6, 8.15.
-            Commands::IdenfityDevice => {
-                self.sector_ptr = 0;
-                self.set_identity();
-                self.complete_with_data_ready(true)
-            }
+                // IDENTIFY DEVICE, see ATA/ATAPI-6, 8.15.
+                Commands::IdenfityDevice => {
+                    self.sector_ptr = 0;
+                    self.set_identity();
+                    self.complete_with_data_ready(true)
+                }
 
-            Commands::SetFeatures => {
-                self.set_features();
-                false
-            }
+                Commands::SetFeatures => {
+                    self.set_features();
+                    false
+                }
 
-            _ => {
-                self.registers.error.set_abort(true);
-                self.registers.status.set_error(true);
-                return Err(AtaError::UnsupportedCommand(c))
-            }
-        };
+                _ => {
+                    self.registers.error.set_abort(true);
+                    self.registers.status.set_error(true);
+                    return Err(AtaError::UnsupportedCommand(c));
+                }
+            };
 
         Ok(())
     }
@@ -109,9 +114,8 @@ impl AtaDevice {
         // the words needed.
         self.sector = [0u16; 256];
 
-        let n_sectors: u64 = 10 * 1024 * 1024 * 2;
-        let n_sectors_lba28 = n_sectors as u32 & 0x0fffffff;
-        let n_sectors_lba48 = n_sectors & 0x0000ffffffffffff;
+        let n_sectors_lba28 = self.geometry.n_sectors as u32 & 0x0fffffff;
+        let n_sectors_lba48 = self.geometry.n_sectors & 0x0000ffffffffffff;
 
         // Set a serial number.
         copy_str("0123456789", &mut self.sector[10..20]);
@@ -128,8 +132,8 @@ impl AtaDevice {
         self.sector[50] = 0x4000;
         self.sector[53] = 0x0006; // Words 70:64 and 88 are valid.
         self.sector[59] = 0x0001; // 1 sector per interrupt.
-        self.sector[60] = (n_sectors_lba28 >> 16) as u16;
-        self.sector[61] = (n_sectors_lba28 >> 0) as u16;
+        self.sector[60] = (n_sectors_lba28 >> 0) as u16;
+        self.sector[61] = (n_sectors_lba28 >> 16) as u16;
         self.sector[63] = 0x0000; // No Multiword DMA support.
         self.sector[64] = 0x0003; // PIO mode 4 support.
 
@@ -147,9 +151,9 @@ impl AtaDevice {
         // Hardware reset result.
         self.sector[93] = 0x4101 | if self.id == 0 { 0x0006 } else { 0x0600 };
 
-        self.sector[100] = (n_sectors_lba48 >> 32) as u16;
+        self.sector[100] = (n_sectors_lba48 >> 0) as u16;
         self.sector[101] = (n_sectors_lba48 >> 16) as u16;
-        self.sector[102] = (n_sectors_lba48 >> 0) as u16;
+        self.sector[102] = (n_sectors_lba48 >> 32) as u16;
     }
 
     fn set_features(&mut self) {}
@@ -212,7 +216,11 @@ impl AtaDevice {
         Ok(())
     }
 
-    pub fn write_register(&mut self, r: Registers, byte: u8) -> Result<(), AtaError> {
+    pub fn write_register(
+        &mut self,
+        r: Registers,
+        byte: u8,
+    ) -> Result<(), AtaError> {
         match r {
             Registers::Features => self.registers.features.write(byte),
             Registers::SectorCount => self.registers.sector_count.write(byte),
@@ -259,6 +267,21 @@ impl DeviceRegisters {
             lba_mid: FifoRegister::default(),
             lba_high: FifoRegister::default(),
         }
+    }
+}
+
+struct Geometry {
+    n_sectors: u64,
+}
+
+impl Geometry {
+    fn new(n_bytes: u64) -> Self {
+        // Determine the number of sectors given the size of the disk in bytes.
+        // If the block size does not divide evenly into the number of bytes any
+        // excess bytes are ignored in the geometry.
+        let n_sectors = n_bytes / AtaDevice::BLOCK_SIZE as u64;
+
+        Self { n_sectors }
     }
 }
 
