@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::common::RWOp;
-use crate::hw::ata::{AtaCtrl, bits::Registers};
+use crate::hw::ata::{AtaController, AtaError, Registers};
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::hw::ids;
@@ -15,14 +15,14 @@ use crate::pio::{PioBus, PioFn};
 
 pub struct Piix3IdeCtrl {
     /// IDE state
-    ata_state: Arc<Mutex<AtaCtrl>>,
+    ata_state: Arc<Mutex<AtaController>>,
 
     /// PCI device state
     pci_state: pci::DeviceState,
 }
 
 impl Piix3IdeCtrl {
-    pub fn create(ata_state: Arc<Mutex<AtaCtrl>>) -> Arc<Self> {
+    pub fn create(ata_state: Arc<Mutex<AtaController>>) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: ids::pci::VENDOR_INTEL,
             device_id: ids::pci::PIIX3_IDE_DEV_ID,
@@ -103,10 +103,16 @@ impl Piix3IdeCtrl {
                         _ => panic!()
                     };
 
-                    if op.len() == 1 {
-                        op.write_u8(ata.read_register(channel, r) as u8)
-                    } else {
-                        op.write_u16(ata.read_register(channel, r))
+                    match ata.read_register(channel, r) {
+                        Ok(val) => if op.len() == 1 {
+                            op.write_u8(val as u8)
+                        } else {
+                            op.write_u16(val)
+                        }
+                        Err(_e) => {
+                            // TODO (arjen): Log error
+                            op.fill(0x0)
+                        }
                     }
                 }
                 RWOp::Write(op) => {
@@ -122,7 +128,12 @@ impl Piix3IdeCtrl {
                         _ => panic!()
                     };
 
-                    ata.write_register(channel, r, val)
+                    match ata.write_register(channel, r, val) {
+                        Ok(()) | Err(AtaError::NoDevice) => {}
+                        Err(_e) => {
+                            // TODO (arjen): Decide what to log.
+                        }
+                    }
                 }
             }
         } else if port == ibmpc::PORT_ATA0_CTRL || port == ibmpc::PORT_ATA1_CTRL
@@ -136,10 +147,16 @@ impl Piix3IdeCtrl {
                         _ => panic!()
                     };
 
-                    if op.len() == 1 {
-                        op.write_u8(ata.read_register(channel, r) as u8)
-                    } else {
-                        op.write_u16(ata.read_register(channel, r))
+                    match ata.read_register(channel, r) {
+                        Ok(val) => if op.len() == 1 {
+                            op.write_u8(val as u8)
+                        } else {
+                            op.write_u16(val)
+                        }
+                        Err(_e) => {
+                            // TODO (arjen): Log error
+                            op.fill(0x0)
+                        }
                     }
                 }
                 RWOp::Write(op) => {
@@ -148,7 +165,12 @@ impl Piix3IdeCtrl {
                         _ => panic!(),
                     };
 
-                    ata.write_register(channel, r, val)
+                    match ata.write_register(channel, r, val) {
+                        Ok(()) | Err(AtaError::NoDevice) => {}
+                        Err(_e) => {
+                            // TODO (arjen): Decide what to log.
+                        }
+                    }
                 }
             }
         }

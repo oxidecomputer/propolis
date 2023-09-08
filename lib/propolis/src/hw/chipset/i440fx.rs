@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::hw::ata::AtaCtrl;
+use crate::hw::ata::AtaController;
 use crate::hw::bhyve::BhyvePmTimer;
 use crate::hw::chipset::piix3_ide::Piix3IdeCtrl;
 use crate::hw::chipset::Chipset;
@@ -47,7 +47,7 @@ pub struct Opts {
     pub enable_pcie: bool,
     pub power_pin: Option<Arc<dyn IntrPin>>,
     pub reset_pin: Option<Arc<dyn IntrPin>>,
-    pub ata_ctrl: Option<Arc<Mutex<AtaCtrl>>>,
+    pub ata_controller: Option<Arc<Mutex<AtaController>>>,
 }
 
 pub struct I440Fx {
@@ -93,7 +93,7 @@ impl I440Fx {
 
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
-            dev_ide: opts.ata_ctrl.map(|c| Piix3IdeCtrl::create(c)),
+            dev_ide: opts.ata_controller.map(|c| Piix3IdeCtrl::create(c)),
             dev_pm: Piix3PM::create(hdl, power_pin, log),
         });
 

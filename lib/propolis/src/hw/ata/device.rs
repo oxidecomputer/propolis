@@ -4,49 +4,41 @@
 
 #![allow(dead_code)]
 
+use crate::hw::ata::AtaError;
 use crate::hw::ata::bits::*;
 
-pub struct Device {
+pub struct AtaDevice {
     sector: [u16; 256],
     sector_ptr: usize,
     registers: DeviceRegisters,
     irq: bool,
-    channel_id: usize,
-    device_id: usize,
-    log: slog::Logger,
+    pub id: usize,
 }
 
-impl Device {
-    pub fn create(log: slog::Logger) -> Self {
+impl AtaDevice {
+    pub fn create() -> Self {
         // Execute Power on Reset, ATA/ATAPI-6, 9.1.
         Self {
             sector: [0u16; 256],
             sector_ptr: 0,
             registers: DeviceRegisters::default_ata(),
             irq: false,
-            // Ids will be updated when the device is attached.
-            channel_id: 0,
-            device_id: 0,
-            log,
+            // Id will be updated when the device is attached.
+            id: 0,
         }
     }
 
-    pub fn attach(mut self, channel_id: usize, device_id: usize) -> Self {
-        self.channel_id = channel_id;
-        self.device_id = device_id;
-        self
-    }
-
-    // Status Register
+    /// Return the Status Register.
     pub fn status(&self) -> &StatusRegister {
         &self.registers.status
     }
 
+    /// Return whether or not an interrupt is pending.
     pub fn interrupt(&self) -> bool {
-        self.irq
+        !self.registers.device_control.interrupt_enabled_n() && self.irq
     }
 
-    fn complete_success(&mut self, data: bool) -> bool {
+    fn complete_with_data_ready(&mut self, data: bool) -> bool {
         self.registers.error.0 = 0x0;
 
         self.registers.status.set_error(false);
@@ -54,42 +46,32 @@ impl Device {
         self.registers.status.set_device_fault(false);
         self.registers.status.set_busy(false);
 
-        !self.registers.device_control.interrupt_enabled_n()
+        data
     }
 
-    // Execute the given command and return whether or not the Controller should
-    // raise an interrupt when done.
-    pub fn execute(&mut self, c: Commands) -> bool {
-        match c {
+    /// Execute the given command and return whether or not the Controller
+    /// should raise an interrupt when done.
+    pub fn execute_command(&mut self, c: Commands) -> Result<(), AtaError> {
+        if !self.registers.status.device_ready() {
+            return Err(AtaError::DeviceNotReady);
+        }
+
+        self.irq = self.irq || match c {
             // EXECUTE DEVICE DIAGNOSTICS, ATA/ATAPI-6, 8.11.
             Commands::ExecuteDeviceDiagnostics => {
                 // Set the diagnostics passed. code. For a non-existent device
                 // the channel will default to a value of 0x0.
                 self.registers.error.0 = 0x1;
-
-                // Set the ATA device signature.
                 self.set_signature();
-
                 // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
-                self.registers.status.set_error(false);
-                self.registers.status.set_alignment_error(false);
-                self.registers.status.set_data_request(false);
-                self.registers.status.set_device_ready(true);
-                self.registers.status.set_busy(false);
-
-                // Request interrupt.
-                !self.registers.device_control.interrupt_enabled_n()
+                self.complete_with_data_ready(false)
             }
 
             // IDENTIFY DEVICE, see ATA/ATAPI-6, 8.15.
             Commands::IdenfityDevice => {
-                if !self.registers.status.device_ready() {
-                    return false;
-                }
-
                 self.sector_ptr = 0;
                 self.set_identity();
-                self.complete_success(true)
+                self.complete_with_data_ready(true)
             }
 
             Commands::SetFeatures => {
@@ -98,12 +80,13 @@ impl Device {
             }
 
             _ => {
-                // TODO (arjen): Log unsupported command.
                 self.registers.error.set_abort(true);
                 self.registers.status.set_error(true);
-                false
+                return Err(AtaError::UnsupportedCommand(c))
             }
-        }
+        };
+
+        Ok(())
     }
 
     /// Write the ATA device signature to the appropriate registers. See
@@ -162,7 +145,7 @@ impl Device {
         self.sector[88] = 0x0000; // No Ultra DMA support.
 
         // Hardware reset result.
-        self.sector[93] = 0x4101 | if self.device_id == 1 { 0x0600 } else { 0x0006 };
+        self.sector[93] = 0x4101 | if self.id == 0 { 0x0006 } else { 0x0600 };
 
         self.sector[100] = (n_sectors_lba48 >> 32) as u16;
         self.sector[101] = (n_sectors_lba48 >> 16) as u16;
@@ -174,8 +157,25 @@ impl Device {
     // Implement the ATA8-ATP, allowing for a channel to read/write the device
     // registers.
 
-    pub fn read_register(&mut self, r: Registers) -> u8 {
-        match r {
+    pub fn read_data(&mut self) -> Result<u16, AtaError> {
+        let data = self.sector[self.sector_ptr];
+
+        if self.registers.status.data_request() {
+            if self.sector_ptr >= self.sector.len() - 1 {
+                self.sector_ptr = 0;
+                // Clear the DRQ bit to signal the host no more data is
+                // available.
+                self.registers.status.set_data_request(false);
+            } else {
+                self.sector_ptr += 1;
+            }
+        }
+
+        Ok(data)
+    }
+
+    pub fn read_register(&mut self, r: Registers) -> Result<u8, AtaError> {
+        Ok(match r {
             Registers::Error => self.registers.error.0,
             Registers::SectorCount => self
                 .registers
@@ -195,15 +195,24 @@ impl Device {
                 .read_u8(self.registers.device_control.high_order_byte()),
             Registers::Device => self.registers.device.0,
             Registers::Status => {
+                // Reading Status clears clears the device interrupt.
                 self.irq = false;
                 self.registers.status.0
             }
             Registers::AltStatus => self.registers.status.0,
             _ => panic!(),
-        }
+        })
     }
 
-    pub fn write_register(&mut self, r: Registers, byte: u8) {
+    pub fn write_data(&mut self, _data: u16) -> Result<(), AtaError> {
+        // Registers::Data => if self.registers.status.data_request() => {
+        //     self.buffer[self.buffer_pointer] = val;
+        //     self.buffer_pointer += 1;
+        // }
+        Ok(())
+    }
+
+    pub fn write_register(&mut self, r: Registers, byte: u8) -> Result<(), AtaError> {
         match r {
             Registers::Features => self.registers.features.write(byte),
             Registers::SectorCount => self.registers.sector_count.write(byte),
@@ -220,38 +229,8 @@ impl Device {
         if r != Registers::DeviceControl {
             self.registers.device_control.set_high_order_byte(false);
         }
-    }
 
-    pub fn read_data(&mut self) -> u16 {
-        let data = self.sector[self.sector_ptr];
-
-        if self.registers.status.data_request() {
-            if self.sector_ptr >= self.sector.len() - 1 {
-                self.sector_ptr = 0;
-                // Clear the DRQ bit to signal the host no more data is
-                // available.
-                self.registers.status.set_data_request(false);
-            } else {
-                self.sector_ptr += 1;
-            }
-        }
-
-        data
-    }
-
-    pub fn write_data(&mut self, _data: u16) {
-        // Registers::Data => if self.registers.status.data_request() => {
-        //     self.buffer[self.buffer_pointer] = val;
-        //     self.buffer_pointer += 1;
-        // }
-    }
-
-    pub fn write_command(&mut self, code: u8) {
-        match Commands::try_from(code) {
-            Ok(command) => self.irq = self.execute(command),
-            // TODO (arjen): Log unknown command.
-            Err(_e) => {}
-        }
+        Ok(())
     }
 }
 
@@ -326,7 +305,8 @@ impl FifoRegister {
 fn copy_str(s: &str, buffer: &mut [u16]) {
     use std::iter::*;
 
-    // Iterate over the bytes of s, chaining null characters when s is exhausted.
+    // Iterate over the bytes of s, chaining null characters when s is
+    // exhausted.
     let null_terminated_s = s.as_bytes().iter().cloned().chain(repeat(0u8));
 
     unsafe {
