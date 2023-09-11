@@ -93,8 +93,8 @@ chrono = "0.4.19"
 clap = "4.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "7ba88771215818d053bb64ae9e995f41ffb3c5a7" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "7ba88771215818d053bb64ae9e995f41ffb3c5a7" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "aeb69dda26c7e1a8b6eada425670cd4b83f91c07" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "aeb69dda26c7e1a8b6eada425670cd4b83f91c07" }
 ctrlc = "3.2"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 enum-iterator = "1.4.1"
@@ -126,7 +126,7 @@ serde_derive = "1.0"
 serde_json = "1.0"
 serde_test = "1.0.138"
 slog = "2.7"
-slog-async = "2.7"
+slog-async = "2.8"
 slog-bunyan = "2.4.0"
 slog-dtrace = "0.2.3"
 slog-term = "2.8"
