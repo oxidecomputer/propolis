@@ -7,12 +7,15 @@
 use thiserror::Error;
 
 mod bits;
-mod controller;
-mod device;
+pub mod controller;
+pub mod device;
+pub mod geometry;
 
 pub use bits::{Commands, Registers};
 pub use controller::AtaController;
 pub use device::AtaDevice;
+
+const BLOCK_SIZE: usize = 512;
 
 #[derive(Debug, Error)]
 pub enum AtaError {
@@ -21,6 +24,9 @@ pub enum AtaError {
 
     #[error("device not ready")]
     DeviceNotReady,
+
+    #[error("no master boot record")]
+    NoMasterBootRecord,
 
     #[error("unknown command code ({0})")]
     UnknownCommandCode(u8),

@@ -5,27 +5,30 @@
 #![allow(dead_code)]
 
 use crate::hw::ata::bits::*;
+use crate::hw::ata::geometry::*;
 use crate::hw::ata::AtaError;
 
 pub struct AtaDevice {
     sector: [u16; 256],
     sector_ptr: usize,
     registers: DeviceRegisters,
-    geometry: Geometry,
+    capacity: Sectors,
+    default_geometry: Geometry,
+    active_geometry: Geometry,
     irq: bool,
     pub id: usize,
 }
 
 impl AtaDevice {
-    const BLOCK_SIZE: usize = 512;
-
-    pub fn create(n_bytes: u64) -> Self {
+    pub fn create(capacity: Sectors, default_geometry: Geometry) -> Self {
         // Execute Power on Reset, ATA/ATAPI-6, 9.1.
         Self {
             sector: [0u16; 256],
             sector_ptr: 0,
             registers: DeviceRegisters::default_ata(),
-            geometry: Geometry::new(n_bytes),
+            capacity,
+            default_geometry,
+            active_geometry: default_geometry,
             irq: false,
             // Id will be updated when the device is attached.
             id: 0,
@@ -64,24 +67,23 @@ impl AtaDevice {
             || match c {
                 // EXECUTE DEVICE DIAGNOSTICS, ATA/ATAPI-6, 8.11.
                 Commands::ExecuteDeviceDiagnostics => {
-                    // Set the diagnostics passed. code. For a non-existent device
-                    // the channel will default to a value of 0x0.
+                    // Set the diagnostics passed. code. For a non-existent
+                    // device the channel will default to a value of 0x0.
                     self.registers.error.0 = 0x1;
                     self.set_signature();
                     // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
                     self.complete_with_data_ready(false)
                 }
 
-                // IDENTIFY DEVICE, see ATA/ATAPI-6, 8.15.
+                // IDENTIFY DEVICE, ATA/ATAPI-6, 8.15.
                 Commands::IdenfityDevice => {
-                    self.sector_ptr = 0;
                     self.set_identity();
                     self.complete_with_data_ready(true)
                 }
 
                 Commands::SetFeatures => {
                     self.set_features();
-                    false
+                    self.complete_with_data_ready(false)
                 }
 
                 _ => {
@@ -113,32 +115,48 @@ impl AtaDevice {
         // space. As such it's easier to simply clear the buffer and only fill
         // the words needed.
         self.sector = [0u16; 256];
-
-        let n_sectors_lba28 = self.geometry.n_sectors as u32 & 0x0fffffff;
-        let n_sectors_lba48 = self.geometry.n_sectors & 0x0000ffffffffffff;
+        self.sector_ptr = 0;
 
         // Set a serial number.
         copy_str("0123456789", &mut self.sector[10..20]);
 
         // Set a firmware version string.
-        copy_str("ata-v0.1", &mut self.sector[23..26]);
+        copy_str("v0.1", &mut self.sector[23..26]);
 
         // Set a model number string.
         copy_str("Propolis ATA HDD-v1", &mut self.sector[27..46]);
 
+        // Set device geometry and capacity.
+        //
+        // Set the default CHS translation.
+        self.sector[1] = self.default_geometry.cylinders;
+        self.sector[3] = self.default_geometry.heads as u16;
+        self.sector[6] = self.default_geometry.sectors as u16;
+        // Set the active CHS translation.
+        self.sector[54] = self.active_geometry.cylinders;
+        self.sector[55] = self.active_geometry.heads as u16;
+        self.sector[56] = self.active_geometry.sectors as u16;
+        // Set the addressable capacity using the active CHS translation.
+        self.sector[57] = self.active_geometry.capacity().lba28_low();
+        self.sector[58] = self.active_geometry.capacity().lba28_high();
+        // Set the device capacity in LBA28.
+        self.sector[60] = self.capacity.lba28_low();
+        self.sector[61] = self.capacity.lba28_high();
+        // Set the device capacity in LBA48.
+        self.sector[100] = self.capacity.lba48_low();
+        self.sector[101] = self.capacity.lba48_mid();
+        self.sector[102] = self.capacity.lba48_high();
+
+        // Set features and capabilities.
         self.sector[2] = 0x8c73; // No standby, IDENTITY is complete.
         self.sector[47] = 0x8001; // 1 sector per interrupt.
         self.sector[49] = 0x0200; // LBA supported, device manages standby timer values.
         self.sector[50] = 0x4000;
         self.sector[53] = 0x0006; // Words 70:64 and 88 are valid.
         self.sector[59] = 0x0001; // 1 sector per interrupt.
-        self.sector[60] = (n_sectors_lba28 >> 0) as u16;
-        self.sector[61] = (n_sectors_lba28 >> 16) as u16;
         self.sector[63] = 0x0000; // No Multiword DMA support.
         self.sector[64] = 0x0003; // PIO mode 4 support.
-
-        // Set features supported.
-        self.sector[80] = 0x0008; // ATA-3 support.
+        self.sector[80] = 0x0030; // ATA-3, ATA/ATAPI-4 support.
         self.sector[81] = 0x0000;
         self.sector[82] = 0x4000; // NOP support.
         self.sector[83] = 0x0000;
@@ -150,10 +168,6 @@ impl AtaDevice {
 
         // Hardware reset result.
         self.sector[93] = 0x4101 | if self.id == 0 { 0x0006 } else { 0x0600 };
-
-        self.sector[100] = (n_sectors_lba48 >> 0) as u16;
-        self.sector[101] = (n_sectors_lba48 >> 16) as u16;
-        self.sector[102] = (n_sectors_lba48 >> 32) as u16;
     }
 
     fn set_features(&mut self) {}
@@ -270,21 +284,6 @@ impl DeviceRegisters {
     }
 }
 
-struct Geometry {
-    n_sectors: u64,
-}
-
-impl Geometry {
-    fn new(n_bytes: u64) -> Self {
-        // Determine the number of sectors given the size of the disk in bytes.
-        // If the block size does not divide evenly into the number of bytes any
-        // excess bytes are ignored in the geometry.
-        let n_sectors = n_bytes / AtaDevice::BLOCK_SIZE as u64;
-
-        Self { n_sectors }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FifoRegister([u8; 2]);
 
@@ -325,24 +324,24 @@ impl FifoRegister {
     }
 }
 
+/// Copy the given str s with appropriate padding into the given word buffer
+/// according to the byte order described in ATA/ATAPI-4, 8.12.8.
 fn copy_str(s: &str, buffer: &mut [u16]) {
     use std::iter::*;
+    use itertools::izip;
 
-    // Iterate over the bytes of s, chaining null characters when s is
-    // exhausted.
-    let null_terminated_s = s.as_bytes().iter().cloned().chain(repeat(0u8));
+    // Create an iterator which chains/pads the bytes of the given str s with
+    // additional ASCII spaces (20h).
+    let padded_s = s.as_bytes().iter().cloned().chain(repeat(0x20));
 
-    unsafe {
-        let n_words = buffer.len();
-        let (_, buffer_as_bytes, _) = buffer.align_to_mut::<u8>();
-        assert!(buffer_as_bytes.len() == n_words * std::mem::size_of::<u16>());
+    // Clone the padded string iterator into two iterators offset by one byte,
+    // to allow iterating in chunks of two bytes.
+    let padded_s_byte0 = padded_s.clone().step_by(2);
+    let padded_s_byte1 = padded_s.clone().skip(1).step_by(2);
 
-        // Zip over the buffer words transmuted to bytes and the null terminated
-        // str, while copying to the buffer. The result is a copy of s in the
-        // buffer up to the lenght of the buffer, padded with null characters if
-        // needed.
-        for (b, s) in zip(buffer_as_bytes, null_terminated_s) {
-            *b = s;
-        }
+    // Copy from the two byte iterators to the buffer in BE order. See
+    // ATA/ATAPI-4, 8.12.8.
+    for (word, b0, b1) in izip!(buffer, padded_s_byte0, padded_s_byte1) {
+        *word = u16::from_be_bytes([b0, b1]);
     }
 }

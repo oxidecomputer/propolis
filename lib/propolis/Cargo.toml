@@ -17,6 +17,7 @@ crucible-client-types = { workspace = true, optional = true }
 dladm.workspace = true
 erased-serde.workspace = true
 futures.workspace = true
+itertools.workspace = true
 lazy_static.workspace = true
 libc.workspace = true
 nexus-client = { workspace = true, optional = true }

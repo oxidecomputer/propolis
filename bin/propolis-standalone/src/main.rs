@@ -15,6 +15,7 @@ use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::ata::{AtaController, AtaDevice};
+use propolis::hw::ata::geometry::{Sectors, Geometry};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -788,7 +789,7 @@ fn setup_instance(
     )?;
 
     let ata_controller = Arc::new(Mutex::new(AtaController::create()));
-    let ata_drive = AtaDevice::create(10 * 1024 * 1024 * 1024);
+    let ata_drive = AtaDevice::create(10 * Sectors::ONE_GB, Geometry::MAX_COMPAT);
     ata_controller.lock().unwrap().attach_device(0, 0, ata_drive);
 
     let (power_pin, reset_pin) = inst.generate_pins();
