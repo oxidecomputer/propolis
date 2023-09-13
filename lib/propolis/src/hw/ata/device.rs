@@ -16,11 +16,16 @@ pub struct AtaDevice {
     default_geometry: Geometry,
     active_geometry: Geometry,
     irq: bool,
+    log: slog::Logger,
     pub id: usize,
 }
 
 impl AtaDevice {
-    pub fn create(capacity: Sectors, default_geometry: Geometry) -> Self {
+    pub fn create(
+        log: slog::Logger,
+        capacity: Sectors,
+        default_geometry: Geometry,
+    ) -> Self {
         // Execute Power on Reset, ATA/ATAPI-6, 9.1.
         Self {
             sector: [0u16; 256],
@@ -30,7 +35,8 @@ impl AtaDevice {
             default_geometry,
             active_geometry: default_geometry,
             irq: false,
-            // Id will be updated when the device is attached.
+            log,
+            // Id and path will be updated when the device is attached.
             id: 0,
         }
     }
@@ -45,15 +51,24 @@ impl AtaDevice {
         !self.registers.device_control.interrupt_enabled_n() && self.irq
     }
 
-    fn complete_with_data_ready(&mut self, data: bool) -> bool {
+    fn complete_command_with_data_ready(
+        &mut self,
+        data_ready: bool,
+    ) -> Result<bool, AtaError> {
         self.registers.error.0 = 0x0;
 
         self.registers.status.set_error(false);
-        self.registers.status.set_data_request(data);
+        self.registers.status.set_data_request(data_ready);
         self.registers.status.set_device_fault(false);
         self.registers.status.set_busy(false);
 
-        data
+        Ok(data_ready)
+    }
+
+    fn abort_command(&mut self, e: AtaError) -> Result<bool, AtaError> {
+        self.registers.error.set_abort(true);
+        self.registers.status.set_error(true);
+        Err(e)
     }
 
     /// Execute the given command and return whether or not the Controller
@@ -72,26 +87,58 @@ impl AtaDevice {
                     self.registers.error.0 = 0x1;
                     self.set_signature();
                     // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
-                    self.complete_with_data_ready(false)
+                    self.complete_command_with_data_ready(false)
                 }
 
                 // IDENTIFY DEVICE, ATA/ATAPI-6, 8.15.
                 Commands::IdenfityDevice => {
                     self.set_identity();
-                    self.complete_with_data_ready(true)
+                    self.complete_command_with_data_ready(true)
                 }
 
-                Commands::SetFeatures => {
-                    self.set_features();
-                    self.complete_with_data_ready(false)
+                // INITIALIZE DEVICE PARAMETERS, ATA/ATAPI-4, 8.16.
+                Commands::InitializeDeviceParameters => {
+                    self.active_geometry.sectors =
+                        self.registers.sector_count.read_current();
+                    self.active_geometry.heads =
+                        self.registers.device.heads() + 1;
+                    self.active_geometry.compute_cylinders(self.capacity);
+
+                    slog::info!(
+                        self.log,
+                        "initialize device parameters";
+                        self.active_geometry);
+
+                    self.complete_command_with_data_ready(false)
                 }
 
-                _ => {
-                    self.registers.error.set_abort(true);
-                    self.registers.status.set_error(true);
-                    return Err(AtaError::UnsupportedCommand(c));
+                // SET FEATURES, ATA/ATAPI-6, 8.36.
+                Commands::SetFeatures => match self.set_features() {
+                    Ok(()) => self.complete_command_with_data_ready(false),
+                    Err(e) => self.abort_command(e),
+                },
+
+                // SET MULTIPLE MODE, ATA/ATAPI-6, 8.39.
+                Commands::SetMultipleMode => {
+                    // TODO (arjen): Actually set the multiple mode instead of
+                    // using a default of 1.
+                    slog::info!(
+                        self.log,
+                        "set multiple mode";
+                        "value" => self.registers.sector_count.read_current());
+
+                    self.complete_command_with_data_ready(false)
                 }
-            };
+
+                Commands::ReadSectors => {
+                    // TODO (arjen): Read actual data from backend.
+                    self.sector = [0u16; 256];
+                    self.sector_ptr = 0;
+                    self.complete_command_with_data_ready(true)
+                }
+
+                _ => self.abort_command(AtaError::UnsupportedCommand(c)),
+            }?;
 
         Ok(())
     }
@@ -170,7 +217,35 @@ impl AtaDevice {
         self.sector[93] = 0x4101 | if self.id == 0 { 0x0006 } else { 0x0600 };
     }
 
-    fn set_features(&mut self) {}
+    fn set_features(&mut self) -> Result<(), AtaError> {
+        match self.registers.features.read_current() {
+            0x3 => {
+                let arguments = self.registers.sector_count.read_current();
+                let mode = (arguments & 0xf8) >> 3;
+                let value = arguments & 0x7;
+
+                match (mode, value) {
+                    (0, 0) => Ok(
+                        slog::info!(self.log, "set transfer mode"; "mode" => "PIO default"),
+                    ),
+                    (0, 1) => Ok(
+                        slog::info!(self.log, "set transfer mode"; "mode" => "PIO default, disable IORDY"),
+                    ),
+                    (1, _) => Ok(
+                        slog::info!(self.log, "set transfer mode"; "mode" => "PIO mode", "value" => value),
+                    ),
+                    (4, _) => Ok(
+                        slog::info!(self.log, "set transfer mode"; "mode" => "Multiword DMA", "value" => value),
+                    ),
+                    (8, _) => Ok(
+                        slog::info!(self.log, "set transfer mode"; "mode" => "Ultra DMA", "value" => value),
+                    ),
+                    (_, _) => Err(AtaError::FeatureNotSupported),
+                }
+            }
+            _ => Err(AtaError::FeatureNotSupported),
+        }
+    }
 
     // Implement the ATA8-ATP, allowing for a channel to read/write the device
     // registers.
@@ -327,8 +402,8 @@ impl FifoRegister {
 /// Copy the given str s with appropriate padding into the given word buffer
 /// according to the byte order described in ATA/ATAPI-4, 8.12.8.
 fn copy_str(s: &str, buffer: &mut [u16]) {
-    use std::iter::*;
     use itertools::izip;
+    use std::iter::*;
 
     // Create an iterator which chains/pads the bytes of the given str s with
     // additional ASCII spaces (20h).

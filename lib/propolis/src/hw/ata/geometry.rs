@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use slog::{Record, Result, Serializer, KV};
+
 /// A distinct type to hold the number of sectors of a disk drive.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Sectors(u64);
@@ -17,13 +19,18 @@ impl Sectors {
     }
 
     #[inline]
+    pub fn lba28(&self) -> u32 {
+        self.0 as u32 & 0x0fffffff
+    }
+
+    #[inline]
     pub fn lba28_low(&self) -> u16 {
-        self.0 as u16
+        self.lba28() as u16
     }
 
     #[inline]
     pub fn lba28_high(&self) -> u16 {
-        (self.0 >> 16) as u16 & 0x0fff
+        (self.lba28() >> 16) as u16
     }
 
     #[inline]
@@ -70,7 +77,8 @@ pub struct Geometry {
 impl Geometry {
     pub const MIN: Self = Self { cylinders: 1, heads: 1, sectors: 1 };
     pub const MAX: Self = Self { cylinders: u16::MAX, heads: 16, sectors: 255 };
-    pub const MAX_COMPAT: Self = Self { cylinders: 16383, heads: 15, sectors: 63 };
+    pub const MAX_COMPAT: Self =
+        Self { cylinders: 16383, heads: 15, sectors: 63 };
 
     #[inline]
     pub fn capacity(&self) -> Sectors {
@@ -87,6 +95,16 @@ impl Geometry {
         lba: LogicalBlockAddress,
     ) -> CylinderHeadSectorAddress {
         CylinderHeadSectorAddress::MIN
+    }
+
+    pub fn compute_cylinders(&mut self, capacity: Sectors) {
+        let sectors_per_cylinder = self.sectors as u32 * self.heads as u32;
+
+        self.cylinders = if capacity.lba28() > 16514064 {
+            (16514064 / sectors_per_cylinder) as u16
+        } else {
+            (capacity.lba28() / sectors_per_cylinder) as u16
+        }
     }
 
     // pub fn guess_from_master_boot_record(mbr: &[u8]) -> Result<Self, AtaError> {
@@ -112,6 +130,18 @@ impl Geometry {
     // }
 }
 
+impl KV for Geometry {
+    fn serialize(
+        &self,
+        _rec: &Record,
+        serializer: &mut dyn Serializer,
+    ) -> Result {
+        serializer.emit_u16("cylinders", self.cylinders)?;
+        serializer.emit_u8("heads", self.heads)?;
+        serializer.emit_u8("sectors", self.sectors)
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CylinderHeadSectorAddress {
     pub cylinder: u16,
@@ -131,7 +161,10 @@ impl CylinderHeadSectorAddress {
         Self { cylinder, head, sector }
     }
 
-    pub fn logical_block_address(&self, geometry: &Geometry) -> LogicalBlockAddress {
+    pub fn logical_block_address(
+        &self,
+        geometry: &Geometry,
+    ) -> LogicalBlockAddress {
         LogicalBlockAddress(
             (((self.cylinder as u64 * geometry.heads as u64)
                 + self.head as u64)

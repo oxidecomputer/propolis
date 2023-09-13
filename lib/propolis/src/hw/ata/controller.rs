@@ -43,24 +43,33 @@ impl AtaController {
         r: Registers,
     ) -> Result<u16, AtaError> {
         let device_id = self.channels[channel_id].device_selected;
-        let result = self.channels[channel_id].devices[device_id]
-            .as_mut()
-            .ok_or(AtaError::NoDevice)
-            .map(|device| match r {
+        let result = if let Some(device) = self.channels[channel_id].devices[device_id].as_mut() {
+            match r {
                 Registers::Data => device.read_data(),
                 _ => device.read_register(r).map(Into::into),
-            })?;
+            }
+        } else {
+            Err(AtaError::NoDevice)
+        };
 
-        // Update the channel interrupt state.
-        self.channels[channel_id]
-            .ata_pin
-            .as_ref()
-            .map(|pin| pin.set_state(self.channel_interrupt(channel_id)));
+        // // Update the channel interrupt state.
+        // self.channels[channel_id]
+        //     .ata_pin
+        //     .as_ref()
+        //     .map(|pin| pin.set_state(self.channel_interrupt(channel_id)));
 
-        println!(
-            "R: {}:{} {:?} {:?}",
-            channel_id, self.channels[channel_id].device_selected, r, result
-        );
+        let value = *result.as_ref().unwrap_or(&0x0);
+        // match r {
+        // //    Registers::Status | Registers::AltStatus | Registers::Error =>
+        //     Registers::Data => {}
+        //     _ =>
+                println!(
+                    "R: {}:{} {:?} {:?}",
+                    channel_id, self.channels[channel_id].device_selected, r, value
+                );
+
+        // //    _ => {}
+        // }
 
         result
     }
@@ -91,6 +100,13 @@ impl AtaController {
         }
 
         let device_id = self.channels[channel_id].device_selected;
+
+        if r != Registers::Data {
+            println!(
+                "W: {}:{} {:?} {:x}",
+                channel_id, self.channels[channel_id].device_selected, r, word
+            );
+        }
 
         // If an EXECUTE DEVICE DIAGNOSTICS command is issued the command should
         // be broadcasted to all attached devices and the device select bit for
@@ -136,22 +152,18 @@ impl AtaController {
             .as_ref()
             .map(|pin| pin.set_state(self.channel_interrupt(channel_id)));
 
-        println!(
-            "W: {}:{} {:?} {:x}",
-            channel_id, self.channels[channel_id].device_selected, r, word
-        );
-
         result
     }
 
     /// Determine if the channel with the given id has pending interrupts.
     fn channel_interrupt(&self, id: usize) -> bool {
-        self.channels[id]
-            .devices
-            .iter()
-            .flatten()
-            .map(|device| device.interrupt())
-            .any(|interrupt| interrupt)
+        // self.channels[id]
+        //     .devices
+        //     .iter()
+        //     .flatten()
+        //     .map(|device| device.interrupt())
+        //     .any(|interrupt| interrupt)
+        false
     }
 }
 

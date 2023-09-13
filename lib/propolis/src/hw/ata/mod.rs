@@ -33,6 +33,9 @@ pub enum AtaError {
 
     #[error("unsupported command ({0})")]
     UnsupportedCommand(Commands),
+
+    #[error("feature not supported")]
+    FeatureNotSupported,
 }
 
 #[usdt::provider(provider = "propolis")]
