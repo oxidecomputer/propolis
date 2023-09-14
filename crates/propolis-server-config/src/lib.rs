@@ -9,6 +9,8 @@ use std::str::FromStr;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use cpuid_profile_config::CpuidProfile;
+
 /// Configuration for the Propolis server.
 // NOTE: This is expected to change over time; portions of the hard-coded
 // configuration will likely become more dynamic.
@@ -27,26 +29,19 @@ pub struct Config {
 
     #[serde(default, rename = "block_dev")]
     pub block_devs: BTreeMap<String, BlockDevice>,
+
+    #[serde(default, rename = "cpuid")]
+    pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
 }
-impl Config {
-    /// Constructs a new configuration object.
-    ///
-    /// Typically, the configuration is parsed from a config
-    /// file via [`parse`], but this method allows an alternative
-    /// mechanism for initialization.
-    pub fn new<P: Into<PathBuf>>(
-        bootrom: P,
-        chipset: Chipset,
-        devices: BTreeMap<String, Device>,
-        block_devs: BTreeMap<String, BlockDevice>,
-        pci_bridges: Vec<PciBridge>,
-    ) -> Config {
-        Config {
-            bootrom: bootrom.into(),
-            pci_bridges,
-            chipset,
-            devices,
-            block_devs,
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bootrom: PathBuf::new(),
+            pci_bridges: Vec::new(),
+            chipset: Chipset { options: BTreeMap::new() },
+            devices: BTreeMap::new(),
+            block_devs: BTreeMap::new(),
+            cpuid_profiles: BTreeMap::new(),
         }
     }
 }
@@ -153,15 +148,68 @@ mod tests {
 
     #[test]
     fn config_can_be_serialized_as_toml() {
-        let dummy_config = Config::new(
-            "/boot",
-            Chipset { options: BTreeMap::new() },
-            BTreeMap::new(),
-            BTreeMap::new(),
-            Vec::new(),
-        );
+        let dummy_config =
+            Config { bootrom: "/boot".into(), ..Default::default() };
         let serialized = toml::ser::to_string(&dummy_config).unwrap();
         let deserialized: Config = toml::de::from_str(&serialized).unwrap();
         assert_eq!(dummy_config, deserialized);
+    }
+
+    #[test]
+    fn parse_basic_config() {
+        let raw = r#"
+bootrom = "/path/to/bootrom"
+[chipset]
+chipset-opt = "copt"
+
+[dev.drv0]
+driver = "nvme"
+other-opt = "value"
+
+[dev.drv1]
+driver = "widget"
+foo = "bar"
+
+[block_dev.block0]
+type = "cement"
+slump = "4in"
+
+[block_dev.block1]
+type = "file"
+path = "/etc/passwd"
+"#;
+        let cfg: Config = toml::de::from_str(raw).unwrap();
+
+        use std::path::PathBuf;
+        use toml::Value;
+
+        assert_eq!(cfg.bootrom, PathBuf::from("/path/to/bootrom"));
+        assert_eq!(cfg.chipset.get_string("chipset-opt"), Some("copt"));
+
+        assert!(cfg.devices.get("drv0").is_some());
+        assert!(cfg.devices.get("drv1").is_some());
+        let dev0 = cfg.devices.get("drv0").unwrap();
+        let dev1 = cfg.devices.get("drv1").unwrap();
+
+        assert_eq!(dev0.driver, "nvme");
+        assert_eq!(dev0.get_string("other-opt"), Some("value"));
+        assert_eq!(dev1.driver, "widget");
+        assert_eq!(dev1.get_string("foo"), Some("bar"));
+
+        assert!(cfg.block_devs.get("block0").is_some());
+        assert!(cfg.block_devs.get("block1").is_some());
+        let bdev0 = cfg.block_devs.get("block0").unwrap();
+        let bdev1 = cfg.block_devs.get("block1").unwrap();
+
+        assert_eq!(bdev0.bdtype, "cement");
+        assert_eq!(
+            bdev0.options.get("slump").map(Value::as_str).unwrap(),
+            Some("4in")
+        );
+        assert_eq!(bdev1.bdtype, "file");
+        assert_eq!(
+            bdev1.options.get("path").map(Value::as_str).unwrap(),
+            Some("/etc/passwd")
+        );
     }
 }

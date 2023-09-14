@@ -101,9 +101,10 @@ fi
 After you've got the bootrom, an ISO, a VNIC, and a configuration file that
 points to them, you're ready to create and run your VM. To do so, make sure
 you've done the following:
-- [build propolis](#Building)
-- run the [propolis-server](#propolis-server)
-- create your VM, run it, and hop on the serial console using [propolis-cli](#propolis-cli)
+- build `propolis-standalone`
+- start `propolis-standalone`, passing it a valid config
+- it will wait to start the VM until you connect to the serial console socket
+  (with something like [sercons](https://github.com/jclulow/vmware-sercons))
 - login to the VM as root (no password)
 - optionally, run `setup-alpine` to configure the VM (including setting a root
   password)
@@ -190,3 +191,63 @@ generation = 1
 # read_only = false
 # === END OPTIONAL OPTIONS ===
 ```
+## Configuring `cpuid`
+
+Rather than using the built-in `cpuid` data masking offered by the bhyve kernel
+VMM, propolis-standalone can load a set of leaf data to be used by the instance.
+An example of such configuration data is as follows:
+
+```toml
+[main]
+# ... other main config bits
+cpuid_profile = "NAME"
+
+[cpuid.NAME]
+vendor = "amd"
+"0" = [0x10, 0x68747541, 0x444d4163, 0x69746e65]
+"1" = [0x830f10, 0x10800, 0xf6d83203, 0x178bfbff]
+"5" = [0x0, 0x0, 0x0, 0x0]
+"6" = [0x4, 0x0, 0x0, 0x0]
+"7" = [0x0, 0x0, 0x0, 0x0]
+"7-0" = [0x0, 0x201401a9, 0x0, 0x0]
+"d" = [0x0, 0x0, 0x0, 0x0]
+"d-0" = [0x7, 0x340, 0x340, 0x0]
+"d-1" = [0x1, 0x0, 0x0, 0x0]
+"d-2" = [0x100, 0x240, 0x0, 0x0]
+"80000000" = [0x80000020, 0x68747541, 0x444d4163, 0x69746e65]
+"80000001" = [0x830f10, 0x40000000, 0x444031fb, 0x25d3fbff]
+"80000002" = [0x20444d41, 0x43595045, 0x38323720, 0x36312032]
+"80000003" = [0x726f432d, 0x72502065, 0x7365636f, 0x20726f73]
+"80000004" = [0x20202020, 0x20202020, 0x20202020, 0x202020]
+"80000005" = [0xff40ff40, 0xff40ff40, 0x20080140, 0x20080140]
+"80000006" = [0x48006400, 0x68006400, 0x2006140, 0x2009140]
+"80000007" = [0x0, 0x0, 0x0, 0x100]
+"80000008" = [0x3030, 0x7, 0x0, 0x10000]
+"8000000a" = [0x1, 0x8000, 0x0, 0x13bcff]
+"80000019" = [0xf040f040, 0x0, 0x0, 0x0]
+"8000001a" = [0x6, 0x0, 0x0, 0x0]
+"8000001b" = [0x3ff, 0x0, 0x0, 0x0]
+"8000001d" = [0x0, 0x0, 0x0, 0x0]
+"8000001d-0" = [0x121, 0x1c0003f, 0x3f, 0x0]
+"8000001d-1" = [0x122, 0x1c0003f, 0x3f, 0x0]
+"8000001d-2" = [0x143, 0x1c0003f, 0x3ff, 0x2]
+"8000001d-3" = [0x163, 0x3c0003f, 0x3fff, 0x1]
+"8000001f" = [0x1000f, 0x16f, 0x1fd, 0x1]
+```
+
+If `cpuid_profile` is specified under the `main` section, a corresponding
+`cpuid` section with a matching name is expected to be defined elsewhere in the
+file.  The `vendor` field under that section controls fallback behavior when a
+vCPU queries a non-existent leaf, and other CPU-specific behavior.  After that,
+the leafs and their register data are listed.  Leafs which require an `ecx`
+match (with `eax` as the function, and `ecx` as the index) are specified with a
+hyphen separating the function and index.  Leafs without an index (just a single
+hex number) will match only against `eax`, and at a lower priority than the
+function/index leafs which match `eax` and `ecx`.  The data for leafs is
+expected to be a 4-item array of 32-bit integers corresponding to `eax`, `ebx`,
+`ecx`, and `edx`, in that order.
+
+Certain fields in `cpuid` data depend on aspects specific to the host (such as
+vCPU count) or the vCPU they are associated with (such as APIC ID).  Propolis
+will "specialize" the data provided in the `cpuid` profile with logic appropriate
+for the specific leafs involved.

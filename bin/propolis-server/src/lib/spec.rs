@@ -603,13 +603,11 @@ impl ServerSpecBuilder {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::BTreeMap, path::PathBuf};
-
     use crucible_client_types::VolumeConstructionRequest;
     use propolis_client::handmade::api::Slot;
     use uuid::Uuid;
 
-    use crate::config::{self, Config};
+    use crate::config::Config;
 
     use super::*;
 
@@ -625,13 +623,7 @@ mod test {
                 memory: 512,
                 vcpus: 4,
             },
-            &Config::new(
-                PathBuf::from_str("").unwrap(),
-                config::Chipset::default(),
-                BTreeMap::new(),
-                BTreeMap::new(),
-                Vec::new(),
-            ),
+            &Config::default(),
         )
     }
 

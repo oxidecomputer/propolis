@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serde::{Deserialize, Serialize};
 
+pub use cpuid_profile_config::*;
+
 #[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq)]
 #[repr(u8)]
 pub enum SnapshotTag {
@@ -26,6 +28,17 @@ pub struct Config {
 
     #[serde(default, rename = "block_dev")]
     pub block_devs: BTreeMap<String, BlockDevice>,
+
+    #[serde(default, rename = "cpuid")]
+    pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
+}
+impl Config {
+    pub fn cpuid_profile(&self) -> Option<&CpuidProfile> {
+        match self.main.cpuid_profile.as_ref() {
+            Some(name) => self.cpuid_profiles.get(name),
+            None => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -35,6 +48,7 @@ pub struct Main {
     pub bootrom: String,
     pub memory: usize,
     pub use_reservoir: Option<bool>,
+    pub cpuid_profile: Option<String>,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally

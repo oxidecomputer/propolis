@@ -392,16 +392,57 @@ impl Default for vm_data_xfer {
 pub const VCE_FLAG_MATCH_INDEX: u32 = 1 << 0;
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-struct vcpu_cpuid_entry {
-    vce_function: u32,
-    vce_index: u32,
-    vce_flags: u32,
-    vce_eax: u32,
-    vce_ebx: u32,
-    vce_ecx: u32,
-    vce_edx: u32,
-    _pad: u32,
+#[derive(Copy, Clone, Default)]
+pub struct vcpu_cpuid_entry {
+    pub vce_function: u32,
+    pub vce_index: u32,
+    pub vce_flags: u32,
+    pub vce_eax: u32,
+    pub vce_ebx: u32,
+    pub vce_ecx: u32,
+    pub vce_edx: u32,
+    pub _pad: u32,
+}
+impl vcpu_cpuid_entry {
+    fn match_idx(&self) -> bool {
+        self.vce_flags & VCE_FLAG_MATCH_INDEX != 0
+    }
+    /// Order entries for proper cpuid evaluation by the kernel VMM.
+    ///
+    /// Bhyve expects that cpuid entries are sorted by function, and then index,
+    /// from least to greatest.  Entries which must match on index should come
+    /// before (less-than) those that do not, so the former can take precedence
+    /// in matching.
+    ///
+    /// This function is provided so that a list of entries can be easily sorted
+    /// prior to loading them into the kernel VMM.
+    ///
+    /// ```
+    /// let mut entries: Vec<vcpu_cpuid_entry> = vec![
+    ///     // entries loaded here
+    /// ];
+    /// entries.sort_by(vcpu_cpuid_entry::eval_sort);
+    /// let config = vm_vcpu_cpuid_config {
+    ///     vvcc_cpuid: 0,
+    ///     vvcc_flags: 0,
+    ///     vvcc_nent: entries.len(),
+    ///     vvcc_entries: &mut entries,
+    /// };
+    /// // perform ioctl(VM_SET_CPUID, &config) ...
+    /// ```
+    pub fn eval_sort(a: &Self, b: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        match a.vce_function.cmp(&b.vce_function) {
+            Ordering::Equal => match (a.match_idx(), b.match_idx()) {
+                (true, false) => Ordering::Less,
+                (false, true) => Ordering::Greater,
+                (true, true) | (false, false) => a.vce_index.cmp(&b.vce_index),
+            },
+
+            ord => ord,
+        }
+    }
 }
 
 /// Use legacy hard-coded cpuid masking tables applied to the host CPU
@@ -420,6 +461,17 @@ pub struct vm_vcpu_cpuid_config {
     pub vvcc_nent: u32,
     pub _pad: u32,
     pub vvcc_entries: *mut c_void,
+}
+impl Default for vm_vcpu_cpuid_config {
+    fn default() -> Self {
+        Self {
+            vvcc_vcpuid: 0,
+            vvcc_flags: 0,
+            vvcc_nent: 0,
+            _pad: 0,
+            vvcc_entries: std::ptr::null_mut(),
+        }
+    }
 }
 
 #[repr(C)]

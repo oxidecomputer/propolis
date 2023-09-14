@@ -4,9 +4,10 @@
 
 //! Virtual CPU functionality.
 
-use std::io::Result;
+use std::io::{Error, ErrorKind, Result};
 use std::sync::Arc;
 
+use crate::cpuid;
 use crate::exits::*;
 use crate::inventory::Entity;
 use crate::migrate::*;
@@ -137,6 +138,106 @@ impl Vcpu {
             self.hdl.ioctl(bhyve_api::VM_GET_SEGMENT_DESCRIPTOR, &mut req)?;
         }
         Ok(req.desc)
+    }
+
+    /// Configure the (in-kernel) `cpuid` emulation state for this vCPU.
+    ///
+    /// If `values` contains no cpuid entries, then legacy emulation handling
+    /// will be used.
+    pub fn set_cpuid(&self, values: cpuid::Set) -> Result<()> {
+        let mut config = bhyve_api::vm_vcpu_cpuid_config {
+            vvcc_vcpuid: self.id,
+            ..Default::default()
+        };
+        if values.is_empty() {
+            config.vvcc_flags = bhyve_api::VCC_FLAG_LEGACY_HANDLING;
+            unsafe {
+                self.hdl.ioctl(bhyve_api::VM_SET_CPUID, &mut config)?;
+            }
+        } else {
+            if values.vendor.is_intel() {
+                config.vvcc_flags |= bhyve_api::VCC_FLAG_INTEL_FALLBACK;
+            }
+            let mut entries: Vec<bhyve_api::vcpu_cpuid_entry> = values.into();
+            entries.sort_by(bhyve_api::vcpu_cpuid_entry::eval_sort);
+            config.vvcc_nent = entries.len() as u32;
+            config.vvcc_entries = entries.as_mut_ptr() as *mut libc::c_void;
+            unsafe {
+                self.hdl.ioctl(bhyve_api::VM_SET_CPUID, &mut config)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Query the configured (in-kernel) `cpuid` emulation state for this vCPU.
+    ///
+    /// If legacy cpuid handling is configured, the resulting [Set](cpuid::Set)
+    /// will contain no entries.
+    pub fn get_cpuid(&self) -> Result<cpuid::Set> {
+        let mut config = bhyve_api::vm_vcpu_cpuid_config {
+            vvcc_vcpuid: self.id,
+            vvcc_nent: 0,
+            ..Default::default()
+        };
+        // Query the number of entries configured in-kernel
+        //
+        // We expect an error (E2BIG) when attempting a VM_GET_CPUID with a
+        // vvcc_nent which falls below the number of entries stored in the
+        // kernel.  When that occurs, vvcc_nent will be updated with that
+        // existing count so we may allocate an array to receive it on a
+        // subsquent ioctl.
+        let count = match unsafe {
+            self.hdl.ioctl(bhyve_api::VM_GET_CPUID, &mut config)
+        } {
+            Err(_) if config.vvcc_nent != 0 => Ok(config.vvcc_nent),
+            Ok(_) => {
+                assert_eq!(config.vvcc_nent, 0);
+                Ok(0)
+            }
+            Err(e) => Err(e),
+        }?;
+
+        let mut entries = Vec::with_capacity(count as usize);
+        entries.fill(bhyve_api::vcpu_cpuid_entry::default());
+        config.vvcc_entries = entries.as_mut_ptr() as *mut libc::c_void;
+        unsafe {
+            self.hdl.ioctl(bhyve_api::VM_GET_CPUID, &mut config)?;
+        }
+
+        if config.vvcc_flags & bhyve_api::VCC_FLAG_LEGACY_HANDLING != 0 {
+            // Since the legacy handling takes care of vendor-specific handling
+            // (by nature of doing the cpuid queries against the host CPU) it
+            // ignores the INTEL_FALLBACK flag.  We must determine the vendor
+            // kind by querying it.
+            let vendor = cpuid::VendorKind::try_from(cpuid::host_query(
+                cpuid::Ident(0, None),
+            ))
+            .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+
+            return Ok(cpuid::Set::new(vendor));
+        }
+        let intel_fallback =
+            config.vvcc_flags & bhyve_api::VCC_FLAG_INTEL_FALLBACK != 0;
+        let mut set = cpuid::Set::new(match intel_fallback {
+            true => cpuid::VendorKind::Intel,
+            false => cpuid::VendorKind::Amd,
+        });
+
+        for entry in entries {
+            let (ident, value) = cpuid::from_raw(entry);
+            let conflict = set.insert(ident, value);
+            if conflict.is_some() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "conflicting entry at eax:{:x} ecx:{:x?})",
+                        ident.0, ident.1
+                    ),
+                ));
+            }
+        }
+        Ok(set)
     }
 
     /// Issues a command to reset all state for the virtual CPU (including registers and
@@ -353,6 +454,7 @@ impl MigrateMulti for Vcpu {
         output.push(migrate::VcpuMsrsV1::read(self)?.into())?;
         output.push(migrate::FpuStateV1::read(self)?.into())?;
         output.push(migrate::LapicV1::read(self)?.into())?;
+        output.push(migrate::CpuidV1::read(self)?.into())?;
 
         Ok(())
     }
@@ -370,6 +472,7 @@ impl MigrateMulti for Vcpu {
         let ms_regs: migrate::VcpuMsrsV1 = offer.take()?;
         let fpu: migrate::FpuStateV1 = offer.take()?;
         let lapic: migrate::LapicV1 = offer.take()?;
+        let cpuid: migrate::CpuidV1 = offer.take()?;
 
         run_state.write(self)?;
         gp_regs.write(self)?;
@@ -379,6 +482,7 @@ impl MigrateMulti for Vcpu {
         ms_regs.write(self)?;
         fpu.write(self)?;
         lapic.write(self)?;
+        cpuid.write(self)?;
 
         Ok(())
     }
@@ -389,6 +493,7 @@ pub mod migrate {
     use std::{convert::TryInto, io};
 
     use super::Vcpu;
+    use crate::cpuid;
     use crate::migrate::*;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name};
@@ -568,6 +673,84 @@ pub mod migrate {
         pub lvt_error: u32,
         pub icr_timer: u32,
         pub dcr_timer: u32,
+    }
+
+    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
+    pub struct CpuidEntV1 {
+        pub func: u32,
+        pub idx: Option<u32>,
+        pub data: [u32; 4],
+    }
+    impl From<CpuidEntV1> for (cpuid::Ident, cpuid::Entry) {
+        fn from(value: CpuidEntV1) -> Self {
+            (
+                cpuid::Ident(value.func, value.idx),
+                cpuid::Entry {
+                    eax: value.data[0],
+                    ebx: value.data[1],
+                    ecx: value.data[2],
+                    edx: value.data[3],
+                },
+            )
+        }
+    }
+
+    #[derive(Copy, Clone, Deserialize, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum CpuidVendorV1 {
+        Amd,
+        Intel,
+    }
+    impl From<cpuid::VendorKind> for CpuidVendorV1 {
+        fn from(value: cpuid::VendorKind) -> Self {
+            match value {
+                cpuid::VendorKind::Amd => Self::Amd,
+                cpuid::VendorKind::Intel => Self::Intel,
+            }
+        }
+    }
+    impl From<CpuidVendorV1> for cpuid::VendorKind {
+        fn from(value: CpuidVendorV1) -> Self {
+            match value {
+                CpuidVendorV1::Amd => Self::Amd,
+                CpuidVendorV1::Intel => Self::Intel,
+            }
+        }
+    }
+
+    #[derive(Clone, Deserialize, Serialize)]
+    pub struct CpuidV1 {
+        pub vendor: CpuidVendorV1,
+        pub entries: Vec<CpuidEntV1>,
+    }
+    impl Schema<'_> for CpuidV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-cpuid", 1)
+        }
+    }
+    impl From<cpuid::Set> for CpuidV1 {
+        fn from(value: cpuid::Set) -> Self {
+            let vendor = value.vendor.into();
+            let entries: Vec<_> = value
+                .iter()
+                .map(|(k, v)| CpuidEntV1 {
+                    func: k.0,
+                    idx: k.1,
+                    data: [v.eax, v.ebx, v.ecx, v.edx],
+                })
+                .collect();
+            CpuidV1 { vendor, entries }
+        }
+    }
+    impl From<CpuidV1> for cpuid::Set {
+        fn from(value: CpuidV1) -> Self {
+            let mut set = cpuid::Set::new(value.vendor.into());
+            for item in value.entries {
+                let (ident, value) = item.into();
+                set.insert(ident, value);
+            }
+            set
+        }
     }
 
     impl From<(bhyve_api::seg_desc, u16)> for SegDesc {
@@ -1079,6 +1262,15 @@ pub mod migrate {
                 .write::<bhyve_api::vdi_lapic_v1>(&self.into())?;
 
             Ok(())
+        }
+    }
+    impl VcpuReadWrite for CpuidV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
+            Ok(vcpu.get_cpuid()?.into())
+        }
+
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
+            vcpu.set_cpuid(self.into())
         }
     }
 }
