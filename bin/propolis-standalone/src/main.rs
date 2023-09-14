@@ -923,7 +923,26 @@ fn setup_instance(
     inv.register(&fwcfg_dev)?;
     inv.register(&ramfb)?;
 
+    let cpuid_profile = config::parse_cpuid(&config)?;
+
     for vcpu in machine.vcpus.iter() {
+        let vcpu_profile = if let Some(profile) = cpuid_profile.as_ref() {
+            propolis::cpuid::Specializer::new()
+                .with_vcpu_count(
+                    std::num::NonZeroU8::new(config.main.cpus).unwrap(),
+                    true,
+                )
+                .with_vcpuid(vcpu.id)
+                .with_cache_topo()
+                .clear_cpu_topo(cpuid::TopoKind::all())
+                .execute(profile.clone())
+                .context("failed to specialize cpuid profile")?
+        } else {
+            // An empty set will instruct the kernel to use the legacy
+            // fallback behavior
+            propolis::cpuid::Set::new_host()
+        };
+        vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;
     }
     drop(guard);

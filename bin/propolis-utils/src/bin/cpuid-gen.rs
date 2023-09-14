@@ -96,7 +96,7 @@ impl PartialOrd for CpuidKey {
     }
 }
 
-/// Query CPUID through bhyve-defined masks
+/// Query `cpuid` through bhyve-defined masks
 fn query_cpuid(vm: &VmmFd, eax: u32, ecx: u32) -> anyhow::Result<Cpuid> {
     let mut data = bhyve_api::vm_legacy_cpuid {
         vlc_eax: eax,
@@ -107,7 +107,7 @@ fn query_cpuid(vm: &VmmFd, eax: u32, ecx: u32) -> anyhow::Result<Cpuid> {
     Ok(Cpuid::from(&data))
 }
 
-/// Query CPUID directly from host CPU
+/// Query `cpuid` directly from host CPU
 fn query_raw_cpuid(eax: u32, ecx: u32) -> Cpuid {
     let mut res = Cpuid::default();
 

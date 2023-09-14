@@ -11,6 +11,7 @@ bitflags.workspace = true
 bitstruct.workspace = true
 byteorder.workspace = true
 lazy_static.workspace = true
+enum-iterator.workspace = true
 num_enum.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true

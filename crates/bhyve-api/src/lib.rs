@@ -578,7 +578,7 @@ pub enum ApiVersion {
     /// Made hlt-on-exit a required CPU feature, and enabled by default in vmm
     V6 = 6,
 
-    /// Adds ability to control CPUID results for guest vCPUs
+    /// Adds ability to control `cpuid` results for guest vCPUs
     V5 = 5,
 }
 impl ApiVersion {

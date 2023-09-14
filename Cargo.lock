@@ -665,6 +665,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpuid_profile_config"
+version = "0.0.0"
+dependencies = [
+ "propolis",
+ "serde",
+ "serde_derive",
+ "thiserror",
+ "toml 0.7.6",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3029,6 +3040,7 @@ dependencies = [
  "crucible-client-types",
  "dladm",
  "dlpi",
+ "enum-iterator",
  "erased-serde",
  "futures",
  "ispf",
@@ -3172,6 +3184,7 @@ dependencies = [
 name = "propolis-server-config"
 version = "0.0.0"
 dependencies = [
+ "cpuid_profile_config",
  "serde",
  "serde_derive",
  "thiserror",
@@ -3210,6 +3223,7 @@ dependencies = [
 name = "propolis-standalone-config"
 version = "0.0.0"
 dependencies = [
+ "cpuid_profile_config",
  "num_enum 0.5.11",
  "serde",
  "serde_derive",

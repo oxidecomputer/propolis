@@ -11,11 +11,12 @@ use anyhow::Context;
 use serde::Deserialize;
 
 use propolis::block;
+use propolis::cpuid;
 use propolis::hw::pci::Bdf;
 use propolis::inventory::ChildRegister;
 
-use propolis_standalone_config::Device;
 pub use propolis_standalone_config::{Config, SnapshotTag};
+use propolis_standalone_config::{CpuVendor, CpuidEntry, Device};
 
 #[derive(Deserialize)]
 struct FileConfig {
@@ -116,6 +117,34 @@ pub fn parse_bdf(v: &str) -> Option<Bdf> {
         Bdf::new(fields[0], fields[1], fields[2])
     } else {
         None
+    }
+}
+
+pub fn parse_cpuid(config: &Config) -> anyhow::Result<Option<cpuid::Set>> {
+    if let Some(profile) = config.cpuid_profile() {
+        let vendor = match profile.vendor {
+            CpuVendor::Amd => cpuid::VendorKind::Amd,
+            CpuVendor::Intel => cpuid::VendorKind::Intel,
+        };
+        let mut set = cpuid::Set::new(vendor);
+        let entries: Vec<CpuidEntry> = profile.try_into()?;
+        for entry in entries {
+            let conflict = set.insert(
+                cpuid::Ident(entry.func, entry.idx),
+                cpuid::Entry::from(entry.values),
+            );
+
+            if conflict.is_some() {
+                anyhow::bail!(
+                    "conflicing entry at func:{:#?} idx:{:#?}",
+                    entry.func,
+                    entry.idx
+                )
+            }
+        }
+        Ok(Some(set))
+    } else {
+        Ok(None)
     }
 }
 

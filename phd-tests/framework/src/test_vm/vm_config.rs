@@ -5,7 +5,6 @@
 //! Structures that express how a VM should be configured.
 
 use std::{
-    collections::BTreeMap,
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
@@ -175,13 +174,10 @@ impl ConfigRequest {
     }
 
     fn write_config_toml(&self, toml_path: &Path) -> anyhow::Result<()> {
-        let config = config::Config::new(
-            self.bootrom_path.clone(),
-            config::Chipset { options: BTreeMap::default() },
-            BTreeMap::new(),
-            BTreeMap::new(),
-            Vec::new(),
-        );
+        let config = config::Config {
+            bootrom: self.bootrom_path.clone(),
+            ..Default::default()
+        };
 
         let serialized = toml::ser::to_string(&config).unwrap();
         let mut cfg_file = std::fs::OpenOptions::new()
