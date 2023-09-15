@@ -159,7 +159,7 @@ impl AtaController {
         let device_id = self.channels[channel_id].device_selected;
         let interrupt_pending = self.channels[channel_id].devices[device_id]
             .as_ref()
-            .map_or(false, |device| device.interrupt());
+            .map_or(false, |device| device.interrupt_pending());
 
         if let Some(pin) = self.channels[channel_id].ata_pin.as_ref() {
             if interrupt_pending && !pin.is_asserted() {

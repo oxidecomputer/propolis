@@ -690,7 +690,7 @@ fn build_log() -> slog::Logger {
 
     let (dtrace_drain, probe_reg) = slog_dtrace::Dtrace::new();
 
-    let filtered_main = slog::LevelFilter::new(main_drain, slog::Level::Info);
+    let filtered_main = slog::LevelFilter::new(main_drain, slog::Level::Debug);
 
     let log = slog::Logger::root(
         slog::Duplicate::new(filtered_main.fuse(), dtrace_drain.fuse()).fuse(),

@@ -3054,6 +3054,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "unwrap-infallible",
  "usdt",
  "uuid",
  "viona_api",
@@ -4821,6 +4822,12 @@ name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
+
+[[package]]
+name = "unwrap-infallible"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "151ac09978d3c2862c4e39b557f4eceee2cc72150bc4cb4f16abf061b6e381fb"
 
 [[package]]
 name = "url"

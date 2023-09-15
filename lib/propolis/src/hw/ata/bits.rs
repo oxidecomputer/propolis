@@ -40,6 +40,7 @@ pub enum Commands {
     WriteDmaQueuedExt = 0x36,
     ExecuteDeviceDiagnostics = 0x90,
     InitializeDeviceParameters = 0x91,
+    DownloadMicrocode = 0x92,
     Packet = 0xa0,
     IdentifyPacketDevice = 0xa1,
     SetMultipleMode = 0xc6,
@@ -55,6 +56,12 @@ pub enum Commands {
     CasheFlushExt = 0xea,
     IdenfityDevice = 0xec,
     SetFeatures = 0xef,
+}
+
+impl From<Commands> for u8 {
+    fn from(c: Commands) -> Self {
+        c as u8
+    }
 }
 
 impl PartialEq<Commands> for u8 {
@@ -73,34 +80,37 @@ impl TryFrom<u8> for Commands {
     type Error = AtaError;
 
     fn try_from(code: u8) -> Result<Self, Self::Error> {
+        use Commands::*;
+
         match code {
-            0x00 => Ok(Commands::Nop),
-            0x08 => Ok(Commands::DeviceReset),
-            0x10 => Ok(Commands::Recalibrate),
-            0x20 => Ok(Commands::ReadSectors),
-            0x21 => Ok(Commands::ReadSectorsWithoutRetry),
-            0x24 => Ok(Commands::ReadSectorsExt),
-            0x25 => Ok(Commands::ReadDmaExt),
-            0x26 => Ok(Commands::ReadDmaQueuedExt),
-            0x35 => Ok(Commands::WriteDmaExt),
-            0x36 => Ok(Commands::WriteDmaQueuedExt),
-            0x90 => Ok(Commands::ExecuteDeviceDiagnostics),
-            0x91 => Ok(Commands::InitializeDeviceParameters),
-            0xa0 => Ok(Commands::Packet),
-            0xa1 => Ok(Commands::IdentifyPacketDevice),
-            0xc6 => Ok(Commands::SetMultipleMode),
-            0xc7 => Ok(Commands::ReadDmaQueued),
-            0xc8 => Ok(Commands::ReadDma),
-            0xc9 => Ok(Commands::ReadDmaWithoutRetry),
-            0xca => Ok(Commands::WriteDma),
-            0xcb => Ok(Commands::WriteDmaWithoutRetry),
-            0xcc => Ok(Commands::WriteDmaQueued),
-            0xe1 => Ok(Commands::IdleImmediate),
-            0xe3 => Ok(Commands::Idle),
-            0xe7 => Ok(Commands::CacheFlush),
-            0xea => Ok(Commands::CasheFlushExt),
-            0xec => Ok(Commands::IdenfityDevice),
-            0xef => Ok(Commands::SetFeatures),
+            0x00 => Ok(Nop),
+            0x08 => Ok(DeviceReset),
+            0x10 => Ok(Recalibrate),
+            0x20 => Ok(ReadSectors),
+            0x21 => Ok(ReadSectorsWithoutRetry),
+            0x24 => Ok(ReadSectorsExt),
+            0x25 => Ok(ReadDmaExt),
+            0x26 => Ok(ReadDmaQueuedExt),
+            0x35 => Ok(WriteDmaExt),
+            0x36 => Ok(WriteDmaQueuedExt),
+            0x90 => Ok(ExecuteDeviceDiagnostics),
+            0x91 => Ok(InitializeDeviceParameters),
+            0x92 => Ok(DownloadMicrocode),
+            0xa0 => Ok(Packet),
+            0xa1 => Ok(IdentifyPacketDevice),
+            0xc6 => Ok(SetMultipleMode),
+            0xc7 => Ok(ReadDmaQueued),
+            0xc8 => Ok(ReadDma),
+            0xc9 => Ok(ReadDmaWithoutRetry),
+            0xca => Ok(WriteDma),
+            0xcb => Ok(WriteDmaWithoutRetry),
+            0xcc => Ok(WriteDmaQueued),
+            0xe1 => Ok(IdleImmediate),
+            0xe3 => Ok(Idle),
+            0xe7 => Ok(CacheFlush),
+            0xea => Ok(CasheFlushExt),
+            0xec => Ok(IdenfityDevice),
+            0xef => Ok(SetFeatures),
             _ => Err(AtaError::UnknownCommandCode(code)),
         }
     }

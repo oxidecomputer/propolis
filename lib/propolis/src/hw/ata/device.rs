@@ -4,7 +4,10 @@
 
 #![allow(dead_code)]
 
+use std::convert::Infallible;
+
 use bitstruct::FromRaw;
+use unwrap_infallible::UnwrapInfallible;
 
 use crate::hw::ata::bits::Commands::*;
 use crate::hw::ata::bits::Registers::*;
@@ -47,6 +50,141 @@ impl AtaDevice {
         }
     }
 
+    /// Read a word of data from the Data port.
+    pub fn read_data(&mut self) -> u16 {
+        use Operations::*;
+
+        match self.operation {
+            // Make sure a DataIn operation is in progress and Status.DRQ is
+            // set.
+            Some(DataIn(data_in)) if self.registers.status.data_request() => {
+                let data = self.sector[data_in.sector_ptr];
+
+                // Update the operation state.
+                if data_in.done() {
+                    self.operation = None;
+                    self.registers.status.set_data_request(false);
+                } else if data_in.last_sector_word() {
+                    self.operation = Some(DataIn(data_in.next_sector()));
+
+                    // TODO (arjen): Handle multiple sectors per interrupt.
+                    self.irq = true;
+                } else {
+                    self.operation = Some(DataIn(data_in.next_word()));
+                }
+
+                data
+            }
+
+            // Return a safe default if no DataIn operation in progress.
+            _ => 0x0,
+        }
+    }
+
+    /// Write the given word of data to the Data port.
+    pub fn write_data(&mut self, _data: u16) {}
+
+    /// Read one of the Command Block or Control Block registers.
+    pub fn read_register(&mut self, reg: Registers) -> u8 {
+        let hob = self.registers.device_control.high_order_byte();
+
+        match reg {
+            Error => self.registers.error.0,
+            SectorCount => self.registers.sector_count.read_u8(hob),
+            LbaLow => self.registers.lba_low.read_u8(hob),
+            LbaMid => self.registers.lba_mid.read_u8(hob),
+            LbaHigh => self.registers.lba_high.read_u8(hob),
+            Device => self.registers.device.0,
+            Status => {
+                // Reading Status clears the device interrupt.
+                self.irq = false;
+                self.registers.status.0
+            }
+            AltStatus => self.registers.status.0,
+            _ => panic!(),
+        }
+    }
+
+    /// Write to one of the Command Block or Control Block registers.
+    pub fn write_register(&mut self, reg: Registers, value: u8) {
+        match reg {
+            Features => self.registers.features.write(value),
+            SectorCount => self.registers.sector_count.write(value),
+            LbaLow => self.registers.lba_low.write(value),
+            LbaMid => self.registers.lba_mid.write(value),
+            LbaHigh => self.registers.lba_high.write(value),
+            Device => self.registers.device.0 = value,
+            DeviceControl => {
+                self.registers.device_control.0 = value;
+                println!(
+                    "     {} interrupt enabled: {}",
+                    self.id,
+                    !self.registers.device_control.interrupt_enabled_n()
+                );
+            }
+            Command => self.execute_command(value),
+            _ => panic!(),
+        }
+
+        // Per ATA/ATAPI-6, 6.20, clear DeviceControl.HOB when any of the
+        // Control Block registers get written.
+        if reg != DeviceControl {
+            self.registers.device_control.set_high_order_byte(false);
+        }
+    }
+
+    /// Execute the given command.
+    pub fn execute_command(&mut self, value: u8) {
+        if let Err(e) = Commands::try_from(value).and_then(|c| {
+            // Initiate one of the protocols based on the command.
+            match c {
+                DeviceReset => {
+                    todo!()
+                }
+                Recalibrate => self.execute_non_data_command(|_| Ok(())),
+                ExecuteDeviceDiagnostics => {
+                    Ok(self.execute_device_diagnostics().unwrap_infallible())
+                }
+                IdenfityDevice => {
+                    self.execute_pio_data_in_command(Self::set_identity)
+                }
+                InitializeDeviceParameters => self.execute_non_data_command(
+                    Self::initialize_device_parameters,
+                ),
+                SetFeatures => {
+                    self.execute_non_data_command(Self::set_features)
+                }
+                SetMultipleMode => {
+                    self.execute_non_data_command(Self::set_multiple_mode)
+                }
+                _ => Err(UnsupportedCommand(c)),
+
+                // Commands::ReadSectors => {
+                //     // TODO (arjen): Seek to address.
+                //     self.operation = Some(Operations::ReadSectors(self.registers.sector_count.read_current().into()));
+                //     self.continue_operation()
+                // }
+            }
+        }) {
+            // This sets the high level Error.ABRT and Status.ERR bits. The
+            // protocol is expected to set additional error bits as appropriate.
+            self.abort_command();
+
+            slog::warn!(self.log, "command aborted"; e);
+        }
+    }
+
+    #[inline]
+    pub fn interrupts_enabled(&self) -> bool {
+        !self.registers.device_control.interrupt_enabled_n()
+    }
+
+    /// Return whether or not an interrupt is pending for this device.
+    #[inline]
+    pub fn interrupt_pending(&self) -> bool {
+        self.interrupts_enabled() && self.irq
+    }
+
     pub fn set_software_reset(&mut self, software_reset: bool) {
         if software_reset {
             self.registers.status.set_busy(true);
@@ -54,23 +192,49 @@ impl AtaDevice {
             && !software_reset
         {
             slog::info!(self.log, "software reset");
-            self.execute_device_diagnostics().unwrap();
+            self.execute_device_diagnostics().unwrap_infallible();
         }
 
         self.registers.device_control.set_software_reset(software_reset);
     }
 
-    /// Return the Status Register.
-    pub fn status(&self) -> &StatusRegister {
-        &self.registers.status
+    fn execute_non_data_command<F>(&mut self, op: F) -> Result<(), AtaError>
+    where
+        F: FnOnce(&mut Self) -> Result<(), AtaError>,
+    {
+        self.check_not_busy()?;
+        self.check_device_ready()?;
+
+        op(self)?;
+
+        self.registers.status.set_busy(false);
+        self.registers.status.set_device_ready(true);
+        self.registers.status.set_data_request(false);
+        self.registers.status.set_error(self.registers.error.0 != 0x0);
+        self.irq = true;
+
+        Ok(())
     }
 
-    /// Return whether or not an interrupt is pending.
-    pub fn interrupt(&self) -> bool {
-        !self.registers.device_control.interrupt_enabled_n() && self.irq
+    fn execute_pio_data_in_command<F>(&mut self, op: F) -> Result<(), AtaError>
+    where
+        F: FnOnce(&mut Self) -> Result<DataInOut, AtaError>,
+    {
+        self.check_not_busy()?;
+        self.check_device_ready()?;
+
+        self.operation = Some(Operations::DataIn(op(self)?));
+
+        self.registers.status.set_busy(false);
+        self.registers.status.set_device_ready(true);
+        self.registers.status.set_data_request(true);
+        self.registers.status.set_error(self.registers.error.0 != 0x0);
+        self.irq = true;
+
+        Ok(())
     }
 
-    fn execute_device_diagnostics(&mut self) -> Result<(), AtaError> {
+    fn execute_device_diagnostics(&mut self) -> Result<(), Infallible> {
         // Set the diagnostics passed code. For a non-existent
         // device the channel will default to a value of 0x7f.
         self.registers.error = ErrorRegister::from_raw(0x1);
@@ -82,39 +246,6 @@ impl AtaDevice {
         Ok(())
     }
 
-    fn complete_command_with_data_ready(
-        &mut self,
-        data_ready: bool,
-    ) -> Result<bool, AtaError> {
-        self.registers.error = ErrorRegister::from_raw(0x0);
-
-        self.registers.status.set_error(false);
-        self.registers.status.set_data_request(data_ready);
-        self.registers.status.set_device_fault(false);
-        self.registers.status.set_busy(false);
-
-        Ok(true)
-    }
-
-    fn continue_operation(&mut self) -> Result<bool, AtaError> {
-        match self.operation {
-            Some(Operations::ReadSectors(sectors_remaining)) => {
-                if sectors_remaining > 0 {
-                    self.operation =
-                        Some(Operations::ReadSectors(sectors_remaining - 1));
-                    self.sector = [0u16; 256];
-                    self.sector_ptr = 0;
-
-                    self.complete_command_with_data_ready(true)
-                } else {
-                    self.operation = None;
-                    self.complete_command_with_data_ready(false)
-                }
-            }
-            None => self.complete_command_with_data_ready(false).and(Ok(false)),
-        }
-    }
-
     /// Write the ATA device signature to the appropriate registers. See
     /// ATA/ATAPI-6, 9.12 for the values.
     fn set_signature(&mut self) {
@@ -124,17 +255,17 @@ impl AtaDevice {
         self.registers.lba_low = ata_signature.lba_low;
         self.registers.lba_mid = ata_signature.lba_mid;
         self.registers.lba_high = ata_signature.lba_high;
+
         self.registers.device.0 = 0x0;
     }
 
     /// Write the ATA/ATAPI-6 IDENTITY sector to the buffer. See ATA/ATAPI-6,
     /// 8.15.8 for details on the fields.
-    fn set_identity(&mut self) {
+    fn set_identity(&mut self) -> Result<DataInOut, AtaError> {
         // The IDENTITY sector has a significant amount of empty/don't care
         // space. As such it's easier to simply clear the buffer and only fill
         // the words needed.
         self.sector = [0u16; 256];
-        self.sector_ptr = 0;
 
         // Set a serial number.
         copy_str("0123456789", &mut self.sector[10..20]);
@@ -187,6 +318,10 @@ impl AtaDevice {
 
         // Hardware reset result.
         self.sector[93] = 0x4101 | if self.id == 0 { 0x0006 } else { 0x0600 };
+
+        // Set the PIO Data In protocol state with the sector pointer at 0 and
+        // no remaining sectors.
+        Ok(DataInOut::default())
     }
 
     // INITIALIZE DEVICE PARAMETERS, ATA/ATAPI-4, 8.16.
@@ -267,140 +402,6 @@ impl AtaDevice {
         self.registers.error.set_abort(true);
         self.registers.status.set_error(true);
     }
-
-    fn execute_non_data_command<F>(&mut self, op: F) -> Result<(), AtaError>
-    where
-        F: FnOnce(&mut Self) -> Result<(), AtaError>,
-    {
-        self.check_not_busy()?;
-        self.check_device_ready()?;
-
-        op(self)?;
-
-        self.registers.status.set_busy(false);
-        self.registers.status.set_device_ready(true);
-        self.registers.status.set_data_request(false);
-        self.registers.status.set_error(self.registers.error.0 != 0x0);
-        self.irq = true;
-
-        Ok(())
-    }
-
-    /// Execute the given command and return whether or not the Controller
-    /// should raise an interrupt when done.
-    pub fn execute_command(&mut self, value: u8) {
-        if let Err(_e) = Commands::try_from(value).and_then(|c| {
-            // Initiate one of the protocols based on the command.
-            match c {
-                DeviceReset => {
-                    todo!()
-                }
-                Recalibrate => self.execute_non_data_command(|_| Ok(())),
-                ExecuteDeviceDiagnostics => self.execute_device_diagnostics(),
-                InitializeDeviceParameters => self.execute_non_data_command(
-                    Self::initialize_device_parameters,
-                ),
-                SetFeatures => {
-                    self.execute_non_data_command(Self::set_features)
-                }
-                SetMultipleMode => {
-                    self.execute_non_data_command(Self::set_multiple_mode)
-                }
-                _ => Err(UnsupportedCommand(c)),
-                // IDENTIFY DEVICE, ATA/ATAPI-6, 8.15.
-                // Commands::IdenfityDevice => {
-                //     self.set_identity();
-                //     self.complete_command_with_data_ready(true)
-                // }
-                // Commands::ReadSectors => {
-                //     // TODO (arjen): Seek to address.
-                //     self.operation = Some(Operations::ReadSectors(self.registers.sector_count.read_current().into()));
-                //     self.continue_operation()
-                // }
-            }
-        }) {
-            // This sets the high level Error.ABRT and Status.ERR bits. The
-            // protocol is expected to set additional error bits as appropriate.
-            self.abort_command();
-            // TODO (arjen): Log error?
-        }
-    }
-
-    pub fn read_data(&mut self) -> u16 {
-        let data = self.sector[self.sector_ptr];
-
-        if self.registers.status.data_request() {
-            if self.sector_ptr >= self.sector.len() - 1 {
-                self.sector_ptr = 0;
-                // Clear the DRQ bit to signal the host no more data is
-                // available.
-                self.registers.status.set_data_request(false);
-            } else {
-                self.sector_ptr += 1;
-            }
-        }
-
-        data
-    }
-
-    pub fn write_data(&mut self, _data: u16) {}
-
-    pub fn read_register(&mut self, reg: Registers) -> u8 {
-        match reg {
-            Error => self.registers.error.0,
-            SectorCount => self
-                .registers
-                .sector_count
-                .read_u8(self.registers.device_control.high_order_byte()),
-            LbaLow => self
-                .registers
-                .lba_low
-                .read_u8(self.registers.device_control.high_order_byte()),
-            LbaMid => self
-                .registers
-                .lba_mid
-                .read_u8(self.registers.device_control.high_order_byte()),
-            LbaHigh => self
-                .registers
-                .lba_high
-                .read_u8(self.registers.device_control.high_order_byte()),
-            Device => self.registers.device.0,
-            Status => {
-                // Reading Status clears the device interrupt.
-                self.irq = false;
-                self.registers.status.0
-            }
-            AltStatus => self.registers.status.0,
-            _ => panic!(),
-        }
-    }
-
-    pub fn write_register(&mut self, reg: Registers, value: u8) {
-        match reg {
-            Features => self.registers.features.write(value),
-            SectorCount => self.registers.sector_count.write(value),
-            LbaLow => self.registers.lba_low.write(value),
-            LbaMid => self.registers.lba_mid.write(value),
-            LbaHigh => self.registers.lba_high.write(value),
-            Device => self.registers.device.0 = value,
-            DeviceControl => {
-                self.registers.device_control.0 = value;
-                println!(
-                    "     {} interrupt enabled: {}",
-                    self.id,
-                    !self.registers.device_control.interrupt_enabled_n()
-                );
-            }
-            Command => self.execute_command(value),
-            _ => panic!(),
-        }
-
-        // Per ATA/ATAPI-6, 6.20, clear the HOB when any of the Control Block
-        // registers get written.
-        if reg != DeviceControl {
-            self.registers.device_control.set_high_order_byte(false);
-        }
-    }
 }
 
 struct DeviceRegisters {
@@ -471,9 +472,50 @@ impl FifoRegister {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DataInOut {
+    sector_ptr: usize,
+    sectors_remaining: usize,
+}
+
+impl DataInOut {
+    #[inline]
+    pub fn last_sector_word(&self) -> bool {
+        self.sector_ptr
+            >= crate::hw::ata::BLOCK_SIZE / std::mem::size_of::<u16>() - 1
+    }
+
+    #[inline]
+    pub fn done(&self) -> bool {
+        self.last_sector_word() && self.sectors_remaining == 0
+    }
+
+    #[inline]
+    pub fn next_word(&self) -> Self {
+        let sector_ptr = self.sector_ptr + 1;
+        Self { sector_ptr, ..*self }
+    }
+
+    #[inline]
+    pub fn next_sector(&self) -> Self {
+        let sectors_remaining = self.sectors_remaining - 1;
+        Self { sectors_remaining, ..*self }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operations {
-    ReadSectors(usize),
+    DataIn(DataInOut),
+    DataOut(DataInOut),
+}
+
+impl Operations {
+    pub fn is_data_in(&self) -> bool {
+        match self {
+            Self::DataIn(_) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Copy the given str s with appropriate padding into the given word buffer

@@ -4,12 +4,15 @@
 
 #![allow(dead_code)]
 
+use slog::{Record, Result, Serializer, KV};
 use thiserror::Error;
 
 mod bits;
 pub mod controller;
 pub mod device;
 pub mod geometry;
+#[cfg(test)]
+mod test;
 
 pub use bits::{Commands, Registers};
 pub use controller::AtaController;
@@ -39,6 +42,16 @@ pub enum AtaError {
 
     #[error("feature not supported")]
     FeatureNotSupported,
+}
+
+impl KV for AtaError {
+    fn serialize(
+        &self,
+        _rec: &Record,
+        serializer: &mut dyn Serializer,
+    ) -> Result {
+        serializer.emit_str("error", &self.to_string())
+    }
 }
 
 #[usdt::provider(provider = "propolis")]

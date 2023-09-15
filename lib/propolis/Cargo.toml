@@ -31,6 +31,7 @@ serde.workspace = true
 slog.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
+unwrap-infallible.workspace = true
 usdt = { workspace = true, features = ["asm"] }
 uuid.workspace = true
 viona_api.workspace = true
