@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::hw::ata::{bits::*, device::*, probes, AtaError};
+use crate::hw::ata::{bits::*, device::*};
 use crate::intr_pins::IntrPin;
 
 pub struct AtaController {
@@ -37,31 +37,52 @@ impl AtaController {
         self.channels[channel_id].devices[device_id] = Some(device);
     }
 
-    pub fn read_register(&mut self, channel_id: usize, r: Registers) -> u32 {
-        let device_id = self.channels[channel_id].device_selected;
-        let result = if let Some(device) =
-            self.channels[channel_id].devices[device_id].as_mut()
-        {
-            match r {
-                Registers::Data16 => device.read_data16().map(Into::into),
-                Registers::Data32 => device.read_data32(),
-                _ => device.read_register(r).map(Into::into),
-            }
-        } else {
-            Err(AtaError::NoDevice)
-        };
+    #[inline]
+    pub fn read_data16(&mut self, channel_id: usize) -> u16 {
+        self.channels[channel_id]
+            .maybe_device()
+            .map_or(u16::MAX, |device| device.read_data())
+    }
+
+    #[inline]
+    pub fn read_data32(&mut self, channel_id: usize) -> u32 {
+        self.channels[channel_id].maybe_device().map_or(u32::MAX, |device| {
+            let low = u32::from(device.read_data());
+            let high = u32::from(device.read_data());
+            high << 16 | low
+        })
+    }
+
+    #[inline]
+    pub fn write_data16(&mut self, channel_id: usize, data: u16) {
+        self.channels[channel_id]
+            .maybe_device()
+            .map(|device| device.write_data(data));
+    }
+
+    #[inline]
+    pub fn write_data32(&mut self, channel_id: usize, data: u32) {
+        self.channels[channel_id].maybe_device().map(|device| {
+            device.write_data(data as u16);
+            device.write_data((data >> 16) as u16);
+        });
+    }
+
+    pub fn read_register(&mut self, channel_id: usize, reg: Registers) -> u8 {
+        let value =
+            if let Some(device) = self.channels[channel_id].maybe_device() {
+                device.read_register(reg)
+            } else if reg == Registers::Status || reg == Registers::AltStatus {
+                0x7f
+            } else {
+                0xff
+            };
 
         self.update_channel_interrupt(channel_id);
 
-        // Determine the data value returned to the caller.
-        let value = match (result, r) {
-            (Ok(val), _) => val,
-            (_, _) => 0x7f,
-        };
-
         println!(
             "R: {}:{} {:?} {:02x}",
-            channel_id, self.channels[channel_id].device_selected, r, value
+            channel_id, self.channels[channel_id].device_selected, reg, value
         );
 
         value
@@ -70,11 +91,9 @@ impl AtaController {
     pub fn write_register(
         &mut self,
         channel_id: usize,
-        r: Registers,
-        word: u32,
+        reg: Registers,
+        value: u8,
     ) {
-        let byte = word as u8;
-
         // A physical ATA channel is a shared medium where both attached devices
         // receive all writes. The devices use the DEV bit in the Device
         // register to determine whether or not to process the write. When
@@ -83,37 +102,33 @@ impl AtaController {
         // them, but there a few exceptions. This function handles these as
         // appropriate.
         //
-        // For starters, the selected device toggle should be updated when a
-        // Device register gets written. Failing to do so would mean that the
-        // Device register write does not get applied to the device now being
-        // addressed, which means the HOB and head bits might get missed.
-        if r == Registers::Device {
+        // For starters, the device selector should be updated when a Device
+        // register gets written. Failing to do so would mean that the Device
+        // register write does not get applied to the device now being
+        // addressed, causing the HOB and head bits to get missed.
+        if reg == Registers::Device {
             self.channels[channel_id].device_selected =
-                DeviceRegister(byte).device_select().into();
+                DeviceRegister(value).device_select().into();
         }
-
-        let device_id = self.channels[channel_id].device_selected;
 
         println!(
             "W: {}:{} {:?} {:02x}",
-            channel_id, self.channels[channel_id].device_selected, r, word
+            channel_id, self.channels[channel_id].device_selected, reg, value
         );
 
         // If an EXECUTE DEVICE DIAGNOSTICS command is issued the command should
         // be broadcasted to all attached devices and the device select bit for
         // the channel should be cleared.
-        if r == Registers::Command
-            && byte == Commands::ExecuteDeviceDiagnostics as u8
+        if reg == Registers::Command
+            && value == Commands::ExecuteDeviceDiagnostics
         {
             for maybe_device in self.channels[channel_id].devices.iter_mut() {
                 // The EXECUTE DEVICE DIAGNOSTICS command is to be implemented
                 // by every device and is expected to succeed. Simply unwrapping
                 // may be good enough for now.
-                maybe_device.as_mut().map(|device| {
-                    device
-                        .execute_command(Commands::ExecuteDeviceDiagnostics)
-                        .unwrap()
-                });
+                maybe_device
+                    .as_mut()
+                    .map(|device| device.execute_command(value));
             }
 
             self.channels[channel_id].device_selected = 0;
@@ -121,34 +136,19 @@ impl AtaController {
 
         // The DeviceControl.SRST bit should be processed by all attached
         // devices, triggering a soft reset when appropriate.
-        if r == Registers::DeviceControl {
+        if reg == Registers::DeviceControl {
             for maybe_device in self.channels[channel_id].devices.iter_mut() {
                 maybe_device.as_mut().map(|device| {
                     device.set_software_reset(
-                        DeviceControlRegister(byte).software_reset(),
+                        DeviceControlRegister(value).software_reset(),
                     )
                 });
             }
         }
 
-        // All other writes can be issued to the currently selected device.
-        let _result = self.channels[channel_id].devices[device_id]
-            .as_mut()
-            .ok_or(AtaError::NoDevice)
-            .map(|device| -> Result<(), AtaError> {
-                match r {
-                    Registers::Data16 => device.write_data(word as u16),
-                    Registers::Data32 => {
-                        device.write_data(word as u16)?;
-                        device.write_data((word >> 16) as u16)
-                    }
-                    Registers::Command => {
-                        probes::ata_cmd!(|| byte);
-                        device.execute_command(Commands::try_from(byte)?)
-                    }
-                    _ => device.write_register(r, byte),
-                }
-            });
+        if let Some(device) = self.channels[channel_id].maybe_device() {
+            device.write_register(reg, value)
+        }
 
         self.update_channel_interrupt(channel_id);
     }
@@ -185,4 +185,10 @@ struct Channel {
     devices: [Option<AtaDevice>; 2],
     device_selected: usize,
     ata_pin: Option<Box<dyn IntrPin>>,
+}
+
+impl Channel {
+    pub fn maybe_device(&mut self) -> Option<&mut AtaDevice> {
+        self.devices[self.device_selected].as_mut()
+    }
 }

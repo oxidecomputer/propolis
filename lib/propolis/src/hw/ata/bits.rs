@@ -29,6 +29,7 @@ pub enum Registers {
 #[repr(u8)]
 pub enum Commands {
     Nop = 0x00,
+    DeviceReset = 0x08,
     Recalibrate = 0x10,
     ReadSectors = 0x20,
     ReadSectorsWithoutRetry = 0x21,
@@ -56,9 +57,9 @@ pub enum Commands {
     SetFeatures = 0xef,
 }
 
-impl PartialEq<Commands> for u16 {
+impl PartialEq<Commands> for u8 {
     fn eq(&self, c: &Commands) -> bool {
-        *self as u8 == *c as u8
+        *self == *c as u8
     }
 }
 
@@ -74,6 +75,7 @@ impl TryFrom<u8> for Commands {
     fn try_from(code: u8) -> Result<Self, Self::Error> {
         match code {
             0x00 => Ok(Commands::Nop),
+            0x08 => Ok(Commands::DeviceReset),
             0x10 => Ok(Commands::Recalibrate),
             0x20 => Ok(Commands::ReadSectors),
             0x21 => Ok(Commands::ReadSectorsWithoutRetry),

@@ -22,6 +22,9 @@ pub enum AtaError {
     #[error("no device")]
     NoDevice,
 
+    #[error("device is busy")]
+    DeviceBusy,
+
     #[error("device not ready")]
     DeviceNotReady,
 

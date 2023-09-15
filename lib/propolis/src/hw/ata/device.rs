@@ -6,9 +6,11 @@
 
 use bitstruct::FromRaw;
 
+use crate::hw::ata::bits::Commands::*;
+use crate::hw::ata::bits::Registers::*;
 use crate::hw::ata::bits::*;
 use crate::hw::ata::geometry::*;
-use crate::hw::ata::AtaError;
+use crate::hw::ata::{AtaError, AtaError::*};
 
 pub struct AtaDevice {
     sector: [u16; 256],
@@ -68,7 +70,7 @@ impl AtaDevice {
         !self.registers.device_control.interrupt_enabled_n() && self.irq
     }
 
-    fn execute_device_diagnostics(&mut self) -> Result<bool, AtaError> {
+    fn execute_device_diagnostics(&mut self) -> Result<(), AtaError> {
         // Set the diagnostics passed code. For a non-existent
         // device the channel will default to a value of 0x7f.
         self.registers.error = ErrorRegister::from_raw(0x1);
@@ -77,7 +79,7 @@ impl AtaDevice {
         self.registers.status = StatusRegister::from_raw(1 << 6 | 1 << 4);
 
         self.set_signature();
-        Ok(true)
+        Ok(())
     }
 
     fn complete_command_with_data_ready(
@@ -94,17 +96,12 @@ impl AtaDevice {
         Ok(true)
     }
 
-    fn abort_command(&mut self, e: AtaError) -> Result<bool, AtaError> {
-        self.registers.error.set_abort(true);
-        self.registers.status.set_error(true);
-        Err(e)
-    }
-
     fn continue_operation(&mut self) -> Result<bool, AtaError> {
         match self.operation {
             Some(Operations::ReadSectors(sectors_remaining)) => {
                 if sectors_remaining > 0 {
-                    self.operation = Some(Operations::ReadSectors(sectors_remaining - 1));
+                    self.operation =
+                        Some(Operations::ReadSectors(sectors_remaining - 1));
                     self.sector = [0u16; 256];
                     self.sector_ptr = 0;
 
@@ -114,78 +111,8 @@ impl AtaDevice {
                     self.complete_command_with_data_ready(false)
                 }
             }
-            None =>
-                self.complete_command_with_data_ready(false).and(Ok(false)),
+            None => self.complete_command_with_data_ready(false).and(Ok(false)),
         }
-    }
-
-    /// Execute the given command and return whether or not the Controller
-    /// should raise an interrupt when done.
-    pub fn execute_command(&mut self, c: Commands) -> Result<(), AtaError> {
-        // if !self.registers.status.device_ready() {
-        //     return Err(AtaError::DeviceNotReady);
-        // }
-
-        self.irq = self.irq
-            || match c {
-                // EXECUTE DEVICE DIAGNOSTICS, ATA/ATAPI-6, 8.11.
-                Commands::ExecuteDeviceDiagnostics => {
-                    self.execute_device_diagnostics()
-                }
-
-                Commands::Recalibrate => //panic!(),
-                    self.complete_command_with_data_ready(false),
-
-                // IDENTIFY DEVICE, ATA/ATAPI-6, 8.15.
-                Commands::IdenfityDevice => {
-                    self.set_identity();
-                    self.complete_command_with_data_ready(true)
-                }
-
-                // INITIALIZE DEVICE PARAMETERS, ATA/ATAPI-4, 8.16.
-                Commands::InitializeDeviceParameters => {
-                    self.active_geometry.sectors =
-                        self.registers.sector_count.read_current();
-                    self.active_geometry.heads =
-                        self.registers.device.heads() + 1;
-                    self.active_geometry.compute_cylinders(self.capacity);
-
-                    slog::info!(
-                        self.log,
-                        "initialize device parameters";
-                        self.active_geometry);
-
-                    self.complete_command_with_data_ready(false)
-                }
-
-                // SET FEATURES, ATA/ATAPI-6, 8.36.
-                Commands::SetFeatures => match self.set_features() {
-                    Ok(()) => self.complete_command_with_data_ready(false),
-                    Err(e) => self.abort_command(e),
-                },
-
-                // SET MULTIPLE MODE, ATA/ATAPI-6, 8.39.
-                Commands::SetMultipleMode => {
-                    // TODO (arjen): Actually set the multiple mode instead of
-                    // using a default of 1.
-                    slog::info!(
-                        self.log,
-                        "set multiple mode";
-                        "value" => self.registers.sector_count.read_current());
-
-                    self.complete_command_with_data_ready(false)
-                }
-
-                Commands::ReadSectors => {
-                    // TODO (arjen): Seek to address.
-                    self.operation = Some(Operations::ReadSectors(self.registers.sector_count.read_current().into()));
-                    self.continue_operation()
-                }
-
-                _ => self.abort_command(AtaError::UnsupportedCommand(c)),
-            }?;
-
-        Ok(())
     }
 
     /// Write the ATA device signature to the appropriate registers. See
@@ -262,6 +189,22 @@ impl AtaDevice {
         self.sector[93] = 0x4101 | if self.id == 0 { 0x0006 } else { 0x0600 };
     }
 
+    // INITIALIZE DEVICE PARAMETERS, ATA/ATAPI-4, 8.16.
+    fn initialize_device_parameters(&mut self) -> Result<(), AtaError> {
+        self.active_geometry.sectors =
+            self.registers.sector_count.read_current();
+        self.active_geometry.heads = self.registers.device.heads() + 1;
+        self.active_geometry.compute_cylinders(self.capacity);
+
+        slog::info!(
+            self.log,
+            "initialize device parameters";
+            self.active_geometry);
+
+        Ok(())
+    }
+
+    // SET FEATURES, ATA/ATAPI-6, 8.36.
     fn set_features(&mut self) -> Result<(), AtaError> {
         match self.registers.features.read_current() {
             0x3 => {
@@ -285,17 +228,105 @@ impl AtaDevice {
                     (8, _) => Ok(
                         slog::info!(self.log, "set transfer mode"; "mode" => "Ultra DMA", "value" => value),
                     ),
-                    (_, _) => Err(AtaError::FeatureNotSupported),
+                    (_, _) => Err(FeatureNotSupported),
                 }
             }
-            _ => Err(AtaError::FeatureNotSupported),
+            _ => Err(FeatureNotSupported),
         }
     }
 
-    // Implement the ATA8-ATP, allowing for a channel to read/write the device
-    // registers.
+    // SET MULTIPLE MODE, ATA/ATAPI-6, 8.39.
+    fn set_multiple_mode(&mut self) -> Result<(), AtaError> {
+        // TODO (arjen): Actually set the multiple mode instead of using a
+        // default of 1.
+        slog::info!(
+            self.log,
+            "set multiple mode";
+            "value" => self.registers.sector_count.read_current());
 
-    pub fn read_data16(&mut self) -> Result<u16, AtaError> {
+        Ok(())
+    }
+
+    fn check_not_busy(&self) -> Result<(), AtaError> {
+        if !self.registers.status.busy() {
+            Ok(())
+        } else {
+            Err(DeviceBusy)
+        }
+    }
+
+    fn check_device_ready(&self) -> Result<(), AtaError> {
+        if self.registers.status.device_ready() {
+            Ok(())
+        } else {
+            Err(DeviceNotReady)
+        }
+    }
+
+    fn abort_command(&mut self) {
+        self.registers.error.set_abort(true);
+        self.registers.status.set_error(true);
+    }
+
+    fn execute_non_data_command<F>(&mut self, op: F) -> Result<(), AtaError>
+    where
+        F: FnOnce(&mut Self) -> Result<(), AtaError>,
+    {
+        self.check_not_busy()?;
+        self.check_device_ready()?;
+
+        op(self)?;
+
+        self.registers.status.set_busy(false);
+        self.registers.status.set_device_ready(true);
+        self.registers.status.set_data_request(false);
+        self.registers.status.set_error(self.registers.error.0 != 0x0);
+        self.irq = true;
+
+        Ok(())
+    }
+
+    /// Execute the given command and return whether or not the Controller
+    /// should raise an interrupt when done.
+    pub fn execute_command(&mut self, value: u8) {
+        if let Err(_e) = Commands::try_from(value).and_then(|c| {
+            // Initiate one of the protocols based on the command.
+            match c {
+                DeviceReset => {
+                    todo!()
+                }
+                Recalibrate => self.execute_non_data_command(|_| Ok(())),
+                ExecuteDeviceDiagnostics => self.execute_device_diagnostics(),
+                InitializeDeviceParameters => self.execute_non_data_command(
+                    Self::initialize_device_parameters,
+                ),
+                SetFeatures => {
+                    self.execute_non_data_command(Self::set_features)
+                }
+                SetMultipleMode => {
+                    self.execute_non_data_command(Self::set_multiple_mode)
+                }
+                _ => Err(UnsupportedCommand(c)),
+                // IDENTIFY DEVICE, ATA/ATAPI-6, 8.15.
+                // Commands::IdenfityDevice => {
+                //     self.set_identity();
+                //     self.complete_command_with_data_ready(true)
+                // }
+                // Commands::ReadSectors => {
+                //     // TODO (arjen): Seek to address.
+                //     self.operation = Some(Operations::ReadSectors(self.registers.sector_count.read_current().into()));
+                //     self.continue_operation()
+                // }
+            }
+        }) {
+            // This sets the high level Error.ABRT and Status.ERR bits. The
+            // protocol is expected to set additional error bits as appropriate.
+            self.abort_command();
+            // TODO (arjen): Log error?
+        }
+    }
+
+    pub fn read_data(&mut self) -> u16 {
         let data = self.sector[self.sector_ptr];
 
         if self.registers.status.data_request() {
@@ -304,86 +335,71 @@ impl AtaDevice {
                 // Clear the DRQ bit to signal the host no more data is
                 // available.
                 self.registers.status.set_data_request(false);
-                self.irq = self.continue_operation()?;
             } else {
                 self.sector_ptr += 1;
             }
         }
 
-        Ok(data)
+        data
     }
 
-    pub fn read_data32(&mut self) -> Result<u32, AtaError> {
-        let low = self.read_data16().map(u32::from)?;
-        let high = self.read_data16().map(u32::from)?;
+    pub fn write_data(&mut self, _data: u16) {}
 
-        Ok(high << 16 | low)
-    }
-
-    pub fn read_register(&mut self, r: Registers) -> Result<u8, AtaError> {
-        Ok(match r {
-            Registers::Error => self.registers.error.0,
-            Registers::SectorCount => self
+    pub fn read_register(&mut self, reg: Registers) -> u8 {
+        match reg {
+            Error => self.registers.error.0,
+            SectorCount => self
                 .registers
                 .sector_count
                 .read_u8(self.registers.device_control.high_order_byte()),
-            Registers::LbaLow => self
+            LbaLow => self
                 .registers
                 .lba_low
                 .read_u8(self.registers.device_control.high_order_byte()),
-            Registers::LbaMid => self
+            LbaMid => self
                 .registers
                 .lba_mid
                 .read_u8(self.registers.device_control.high_order_byte()),
-            Registers::LbaHigh => self
+            LbaHigh => self
                 .registers
                 .lba_high
                 .read_u8(self.registers.device_control.high_order_byte()),
-            Registers::Device => self.registers.device.0,
-            Registers::Status => {
-                // Reading Status clears clears the device interrupt.
+            Device => self.registers.device.0,
+            Status => {
+                // Reading Status clears the device interrupt.
                 self.irq = false;
                 self.registers.status.0
             }
-            Registers::AltStatus => self.registers.status.0,
+            AltStatus => self.registers.status.0,
             _ => panic!(),
-        })
+        }
     }
 
-    pub fn write_data(&mut self, _data: u16) -> Result<(), AtaError> {
-        // Registers::Data => if self.registers.status.data_request() => {
-        //     self.buffer[self.buffer_pointer] = val;
-        //     self.buffer_pointer += 1;
-        // }
-        Ok(())
-    }
-
-    pub fn write_register(
-        &mut self,
-        r: Registers,
-        byte: u8,
-    ) -> Result<(), AtaError> {
-        match r {
-            Registers::Features => self.registers.features.write(byte),
-            Registers::SectorCount => self.registers.sector_count.write(byte),
-            Registers::LbaLow => self.registers.lba_low.write(byte),
-            Registers::LbaMid => self.registers.lba_mid.write(byte),
-            Registers::LbaHigh => self.registers.lba_high.write(byte),
-            Registers::Device => self.registers.device.0 = byte,
-            Registers::DeviceControl => {
-                self.registers.device_control.0 = byte;
-                println!("     {} interrupt enabled: {}", self.id, !self.registers.device_control.interrupt_enabled_n());
+    pub fn write_register(&mut self, reg: Registers, value: u8) {
+        match reg {
+            Features => self.registers.features.write(value),
+            SectorCount => self.registers.sector_count.write(value),
+            LbaLow => self.registers.lba_low.write(value),
+            LbaMid => self.registers.lba_mid.write(value),
+            LbaHigh => self.registers.lba_high.write(value),
+            Device => self.registers.device.0 = value,
+            DeviceControl => {
+                self.registers.device_control.0 = value;
+                println!(
+                    "     {} interrupt enabled: {}",
+                    self.id,
+                    !self.registers.device_control.interrupt_enabled_n()
+                );
             }
+            Command => self.execute_command(value),
             _ => panic!(),
         }
 
         // Per ATA/ATAPI-6, 6.20, clear the HOB when any of the Control Block
         // registers get written.
-        if r != Registers::DeviceControl {
+        if reg != DeviceControl {
             self.registers.device_control.set_high_order_byte(false);
         }
-
-        Ok(())
     }
 }
 

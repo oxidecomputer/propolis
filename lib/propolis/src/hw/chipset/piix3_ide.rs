@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::common::RWOp;
+use crate::common::{RWOp, ReadOp, WriteOp};
 use crate::hw::ata::{AtaController, Registers};
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
@@ -81,82 +81,79 @@ impl Piix3IdeCtrl {
     }
 
     fn pio_rw(&self, port: u16, rwo: RWOp) {
+        use ibmpc::*;
+        use RWOp::*;
+
+        match (port, rwo) {
+            (PORT_ATA0_CMD, Read(op)) => self.read_command_block(0, op),
+            (PORT_ATA1_CMD, Read(op)) => self.read_command_block(1, op),
+            (PORT_ATA0_CMD, Write(op)) => self.write_command_block(0, op),
+            (PORT_ATA1_CMD, Write(op)) => self.write_command_block(1, op),
+            (PORT_ATA0_CTRL, Read(op)) => self.read_control_block(0, op),
+            (PORT_ATA1_CTRL, Read(op)) => self.read_control_block(1, op),
+            (PORT_ATA0_CTRL, Write(op)) => self.write_control_block(0, op),
+            (PORT_ATA1_CTRL, Write(op)) => self.write_control_block(1, op),
+            (_, _) => panic!(),
+        }
+    }
+
+    fn read_command_block(&self, channel_id: usize, op: &mut ReadOp) {
+        use Registers::*;
+
         let mut ata = self.ata_state.lock().unwrap();
 
-        // Decode the ATA channel and request based on the port, operation
-        // offset and selected device type. Then issue the request with the
-        // ATA controller and respond to read operations.
-        if port == ibmpc::PORT_ATA0_CMD || port == ibmpc::PORT_ATA1_CMD {
-            let channel_id = if port == ibmpc::PORT_ATA0_CMD { 0 } else { 1 };
+        match op.offset() {
+            0 if op.len() == 2 => op.write_u16(ata.read_data16(channel_id)),
+            0 if op.len() == 4 => op.write_u32(ata.read_data32(channel_id)),
+            1 => op.write_u8(ata.read_register(channel_id, Error)),
+            2 => op.write_u8(ata.read_register(channel_id, SectorCount)),
+            3 => op.write_u8(ata.read_register(channel_id, LbaLow)),
+            4 => op.write_u8(ata.read_register(channel_id, LbaMid)),
+            5 => op.write_u8(ata.read_register(channel_id, LbaHigh)),
+            6 => op.write_u8(ata.read_register(channel_id, Device)),
+            7 => op.write_u8(ata.read_register(channel_id, Status)),
+            _ => panic!(),
+        }
+    }
 
-            match rwo {
-                RWOp::Read(op) => {
-                    let val = ata.read_register(
-                        channel_id,
-                        match op.offset() {
-                            0 if op.len() == 2 => Registers::Data16,
-                            0 if op.len() == 4 => Registers::Data32,
-                            1 => Registers::Error,
-                            2 => Registers::SectorCount,
-                            3 => Registers::LbaLow,
-                            4 => Registers::LbaMid,
-                            5 => Registers::LbaHigh,
-                            6 => Registers::Device,
-                            7 => Registers::Status,
-                            _ => panic!(),
-                        },
-                    );
+    fn write_command_block(&self, channel_id: usize, op: &mut WriteOp) {
+        use Registers::*;
 
-                    if op.len() == 1 {
-                        op.write_u8(val as u8)
-                    } else if op.len() == 4 {
-                        op.write_u32(val)
-                    } else {
-                        op.write_u16(val as u16)
-                    }
-                }
-                RWOp::Write(op) => {
-                    let (r, val) = match op.offset() {
-                        0 if op.len() == 2 => {
-                            (Registers::Data16, op.read_u16().into())
-                        }
-                        0 if op.len() == 4 => {
-                            (Registers::Data32, op.read_u32())
-                        }
-                        1 => (Registers::Features, op.read_u8().into()),
-                        2 => (Registers::SectorCount, op.read_u8().into()),
-                        3 => (Registers::LbaLow, op.read_u8().into()),
-                        4 => (Registers::LbaMid, op.read_u8().into()),
-                        5 => (Registers::LbaHigh, op.read_u8().into()),
-                        6 => (Registers::Device, op.read_u8().into()),
-                        7 => (Registers::Command, op.read_u8().into()),
-                        _ => panic!(),
-                    };
+        let mut ata = self.ata_state.lock().unwrap();
 
-                    ata.write_register(channel_id, r, val)
-                }
-            }
-        } else if port == ibmpc::PORT_ATA0_CTRL || port == ibmpc::PORT_ATA1_CTRL
-        {
-            let channel_id = if port == ibmpc::PORT_ATA0_CTRL { 0 } else { 1 };
+        match op.offset() {
+            0 if op.len() == 2 => ata.write_data16(channel_id, op.read_u16()),
+            0 if op.len() == 4 => ata.write_data32(channel_id, op.read_u32()),
+            1 => ata.write_register(channel_id, Features, op.read_u8()),
+            2 => ata.write_register(channel_id, SectorCount, op.read_u8()),
+            3 => ata.write_register(channel_id, LbaLow, op.read_u8()),
+            4 => ata.write_register(channel_id, LbaMid, op.read_u8()),
+            5 => ata.write_register(channel_id, LbaHigh, op.read_u8()),
+            6 => ata.write_register(channel_id, Device, op.read_u8()),
+            7 => ata.write_register(channel_id, Command, op.read_u8()),
+            _ => panic!(),
+        }
+    }
 
-            match rwo {
-                RWOp::Read(op) => op.write_u8(ata.read_register(
-                    channel_id,
-                    match op.offset() {
-                        0 => Registers::AltStatus,
-                        _ => panic!(),
-                    },
-                ) as u8),
-                RWOp::Write(op) => ata.write_register(
-                    channel_id,
-                    match op.offset() {
-                        0 => Registers::DeviceControl,
-                        _ => panic!(),
-                    },
-                    op.read_u8().into(),
-                ),
-            }
+    fn read_control_block(&self, channel_id: usize, op: &mut ReadOp) {
+        use Registers::*;
+
+        let mut ata = self.ata_state.lock().unwrap();
+
+        match op.offset() {
+            0 => op.write_u8(ata.read_register(channel_id, AltStatus)),
+            _ => panic!(),
+        }
+    }
+
+    fn write_control_block(&self, channel_id: usize, op: &mut WriteOp) {
+        use Registers::*;
+
+        let mut ata = self.ata_state.lock().unwrap();
+
+        match op.offset() {
+            0 => ata.write_register(channel_id, DeviceControl, op.read_u8()),
+            _ => panic!(),
         }
     }
 }
