@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::common::RWOp;
-use crate::hw::ata::{AtaController, AtaError, Registers};
+use crate::hw::ata::{AtaController, Registers};
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::hw::ids;
@@ -87,37 +87,42 @@ impl Piix3IdeCtrl {
         // offset and selected device type. Then issue the request with the
         // ATA controller and respond to read operations.
         if port == ibmpc::PORT_ATA0_CMD || port == ibmpc::PORT_ATA1_CMD {
-            let channel = if port == ibmpc::PORT_ATA0_CMD { 0 } else { 1 };
+            let channel_id = if port == ibmpc::PORT_ATA0_CMD { 0 } else { 1 };
 
             match rwo {
                 RWOp::Read(op) => {
-                    let r =  match op.offset() {
-                        0 => Registers::Data,
-                        1 => Registers::Error,
-                        2 => Registers::SectorCount,
-                        3 => Registers::LbaLow,
-                        4 => Registers::LbaMid,
-                        5 => Registers::LbaHigh,
-                        6 => Registers::Device,
-                        7 => Registers::Status,
-                        _ => panic!()
-                    };
+                    let val = ata.read_register(
+                        channel_id,
+                        match op.offset() {
+                            0 if op.len() == 2 => Registers::Data16,
+                            0 if op.len() == 4 => Registers::Data32,
+                            1 => Registers::Error,
+                            2 => Registers::SectorCount,
+                            3 => Registers::LbaLow,
+                            4 => Registers::LbaMid,
+                            5 => Registers::LbaHigh,
+                            6 => Registers::Device,
+                            7 => Registers::Status,
+                            _ => panic!(),
+                        },
+                    );
 
-                    match ata.read_register(channel, r) {
-                        Ok(val) => if op.len() == 1 {
-                            op.write_u8(val as u8)
-                        } else {
-                            op.write_u16(val)
-                        }
-                        Err(_e) => {
-                            // TODO (arjen): Log error
-                            op.fill(0x0)
-                        }
+                    if op.len() == 1 {
+                        op.write_u8(val as u8)
+                    } else if op.len() == 4 {
+                        op.write_u32(val)
+                    } else {
+                        op.write_u16(val as u16)
                     }
                 }
                 RWOp::Write(op) => {
                     let (r, val) = match op.offset() {
-                        0 => (Registers::Data, op.read_u16()),
+                        0 if op.len() == 2 => {
+                            (Registers::Data16, op.read_u16().into())
+                        }
+                        0 if op.len() == 4 => {
+                            (Registers::Data32, op.read_u32())
+                        }
                         1 => (Registers::Features, op.read_u8().into()),
                         2 => (Registers::SectorCount, op.read_u8().into()),
                         3 => (Registers::LbaLow, op.read_u8().into()),
@@ -125,53 +130,32 @@ impl Piix3IdeCtrl {
                         5 => (Registers::LbaHigh, op.read_u8().into()),
                         6 => (Registers::Device, op.read_u8().into()),
                         7 => (Registers::Command, op.read_u8().into()),
-                        _ => panic!()
+                        _ => panic!(),
                     };
 
-                    match ata.write_register(channel, r, val) {
-                        Ok(()) | Err(AtaError::NoDevice) => {}
-                        Err(_e) => {
-                            // TODO (arjen): Decide what to log.
-                        }
-                    }
+                    ata.write_register(channel_id, r, val)
                 }
             }
         } else if port == ibmpc::PORT_ATA0_CTRL || port == ibmpc::PORT_ATA1_CTRL
         {
-            let channel = if port == ibmpc::PORT_ATA0_CTRL { 0 } else { 1 };
+            let channel_id = if port == ibmpc::PORT_ATA0_CTRL { 0 } else { 1 };
 
             match rwo {
-                RWOp::Read(op) => {
-                    let r = match op.offset() {
+                RWOp::Read(op) => op.write_u8(ata.read_register(
+                    channel_id,
+                    match op.offset() {
                         0 => Registers::AltStatus,
-                        _ => panic!()
-                    };
-
-                    match ata.read_register(channel, r) {
-                        Ok(val) => if op.len() == 1 {
-                            op.write_u8(val as u8)
-                        } else {
-                            op.write_u16(val)
-                        }
-                        Err(_e) => {
-                            // TODO (arjen): Log error
-                            op.fill(0x0)
-                        }
-                    }
-                }
-                RWOp::Write(op) => {
-                    let (r, val) = match op.offset() {
-                        0 => (Registers::DeviceControl, op.read_u8().into()),
                         _ => panic!(),
-                    };
-
-                    match ata.write_register(channel, r, val) {
-                        Ok(()) | Err(AtaError::NoDevice) => {}
-                        Err(_e) => {
-                            // TODO (arjen): Decide what to log.
-                        }
-                    }
-                }
+                    },
+                ) as u8),
+                RWOp::Write(op) => ata.write_register(
+                    channel_id,
+                    match op.offset() {
+                        0 => Registers::DeviceControl,
+                        _ => panic!(),
+                    },
+                    op.read_u8().into(),
+                ),
             }
         }
     }

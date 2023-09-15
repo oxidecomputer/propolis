@@ -4,13 +4,14 @@
 
 #![allow(dead_code)]
 
-use crate::hw::ata::AtaError;
-use bitstruct::bitstruct;
 use std::fmt;
+use bitstruct::*;
+use crate::hw::ata::AtaError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Registers {
-    Data,
+    Data16,
+    Data32,
     Error,
     Features,
     SectorCount,
@@ -28,6 +29,7 @@ pub enum Registers {
 #[repr(u8)]
 pub enum Commands {
     Nop = 0x00,
+    Recalibrate = 0x10,
     ReadSectors = 0x20,
     ReadSectorsWithoutRetry = 0x21,
     ReadSectorsExt = 0x24,
@@ -72,6 +74,7 @@ impl TryFrom<u8> for Commands {
     fn try_from(code: u8) -> Result<Self, Self::Error> {
         match code {
             0x00 => Ok(Commands::Nop),
+            0x10 => Ok(Commands::Recalibrate),
             0x20 => Ok(Commands::ReadSectors),
             0x21 => Ok(Commands::ReadSectorsWithoutRetry),
             0x24 => Ok(Commands::ReadSectorsExt),
@@ -103,13 +106,16 @@ impl TryFrom<u8> for Commands {
 
 bitstruct! {
     /// Representation of the Status register.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct StatusRegister(pub(super) u8) {
         pub error: bool = 0;
         pub data_request: bool = 3;
         pub device_fault: bool = 5;
         pub device_ready: bool = 6;
         pub busy: bool = 7;
+
+        // Command dependent bits.
+        pub device_seek_complete: bool = 4;
 
         /// ATA8-ACS fields. Note that some of these fields are backed by
         /// repurposed bits after they went obsolete in prior versions of the
@@ -122,11 +128,23 @@ bitstruct! {
     }
 }
 
+impl FromRaw<u8, Self> for StatusRegister {
+    fn from_raw(raw: u8) -> Self {
+        Self(raw)
+    }
+}
+
 bitstruct! {
     /// Representation of the Status register.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct ErrorRegister(pub(super) u8) {
         pub abort: bool = 2;
+    }
+}
+
+impl FromRaw<u8, Self> for ErrorRegister {
+    fn from_raw(raw: u8) -> Self {
+        Self(raw)
     }
 }
 

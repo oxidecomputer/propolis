@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+use bitstruct::FromRaw;
+
 use crate::hw::ata::bits::*;
 use crate::hw::ata::geometry::*;
 use crate::hw::ata::AtaError;
@@ -15,6 +17,7 @@ pub struct AtaDevice {
     capacity: Sectors,
     default_geometry: Geometry,
     active_geometry: Geometry,
+    operation: Option<Operations>,
     irq: bool,
     log: slog::Logger,
     pub id: usize,
@@ -34,11 +37,25 @@ impl AtaDevice {
             capacity,
             default_geometry,
             active_geometry: default_geometry,
+            operation: None,
             irq: false,
             log,
             // Id and path will be updated when the device is attached.
             id: 0,
         }
+    }
+
+    pub fn set_software_reset(&mut self, software_reset: bool) {
+        if software_reset {
+            self.registers.status.set_busy(true);
+        } else if self.registers.device_control.software_reset()
+            && !software_reset
+        {
+            slog::info!(self.log, "software reset");
+            self.execute_device_diagnostics().unwrap();
+        }
+
+        self.registers.device_control.set_software_reset(software_reset);
     }
 
     /// Return the Status Register.
@@ -51,18 +68,30 @@ impl AtaDevice {
         !self.registers.device_control.interrupt_enabled_n() && self.irq
     }
 
+    fn execute_device_diagnostics(&mut self) -> Result<bool, AtaError> {
+        // Set the diagnostics passed code. For a non-existent
+        // device the channel will default to a value of 0x7f.
+        self.registers.error = ErrorRegister::from_raw(0x1);
+
+        // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
+        self.registers.status = StatusRegister::from_raw(1 << 6 | 1 << 4);
+
+        self.set_signature();
+        Ok(true)
+    }
+
     fn complete_command_with_data_ready(
         &mut self,
         data_ready: bool,
     ) -> Result<bool, AtaError> {
-        self.registers.error.0 = 0x0;
+        self.registers.error = ErrorRegister::from_raw(0x0);
 
         self.registers.status.set_error(false);
         self.registers.status.set_data_request(data_ready);
         self.registers.status.set_device_fault(false);
         self.registers.status.set_busy(false);
 
-        Ok(data_ready)
+        Ok(true)
     }
 
     fn abort_command(&mut self, e: AtaError) -> Result<bool, AtaError> {
@@ -71,24 +100,41 @@ impl AtaDevice {
         Err(e)
     }
 
+    fn continue_operation(&mut self) -> Result<bool, AtaError> {
+        match self.operation {
+            Some(Operations::ReadSectors(sectors_remaining)) => {
+                if sectors_remaining > 0 {
+                    self.operation = Some(Operations::ReadSectors(sectors_remaining - 1));
+                    self.sector = [0u16; 256];
+                    self.sector_ptr = 0;
+
+                    self.complete_command_with_data_ready(true)
+                } else {
+                    self.operation = None;
+                    self.complete_command_with_data_ready(false)
+                }
+            }
+            None =>
+                self.complete_command_with_data_ready(false).and(Ok(false)),
+        }
+    }
+
     /// Execute the given command and return whether or not the Controller
     /// should raise an interrupt when done.
     pub fn execute_command(&mut self, c: Commands) -> Result<(), AtaError> {
-        if !self.registers.status.device_ready() {
-            return Err(AtaError::DeviceNotReady);
-        }
+        // if !self.registers.status.device_ready() {
+        //     return Err(AtaError::DeviceNotReady);
+        // }
 
         self.irq = self.irq
             || match c {
                 // EXECUTE DEVICE DIAGNOSTICS, ATA/ATAPI-6, 8.11.
                 Commands::ExecuteDeviceDiagnostics => {
-                    // Set the diagnostics passed. code. For a non-existent
-                    // device the channel will default to a value of 0x0.
-                    self.registers.error.0 = 0x1;
-                    self.set_signature();
-                    // Set Status according to ATA/ATAPI-6, 9.10, D0ED3, p. 362.
-                    self.complete_command_with_data_ready(false)
+                    self.execute_device_diagnostics()
                 }
+
+                Commands::Recalibrate => //panic!(),
+                    self.complete_command_with_data_ready(false),
 
                 // IDENTIFY DEVICE, ATA/ATAPI-6, 8.15.
                 Commands::IdenfityDevice => {
@@ -131,10 +177,9 @@ impl AtaDevice {
                 }
 
                 Commands::ReadSectors => {
-                    // TODO (arjen): Read actual data from backend.
-                    self.sector = [0u16; 256];
-                    self.sector_ptr = 0;
-                    self.complete_command_with_data_ready(true)
+                    // TODO (arjen): Seek to address.
+                    self.operation = Some(Operations::ReadSectors(self.registers.sector_count.read_current().into()));
+                    self.continue_operation()
                 }
 
                 _ => self.abort_command(AtaError::UnsupportedCommand(c)),
@@ -168,10 +213,10 @@ impl AtaDevice {
         copy_str("0123456789", &mut self.sector[10..20]);
 
         // Set a firmware version string.
-        copy_str("v0.1", &mut self.sector[23..26]);
+        copy_str("v1", &mut self.sector[23..26]);
 
         // Set a model number string.
-        copy_str("Propolis ATA HDD-v1", &mut self.sector[27..46]);
+        copy_str("Propolis ATA-v1", &mut self.sector[27..46]);
 
         // Set device geometry and capacity.
         //
@@ -250,7 +295,7 @@ impl AtaDevice {
     // Implement the ATA8-ATP, allowing for a channel to read/write the device
     // registers.
 
-    pub fn read_data(&mut self) -> Result<u16, AtaError> {
+    pub fn read_data16(&mut self) -> Result<u16, AtaError> {
         let data = self.sector[self.sector_ptr];
 
         if self.registers.status.data_request() {
@@ -259,12 +304,20 @@ impl AtaDevice {
                 // Clear the DRQ bit to signal the host no more data is
                 // available.
                 self.registers.status.set_data_request(false);
+                self.irq = self.continue_operation()?;
             } else {
                 self.sector_ptr += 1;
             }
         }
 
         Ok(data)
+    }
+
+    pub fn read_data32(&mut self) -> Result<u32, AtaError> {
+        let low = self.read_data16().map(u32::from)?;
+        let high = self.read_data16().map(u32::from)?;
+
+        Ok(high << 16 | low)
     }
 
     pub fn read_register(&mut self, r: Registers) -> Result<u8, AtaError> {
@@ -317,7 +370,10 @@ impl AtaDevice {
             Registers::LbaMid => self.registers.lba_mid.write(byte),
             Registers::LbaHigh => self.registers.lba_high.write(byte),
             Registers::Device => self.registers.device.0 = byte,
-            Registers::DeviceControl => self.registers.device_control.0 = byte,
+            Registers::DeviceControl => {
+                self.registers.device_control.0 = byte;
+                println!("     {} interrupt enabled: {}", self.id, !self.registers.device_control.interrupt_enabled_n());
+            }
             _ => panic!(),
         }
 
@@ -397,6 +453,11 @@ impl FifoRegister {
         self.0[1] = self.0[0];
         self.0[0] = val;
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Operations {
+    ReadSectors(usize),
 }
 
 /// Copy the given str s with appropriate padding into the given word buffer
