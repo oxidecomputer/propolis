@@ -65,7 +65,6 @@ pub fn block_backend(
                     parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
                 )
                 .unwrap(),
-                log.clone(),
             )
             .unwrap();
 

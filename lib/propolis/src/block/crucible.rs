@@ -7,8 +7,8 @@
 use std::io;
 use std::sync::Arc;
 
-use super::DeviceInfo;
-use crate::block;
+use crate::accessors::MemAccessor;
+use crate::block::{self, DeviceInfo};
 use crate::inventory::Entity;
 use crate::vmm::MemCtx;
 
@@ -23,11 +23,49 @@ pub use nexus_client::Client as NexusClient;
 
 pub struct CrucibleBackend {
     tokio_rt: tokio::runtime::Handle,
-    block_io: Arc<Volume>,
-    scheduler: block::Scheduler,
-
+    state: Arc<WorkerState>,
+}
+struct WorkerState {
+    attachment: block::backend::Attachment,
+    volume: Volume,
     info: block::DeviceInfo,
     skip_flush: bool,
+}
+impl WorkerState {
+    async fn process_loop(&self, acc_mem: MemAccessor) {
+        let read_only = self.info.read_only;
+        let skip_flush = self.skip_flush;
+        loop {
+            let req = match self.attachment.wait_for_req().await {
+                Some(r) => r,
+                None => {
+                    // bail
+                    break;
+                }
+            };
+            let res = if let Some(memctx) = acc_mem.access() {
+                match process_request(
+                    &self.volume,
+                    read_only,
+                    skip_flush,
+                    &req,
+                    &memctx,
+                )
+                .await
+                {
+                    Ok(_) => block::Result::Success,
+                    Err(e) => {
+                        let mapped = block::Result::from(e);
+                        assert!(mapped.is_err());
+                        mapped
+                    }
+                }
+            } else {
+                block::Result::Failure
+            };
+            req.complete(res);
+        }
+    }
 }
 
 impl CrucibleBackend {
@@ -112,15 +150,16 @@ impl CrucibleBackend {
 
         Ok(Arc::new(Self {
             tokio_rt: tokio::runtime::Handle::current(),
-            block_io: Arc::new(volume),
-            scheduler: block::Scheduler::new(),
-
-            info: block::DeviceInfo {
-                block_size: block_size as u32,
-                total_size: sectors,
-                read_only: opts.read_only.unwrap_or(false),
-            },
-            skip_flush: opts.skip_flush.unwrap_or(false),
+            state: Arc::new(WorkerState {
+                attachment: block::backend::Attachment::new(),
+                volume,
+                info: block::DeviceInfo {
+                    block_size: block_size as u32,
+                    total_size: sectors,
+                    read_only: opts.read_only.unwrap_or(false),
+                },
+                skip_flush: opts.skip_flush.unwrap_or(false),
+            }),
         }))
     }
 
@@ -154,13 +193,14 @@ impl CrucibleBackend {
     /// Retrieve the UUID identifying this Crucible backend.
     pub fn get_uuid(&self) -> io::Result<uuid::Uuid> {
         let rt = tokio::runtime::Handle::current();
-        rt.block_on(async { self.block_io.get_uuid().await })
+        rt.block_on(async { self.state.volume.get_uuid().await })
             .map_err(CrucibleError::into)
     }
 
     /// Issue a snapshot request
     pub async fn snapshot(&self, snapshot_id: Uuid) -> io::Result<()> {
-        self.block_io
+        self.state
+            .volume
             .flush(Some(SnapshotDetails {
                 snapshot_name: snapshot_id.to_string(),
             }))
@@ -176,58 +216,37 @@ impl CrucibleBackend {
     ) -> io::Result<()> {
         let old_vcr = serde_json::from_str(old_vcr_json)?;
         let new_vcr = serde_json::from_str(new_vcr_json)?;
-        self.block_io
+        self.state
+            .volume
             .target_replace(old_vcr, new_vcr)
             .await
             .map_err(CrucibleError::into)
     }
-}
 
-impl block::Backend for CrucibleBackend {
-    fn info(&self) -> DeviceInfo {
-        self.info
-    }
-
-    fn process(&self, _req: &block::Request, _mem: &MemCtx) -> block::Result {
-        panic!("request dispatch expected to be done through async logic");
-    }
-
-    fn attach(&self, dev: Arc<dyn block::Device>) -> io::Result<()> {
-        self.scheduler.attach(dev);
-
+    fn spawn_workers(&self) {
         // TODO: make this tunable?
         let worker_count = 8;
 
-        for _n in 0..worker_count {
-            let bdev = self.block_io.clone();
-            let read_only = self.info.read_only;
-            let skip_flush = self.skip_flush;
-            let mut worker = self.scheduler.worker();
-            tokio::spawn(async move {
-                loop {
-                    let res = match worker.next().await {
-                        None => break,
-                        Some((req, mguard)) => {
-                            match process_request(
-                                bdev.as_ref(),
-                                read_only,
-                                skip_flush,
-                                req,
-                                &mguard,
-                            )
-                            .await
-                            {
-                                Ok(_) => block::Result::Success,
-                                Err(_) => block::Result::Failure,
-                            }
-                        }
-                    };
-                    worker.complete(res);
-                }
+        for n in 0..worker_count {
+            let worker_state = self.state.clone();
+            let worker_acc = self.state.attachment.accessor_mem(|acc_mem| {
+                acc_mem
+                    .expect("backend is attached")
+                    .child(Some(format!("crucible worker {n}")))
             });
+            tokio::spawn(
+                async move { worker_state.process_loop(worker_acc).await },
+            );
         }
+    }
+}
 
-        Ok(())
+impl block::Backend for CrucibleBackend {
+    fn attachment(&self) -> &block::backend::Attachment {
+        &self.state.attachment
+    }
+    fn info(&self) -> DeviceInfo {
+        self.state.info
     }
 }
 
@@ -237,19 +256,15 @@ impl Entity for CrucibleBackend {
     }
     fn start(&self) -> anyhow::Result<()> {
         self.tokio_rt
-            .block_on(async move { self.block_io.activate().await })?;
+            .block_on(async move { self.state.volume.activate().await })?;
 
-        self.scheduler.start();
+        self.state.attachment.start();
+        self.spawn_workers();
+
         Ok(())
     }
-    fn pause(&self) {
-        self.scheduler.pause();
-    }
-    fn resume(&self) {
-        self.scheduler.resume();
-    }
     fn halt(&self) {
-        self.scheduler.halt();
+        self.state.attachment.halt();
     }
 }
 
@@ -269,6 +284,14 @@ pub enum Error {
     #[error("Crucible Error: {0}")]
     Crucible(#[from] CrucibleError),
 }
+impl From<Error> for block::Result {
+    fn from(value: Error) -> Self {
+        match value {
+            Error::ReadOnly => block::Result::ReadOnly,
+            _ => block::Result::Failure,
+        }
+    }
+}
 
 async fn process_request(
     block: &(dyn BlockIO + Send + Sync),
@@ -278,11 +301,10 @@ async fn process_request(
     mem: &MemCtx,
 ) -> Result<(), Error> {
     match req.oper() {
-        block::Operation::Read(off) => {
+        block::Operation::Read(off, len) => {
             let maps =
                 req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
 
-            let len = req.len();
             let offset = block.byte_offset_to_block(off as u64).await?;
 
             // Perform one large read from crucible, and write from data into
@@ -302,7 +324,7 @@ async fn process_request(
                 return Err(Error::CopyError(nwritten, len));
             }
         }
-        block::Operation::Write(off) => {
+        block::Operation::Write(off, len) => {
             if read_only {
                 return Err(Error::ReadOnly);
             }
@@ -311,7 +333,6 @@ async fn process_request(
             // to crucible
             let maps =
                 req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
-            let len = req.len();
             let mut vec: Vec<u8> = vec![0; len];
             let mut nread = 0;
             for mapping in maps {

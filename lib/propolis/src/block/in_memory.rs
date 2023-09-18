@@ -4,23 +4,89 @@
 
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
+use crate::accessors::MemAccessor;
 use crate::block;
 use crate::inventory::Entity;
 use crate::vmm::{MemCtx, SubMapping};
 
 pub struct InMemoryBackend {
-    bytes: Mutex<Vec<u8>>,
-    driver: block::Driver,
+    state: Arc<WorkingState>,
 
+    worker_count: NonZeroUsize,
+}
+struct WorkingState {
+    attachment: block::backend::Attachment,
+    bytes: Mutex<Vec<u8>>,
     info: block::DeviceInfo,
+}
+impl WorkingState {
+    fn processing_loop(&self, acc_mem: MemAccessor) {
+        while let Some(req) = self.attachment.block_for_req() {
+            if self.info.read_only && req.oper().is_write() {
+                req.complete(block::Result::ReadOnly);
+                continue;
+            }
+
+            let mem = match acc_mem.access() {
+                Some(m) => m,
+                None => {
+                    req.complete(block::Result::Failure);
+                    continue;
+                }
+            };
+            let res = match self.process_request(&req, &mem) {
+                Ok(_) => block::Result::Success,
+                Err(_) => block::Result::Failure,
+            };
+            req.complete(res);
+        }
+    }
+
+    fn process_request(
+        &self,
+        req: &block::Request,
+        mem: &MemCtx,
+    ) -> Result<()> {
+        match req.oper() {
+            block::Operation::Read(off, len) => {
+                let maps = req.mappings(mem).ok_or_else(|| {
+                    Error::new(ErrorKind::Other, "bad guest region")
+                })?;
+
+                let bytes = self.bytes.lock().unwrap();
+                process_read_request(&bytes, off as u64, len, &maps)?;
+            }
+            block::Operation::Write(off, len) => {
+                if self.info.read_only {
+                    return Err(Error::new(
+                        ErrorKind::PermissionDenied,
+                        "backend is read-only",
+                    ));
+                }
+
+                let maps = req.mappings(mem).ok_or_else(|| {
+                    Error::new(ErrorKind::Other, "bad guest region")
+                })?;
+
+                let mut bytes = self.bytes.lock().unwrap();
+                process_write_request(&mut bytes, off as u64, len, &maps)?;
+            }
+            block::Operation::Flush => {
+                // nothing to do
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl InMemoryBackend {
     pub fn create(
         bytes: Vec<u8>,
         opts: block::BackendOpts,
+        worker_count: NonZeroUsize,
     ) -> Result<Arc<Self>> {
         let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
@@ -37,84 +103,43 @@ impl InMemoryBackend {
             ));
         }
 
-        Ok(Arc::new_cyclic(|me| Self {
-            bytes: Mutex::new(bytes),
-
-            driver: block::Driver::new(
-                me.clone() as Weak<dyn block::Backend>,
-                "mem-bdev".to_string(),
-                NonZeroUsize::new(1).unwrap(),
-            ),
-
-            info: block::DeviceInfo {
-                block_size,
-                total_size: len as u64 / block_size as u64,
-                read_only: opts.read_only.unwrap_or(false),
-            },
+        Ok(Arc::new(Self {
+            state: Arc::new(WorkingState {
+                attachment: block::backend::Attachment::new(),
+                bytes: Mutex::new(bytes),
+                info: block::DeviceInfo {
+                    block_size,
+                    total_size: len as u64 / block_size as u64,
+                    read_only: opts.read_only.unwrap_or(false),
+                },
+            }),
+            worker_count,
         }))
     }
+    fn spawn_workers(&self) -> Result<()> {
+        for n in 0..self.worker_count.get() {
+            let worker_state = self.state.clone();
+            let worker_acc = self.state.attachment.accessor_mem(|mem| {
+                mem.expect("backend is attached")
+                    .child(Some(format!("worker {n}")))
+            });
 
-    fn process_request(
-        &self,
-        req: &block::Request,
-        mem: &MemCtx,
-    ) -> Result<()> {
-        match req.oper() {
-            block::Operation::Read(off) => {
-                let maps = req.mappings(mem).ok_or_else(|| {
-                    Error::new(ErrorKind::Other, "bad guest region")
+            let _join = std::thread::Builder::new()
+                .name(format!("in-memory worker {n}"))
+                .spawn(move || {
+                    worker_state.processing_loop(worker_acc);
                 })?;
-
-                let bytes = self.bytes.lock().unwrap();
-                process_read_request(&bytes, off as u64, req.len(), &maps)?;
-            }
-            block::Operation::Write(off) => {
-                if self.info.read_only {
-                    return Err(Error::new(
-                        ErrorKind::PermissionDenied,
-                        "backend is read-only",
-                    ));
-                }
-
-                let maps = req.mappings(mem).ok_or_else(|| {
-                    Error::new(ErrorKind::Other, "bad guest region")
-                })?;
-
-                let mut bytes = self.bytes.lock().unwrap();
-                process_write_request(
-                    &mut bytes,
-                    off as u64,
-                    req.len(),
-                    &maps,
-                )?;
-            }
-            block::Operation::Flush => {
-                // nothing to do
-            }
         }
-
         Ok(())
     }
 }
 
 impl block::Backend for InMemoryBackend {
+    fn attachment(&self) -> &block::backend::Attachment {
+        &self.state.attachment
+    }
     fn info(&self) -> block::DeviceInfo {
-        self.info
-    }
-
-    fn attach(&self, dev: Arc<dyn block::Device>) -> Result<()> {
-        self.driver.attach(dev)
-    }
-
-    fn process(&self, req: &block::Request, mem: &MemCtx) -> block::Result {
-        match self.process_request(req, mem) {
-            Ok(_) => block::Result::Success,
-            Err(_e) => {
-                // TODO: add detail
-                //slog::info!(self.log, "block IO error {:?}", req.op; "error" => e);
-                block::Result::Failure
-            }
-        }
+        self.state.info
     }
 }
 
@@ -123,17 +148,12 @@ impl Entity for InMemoryBackend {
         "block-in-memory"
     }
     fn start(&self) -> anyhow::Result<()> {
-        self.driver.start();
+        self.state.attachment.start();
+        self.spawn_workers()?;
         Ok(())
     }
-    fn pause(&self) {
-        self.driver.pause();
-    }
-    fn resume(&self) {
-        self.driver.resume();
-    }
     fn halt(&self) {
-        self.driver.halt();
+        self.state.attachment.halt();
     }
 }
 

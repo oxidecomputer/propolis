@@ -98,6 +98,7 @@ pub(crate) fn build_cidata_be(
             read_only: Some(true),
             ..Default::default()
         },
+        std::num::NonZeroUsize::new(8).unwrap(),
     )
     .context("could not create block backend")
 }

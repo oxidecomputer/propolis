@@ -3049,6 +3049,7 @@ dependencies = [
  "num_enum 0.5.11",
  "oximeter",
  "p9ds 0.1.0 (git+https://github.com/oxidecomputer/p9fs)",
+ "pin-project-lite",
  "propolis_types",
  "rand",
  "rfb",

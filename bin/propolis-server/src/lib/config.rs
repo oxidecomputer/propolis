@@ -4,66 +4,7 @@
 
 //! Describes a server config which may be parsed from a TOML file.
 
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-
-use propolis::block;
-use propolis::inventory;
 pub use propolis_server_config::*;
-
-pub fn create_backend_for_block(
-    config: &Config,
-    name: &str,
-    log: slog::Logger,
-) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError> {
-    let entry = config.block_devs.get(name).ok_or_else(|| {
-        ParseError::KeyNotFound(name.to_string(), "block_dev".to_string())
-    })?;
-    blockdev_backend(entry, log)
-}
-
-fn blockdev_backend(
-    dev: &BlockDevice,
-    log: slog::Logger,
-) -> Result<(Arc<dyn block::Backend>, inventory::ChildRegister), ParseError> {
-    let opts = propolis::block::BackendOpts {
-        block_size: dev.opts.block_size,
-        read_only: dev.opts.read_only,
-        skip_flush: dev.opts.skip_flush,
-    };
-    match &dev.bdtype as &str {
-        "file" => {
-            let path = dev
-                .options
-                .get("path")
-                .ok_or_else(|| {
-                    ParseError::KeyNotFound(
-                        "path".to_string(),
-                        "options".to_string(),
-                    )
-                })?
-                .as_str()
-                .ok_or_else(|| {
-                    ParseError::AsError(
-                        "path".to_string(),
-                        "as_str".to_string(),
-                    )
-                })?;
-
-            let nworkers = NonZeroUsize::new(8).unwrap();
-            let be = propolis::block::FileBackend::create(
-                path, opts, nworkers, log,
-            )?;
-            let child =
-                inventory::ChildRegister::new(&be, Some(path.to_string()));
-
-            Ok((be, child))
-        }
-        _ => {
-            panic!("unrecognized block dev type {}!", dev.bdtype);
-        }
-    }
-}
 
 #[cfg(not(feature = "omicron-build"))]
 pub fn reservoir_decide(log: &slog::Logger) -> bool {

@@ -335,9 +335,6 @@ impl<'a> MachineInitializer<'a> {
                         ..Default::default()
                     },
                     nworkers,
-                    self.log.new(
-                        slog::o!("component" => format!("file-{}", spec.path)),
-                    ),
                 )?;
 
                 let child =
@@ -363,6 +360,7 @@ impl<'a> MachineInitializer<'a> {
                 info!(self.log, "Creating in-memory disk backend";
                       "len" => bytes.len());
 
+                let nworkers = NonZeroUsize::new(8).unwrap();
                 let be = propolis::block::InMemoryBackend::create(
                     bytes,
                     propolis::block::BackendOpts {
@@ -370,6 +368,7 @@ impl<'a> MachineInitializer<'a> {
                         read_only: Some(spec.readonly),
                         ..Default::default()
                     },
+                    nworkers,
                 )?;
 
                 let child = inventory::ChildRegister::new(
@@ -447,20 +446,18 @@ impl<'a> MachineInitializer<'a> {
                 )
             })?;
 
-            let be_info = backend.info();
             match device_interface {
                 DeviceInterface::Virtio => {
-                    let vioblk = virtio::PciVirtioBlock::new(0x100, be_info);
+                    let vioblk = virtio::PciVirtioBlock::new(0x100);
                     let id =
                         self.inv.register_instance(&vioblk, bdf.to_string())?;
                     let _ = self.inv.register_child(child, id).unwrap();
-                    backend.attach(vioblk.clone())?;
+                    block::attach(backend, vioblk.clone());
                     chipset.device().pci_attach(bdf, vioblk);
                 }
                 DeviceInterface::Nvme => {
                     let nvme = nvme::PciNvme::create(
                         name.to_string(),
-                        be_info,
                         self.log.new(
                             slog::o!("component" => format!("nvme-{}", name)),
                         ),
@@ -468,7 +465,7 @@ impl<'a> MachineInitializer<'a> {
                     let id =
                         self.inv.register_instance(&nvme, bdf.to_string())?;
                     let _ = self.inv.register_child(child, id).unwrap();
-                    backend.attach(nvme.clone())?;
+                    block::attach(backend, nvme.clone());
                     chipset.device().pci_attach(bdf, nvme);
                 }
             };

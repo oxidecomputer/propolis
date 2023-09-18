@@ -7,6 +7,7 @@ use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+use crate::accessors::MemAccessor;
 use crate::block;
 use crate::inventory::Entity;
 use crate::vmm::MemCtx;
@@ -17,12 +18,81 @@ use crate::vmm::MemCtx;
 /// this backend can be used for measuring how other parts of the emulation
 /// stack perform.
 pub struct MemAsyncBackend {
-    seg: Arc<MmapSeg>,
+    work_state: Arc<WorkingState>,
 
     workers: NonZeroUsize,
-    scheduler: block::Scheduler,
-
+}
+struct WorkingState {
+    attachment: block::backend::Attachment,
+    seg: MmapSeg,
     info: block::DeviceInfo,
+}
+impl WorkingState {
+    async fn processing_loop(&self, acc_mem: MemAccessor) {
+        while let Some(req) = self.attachment.wait_for_req().await {
+            if self.info.read_only && req.oper().is_write() {
+                req.complete(block::Result::ReadOnly);
+                continue;
+            }
+            let res = match acc_mem
+                .access()
+                .and_then(|mem| self.process_request(&req, &mem).ok())
+            {
+                Some(_) => block::Result::Success,
+                None => block::Result::Failure,
+            };
+            req.complete(res);
+        }
+    }
+
+    fn process_request(
+        &self,
+        req: &block::Request,
+        mem: &MemCtx,
+    ) -> std::result::Result<(), &'static str> {
+        let seg = &self.seg;
+        match req.oper() {
+            block::Operation::Read(off, _len) => {
+                let maps = req.mappings(mem).ok_or("bad mapping")?;
+
+                let mut nread = 0;
+                for map in maps {
+                    unsafe {
+                        let len = map.len();
+                        let read_ptr = map
+                            .raw_writable()
+                            .ok_or("expected writable mapping")?;
+                        if !seg.read(off + nread, read_ptr, len) {
+                            return Err("failed mem read");
+                        }
+                        nread += len;
+                    };
+                }
+            }
+            block::Operation::Write(off, _len) => {
+                let maps = req.mappings(mem).ok_or("bad mapping")?;
+
+                let mut nwritten = 0;
+                for map in maps {
+                    unsafe {
+                        let len = map.len();
+                        let write_ptr = map
+                            .raw_readable()
+                            .ok_or("expected readable mapping")?;
+                        if !seg.write(off + nwritten, write_ptr, len) {
+                            return Err("failed mem write");
+                        }
+                        nwritten += len;
+                    };
+                }
+            }
+            block::Operation::Flush => {
+                // nothing to do
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl MemAsyncBackend {
@@ -48,69 +118,34 @@ impl MemAsyncBackend {
         let seg = MmapSeg::new(size as usize)?;
 
         Ok(Arc::new(Self {
-            seg: Arc::new(seg),
+            work_state: Arc::new(WorkingState {
+                attachment: block::backend::Attachment::new(),
+                info: block::DeviceInfo {
+                    block_size,
+                    total_size: size / block_size as u64,
+                    read_only: opts.read_only.unwrap_or(false),
+                },
+                seg,
+            }),
 
             workers,
-            scheduler: block::Scheduler::new(),
-
-            info: block::DeviceInfo {
-                block_size,
-                total_size: size / block_size as u64,
-                read_only: opts.read_only.unwrap_or(false),
-            },
         }))
     }
-}
 
-fn process_request(
-    seg: &MmapSeg,
-    read_only: bool,
-    req: &block::Request,
-    mem: &MemCtx,
-) -> std::result::Result<(), &'static str> {
-    match req.oper() {
-        block::Operation::Read(off) => {
-            let maps = req.mappings(mem).ok_or("bad guest region")?;
-
-            let mut nread = 0;
-            for map in maps {
-                unsafe {
-                    let len = map.len();
-                    let read_ptr =
-                        map.raw_writable().ok_or("wrong protection")?;
-                    if !seg.read(off + nread, read_ptr, len) {
-                        return Err("read too long");
-                    }
-                    nread += len;
-                };
-            }
-        }
-        block::Operation::Write(off) => {
-            if read_only {
-                return Err("dev is readonly");
-            }
-
-            let maps = req.mappings(mem).ok_or("bad guest region")?;
-
-            let mut nwritten = 0;
-            for map in maps {
-                unsafe {
-                    let len = map.len();
-                    let write_ptr =
-                        map.raw_readable().ok_or("wrong protection")?;
-                    if !seg.write(off + nwritten, write_ptr, len) {
-                        return Err("write too long");
-                    }
-                    nwritten += len;
-                };
-            }
-        }
-        block::Operation::Flush => {
-            // nothing to do
+    fn spawn_workers(&self) {
+        for n in 0..self.workers.get() {
+            let worker_state = self.work_state.clone();
+            let worker_acc =
+                self.work_state.attachment.accessor_mem(|acc_mem| {
+                    acc_mem
+                        .expect("backend is attached")
+                        .child(Some(format!("worker {n}")))
+                });
+            tokio::spawn(async move {
+                worker_state.processing_loop(worker_acc).await
+            });
         }
     }
-
-    Ok(())
 }
 
 struct MmapSeg(NonNull<u8>, usize);
@@ -162,37 +197,10 @@ unsafe impl Sync for MmapSeg {}
 
 impl block::Backend for MemAsyncBackend {
     fn info(&self) -> block::DeviceInfo {
-        self.info
+        self.work_state.info
     }
-
-    fn attach(&self, dev: Arc<dyn block::Device>) -> Result<()> {
-        self.scheduler.attach(dev);
-
-        for _n in 0..self.workers.get() {
-            let seg = self.seg.clone();
-            let ro = self.info.read_only;
-            let mut worker = self.scheduler.worker();
-            tokio::spawn(async move {
-                loop {
-                    let res = match worker.next().await {
-                        None => break,
-                        Some((req, mguard)) => {
-                            match process_request(&seg, ro, req, &mguard) {
-                                Ok(_) => block::Result::Success,
-                                Err(_) => block::Result::Failure,
-                            }
-                        }
-                    };
-                    worker.complete(res);
-                }
-            });
-        }
-
-        Ok(())
-    }
-
-    fn process(&self, _req: &block::Request, _mem: &MemCtx) -> block::Result {
-        panic!("request dispatch expected to be done through async logic");
+    fn attachment(&self) -> &block::backend::Attachment {
+        &self.work_state.attachment
     }
 }
 
@@ -201,16 +209,11 @@ impl Entity for MemAsyncBackend {
         "block-memory-async"
     }
     fn start(&self) -> anyhow::Result<()> {
-        self.scheduler.start();
+        self.work_state.attachment.start();
+        self.spawn_workers();
         Ok(())
     }
-    fn pause(&self) {
-        self.scheduler.pause();
-    }
-    fn resume(&self) {
-        self.scheduler.resume();
-    }
     fn halt(&self) {
-        self.scheduler.halt();
+        self.work_state.attachment.halt();
     }
 }

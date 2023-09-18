@@ -848,6 +848,10 @@ impl From<block::Result> for Completion {
             block::Result::Failure => {
                 Completion::generic_err(bits::STS_DATA_XFER_ERR)
             }
+            block::Result::ReadOnly => Completion::specific_err(
+                bits::StatusCodeType::CmdSpecific,
+                bits::STS_WRITE_READ_ONLY_RANGE,
+            ),
             block::Result::Unsupported => Completion::specific_err(
                 bits::StatusCodeType::CmdSpecific,
                 bits::STS_READ_CONFLICTING_ATTRS,

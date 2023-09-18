@@ -872,12 +872,11 @@ fn setup_instance(
                 let (backend, creg) = config::block_backend(&config, dev, log);
                 let bdf = bdf.unwrap();
 
-                let info = backend.info();
-                let vioblk = hw::virtio::PciVirtioBlock::new(0x100, info);
+                let vioblk = hw::virtio::PciVirtioBlock::new(0x100);
                 let id = inv.register_instance(&vioblk, bdf.to_string())?;
                 let _be_id = inv.register_child(creg, id)?;
 
-                backend.attach(vioblk.clone() as Arc<dyn block::Device>)?;
+                block::attach(backend, vioblk.clone());
 
                 chipset.pci_attach(bdf, vioblk);
             }
@@ -902,14 +901,13 @@ fn setup_instance(
                     .as_str()
                     .unwrap()
                     .to_string();
-                let info = backend.info();
                 let log = log.new(slog::o!("dev" => format!("nvme-{}", name)));
-                let nvme = hw::nvme::PciNvme::create(dev_serial, info, log);
+                let nvme = hw::nvme::PciNvme::create(dev_serial, log);
 
                 let id = inv.register_instance(&nvme, bdf.to_string())?;
                 let _be_id = inv.register_child(creg, id)?;
 
-                backend.attach(nvme.clone())?;
+                block::attach(backend, nvme.clone());
 
                 chipset.pci_attach(bdf, nvme);
             }

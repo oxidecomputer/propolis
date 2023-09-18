@@ -116,6 +116,7 @@ lazy_static = "1.4"
 libc = "0.2"
 mockall = "0.11"
 num_enum = "0.5.11"
+pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "main" }
 quote = "1.0"

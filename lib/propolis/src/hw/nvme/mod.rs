@@ -4,7 +4,7 @@
 
 use std::convert::TryInto;
 use std::mem::size_of;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use crate::accessors::Guard;
 use crate::block;
@@ -27,7 +27,7 @@ mod queue;
 mod requests;
 
 use bits::*;
-use queue::{CompQueue, QueueId, SubQueue};
+use queue::{CompQueue, Permit, QueueId, SubQueue};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -166,12 +166,6 @@ struct NvmeCtrl {
 
     /// The Identify structure returned for Identify namespace commands
     ns_ident: IdentifyNamespace,
-
-    /// Underlying Block Device info
-    binfo: block::DeviceInfo,
-
-    /// Whether or not we should service guest commands
-    paused: bool,
 }
 
 impl NvmeCtrl {
@@ -417,6 +411,18 @@ impl NvmeCtrl {
         b << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads
     }
 
+    fn update_block_info(&mut self, info: block::DeviceInfo) {
+        let nsze = info.total_size;
+        self.ns_ident = bits::IdentifyNamespace {
+            // No thin provisioning so nsze == ncap == nuse
+            nsze,
+            ncap: nsze,
+            nuse: nsze,
+            ..self.ns_ident
+        };
+        self.ns_ident.lbaf[0].lbads = info.block_size.trailing_zeros() as u8;
+    }
+
     fn export(&self) -> migrate::NvmeCtrlV1 {
         let cqs = self.cqs.iter().flatten().map(|cq| cq.export()).collect();
         let sqs = self.sqs.iter().flatten().map(|sq| sq.export()).collect();
@@ -477,11 +483,12 @@ pub struct PciNvme {
     /// NVMe Controller
     state: Mutex<NvmeCtrl>,
 
-    /// Underlying Block Device notifier
-    notifier: block::Notifier,
-
     /// PCI device state
     pci_state: pci::DeviceState,
+
+    block_attach: block::device::Attachment,
+
+    block_tracking: block::device::Tracking<Permit>,
 
     /// Logger resource
     log: slog::Logger,
@@ -489,11 +496,7 @@ pub struct PciNvme {
 
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
-    pub fn create(
-        serial_number: String,
-        binfo: block::DeviceInfo,
-        log: slog::Logger,
-    ) -> Arc<Self> {
+    pub fn create(serial_number: String, log: slog::Logger) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_OXIDE,
             device_id: PROPOLIS_NVME_DEV_ID,
@@ -535,30 +538,14 @@ impl PciNvme {
             ..Default::default()
         };
 
-        // Initialize the Identify structure returned when the  host issues
-        // an Identify Namespace command.
-        let nsze = binfo.total_size;
-        let mut ns_ident = bits::IdentifyNamespace {
-            // No thin provisioning so nsze == ncap == nuse
-            nsze,
-            ncap: nsze,
-            nuse: nsze,
+        // The Identify structure (returned by Identify command issued by guest)
+        // will be further updated when a backend is attached to make the
+        // underlying device info available.
+        let ns_ident = bits::IdentifyNamespace {
             nlbaf: 0, // We only support a single LBA format (1 but 0-based)
             flbas: 0, // And it is at index 0 in the lbaf array
             ..Default::default()
         };
-
-        // Update the block format we support
-        debug_assert!(
-            binfo.block_size.is_power_of_two(),
-            "binfo.block_size must be a power of 2"
-        );
-        debug_assert!(
-            binfo.block_size >= 512,
-            "binfo.block_size must be at least 512 bytes"
-        );
-
-        ns_ident.lbaf[0].lbads = binfo.block_size.trailing_zeros() as u8;
 
         // Initialize the CAP "register" leaving most values
         // at their defaults (0):
@@ -599,8 +586,6 @@ impl PciNvme {
             sqs: Default::default(),
             ctrl_ident,
             ns_ident,
-            binfo,
-            paused: false,
         };
 
         let pci_state = builder
@@ -611,10 +596,13 @@ impl PciNvme {
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
             .finish();
 
-        Arc::new(PciNvme {
+        Arc::new_cyclic(|weak| PciNvme {
             state: Mutex::new(state),
-            notifier: block::Notifier::new(),
             pci_state,
+            block_attach: block::device::Attachment::new(),
+            block_tracking: block::device::Tracking::new(
+                weak.clone() as Weak<dyn block::Device>
+            ),
             log,
         })
     }
@@ -851,21 +839,16 @@ impl PciNvme {
 
                     // We may have skipped pulling entries off some SQ due to this
                     // CQ having no available entry slots. Since we've just freed
-                    // up some slots, kick the SQs (excl. admin) here just in case.
-                    // TODO: worth kicking only the SQs specifically associated
-                    //       with this CQ?
-                    if !state.paused && cq.kick() {
-                        self.notifier.notify(self);
-                    }
+                    // up some slots, notify any attached block backend that
+                    // there may be new requests available.
+                    self.block_attach.notify();
                 } else {
                     // Submission Queue y Tail Doorbell
                     let sq = state.get_sq(qid)?;
                     sq.notify_tail(val)?;
 
-                    // Poke block device to service new requests
-                    if !state.paused {
-                        self.notifier.notify(self);
-                    }
+                    // Poke block backend to service new requests
+                    self.block_attach.notify();
                 }
             }
         }
@@ -879,10 +862,6 @@ impl PciNvme {
         mut state: MutexGuard<NvmeCtrl>,
         sq: Arc<SubQueue>,
     ) -> Result<(), NvmeError> {
-        if state.paused {
-            return Ok(());
-        }
-
         // Grab the Admin CQ too
         let cq = state.get_admin_cq()?;
 
@@ -1036,29 +1015,15 @@ impl Entity for PciNvme {
     }
 
     fn pause(&self) {
-        let mut ctrl = self.state.lock().unwrap();
-
-        // Stop responding to any requests
-        assert!(!ctrl.paused);
-        ctrl.paused = true;
-
-        self.notifier.pause();
+        self.block_attach.pause();
     }
 
     fn resume(&self) {
-        let mut ctrl = self.state.lock().unwrap();
-
-        assert!(ctrl.paused);
-        ctrl.paused = false;
-
-        self.notifier.resume();
+        self.block_attach.resume();
     }
 
     fn paused(&self) -> BoxFuture<'static, ()> {
-        let ctrl = self.state.lock().unwrap();
-        assert!(ctrl.paused);
-
-        Box::pin(self.notifier.paused())
+        Box::pin(self.block_tracking.none_outstanding())
     }
 
     fn migrate(&self) -> Migrator {

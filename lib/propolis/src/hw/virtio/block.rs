@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::num::NonZeroU16;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use crate::accessors::MemAccessor;
 use crate::block;
@@ -35,11 +35,11 @@ pub struct PciVirtioBlock {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
 
-    info: block::DeviceInfo,
-    notifier: block::Notifier,
+    block_attach: block::device::Attachment,
+    block_tracking: block::device::Tracking<CompletionPayload>,
 }
 impl PciVirtioBlock {
-    pub fn new(queue_size: u16, info: block::DeviceInfo) -> Arc<Self> {
+    pub fn new(queue_size: u16) -> Arc<Self> {
         let queues = VirtQueues::new(
             NonZeroU16::new(queue_size).unwrap(),
             NonZeroU16::new(1).unwrap(),
@@ -57,12 +57,19 @@ impl PciVirtioBlock {
             VIRTIO_BLK_CFG_SIZE,
         );
 
-        let notifier = block::Notifier::new();
-        Arc::new(Self { pci_state, virtio_state, info, notifier })
+        Arc::new_cyclic(|weak| Self {
+            pci_state,
+            virtio_state,
+            block_attach: block::device::Attachment::new(),
+            block_tracking: block::device::Tracking::new(
+                weak.clone() as Weak<dyn block::Device>
+            ),
+        })
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
-        let info = self.info;
+        let info = self.block_attach.info().unwrap_or_else(Default::default);
+
         let total_bytes = info.total_size * info.block_size as u64;
         match id {
             BlockReg::Capacity => {
@@ -110,10 +117,9 @@ impl PciVirtioBlock {
                     probes::vioblk_read_enqueue!(|| (
                         rid, off as u64, sz as u64
                     ));
-                    Ok(block::Request::new_read(
-                        off,
-                        regions,
-                        Box::new(CompletionPayload { rid, chain }),
+                    Ok(self.block_tracking.track(
+                        block::Request::new_read(off, sz, regions),
+                        CompletionPayload { rid, chain },
                     ))
                 } else {
                     Err(chain)
@@ -128,10 +134,9 @@ impl PciVirtioBlock {
                     probes::vioblk_write_enqueue!(|| (
                         rid, off as u64, sz as u64
                     ));
-                    Ok(block::Request::new_write(
-                        off,
-                        regions,
-                        Box::new(CompletionPayload { rid, chain }),
+                    Ok(self.block_tracking.track(
+                        block::Request::new_write(off, sz, regions),
+                        CompletionPayload { rid, chain },
                     ))
                 } else {
                     Err(chain)
@@ -139,10 +144,10 @@ impl PciVirtioBlock {
             }
             VIRTIO_BLK_T_FLUSH => {
                 probes::vioblk_flush_enqueue!(|| (rid));
-                Ok(block::Request::new_flush(Box::new(CompletionPayload {
-                    rid,
-                    chain,
-                })))
+                Ok(self.block_tracking.track(
+                    block::Request::new_flush(),
+                    CompletionPayload { rid, chain },
+                ))
             }
             _ => Err(chain),
         };
@@ -173,6 +178,7 @@ impl PciVirtioBlock {
             let resnum = match res {
                 block::Result::Success => VIRTIO_BLK_S_OK,
                 block::Result::Failure => VIRTIO_BLK_S_IOERR,
+                block::Result::ReadOnly => VIRTIO_BLK_S_IOERR,
                 block::Result::Unsupported => VIRTIO_BLK_S_UNSUPP,
             };
             match op {
@@ -206,7 +212,8 @@ impl VirtioDevice for PciVirtioBlock {
         feat |= VIRTIO_BLK_F_SEG_MAX;
         feat |= VIRTIO_BLK_F_FLUSH;
 
-        if self.info.read_only {
+        let info = self.block_attach.info().unwrap_or_else(Default::default);
+        if info.read_only {
             feat |= VIRTIO_BLK_F_RO;
         }
         feat
@@ -216,7 +223,7 @@ impl VirtioDevice for PciVirtioBlock {
     }
 
     fn queue_notify(&self, _vq: &Arc<VirtQueue>) {
-        self.notifier.notify(self);
+        self.block_attach.notify()
     }
 }
 impl PciVirtio for PciVirtioBlock {
@@ -228,28 +235,22 @@ impl PciVirtio for PciVirtioBlock {
     }
 }
 impl block::Device for PciVirtioBlock {
-    fn next(&self) -> Option<block::Request> {
-        self.notifier.next_arming(|| self.next_req())
+    fn attachment(&self) -> &block::device::Attachment {
+        &self.block_attach
     }
 
-    fn complete(
-        &self,
-        op: block::Operation,
-        res: block::Result,
-        payload: Box<block::BlockPayload>,
-    ) {
-        let mut payload: Box<CompletionPayload> =
-            payload.downcast().expect("payload must be correct type");
-        let CompletionPayload { rid, ref mut chain } = *payload;
+    fn next(&self) -> Option<block::Request> {
+        self.next_req()
+    }
+
+    fn complete(&self, res: block::Result, id: block::ReqId) {
+        let (op, mut payload) = self.block_tracking.complete(id, res);
+        let CompletionPayload { rid, ref mut chain } = payload;
         self.complete_req(rid, op, res, chain);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
         self.pci_state.acc_mem.child(Some("block backend".to_string()))
-    }
-
-    fn set_notifier(&self, val: Option<Box<block::NotifierFn>>) {
-        self.notifier.set(val);
     }
 }
 impl Entity for PciVirtioBlock {
@@ -260,13 +261,13 @@ impl Entity for PciVirtioBlock {
         self.virtio_state.reset(self);
     }
     fn pause(&self) {
-        self.notifier.pause();
+        self.block_attach.pause();
     }
     fn resume(&self) {
-        self.notifier.resume();
+        self.block_attach.resume();
     }
     fn paused(&self) -> BoxFuture<'static, ()> {
-        Box::pin(self.notifier.paused())
+        Box::pin(self.block_tracking.none_outstanding())
     }
     fn migrate(&self) -> Migrator {
         Migrator::Multi(self)

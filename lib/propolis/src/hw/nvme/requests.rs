@@ -4,7 +4,7 @@
 
 use crate::{
     accessors::MemAccessor,
-    block::{self, BlockPayload, Operation, Request, Result as BlockResult},
+    block::{self, Operation, Request, Result as BlockResult},
     hw::nvme::{bits, cmds::Completion},
 };
 
@@ -31,41 +31,35 @@ mod probes {
     }
 }
 
-type NvmeBlockPayload = Permit;
-
 impl block::Device for PciNvme {
-    fn next(&self) -> Option<Request> {
-        self.notifier.next_arming(|| self.next_req())
+    fn attachment(&self) -> &block::device::Attachment {
+        &self.block_attach
     }
 
-    fn complete(
-        &self,
-        op: Operation,
-        res: BlockResult,
-        payload: Box<BlockPayload>,
-    ) {
-        let payload: Box<NvmeBlockPayload> =
-            payload.downcast().expect("payload must be correct type");
-        self.complete_req(op, res, *payload);
+    fn attach(&self, info: block::DeviceInfo) {
+        self.state.lock().unwrap().update_block_info(info);
+    }
+
+    fn next(&self) -> Option<Request> {
+        let (req, permit) = self.next_req()?;
+        Some(self.block_tracking.track(req, permit))
+    }
+
+    fn complete(&self, res: BlockResult, id: block::ReqId) {
+        let (op, permit) = self.block_tracking.complete(id, res);
+        self.complete_req(op, res, permit);
     }
 
     fn accessor_mem(&self) -> MemAccessor {
         self.pci_state.acc_mem.child(Some("block backend".to_string()))
-    }
-
-    fn set_notifier(&self, f: Option<Box<block::NotifierFn>>) {
-        self.notifier.set(f)
     }
 }
 
 impl PciNvme {
     /// Pop an available I/O request off of a Submission Queue to begin
     /// processing by the underlying Block Device.
-    fn next_req(&self) -> Option<Request> {
+    fn next_req(&self) -> Option<(Request, Permit)> {
         let state = self.state.lock().unwrap();
-
-        // We shouldn't be called while paused
-        assert!(!state.paused, "I/O requested while device paused");
 
         let mem = self.mem_access()?;
 
@@ -87,23 +81,6 @@ impl PciNvme {
                 let cmd = NvmCmd::parse(sub);
 
                 match cmd {
-                    Ok(NvmCmd::Write(cmd)) if state.binfo.read_only => {
-                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
-                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
-                        probes::nvme_write_enqueue!(|| (
-                            qid, idx, cid, off, size
-                        ));
-                        let comp = Completion::specific_err(
-                            bits::StatusCodeType::CmdSpecific,
-                            bits::STS_WRITE_READ_ONLY_RANGE,
-                        );
-                        probes::nvme_write_complete!(|| (
-                            qid,
-                            cid,
-                            BlockResult::Failure as u8,
-                        ));
-                        permit.complete(comp, Some(&mem));
-                    }
                     Ok(NvmCmd::Write(cmd)) => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
                         let size = state.nlb_to_size(cmd.nlb as usize) as u64;
@@ -114,10 +91,10 @@ impl PciNvme {
                         let bufs = cmd.data(size, &mem).collect();
                         let req = Request::new_write(
                             off as usize,
+                            size as usize,
                             bufs,
-                            Box::new(permit),
                         );
-                        return Some(req);
+                        return Some((req, permit));
                     }
                     Ok(NvmCmd::Read(cmd)) => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
@@ -130,15 +107,15 @@ impl PciNvme {
                         let bufs = cmd.data(size, &mem).collect();
                         let req = Request::new_read(
                             off as usize,
+                            size as usize,
                             bufs,
-                            Box::new(permit),
                         );
-                        return Some(req);
+                        return Some((req, permit));
                     }
                     Ok(NvmCmd::Flush) => {
                         probes::nvme_flush_enqueue!(|| (qid, idx, cid));
-                        let req = Request::new_flush(Box::new(permit));
-                        return Some(req);
+                        let req = Request::new_flush();
+                        return Some((req, permit));
                     }
                     Ok(NvmCmd::Unknown(_)) | Err(_) => {
                         // For any other unrecognized or malformed command,
