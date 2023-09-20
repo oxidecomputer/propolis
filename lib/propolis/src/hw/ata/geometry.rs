@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use slog::{Record, Result, Serializer, KV};
-
 /// A distinct type to hold the number of sectors of a disk drive.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Sectors(u64);
@@ -62,6 +60,27 @@ impl std::ops::Mul<Sectors> for u64 {
 
     fn mul(self, rhs: Sectors) -> Sectors {
         rhs * self
+    }
+}
+
+impl slog::Value for Sectors {
+    fn serialize(
+        &self,
+        _rec: &slog::Record,
+        key: slog::Key,
+        serializer: &mut dyn slog::Serializer,
+    ) -> slog::Result {
+        serializer.emit_u64(key, self.0)
+    }
+}
+
+impl slog::KV for Sectors {
+    fn serialize(
+        &self,
+        _rec: &slog::Record,
+        serializer: &mut dyn slog::Serializer,
+    ) -> slog::Result {
+        serializer.emit_u64("sectors", self.0)
     }
 }
 
@@ -130,12 +149,12 @@ impl Geometry {
     // }
 }
 
-impl KV for Geometry {
+impl slog::KV for Geometry {
     fn serialize(
         &self,
-        _rec: &Record,
-        serializer: &mut dyn Serializer,
-    ) -> Result {
+        _rec: &slog::Record,
+        serializer: &mut dyn slog::Serializer,
+    ) -> slog::Result {
         serializer.emit_u16("cylinders", self.cylinders)?;
         serializer.emit_u8("heads", self.heads)?;
         serializer.emit_u8("sectors", self.sectors)
@@ -183,3 +202,9 @@ impl Default for CylinderHeadSectorAddress {
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LogicalBlockAddress(u64);
+
+impl LogicalBlockAddress {
+    pub fn new(v: u64) -> Self {
+        Self(v)
+    }
+}

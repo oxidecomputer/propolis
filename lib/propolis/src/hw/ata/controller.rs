@@ -2,19 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::hw::ata::{bits::*, device::*};
+use crate::hw::ata::bits::*;
+use crate::hw::ata::device::*;
 use crate::intr_pins::IntrPin;
 
 pub struct AtaController {
     channels: [Channel; 2],
-    paused: bool,
 }
 
 impl AtaController {
     pub fn create() -> Self {
         Self {
             channels: [Channel::default(), Channel::default()],
-            paused: false,
         }
     }
 
@@ -33,7 +32,7 @@ impl AtaController {
         device_id: usize,
         mut device: AtaDevice,
     ) {
-        device.id = device_id;
+        //device.id = device_id;
         self.channels[channel_id].devices[device_id] = Some(device);
     }
 
@@ -128,7 +127,7 @@ impl AtaController {
                 // may be good enough for now.
                 maybe_device
                     .as_mut()
-                    .map(|device| device.execute_command(value));
+                    .map(|device| device.write_register(reg, value));
             }
 
             self.channels[channel_id].device_selected = 0;
@@ -136,7 +135,7 @@ impl AtaController {
 
         // The DeviceControl.SRST bit should be processed by all attached
         // devices, triggering a soft reset when appropriate.
-        if reg == Registers::DeviceControl {
+        else if reg == Registers::DeviceControl {
             for maybe_device in self.channels[channel_id].devices.iter_mut() {
                 maybe_device.as_mut().map(|device| {
                     device.set_software_reset(
@@ -146,7 +145,7 @@ impl AtaController {
             }
         }
 
-        if let Some(device) = self.channels[channel_id].maybe_device() {
+        else if let Some(device) = self.channels[channel_id].maybe_device() {
             device.write_register(reg, value)
         }
 

@@ -5,10 +5,12 @@
 #![allow(dead_code)]
 
 use std::convert::Infallible;
+use std::sync::Mutex;
 
 use bitstruct::FromRaw;
 use unwrap_infallible::UnwrapInfallible;
 
+use crate::block;
 use crate::hw::ata::bits::Commands::*;
 use crate::hw::ata::bits::Registers::*;
 use crate::hw::ata::bits::*;
@@ -16,16 +18,7 @@ use crate::hw::ata::geometry::*;
 use crate::hw::ata::{AtaError, AtaError::*};
 
 pub struct AtaDevice {
-    sector: [u16; 256],
-    sector_ptr: usize,
-    registers: DeviceRegisters,
-    capacity: Sectors,
-    default_geometry: Geometry,
-    active_geometry: Geometry,
-    operation: Option<Operations>,
-    irq: bool,
-    log: slog::Logger,
-    pub id: usize,
+    state: Mutex<State>,
 }
 
 impl AtaDevice {
@@ -34,20 +27,126 @@ impl AtaDevice {
         capacity: Sectors,
         default_geometry: Geometry,
     ) -> Self {
+        Self {
+            state: Mutex::new(State::create(log, capacity, default_geometry)),
+        }
+    }
+
+    pub fn interrupts_enabled(&self) -> bool {
+        self.state.lock().unwrap().interrupts_enabled()
+    }
+
+    pub fn interrupt_pending(&self) -> bool {
+        self.state.lock().unwrap().interrupt_pending()
+    }
+
+    pub fn set_software_reset(&self, software_reset: bool) {
+        self.state.lock().unwrap().set_software_reset(software_reset)
+    }
+
+    pub fn read_data(&self) -> u16 {
+        self.state.lock().unwrap().read_data()
+    }
+
+    pub fn write_data(&self, data: u16) {
+        self.state.lock().unwrap().write_data(data)
+    }
+
+    pub fn read_register(&self, reg: Registers) -> u8 {
+        self.state.lock().unwrap().read_register(reg)
+    }
+
+    pub fn write_register(&self, reg: Registers, value: u8) {
+        self.state.lock().unwrap().write_register(reg, value)
+    }
+
+    pub fn status(&self) -> StatusRegister {
+        StatusRegister(self.state.lock().unwrap().read_register(Registers::Status))
+    }
+
+    pub fn alt_status(&self) -> StatusRegister {
+        StatusRegister(self.state.lock().unwrap().read_register(Registers::AltStatus))
+    }
+
+    pub fn error(&self) -> ErrorRegister {
+        ErrorRegister(self.state.lock().unwrap().read_register(Registers::Error))
+    }
+}
+
+// impl block::Device for AtaDevice {
+//     fn next(&self) -> Option<Request> {
+//         None
+//     }
+//     fn complete(&self, op: Operation, res: Result, payload: Box<BlockPayload>) {}
+//     fn accessor_mem(&self) -> MemAccessor {
+
+//     }
+//     fn set_notifier(&self, f: Option<Box<NotifierFn>>) {}
+// }
+
+pub struct State {
+    sector: [u16; 256],
+    registers: DeviceRegisters,
+    capacity: Sectors,
+    default_geometry: Geometry,
+    active_geometry: Geometry,
+    pio_mode: u8,
+    dma_mode: u8,
+    operation: Option<Operations>,
+    irq: bool,
+    //info: block::DeviceInfo,
+    //notifier: block::Notifier,
+    log: slog::Logger,
+    pub id: usize,
+}
+
+impl State {
+    pub fn create(
+        log: slog::Logger,
+        capacity: Sectors,
+        default_geometry: Geometry,
+    ) -> Self {
         // Execute Power on Reset, ATA/ATAPI-6, 9.1.
         Self {
             sector: [0u16; 256],
-            sector_ptr: 0,
             registers: DeviceRegisters::default_ata(),
             capacity,
             default_geometry,
             active_geometry: default_geometry,
+            pio_mode: 0,
+            dma_mode: 0,
             operation: None,
             irq: false,
+            //info: block::DeviceInfo::default(),
+            //notifier: block::Notifier::default(),
             log,
             // Id and path will be updated when the device is attached.
             id: 0,
         }
+    }
+
+    #[inline]
+    pub fn interrupts_enabled(&self) -> bool {
+        !self.registers.device_control.interrupt_enabled_n()
+    }
+
+    /// Return whether or not an interrupt is pending for this device.
+    #[inline]
+    pub fn interrupt_pending(&self) -> bool {
+        self.interrupts_enabled() && self.irq
+    }
+
+    pub fn set_software_reset(&mut self, software_reset: bool) {
+        if software_reset {
+            self.registers.status.set_busy(true);
+        } else if self.registers.device_control.software_reset()
+            && !software_reset
+        {
+            slog::info!(self.log, "software reset");
+            self.execute_device_diagnostics().unwrap_infallible();
+        }
+
+        self.registers.device_control.set_software_reset(software_reset);
     }
 
     /// Read a word of data from the Data port.
@@ -134,10 +233,10 @@ impl AtaDevice {
     }
 
     /// Execute the given command.
-    pub fn execute_command(&mut self, value: u8) {
-        if let Err(e) = Commands::try_from(value).and_then(|c| {
+    fn execute_command(&mut self, value: u8) {
+        if let Err(e) = Commands::try_from(value).and_then(|command| {
             // Initiate one of the protocols based on the command.
-            match c {
+            match command {
                 DeviceReset => {
                     todo!()
                 }
@@ -157,13 +256,10 @@ impl AtaDevice {
                 SetMultipleMode => {
                     self.execute_non_data_command(Self::set_multiple_mode)
                 }
-                _ => Err(UnsupportedCommand(c)),
-
-                // Commands::ReadSectors => {
-                //     // TODO (arjen): Seek to address.
-                //     self.operation = Some(Operations::ReadSectors(self.registers.sector_count.read_current().into()));
-                //     self.continue_operation()
-                // }
+                ReadSectors => {
+                    self.execute_pio_data_in_command(Self::seek_and_read_sector)
+                }
+                _ => Err(UnsupportedCommand(command)),
             }
         }) {
             // This sets the high level Error.ABRT and Status.ERR bits. The
@@ -172,30 +268,6 @@ impl AtaDevice {
 
             slog::warn!(self.log, "command aborted"; e);
         }
-    }
-
-    #[inline]
-    pub fn interrupts_enabled(&self) -> bool {
-        !self.registers.device_control.interrupt_enabled_n()
-    }
-
-    /// Return whether or not an interrupt is pending for this device.
-    #[inline]
-    pub fn interrupt_pending(&self) -> bool {
-        self.interrupts_enabled() && self.irq
-    }
-
-    pub fn set_software_reset(&mut self, software_reset: bool) {
-        if software_reset {
-            self.registers.status.set_busy(true);
-        } else if self.registers.device_control.software_reset()
-            && !software_reset
-        {
-            slog::info!(self.log, "software reset");
-            self.execute_device_diagnostics().unwrap_infallible();
-        }
-
-        self.registers.device_control.set_software_reset(software_reset);
     }
 
     fn execute_non_data_command<F>(&mut self, op: F) -> Result<(), AtaError>
@@ -302,6 +374,7 @@ impl AtaDevice {
         self.sector[47] = 0x8001; // 1 sector per interrupt.
         self.sector[49] = 0x0200; // LBA supported, device manages standby timer values.
         self.sector[50] = 0x4000;
+        self.sector[51] = (self.pio_mode as u16) << 8;
         self.sector[53] = 0x0006; // Words 70:64 and 88 are valid.
         self.sector[59] = 0x0001; // 1 sector per interrupt.
         self.sector[63] = 0x0000; // No Multiword DMA support.
@@ -334,7 +407,8 @@ impl AtaDevice {
         slog::info!(
             self.log,
             "initialize device parameters";
-            self.active_geometry);
+            self.active_geometry,
+            "capacity" => self.active_geometry.capacity());
 
         Ok(())
     }
@@ -344,29 +418,33 @@ impl AtaDevice {
         match self.registers.features.read_current() {
             0x3 => {
                 let arguments = self.registers.sector_count.read_current();
-                let mode = (arguments & 0xf8) >> 3;
+                let transfer_type = (arguments & 0xf8) >> 3;
                 let value = arguments & 0x7;
+                let result = match (transfer_type, value) {
+                    (0, 0) => Ok(self.pio_mode = 0),
+                    (0, 1) => Ok(self.pio_mode = 0),
+                    (1, value) => Ok(self.pio_mode = value),
+                    (8, value) => Ok(self.dma_mode = value),
+                    (_, _) => {
+                        Err(TransferModeNotSupported(transfer_type, value))
+                    }
+                };
 
-                match (mode, value) {
-                    (0, 0) => Ok(
-                        slog::info!(self.log, "set transfer mode"; "mode" => "PIO default"),
-                    ),
-                    (0, 1) => Ok(
-                        slog::info!(self.log, "set transfer mode"; "mode" => "PIO default, disable IORDY"),
-                    ),
-                    (1, _) => Ok(
-                        slog::info!(self.log, "set transfer mode"; "mode" => "PIO mode", "value" => value),
-                    ),
-                    (4, _) => Ok(
-                        slog::info!(self.log, "set transfer mode"; "mode" => "Multiword DMA", "value" => value),
-                    ),
-                    (8, _) => Ok(
-                        slog::info!(self.log, "set transfer mode"; "mode" => "Ultra DMA", "value" => value),
-                    ),
-                    (_, _) => Err(FeatureNotSupported),
+                if result.is_ok() {
+                    slog::info!(
+                        self.log,
+                        "set transfer mode";
+                        "type" => match transfer_type {
+                            0 | 1 => "PIO",
+                            8 => "UltraDMA",
+                            _ => panic!(),
+                        },
+                        "mode" => value);
                 }
+
+                result
             }
-            _ => Err(FeatureNotSupported),
+            code => Err(FeatureNotSupported(code)),
         }
     }
 
@@ -377,9 +455,23 @@ impl AtaDevice {
         slog::info!(
             self.log,
             "set multiple mode";
-            "value" => self.registers.sector_count.read_current());
+            "sectors" => self.registers.sector_count.read_current());
 
         Ok(())
+    }
+
+    fn seek_and_read_sector(&mut self) -> Result<DataInOut, AtaError> {
+        let address = if !self.registers.device.lba_addressing() {
+            let chs = self.cylinder_head_sector_address();
+            // TODO (arjen): Test if address valid.
+            chs.logical_block_address(&self.active_geometry)
+        } else {
+            let lba = self.logical_block_address28();
+            // TODO (arjen): Test if address valid.
+            lba
+        };
+
+        Ok(DataInOut::default())
     }
 
     fn check_not_busy(&self) -> Result<(), AtaError> {
@@ -401,6 +493,33 @@ impl AtaDevice {
     fn abort_command(&mut self) {
         self.registers.error.set_abort(true);
         self.registers.status.set_error(true);
+    }
+
+    #[inline]
+    fn logical_block_address28(&self) -> LogicalBlockAddress {
+        LogicalBlockAddress::new(
+            u64::from(self.registers.lba_low.read_current())
+                | u64::from(self.registers.lba_mid.read_current()) << 8
+                | u64::from(self.registers.lba_high.read_current()) << 16
+                | u64::from(self.registers.device.heads()) << 24,
+        )
+    }
+
+    #[inline]
+    fn logical_block_address48(&self) -> LogicalBlockAddress {
+        todo!()
+    }
+
+    #[inline]
+    fn cylinder_head_sector_address(&self) -> CylinderHeadSectorAddress {
+        // Determine the logical address from the CHS address.
+        let cylinder = u16::from(self.registers.lba_mid.read_current()) << 8
+            | u16::from(self.registers.lba_high.read_current());
+        CylinderHeadSectorAddress {
+            cylinder,
+            head: self.registers.device.heads(),
+            sector: self.registers.lba_low.read_current(),
+        }
     }
 }
 
@@ -474,6 +593,7 @@ impl FifoRegister {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DataInOut {
+    sector_address: usize,
     sector_ptr: usize,
     sectors_remaining: usize,
 }
@@ -498,8 +618,9 @@ impl DataInOut {
 
     #[inline]
     pub fn next_sector(&self) -> Self {
+        let sector_address = self.sector_address + 1;
         let sectors_remaining = self.sectors_remaining - 1;
-        Self { sectors_remaining, ..*self }
+        Self { sector_address, sectors_remaining, ..*self }
     }
 }
 

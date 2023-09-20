@@ -4,9 +4,9 @@
 
 #![allow(dead_code)]
 
-use std::fmt;
-use bitstruct::*;
 use crate::hw::ata::AtaError;
+use bitstruct::*;
+use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Registers {

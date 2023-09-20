@@ -11,6 +11,7 @@ mod bits;
 pub mod controller;
 pub mod device;
 pub mod geometry;
+pub mod pci;
 #[cfg(test)]
 mod test;
 
@@ -40,8 +41,11 @@ pub enum AtaError {
     #[error("unsupported command ({0})")]
     UnsupportedCommand(Commands),
 
-    #[error("feature not supported")]
-    FeatureNotSupported,
+    #[error("feature not supported ({0})")]
+    FeatureNotSupported(u8),
+
+    #[error("transfer mode not supported ({0}, {0})")]
+    TransferModeNotSupported(u8, u8),
 }
 
 impl KV for AtaError {
