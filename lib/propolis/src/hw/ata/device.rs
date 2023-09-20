@@ -5,86 +5,17 @@
 #![allow(dead_code)]
 
 use std::convert::Infallible;
-use std::sync::Mutex;
 
 use bitstruct::FromRaw;
 use unwrap_infallible::UnwrapInfallible;
 
-use crate::block;
 use crate::hw::ata::bits::Commands::*;
 use crate::hw::ata::bits::Registers::*;
 use crate::hw::ata::bits::*;
 use crate::hw::ata::geometry::*;
 use crate::hw::ata::{AtaError, AtaError::*};
 
-pub struct AtaDevice {
-    state: Mutex<State>,
-}
-
-impl AtaDevice {
-    pub fn create(
-        log: slog::Logger,
-        capacity: Sectors,
-        default_geometry: Geometry,
-    ) -> Self {
-        Self {
-            state: Mutex::new(State::create(log, capacity, default_geometry)),
-        }
-    }
-
-    pub fn interrupts_enabled(&self) -> bool {
-        self.state.lock().unwrap().interrupts_enabled()
-    }
-
-    pub fn interrupt_pending(&self) -> bool {
-        self.state.lock().unwrap().interrupt_pending()
-    }
-
-    pub fn set_software_reset(&self, software_reset: bool) {
-        self.state.lock().unwrap().set_software_reset(software_reset)
-    }
-
-    pub fn read_data(&self) -> u16 {
-        self.state.lock().unwrap().read_data()
-    }
-
-    pub fn write_data(&self, data: u16) {
-        self.state.lock().unwrap().write_data(data)
-    }
-
-    pub fn read_register(&self, reg: Registers) -> u8 {
-        self.state.lock().unwrap().read_register(reg)
-    }
-
-    pub fn write_register(&self, reg: Registers, value: u8) {
-        self.state.lock().unwrap().write_register(reg, value)
-    }
-
-    pub fn status(&self) -> StatusRegister {
-        StatusRegister(self.state.lock().unwrap().read_register(Registers::Status))
-    }
-
-    pub fn alt_status(&self) -> StatusRegister {
-        StatusRegister(self.state.lock().unwrap().read_register(Registers::AltStatus))
-    }
-
-    pub fn error(&self) -> ErrorRegister {
-        ErrorRegister(self.state.lock().unwrap().read_register(Registers::Error))
-    }
-}
-
-// impl block::Device for AtaDevice {
-//     fn next(&self) -> Option<Request> {
-//         None
-//     }
-//     fn complete(&self, op: Operation, res: Result, payload: Box<BlockPayload>) {}
-//     fn accessor_mem(&self) -> MemAccessor {
-
-//     }
-//     fn set_notifier(&self, f: Option<Box<NotifierFn>>) {}
-// }
-
-pub struct State {
+pub struct AtaDeviceState {
     sector: [u16; 256],
     registers: DeviceRegisters,
     capacity: Sectors,
@@ -94,13 +25,11 @@ pub struct State {
     dma_mode: u8,
     operation: Option<Operations>,
     irq: bool,
-    //info: block::DeviceInfo,
-    //notifier: block::Notifier,
     log: slog::Logger,
     pub id: usize,
 }
 
-impl State {
+impl AtaDeviceState {
     pub fn create(
         log: slog::Logger,
         capacity: Sectors,
@@ -117,10 +46,7 @@ impl State {
             dma_mode: 0,
             operation: None,
             irq: false,
-            //info: block::DeviceInfo::default(),
-            //notifier: block::Notifier::default(),
             log,
-            // Id and path will be updated when the device is attached.
             id: 0,
         }
     }
@@ -290,7 +216,7 @@ impl State {
 
     fn execute_pio_data_in_command<F>(&mut self, op: F) -> Result<(), AtaError>
     where
-        F: FnOnce(&mut Self) -> Result<DataInOut, AtaError>,
+        F: FnOnce(&mut Self) -> Result<DataInOutState, AtaError>,
     {
         self.check_not_busy()?;
         self.check_device_ready()?;
@@ -333,7 +259,7 @@ impl State {
 
     /// Write the ATA/ATAPI-6 IDENTITY sector to the buffer. See ATA/ATAPI-6,
     /// 8.15.8 for details on the fields.
-    fn set_identity(&mut self) -> Result<DataInOut, AtaError> {
+    fn set_identity(&mut self) -> Result<DataInOutState, AtaError> {
         // The IDENTITY sector has a significant amount of empty/don't care
         // space. As such it's easier to simply clear the buffer and only fill
         // the words needed.
@@ -394,7 +320,7 @@ impl State {
 
         // Set the PIO Data In protocol state with the sector pointer at 0 and
         // no remaining sectors.
-        Ok(DataInOut::default())
+        Ok(DataInOutState::default())
     }
 
     // INITIALIZE DEVICE PARAMETERS, ATA/ATAPI-4, 8.16.
@@ -460,7 +386,7 @@ impl State {
         Ok(())
     }
 
-    fn seek_and_read_sector(&mut self) -> Result<DataInOut, AtaError> {
+    fn seek_and_read_sector(&mut self) -> Result<DataInOutState, AtaError> {
         let address = if !self.registers.device.lba_addressing() {
             let chs = self.cylinder_head_sector_address();
             // TODO (arjen): Test if address valid.
@@ -471,7 +397,7 @@ impl State {
             lba
         };
 
-        Ok(DataInOut::default())
+        Ok(DataInOutState::default())
     }
 
     fn check_not_busy(&self) -> Result<(), AtaError> {
@@ -520,6 +446,21 @@ impl State {
             head: self.registers.device.heads(),
             sector: self.registers.lba_low.read_current(),
         }
+    }
+
+    #[inline]
+    pub fn status(&mut self) -> StatusRegister {
+        StatusRegister(self.read_register(Status))
+    }
+
+    #[inline]
+    pub fn alt_status(&mut self) -> StatusRegister {
+        StatusRegister(self.read_register(AltStatus))
+    }
+
+    #[inline]
+    pub fn error(&mut self) -> ErrorRegister {
+        ErrorRegister(self.read_register(Error))
     }
 }
 
@@ -592,17 +533,16 @@ impl FifoRegister {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct DataInOut {
+struct DataInOutState {
     sector_address: usize,
     sector_ptr: usize,
     sectors_remaining: usize,
 }
 
-impl DataInOut {
+impl DataInOutState {
     #[inline]
     pub fn last_sector_word(&self) -> bool {
-        self.sector_ptr
-            >= crate::hw::ata::BLOCK_SIZE / std::mem::size_of::<u16>() - 1
+        self.sector_ptr >= BLOCK_SIZE / std::mem::size_of::<u16>() - 1
     }
 
     #[inline]
@@ -626,8 +566,8 @@ impl DataInOut {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operations {
-    DataIn(DataInOut),
-    DataOut(DataInOut),
+    DataIn(DataInOutState),
+    DataOut(DataInOutState),
 }
 
 impl Operations {
@@ -642,21 +582,18 @@ impl Operations {
 /// Copy the given str s with appropriate padding into the given word buffer
 /// according to the byte order described in ATA/ATAPI-4, 8.12.8.
 fn copy_str(s: &str, buffer: &mut [u16]) {
-    use itertools::izip;
-    use std::iter::*;
-
     // Create an iterator which chains/pads the bytes of the given str s with
     // additional ASCII spaces (20h).
-    let padded_s = s.as_bytes().iter().cloned().chain(repeat(0x20));
+    let padded_s = s.as_bytes().iter().cloned().chain(std::iter::repeat(0x20));
 
     // Clone the padded string iterator into two iterators offset by one byte,
     // to allow iterating in chunks of two bytes.
-    let padded_s_byte0 = padded_s.clone().step_by(2);
-    let padded_s_byte1 = padded_s.clone().skip(1).step_by(2);
+    let padded_s0 = padded_s.clone().step_by(2);
+    let padded_s1 = padded_s.clone().skip(1).step_by(2);
 
     // Copy from the two byte iterators to the buffer in BE order. See
     // ATA/ATAPI-4, 8.12.8.
-    for (word, b0, b1) in izip!(buffer, padded_s_byte0, padded_s_byte1) {
+    for (word, b0, b1) in itertools::izip!(buffer, padded_s0, padded_s1) {
         *word = u16::from_be_bytes([b0, b1]);
     }
 }

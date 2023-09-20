@@ -6,15 +6,13 @@ use crate::hw::ata::bits::*;
 use crate::hw::ata::device::*;
 use crate::intr_pins::IntrPin;
 
-pub struct AtaController {
+pub struct AtaControllerState {
     channels: [Channel; 2],
 }
 
-impl AtaController {
-    pub fn create() -> Self {
-        Self {
-            channels: [Channel::default(), Channel::default()],
-        }
+impl AtaControllerState {
+    pub fn new() -> Self {
+        Self { channels: [Channel::default(), Channel::default()] }
     }
 
     pub fn attach_irq(
@@ -30,7 +28,7 @@ impl AtaController {
         &mut self,
         channel_id: usize,
         device_id: usize,
-        mut device: AtaDevice,
+        device: AtaDeviceState,
     ) {
         //device.id = device_id;
         self.channels[channel_id].devices[device_id] = Some(device);
@@ -132,7 +130,6 @@ impl AtaController {
 
             self.channels[channel_id].device_selected = 0;
         }
-
         // The DeviceControl.SRST bit should be processed by all attached
         // devices, triggering a soft reset when appropriate.
         else if reg == Registers::DeviceControl {
@@ -143,9 +140,7 @@ impl AtaController {
                     )
                 });
             }
-        }
-
-        else if let Some(device) = self.channels[channel_id].maybe_device() {
+        } else if let Some(device) = self.channels[channel_id].maybe_device() {
             device.write_register(reg, value)
         }
 
@@ -181,13 +176,13 @@ impl AtaController {
 
 #[derive(Default)]
 struct Channel {
-    devices: [Option<AtaDevice>; 2],
+    devices: [Option<AtaDeviceState>; 2],
     device_selected: usize,
     ata_pin: Option<Box<dyn IntrPin>>,
 }
 
 impl Channel {
-    pub fn maybe_device(&mut self) -> Option<&mut AtaDevice> {
+    pub fn maybe_device(&mut self) -> Option<&mut AtaDeviceState> {
         self.devices[self.device_selected].as_mut()
     }
 }

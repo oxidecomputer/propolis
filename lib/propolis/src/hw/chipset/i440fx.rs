@@ -6,15 +6,14 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::hw::ata::AtaController;
+use crate::hw::ata::PciAtaController;
 use crate::hw::bhyve::BhyvePmTimer;
-use crate::hw::chipset::piix3_ide::Piix3IdeCtrl;
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::hw::ids::pci::{
-    PIIX3_ISA_DEV_ID, PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID,
-    PIIX4_HB_SUB_DEV_ID, PIIX4_PM_DEV_ID, PIIX4_PM_SUB_DEV_ID, VENDOR_INTEL,
-    VENDOR_OXIDE,
+    PIIX3_IDE_DEV_ID, PIIX3_IDE_SUB_DEV_ID, PIIX3_ISA_DEV_ID,
+    PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID, PIIX4_HB_SUB_DEV_ID,
+    PIIX4_PM_DEV_ID, PIIX4_PM_SUB_DEV_ID, VENDOR_INTEL, VENDOR_OXIDE,
 };
 use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
@@ -47,7 +46,7 @@ pub struct Opts {
     pub enable_pcie: bool,
     pub power_pin: Option<Arc<dyn IntrPin>>,
     pub reset_pin: Option<Arc<dyn IntrPin>>,
-    pub ata_controller: Option<Arc<Mutex<AtaController>>>,
+    pub ide_controller: Option<Arc<Piix4IdeCtrl>>,
 }
 
 pub struct I440Fx {
@@ -61,7 +60,7 @@ pub struct I440Fx {
 
     dev_hb: Arc<Piix4HostBridge>,
     dev_lpc: Arc<Piix3Lpc>,
-    dev_ide: Option<Arc<Piix3IdeCtrl>>,
+    dev_ide: Option<Arc<Piix4IdeCtrl>>,
     dev_pm: Arc<Piix3PM>,
     // TODO: could attach the PCI topology as part of chipset
     // acc_mem: MemAccessor,
@@ -93,7 +92,7 @@ impl I440Fx {
 
             dev_hb: Piix4HostBridge::create(),
             dev_lpc: Piix3Lpc::create(irq_config),
-            dev_ide: opts.ata_controller.map(|c| Piix3IdeCtrl::create(c)),
+            dev_ide: opts.ide_controller,
             dev_pm: Piix3PM::create(hdl, power_pin, log),
         });
 
@@ -133,12 +132,13 @@ impl I440Fx {
         .unwrap();
 
         // Attach the IDE controller if present.
-        this.dev_ide.clone().map(|ide| {
-            ide.attach_pio(pio);
-            ide.attach_irq(&*this);
-
-            this.pci_attach(Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(), ide)
-        });
+        if let Some(ide) = &this.dev_ide {
+            ide.attach(&*this, pio);
+            this.pci_attach(
+                Bdf::new(0, IDE_DEV, IDE_FUNC).unwrap(),
+                ide.clone(),
+            )
+        }
 
         if opts.enable_pcie {
             let mmio = &machine.bus_mmio;
@@ -1070,6 +1070,66 @@ impl MigrateMulti for Piix3PM {
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
 
         Ok(())
+    }
+}
+
+pub struct Piix4IdeCtrl(PciAtaController);
+
+impl Piix4IdeCtrl {
+    pub fn create() -> Arc<Self> {
+        let pci_state = pci::Builder::new(pci::Ident {
+            vendor_id: VENDOR_INTEL,
+            device_id: PIIX3_IDE_DEV_ID,
+            sub_vendor_id: VENDOR_OXIDE,
+            sub_device_id: PIIX3_IDE_SUB_DEV_ID,
+            class: pci::bits::CLASS_STORAGE,
+            subclass: pci::bits::SUBCLASS_STORAGE_IDE,
+            prog_if: pci::bits::PROGIF_IDE_LEGACY_MODE,
+            ..Default::default()
+        })
+        .add_bar_io(pci::BarN::BAR0, ibmpc::LEN_ATA_CMD * 2)
+        .add_bar_io(pci::BarN::BAR1, ibmpc::LEN_ATA_CTRL * 2)
+        .add_bar_io(pci::BarN::BAR2, ibmpc::LEN_ATA_CMD * 2)
+        .add_bar_io(pci::BarN::BAR3, ibmpc::LEN_ATA_CTRL * 2)
+        .finish();
+
+        Arc::new(Self(PciAtaController::new(pci_state)))
+    }
+
+    pub fn attach(self: &Arc<Self>, chipset: &dyn Chipset, pio: &PioBus) {
+        let this = Arc::clone(self);
+        let piofn =
+            Arc::new(move |port: u16, rwo: RWOp| this.0.pio_rw(port, rwo))
+                as Arc<PioFn>;
+
+        PciAtaController::attach_pio(pio, &piofn);
+        PciAtaController::attach_irq(
+            &self.0,
+            chipset.irq_pin(ibmpc::IRQ_ATA0).unwrap(),
+            chipset.irq_pin(ibmpc::IRQ_ATA1).unwrap(),
+        )
+    }
+}
+
+impl pci::Device for Piix4IdeCtrl {
+    #[inline]
+    fn device_state(&self) -> &pci::DeviceState {
+        self.0.device_state()
+    }
+
+    #[inline]
+    fn bar_rw(&self, bar: pci::BarN, mut rwo: RWOp) {
+        self.0.bar_rw(bar, rwo)
+    }
+}
+
+impl Entity for Piix4IdeCtrl {
+    fn type_name(&self) -> &'static str {
+        "pci-piix4-ide"
+    }
+
+    fn reset(&self) {
+        <PciAtaController as pci::Device>::device_state(&self.0).reset(self);
     }
 }
 

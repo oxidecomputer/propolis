@@ -14,8 +14,8 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
-use propolis::hw::ata::{AtaController, AtaDevice};
-use propolis::hw::ata::geometry::{Sectors, Geometry};
+use propolis::hw::ata::AtaBlockDevice;
+//use propolis::hw::ata::geometry::{Sectors, Geometry};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -788,9 +788,9 @@ fn setup_instance(
             .expect("system time precedes UNIX epoch"),
     )?;
 
-    let ata_controller = Arc::new(Mutex::new(AtaController::create()));
-    let ata_drive = AtaDevice::create(log.new(slog::o!("dev" => "ata-0-0-0")), 10 * Sectors::ONE_GB, Geometry::MAX_COMPAT);
-    ata_controller.lock().unwrap().attach_device(0, 0, ata_drive);
+    let ide_controller = i440fx::Piix4IdeCtrl::create();
+    //let ata_drive = AtaDevice::create(log.new(slog::o!("dev" => "ata-0-0-0")), 10 * Sectors::ONE_GB, Geometry::MAX_COMPAT);
+    //ata_controller.lock().unwrap().attach_device(0, 0, ata_drive);
 
     let (power_pin, reset_pin) = inst.generate_pins();
     let pci_topo =
@@ -801,7 +801,7 @@ fn setup_instance(
         i440fx::Opts {
             power_pin: Some(power_pin),
             reset_pin: Some(reset_pin),
-            ata_controller: Some(ata_controller.clone()),
+            ide_controller: Some(ide_controller),
             ..Default::default()
         },
         log.new(slog::o!("dev" => "chipset")),
