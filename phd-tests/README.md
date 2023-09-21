@@ -71,55 +71,67 @@ Other options are described in the runner's help text (`cargo run -- --help`).
 
 ### Specifying artifacts
 
-The runner requires a TOML file that specifies what guest OS and firmware
-artifacts are available in a given test run. This file has the following
-entries:
+The runner requires a TOML file that specifies the guest OS and firmware images
+that are available for a test run to use. It has the following format:
 
-- `local_root`: The path to the local directory in which artifacts are stored.
-  PHD requires read/write access to this directory.
-- One or more `guest_images` tables, written as `[guest_images.$KEY]`. The
-  runner uses the value of its `--default-guest-artifact` parameter to choose a
-  guest image to use for tests that don't attach their own disks.
+```toml
+# An array of URIs from which to try to fetch artifacts with the "remote_server"
+# source type. The runner appends "/filename" to each of these URIs to generate
+# a download URI for each such artifact.
+remote_server_uris = ["http://foo.com", "http://bar.net"]
 
-  These tables have the following fields:
-  - `guest_os_kind`: Supplies the "kind" of guest OS this is. PHD uses this to
-    create an adapter that tells the rest of the framework how to interact with
-    this guest OS--how to log in, what command prompt to expect, etc. The list
-    of kinds is given by the `framework::guest_os::artifacts::GuestOsKind` enum.
+# Every artifact has a named entry in the "artifacts" table. The runner's
+# `default_guest_artifact` and `default_bootrom_artifact` parameters name the
+# guest OS and bootrom artifacts that will be used for a given test run.
+#
+# Every artifact has a kind, which is one of `guest_os`, `bootrom`, or
+# `propolis_server`.
+#
+# Every artifact also has a source, which is one of `remote_server`,
+# `local_path`, or `buildomat`.
+#
+# The following entry specifies a guest OS named "alpine" that searches the
+# remote URI list for files named "alpine.iso":
+[artifacts.alpine]
+filename = "alpine.iso"
 
-    Note that PHD expects images to conform to the per-OS-kind behaviors encoded
-    in its guest OS adapters. That is, if the PHD code's adapter for
-    `GuestOsKind::Foo` says that FooOS is expected to have a shell prompt of
-    `user@foo$`, and instead it's `user@bar$`, tests using this artifact will
-    fail.
-  - `metadata.relative_local_path`: The path to this artifact relative to the
-    `local_root` in this artifact file.
-  - `metadata.expected_digest`: Optional. A string containing the expected
-    SHA256 digest of this artifact.
+# Bootrom and Propolis server artifacts can put a `kind = "foo"` entry inline,
+# but guest OSes need to use the structured data syntax to specify the guest OS
+# adapter to use when booting a guest from this artifact.
+[artifacts.alpine.kind]
+guest_os = "alpine"
 
-    At the start of each test, PHD will check the integrity of artifacts with
-    expected digests against this digest. If the computed and expected digests
-    don't match, PHD will either attempt to reacquire the artifact or abort
-    testing.
+# Remote artifacts are required to specify an expected SHA256 digest as a
+# string.
+[artifacts.alpine.source.remote_server]
+sha256 = "alpine_digest"
 
-    If not specified, PHD will skip pre-test integrity checks for this artifact.
-    Note that this can cause changes to a disk image to persist between test
-    cases!
-  - `metadata.remote_uri`: Optional. A URI from which to try to download this
-    artifact.
+# The following entry specifies a debug bootrom pulled from Buildomat. Buildomat
+# outputs are associated with a single repo and a commit therein; the jobs that
+# create them also specify a 'series' that identifies the task that created the
+# collateral.
+[artifacts.bootrom]
+filename = "OVMF_CODE.fd"
+kind = "bootrom"
 
-    If an artifact is not present on disk or has the wrong SHA256 digest, the
-    runner will try to redownload the artifact from this path.
+[artifacts.bootrom.source.buildomat]
+repo = "oxidecomputer/edk2"
+series = "image_debug"
+commit = "commit_sha"
+sha256 = "expected_ovmf_digest"
 
-    If this is omitted for an artifact, the runner will abort testing if it
-    encounters a scenario where it needs to reacquire the artifact.
-- One or more `[bootroms]` tables, written as `[bootroms.$KEY]`. The runner uses
-  the value of its `--default-bootrom-artifact` parameter to choose a bootrom to
-  use for tests that don't select their own bootrom.
+# This entry specifies a local directory in which an artifact can be found.
+# SHA256 digests are optional for local artifacts. This allows you to create
+# an entry for a local artifact that changes frequently (e.g. a Propolis build)
+# without having to edit the digest every time it changes.
+[artifacts.propolis]
+filename = "propolis-server"
+kind = "propolis_server"
 
-  The fields in these tables are `relative_local_path`, `expected_digest`, and
-  `remote_uri`, with the same semantics as for guest images (just without the
-  `metadata.` prefix).
+[artifacts.propolis.source.local_path]
+path = "/home/oxide/propolis/target/debug"
+# sha256 = "digest, if you want it"
+```
 
 ## Authoring tests
 

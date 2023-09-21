@@ -2707,6 +2707,7 @@ dependencies = [
  "backoff",
  "base64 0.21.4",
  "bhyve_api",
+ "camino",
  "cfg-if",
  "crucible-client-types",
  "errno 0.2.8",
@@ -2740,6 +2741,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backtrace",
+ "camino",
  "clap 4.4.0",
  "phd-framework",
  "phd-tests",
