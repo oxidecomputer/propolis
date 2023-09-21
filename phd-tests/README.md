@@ -34,15 +34,15 @@ against them.
 
 To build:
 
-`cargo build -p phd-runner --profile=phd`
+`cargo build -p phd-runner`
 
-Note that `--profile=phd` is required to allow the runner to catch assertions
-from test cases (the default Propolis profile aborts on panic instead of
-unwinding).
+PHD requires the unwinding of stacks in order to properly catch assertions in
+test cases, so building with a profile which sets `panic = "abort"` is not
+supported.  This precludes the use of the `release` or `dev-abort` profiles.
 
 To run:
 
-`pfexec cargo run -p phd-runner --profile=phd -- [OPTIONS]`
+`pfexec cargo run -p phd-runner -- [OPTIONS]`
 
 Running under pfexec is required to allow PHD to ensure the host system is
 correctly configured to run live migration tests.

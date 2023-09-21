@@ -30,6 +30,9 @@ banner build
 
 # Enable the "omicron-build" feature to indicate this is an artifact destined
 # for production use on an appropriately configured Oxide machine
+#
+# The 'release' profile is configured for abort-on-panic, so we get an
+# immediate coredump rather than unwinding in the case of an error.
 ptime -m cargo build --release --verbose -p propolis-server --features omicron-build
 
 banner image

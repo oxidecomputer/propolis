@@ -27,16 +27,17 @@ exclude = [
   "phd-tests/buildomat",
 ]
 
-[profile.dev]
-panic = "abort"
-[profile.release]
+# If one wants the 'dev' profile, but with "panic = abort" semantics, they
+# should opt in with this profile.  Unwinding is required by PHD and
+# should_abort cargo tests, and so remains the default for the 'dev' profile.
+[profile.dev-abort]
+inherits = "dev"
 panic = "abort"
 
-# The PHD test runner needs to use unwinding to catch panics that occur during
-# tests (e.g. due to a failed `assert!` in a test case).
-[profile.phd]
-inherits = "dev"
-panic = "unwind"
+# Building for 'release' implies running on a real illumos system, where we
+# certainly want (rust) panics to cause an immediate abort and coredump.
+[profile.release]
+panic = "abort"
 
 [workspace.dependencies]
 # Internal crates
