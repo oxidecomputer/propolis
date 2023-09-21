@@ -235,7 +235,9 @@ impl PciVirtioState {
 
         for queue in this.queues.iter() {
             queue.set_intr(IsrIntr::new(&this.isr_state));
-            queue.acc_mem.set_parent(&pci_state.acc_mem);
+            pci_state
+                .acc_mem
+                .adopt(&queue.acc_mem, Some(format!("VQ {}", queue.id)));
         }
 
         (this, pci_state)

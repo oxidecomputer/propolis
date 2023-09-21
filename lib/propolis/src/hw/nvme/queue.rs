@@ -894,7 +894,7 @@ mod tests {
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child();
+        let acc_mem = instance.lock().machine().acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Admin queues must be less than 4K
@@ -947,7 +947,7 @@ mod tests {
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child();
+        let acc_mem = instance.lock().machine().acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create corresponding CQs
@@ -1024,7 +1024,7 @@ mod tests {
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child();
+        let acc_mem = instance.lock().machine().acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create our queues
@@ -1090,7 +1090,7 @@ mod tests {
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child();
+        let acc_mem = instance.lock().machine().acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create our queues
@@ -1144,7 +1144,7 @@ mod tests {
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child();
+        let acc_mem = instance.lock().machine().acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create a pair of Completion and Submission Queues
@@ -1223,7 +1223,7 @@ mod tests {
                 let worker_sq = sq.clone();
                 let worker_comp_tx = comp_tx.clone();
 
-                let child_acc = acc_mem.child();
+                let child_acc = acc_mem.child(None);
 
                 spawn(move || {
                     let mut submissions = 0;

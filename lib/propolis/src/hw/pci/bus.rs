@@ -173,7 +173,17 @@ impl Inner {
     ) -> (Arc<SlotState>, MsiAccessor, MemAccessor) {
         let slot_state =
             self.slots[location.dev.get() as usize].attach(location, dev);
-        (slot_state, self.acc_msi.child(), self.acc_mem.child())
+
+        let acc_name = format!(
+            "PCI dev:{} func:{}",
+            location.dev.get(),
+            location.func.get()
+        );
+        (
+            slot_state,
+            self.acc_msi.child(Some(acc_name.clone())),
+            self.acc_mem.child(Some(acc_name)),
+        )
     }
     fn bar_register(
         &mut self,

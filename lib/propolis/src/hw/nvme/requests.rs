@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::{
-    accessors::{opt_guard, MemAccessor},
+    accessors::MemAccessor,
     block::{self, BlockPayload, Operation, Request, Result as BlockResult},
     hw::nvme::{bits, cmds::Completion},
 };
@@ -50,7 +50,7 @@ impl block::Device for PciNvme {
     }
 
     fn accessor_mem(&self) -> MemAccessor {
-        self.pci_state.acc_mem.child()
+        self.pci_state.acc_mem.child(Some("block backend".to_string()))
     }
 
     fn set_notifier(&self, f: Option<Box<block::NotifierFn>>) {
@@ -172,7 +172,7 @@ impl PciNvme {
             }
         }
 
-        let mem = self.mem_access();
-        permit.complete(Completion::from(res), opt_guard(&mem));
+        let guard = self.mem_access();
+        permit.complete(Completion::from(res), guard.as_deref());
     }
 }

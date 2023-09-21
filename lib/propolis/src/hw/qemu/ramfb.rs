@@ -115,7 +115,7 @@ impl RamFb {
         builder: &mut FwCfgBuilder,
         acc_mem: &MemAccessor,
     ) {
-        self.acc_mem.set_parent(acc_mem);
+        acc_mem.adopt(&self.acc_mem, Some("ramfb".to_string()));
         builder
             .add_named("etc/ramfb", Arc::clone(self) as Arc<dyn Item>)
             .unwrap();

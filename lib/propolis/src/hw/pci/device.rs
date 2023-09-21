@@ -562,8 +562,8 @@ impl DeviceState {
         let _old = state.attach.replace(attachment);
         assert!(_old.is_none());
         let attach = state.attach.as_ref().unwrap();
-        self.acc_mem.set_parent(&attach.acc_mem);
-        self.acc_msi.set_parent(&attach.acc_msi);
+        attach.acc_mem.adopt(&self.acc_mem, None);
+        attach.acc_msi.adopt(&self.acc_msi, None);
     }
 
     pub fn lintr_pin(&self) -> Option<Arc<dyn IntrPin>> {
@@ -998,7 +998,7 @@ impl MsixCfg {
     fn attach(&self, msi_acc: &MsiAccessor) {
         for entry in self.entries.iter() {
             let mut guard = entry.lock().unwrap();
-            guard.acc_msi = Some(msi_acc.child());
+            guard.acc_msi = Some(msi_acc.child(None));
         }
     }
     fn export(&self) -> migrate::MsixStateV1 {

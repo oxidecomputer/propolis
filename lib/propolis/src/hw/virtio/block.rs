@@ -245,7 +245,7 @@ impl block::Device for PciVirtioBlock {
     }
 
     fn accessor_mem(&self) -> MemAccessor {
-        self.pci_state.acc_mem.child()
+        self.pci_state.acc_mem.child(Some("block backend".to_string()))
     }
 
     fn set_notifier(&self, val: Option<Box<block::NotifierFn>>) {
