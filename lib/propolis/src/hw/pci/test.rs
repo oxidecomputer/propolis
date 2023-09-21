@@ -34,8 +34,8 @@ impl Scaffold {
         Bus::new(
             &self.bus_pio,
             &self.bus_mmio,
-            self.acc_mem.child(),
-            self.acc_msi.child(),
+            self.acc_mem.child(None),
+            self.acc_msi.child(None),
         )
     }
 }

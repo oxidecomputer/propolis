@@ -267,30 +267,29 @@ impl Builder {
 
         let pio_bus = &machine.bus_pio;
         let mmio_bus = &machine.bus_mmio;
-        let acc_mem = machine.acc_mem.child();
-        let acc_msi = machine.acc_msi.child();
 
         // Bus 0 is always present and always routes to itself.
         buses.push(Bus::new(
             pio_bus,
             mmio_bus,
-            acc_mem.child(),
-            acc_msi.child(),
+            machine.acc_mem.child(Some("PCI bus 0".to_string())),
+            machine.acc_msi.child(Some("PCI bus 0".to_string())),
         ));
         logical_buses.insert(LogicalBusId(0), BusIndex(0));
         inner.routed_buses.insert(RoutedBusId(0), BusIndex(0));
 
         for bridge in &self.bridges {
+            let idx = buses.len();
             logical_buses.insert(
                 LogicalBusId(bridge.downstream_bus_id.0),
-                BusIndex(buses.len()),
+                BusIndex(idx),
             );
             // TODO: wire up accessors to mirror actual bus topology
             buses.push(Bus::new(
                 &pio_bus,
                 &mmio_bus,
-                acc_mem.child(),
-                acc_msi.child(),
+                machine.acc_mem.child(Some(format!("PCI bus {idx}"))),
+                machine.acc_msi.child(Some(format!("PCI bus {idx}"))),
             ));
         }
 

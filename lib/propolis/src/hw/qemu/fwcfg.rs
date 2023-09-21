@@ -388,7 +388,7 @@ impl FwCfg {
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus, acc_mem: &MemAccessor) {
-        self.acc_mem.set_parent(acc_mem);
+        acc_mem.adopt(&self.acc_mem, Some("fw_cfg".to_string()));
         let ports = [
             (FW_CFG_IOP_SELECTOR, 1),
             (FW_CFG_IOP_DATA, 1),
