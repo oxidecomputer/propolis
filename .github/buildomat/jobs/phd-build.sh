@@ -17,22 +17,22 @@ outdir="/out"
 cargo --version
 rustc --version
 
-# Build the Propolis server binary in debug mode to enable assertions
-# that should fire during tests.
+# Build the Propolis server binary with 'dev' profile to enable assertions that
+# should fire during tests.
 banner build-propolis
 ptime -m cargo build --verbose -p propolis-server
 
-# Build the PHD runner with the phd profile to enable unwind on panic,
-# which the framework requires to catch certain test failures.
+# The PHD runner requires unwind-on-panic to catch certain test failures, so
+# build it with the 'dev' profile which is so configured.
 banner build-phd
-ptime -m cargo build --verbose -p phd-runner --profile=phd
+ptime -m cargo build --verbose -p phd-runner
 
 banner contents
 tar -czvf target/debug/propolis-server-debug.tar.gz \
 	-C target/debug propolis-server
 
-tar -czvf target/phd/phd-runner.tar.gz \
-	-C target/phd phd-runner \
+tar -czvf target/debug/phd-runner.tar.gz \
+	-C target/debug phd-runner \
 	-C phd-tests artifacts.toml
 
 banner copy
@@ -40,7 +40,7 @@ pfexec mkdir -p $outdir
 pfexec chown "$UID" $outdir
 mv target/debug/propolis-server-debug.tar.gz \
 	$outdir/propolis-server-debug.tar.gz
-mv target/phd/phd-runner.tar.gz $outdir/phd-runner.tar.gz
+mv target/debug/phd-runner.tar.gz $outdir/phd-runner.tar.gz
 cd $outdir
 digest -a sha256 propolis-server-debug.tar.gz > \
 	propolis-server-debug.sha256.txt
