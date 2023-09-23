@@ -5,15 +5,17 @@
 #![allow(dead_code)]
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use bitstruct::FromRaw;
 use unwrap_infallible::UnwrapInfallible;
 
+use crate::block;
 use crate::hw::ata::bits::Commands::*;
 use crate::hw::ata::bits::Registers::*;
 use crate::hw::ata::bits::*;
 use crate::hw::ata::geometry::*;
-use crate::hw::ata::{AtaError, AtaError::*};
+use crate::hw::ata::{AtaBlockDevice, AtaError, AtaError::*};
 
 pub struct AtaDeviceState {
     sector: [u16; 256],
@@ -24,14 +26,17 @@ pub struct AtaDeviceState {
     pio_mode: u8,
     dma_mode: u8,
     operation: Option<Operations>,
+    backend: Arc<AtaBlockDevice>,
     irq: bool,
     log: slog::Logger,
     pub id: usize,
+    pub backend_request: Option<block::Request>,
 }
 
 impl AtaDeviceState {
     pub fn create(
         log: slog::Logger,
+        backend: Arc<AtaBlockDevice>,
         capacity: Sectors,
         default_geometry: Geometry,
     ) -> Self {
@@ -47,17 +52,17 @@ impl AtaDeviceState {
             operation: None,
             irq: false,
             log,
+            backend,
             id: 0,
+            backend_request: None,
         }
     }
 
-    #[inline]
     pub fn interrupts_enabled(&self) -> bool {
         !self.registers.device_control.interrupt_enabled_n()
     }
 
     /// Return whether or not an interrupt is pending for this device.
-    #[inline]
     pub fn interrupt_pending(&self) -> bool {
         self.interrupts_enabled() && self.irq
     }
@@ -387,7 +392,7 @@ impl AtaDeviceState {
     }
 
     fn seek_and_read_sector(&mut self) -> Result<DataInOutState, AtaError> {
-        let address = if !self.registers.device.lba_addressing() {
+        let _address = if !self.registers.device.lba_addressing() {
             let chs = self.cylinder_head_sector_address();
             // TODO (arjen): Test if address valid.
             chs.logical_block_address(&self.active_geometry)
@@ -421,7 +426,6 @@ impl AtaDeviceState {
         self.registers.status.set_error(true);
     }
 
-    #[inline]
     fn logical_block_address28(&self) -> LogicalBlockAddress {
         LogicalBlockAddress::new(
             u64::from(self.registers.lba_low.read_current())
@@ -431,12 +435,10 @@ impl AtaDeviceState {
         )
     }
 
-    #[inline]
     fn logical_block_address48(&self) -> LogicalBlockAddress {
         todo!()
     }
 
-    #[inline]
     fn cylinder_head_sector_address(&self) -> CylinderHeadSectorAddress {
         // Determine the logical address from the CHS address.
         let cylinder = u16::from(self.registers.lba_mid.read_current()) << 8
@@ -448,17 +450,14 @@ impl AtaDeviceState {
         }
     }
 
-    #[inline]
     pub fn status(&mut self) -> StatusRegister {
         StatusRegister(self.read_register(Status))
     }
 
-    #[inline]
     pub fn alt_status(&mut self) -> StatusRegister {
         StatusRegister(self.read_register(AltStatus))
     }
 
-    #[inline]
     pub fn error(&mut self) -> ErrorRegister {
         ErrorRegister(self.read_register(Error))
     }
@@ -496,22 +495,18 @@ impl DeviceRegisters {
 struct FifoRegister([u8; 2]);
 
 impl FifoRegister {
-    #[inline]
     fn new(val: u8) -> Self {
         Self([val, 0])
     }
 
-    #[inline]
     fn read_current(&self) -> u8 {
         self.0[0]
     }
 
-    #[inline]
     fn read_previous(&self) -> u8 {
         self.0[1]
     }
 
-    #[inline]
     fn read_u8(&self, previous: bool) -> u8 {
         if previous {
             self.read_previous()
@@ -520,12 +515,10 @@ impl FifoRegister {
         }
     }
 
-    #[inline]
     fn read_u16(&self) -> u16 {
         u16::from_le_bytes(self.0)
     }
 
-    #[inline]
     fn write(&mut self, val: u8) {
         self.0[1] = self.0[0];
         self.0[0] = val;
@@ -540,23 +533,19 @@ struct DataInOutState {
 }
 
 impl DataInOutState {
-    #[inline]
     pub fn last_sector_word(&self) -> bool {
         self.sector_ptr >= BLOCK_SIZE / std::mem::size_of::<u16>() - 1
     }
 
-    #[inline]
     pub fn done(&self) -> bool {
         self.last_sector_word() && self.sectors_remaining == 0
     }
 
-    #[inline]
     pub fn next_word(&self) -> Self {
         let sector_ptr = self.sector_ptr + 1;
         Self { sector_ptr, ..*self }
     }
 
-    #[inline]
     pub fn next_sector(&self) -> Self {
         let sector_address = self.sector_address + 1;
         let sectors_remaining = self.sectors_remaining - 1;

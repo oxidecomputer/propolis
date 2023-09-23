@@ -113,7 +113,7 @@ impl Geometry {
 
     pub fn from_lba(
         &self,
-        lba: LogicalBlockAddress,
+        _lba: LogicalBlockAddress,
     ) -> CylinderHeadSectorAddress {
         CylinderHeadSectorAddress::MIN
     }

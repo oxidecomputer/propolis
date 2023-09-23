@@ -26,8 +26,7 @@ mod geometry;
 mod test;
 
 use bits::{Commands, Registers};
-use controller::AtaControllerState;
-use device::AtaDeviceState;
+use controller::{AtaControllerState, ChannelSelect};
 
 #[derive(Debug, Error)]
 pub enum AtaError {
@@ -71,6 +70,8 @@ pub struct AtaBlockDevice {
     pci_state: Arc<pci::DeviceState>,
     ata_state: Arc<Mutex<AtaControllerState>>,
     notifier: block::Notifier,
+    pub channel: ChannelSelect,
+    pub device_id: usize,
 }
 
 struct CompletionPayload {
@@ -88,12 +89,32 @@ impl PciAtaController {
             ata_state: ata_state.clone(),
             block_devices: [
                 [
-                    AtaBlockDevice::new(&pci_state, &ata_state),
-                    AtaBlockDevice::new(&pci_state, &ata_state),
+                    AtaBlockDevice::new(
+                        &pci_state,
+                        &ata_state,
+                        ChannelSelect::Primary,
+                        0,
+                    ),
+                    AtaBlockDevice::new(
+                        &pci_state,
+                        &ata_state,
+                        ChannelSelect::Primary,
+                        1,
+                    ),
                 ],
                 [
-                    AtaBlockDevice::new(&pci_state, &ata_state),
-                    AtaBlockDevice::new(&pci_state, &ata_state),
+                    AtaBlockDevice::new(
+                        &pci_state,
+                        &ata_state,
+                        ChannelSelect::Secondary,
+                        0,
+                    ),
+                    AtaBlockDevice::new(
+                        &pci_state,
+                        &ata_state,
+                        ChannelSelect::Secondary,
+                        1,
+                    ),
                 ],
             ],
         }
@@ -115,77 +136,86 @@ impl PciAtaController {
     }
 
     pub fn pio_rw(&self, port: u16, rwo: RWOp) {
+        use ChannelSelect::*;
         use RWOp::*;
 
         match (port, rwo) {
-            (PORT_ATA0_CMD, Read(op)) => self.read_command_block(0, op),
-            (PORT_ATA1_CMD, Read(op)) => self.read_command_block(1, op),
-            (PORT_ATA0_CMD, Write(op)) => self.write_command_block(0, op),
-            (PORT_ATA1_CMD, Write(op)) => self.write_command_block(1, op),
-            (PORT_ATA0_CTRL, Read(op)) => self.read_control_block(0, op),
-            (PORT_ATA1_CTRL, Read(op)) => self.read_control_block(1, op),
-            (PORT_ATA0_CTRL, Write(op)) => self.write_control_block(0, op),
-            (PORT_ATA1_CTRL, Write(op)) => self.write_control_block(1, op),
+            (PORT_ATA0_CMD, Read(op)) => self.read_command_block(Primary, op),
+            (PORT_ATA1_CMD, Read(op)) => self.read_command_block(Secondary, op),
+            (PORT_ATA0_CMD, Write(op)) => self.write_command_block(Primary, op),
+            (PORT_ATA1_CMD, Write(op)) => {
+                self.write_command_block(Secondary, op)
+            }
+            (PORT_ATA0_CTRL, Read(op)) => self.read_control_block(Primary, op),
+            (PORT_ATA1_CTRL, Read(op)) => {
+                self.read_control_block(Secondary, op)
+            }
+            (PORT_ATA0_CTRL, Write(op)) => {
+                self.write_control_block(Primary, op)
+            }
+            (PORT_ATA1_CTRL, Write(op)) => {
+                self.write_control_block(Secondary, op)
+            }
             (_, _) => panic!(),
         }
     }
 
-    fn read_command_block(&self, channel_id: usize, op: &mut ReadOp) {
+    fn read_command_block(&self, channel: ChannelSelect, op: &mut ReadOp) {
         use Registers::*;
 
         let mut ata = self.ata_state.lock().unwrap();
 
         match op.offset() {
-            0 if op.len() == 2 => op.write_u16(ata.read_data16(channel_id)),
-            0 if op.len() == 4 => op.write_u32(ata.read_data32(channel_id)),
-            1 => op.write_u8(ata.read_register(channel_id, Error)),
-            2 => op.write_u8(ata.read_register(channel_id, SectorCount)),
-            3 => op.write_u8(ata.read_register(channel_id, LbaLow)),
-            4 => op.write_u8(ata.read_register(channel_id, LbaMid)),
-            5 => op.write_u8(ata.read_register(channel_id, LbaHigh)),
-            6 => op.write_u8(ata.read_register(channel_id, Device)),
-            7 => op.write_u8(ata.read_register(channel_id, Status)),
+            0 if op.len() == 2 => op.write_u16(ata.read_data16(channel)),
+            0 if op.len() == 4 => op.write_u32(ata.read_data32(channel)),
+            1 => op.write_u8(ata.read_register(channel, Error)),
+            2 => op.write_u8(ata.read_register(channel, SectorCount)),
+            3 => op.write_u8(ata.read_register(channel, LbaLow)),
+            4 => op.write_u8(ata.read_register(channel, LbaMid)),
+            5 => op.write_u8(ata.read_register(channel, LbaHigh)),
+            6 => op.write_u8(ata.read_register(channel, Device)),
+            7 => op.write_u8(ata.read_register(channel, Status)),
             _ => panic!(),
         }
     }
 
-    fn write_command_block(&self, channel_id: usize, op: &mut WriteOp) {
+    fn write_command_block(&self, channel: ChannelSelect, op: &mut WriteOp) {
         use Registers::*;
 
         let mut ata = self.ata_state.lock().unwrap();
 
         match op.offset() {
-            0 if op.len() == 2 => ata.write_data16(channel_id, op.read_u16()),
-            0 if op.len() == 4 => ata.write_data32(channel_id, op.read_u32()),
-            1 => ata.write_register(channel_id, Features, op.read_u8()),
-            2 => ata.write_register(channel_id, SectorCount, op.read_u8()),
-            3 => ata.write_register(channel_id, LbaLow, op.read_u8()),
-            4 => ata.write_register(channel_id, LbaMid, op.read_u8()),
-            5 => ata.write_register(channel_id, LbaHigh, op.read_u8()),
-            6 => ata.write_register(channel_id, Device, op.read_u8()),
-            7 => ata.write_register(channel_id, Command, op.read_u8()),
+            0 if op.len() == 2 => ata.write_data16(channel, op.read_u16()),
+            0 if op.len() == 4 => ata.write_data32(channel, op.read_u32()),
+            1 => ata.write_register(channel, Features, op.read_u8()),
+            2 => ata.write_register(channel, SectorCount, op.read_u8()),
+            3 => ata.write_register(channel, LbaLow, op.read_u8()),
+            4 => ata.write_register(channel, LbaMid, op.read_u8()),
+            5 => ata.write_register(channel, LbaHigh, op.read_u8()),
+            6 => ata.write_register(channel, Device, op.read_u8()),
+            7 => ata.write_register(channel, Command, op.read_u8()),
             _ => panic!(),
         }
     }
 
-    fn read_control_block(&self, channel_id: usize, op: &mut ReadOp) {
+    fn read_control_block(&self, channel: ChannelSelect, op: &mut ReadOp) {
         use Registers::*;
 
         let mut ata = self.ata_state.lock().unwrap();
 
         match op.offset() {
-            0 => op.write_u8(ata.read_register(channel_id, AltStatus)),
+            0 => op.write_u8(ata.read_register(channel, AltStatus)),
             _ => panic!(),
         }
     }
 
-    fn write_control_block(&self, channel_id: usize, op: &mut WriteOp) {
+    fn write_control_block(&self, channel: ChannelSelect, op: &mut WriteOp) {
         use Registers::*;
 
         let mut ata = self.ata_state.lock().unwrap();
 
         match op.offset() {
-            0 => ata.write_register(channel_id, DeviceControl, op.read_u8()),
+            0 => ata.write_register(channel, DeviceControl, op.read_u8()),
             _ => panic!(),
         }
     }
@@ -203,25 +233,34 @@ impl AtaBlockDevice {
     pub fn new(
         pci_state: &Arc<pci::DeviceState>,
         ata_state: &Arc<Mutex<AtaControllerState>>,
+        channel: ChannelSelect,
+        device_id: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
             pci_state: pci_state.clone(),
             ata_state: ata_state.clone(),
             notifier: block::Notifier::new(),
+            channel,
+            device_id,
         })
     }
 }
 
 impl block::Device for AtaBlockDevice {
     fn next(&self) -> Option<block::Request> {
-        self.notifier.next_arming(|| None)
+        self.notifier.next_arming(move || {
+            self.ata_state
+                .lock()
+                .unwrap()
+                .backend_request(self.channel, self.device_id)
+        })
     }
 
     fn complete(
         &self,
-        op: block::Operation,
-        result: block::Result,
-        payload: Box<block::BlockPayload>,
+        _op: block::Operation,
+        _result: block::Result,
+        _payload: Box<block::BlockPayload>,
     ) {
     }
 
