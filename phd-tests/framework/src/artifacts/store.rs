@@ -47,7 +47,7 @@ impl StoredArtifact {
             // This facilitates the use of local build outputs whose hashes
             // frequently change. If a digest was passed, make sure it matches.
             if let Some(digest) = sha256 {
-                hash_equals(&path, &digest)?;
+                hash_equals(&path, digest)?;
             } else if !path.is_file() {
                 anyhow::bail!("artifact path {} is not a file", path);
             }
@@ -76,7 +76,7 @@ impl StoredArtifact {
 
         info!(%maybe_path, "checking for existing copy of artifact");
         if maybe_path.is_file() {
-            if hash_equals(&maybe_path, &expected_digest).is_ok() {
+            if hash_equals(&maybe_path, expected_digest).is_ok() {
                 info!(%maybe_path,
                       "Valid artifact already exists, caching its path");
 
@@ -149,7 +149,7 @@ impl StoredArtifact {
 
             let mut new_file = std::fs::File::create(&maybe_path)?;
             new_file.write_all(&response.bytes()?)?;
-            match hash_equals(&maybe_path, &expected_digest) {
+            match hash_equals(&maybe_path, expected_digest) {
                 Ok(_) => {
                     // Make the newly-downloaded artifact read-only to try to
                     // ensure tests won't change it. Disks created from an
