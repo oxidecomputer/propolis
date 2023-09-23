@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use thiserror::Error;
 use tracing::info;
@@ -27,11 +27,6 @@ use super::{
 /// Errors that can arise while creating a VM factory.
 #[derive(Debug, Error)]
 pub enum FactoryConstructionError {
-    /// Raised if the default bootrom key in the [`FactoryOptions`] does not
-    /// yield a valid bootrom from the artifact store.
-    #[error("Default bootrom {0} not found in artifact store: {1}")]
-    DefaultBootromMissing(String, anyhow::Error),
-
     /// Raised if the default guest image key in the [`FactoryOptions`] does not
     /// yield a valid image from the artifact store.
     #[error("Default guest image {0} not in artifact store")]
@@ -86,11 +81,12 @@ impl<'a> VmFactory<'a> {
         port_allocator: &'a PortAllocator,
     ) -> Result<Self> {
         info!(?opts, "Building VM factory");
-        let bootrom_path =
-            store.get_bootrom(&opts.default_bootrom_artifact).map_err(|e| {
-                FactoryConstructionError::DefaultBootromMissing(
-                    opts.default_bootrom_artifact.clone(),
-                    e,
+        let bootrom_path = store
+            .get_bootrom(&opts.default_bootrom_artifact)
+            .with_context(|| {
+                format!(
+                    "failed to get path to bootrom artifact '{}'",
+                    &opts.default_bootrom_artifact
                 )
             })?;
 
