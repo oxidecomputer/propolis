@@ -104,7 +104,7 @@ guest_os = "alpine"
 # Remote artifacts are required to specify an expected SHA256 digest as a
 # string.
 [artifacts.alpine.source.remote_server]
-sha256 = "alpine_digest"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 # The following entry specifies a debug bootrom pulled from Buildomat. Buildomat
 # outputs are associated with a single repo and a commit therein; the jobs that
@@ -118,7 +118,7 @@ kind = "bootrom"
 repo = "oxidecomputer/edk2"
 series = "image_debug"
 commit = "commit_sha"
-sha256 = "expected_ovmf_digest"
+sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 # This entry specifies a local directory in which an artifact can be found.
 # SHA256 digests are optional for local artifacts. This allows you to create
@@ -130,7 +130,7 @@ kind = "propolis_server"
 
 [artifacts.propolis.source.local_path]
 path = "/home/oxide/propolis/target/debug"
-# sha256 = "digest, if you want it"
+# sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 ```
 
 ## Authoring tests
