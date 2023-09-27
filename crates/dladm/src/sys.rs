@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use libc::c_int;
-use num_enum::TryFromPrimitive;
+use strum::FromRepr;
 
 #[cfg(target_os = "illumos")]
 #[link(name = "dladm")]
@@ -54,7 +54,7 @@ pub enum dladm_handle {}
 pub type dladm_handle_t = *mut dladm_handle;
 pub type datalink_id_t = u32;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
 #[repr(i32)]
 pub enum datalink_class {
     DATALINK_CLASS_PHYS = 0x01,
@@ -68,7 +68,7 @@ pub enum datalink_class {
     DATALINK_CLASS_PART = 0x100,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
 #[repr(i32)]
 pub enum dladm_status {
     DLADM_STATUS_OK = 0,

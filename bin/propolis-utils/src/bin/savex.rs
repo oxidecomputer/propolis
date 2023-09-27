@@ -34,7 +34,8 @@ fn find_region(fp: &mut File, target: SnapshotTag) -> anyhow::Result<u64> {
     let mut buf = [0u8; 9];
     loop {
         fp.read_exact(&mut buf)?;
-        let tag = SnapshotTag::try_from(buf[0])?;
+        let tag = SnapshotTag::from_repr(buf[0])
+            .ok_or(anyhow::anyhow!("invalid snapshot tag"))?;
         // The tokio writer uses BE, apparently
         let len = u64::from_be_bytes(buf[1..].try_into().unwrap());
         if tag == target {

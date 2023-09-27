@@ -14,14 +14,14 @@
 
 use std::{fmt::Display, iter::Peekable, num::ParseIntError, str::FromStr};
 
-use enum_iterator::Sequence;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
 /// The complete set of protocols supported by this version of the migration
 /// library.
-#[derive(Debug, Clone, Copy, Sequence)]
+#[derive(Debug, Clone, Copy, EnumIter)]
 pub enum Protocol {
     RonV0,
 }
@@ -171,7 +171,7 @@ impl FromStr for ProtocolParts {
 
 lazy_static! {
     static ref PROTOCOL_PARTS: Vec<ProtocolParts> =
-        enum_iterator::all::<Protocol>().map(ProtocolParts::from).collect();
+        Protocol::iter().map(ProtocolParts::from).collect();
 }
 
 /// Constructs a protocol offer string from a peekable protocol iterator.
@@ -194,7 +194,7 @@ fn make_protocol_offers_from_parts<
 /// Constructs a protocol offer string from the static supported protocol set.
 pub(super) fn make_protocol_offer() -> String {
     make_protocol_offers_from_parts(
-        enum_iterator::all::<Protocol>().map(ProtocolParts::from).peekable(),
+        Protocol::iter().map(ProtocolParts::from).peekable(),
     )
 }
 

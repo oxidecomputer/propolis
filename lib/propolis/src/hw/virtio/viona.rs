@@ -686,7 +686,7 @@ pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
     let vers = fd.api_version()?;
 
     // viona only requires the V2 bits for now
-    let compare = viona_api::ApiVersion::V2.into();
+    let compare = viona_api::ApiVersion::V2 as u32;
 
     if vers < compare {
         Err(crate::api_version::Error::Mismatch("viona", vers, compare))

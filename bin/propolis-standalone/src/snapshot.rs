@@ -17,7 +17,7 @@
 //!     3   - Low Mem
 //!     4   - High Mem
 
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryInto;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -172,17 +172,17 @@ pub(crate) async fn save(
 
     info!(log, "Writing VM config...");
     let config_bytes = toml::to_string(config)?.into_bytes();
-    file.write_u8(SnapshotTag::Config.into()).await?;
+    file.write_u8(SnapshotTag::Config as u8).await?;
     file.write_u64(config_bytes.len().try_into()?).await?;
     file.write_all(&config_bytes).await?;
 
     info!(log, "Writing global state...");
-    file.write_u8(SnapshotTag::Global.into()).await?;
+    file.write_u8(SnapshotTag::Global as u8).await?;
     file.write_u64(global_state.len().try_into()?).await?;
     file.write_all(&global_state).await?;
 
     info!(log, "Writing device state...");
-    file.write_u8(SnapshotTag::Device.into()).await?;
+    file.write_u8(SnapshotTag::Device as u8).await?;
     file.write_u64(device_states.len().try_into()?).await?;
     file.write_all(&device_states).await?;
 
@@ -190,14 +190,14 @@ pub(crate) async fn save(
 
     // Low Mem
     // Note `pwrite` doesn't update the current position, so we do it manually
-    file.write_u8(SnapshotTag::Lowmem.into()).await?;
+    file.write_u8(SnapshotTag::Lowmem as u8).await?;
     file.write_u64(lo.try_into()?).await?;
     let offset = file.stream_position().await?.try_into()?;
     lo_mapping.pwrite(file.get_ref(), lo, offset)?; // Blocks; not great
     file.seek(std::io::SeekFrom::Current(lo.try_into()?)).await?;
 
     // High Mem
-    file.write_u8(SnapshotTag::Himem.into()).await?;
+    file.write_u8(SnapshotTag::Himem as u8).await?;
     if let (Some(hi), Some(hi_mapping)) = (hi, hi_mapping) {
         file.write_u64(hi.try_into()?).await?;
         let offset = file.stream_position().await?.try_into()?;
@@ -229,8 +229,8 @@ pub(crate) async fn restore(
 
     // First off we need the config
     let config: Config = {
-        match SnapshotTag::try_from(file.read_u8().await?) {
-            Ok(SnapshotTag::Config) => {}
+        match SnapshotTag::from_repr(file.read_u8().await?) {
+            Some(SnapshotTag::Config) => {}
             _ => anyhow::bail!("Expected VM config"),
         }
         let config_len = file.read_u64().await?;
@@ -266,8 +266,8 @@ pub(crate) async fn restore(
 
     {
         // Grab the global VM state
-        match SnapshotTag::try_from(file.read_u8().await?) {
-            Ok(SnapshotTag::Global) => {}
+        match SnapshotTag::from_repr(file.read_u8().await?) {
+            Some(SnapshotTag::Global) => {}
             _ => anyhow::bail!("Expected VM config"),
         }
         let state_len = file.read_u64().await?;
@@ -283,8 +283,8 @@ pub(crate) async fn restore(
 
     // Next are the devices
     let device_states = {
-        match SnapshotTag::try_from(file.read_u8().await?) {
-            Ok(SnapshotTag::Device) => {}
+        match SnapshotTag::from_repr(file.read_u8().await?) {
+            Some(SnapshotTag::Device) => {}
             _ => anyhow::bail!("Expected VM config"),
         }
         let state_len = file.read_u64().await?;
@@ -296,8 +296,8 @@ pub(crate) async fn restore(
     // Finally we have our RAM
 
     // Get low mem length and offset
-    match SnapshotTag::try_from(file.read_u8().await?) {
-        Ok(SnapshotTag::Lowmem) => {}
+    match SnapshotTag::from_repr(file.read_u8().await?) {
+        Some(SnapshotTag::Lowmem) => {}
         _ => anyhow::bail!("Expected VM config"),
     }
     let lo_mem: usize = file.read_u64().await?.try_into()?;
@@ -305,8 +305,8 @@ pub(crate) async fn restore(
 
     // Seek past low mem blob and get high mem length and offset
     file.seek(std::io::SeekFrom::Current(lo_mem.try_into()?)).await?;
-    match SnapshotTag::try_from(file.read_u8().await?) {
-        Ok(SnapshotTag::Himem) => {}
+    match SnapshotTag::from_repr(file.read_u8().await?) {
+        Some(SnapshotTag::Himem) => {}
         _ => anyhow::bail!("Expected VM config"),
     }
     let hi_mem: usize = file.read_u64().await?.try_into()?;
@@ -444,7 +444,7 @@ pub struct VmGlobalState {
 }
 
 fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
-    if hdl.api_version()? > ApiVersion::V11.into() {
+    if hdl.api_version()? > ApiVersion::V11 as u32 {
         let info = hdl.data_op(VDC_VMM_TIME, 1).read::<vdi_time_info_v1>()?;
 
         Ok(VmGlobalState { boot_hrtime: info.vt_boot_hrtime })
@@ -460,7 +460,7 @@ fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
     }
 }
 fn import_global(hdl: &VmmHdl, state: &VmGlobalState) -> std::io::Result<()> {
-    if hdl.api_version()? > ApiVersion::V11.into() {
+    if hdl.api_version()? > ApiVersion::V11 as u32 {
         let mut info =
             hdl.data_op(VDC_VMM_TIME, 1).read::<vdi_time_info_v1>()?;
 

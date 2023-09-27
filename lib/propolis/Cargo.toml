@@ -11,8 +11,7 @@ bitflags.workspace = true
 bitstruct.workspace = true
 byteorder.workspace = true
 lazy_static.workspace = true
-enum-iterator.workspace = true
-num_enum.workspace = true
+num_enum = { workspace = true, optional = true }
 thiserror.workspace = true
 bhyve_api.workspace = true
 dladm.workspace = true
@@ -28,6 +27,7 @@ serde.workspace = true
 serde_arrays.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
+strum = { workspace = true, features = ["derive"] }
 uuid.workspace = true
 crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
@@ -52,5 +52,5 @@ rand.workspace = true
 [features]
 default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
-falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu-lib"]
+falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu-lib", "num_enum"]
 omicron-build = []

@@ -6,8 +6,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::os::fd::*;
 
-use num_enum::IntoPrimitive;
-
 pub use viona_api_sys::*;
 
 pub const VIONA_DEV_PATH: &str = "/dev/viona";
@@ -107,7 +105,6 @@ unsafe fn ioctl(
 /// Convenience constants to provide some documentation on what changes have
 /// been introduced in the various viona API versions.
 #[repr(u32)]
-#[derive(IntoPrimitive)]
 pub enum ApiVersion {
     /// Adds support for non-vnic datalink devices
     V2 = 2,
@@ -128,6 +125,6 @@ mod test {
     #[test]
     fn latest_api_version() {
         let cur = ApiVersion::current();
-        assert_eq!(VIONA_CURRENT_INTERFACE_VERSION, cur.into());
+        assert_eq!(VIONA_CURRENT_INTERFACE_VERSION, cur as u32);
     }
 }

@@ -312,7 +312,7 @@ impl Vcpu {
         let mut entry = entry.to_raw(self.id, &mut exit);
 
         if exit_when_consistent {
-            if self.hdl.api_version()? >= bhyve_api::ApiVersion::V15.into() {
+            if self.hdl.api_version()? >= bhyve_api::ApiVersion::V15 as u32 {
                 entry.cmd |=
                     bhyve_api::vm_entry_cmds::VEC_FLAG_EXIT_CONSISTENT as u32;
             } else {

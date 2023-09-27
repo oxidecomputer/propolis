@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use num_enum::IntoPrimitive;
-
 pub use bhyve_api_sys::*;
 
 pub const VMM_PATH_PREFIX: &str = "/dev/vmm";
@@ -218,7 +216,7 @@ impl VmmFd {
     /// Arguments:
     /// - `time`: Duration since `UNIX_EPOCH`
     pub fn rtc_settime(&self, time: Duration) -> Result<()> {
-        if self.api_version()? >= ApiVersion::V12.into() {
+        if self.api_version()? >= ApiVersion::V12 as u32 {
             let mut ts = libc::timespec {
                 tv_sec: time.as_secs() as i64,
                 tv_nsec: time.subsec_nanos() as i64,
@@ -541,7 +539,6 @@ unsafe fn ioctl(
 /// Convenience constants to provide some documentation on what changes have
 /// been introduced in the various bhyve API versions.
 #[repr(u32)]
-#[derive(IntoPrimitive)]
 pub enum ApiVersion {
     /// Add flag for exit-when-consistent as part of `VM_RUN`
     V15 = 15,
@@ -594,6 +591,6 @@ mod test {
     #[test]
     fn latest_api_version() {
         let cur = ApiVersion::current();
-        assert_eq!(VMM_CURRENT_INTERFACE_VERSION, cur.into());
+        assert_eq!(VMM_CURRENT_INTERFACE_VERSION, cur as u32);
     }
 }

@@ -21,10 +21,10 @@
 //! for that.
 
 use super::MigrateError;
+
 use bytes::{Buf, BufMut, Bytes};
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 use slog::error;
-use std::convert::TryFrom;
+use strum::FromRepr;
 use thiserror::Error;
 use tokio_tungstenite::tungstenite;
 
@@ -90,7 +90,7 @@ pub(crate) enum Message {
 /// identifying frame types.  They are an implementation detail of
 /// the wire format, and not used elsewhere.  However, they must be
 /// kept in bijection with Message, above.
-#[derive(Debug, PartialEq, IntoPrimitive, TryFromPrimitive)]
+#[derive(Debug, PartialEq, FromRepr)]
 #[repr(u8)]
 enum MessageType {
     Okay,
@@ -179,8 +179,8 @@ impl std::convert::TryInto<Message> for tungstenite::Message {
             tungstenite::Message::Binary(mut v) => {
                 // If the tag byte is absent or invalid, don't bother looking at the message.
                 let tag_byte = v.pop().ok_or(ProtocolError::EmptyMessage)?;
-                let tag = MessageType::try_from(tag_byte)
-                    .map_err(|_| ProtocolError::InvalidMessageType(tag_byte))?;
+                let tag = MessageType::from_repr(tag_byte)
+                    .ok_or(ProtocolError::InvalidMessageType(tag_byte))?;
                 let mut src = Bytes::from(v);
                 // At this point, we have a valid message of a known type, and
                 // the remaining bytes are the message contents.

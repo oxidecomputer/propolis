@@ -2,10 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-extern crate libc;
-extern crate num_enum;
-
-use std::convert::TryFrom;
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use std::process::{Command, Stdio};
@@ -42,17 +38,17 @@ impl Handle {
             )
         })?;
 
-        match datalink_class::try_from(class) {
-            Ok(datalink_class::DATALINK_CLASS_VNIC) => {
+        match datalink_class::from_repr(class) {
+            Some(datalink_class::DATALINK_CLASS_VNIC) => {
                 // acceptable value
             }
-            Ok(c) => {
+            Some(c) => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!("{} is not vnic class, but {:?}", name, c),
                 ));
             }
-            Err(_) => {
+            None => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!("{} is of invalid class {:x}", name, class),
@@ -121,7 +117,7 @@ impl Handle {
     }
 
     fn handle_dladm_err(v: i32) -> Result<()> {
-        match dladm_status::try_from(v)
+        match dladm_status::from_repr(v)
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),

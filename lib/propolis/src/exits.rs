@@ -4,7 +4,6 @@
 
 //! Describes transitions from VMs to the VMM.
 
-use std::convert::TryFrom;
 use std::os::raw::c_void;
 
 use bhyve_api::{
@@ -199,9 +198,9 @@ impl VmExitKind {
 }
 impl From<&vm_exit> for VmExitKind {
     fn from(exit: &vm_exit) -> Self {
-        let code = match vm_exitcode::try_from(exit.exitcode) {
-            Err(_) => return VmExitKind::Unknown(exit.exitcode),
-            Ok(c) => c,
+        let code = match vm_exitcode::from_repr(exit.exitcode) {
+            None => return VmExitKind::Unknown(exit.exitcode),
+            Some(c) => c,
         };
         match code {
             vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
@@ -252,18 +251,18 @@ impl From<&vm_exit> for VmExitKind {
             }
             vm_exitcode::VM_EXITCODE_SUSPENDED => {
                 let detail = unsafe { exit.u.suspend };
-                match vm_suspend_how::try_from(detail as u32) {
-                    Ok(vm_suspend_how::VM_SUSPEND_RESET) => {
+                match vm_suspend_how::from_repr(detail as u32) {
+                    Some(vm_suspend_how::VM_SUSPEND_RESET) => {
                         VmExitKind::Suspended(Suspend::Reset)
                     }
-                    Ok(vm_suspend_how::VM_SUSPEND_POWEROFF)
-                    | Ok(vm_suspend_how::VM_SUSPEND_HALT) => {
+                    Some(vm_suspend_how::VM_SUSPEND_POWEROFF)
+                    | Some(vm_suspend_how::VM_SUSPEND_HALT) => {
                         VmExitKind::Suspended(Suspend::Halt)
                     }
-                    Ok(vm_suspend_how::VM_SUSPEND_TRIPLEFAULT) => {
+                    Some(vm_suspend_how::VM_SUSPEND_TRIPLEFAULT) => {
                         VmExitKind::Suspended(Suspend::TripleFault)
                     }
-                    Ok(vm_suspend_how::VM_SUSPEND_NONE) | Err(_) => {
+                    Some(vm_suspend_how::VM_SUSPEND_NONE) | None => {
                         panic!("invalid vm_suspend_how: {}", detail);
                     }
                 }

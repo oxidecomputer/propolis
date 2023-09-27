@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use num_enum::TryFromPrimitive;
+use strum::FromRepr;
 
 #[repr(C)]
 #[allow(non_camel_case_types, unused)]
@@ -59,7 +59,7 @@ pub enum vm_reg_name {
 
 #[repr(i32)]
 #[allow(non_camel_case_types, unused)]
-#[derive(TryFromPrimitive, Debug)]
+#[derive(FromRepr, Debug)]
 pub enum vm_exitcode {
     VM_EXITCODE_INOUT,
     VM_EXITCODE_VMX,
@@ -117,7 +117,7 @@ pub enum vm_cap_type {
 
 #[repr(u32)]
 #[allow(non_camel_case_types, unused)]
-#[derive(TryFromPrimitive)]
+#[derive(FromRepr)]
 pub enum vm_suspend_how {
     VM_SUSPEND_NONE,
     VM_SUSPEND_RESET,

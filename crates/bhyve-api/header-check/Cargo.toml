@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 bhyve_api_sys = { path = "../sys" }
 libc = "0.2"
+strum = "0.25"
 
 [build-dependencies]
 cc = "1"

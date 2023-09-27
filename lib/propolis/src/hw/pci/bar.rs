@@ -314,7 +314,6 @@ pub mod migrate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::TryFrom;
 
     fn setup() -> Bars {
         let bar_defs = [
@@ -371,7 +370,7 @@ mod tests {
     fn limits() {
         let mut bars = setup();
         for i in 0..=5u8 {
-            bars.reg_write(BarN::try_from(i).unwrap(), 0xffffffff);
+            bars.reg_write(BarN::from_repr(i).unwrap(), 0xffffffff);
         }
         assert_eq!(bars.reg_read(BarN::BAR0), 0x0000ff01);
         assert_eq!(bars.reg_read(BarN::BAR1), 0xfffe0000);

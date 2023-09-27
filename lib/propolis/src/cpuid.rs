@@ -11,7 +11,6 @@ use std::num::NonZeroU8;
 use std::ops::Bound;
 
 use bhyve_api::vcpu_cpuid_entry;
-use enum_iterator::Sequence;
 
 /// Values for a cpuid leaf
 #[derive(Copy, Clone, Debug)]
@@ -389,7 +388,7 @@ impl Specializer {
 }
 
 /// Flavors of CPU topology information
-#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Sequence)]
+#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter)]
 pub enum TopoKind {
     /// Leaf 0xB AMD (and legacy on Intel)
     StdB = 0xb,
@@ -397,11 +396,6 @@ pub enum TopoKind {
     Std1F = 0x1f,
     /// LEAF 0x8000001E (AMD)
     Ext1E = 0x8000001e,
-}
-impl TopoKind {
-    pub fn all() -> enum_iterator::All<Self> {
-        enum_iterator::all()
-    }
 }
 
 /// Flavors of CPU vendor for cpuid specialization

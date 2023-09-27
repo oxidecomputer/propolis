@@ -329,7 +329,7 @@ version = "0.0.0"
 dependencies = [
  "bhyve_api_sys",
  "libc",
- "num_enum 0.5.11",
+ "strum",
 ]
 
 [[package]]
@@ -337,7 +337,7 @@ name = "bhyve_api_sys"
 version = "0.0.0"
 dependencies = [
  "libc",
- "num_enum 0.5.11",
+ "strum",
 ]
 
 [[package]]
@@ -946,7 +946,7 @@ name = "dladm"
 version = "0.0.0"
 dependencies = [
  "libc",
- "num_enum 0.5.11",
+ "strum",
 ]
 
 [[package]]
@@ -1100,26 +1100,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "enum-iterator"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7add3873b5dd076766ee79c8e406ad1a472c385476b9e38849f8eec24f1be689"
-dependencies = [
- "enum-iterator-derive",
-]
-
-[[package]]
-name = "enum-iterator-derive"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eecf8589574ce9b895052fa12d69af7a233f99e6107f5cb8dd1044f2a17bfdcb"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.29",
 ]
 
 [[package]]
@@ -3042,7 +3022,6 @@ dependencies = [
  "crucible-client-types",
  "dladm",
  "dlpi",
- "enum-iterator",
  "erased-serde",
  "futures",
  "ispf",
@@ -3063,6 +3042,7 @@ dependencies = [
  "slog-async",
  "slog-term",
  "softnpu",
+ "strum",
  "tempfile",
  "thiserror",
  "tokio",
@@ -3142,7 +3122,6 @@ dependencies = [
  "const_format",
  "crucible-client-types",
  "dropshot",
- "enum-iterator",
  "erased-serde",
  "expectorate",
  "futures",
@@ -3153,7 +3132,6 @@ dependencies = [
  "lazy_static",
  "mockall",
  "nexus-client",
- "num_enum 0.5.11",
  "omicron-common",
  "oximeter",
  "oximeter-producer",
@@ -3173,6 +3151,7 @@ dependencies = [
  "slog-bunyan",
  "slog-dtrace",
  "slog-term",
+ "strum",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
@@ -3206,7 +3185,6 @@ dependencies = [
  "erased-serde",
  "futures",
  "libc",
- "num_enum 0.5.11",
  "propolis",
  "propolis-standalone-config",
  "serde",
@@ -3216,6 +3194,7 @@ dependencies = [
  "slog-bunyan",
  "slog-dtrace",
  "slog-term",
+ "strum",
  "tokio",
  "toml 0.7.6",
  "uuid",
@@ -3226,9 +3205,9 @@ name = "propolis-standalone-config"
 version = "0.0.0"
 dependencies = [
  "cpuid_profile_config",
- "num_enum 0.5.11",
  "serde",
  "serde_derive",
+ "strum",
  "toml 0.7.6",
 ]
 
@@ -4966,7 +4945,6 @@ name = "viona_api"
 version = "0.0.0"
 dependencies = [
  "libc",
- "num_enum 0.5.11",
  "viona_api_sys",
 ]
 

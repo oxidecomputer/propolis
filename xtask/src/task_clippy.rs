@@ -43,6 +43,9 @@ pub(crate) fn cmd_clippy(strict: bool) -> Result<()> {
     failed |=
         run_clippy(&["-p", "propolis-standalone", "--features", "crucible"])?;
 
+    // Check PHD bits
+    failed |= run_clippy(&["-p", "phd-runner"])?;
+
     if failed {
         bail!("Clippy failures detected")
     }

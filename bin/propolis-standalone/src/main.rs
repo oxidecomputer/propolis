@@ -13,20 +13,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
+use slog::{o, Drain};
+use strum::IntoEnumIterator;
+use tokio::runtime;
+
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
 use propolis::intr_pins::FuncPin;
+use propolis::usdt::register_probes;
 use propolis::vcpu::Vcpu;
 use propolis::vmm::{Builder, Machine};
 use propolis::*;
-use tokio::runtime;
-
-use propolis::usdt::register_probes;
-
-use slog::{o, Drain};
 
 mod config;
 mod snapshot;
@@ -934,7 +934,7 @@ fn setup_instance(
                 )
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
-                .clear_cpu_topo(cpuid::TopoKind::all())
+                .clear_cpu_topo(cpuid::TopoKind::iter())
                 .execute(profile.clone())
                 .context("failed to specialize cpuid profile")?
         } else {

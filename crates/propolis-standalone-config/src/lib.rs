@@ -4,12 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serde::{Deserialize, Serialize};
+use strum::FromRepr;
 
 pub use cpuid_profile_config::*;
 
-#[derive(TryFromPrimitive, IntoPrimitive, Eq, PartialEq)]
+#[derive(FromRepr, Eq, PartialEq)]
 #[repr(u8)]
 pub enum SnapshotTag {
     Config = 0,

@@ -8,6 +8,6 @@ edition = "2021"
 doctest = false
 
 [dependencies]
-libc.workspace = true
 bhyve_api_sys.workspace = true
-num_enum.workspace = true
+libc.workspace = true
+strum = { workspace = true, features = ["derive"] }
