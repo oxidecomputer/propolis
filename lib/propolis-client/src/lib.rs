@@ -140,7 +140,9 @@ pub mod support {
                 .send()
                 .await
                 .map_err(|e| {
-                    WSError::Http(http::Response::new(Some(e.to_string())))
+                    WSError::Http(http::Response::new(Some(
+                        e.to_string().into_bytes(),
+                    )))
                 })?
                 .into_inner();
 
@@ -190,9 +192,10 @@ pub mod support {
                 tokio::time::sleep(delay).await;
                 Ok(Box::new(stream))
             } else {
-                Err(WSError::Http(http::Response::new(Some(format!(
-                    "no duplex connection found for address {address}"
-                )))))
+                Err(WSError::Http(http::Response::new(Some(
+                    format!("no duplex connection found for address {address}")
+                        .into_bytes(),
+                ))))
             }
         }
     }

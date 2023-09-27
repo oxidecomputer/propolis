@@ -831,8 +831,13 @@ async fn instance_serial(
     let vm = ctx.vm().await?;
     let serial = vm.com1().clone();
 
-    let config =
-        WebSocketConfig { max_send_queue: Some(4096), ..Default::default() };
+    let config = WebSocketConfig {
+        // tune the buffer size limits down (compared to the defaults)
+        // TODO: tuning for this could be explored
+        write_buffer_size: 4096,
+        max_write_buffer_size: 8192,
+        ..Default::default()
+    };
     let mut ws_stream = WebSocketStream::from_raw_socket(
         websock.into_inner(),
         Role::Server,
