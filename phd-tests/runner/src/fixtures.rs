@@ -3,31 +3,26 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use anyhow::Result;
-use phd_framework::artifacts::ArtifactStore;
 use tracing::instrument;
 
 use crate::TestContext;
 
 /// A wrapper containing the objects needed to run the executor's test fixtures.
 pub struct TestFixtures<'a> {
-    artifact_store: &'a ArtifactStore,
     test_context: &'a TestContext<'a>,
 }
 
 impl<'a> TestFixtures<'a> {
     /// Creates a new set of test fixtures using the supplied command-line
     /// parameters and artifact store.
-    pub fn new(
-        artifact_store: &'a ArtifactStore,
-        test_context: &'a TestContext,
-    ) -> Result<Self> {
-        Ok(Self { artifact_store, test_context })
+    pub fn new(test_context: &'a TestContext) -> Result<Self> {
+        Ok(Self { test_context })
     }
 
     /// Calls fixture routines that need to run before any tests run.
     #[instrument(skip_all)]
     pub fn execution_setup(&mut self) -> Result<()> {
-        self.artifact_store.check_local_copies()
+        Ok(())
     }
 
     /// Calls fixture routines that need to run after all tests run.

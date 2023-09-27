@@ -44,9 +44,9 @@ fn main() {
 }
 
 fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
-    let artifact_store = ArtifactStore::from_file(
-        &run_opts.artifact_toml_path,
+    let artifact_store = ArtifactStore::from_toml_path(
         run_opts.artifact_directory.clone(),
+        &run_opts.artifact_toml_path,
     )
     .unwrap();
 
@@ -57,10 +57,7 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
     let mut config_toml_path = run_opts.tmp_directory.clone();
     config_toml_path.push("vm_config.toml");
     let factory_config = phd_framework::test_vm::factory::FactoryOptions {
-        propolis_server_path: run_opts
-            .propolis_server_cmd
-            .to_string_lossy()
-            .to_string(),
+        propolis_server_path: run_opts.propolis_server_cmd.clone(),
         tmp_directory: run_opts.tmp_directory.clone(),
         server_log_mode: run_opts.server_logging_mode,
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
@@ -86,7 +83,7 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
             run_opts.server_logging_mode,
         ),
     };
-    let fixtures = TestFixtures::new(&artifact_store, &ctx).unwrap();
+    let fixtures = TestFixtures::new(&ctx).unwrap();
 
     // Run the tests and print results.
     let execution_stats = execute::run_tests_with_ctx(&ctx, fixtures, run_opts);

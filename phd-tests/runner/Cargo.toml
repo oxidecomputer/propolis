@@ -12,6 +12,7 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 backtrace.workspace = true
+camino.workspace = true
 clap = { workspace = true, features = ["derive"] }
 phd-framework.workspace = true
 phd-tests.workspace = true

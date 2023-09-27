@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::path::PathBuf;
-
+use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use phd_framework::server_log_mode::ServerLogMode;
 
@@ -34,21 +33,21 @@ pub struct ProcessArgs {
 pub struct RunOptions {
     /// The command to use to launch the Propolis server.
     #[clap(long, value_parser)]
-    pub propolis_server_cmd: PathBuf,
+    pub propolis_server_cmd: Utf8PathBuf,
 
     /// The command to use to launch Crucible downstairs servers.
     #[clap(long, value_parser)]
-    pub crucible_downstairs_cmd: Option<PathBuf>,
+    pub crucible_downstairs_cmd: Option<Utf8PathBuf>,
 
     /// The directory into which to write temporary files (config TOMLs, log
     /// files, etc.) generated during test execution.
     #[clap(long, value_parser)]
-    pub tmp_directory: PathBuf,
+    pub tmp_directory: Utf8PathBuf,
 
     /// The directory in which artifacts (guest OS images, bootroms, etc.)
     /// are to be stored.
     #[clap(long, value_parser)]
-    pub artifact_directory: PathBuf,
+    pub artifact_directory: Utf8PathBuf,
 
     /// If true, direct Propolis servers created by the runner to log to
     /// stdout/stderr handles inherited from the runner.
@@ -76,7 +75,7 @@ pub struct RunOptions {
     /// The path to a TOML file describing the artifact store to use for this
     /// run.
     #[clap(long, value_parser)]
-    pub artifact_toml_path: PathBuf,
+    pub artifact_toml_path: Utf8PathBuf,
 
     /// The default artifact store key to use to load a guest OS image in tests
     /// that do not explicitly specify one.

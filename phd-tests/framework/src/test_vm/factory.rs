@@ -9,7 +9,8 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
 use thiserror::Error;
 use tracing::info;
 
@@ -26,11 +27,6 @@ use super::{
 /// Errors that can arise while creating a VM factory.
 #[derive(Debug, Error)]
 pub enum FactoryConstructionError {
-    /// Raised if the default bootrom key in the [`FactoryOptions`] does not
-    /// yield a valid bootrom from the artifact store.
-    #[error("Default bootrom {0} not in artifact store")]
-    DefaultBootromMissing(String),
-
     /// Raised if the default guest image key in the [`FactoryOptions`] does not
     /// yield a valid image from the artifact store.
     #[error("Default guest image {0} not in artifact store")]
@@ -47,11 +43,11 @@ pub enum FactoryConstructionError {
 pub struct FactoryOptions {
     /// The path to the Propolis server binary to use for VMs created by this
     /// factory.
-    pub propolis_server_path: String,
+    pub propolis_server_path: Utf8PathBuf,
 
     /// The directory to use as a temporary directory for config TOML files,
     /// server logs, and the like.
-    pub tmp_directory: PathBuf,
+    pub tmp_directory: Utf8PathBuf,
 
     /// The logging discipline to use for this factory's Propolis servers.
     pub server_log_mode: ServerLogMode,
@@ -86,16 +82,17 @@ impl<'a> VmFactory<'a> {
     ) -> Result<Self> {
         info!(?opts, "Building VM factory");
         let bootrom_path = store
-            .get_bootrom_by_name(&opts.default_bootrom_artifact)
-            .ok_or_else(|| {
-                FactoryConstructionError::DefaultBootromMissing(
-                    opts.default_bootrom_artifact.clone(),
+            .get_bootrom(&opts.default_bootrom_artifact)
+            .with_context(|| {
+                format!(
+                    "failed to get path to bootrom artifact '{}'",
+                    &opts.default_bootrom_artifact
                 )
             })?;
 
         Ok(Self {
             opts,
-            default_bootrom_path: bootrom_path.to_string_lossy().to_string(),
+            default_bootrom_path: bootrom_path.into_string(),
             port_allocator,
         })
     }
@@ -174,7 +171,7 @@ impl VmFactory<'_> {
         let server_port = self.port_allocator.next()?;
         let vnc_port = self.port_allocator.next()?;
         let server_params = ServerProcessParameters {
-            server_path: &self.opts.propolis_server_path,
+            server_path: self.opts.propolis_server_path.as_str(),
             config_toml_path: vm_config.server_toml_path().clone(),
             server_addr: SocketAddrV4::new(
                 Ipv4Addr::new(127, 0, 0, 1),

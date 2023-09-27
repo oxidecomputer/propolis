@@ -13,6 +13,7 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::Context;
 use propolis_client::instance_spec::v0::StorageBackendV0;
 use thiserror::Error;
 
@@ -31,9 +32,6 @@ mod file;
 /// Errors that can arise while working with disks.
 #[derive(Debug, Error)]
 pub enum DiskError {
-    #[error("Could not find source artifact {0}")]
-    ArtifactNotFound(String),
-
     #[error("Disk factory has no Crucible downstairs path")]
     NoCrucibleDownstairsPath,
 
@@ -150,10 +148,12 @@ impl DiskFactory<'_> {
         artifact_name: &str,
     ) -> Result<(PathBuf, GuestOsKind), DiskError> {
         self.artifact_store
-            .get_guest_artifact_info_by_name(artifact_name)
-            .ok_or_else(|| {
-                DiskError::ArtifactNotFound(artifact_name.to_string())
+            .get_guest_os_image(artifact_name)
+            .map(|(utf8, kind)| (utf8.into_std_path_buf(), kind))
+            .with_context(|| {
+                format!("failed to get guest OS artifact '{}'", artifact_name)
             })
+            .map_err(Into::into)
     }
 
     /// Creates a new disk backed by a file whose initial contents are specified
