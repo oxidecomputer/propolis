@@ -720,7 +720,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=cd891a22234beecc77fce9351f0c492382adc54f#cd891a22234beecc77fce9351f0c492382adc54f"
+source = "git+https://github.com/oxidecomputer/crucible?rev=20273bcca1fd5834ebc3e67dfa7020f0e99ad681#20273bcca1fd5834ebc3e67dfa7020f0e99ad681"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -765,7 +765,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=cd891a22234beecc77fce9351f0c492382adc54f#cd891a22234beecc77fce9351f0c492382adc54f"
+source = "git+https://github.com/oxidecomputer/crucible?rev=20273bcca1fd5834ebc3e67dfa7020f0e99ad681#20273bcca1fd5834ebc3e67dfa7020f0e99ad681"
 dependencies = [
  "base64 0.21.4",
  "schemars",
@@ -778,7 +778,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=cd891a22234beecc77fce9351f0c492382adc54f#cd891a22234beecc77fce9351f0c492382adc54f"
+source = "git+https://github.com/oxidecomputer/crucible?rev=20273bcca1fd5834ebc3e67dfa7020f0e99ad681#20273bcca1fd5834ebc3e67dfa7020f0e99ad681"
 dependencies = [
  "anyhow",
  "atty",
@@ -806,7 +806,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=cd891a22234beecc77fce9351f0c492382adc54f#cd891a22234beecc77fce9351f0c492382adc54f"
+source = "git+https://github.com/oxidecomputer/crucible?rev=20273bcca1fd5834ebc3e67dfa7020f0e99ad681#20273bcca1fd5834ebc3e67dfa7020f0e99ad681"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5365,7 +5365,7 @@ dependencies = [
 [[package]]
 name = "workspace-hack"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=cd891a22234beecc77fce9351f0c492382adc54f#cd891a22234beecc77fce9351f0c492382adc54f"
+source = "git+https://github.com/oxidecomputer/crucible?rev=20273bcca1fd5834ebc3e67dfa7020f0e99ad681#20273bcca1fd5834ebc3e67dfa7020f0e99ad681"
 dependencies = [
  "bitflags 2.4.0",
  "bytes",
