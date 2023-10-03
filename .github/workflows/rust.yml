@@ -13,7 +13,7 @@ jobs:
   check-style:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
     - name: Report rustfmt version
       run: cargo fmt -- --version
     - name: Check style
@@ -21,7 +21,7 @@ jobs:
   check-clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
     - name: Report clippy version
       run: cargo clippy -- --version
     - name: Check clippy
@@ -29,21 +29,21 @@ jobs:
   check-license:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
     - name: Check license headers
-      uses: apache/skywalking-eyes/header@501a28d2fb4a9b962661987e50cf0219631b32ff
+      uses: apache/skywalking-eyes/header@6b2529214f6b1ccee3ec92bb0adfeabf6f66f538 # v0.5.0
   build-docs:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+    - uses: dtolnay/rust-toolchain@d11fc332e14e1487b3fae4f033c989be52c27113 # v1.72.1
     - name: Test build documentation
       run: cargo doc --workspace --no-deps
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+    - uses: dtolnay/rust-toolchain@d11fc332e14e1487b3fae4f033c989be52c27113 # v1.72.1
     - name: Build mock-only server
       run: cargo build --bin propolis-server --features mock-only
     - name: Build
