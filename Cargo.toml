@@ -76,6 +76,10 @@ omicron-zone-package = "0.9.0"
 oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
+# Crucible
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "6322a223c0e82a7731ff238416c11142c4c05c80" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "6322a223c0e82a7731ff238416c11142c4c05c80" }
+
 # External dependencies
 anyhow = "1.0"
 async-trait = "0.1.53"
@@ -96,8 +100,6 @@ chrono = "0.4.19"
 clap = "4.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "20273bcca1fd5834ebc3e67dfa7020f0e99ad681" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "20273bcca1fd5834ebc3e67dfa7020f0e99ad681" }
 ctrlc = "3.2"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 erased-serde = "0.3"
