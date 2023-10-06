@@ -10,9 +10,7 @@ use uuid::Uuid;
 
 #[phd_testcase]
 fn smoke_test(ctx: &TestContext) {
-    let mut source = ctx
-        .vm_factory
-        .new_vm("migration_smoke_source", ctx.default_vm_config())?;
+    let mut source = ctx.spawn_default_vm("migration_smoke_source")?;
 
     source.launch()?;
     source.wait_to_boot()?;
@@ -21,9 +19,8 @@ fn smoke_test(ctx: &TestContext) {
     source.run_shell_command("touch ./foo.bar")?;
     source.run_shell_command("sync ./foo.bar")?;
 
-    let mut target = ctx
-        .vm_factory
-        .new_vm_from_cloned_config("migration_smoke_target", &source)?;
+    let mut target =
+        ctx.spawn_successor_vm("migration_smoke_target", &source, None)?;
 
     let serial_hist_pre = source.get_serial_console_history(0)?;
     assert!(!serial_hist_pre.data.is_empty());
@@ -53,23 +50,27 @@ fn smoke_test(ctx: &TestContext) {
 
 #[phd_testcase]
 fn incompatible_vms(ctx: &TestContext) {
-    let configs = vec![
-        ctx.default_vm_config().set_cpus(8),
-        ctx.default_vm_config().set_memory_mib(1024),
+    let mut builders = vec![
+        ctx.vm_config_builder("migration_incompatible_target_1"),
+        ctx.vm_config_builder("migration_incompatible_target_2"),
     ];
 
-    for (i, cfg) in configs.into_iter().enumerate() {
-        let mut source = ctx.vm_factory.new_vm(
-            format!("migration_incompatible_source_{}", i).as_str(),
-            ctx.default_vm_config().set_cpus(4).set_memory_mib(512),
+    builders[0].cpus(8);
+    builders[1].memory_mib(1024);
+
+    for (i, cfg) in builders.into_iter().enumerate() {
+        let mut source = ctx.spawn_vm(
+            ctx.vm_config_builder(&format!(
+                "migration_incompatible_source_{}",
+                i
+            ))
+            .cpus(4)
+            .memory_mib(512),
+            None,
         )?;
 
         source.launch()?;
-
-        let mut target = ctx.vm_factory.new_vm(
-            format!("migration_incompatible_target_{}", i).as_str(),
-            cfg,
-        )?;
+        let mut target = ctx.spawn_vm(&cfg, None)?;
 
         let migration_id = Uuid::new_v4();
         assert!(target
@@ -88,15 +89,11 @@ fn incompatible_vms(ctx: &TestContext) {
 
 #[phd_testcase]
 fn multiple_migrations(ctx: &TestContext) {
-    let mut vm0 = ctx
-        .vm_factory
-        .new_vm("multiple_migrations_0", ctx.default_vm_config())?;
-    let mut vm1 = ctx
-        .vm_factory
-        .new_vm_from_cloned_config("multiple_migrations_1", &vm0)?;
-    let mut vm2 = ctx
-        .vm_factory
-        .new_vm_from_cloned_config("multiple_migrations_2", &vm1)?;
+    let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0")?;
+    let mut vm1 =
+        ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None)?;
+    let mut vm2 =
+        ctx.spawn_successor_vm("multiple_migrations_2", &vm1, None)?;
 
     vm0.launch()?;
     vm0.wait_to_boot()?;

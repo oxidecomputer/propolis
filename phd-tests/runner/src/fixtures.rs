@@ -9,7 +9,7 @@ use crate::TestContext;
 
 /// A wrapper containing the objects needed to run the executor's test fixtures.
 pub struct TestFixtures<'a> {
-    test_context: &'a TestContext<'a>,
+    test_context: &'a TestContext,
 }
 
 impl<'a> TestFixtures<'a> {
@@ -48,7 +48,7 @@ impl<'a> TestFixtures<'a> {
     /// corresponding setup fixture has run.
     #[instrument(skip_all)]
     pub fn test_cleanup(&mut self) -> Result<()> {
-        self.test_context.vm_factory.reset();
+        self.test_context.reset();
         Ok(())
     }
 }

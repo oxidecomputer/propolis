@@ -57,6 +57,9 @@ impl Drop for Downstairs {
 /// An RAII wrapper around a Crucible disk.
 #[derive(Debug)]
 pub struct CrucibleDisk {
+    /// The name of the backend to use in instance specs that include this disk.
+    backend_name: String,
+
     /// The UUID to insert into this disk's `VolumeConstructionRequest`s.
     id: Uuid,
 
@@ -91,6 +94,7 @@ impl CrucibleDisk {
     /// `data_dir`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        backend_name: String,
         disk_size_gib: u64,
         block_size: BlockSize,
         downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
@@ -205,6 +209,7 @@ impl CrucibleDisk {
         }
 
         Ok(Self {
+            backend_name,
             id: disk_uuid,
             block_size,
             blocks_per_extent,
@@ -233,7 +238,7 @@ impl CrucibleDisk {
 }
 
 impl super::DiskConfig for CrucibleDisk {
-    fn backend_spec(&self) -> instance_spec::v0::StorageBackendV0 {
+    fn backend_spec(&self) -> (String, instance_spec::v0::StorageBackendV0) {
         let gen = self.generation.load(Ordering::Relaxed);
         let downstairs_addrs =
             self.downstairs_instances.iter().map(|ds| ds.address).collect();
@@ -268,17 +273,24 @@ impl super::DiskConfig for CrucibleDisk {
             }),
         };
 
-        instance_spec::v0::StorageBackendV0::Crucible(
-            instance_spec::components::backends::CrucibleStorageBackend {
-                request_json: serde_json::to_string(&vcr)
-                    .expect("VolumeConstructionRequest should serialize"),
-                readonly: false,
-            },
+        (
+            self.backend_name.clone(),
+            instance_spec::v0::StorageBackendV0::Crucible(
+                instance_spec::components::backends::CrucibleStorageBackend {
+                    request_json: serde_json::to_string(&vcr)
+                        .expect("VolumeConstructionRequest should serialize"),
+                    readonly: false,
+                },
+            ),
         )
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {
         self.guest_os
+    }
+
+    fn as_crucible(&self) -> Option<&CrucibleDisk> {
+        Some(self)
     }
 }
 

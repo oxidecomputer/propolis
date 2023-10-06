@@ -1,0 +1,249 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use std::sync::Arc;
+
+use anyhow::Context;
+use propolis_client::instance_spec::{
+    components as spec_components, v0::StorageDeviceV0,
+};
+use propolis_types::PciPath;
+
+use crate::{
+    disk::{DiskConfig, DiskSource},
+    test_vm::spec::VmSpec,
+    Framework,
+};
+
+/// The disk interface to use for a given guest disk.
+#[derive(Clone, Copy, Debug)]
+pub enum DiskInterface {
+    Virtio,
+    Nvme,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DiskBackend {
+    File,
+    Crucible { disk_size_gib: u64, block_size: crate::disk::BlockSize },
+}
+
+#[derive(Clone, Debug)]
+struct DiskRequest {
+    interface: DiskInterface,
+    backend: DiskBackend,
+    source_artifact: String,
+    pci_device_num: u8,
+}
+
+pub struct VmConfig {
+    vm_name: String,
+    cpus: u8,
+    memory_mib: u64,
+    bootrom_artifact: String,
+    boot_disk: DiskRequest,
+    data_disks: Vec<DiskRequest>,
+}
+
+impl VmConfig {
+    pub(crate) fn new(
+        vm_name: &str,
+        cpus: u8,
+        memory_mib: u64,
+        bootrom: &str,
+        guest_artifact: &str,
+    ) -> Self {
+        let boot_disk = DiskRequest {
+            interface: DiskInterface::Nvme,
+            backend: DiskBackend::File,
+            source_artifact: guest_artifact.to_owned(),
+            pci_device_num: 4,
+        };
+
+        Self {
+            vm_name: vm_name.to_owned(),
+            cpus,
+            memory_mib,
+            bootrom_artifact: bootrom.to_owned(),
+            boot_disk,
+            data_disks: Vec::new(),
+        }
+    }
+
+    pub fn cpus(&mut self, cpus: u8) -> &mut Self {
+        self.cpus = cpus;
+        self
+    }
+
+    pub fn memory_mib(&mut self, mem: u64) -> &mut Self {
+        self.memory_mib = mem;
+        self
+    }
+
+    pub fn bootrom(&mut self, artifact: &str) -> &mut Self {
+        self.bootrom_artifact = artifact.to_owned();
+        self
+    }
+
+    pub fn boot_disk(
+        &mut self,
+        artifact: &str,
+        interface: DiskInterface,
+        backend: DiskBackend,
+        pci_device_num: u8,
+    ) -> &mut Self {
+        self.boot_disk = DiskRequest {
+            interface,
+            backend,
+            source_artifact: artifact.to_owned(),
+            pci_device_num,
+        };
+        self
+    }
+
+    pub fn data_disk(
+        &mut self,
+        artifact: &str,
+        interface: DiskInterface,
+        backend: DiskBackend,
+        pci_device_num: u8,
+    ) -> &mut Self {
+        self.data_disks.push(DiskRequest {
+            interface,
+            backend,
+            source_artifact: artifact.to_owned(),
+            pci_device_num,
+        });
+        self
+    }
+
+    pub(crate) fn vm_spec(
+        &self,
+        framework: &Framework,
+    ) -> anyhow::Result<VmSpec> {
+        // Figure out where the bootrom is and generate the serialized contents
+        // of a Propolis server config TOML that points to it.
+        let bootrom = framework
+            .artifact_store
+            .get_bootrom(&self.bootrom_artifact)
+            .context("looking up bootrom artifact")?;
+
+        let config_toml_contents =
+            toml::ser::to_string(&propolis_server_config::Config {
+                bootrom: bootrom.clone().into(),
+                ..Default::default()
+            })
+            .context("serializing Propolis server config")?;
+
+        let (_, guest_os_kind) = framework
+            .artifact_store
+            .get_guest_os_image(&self.boot_disk.source_artifact)
+            .context("getting guest OS kind for boot disk")?;
+
+        // This closure helps to construct disk handles from disk requests.
+        let make_disk = |name: String,
+                         req: &DiskRequest|
+         -> anyhow::Result<Arc<dyn DiskConfig>> {
+            let source = DiskSource::Artifact(&req.source_artifact);
+            Ok(match req.backend {
+                DiskBackend::File => framework
+                    .disk_factory
+                    .create_file_backed_disk(name, source)
+                    .with_context(|| {
+                        format!(
+                            "creating new file-backed disk from '{}'",
+                            &req.source_artifact
+                        )
+                    })?,
+                DiskBackend::Crucible { disk_size_gib, block_size } => {
+                    framework
+                        .disk_factory
+                        .create_crucible_disk(
+                            name,
+                            source,
+                            disk_size_gib,
+                            block_size,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "creating new Crucible-backed disk from \
+                                    '{}'",
+                                &req.source_artifact
+                            )
+                        })?
+                }
+            })
+        };
+
+        let mut disk_handles = Vec::new();
+        disk_handles.push(
+            make_disk("boot-disk".to_owned(), &self.boot_disk)
+                .context("creating boot disk")?,
+        );
+        for (idx, data_disk) in self.data_disks.iter().enumerate() {
+            disk_handles.push(
+                make_disk(format!("data-disk-{}", idx), data_disk)
+                    .context("creating data disk")?,
+            );
+        }
+
+        let mut spec_builder =
+            propolis_client::instance_spec::v0::builder::SpecBuilder::new(
+                self.cpus,
+                self.memory_mib,
+                false,
+            );
+
+        // Iterate over the collection of disks and handles and add spec
+        // elements for all of them. This assumes the disk handles were created
+        // in the correct order: boot disk first, then in the data disks'
+        // iteration order.
+        let all_disks = [&self.boot_disk]
+            .into_iter()
+            .chain(self.data_disks.iter())
+            .zip(disk_handles.iter());
+        for (idx, (req, hdl)) in all_disks.enumerate() {
+            let device_name = format!("disk-device{}", idx);
+            let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
+            let (backend_name, backend_spec) = hdl.backend_spec();
+            let device_spec = match req.interface {
+                DiskInterface::Virtio => StorageDeviceV0::VirtioDisk(
+                    spec_components::devices::VirtioDisk {
+                        backend_name: backend_name.clone(),
+                        pci_path,
+                    },
+                ),
+                DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(
+                    spec_components::devices::NvmeDisk {
+                        backend_name: backend_name.clone(),
+                        pci_path,
+                    },
+                ),
+            };
+
+            spec_builder
+                .add_storage_device(
+                    device_name,
+                    device_spec,
+                    backend_name,
+                    backend_spec,
+                )
+                .context("adding storage device to spec")?;
+        }
+
+        spec_builder
+            .add_serial_port(spec_components::devices::SerialPortNumber::Com1)
+            .context("adding serial port to spec")?;
+
+        let instance_spec = spec_builder.finish();
+
+        Ok(VmSpec {
+            vm_name: self.vm_name.clone(),
+            instance_spec: instance_spec.into(),
+            disk_handles,
+            guest_os_kind,
+            config_toml_contents,
+        })
+    }
+}

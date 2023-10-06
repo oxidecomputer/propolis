@@ -11,9 +11,7 @@ use propolis_client::types::InstanceState;
 
 #[phd_testcase]
 fn instance_start_stop_test(ctx: &TestContext) {
-    let mut vm = ctx
-        .vm_factory
-        .new_vm("instance_ensure_running_test", ctx.default_vm_config())?;
+    let mut vm = ctx.spawn_default_vm("instance_ensure_running_test")?;
 
     vm.instance_ensure()?;
     let instance = vm.get()?.instance;
@@ -28,9 +26,7 @@ fn instance_start_stop_test(ctx: &TestContext) {
 
 #[phd_testcase]
 fn instance_stop_causes_destroy_test(ctx: &TestContext) {
-    let mut vm = ctx
-        .vm_factory
-        .new_vm("instance_stop_causes_destroy_test", ctx.default_vm_config())?;
+    let mut vm = ctx.spawn_default_vm("instance_stop_causes_destroy_test")?;
 
     vm.launch()?;
     vm.stop()?;
@@ -52,10 +48,8 @@ fn instance_stop_causes_destroy_test(ctx: &TestContext) {
 
 #[phd_testcase]
 fn instance_reset_test(ctx: &TestContext) {
-    let mut vm = ctx.vm_factory.new_vm(
-        "instance_reset_returns_to_running_test",
-        ctx.default_vm_config(),
-    )?;
+    let mut vm =
+        ctx.spawn_default_vm("instance_reset_returns_to_running_test")?;
 
     assert!(vm.reset().is_err());
     vm.launch()?;
@@ -84,10 +78,8 @@ fn instance_reset_test(ctx: &TestContext) {
 
 #[phd_testcase]
 fn instance_reset_requires_running_test(ctx: &TestContext) {
-    let mut vm = ctx.vm_factory.new_vm(
-        "instance_reset_requires_running_test",
-        ctx.default_vm_config(),
-    )?;
+    let mut vm =
+        ctx.spawn_default_vm("instance_reset_requires_running_test")?;
 
     assert!(vm.reset().is_err());
     vm.launch()?;

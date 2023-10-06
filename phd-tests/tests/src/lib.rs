@@ -5,6 +5,7 @@
 pub use phd_testcase;
 
 mod crucible;
+mod hw;
 mod migrate;
 mod server_state_machine;
 mod smoke;

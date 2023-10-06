@@ -4,22 +4,25 @@
 
 //! Routines and data structures for working with Propolis server processes.
 
-use std::{fmt::Debug, net::SocketAddrV4, path::PathBuf, process::Stdio};
+use std::{fmt::Debug, net::SocketAddrV4};
 
 use anyhow::Result;
+use camino::{Utf8Path, Utf8PathBuf};
 use tracing::info;
+
+use crate::server_log_mode::ServerLogMode;
 
 /// Parameters used to launch and configure the Propolis server process. These
 /// are distinct from the parameters used to configure the VM that that process
 /// will host.
-#[derive(Debug)]
-pub struct ServerProcessParameters<'a, T: Into<Stdio>> {
+#[derive(Clone, Debug)]
+pub struct ServerProcessParameters<'a> {
     /// The path to the server binary to launch.
-    pub server_path: &'a str,
+    pub server_path: Utf8PathBuf,
 
-    /// The path to the configuration TOML that should be placed on the server's
-    /// command line.
-    pub config_toml_path: PathBuf,
+    /// The directory in which to find or place files that are read or written
+    /// by this server process.
+    pub data_dir: &'a Utf8Path,
 
     /// The address at which the server should serve.
     pub server_addr: SocketAddrV4,
@@ -27,13 +30,7 @@ pub struct ServerProcessParameters<'a, T: Into<Stdio>> {
     /// The address at which the server should offer its VNC server.
     pub vnc_addr: SocketAddrV4,
 
-    /// The [`Stdio`] descriptor to which the server's stdout should be
-    /// directed.
-    pub server_stdout: T,
-
-    /// The [`Stdio`] descriptor to which the server's stderr should be
-    /// directed.
-    pub server_stderr: T,
+    pub log_mode: ServerLogMode,
 }
 
 pub struct PropolisServer {
@@ -42,16 +39,17 @@ pub struct PropolisServer {
 }
 
 impl PropolisServer {
-    pub(crate) fn new<T: Into<Stdio> + Debug>(
-        process_params: ServerProcessParameters<T>,
+    pub(crate) fn new(
+        vm_name: &str,
+        process_params: ServerProcessParameters,
+        config_toml_path: &Utf8Path,
     ) -> Result<Self> {
         let ServerProcessParameters {
             server_path,
-            config_toml_path,
+            data_dir,
             server_addr,
             vnc_addr,
-            server_stdout,
-            server_stderr,
+            log_mode,
         } = process_params;
 
         info!(
@@ -61,12 +59,15 @@ impl PropolisServer {
             "Launching Propolis server"
         );
 
+        let (server_stdout, server_stderr) =
+            log_mode.get_handles(&data_dir, vm_name)?;
+
         let server = PropolisServer {
             server: std::process::Command::new("pfexec")
                 .args([
-                    server_path,
+                    server_path.as_str(),
                     "run",
-                    config_toml_path.as_os_str().to_string_lossy().as_ref(),
+                    config_toml_path.as_str(),
                     server_addr.to_string().as_str(),
                     vnc_addr.to_string().as_str(),
                 ])

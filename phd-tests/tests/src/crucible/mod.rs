@@ -2,52 +2,51 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::Arc;
-
 use phd_testcase::{
-    phd_framework::disk::{
-        crucible::CrucibleDisk, BlockSize, DiskError, DiskSource,
+    phd_framework::{
+        disk::BlockSize,
+        test_vm::{DiskBackend, DiskInterface, VmConfig},
     },
-    phd_skip, TestContext,
+    *,
 };
 
 mod migrate;
 mod smoke;
 
-/// Attempts to create a Crucible disk with the specified parameters. If the
-/// runner did not specify a Crucible downstairs path, produces the special
-/// "test skipped" error status for the caller to return.
-fn create_disk_or_skip(
+fn add_crucible_boot_disk_or_skip(
     ctx: &TestContext,
-    source: DiskSource,
+    config: &mut VmConfig,
+    artifact: &str,
+    interface: DiskInterface,
+    pci_slot: u8,
     disk_size_gib: u64,
     block_size: BlockSize,
-) -> phd_testcase::Result<Arc<CrucibleDisk>> {
-    let disk = ctx.disk_factory.create_crucible_disk(
-        source,
-        disk_size_gib,
-        block_size,
-    );
-
-    if let Err(DiskError::NoCrucibleDownstairsPath) = disk {
-        phd_skip!("Crucible binary not specified, can't create crucible disk");
+) -> phd_testcase::Result<()> {
+    if !ctx.crucible_enabled() {
+        phd_skip!("Crucible backends not enabled (no downstairs path)");
     }
 
-    Ok(disk?)
+    config.boot_disk(
+        artifact,
+        interface,
+        DiskBackend::Crucible { disk_size_gib, block_size },
+        pci_slot,
+    );
+
+    Ok(())
 }
 
-/// Creates a boot disk of the supplied size using the default guest image
-/// artifact and a 512-byte block size. Returns the special "test skipped" error
-/// status if Crucible is not enabled for this test run (see
-/// [`create_disk_or_skip`]).
-fn create_default_boot_disk(
+fn add_default_boot_disk(
     ctx: &TestContext,
-    disk_size_gib: u64,
-) -> phd_testcase::Result<Arc<CrucibleDisk>> {
-    create_disk_or_skip(
+    config: &mut VmConfig,
+) -> phd_testcase::Result<()> {
+    add_crucible_boot_disk_or_skip(
         ctx,
-        DiskSource::Artifact(&ctx.default_guest_image_artifact),
-        disk_size_gib,
+        config,
+        ctx.default_guest_os_artifact(),
+        DiskInterface::Nvme,
+        4,
+        10,
         BlockSize::Bytes512,
     )
 }
