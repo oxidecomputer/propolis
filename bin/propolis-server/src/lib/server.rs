@@ -831,13 +831,13 @@ async fn instance_serial(
     let vm = ctx.vm().await?;
     let serial = vm.com1().clone();
 
-    let config = WebSocketConfig {
-        // tune the buffer size limits down (compared to the defaults)
-        // TODO: tuning for this could be explored
-        write_buffer_size: 4096,
-        max_write_buffer_size: 8192,
-        ..Default::default()
-    };
+    // Use the default buffering paramters for the websocket configuration
+    //
+    // Because messages are written with [`StreamExt::send`], the buffer on the
+    // websocket is flushed for every message, preventing both unecessary delays
+    // of messages and the potential for the buffer to grow without bound.
+    let config = WebSocketConfig::default();
+
     let mut ws_stream = WebSocketStream::from_raw_socket(
         websock.into_inner(),
         Role::Server,

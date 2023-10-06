@@ -329,12 +329,7 @@ async fn instance_serial(
     query: Query<api::InstanceSerialConsoleStreamRequest>,
     websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
-    let config = WebSocketConfig {
-        // tune the buffer size limits down (compared to the defaults)
-        write_buffer_size: 4096,
-        max_write_buffer_size: 8192,
-        ..Default::default()
-    };
+    let config = WebSocketConfig::default();
     let mut ws_stream = WebSocketStream::from_raw_socket(
         websock.into_inner(),
         Role::Server,
