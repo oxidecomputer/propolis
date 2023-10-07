@@ -169,6 +169,7 @@ fn create_crucible_backend(
     log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
     use slog::info;
+    use std::net::SocketAddr;
     use uuid::Uuid;
 
     info!(
@@ -181,92 +182,70 @@ fn create_crucible_backend(
     // what block size the downstairs is using. A lot of things
     // default to 512, but it's best not to assume it'll always be
     // that way.
-    let block_size = opts.block_size.unwrap() as u64;
+    let block_size = opts.block_size.expect("block_size is provided") as u64;
     let read_only = opts.read_only.unwrap_or(false);
 
-    let blocks_per_extent =
-        be.options.get("blocks_per_extent").unwrap().as_integer().unwrap()
-            as u64;
+    #[derive(Deserialize)]
+    struct CrucibleConfig {
+        blocks_per_extent: u64,
+        extent_count: u32,
+        upstairs_id: Option<String>,
+        targets: [String; 3],
 
-    let extent_count =
-        be.options.get("extent_count").unwrap().as_integer().unwrap() as u32;
+        // This needs to increase monotonically with each successive connection
+        // to the downstairs. As a hack, you can set it to the current system
+        // time, and this will usually give us a newer generation than the last
+        // connection. NEVER do this in prod EVER.
+        generation: u64,
+
+        lossy: Option<bool>,
+        flush_timeout: Option<f32>,
+        encryption_key: Option<String>,
+        cert_pem: Option<String>,
+        key_pem: Option<String>,
+        root_cert_pem: Option<String>,
+        control_addr: Option<String>,
+    }
+    let parsed: CrucibleConfig = opt_deser(&be.options).unwrap();
 
     // Parse a UUID, or generate a random one if none is specified.
     // Reasonable in something primarily used for testing like
     // propolis-standalone, but you wouldn't want to do this in
     // prod.
-    let uuid = be
-        .options
-        .get("upstairs_id")
-        .map(|x| Uuid::parse_str(x.as_str().unwrap()).unwrap())
-        .unwrap_or_else(Uuid::new_v4);
+    let upstairs_id = if let Some(val) = parsed.upstairs_id {
+        Uuid::parse_str(&val).expect("upstairs_id is valid uuid")
+    } else {
+        Uuid::new_v4()
+    };
 
-    // The actual addresses of the three downstairs we're going to connect to.
-    let targets: Vec<_> = be
-        .options
-        .get("targets")
-        .unwrap()
-        .as_array()
-        .unwrap()
+    let target = parsed
+        .targets
         .iter()
-        .map(|target_val| target_val.as_str().unwrap().parse().unwrap())
-        .collect();
-    // There is currently no universe where an amount of Downstairs
-    // other than 3 is valid.
-    assert_eq!(targets.len(), 3);
+        .map(|val| val.parse::<SocketAddr>())
+        .collect::<Result<Vec<_>, _>>()
+        .expect("targets contains valid socket addresses");
 
-    let lossy =
-        be.options.get("lossy").map(|x| x.as_bool().unwrap()).unwrap_or(false);
-
-    let flush_timeout =
-        be.options.get("flush_timeout").map(|x| x.as_integer().unwrap() as f32);
-
-    let key = be
-        .options
-        .get("encryption_key")
-        .map(|x| x.as_str().unwrap().to_string());
-
-    let cert_pem =
-        be.options.get("cert_pem").map(|x| x.as_str().unwrap().to_string());
-
-    let key_pem =
-        be.options.get("key_pem").map(|x| x.as_str().unwrap().to_string());
-
-    let root_cert_pem = be
-        .options
-        .get("root_cert_pem")
-        .map(|x| x.as_str().unwrap().to_string());
-
-    let control_addr = be
-        .options
-        .get("control_addr")
-        .map(|target_val| target_val.as_str().unwrap().parse().unwrap());
-
-    // This needs to increase monotonically with each successive
-    // connection to the downstairs. As a hack, you can set it to
-    // the current system time, and this will usually give us a newer
-    // generation than the last connection. NEVER do this in prod
-    // EVER.
-    let generation =
-        be.options.get("generation").unwrap().as_integer().unwrap() as u64;
+    let control = parsed.control_addr.map(|val| {
+        val.parse::<SocketAddr>().expect("control_addr is valid socket addr")
+    });
 
     let req = crucible_client_types::VolumeConstructionRequest::Region {
         block_size,
-        blocks_per_extent,
-        extent_count,
+        blocks_per_extent: parsed.blocks_per_extent,
+        extent_count: parsed.extent_count,
         opts: crucible_client_types::CrucibleOpts {
-            id: uuid,
-            target: targets,
-            lossy,
-            flush_timeout,
-            key,
-            cert_pem,
-            key_pem,
-            root_cert_pem,
-            control: control_addr,
+            id: upstairs_id,
+            target,
+            lossy: parsed.lossy.unwrap_or(false),
+            flush_timeout: parsed.flush_timeout,
+            key: parsed.encryption_key,
+            cert_pem: parsed.cert_pem,
+            key_pem: parsed.key_pem,
+            root_cert_pem: parsed.root_cert_pem,
+            control,
             read_only,
         },
-        gen: generation,
+        gen: parsed.generation,
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
