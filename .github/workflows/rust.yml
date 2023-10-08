@@ -36,14 +36,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
-    - uses: dtolnay/rust-toolchain@d11fc332e14e1487b3fae4f033c989be52c27113 # v1.72.1
+    - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
+      with:
+        toolchain: stable
     - name: Test build documentation
       run: cargo doc --workspace --no-deps
   build-and-test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
-    - uses: dtolnay/rust-toolchain@d11fc332e14e1487b3fae4f033c989be52c27113 # v1.72.1
+    - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
+      with:
+        toolchain: stable
     - name: Build mock-only server
       run: cargo build --bin propolis-server --features mock-only
     - name: Build
