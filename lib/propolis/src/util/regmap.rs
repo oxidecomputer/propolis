@@ -126,8 +126,7 @@ impl<ID> RegMap<ID> {
             debug_assert!(copy_op.offset() == 0);
             f(&reg.id, RWOp::Read(copy_op));
         } else {
-            let mut scratch = Vec::new();
-            scratch.resize(reg_len, 0);
+            let mut scratch = vec![0; reg_len];
             let mut sro = ReadOp::from_buf(0, &mut scratch);
 
             f(&reg.id, RWOp::Read(&mut sro));
@@ -154,10 +153,8 @@ impl<ID> RegMap<ID> {
             debug_assert!(copy_op.offset() == 0);
             f(&reg.id, RWOp::Write(copy_op));
         } else {
-            let mut scratch = Vec::new();
-            scratch.resize(reg_len, 0);
+            let mut scratch = vec![0; reg_len];
 
-            debug_assert!(scratch.len() == reg_len);
             if !reg.flags.contains(Flags::NO_READ_MOD_WRITE) {
                 let mut sro = ReadOp::from_buf(0, &mut scratch);
                 f(&reg.id, RWOp::Read(&mut sro));

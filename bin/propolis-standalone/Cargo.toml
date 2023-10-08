@@ -3,6 +3,7 @@ name = "propolis-standalone"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
+rust-version = "1.73"
 
 [[bin]]
 name = "propolis-standalone"
@@ -16,6 +17,7 @@ atty.workspace = true
 bhyve_api.workspace = true
 clap = { workspace = true, features = ["derive"] }
 ctrlc.workspace = true
+fatfs.workspace = true
 futures.workspace = true
 libc.workspace = true
 toml.workspace = true

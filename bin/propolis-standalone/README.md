@@ -251,3 +251,46 @@ Certain fields in `cpuid` data depend on aspects specific to the host (such as
 vCPU count) or the vCPU they are associated with (such as APIC ID).  Propolis
 will "specialize" the data provided in the `cpuid` profile with logic appropriate
 for the specific leafs involved.
+
+## Configuring Cloud-Init
+
+Propolis is able to assemble a disk image formatted in the
+[NoCloud](https://cloudinit.readthedocs.io/en/latest/reference/datasources/nocloud.html)
+fashion to be consumed by `cloud-init` inside the guest.  An example of such configuration is as follows:
+```toml
+# ... other configuration bits
+
+# Define a disk device to bear the cloud-init data
+[dev.cloudinit]
+driver = "pci-virtio-block"
+pci-path = "0.16.0"
+block_dev = "cloudinit_be"
+
+# Define the backend to that disk as the cloudinit type
+[block_dev.cloudinit_be]
+type = "cloudinit"
+
+# Data from this cloudinit section will be used to populate the above block_dev
+[cloudinit]
+user-data = '''
+#cloud-config
+users:
+- default
+- name: test
+  sudo: 'ALL=(ALL) NOPASSWD:ALL'
+  lock_passwd: false
+  hashed_passwd: '$6$rounds=4096$MBW/3OrwWLifnv30$QM.oCQ3pzV7X4EToX9IyZmplvaTgpZ6YJ50MhQrwlryj1soqBW5zvraVttYwfyWdxigHpZHTjY9kT.029UOEn1'
+'''
+# Instead of specifying string data like above, a path to a file can be used too:
+# user-data-path = "path/to/file"
+
+# Instance metadata is configured the same way:
+# meta-data = "..."
+# or
+# meta-data-path = "path/to/file"
+
+# Same with network configuration:
+# network-config = "..."
+# or
+# network-config-path = "path/to/file"
+```

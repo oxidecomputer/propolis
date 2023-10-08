@@ -15,6 +15,7 @@ use propolis::cpuid;
 use propolis::hw::pci::Bdf;
 use propolis::inventory::ChildRegister;
 
+use crate::cidata::build_cidata_be;
 pub use propolis_standalone_config::{Config, SnapshotTag};
 use propolis_standalone_config::{CpuVendor, CpuidEntry, Device};
 
@@ -85,6 +86,11 @@ pub fn block_backend(
             )
             .unwrap();
 
+            let creg = ChildRegister::new(&be, None);
+            (be, creg)
+        }
+        "cloudinit" => {
+            let be = build_cidata_be(config).unwrap();
             let creg = ChildRegister::new(&be, None);
             (be, creg)
         }

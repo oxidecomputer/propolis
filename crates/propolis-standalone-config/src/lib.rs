@@ -31,6 +31,8 @@ pub struct Config {
 
     #[serde(default, rename = "cpuid")]
     pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
+
+    pub cloudinit: Option<CloudInit>,
 }
 impl Config {
     pub fn cpuid_profile(&self) -> Option<&CpuidProfile> {
@@ -78,4 +80,17 @@ pub struct BlockDevice {
 
     #[serde(flatten, default)]
     pub options: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CloudInit {
+    pub user_data: Option<String>,
+    pub meta_data: Option<String>,
+    pub network_config: Option<String>,
+
+    // allow path-style contents as well
+    pub user_data_path: Option<String>,
+    pub meta_data_path: Option<String>,
+    pub network_config_path: Option<String>,
 }

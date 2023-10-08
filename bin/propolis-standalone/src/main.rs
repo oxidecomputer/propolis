@@ -28,6 +28,7 @@ use propolis::vcpu::Vcpu;
 use propolis::vmm::{Builder, Machine};
 use propolis::*;
 
+mod cidata;
 mod config;
 mod snapshot;
 
