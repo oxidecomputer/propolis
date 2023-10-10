@@ -10,10 +10,8 @@ fn lspci_lifecycle_test(ctx: &TestContext) {
     const LSPCI: &str = "sudo lspci -vvx";
     const LSHW: &str = "sudo lshw -notime";
 
-    let mut vm = ctx.spawn_vm(
-        &ctx.vm_config_builder("lspci_lifecycle_test"),
-        Some(&ctx.environment_builder().propolis("propolis-minus-two")),
-    )?;
+    let mut vm =
+        ctx.spawn_vm(&ctx.vm_config_builder("lspci_lifecycle_test"), None)?;
 
     vm.launch()?;
     vm.wait_to_boot()?;

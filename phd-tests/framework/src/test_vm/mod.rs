@@ -222,7 +222,7 @@ impl TestVm {
             VersionedInstanceSpec::V0(self.spec.instance_spec.clone());
         let ensure_req = InstanceSpecEnsureRequest {
             properties,
-            instance_spec: versioned_spec.into(),
+            instance_spec: versioned_spec,
             migrate,
         };
 

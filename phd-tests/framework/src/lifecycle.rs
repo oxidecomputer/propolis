@@ -35,11 +35,11 @@ impl Framework {
         check_fn: F,
     ) -> anyhow::Result<()>
     where
-        F: Fn(&TestVm) -> (),
+        F: Fn(&TestVm),
     {
         let mut vm = vm;
         let original_name = vm.name().to_owned();
-        for (idx, action) in actions.into_iter().enumerate() {
+        for (idx, action) in actions.iter().enumerate() {
             match action {
                 Action::Reset => {
                     info!(
