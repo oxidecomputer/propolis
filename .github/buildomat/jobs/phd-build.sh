@@ -10,12 +10,12 @@
 #:
 #: [[publish]]
 #: series = "phd_build"
-#: name = "propolis-server-debug.tar.gz"
+#: name = "propolis-server.tar.gz"
 #: from_output = "/out/propolis-server-debug.tar.gz"
 #:
 #: [[publish]]
 #: series = "phd_build"
-#: name = "propolis-server-debug.sha256.txt"
+#: name = "propolis-server.sha256.txt"
 #: from_output = "/out/propolis-server-debug.sha256.txt"
 
 set -o errexit
