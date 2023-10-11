@@ -254,11 +254,9 @@ impl Store {
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<(Utf8PathBuf, GuestOsKind)> {
-        let entry = if let Some(e) = self.artifacts.get(artifact_name) {
-            e
-        } else {
-            anyhow::bail!("artifact {} not found in store", artifact_name);
-        };
+        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", artifact_name)
+        })?;
 
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
@@ -278,11 +276,9 @@ impl Store {
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
-        let entry = if let Some(e) = self.artifacts.get(artifact_name) {
-            e
-        } else {
-            anyhow::bail!("artifact {} not found in store", artifact_name);
-        };
+        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", artifact_name)
+        })?;
 
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
@@ -300,11 +296,9 @@ impl Store {
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
-        let entry = if let Some(e) = self.artifacts.get(artifact_name) {
-            e
-        } else {
-            anyhow::bail!("artifact {} not found in store", artifact_name);
-        };
+        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", artifact_name)
+        })?;
 
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
