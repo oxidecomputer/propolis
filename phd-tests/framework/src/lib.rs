@@ -61,6 +61,12 @@ pub struct Framework {
     pub(crate) default_guest_os_artifact: String,
     pub(crate) default_bootrom_artifact: String,
 
+    // The disk factory used to be a freestanding struct that took references to
+    // an artifact store and port allocator that were owned by someone else.
+    // Putting all these components into a single struct makes the struct
+    // self-referencing. Since the runner is single-threaded, avoid arguing with
+    // anyone about lifetimes by wrapping the relevant shared components in an
+    // `Rc`.
     pub(crate) artifact_store: Rc<artifacts::ArtifactStore>,
     pub(crate) disk_factory: DiskFactory,
     pub(crate) port_allocator: Rc<PortAllocator>,
