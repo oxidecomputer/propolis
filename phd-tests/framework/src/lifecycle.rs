@@ -37,15 +37,12 @@ impl Framework {
     /// Runs a lifecycle test on the supplied `vm` by iterating over the
     /// `actions`, performing the specified action, and then calling `check_fn`
     /// on the resulting VM to verify invariants.
-    pub fn lifecycle_test<F>(
+    pub fn lifecycle_test(
         &self,
         vm: TestVm,
         actions: &[Action],
-        check_fn: F,
-    ) -> anyhow::Result<()>
-    where
-        F: Fn(&TestVm),
-    {
+        check_fn: impl Fn(&TestVm),
+    ) -> anyhow::Result<()> {
         let mut vm = vm;
         let original_name = vm.name().to_owned();
         for (idx, action) in actions.iter().enumerate() {
