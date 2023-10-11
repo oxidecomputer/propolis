@@ -12,7 +12,11 @@ use crate::{Framework, TestVm};
 /// The set of actions that can be taken on a VM undergoing lifecycle testing.
 pub enum Action<'a> {
     /// Reset the VM using the Propolis server reset API. This sort of reboot
-    /// does not involve the guest OS.
+    /// does not involve the guest OS. It can be used to verify that components'
+    /// reset implementations don't change properties that shouldn't change
+    /// without fully stopping and restarting a VM.
+    //
+    // N.B. This isn't used in any lifecycle tests yet.
     Reset,
 
     /// Stop the VM and restart it in a successor Propolis using the same
@@ -21,6 +25,11 @@ pub enum Action<'a> {
 
     /// Migrate the VM to a new Propolis server. The wrapped `&str` names a
     /// Propolis server artifact to migrate to.
+    //
+    // N.B. This isn't used in any lifecycle tests yet, mostly because there are
+    // no well-known, stable Propolis artifact names other than the name of the
+    // default artifact supplied on the command line. This will change in the
+    // future as new well-known artifacts (like "Buildomat HEAD") are added.
     MigrateToPropolis(&'a str),
 }
 
