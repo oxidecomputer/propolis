@@ -93,6 +93,7 @@ impl<T> Tree<T> {
                 .is_some(),
             "leaf target for re-parenting missing"
         );
+        assert_eq!(adopt_root.id, ID_ROOT);
         let tree_ref = &leaf_ent.tree;
 
         let mut queue = VecDeque::new();
@@ -390,6 +391,10 @@ impl<T> Node<T> {
         self.lock_tree(|mut parent_tguard, parent_ent| {
             child.lock_tree(|mut child_tguard, child_ent| {
                 if child_ent.id != ID_ROOT {
+                    // Drop all mutex guards prior to panic in order to allow
+                    // unwinder to do its job, rather than getting tripped up by
+                    // poisoned mutexes.  This allows the unit tests to exercise
+                    // this panic condition.
                     drop(child_tguard);
                     drop(child_ent);
                     drop(parent_tguard);
@@ -731,6 +736,27 @@ mod test {
             let guard = child.access().expect("resource is accessible");
             assert_eq!(guard.load(Ordering::Relaxed), tval);
         }
+    }
+
+    #[test]
+    fn orphan_sibling() {
+        let (root, mut children) = new_depth(2);
+
+        let sib = root.child(Some("sibling".to_string()));
+        let sib_child = sib.child(Some("sibling child".to_string()));
+
+        // Check that both siblings, and their progeny, can access the resource
+        assert!(sib.access().is_some());
+        assert!(children[0].access().is_some());
+        assert!(sib_child.access().is_some());
+        assert!(children[1].access().is_some());
+
+        // ... and that after orphaning one of them, that the other sibling
+        // still has access
+        let _ = children.remove(0);
+        assert!(children[0].access().is_none());
+        assert!(sib.access().is_some());
+        assert!(sib_child.access().is_some());
     }
 
     #[test]
