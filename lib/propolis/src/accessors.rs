@@ -25,7 +25,7 @@ const ID_ROOT: AccId = 1;
 struct TreeNode<T> {
     parent_id: AccId,
     node_ref: Weak<Node<T>>,
-    children: Option<BTreeSet<AccId>>,
+    children: BTreeSet<AccId>,
     name: Option<String>,
 }
 impl<T> TreeNode<T> {
@@ -34,13 +34,7 @@ impl<T> TreeNode<T> {
         node_ref: Weak<Node<T>>,
         name: Option<String>,
     ) -> Self {
-        Self { parent_id, node_ref, children: None, name }
-    }
-    fn children_mut(&mut self) -> &mut BTreeSet<AccId> {
-        if self.children.is_none() {
-            self.children = Some(BTreeSet::new());
-        }
-        self.children.as_mut().unwrap()
+        Self { parent_id, node_ref, children: BTreeSet::new(), name }
     }
 }
 struct Tree<T> {
@@ -76,7 +70,7 @@ impl<T> Tree<T> {
         self.nodes
             .get_mut(&parent)
             .expect("parent node must exist")
-            .children_mut()
+            .children
             .insert(child);
     }
 
@@ -134,7 +128,8 @@ impl<T> Tree<T> {
                 );
 
                 // Note its children so they can be processed in turn
-                if let Some(cq) = tnode.children.take() {
+                let cq = std::mem::take(&mut tnode.children);
+                if !cq.is_empty() {
                     queue.extend(cq.into_iter().map(|cid| (cid, new_child_id)));
                 }
             }
@@ -152,7 +147,7 @@ impl<T> Tree<T> {
                 .nodes
                 .get_mut(&tnode.parent_id)
                 .expect("parent for node exists")
-                .children_mut()
+                .children
                 .remove(&id);
             assert!(removed, "parent should list node as child");
         } else {
@@ -164,10 +159,8 @@ impl<T> Tree<T> {
         debug_assert_eq!(tnode.node_ref.strong_count(), 0);
 
         // orphan any children of the node
-        if let Some(children) = tnode.children.take() {
-            for child in children {
-                self.orphan_node(child);
-            }
+        for child in std::mem::take(&mut tnode.children) {
+            self.orphan_node(child);
         }
     }
 
@@ -192,10 +185,10 @@ impl<T> Tree<T> {
             TreeNode::new(ID_NULL, Arc::downgrade(&node), None),
         );
 
-        let children = match tnode.children.take() {
-            None => return,
-            Some(c) => c,
-        };
+        let children = std::mem::take(&mut tnode.children);
+        if children.is_empty() {
+            return;
+        }
         drop(node);
         drop(tnode);
 
@@ -231,9 +224,7 @@ impl<T> Tree<T> {
                 ent.resource = None;
                 drop(ent);
 
-                if let Some(grandchildren) = tnode.children.take() {
-                    needs_fixup.extend(grandchildren.into_iter())
-                }
+                needs_fixup.extend(std::mem::take(&mut tnode.children))
             }
         }
     }
@@ -250,9 +241,7 @@ impl<T> Tree<T> {
         while let Some(id) = to_process.pop_front() {
             if let Some(tnode) = self.nodes.get(&id) {
                 f(id, tnode);
-                if let Some(children) = tnode.children.as_ref() {
-                    to_process.extend(children);
-                }
+                to_process.extend(tnode.children.iter());
             }
         }
     }
@@ -278,8 +267,8 @@ impl<T> Tree<T> {
                 let pnode =
                     PrintNode { depth, id, name: tnode.name.as_deref() };
                 print_fn(pnode);
-                if let Some(children) = tnode.children.clone() {
-                    to_process.push((depth + 1, children))
+                if !tnode.children.is_empty() {
+                    to_process.push((depth + 1, tnode.children.clone()))
                 }
             }
         }
