@@ -8,7 +8,7 @@ use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
 #[phd_testcase]
-fn boot_test(ctx: &TestContext) {
+fn boot_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_boot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
     let mut vm = ctx.spawn_vm(&config, None)?;
@@ -17,7 +17,7 @@ fn boot_test(ctx: &TestContext) {
 }
 
 #[phd_testcase]
-fn shutdown_persistence_test(ctx: &TestContext) {
+fn shutdown_persistence_test(ctx: &Framework) {
     let mut config =
         ctx.vm_config_builder("crucible_shutdown_persistence_test");
     super::add_default_boot_disk(ctx, &mut config)?;

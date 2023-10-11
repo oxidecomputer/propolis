@@ -5,7 +5,7 @@
 use phd_testcase::*;
 
 #[phd_testcase]
-fn nproc_test(ctx: &TestContext) {
+fn nproc_test(ctx: &Framework) {
     let mut vm =
         ctx.spawn_vm(ctx.vm_config_builder("nproc_test").cpus(6), None)?;
     vm.launch()?;
@@ -16,7 +16,7 @@ fn nproc_test(ctx: &TestContext) {
 }
 
 #[phd_testcase]
-fn instance_spec_get_test(ctx: &TestContext) {
+fn instance_spec_get_test(ctx: &Framework) {
     let mut vm = ctx.spawn_vm(
         ctx.vm_config_builder("instance_spec_test").cpus(4).memory_mib(3072),
         None,

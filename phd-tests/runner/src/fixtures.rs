@@ -5,17 +5,17 @@
 use anyhow::Result;
 use tracing::instrument;
 
-use crate::TestContext;
+use crate::Framework;
 
 /// A wrapper containing the objects needed to run the executor's test fixtures.
 pub struct TestFixtures<'a> {
-    test_context: &'a TestContext,
+    test_context: &'a Framework,
 }
 
 impl<'a> TestFixtures<'a> {
     /// Creates a new set of test fixtures using the supplied command-line
     /// parameters and artifact store.
-    pub fn new(test_context: &'a TestContext) -> Result<Self> {
+    pub fn new(test_context: &'a Framework) -> Result<Self> {
         Ok(Self { test_context })
     }
 

@@ -8,7 +8,7 @@ mod fixtures;
 
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
-use phd_tests::phd_testcase::{TestContext, TestContextParameters};
+use phd_tests::phd_testcase::{Framework, FrameworkParameters};
 use tracing::{debug, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -42,7 +42,7 @@ fn main() {
 }
 
 fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
-    let ctx_params = TestContextParameters {
+    let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
         crucible_downstairs_cmd: run_opts.crucible_downstairs_cmd.clone(),
         tmp_directory: run_opts.tmp_directory.clone(),
@@ -55,7 +55,7 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
         port_range: 9000..10000,
     };
 
-    let ctx = TestContext::new(ctx_params)
+    let ctx = Framework::new(ctx_params)
         .expect("should be able to set up a test context");
 
     let fixtures = TestFixtures::new(&ctx).unwrap();

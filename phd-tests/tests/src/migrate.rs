@@ -9,7 +9,7 @@ use propolis_client::types::MigrationState;
 use uuid::Uuid;
 
 #[phd_testcase]
-fn smoke_test(ctx: &TestContext) {
+fn smoke_test(ctx: &Framework) {
     let mut source = ctx.spawn_default_vm("migration_smoke_source")?;
 
     source.launch()?;
@@ -49,7 +49,7 @@ fn smoke_test(ctx: &TestContext) {
 }
 
 #[phd_testcase]
-fn incompatible_vms(ctx: &TestContext) {
+fn incompatible_vms(ctx: &Framework) {
     let mut builders = vec![
         ctx.vm_config_builder("migration_incompatible_target_1"),
         ctx.vm_config_builder("migration_incompatible_target_2"),
@@ -88,7 +88,7 @@ fn incompatible_vms(ctx: &TestContext) {
 }
 
 #[phd_testcase]
-fn multiple_migrations(ctx: &TestContext) {
+fn multiple_migrations(ctx: &Framework) {
     let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0")?;
     let mut vm1 =
         ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None)?;

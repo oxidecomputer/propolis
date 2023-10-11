@@ -9,7 +9,7 @@ use tracing::info;
 use uuid::Uuid;
 
 #[phd_testcase]
-fn smoke_test(ctx: &TestContext) {
+fn smoke_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_migrate_smoke_source");
     super::add_default_boot_disk(ctx, &mut config)?;
     let mut source = ctx.spawn_vm(&config, None)?;
@@ -35,7 +35,7 @@ fn smoke_test(ctx: &TestContext) {
 }
 
 #[phd_testcase]
-fn load_test(ctx: &TestContext) {
+fn load_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_load_test_source");
     super::add_default_boot_disk(ctx, &mut config)?;
     let mut source = ctx.spawn_vm(&config, None)?;

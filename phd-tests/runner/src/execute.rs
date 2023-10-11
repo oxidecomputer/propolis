@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
-use phd_tests::phd_testcase::{TestCase, TestContext, TestOutcome};
+use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
 use tracing::{error, info};
 
 use crate::config::RunOptions;
@@ -57,7 +57,7 @@ thread_local! {
 
 /// Executes a set of tests using the supplied test context.
 pub fn run_tests_with_ctx(
-    ctx: &TestContext,
+    ctx: &Framework,
     mut fixtures: TestFixtures,
     run_opts: &RunOptions,
 ) -> ExecutionStats {

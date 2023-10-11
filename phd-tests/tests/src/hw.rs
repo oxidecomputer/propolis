@@ -6,7 +6,7 @@ use phd_framework::lifecycle::Action;
 use phd_testcase::*;
 
 #[phd_testcase]
-fn lspci_lifecycle_test(ctx: &TestContext) {
+fn lspci_lifecycle_test(ctx: &Framework) {
     const LSPCI: &str = "sudo lspci -vvx";
     const LSHW: &str = "sudo lshw -notime";
 
