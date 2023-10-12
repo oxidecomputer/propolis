@@ -17,6 +17,9 @@ use crate::guest_os::GuestOsKind;
 /// An RAII wrapper for a disk wrapped by a file.
 #[derive(Debug)]
 pub struct FileBackedDisk {
+    /// The name to use for instance spec backends that refer to this disk.
+    backend_name: String,
+
     /// The path at which the disk is stored.
     disk_path: PathBuf,
 
@@ -29,6 +32,7 @@ impl FileBackedDisk {
     /// Creates a new file-backed disk whose initial contents are copied from
     /// the specified artifact on the host file system.
     pub(crate) fn new_from_artifact(
+        backend_name: String,
         artifact_path: &impl AsRef<Path>,
         data_dir: &impl AsRef<Path>,
         guest_os: Option<GuestOsKind>,
@@ -55,16 +59,19 @@ impl FileBackedDisk {
         permissions.set_readonly(false);
         disk_file.set_permissions(permissions)?;
 
-        Ok(Self { disk_path, guest_os })
+        Ok(Self { backend_name, disk_path, guest_os })
     }
 }
 
 impl super::DiskConfig for FileBackedDisk {
-    fn backend_spec(&self) -> StorageBackendV0 {
-        StorageBackendV0::File(FileStorageBackend {
-            path: self.disk_path.to_string_lossy().to_string(),
-            readonly: false,
-        })
+    fn backend_spec(&self) -> (String, StorageBackendV0) {
+        (
+            self.backend_name.clone(),
+            StorageBackendV0::File(FileStorageBackend {
+                path: self.disk_path.to_string_lossy().to_string(),
+                readonly: false,
+            }),
+        )
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {

@@ -3,7 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::{
-    artifacts::{manifest::Manifest, ArtifactSource},
+    artifacts::{
+        manifest::Manifest, ArtifactSource, DEFAULT_PROPOLIS_ARTIFACT,
+    },
     guest_os::GuestOsKind,
 };
 
@@ -24,6 +26,10 @@ struct StoredArtifact {
 }
 
 impl StoredArtifact {
+    fn new(description: super::Artifact) -> Self {
+        Self { description, cached_path: None }
+    }
+
     fn ensure(
         &mut self,
         local_dir: &Utf8Path,
@@ -194,15 +200,7 @@ impl Store {
         let Manifest { artifacts, remote_server_uris } = manifest;
         let artifacts = artifacts
             .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    Mutex::new(StoredArtifact {
-                        description: v,
-                        cached_path: None,
-                    }),
-                )
-            })
+            .map(|(k, v)| (k, Mutex::new(StoredArtifact::new(v))))
             .collect();
 
         let store = Self { local_dir, artifacts, remote_server_uris };
@@ -210,15 +208,55 @@ impl Store {
         store
     }
 
+    pub fn add_propolis_from_local_cmd(
+        &mut self,
+        propolis_server_cmd: &Utf8Path,
+    ) -> anyhow::Result<()> {
+        if self.artifacts.contains_key(DEFAULT_PROPOLIS_ARTIFACT) {
+            anyhow::bail!(
+                "artifact store already contains key {}",
+                DEFAULT_PROPOLIS_ARTIFACT
+            );
+        }
+
+        let full_path = propolis_server_cmd.canonicalize_utf8()?;
+        let filename = full_path.file_name().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Propolis server command '{}' contains no file component",
+                propolis_server_cmd
+            )
+        })?;
+        let dir = full_path.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "canonicalized Propolis path '{}' has no directory component",
+                full_path
+            )
+        })?;
+
+        let artifact = super::Artifact {
+            filename: filename.to_string(),
+            kind: super::ArtifactKind::PropolisServer,
+            source: super::ArtifactSource::LocalPath {
+                path: dir.to_path_buf(),
+                sha256: None,
+            },
+        };
+
+        let _old = self.artifacts.insert(
+            DEFAULT_PROPOLIS_ARTIFACT.to_string(),
+            Mutex::new(StoredArtifact::new(artifact)),
+        );
+        assert!(_old.is_none());
+        Ok(())
+    }
+
     pub fn get_guest_os_image(
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<(Utf8PathBuf, GuestOsKind)> {
-        let entry = if let Some(e) = self.artifacts.get(artifact_name) {
-            e
-        } else {
-            anyhow::bail!("artifact {} not found in store", artifact_name);
-        };
+        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", artifact_name)
+        })?;
 
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
@@ -238,11 +276,9 @@ impl Store {
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
-        let entry = if let Some(e) = self.artifacts.get(artifact_name) {
-            e
-        } else {
-            anyhow::bail!("artifact {} not found in store", artifact_name);
-        };
+        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", artifact_name)
+        })?;
 
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
@@ -251,6 +287,26 @@ impl Store {
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {} is not a bootrom",
+                artifact_name
+            )),
+        }
+    }
+
+    pub fn get_propolis_server(
+        &self,
+        artifact_name: &str,
+    ) -> anyhow::Result<Utf8PathBuf> {
+        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", artifact_name)
+        })?;
+
+        let mut guard = entry.lock().unwrap();
+        match guard.description.kind {
+            super::ArtifactKind::PropolisServer => {
+                guard.ensure(&self.local_dir, &self.remote_server_uris)
+            }
+            _ => Err(anyhow::anyhow!(
+                "artifact {} is not a Propolis server",
                 artifact_name
             )),
         }

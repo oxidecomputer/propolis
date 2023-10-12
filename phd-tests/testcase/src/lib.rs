@@ -8,10 +8,8 @@ pub use phd_framework;
 pub use phd_testcase_macros::*;
 use thiserror::Error;
 
-use phd_framework::{
-    disk::{DiskFactory, DiskSource},
-    test_vm::{factory::VmFactory, vm_config::ConfigRequest},
-};
+pub use phd_framework::Framework;
+pub use phd_framework::FrameworkParameters;
 
 #[derive(Debug, Error)]
 pub enum TestSkippedError {
@@ -34,42 +32,10 @@ pub enum TestOutcome {
     Skipped(Option<String>),
 }
 
-/// The test context structure passed to every PHD test case.
-pub struct TestContext<'a> {
-    pub default_guest_image_artifact: String,
-    pub vm_factory: VmFactory<'a>,
-    pub disk_factory: DiskFactory<'a>,
-}
-
-impl TestContext<'_> {
-    /// Yields a VM configuration builder that uses the default CPU count and
-    /// memory size and has a file-backed boot disk attached that supplies the
-    /// default guest OS image.
-    pub fn default_vm_config(&self) -> ConfigRequest {
-        let boot_disk = self
-            .disk_factory
-            .create_file_backed_disk(DiskSource::Artifact(
-                &self.default_guest_image_artifact,
-            ))
-            .unwrap();
-        self.vm_factory.deviceless_vm_config().set_boot_disk(
-            boot_disk,
-            4,
-            phd_framework::test_vm::vm_config::DiskInterface::Nvme,
-        )
-    }
-
-    /// Yields a VM configuration builder with the default CPU count and memory
-    /// size, but with no devices attached.
-    pub fn deviceless_vm_config(&self) -> ConfigRequest {
-        self.vm_factory.deviceless_vm_config()
-    }
-}
-
 /// A wrapper for test functions. This is needed to allow [`TestCase`] to have a
 /// `const` constructor for the inventory crate.
 pub struct TestFunction {
-    pub f: fn(&TestContext) -> TestOutcome,
+    pub f: fn(&Framework) -> TestOutcome,
 }
 
 /// A description of a single test case.
@@ -109,7 +75,7 @@ impl TestCase {
 
     /// Runs the test case's body with the supplied test context and returns its
     /// outcome.
-    pub fn run(&self, ctx: &TestContext) -> TestOutcome {
+    pub fn run(&self, ctx: &Framework) -> TestOutcome {
         (self.function.f)(ctx)
     }
 }

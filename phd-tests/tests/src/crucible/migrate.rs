@@ -4,23 +4,19 @@
 
 use std::time::Duration;
 
-use phd_framework::test_vm::vm_config::DiskInterface;
 use phd_testcase::*;
 use tracing::info;
 use uuid::Uuid;
 
 #[phd_testcase]
-fn smoke_test(ctx: &TestContext) {
-    let disk = super::create_default_boot_disk(ctx, 10)?;
+fn smoke_test(ctx: &Framework) {
+    let mut config = ctx.vm_config_builder("crucible_migrate_smoke_source");
+    super::add_default_boot_disk(ctx, &mut config)?;
+    let mut source = ctx.spawn_vm(&config, None)?;
+    let disk_handles = source.cloned_disk_handles();
+    let disk = disk_handles[0].as_crucible().unwrap();
     disk.set_generation(1);
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
 
-    let mut source =
-        ctx.vm_factory.new_vm("crucible_migrate_smoke_source", config)?;
     source.launch()?;
     source.wait_to_boot()?;
 
@@ -30,36 +26,29 @@ fn smoke_test(ctx: &TestContext) {
     source.run_shell_command("sync ./foo.bar")?;
 
     disk.set_generation(2);
-    let config =
-        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
-
     let mut target =
-        ctx.vm_factory.new_vm("crucible_migrate_smoke_target", config)?;
+        ctx.spawn_successor_vm("crucible_migrate_smoke_target", &source, None)?;
+
     target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
     let lsout = target.run_shell_command("ls foo.bar")?;
     assert_eq!(lsout, "foo.bar");
 }
 
 #[phd_testcase]
-fn load_test(ctx: &TestContext) {
-    let disk = super::create_default_boot_disk(ctx, 12)?;
+fn load_test(ctx: &Framework) {
+    let mut config = ctx.vm_config_builder("crucible_load_test_source");
+    super::add_default_boot_disk(ctx, &mut config)?;
+    let mut source = ctx.spawn_vm(&config, None)?;
+    let disk_handles = source.cloned_disk_handles();
+    let disk = disk_handles[0].as_crucible().unwrap();
     disk.set_generation(1);
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
-    let mut source =
-        ctx.vm_factory.new_vm("crucible_migrate_load_source", config)?;
-
-    disk.set_generation(2);
-    let config =
-        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
-    let mut target =
-        ctx.vm_factory.new_vm("crucible_migrate_load_target", config)?;
 
     source.launch()?;
     source.wait_to_boot()?;
+
+    disk.set_generation(2);
+    let mut target =
+        ctx.spawn_successor_vm("crucible_load_test_target", &source, None)?;
 
     // Create some random data.
     let block_count = 10;

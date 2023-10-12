@@ -11,6 +11,8 @@ mod store;
 
 pub use store::Store as ArtifactStore;
 
+pub const DEFAULT_PROPOLIS_ARTIFACT: &str = "__DEFAULT_PROPOLIS";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ArtifactKind {

@@ -5,19 +5,24 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, process::Stdio, time::Duration};
+use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
 
-use crate::guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind};
-use crate::serial::SerialConsole;
+use crate::{
+    guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind},
+    serial::SerialConsole,
+    test_vm::{
+        environment::Environment, server::ServerProcessParameters, spec::VmSpec,
+    },
+    Framework,
+};
 
 use anyhow::{anyhow, Context, Result};
 use core::result::Result as StdResult;
-use propolis_client::instance_spec::VersionedInstanceSpec;
 use propolis_client::types::{
     InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
     InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
     InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-    MigrationState,
+    MigrationState, VersionedInstanceSpec,
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
@@ -29,11 +34,15 @@ type PropolisClientError =
     propolis_client::Error<propolis_client::types::Error>;
 type PropolisClientResult<T> = StdResult<ResponseValue<T>, PropolisClientError>;
 
-use self::vm_config::VmConfig;
+pub(crate) mod config;
+pub(crate) mod environment;
+mod server;
+pub(crate) mod spec;
 
-pub mod factory;
-pub mod server;
-pub mod vm_config;
+pub use config::*;
+pub use environment::VmLocation;
+
+use self::environment::EnvironmentSpec;
 
 #[derive(Debug, Error)]
 pub enum VmStateError {
@@ -62,7 +71,9 @@ pub struct TestVm {
     rt: tokio::runtime::Runtime,
     client: Client,
     server: server::PropolisServer,
-    config: VmConfig,
+    spec: VmSpec,
+    environment_spec: EnvironmentSpec,
+
     guest_os: Box<dyn GuestOs>,
     tracing_span: tracing::Span,
 
@@ -89,41 +100,95 @@ impl TestVm {
     ///   this location.
     /// - guest_os_kind: The kind of guest OS this VM will host.
     #[instrument(skip_all)]
-    pub(crate) fn new<T: Into<Stdio> + Debug>(
-        vm_name: &str,
-        process_params: server::ServerProcessParameters<T>,
-        vm_config: vm_config::VmConfig,
+    pub(crate) fn new(
+        framework: &Framework,
+        spec: VmSpec,
+        environment: &EnvironmentSpec,
     ) -> Result<Self> {
         let id = Uuid::new_v4();
-        let guest_os_kind = vm_config.guest_os_kind();
-        info!(?process_params, ?vm_config, ?guest_os_kind);
-        let span = info_span!(parent: None, "VM", vm = ?vm_name, %id);
+        let guest_os_kind = spec.guest_os_kind;
+
+        let vm_name = &spec.vm_name;
+        info!(%vm_name, ?spec.instance_spec, ?guest_os_kind, ?environment);
+
+        match environment
+            .build(framework)
+            .context("building environment for new VM")?
+        {
+            Environment::Local(params) => {
+                Self::start_local_vm(id, spec, environment.clone(), params)
+            }
+        }
+    }
+
+    fn start_local_vm(
+        vm_id: Uuid,
+        vm_spec: VmSpec,
+        environment_spec: EnvironmentSpec,
+        params: ServerProcessParameters,
+    ) -> Result<Self> {
+        let config_filename = format!("{}.config.toml", &vm_spec.vm_name);
+        let mut config_toml_path = params.data_dir.to_path_buf();
+        config_toml_path.push(config_filename);
+        let mut config_file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&config_toml_path)
+            .with_context(|| {
+                format!("opening config file {} for writing", config_toml_path)
+            })?;
+
+        config_file
+            .write_all(vm_spec.config_toml_contents.as_bytes())
+            .with_context(|| {
+                format!(
+                    "writing config toml to config file {}",
+                    config_toml_path
+                )
+            })?;
+
+        let span =
+            info_span!(parent: None, "VM", vm = %vm_spec.vm_name, %vm_id);
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
-        let server_addr = process_params.server_addr;
-        let server = server::PropolisServer::new(process_params)?;
+        let server_addr = params.server_addr;
+        let server = server::PropolisServer::new(
+            &vm_spec.vm_name,
+            params,
+            &config_toml_path,
+        )?;
 
         let client = Client::new(&format!("http://{}", server_addr));
-
+        let guest_os = guest_os::get_guest_os_adapter(vm_spec.guest_os_kind);
         Ok(Self {
-            id,
+            id: vm_id,
             rt,
             client,
             server,
-            config: vm_config,
-            guest_os: guest_os::get_guest_os_adapter(guest_os_kind),
+            spec: vm_spec,
+            environment_spec,
+            guest_os,
             tracing_span: span,
             state: VmState::New,
         })
     }
 
-    /// Obtains a clone of the configuration parameters that were supplied when
-    /// this VM was created so that a new VM can be created from them.
-    ///
-    /// N.B. This also clones handles to the backend objects this VM is using.
-    pub(crate) fn clone_config(&self) -> vm_config::VmConfig {
-        self.config.clone()
+    pub fn name(&self) -> &str {
+        &self.spec.vm_name
+    }
+
+    pub fn cloned_disk_handles(&self) -> Vec<Arc<dyn crate::disk::DiskConfig>> {
+        self.spec.disk_handles.clone()
+    }
+
+    pub(crate) fn vm_spec(&self) -> VmSpec {
+        self.spec.clone()
+    }
+
+    pub(crate) fn environment_spec(&self) -> EnvironmentSpec {
+        self.environment_spec.clone()
     }
 
     /// Sends an instance ensure request to this VM's server, allowing it to
@@ -135,8 +200,8 @@ impl TestVm {
         let _span = self.tracing_span.enter();
         let (vcpus, memory_mib) = match self.state {
             VmState::New => (
-                self.config.instance_spec().devices.board.cpus,
-                self.config.instance_spec().devices.board.memory_mb,
+                self.spec.instance_spec.devices.board.cpus,
+                self.spec.instance_spec.devices.board.memory_mb,
             ),
             VmState::Ensured { .. } => {
                 return Err(VmStateError::InstanceAlreadyEnsured.into())
@@ -154,10 +219,10 @@ impl TestVm {
         };
 
         let versioned_spec =
-            VersionedInstanceSpec::V0(self.config.instance_spec().to_owned());
+            VersionedInstanceSpec::V0(self.spec.instance_spec.clone());
         let ensure_req = InstanceSpecEnsureRequest {
             properties,
-            instance_spec: versioned_spec.into(),
+            instance_spec: versioned_spec,
             migrate,
         };
 
@@ -189,10 +254,9 @@ impl TestVm {
                 anyhow!("failed to get instance properties")
             })?;
 
-        let instance_spec = self.config.instance_spec();
         info!(
             ?instance_description.instance,
-            ?instance_spec,
+            ?self.spec.instance_spec,
             "Started instance"
         );
 
@@ -201,7 +265,7 @@ impl TestVm {
 
     /// Returns the kind of guest OS running in this VM.
     pub fn guest_os_kind(&self) -> GuestOsKind {
-        self.config.guest_os_kind()
+        self.spec.guest_os_kind
     }
 
     /// Sets the VM to the running state. If the VM has not yet been launched

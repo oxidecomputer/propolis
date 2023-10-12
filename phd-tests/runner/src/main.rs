@@ -8,9 +8,7 @@ mod fixtures;
 
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
-use phd_framework::artifacts::ArtifactStore;
-use phd_framework::port_allocator::PortAllocator;
-use phd_tests::phd_testcase::TestContext;
+use phd_tests::phd_testcase::{Framework, FrameworkParameters};
 use tracing::{debug, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -44,45 +42,22 @@ fn main() {
 }
 
 fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
-    let artifact_store = ArtifactStore::from_toml_path(
-        run_opts.artifact_directory.clone(),
-        &run_opts.artifact_toml_path,
-    )
-    .unwrap();
-
-    let port_allocator = PortAllocator::new(9000..10000);
-
-    // Convert the command-line config and artifact store into a VM factory
-    // definition.
-    let mut config_toml_path = run_opts.tmp_directory.clone();
-    config_toml_path.push("vm_config.toml");
-    let factory_config = phd_framework::test_vm::factory::FactoryOptions {
+    let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
+        crucible_downstairs_cmd: run_opts.crucible_downstairs_cmd.clone(),
         tmp_directory: run_opts.tmp_directory.clone(),
+        artifact_toml: run_opts.artifact_toml_path.clone(),
         server_log_mode: run_opts.server_logging_mode,
-        default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         default_guest_cpus: run_opts.default_guest_cpus,
         default_guest_memory_mib: run_opts.default_guest_memory_mib,
+        default_guest_os_artifact: run_opts.default_guest_artifact.clone(),
+        default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
+        port_range: 9000..10000,
     };
 
-    // The VM factory config and artifact store are enough to create a test
-    // context to pass to test cases and a set of fixtures.
-    let ctx = TestContext {
-        default_guest_image_artifact: run_opts.default_guest_artifact.clone(),
-        vm_factory: phd_framework::test_vm::factory::VmFactory::new(
-            factory_config,
-            &artifact_store,
-            &port_allocator,
-        )
-        .unwrap(),
-        disk_factory: phd_framework::disk::DiskFactory::new(
-            &run_opts.tmp_directory,
-            &artifact_store,
-            run_opts.crucible_downstairs_cmd.clone().as_ref(),
-            &port_allocator,
-            run_opts.server_logging_mode,
-        ),
-    };
+    let ctx = Framework::new(ctx_params)
+        .expect("should be able to set up a test context");
+
     let fixtures = TestFixtures::new(&ctx).unwrap();
 
     // Run the tests and print results.

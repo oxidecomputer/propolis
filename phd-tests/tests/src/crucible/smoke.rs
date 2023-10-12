@@ -4,32 +4,24 @@
 
 use std::time::Duration;
 
-use phd_testcase::{phd_framework::test_vm::vm_config::DiskInterface, *};
+use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
 #[phd_testcase]
-fn boot_test(ctx: &TestContext) {
-    let disk = super::create_default_boot_disk(ctx, 10)?;
-    let config =
-        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
-
-    let mut vm = ctx.vm_factory.new_vm("crucible_boot_test", config)?;
+fn boot_test(ctx: &Framework) {
+    let mut config = ctx.vm_config_builder("crucible_boot_test");
+    super::add_default_boot_disk(ctx, &mut config)?;
+    let mut vm = ctx.spawn_vm(&config, None)?;
     vm.launch()?;
     vm.wait_to_boot()?;
 }
 
 #[phd_testcase]
-fn shutdown_persistence_test(ctx: &TestContext) {
-    let disk = super::create_default_boot_disk(ctx, 10)?;
-    disk.set_generation(1);
-    let config = ctx.deviceless_vm_config().set_boot_disk(
-        disk.clone(),
-        4,
-        DiskInterface::Nvme,
-    );
-
-    let mut vm =
-        ctx.vm_factory.new_vm("crucible_shutdown_persistence_test", config)?;
+fn shutdown_persistence_test(ctx: &Framework) {
+    let mut config =
+        ctx.vm_config_builder("crucible_shutdown_persistence_test");
+    super::add_default_boot_disk(ctx, &mut config)?;
+    let mut vm = ctx.spawn_vm(&config, None)?;
     if vm.guest_os_has_read_only_fs() {
         phd_skip!(
             "Can't run data persistence test on a guest with a read-only file
@@ -37,6 +29,9 @@ fn shutdown_persistence_test(ctx: &TestContext) {
         );
     }
 
+    let disk_handles = vm.cloned_disk_handles();
+    let disk = disk_handles[0].as_crucible().unwrap();
+    disk.set_generation(1);
     vm.launch()?;
     vm.wait_to_boot()?;
 
@@ -51,16 +46,16 @@ fn shutdown_persistence_test(ctx: &TestContext) {
 
     // Increment the disk's generation before attaching it to a new VM.
     disk.set_generation(2);
-    let config =
-        ctx.deviceless_vm_config().set_boot_disk(disk, 4, DiskInterface::Nvme);
-
-    // The touched file from the previous VM should be present in the new one.
-    let mut vm = ctx
-        .vm_factory
-        .new_vm("crucible_shutdown_persistence_test_2", config)?;
+    let mut vm = ctx.spawn_successor_vm(
+        "crucible_shutdown_persistence_test_2",
+        &vm,
+        None,
+    )?;
 
     vm.launch()?;
     vm.wait_to_boot()?;
+
+    // The touched file from the previous VM should be present in the new one.
     let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null")?;
     assert_eq!(lsout, "foo.bar");
 }

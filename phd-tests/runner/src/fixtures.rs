@@ -5,17 +5,17 @@
 use anyhow::Result;
 use tracing::instrument;
 
-use crate::TestContext;
+use crate::Framework;
 
 /// A wrapper containing the objects needed to run the executor's test fixtures.
 pub struct TestFixtures<'a> {
-    test_context: &'a TestContext<'a>,
+    test_context: &'a Framework,
 }
 
 impl<'a> TestFixtures<'a> {
     /// Creates a new set of test fixtures using the supplied command-line
     /// parameters and artifact store.
-    pub fn new(test_context: &'a TestContext) -> Result<Self> {
+    pub fn new(test_context: &'a Framework) -> Result<Self> {
         Ok(Self { test_context })
     }
 
@@ -48,7 +48,7 @@ impl<'a> TestFixtures<'a> {
     /// corresponding setup fixture has run.
     #[instrument(skip_all)]
     pub fn test_cleanup(&mut self) -> Result<()> {
-        self.test_context.vm_factory.reset();
+        self.test_context.reset();
         Ok(())
     }
 }

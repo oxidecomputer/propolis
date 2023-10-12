@@ -136,7 +136,7 @@ path = "/home/oxide/propolis/target/debug"
 ## Authoring tests
 
 PHD's test cases live in the `tests` crate. To write a new test, add a function
-of the form `fn my_test(ctx: &TestContext)` and tag it with the
+of the form `fn my_test(ctx: &Framework)` and tag it with the
 `#[phd_testcase]` attribute macro. The framework will automatically register the
 test into the crate's test inventory for the runner to discover.
 
@@ -156,8 +156,9 @@ function body is reached. This means that
 
 ### Test context
 
-The `TestContext` structure contains a `VmFactory` helper object that tests can
-use to construct VMs. See the module documentation for more information.
+Every test gets a `phd_testcase::Framework` that contains helper methods for
+constructing VMs and their execution environments. See the module documentation
+for more information.
 
 The tests in `tests/src/smoke.rs` provide some simple examples of using the
 factory to customize and launch a new VM.

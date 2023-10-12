@@ -10,6 +10,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -63,11 +64,17 @@ impl BlockSize {
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
 pub trait DiskConfig: std::fmt::Debug {
     /// Yields the backend spec for this disk's storage backend.
-    fn backend_spec(&self) -> StorageBackendV0;
+    fn backend_spec(&self) -> (String, StorageBackendV0);
 
     /// Yields the guest OS kind of the guest image the disk was created from,
     /// or `None` if the disk was not created from a guest image.
     fn guest_os(&self) -> Option<GuestOsKind>;
+
+    /// If this disk is a Crucible disk, yields `Some` reference to that disk as
+    /// a Crucible disk.
+    fn as_crucible(&self) -> Option<&CrucibleDisk> {
+        None
+    }
 }
 
 /// The possible sources for a disk's initial data.
@@ -100,13 +107,13 @@ pub enum DiskSource<'a> {
 ///      multiple VMs do use a single set of backend resources, the resulting
 ///      behavior will depend on the chosen backend's semantics and the way the
 ///      Propolis backend implementations interact with the disk.
-pub struct DiskFactory<'a> {
+pub(crate) struct DiskFactory {
     /// The directory in which disk files should be stored.
     storage_dir: PathBuf,
 
     /// A reference to the artifact store to use to look up guest OS artifacts
     /// when those are used as a disk source.
-    artifact_store: &'a ArtifactStore,
+    artifact_store: Rc<ArtifactStore>,
 
     /// The path to the Crucible downstairs binary to launch to serve Crucible
     /// disks.
@@ -114,21 +121,21 @@ pub struct DiskFactory<'a> {
 
     /// The port allocator to use to allocate ports to Crucible server
     /// processes.
-    port_allocator: &'a PortAllocator,
+    port_allocator: Rc<PortAllocator>,
 
     /// The logging discipline to use for Crucible server processes.
     log_mode: ServerLogMode,
 }
 
-impl<'a> DiskFactory<'a> {
+impl DiskFactory {
     /// Creates a new disk factory. The disks this factory generates will store
     /// their data in `storage_dir` and will look up guest OS images in the
     /// supplied `artifact_store`.
     pub fn new(
         storage_dir: &impl AsRef<Path>,
-        artifact_store: &'a ArtifactStore,
+        artifact_store: Rc<ArtifactStore>,
         crucible_downstairs_binary: Option<&impl AsRef<Path>>,
-        port_allocator: &'a PortAllocator,
+        port_allocator: Rc<PortAllocator>,
         log_mode: ServerLogMode,
     ) -> Self {
         Self {
@@ -140,9 +147,13 @@ impl<'a> DiskFactory<'a> {
             log_mode,
         }
     }
+
+    pub fn crucible_enabled(&self) -> bool {
+        self.crucible_downstairs_binary.is_some()
+    }
 }
 
-impl DiskFactory<'_> {
+impl DiskFactory {
     fn get_guest_artifact_info(
         &self,
         artifact_name: &str,
@@ -158,8 +169,9 @@ impl DiskFactory<'_> {
 
     /// Creates a new disk backed by a file whose initial contents are specified
     /// by `source`.
-    pub fn create_file_backed_disk(
+    pub(crate) fn create_file_backed_disk(
         &self,
+        name: String,
         source: DiskSource,
     ) -> Result<Arc<FileBackedDisk>, DiskError> {
         let DiskSource::Artifact(artifact_name) = source;
@@ -167,6 +179,7 @@ impl DiskFactory<'_> {
             self.get_guest_artifact_info(artifact_name)?;
 
         FileBackedDisk::new_from_artifact(
+            name,
             &artifact_path,
             &self.storage_dir,
             Some(guest_os),
@@ -186,8 +199,9 @@ impl DiskFactory<'_> {
     ///   file should be used as a read-only parent volume.
     /// - disk_size_gib: The disk's expected size in GiB.
     /// - block_size: The disk's block size.
-    pub fn create_crucible_disk(
+    pub(crate) fn create_crucible_disk(
         &self,
+        name: String,
         source: DiskSource,
         disk_size_gib: u64,
         block_size: BlockSize,
@@ -207,6 +221,7 @@ impl DiskFactory<'_> {
         }
 
         CrucibleDisk::new(
+            name,
             disk_size_gib,
             block_size,
             binary_path,
