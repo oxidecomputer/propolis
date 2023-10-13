@@ -834,10 +834,20 @@ fn setup_instance(
     ps2_ctrl.attach(pio, chipset.as_ref());
     inv.register(&ps2_ctrl)?;
 
-    let debug_file = std::fs::File::create("debug.out")?;
-    let debug_out = chardev::BlockingFileOutput::new(debug_file);
+    // Qemu debug IO port
     let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
-    debug_out.attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>);
+    match &config.main.qemu_debug_file {
+        Some(path) => {
+            let debug_file = std::fs::File::create(path)?;
+            let debug_out = chardev::BlockingFileOutput::new(debug_file);
+            debug_out
+                .attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>);
+        }
+        None => {
+            // Send output bytes to the bit bucket
+            debug_device.set_consumer(Some(chardev::null_blocking_consumer()));
+        }
+    };
     inv.register(&debug_device)?;
 
     for (name, dev) in config.devices.iter() {

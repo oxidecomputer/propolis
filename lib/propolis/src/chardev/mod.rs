@@ -105,3 +105,10 @@ impl ConsumerCell {
         }
     }
 }
+
+/// Build a [`BlockingSourceConsumer`] which silently consumes any output bytes
+pub fn null_blocking_consumer() -> BlockingSourceConsumer {
+    Box::new(|_buf| {
+        // Simply do nothing with the buffer
+    })
+}

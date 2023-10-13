@@ -16,6 +16,8 @@ name = "testvm"
 cpus = 4
 bootrom = "/path/to/bootrom/OVMF_CODE.fd"
 memory = 1024
+# File path to store qemu debug port output (optional)
+# qemu_debug_file = "/path/to/output"
 
 [block_dev.alpine_iso]
 type = "file"

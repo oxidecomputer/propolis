@@ -267,6 +267,7 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
+        // TODO: Make the output file configurable
         let dbg = QemuDebugPort::create(&self.machine.bus_pio);
         let debug_file = std::fs::File::create("debug.out")?;
         let poller = chardev::BlockingFileOutput::new(debug_file);
