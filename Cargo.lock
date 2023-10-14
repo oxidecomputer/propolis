@@ -3114,6 +3114,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "propolis-mock-server"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "atty",
+ "base64 0.21.4",
+ "clap 4.4.0",
+ "dropshot",
+ "futures",
+ "hyper",
+ "propolis-client",
+ "serde_json",
+ "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
+ "slog-term",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "propolis-package"
 version = "0.1.0"
 dependencies = [
@@ -3134,7 +3157,6 @@ dependencies = [
  "bit_field",
  "bitvec",
  "bytes",
- "cfg-if",
  "chrono",
  "clap 4.4.0",
  "const_format",

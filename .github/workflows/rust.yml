@@ -54,10 +54,10 @@ jobs:
     - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
       with:
         toolchain: stable
-    - name: Build mock-only server
-      run: cargo build --bin propolis-server --features mock-only
     - name: Build
       run: cargo build --verbose
+    - name: Build mock-only server
+      run: cargo build -p propolis-mock-server --verbose
     - name: Test Libraries
       run: cargo test --lib --verbose
 

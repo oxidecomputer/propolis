@@ -4,8 +4,6 @@
 
 //! Routines to expose a connection to an instance's serial port.
 
-#![cfg_attr(feature = "mock-only", allow(unused))]
-#[cfg(not(feature = "mock-only"))]
 use crate::migrate::MigrateError;
 
 use std::collections::HashMap;
@@ -357,7 +355,6 @@ impl<Device: Sink + Source> Serial<Device> {
         self.task_control_ch.lock().await.replace(control_ch);
     }
 
-    #[cfg(not(feature = "mock-only"))]
     pub(crate) async fn export_history(
         &self,
         destination: SocketAddr,
@@ -378,7 +375,6 @@ impl<Device: Sink + Source> Serial<Device> {
         Ok(encoded)
     }
 
-    #[cfg(not(feature = "mock-only"))]
     pub(crate) async fn import(
         &self,
         serialized_hist: &str,

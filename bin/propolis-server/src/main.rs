@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-#![cfg_attr(feature = "mock-only", allow(unused))]
-
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
@@ -14,17 +12,11 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(feature = "mock-only")]
-use propolis_server::mock_server as server;
-
-cfg_if::cfg_if! {
-    if #[cfg(not(feature = "mock-only"))] {
-        use propolis_server::server::{self, MetricsEndpointConfig};
-        use propolis_server::vnc::setup_vnc;
-    }
-}
-
-use propolis_server::config;
+use propolis_server::{
+    config,
+    server::{self, MetricsEndpointConfig},
+    vnc::setup_vnc,
+};
 
 #[derive(Debug, Parser)]
 #[clap(about, version)]
@@ -65,7 +57,6 @@ pub fn run_openapi() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(feature = "mock-only"))]
 async fn run_server(
     config_app: config::Config,
     config_dropshot: dropshot::ConfigDropshot,
@@ -118,31 +109,6 @@ async fn run_server(
 
     let server_res = join!(server, vnc_server_hdl.start()).0;
 
-    server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
-}
-
-#[cfg(feature = "mock-only")]
-async fn run_server(
-    config_app: config::Config,
-    config_dropshot: dropshot::ConfigDropshot,
-    _metrics_addr: Option<SocketAddr>,
-    _vnc_addr: SocketAddr,
-    log: slog::Logger,
-) -> anyhow::Result<()> {
-    let context = server::Context::new(config_app, log.new(slog::o!()));
-
-    info!(log, "Starting server...");
-
-    let server = HttpServerStarter::new(
-        &config_dropshot,
-        server::api(),
-        Arc::new(context),
-        &log,
-    )
-    .map_err(|error| anyhow!("Failed to start server: {}", error))?
-    .start();
-
-    let server_res = server.await;
     server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
 }
 

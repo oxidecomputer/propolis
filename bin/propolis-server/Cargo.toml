@@ -23,7 +23,6 @@ async-trait.workspace = true
 bit_field.workspace = true
 bitvec.workspace = true
 bytes.workspace = true
-cfg-if.workspace = true
 chrono = { workspace = true, features = [ "serde" ] }
 clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
@@ -77,10 +76,6 @@ default = []
 # When building to be packaged for inclusion in the production ramdisk
 # (nominally an Omicron package), certain code is compiled in or out.
 omicron-build = ["propolis/omicron-build"]
-
-# If selected, only build a mock server which does not actually spawn instances
-# (i.e. to test with a facsimile of the API on unsupported platforms)
-mock-only = []
 
 # Falcon builds require corresponding bits turned on in the dependency libs
 falcon = ["propolis/falcon", "propolis-client/falcon"]

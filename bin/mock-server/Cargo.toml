@@ -1,0 +1,38 @@
+[package]
+name = "propolis-mock-server"
+version = "0.0.0"
+license = "MPL-2.0"
+edition = "2021"
+
+[lib]
+name = "propolis_mock_server"
+path = "src/lib/lib.rs"
+doc = false
+doctest = false
+test = false
+
+[[bin]]
+name = "propolis-mock-server"
+path = "src/main.rs"
+doc = false
+doctest = false
+test = false
+
+[dependencies]
+atty.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+base64.workspace = true
+dropshot = { workspace = true }
+futures.workspace = true
+hyper.workspace = true
+propolis-client = { workspace = true, features = ["generated"] }
+serde_json.workspace = true
+slog.workspace = true
+slog-async.workspace = true
+slog-dtrace.workspace = true
+slog-term.workspace = true
+slog-bunyan.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite.workspace = true
