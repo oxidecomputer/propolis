@@ -7,29 +7,24 @@ edition = "2021"
 doctest = false
 
 [dependencies]
-propolis_types.workspace = true
 async-trait.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 base64.workspace = true
-futures = { workspace = true, optional = true }
+futures.workspace = true
+progenitor.workspace = true
 rand.workspace = true
-ring.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 schemars = { workspace = true, features = [ "uuid1" ] }
 serde.workspace = true
 serde_json.workspace = true
-slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
+slog.workspace = true
 thiserror.workspace = true
-uuid = { workspace = true, features = [ "serde", "v4" ] }
-progenitor = { workspace = true, optional = true }
-tokio = { workspace = true, features = [ "net" ], optional = true }
-tokio-tungstenite = { workspace = true, optional = true }
-crucible-client-types.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-tungstenite.workspace = true
+uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 
 [features]
 default = []
-generated = ["progenitor", "tokio", "tokio-tungstenite", "futures"]
-generated-migration = ["generated"]
 falcon = []

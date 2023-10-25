@@ -44,13 +44,13 @@ use propolis::{
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     Instance,
 };
-use propolis_client::handmade::{
-    api::InstanceProperties, api::InstanceState as ApiInstanceState,
-    api::InstanceStateMonitorResponse as ApiMonitoredState,
-    api::InstanceStateRequested as ApiInstanceStateRequested,
-    api::MigrationState as ApiMigrationState,
+use propolis_api_types::{
+    instance_spec::VersionedInstanceSpec, InstanceProperties,
+    InstanceState as ApiInstanceState,
+    InstanceStateMonitorResponse as ApiMonitoredState,
+    InstanceStateRequested as ApiInstanceStateRequested,
+    MigrationState as ApiMigrationState,
 };
-use propolis_client::instance_spec::VersionedInstanceSpec;
 use slog::{error, info, Logger};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};

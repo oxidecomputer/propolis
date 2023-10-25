@@ -5,10 +5,10 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use propolis_client::instance_spec::{
-    components as spec_components, v0::StorageDeviceV0,
+use propolis_client::{
+    instance_spec::SpecBuilderV0,
+    types::{NvmeDisk, PciPath, SerialPortNumber, StorageDeviceV0, VirtioDisk},
 };
-use propolis_types::PciPath;
 
 use crate::{
     disk::{DiskConfig, DiskSource},
@@ -189,11 +189,7 @@ impl VmConfig {
         }
 
         let mut spec_builder =
-            propolis_client::instance_spec::v0::builder::SpecBuilder::new(
-                self.cpus,
-                self.memory_mib,
-                false,
-            );
+            SpecBuilderV0::new(self.cpus, self.memory_mib, false);
 
         // Iterate over the collection of disks and handles and add spec
         // elements for all of them. This assumes the disk handles were created
@@ -208,18 +204,16 @@ impl VmConfig {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
             let (backend_name, backend_spec) = hdl.backend_spec();
             let device_spec = match req.interface {
-                DiskInterface::Virtio => StorageDeviceV0::VirtioDisk(
-                    spec_components::devices::VirtioDisk {
+                DiskInterface::Virtio => {
+                    StorageDeviceV0::VirtioDisk(VirtioDisk {
                         backend_name: backend_name.clone(),
                         pci_path,
-                    },
-                ),
-                DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(
-                    spec_components::devices::NvmeDisk {
-                        backend_name: backend_name.clone(),
-                        pci_path,
-                    },
-                ),
+                    })
+                }
+                DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(NvmeDisk {
+                    backend_name: backend_name.clone(),
+                    pci_path,
+                }),
             };
 
             spec_builder
@@ -233,14 +227,14 @@ impl VmConfig {
         }
 
         spec_builder
-            .add_serial_port(spec_components::devices::SerialPortNumber::Com1)
+            .add_serial_port(SerialPortNumber::Com1)
             .context("adding serial port to spec")?;
 
         let instance_spec = spec_builder.finish();
 
         Ok(VmSpec {
             vm_name: self.vm_name.clone(),
-            instance_spec: instance_spec.into(),
+            instance_spec,
             disk_handles,
             guest_os_kind,
             config_toml_contents,

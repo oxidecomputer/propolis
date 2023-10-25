@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use propolis_client::instance_spec::{
+use propolis_api_types::instance_spec::{
     migration::{CollectionCompatibilityError, MigrationCompatibilityError},
     v0::{DeviceSpecV0, InstanceSpecV0},
     VersionedInstanceSpec,

@@ -28,10 +28,10 @@ use internal_dns::resolver::{ResolveError, Resolver};
 use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
-use propolis_client::instance_spec::components::backends::CrucibleStorageBackend;
-use propolis_client::{
-    handmade::api,
-    instance_spec::{self, v0::StorageBackendV0, VersionedInstanceSpec},
+use propolis_api_types as api;
+use propolis_api_types::instance_spec::{
+    self, components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
+    VersionedInstanceSpec,
 };
 
 use propolis_server_config::Config as VmTomlConfig;

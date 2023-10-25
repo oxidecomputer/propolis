@@ -17,9 +17,8 @@ errno.workspace = true
 futures.workspace = true
 hex.workspace = true
 libc.workspace = true
-propolis-client = { workspace = true, features = ["generated"] }
+propolis-client.workspace = true
 propolis-server-config.workspace = true
-propolis_types.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -37,5 +36,3 @@ uuid.workspace = true
 vte.workspace = true
 rand.workspace = true
 base64.workspace = true
-crucible-client-types.workspace = true
-

@@ -19,7 +19,7 @@ use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
 use hyper::upgrade::Upgraded;
 use propolis::chardev::{pollers, Sink, Source};
-use propolis_client::handmade::api::InstanceSerialConsoleControlMessage;
+use propolis_api_types::InstanceSerialConsoleControlMessage;
 use slog::{info, warn, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock as AsyncRwLock};

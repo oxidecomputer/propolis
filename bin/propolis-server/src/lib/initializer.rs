@@ -26,7 +26,7 @@ use propolis::hw::{nvme, virtio};
 use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
-use propolis_client::instance_spec::{self, v0::InstanceSpecV0};
+use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
 use slog::info;
 
 use crate::serial::Serial;

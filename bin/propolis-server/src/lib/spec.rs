@@ -7,16 +7,16 @@
 use std::str::FromStr;
 
 use crate::config;
-use propolis_client::handmade::api::{
-    self, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
-};
-use propolis_client::instance_spec::{
+use propolis_api_types::instance_spec::{
     components,
     v0::{
         builder::{SpecBuilder, SpecBuilderError},
         *,
     },
     PciPath,
+};
+use propolis_api_types::{
+    self as api, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
@@ -604,7 +604,7 @@ impl ServerSpecBuilder {
 #[cfg(test)]
 mod test {
     use crucible_client_types::VolumeConstructionRequest;
-    use propolis_client::handmade::api::Slot;
+    use propolis_api_types::Slot;
     use uuid::Uuid;
 
     use crate::config::Config;

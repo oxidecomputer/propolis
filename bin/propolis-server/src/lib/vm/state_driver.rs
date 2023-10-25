@@ -13,11 +13,11 @@ use super::{
     SharedVmState, StateDriverEvent,
 };
 
-use propolis_client::handmade::{
-    api::InstanceMigrateStatusResponse as ApiMigrationStatus,
-    api::InstanceState as ApiInstanceState,
-    api::InstanceStateMonitorResponse as ApiMonitoredState,
-    api::MigrationState as ApiMigrationState,
+use propolis_api_types::{
+    InstanceMigrateStatusResponse as ApiMigrationStatus,
+    InstanceState as ApiInstanceState,
+    InstanceStateMonitorResponse as ApiMonitoredState,
+    MigrationState as ApiMigrationState,
 };
 use slog::{error, info, Logger};
 use uuid::Uuid;

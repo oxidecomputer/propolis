@@ -8,7 +8,7 @@ use bit_field::BitField;
 use dropshot::{HttpError, RequestContext};
 use futures::{SinkExt, StreamExt};
 use propolis::migrate::MigrateStateError;
-use propolis_client::handmade::api::{self, MigrationState};
+use propolis_api_types::{self as api, MigrationState};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use thiserror::Error;

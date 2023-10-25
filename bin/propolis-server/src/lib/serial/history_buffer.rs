@@ -6,7 +6,7 @@
 //! first mebibyte and the most recent mebibyte of console output.
 
 use dropshot::HttpError;
-use propolis_client::handmade::api;
+use propolis_api_types as api;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::convert::TryFrom;

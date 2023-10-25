@@ -47,6 +47,7 @@ cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
 propolis-server-config = { path = "crates/propolis-server-config" }
 propolis-standalone-config = { path = "crates/propolis-standalone-config" }
+propolis_api_types = { path = "crates/propolis-api-types" }
 propolis_types = { path = "crates/propolis-types" }
 viona_api = { path = "crates/viona-api" }
 viona_api_sys = { path = "crates/viona-api/sys" }

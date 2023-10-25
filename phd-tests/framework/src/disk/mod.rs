@@ -15,7 +15,7 @@ use std::{
 };
 
 use anyhow::Context;
-use propolis_client::instance_spec::v0::StorageBackendV0;
+use propolis_client::types::StorageBackendV0;
 use thiserror::Error;
 
 use crate::{

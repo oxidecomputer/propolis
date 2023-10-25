@@ -50,7 +50,7 @@ impl VmSpec {
                     self.instance_spec
                         .backends
                         .storage_backends
-                        .insert(backend_name, backend_spec.into());
+                        .insert(backend_name, backend_spec);
                 }
                 Some(_) | None => {}
             }

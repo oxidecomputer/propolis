@@ -5,8 +5,7 @@
 //! Bits copied from propolis-server, rather than splitting them out into some
 //! shared dependency
 
-use propolis_client::handmade::api;
-use propolis_client::instance_spec::{v0::builder::SpecBuilderError, PciPath};
+use crate::api_types::{types as api, PciPath};
 
 use thiserror::Error;
 
@@ -20,9 +19,6 @@ pub(crate) enum SlotType {
 #[allow(unused)]
 #[derive(Debug, Error)]
 pub(crate) enum ServerSpecBuilderError {
-    #[error(transparent)]
-    InnerBuilderError(#[from] SpecBuilderError),
-
     #[error("The string {0} could not be converted to a PCI path")]
     PciPathNotParseable(String),
 

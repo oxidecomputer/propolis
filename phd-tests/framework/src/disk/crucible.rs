@@ -11,15 +11,16 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
-use propolis_client::instance_spec;
+use propolis_client::types::{
+    CrucibleOpts, CrucibleStorageBackend, StorageBackendV0,
+    VolumeConstructionRequest,
+};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::{guest_os::GuestOsKind, server_log_mode::ServerLogMode};
-
 use super::BlockSize;
+use crate::{guest_os::GuestOsKind, server_log_mode::ServerLogMode};
 
 /// An RAII wrapper around a directory containing Crucible data files. Deletes
 /// the directory and its contents when dropped.
@@ -238,10 +239,13 @@ impl CrucibleDisk {
 }
 
 impl super::DiskConfig for CrucibleDisk {
-    fn backend_spec(&self) -> (String, instance_spec::v0::StorageBackendV0) {
+    fn backend_spec(&self) -> (String, StorageBackendV0) {
         let gen = self.generation.load(Ordering::Relaxed);
-        let downstairs_addrs =
-            self.downstairs_instances.iter().map(|ds| ds.address).collect();
+        let downstairs_addrs = self
+            .downstairs_instances
+            .iter()
+            .map(|ds| ds.address.to_string())
+            .collect();
 
         let vcr = VolumeConstructionRequest::Volume {
             id: self.id,
@@ -275,13 +279,11 @@ impl super::DiskConfig for CrucibleDisk {
 
         (
             self.backend_name.clone(),
-            instance_spec::v0::StorageBackendV0::Crucible(
-                instance_spec::components::backends::CrucibleStorageBackend {
-                    request_json: serde_json::to_string(&vcr)
-                        .expect("VolumeConstructionRequest should serialize"),
-                    readonly: false,
-                },
-            ),
+            StorageBackendV0::Crucible(CrucibleStorageBackend {
+                request_json: serde_json::to_string(&vcr)
+                    .expect("VolumeConstructionRequest should serialize"),
+                readonly: false,
+            }),
         )
     }
 

@@ -14,15 +14,6 @@ use std::{
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use futures::{future, SinkExt};
-use propolis_client::handmade::{
-    api::{
-        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceStateRequested, InstanceVCRReplace,
-        MigrationState,
-    },
-    Client,
-};
-use propolis_client::support::{InstanceSerialConsoleHelper, WSClientOffset};
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -30,6 +21,16 @@ use tokio_tungstenite::tungstenite::{
     Message,
 };
 use uuid::Uuid;
+
+use propolis_client::{
+    support::{InstanceSerialConsoleHelper, WSClientOffset},
+    types::{
+        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
+        InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
+        MigrationState,
+    },
+    Client,
+};
 
 #[derive(Debug, Parser)]
 #[clap(about, version)]
@@ -130,7 +131,7 @@ enum Command {
         #[clap(short = 'u', action)]
         uuid: Uuid,
 
-        /// File with a JSON InstanceVCRReplace struct
+        /// File with a JSON InstanceVcrReplace struct
         #[clap(long, action)]
         vcr_replace: PathBuf,
     },
@@ -210,7 +211,9 @@ async fn new_instance(
 
     // Try to create the instance
     client
-        .instance_ensure(&request)
+        .instance_ensure()
+        .body(request)
+        .send()
         .await
         .with_context(|| anyhow!("failed to create instance"))?;
 
@@ -220,11 +223,14 @@ async fn new_instance(
 async fn replace_vcr(
     client: &Client,
     id: Uuid,
-    vcr_replace: InstanceVCRReplace,
+    vcr_replace: InstanceVcrReplace,
 ) -> anyhow::Result<()> {
     // Try to call the endpoint
     client
-        .instance_issue_crucible_vcr_request(id, vcr_replace)
+        .instance_issue_crucible_vcr_request()
+        .id(id)
+        .body(vcr_replace)
+        .send()
         .await
         .with_context(|| anyhow!("failed to issue vcr request"))?;
 
@@ -234,6 +240,7 @@ async fn replace_vcr(
 async fn get_instance(client: &Client) -> anyhow::Result<()> {
     let res = client
         .instance_get()
+        .send()
         .await
         .with_context(|| anyhow!("failed to get instance properties"))?;
 
@@ -247,7 +254,9 @@ async fn put_instance(
     state: InstanceStateRequested,
 ) -> anyhow::Result<()> {
     client
-        .instance_state_put(state)
+        .instance_state_put()
+        .body(state)
+        .send()
         .await
         .with_context(|| anyhow!("failed to set instance state"))?;
 
@@ -483,34 +492,35 @@ async fn migrate_instance(
     disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
     // Grab the instance details
-    let src_instance = src_client
-        .instance_get()
-        .await
-        .with_context(|| anyhow!("failed to get src instance properties"))?;
+    let src_instance =
+        src_client.instance_get().send().await.with_context(|| {
+            anyhow!("failed to get src instance properties")
+        })?;
     let src_uuid = src_instance.instance.properties.id;
 
     let request = InstanceEnsureRequest {
         properties: InstanceProperties {
             // Use a new ID for the destination instance we're creating
             id: dst_uuid,
-            ..src_instance.instance.properties
+            ..src_instance.instance.properties.clone()
         },
         // TODO: Handle migrating NICs
         nics: vec![],
         disks,
         migrate: Some(InstanceMigrateInitiateRequest {
             migration_id: Uuid::new_v4(),
-            src_addr,
+            src_addr: src_addr.to_string(),
             src_uuid,
         }),
         cloud_init_bytes: None,
     };
 
     // Initiate the migration via the destination instance
-    let migration_id = dst_client
-        .instance_ensure(&request)
-        .await?
+    let migration_res =
+        dst_client.instance_ensure().body(request).send().await?;
+    let migration_id = migration_res
         .migrate
+        .as_ref()
         .ok_or_else(|| anyhow!("no migrate id on response"))?
         .migration_id;
 
@@ -523,8 +533,12 @@ async fn migrate_instance(
     .map(|(role, client, id)| {
         tokio::spawn(async move {
             loop {
-                let state =
-                    client.instance_migrate_status(migration_id).await?.state;
+                let state = client
+                    .instance_migrate_status()
+                    .migration_id(migration_id)
+                    .send()
+                    .await?
+                    .state;
                 println!("{}({}) migration state={:?}", role, id, state);
                 if state == MigrationState::Finish {
                     return Ok::<_, anyhow::Error>(());
@@ -583,9 +597,11 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
 
 async fn inject_nmi(client: &Client) -> anyhow::Result<()> {
     client
-        .instance_inject_nmi()
+        .instance_issue_nmi()
+        .send()
         .await
-        .with_context(|| anyhow!("failed to inject NMI"))
+        .with_context(|| anyhow!("failed to inject NMI"))?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -594,7 +610,7 @@ async fn main() -> anyhow::Result<()> {
     let log = create_logger(&opt);
 
     let addr = SocketAddr::new(opt.server, opt.port);
-    let client = Client::new(addr, log.new(o!()));
+    let client = Client::new(&format!("http://{addr}"));
 
     match opt.cmd {
         Command::New {
@@ -636,7 +652,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
-            let dst_client = Client::new(dst_addr, log.clone());
+            let dst_client = Client::new(&format!("http://{dst_addr}"));
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
@@ -648,7 +664,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Monitor => monitor(addr).await?,
         Command::InjectNmi => inject_nmi(&client).await?,
         Command::Vcr { uuid, vcr_replace } => {
-            let replace: InstanceVCRReplace = parse_json_file(&vcr_replace)?;
+            let replace: InstanceVcrReplace = parse_json_file(&vcr_replace)?;
             replace_vcr(&client, uuid, replace).await?
         }
     }

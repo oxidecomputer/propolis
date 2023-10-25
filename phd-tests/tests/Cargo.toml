@@ -9,7 +9,7 @@ doctest = false
 
 [dependencies]
 http.workspace = true
-propolis-client = { workspace = true, features = ["generated"] }
+propolis-client.workspace = true
 phd-testcase.workspace = true
 tracing.workspace = true
 uuid.workspace = true

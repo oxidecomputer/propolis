@@ -6,9 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use propolis_client::instance_spec::{
-    components::backends::FileStorageBackend, v0::StorageBackendV0,
-};
+use propolis_client::types::{FileStorageBackend, StorageBackendV0};
 use tracing::{error, info};
 use uuid::Uuid;
 

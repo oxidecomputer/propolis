@@ -14,7 +14,6 @@ use dropshot::{
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use propolis_client::handmade::api;
 use slog::{error, info, Logger};
 use thiserror::Error;
 use tokio::sync::{watch, Mutex};
@@ -22,9 +21,11 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+mod api_types;
 mod copied;
 
 use crate::copied::{slot_to_pci_path, SlotType};
+use api_types::types as api;
 
 #[derive(Debug, Eq, PartialEq, Error)]
 pub enum Error {
@@ -293,7 +294,7 @@ async fn instance_state_put(
 }]
 async fn instance_serial(
     rqctx: RequestContext<Arc<Context>>,
-    query: Query<api::InstanceSerialConsoleStreamRequest>,
+    query: Query<api_types::InstanceSerialParams>,
     websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
     let config = WebSocketConfig::default();
@@ -345,7 +346,7 @@ async fn instance_serial(
 }]
 async fn instance_serial_history_get(
     rqctx: RequestContext<Arc<Context>>,
-    query: Query<api::InstanceSerialConsoleHistoryRequest>,
+    query: Query<api_types::InstanceSerialHistoryParams>,
 ) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
 {
     let query_params = query.into_inner();

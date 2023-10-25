@@ -2717,14 +2717,12 @@ dependencies = [
  "bhyve_api",
  "camino",
  "cfg-if",
- "crucible-client-types",
  "errno 0.2.8",
  "futures",
  "hex",
  "libc",
  "propolis-client",
  "propolis-server-config",
- "propolis_types",
  "rand",
  "reqwest",
  "ring",
@@ -3096,13 +3094,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.21.4",
- "crucible-client-types",
  "futures",
  "progenitor",
- "propolis_types",
  "rand",
  "reqwest",
- "ring",
  "schemars",
  "serde",
  "serde_json",
@@ -3124,7 +3119,12 @@ dependencies = [
  "dropshot",
  "futures",
  "hyper",
- "propolis-client",
+ "progenitor",
+ "propolis_types",
+ "rand",
+ "reqwest",
+ "schemars",
+ "serde",
  "serde_json",
  "slog",
  "slog-async",
@@ -3134,6 +3134,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "uuid",
 ]
 
 [[package]]
@@ -3176,8 +3177,8 @@ dependencies = [
  "oximeter",
  "oximeter-producer",
  "propolis",
- "propolis-client",
  "propolis-server-config",
+ "propolis_api_types",
  "reqwest",
  "rfb",
  "ring",
@@ -3264,6 +3265,18 @@ dependencies = [
  "propolis-standalone-config",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "propolis_api_types"
+version = "0.0.0"
+dependencies = [
+ "crucible-client-types",
+ "propolis_types",
+ "schemars",
+ "serde",
+ "thiserror",
+ "uuid",
 ]
 
 [[package]]

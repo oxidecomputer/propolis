@@ -2,21 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Types used to communicate between the Sled Agent and Propolis.
-//!
-//! Although many of these types mirror the API between Nexus
-//! and sled agent (within omicron-common), they are intentionally
-//! decoupled so the interfaces may evolve independently, as necessary.
+//! Definitions for types exposed by the propolis-server API
 
-use crate::instance_spec::VersionedInstanceSpec;
+use std::net::SocketAddr;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 use uuid::Uuid;
 
 // Re-export types that are of a public struct
+use crate::instance_spec::VersionedInstanceSpec;
 pub use crucible_client_types::VolumeConstructionRequest;
+
+pub mod instance_spec;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceVCRReplace {
@@ -240,8 +238,13 @@ pub struct InstanceSerialConsoleStreamRequest {
     pub most_recent: Option<u64>,
 }
 
-/// Send things besides raw bytes to connected serial console clients, such as
-/// the change-of-address notice when the VM migrates
+/// Control message(s) sent through the websocket to serial console clients.
+///
+/// Note: Because this is associated with the websocket, and not some REST
+/// endpoint, Dropshot lacks the ability to communicate it via the OpenAPI
+/// document underpinning the exposed interfaces.  As such, clients (including
+/// the `propolis-client` crate) are expected to define their own identical copy
+/// of this type in order to consume it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum InstanceSerialConsoleControlMessage {
     Migrating { destination: SocketAddr, from_start: u64 },

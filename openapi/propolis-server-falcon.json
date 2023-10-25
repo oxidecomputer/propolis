@@ -1,0 +1,1839 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Oxide Propolis Server API",
+    "description": "API for interacting with the Propolis hypervisor frontend.",
+    "contact": {
+      "url": "https://oxide.computer",
+      "email": "api@oxide.computer"
+    },
+    "version": "0.0.1"
+  },
+  "paths": {
+    "/instance": {
+      "get": {
+        "operationId": "instance_get",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceGetResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "instance_ensure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceEnsureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "successful creation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceEnsureResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/disk/{id}/snapshot/{snapshot_id}": {
+      "post": {
+        "summary": "Issues a snapshot request to a crucible backend.",
+        "operationId": "instance_issue_crucible_snapshot_request",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Null",
+                  "type": "string",
+                  "enum": [
+                    null
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/disk/{id}/vcr": {
+      "put": {
+        "summary": "Issues a volume_construction_request replace to a crucible backend.",
+        "operationId": "instance_issue_crucible_vcr_request",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceVCRReplace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Null",
+                  "type": "string",
+                  "enum": [
+                    null
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/migrate/{migration_id}/status": {
+      "get": {
+        "operationId": "instance_migrate_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "migration_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/nmi": {
+      "post": {
+        "summary": "Issues an NMI to the instance.",
+        "operationId": "instance_issue_nmi",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Null",
+                  "type": "string",
+                  "enum": [
+                    null
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/serial": {
+      "get": {
+        "operationId": "instance_serial",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_start",
+            "description": "Character index in the serial buffer from which to read, counting the bytes output since instance start. If this is provided, `most_recent` must *not* be provided.",
+            "schema": {
+              "nullable": true,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "most_recent",
+            "description": "Character index in the serial buffer from which to read, counting *backward* from the most recently buffered data retrieved from the instance. (See note on `from_start` about mutual exclusivity)",
+            "schema": {
+              "nullable": true,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "x-dropshot-websocket": {}
+      }
+    },
+    "/instance/serial/history": {
+      "get": {
+        "operationId": "instance_serial_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_start",
+            "description": "Character index in the serial buffer from which to read, counting the bytes output since instance start. If this is not provided, `most_recent` must be provided, and if this *is* provided, `most_recent` must *not* be provided.",
+            "schema": {
+              "nullable": true,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_bytes",
+            "description": "Maximum number of bytes of buffered serial console contents to return. If the requested range runs to the end of the available buffer, the data returned will be shorter than `max_bytes`.",
+            "schema": {
+              "nullable": true,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "most_recent",
+            "description": "Character index in the serial buffer from which to read, counting *backward* from the most recently buffered data retrieved from the instance. (See note on `from_start` about mutual exclusivity)",
+            "schema": {
+              "nullable": true,
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSerialConsoleHistoryResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/spec": {
+      "get": {
+        "operationId": "instance_spec_get",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSpecGetResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "instance_spec_ensure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceSpecEnsureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "successful creation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceEnsureResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/state": {
+      "put": {
+        "operationId": "instance_state_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceStateRequested"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "resource updated"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/state-monitor": {
+      "get": {
+        "operationId": "instance_state_monitor",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceStateMonitorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceStateMonitorResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "Error": {
+        "description": "Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "BackendSpecV0": {
+        "type": "object",
+        "properties": {
+          "network_backends": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NetworkBackendV0"
+            }
+          },
+          "storage_backends": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StorageBackendV0"
+            }
+          }
+        },
+        "required": [
+          "network_backends",
+          "storage_backends"
+        ]
+      },
+      "BlobStorageBackend": {
+        "description": "A storage backend for a disk whose initial contents are given explicitly by the specification.",
+        "type": "object",
+        "properties": {
+          "base64": {
+            "description": "The disk's initial contents, encoded as a base64 string.",
+            "type": "string"
+          },
+          "readonly": {
+            "description": "Indicates whether the storage is read-only.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "base64",
+          "readonly"
+        ],
+        "additionalProperties": false
+      },
+      "Board": {
+        "description": "A VM's mainboard.",
+        "type": "object",
+        "properties": {
+          "chipset": {
+            "description": "The chipset to expose to guest software.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Chipset"
+              }
+            ]
+          },
+          "cpus": {
+            "description": "The number of virtual logical processors attached to this VM.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "memory_mb": {
+            "description": "The amount of guest RAM attached to this VM.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "chipset",
+          "cpus",
+          "memory_mb"
+        ],
+        "additionalProperties": false
+      },
+      "Chipset": {
+        "description": "A kind of virtual chipset.",
+        "oneOf": [
+          {
+            "description": "An Intel 440FX-compatible chipset.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "i440_fx"
+                ]
+              },
+              "value": {
+                "$ref": "#/components/schemas/I440Fx"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "CrucibleOpts": {
+        "type": "object",
+        "properties": {
+          "cert_pem": {
+            "nullable": true,
+            "type": "string"
+          },
+          "control": {
+            "nullable": true,
+            "type": "string"
+          },
+          "flush_timeout": {
+            "nullable": true,
+            "type": "number",
+            "format": "float"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "nullable": true,
+            "type": "string"
+          },
+          "key_pem": {
+            "nullable": true,
+            "type": "string"
+          },
+          "lossy": {
+            "type": "boolean"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "root_cert_pem": {
+            "nullable": true,
+            "type": "string"
+          },
+          "target": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "lossy",
+          "read_only",
+          "target"
+        ]
+      },
+      "CrucibleStorageBackend": {
+        "description": "A Crucible storage backend.",
+        "type": "object",
+        "properties": {
+          "readonly": {
+            "description": "Indicates whether the storage is read-only.",
+            "type": "boolean"
+          },
+          "request_json": {
+            "description": "A serialized `[crucible_client_types::VolumeConstructionRequest]`. This is stored in serialized form so that breaking changes to the definition of a `VolumeConstructionRequest` do not inadvertently break instance spec deserialization.\n\nWhen using a spec to initialize a new instance, the spec author must ensure this request is well-formed and can be deserialized by the version of `crucible_client_types` used by the target Propolis.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "readonly",
+          "request_json"
+        ],
+        "additionalProperties": false
+      },
+      "DeviceSpecV0": {
+        "type": "object",
+        "properties": {
+          "board": {
+            "$ref": "#/components/schemas/Board"
+          },
+          "network_devices": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/NetworkDeviceV0"
+            }
+          },
+          "p9fs": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/P9fs"
+              }
+            ]
+          },
+          "pci_pci_bridges": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PciPciBridge"
+            }
+          },
+          "serial_ports": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SerialPort"
+            }
+          },
+          "softnpu_p9": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SoftNpuP9"
+              }
+            ]
+          },
+          "softnpu_pci_port": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SoftNpuPciPort"
+              }
+            ]
+          },
+          "softnpu_ports": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SoftNpuPort"
+            }
+          },
+          "storage_devices": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StorageDeviceV0"
+            }
+          }
+        },
+        "required": [
+          "board",
+          "network_devices",
+          "pci_pci_bridges",
+          "serial_ports",
+          "softnpu_ports",
+          "storage_devices"
+        ],
+        "additionalProperties": false
+      },
+      "DiskAttachment": {
+        "type": "object",
+        "properties": {
+          "disk_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "generation_id": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/DiskAttachmentState"
+          }
+        },
+        "required": [
+          "disk_id",
+          "generation_id",
+          "state"
+        ]
+      },
+      "DiskAttachmentState": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "Detached",
+              "Destroyed",
+              "Faulted"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Attached": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "Attached"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "DiskRequest": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "slot": {
+            "$ref": "#/components/schemas/Slot"
+          },
+          "volume_construction_request": {
+            "$ref": "#/components/schemas/VolumeConstructionRequest"
+          }
+        },
+        "required": [
+          "device",
+          "name",
+          "read_only",
+          "slot",
+          "volume_construction_request"
+        ]
+      },
+      "DlpiNetworkBackend": {
+        "description": "A network backend associated with a DLPI VNIC on the host.",
+        "type": "object",
+        "properties": {
+          "vnic_name": {
+            "description": "The name of the VNIC to use as a backend.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vnic_name"
+        ],
+        "additionalProperties": false
+      },
+      "Error": {
+        "description": "Error information from a response.",
+        "type": "object",
+        "properties": {
+          "error_code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "request_id"
+        ]
+      },
+      "FileStorageBackend": {
+        "description": "A storage backend backed by a file in the host system's file system.",
+        "type": "object",
+        "properties": {
+          "path": {
+            "description": "A path to a file that backs a disk.",
+            "type": "string"
+          },
+          "readonly": {
+            "description": "Indicates whether the storage is read-only.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "readonly"
+        ],
+        "additionalProperties": false
+      },
+      "I440Fx": {
+        "description": "An Intel 440FX-compatible chipset.",
+        "type": "object",
+        "properties": {
+          "enable_pcie": {
+            "description": "Specifies whether the chipset should allow PCI configuration space to be accessed through the PCIe extended configuration mechanism.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enable_pcie"
+        ],
+        "additionalProperties": false
+      },
+      "Instance": {
+        "type": "object",
+        "properties": {
+          "disks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiskAttachment"
+            }
+          },
+          "nics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkInterface"
+            }
+          },
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceState"
+          }
+        },
+        "required": [
+          "disks",
+          "nics",
+          "properties",
+          "state"
+        ]
+      },
+      "InstanceEnsureRequest": {
+        "type": "object",
+        "properties": {
+          "cloud_init_bytes": {
+            "nullable": true,
+            "type": "string"
+          },
+          "disks": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiskRequest"
+            }
+          },
+          "migrate": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
+              }
+            ]
+          },
+          "nics": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NetworkInterfaceRequest"
+            }
+          },
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          }
+        },
+        "required": [
+          "properties"
+        ]
+      },
+      "InstanceEnsureResponse": {
+        "type": "object",
+        "properties": {
+          "migrate": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateInitiateResponse"
+              }
+            ]
+          }
+        }
+      },
+      "InstanceGetResponse": {
+        "type": "object",
+        "properties": {
+          "instance": {
+            "$ref": "#/components/schemas/Instance"
+          }
+        },
+        "required": [
+          "instance"
+        ]
+      },
+      "InstanceMigrateInitiateRequest": {
+        "type": "object",
+        "properties": {
+          "migration_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "src_addr": {
+            "type": "string"
+          },
+          "src_uuid": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "migration_id",
+          "src_addr",
+          "src_uuid"
+        ]
+      },
+      "InstanceMigrateInitiateResponse": {
+        "type": "object",
+        "properties": {
+          "migration_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "migration_id"
+        ]
+      },
+      "InstanceMigrateStatusResponse": {
+        "type": "object",
+        "properties": {
+          "migration_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MigrationState"
+          }
+        },
+        "required": [
+          "migration_id",
+          "state"
+        ]
+      },
+      "InstanceProperties": {
+        "type": "object",
+        "properties": {
+          "bootrom_id": {
+            "description": "ID of the bootrom used to initialize this Instance.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": {
+            "description": "Free-form text description of an Instance.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique identifier for this Instance.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "image_id": {
+            "description": "ID of the image used to initialize this Instance.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "memory": {
+            "description": "Size of memory allocated to the Instance, in MiB.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "name": {
+            "description": "Human-readable name of the Instance.",
+            "type": "string"
+          },
+          "vcpus": {
+            "description": "Number of vCPUs to be allocated to the Instance.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "bootrom_id",
+          "description",
+          "id",
+          "image_id",
+          "memory",
+          "name",
+          "vcpus"
+        ]
+      },
+      "InstanceSerialConsoleHistoryResponse": {
+        "description": "Contents of an Instance's serial console buffer.",
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "The bytes starting from the requested offset up to either the end of the buffer or the request's `max_bytes`. Provided as a u8 array rather than a string, as it may not be UTF-8.",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0
+            }
+          },
+          "last_byte_offset": {
+            "description": "The absolute offset since boot (suitable for use as `byte_offset` in a subsequent request) of the last byte returned in `data`.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "data",
+          "last_byte_offset"
+        ]
+      },
+      "InstanceSpecEnsureRequest": {
+        "type": "object",
+        "properties": {
+          "instance_spec": {
+            "$ref": "#/components/schemas/VersionedInstanceSpec"
+          },
+          "migrate": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateInitiateRequest"
+              }
+            ]
+          },
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          }
+        },
+        "required": [
+          "instance_spec",
+          "properties"
+        ]
+      },
+      "InstanceSpecGetResponse": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/VersionedInstanceSpec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceState"
+          }
+        },
+        "required": [
+          "properties",
+          "spec",
+          "state"
+        ]
+      },
+      "InstanceSpecV0": {
+        "type": "object",
+        "properties": {
+          "backends": {
+            "$ref": "#/components/schemas/BackendSpecV0"
+          },
+          "devices": {
+            "$ref": "#/components/schemas/DeviceSpecV0"
+          }
+        },
+        "required": [
+          "backends",
+          "devices"
+        ],
+        "additionalProperties": false
+      },
+      "InstanceState": {
+        "description": "Current state of an Instance.",
+        "type": "string",
+        "enum": [
+          "Creating",
+          "Starting",
+          "Running",
+          "Stopping",
+          "Stopped",
+          "Rebooting",
+          "Migrating",
+          "Repairing",
+          "Failed",
+          "Destroyed"
+        ]
+      },
+      "InstanceStateMonitorRequest": {
+        "type": "object",
+        "properties": {
+          "gen": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "gen"
+        ]
+      },
+      "InstanceStateMonitorResponse": {
+        "type": "object",
+        "properties": {
+          "gen": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "migration": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceState"
+          }
+        },
+        "required": [
+          "gen",
+          "state"
+        ]
+      },
+      "InstanceStateRequested": {
+        "type": "string",
+        "enum": [
+          "Run",
+          "Stop",
+          "Reboot"
+        ]
+      },
+      "InstanceVCRReplace": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "vcr_json": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "vcr_json"
+        ]
+      },
+      "MigrationState": {
+        "type": "string",
+        "enum": [
+          "Sync",
+          "RamPush",
+          "Pause",
+          "RamPushDirty",
+          "Device",
+          "Resume",
+          "RamPull",
+          "Server",
+          "Finish",
+          "Error"
+        ]
+      },
+      "NetworkBackendV0": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioNetworkBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Virtio"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/DlpiNetworkBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Dlpi"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "NetworkDeviceV0": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioNic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "VirtioNic"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "NetworkInterface": {
+        "type": "object",
+        "properties": {
+          "attachment": {
+            "$ref": "#/components/schemas/NetworkInterfaceAttachmentState"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attachment",
+          "name"
+        ]
+      },
+      "NetworkInterfaceAttachmentState": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "Detached",
+              "Faulted"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Attached": {
+                "$ref": "#/components/schemas/Slot"
+              }
+            },
+            "required": [
+              "Attached"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "NetworkInterfaceRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "slot": {
+            "$ref": "#/components/schemas/Slot"
+          }
+        },
+        "required": [
+          "name",
+          "slot"
+        ]
+      },
+      "NvmeDisk": {
+        "description": "A disk that presents an NVMe interface to the guest.",
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the disk's backend component.",
+            "type": "string"
+          },
+          "pci_path": {
+            "description": "The PCI bus/device/function at which this disk should be attached.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "backend_name",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "P9fs": {
+        "type": "object",
+        "properties": {
+          "chunk_size": {
+            "description": "The chunk size to use in the 9P protocol. Vanilla Helios images should use 8192. Falcon Helios base images and Linux can use up to 65536.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this P9 filesystem.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          },
+          "source": {
+            "description": "The host source path to mount into the guest.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The 9P target filesystem tag.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_size",
+          "pci_path",
+          "source",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "PciPath": {
+        "description": "A PCI bus/device/function tuple.",
+        "type": "object",
+        "properties": {
+          "bus": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "device": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "function": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "bus",
+          "device",
+          "function"
+        ]
+      },
+      "PciPciBridge": {
+        "description": "A PCI-PCI bridge.",
+        "type": "object",
+        "properties": {
+          "downstream_bus": {
+            "description": "The logical bus number of this bridge's downstream bus. Other devices may use this bus number in their PCI paths to indicate they should be attached to this bridge's bus.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach this bridge.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "downstream_bus",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "SerialPort": {
+        "description": "A serial port device.",
+        "type": "object",
+        "properties": {
+          "num": {
+            "description": "The serial port number for this port.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SerialPortNumber"
+              }
+            ]
+          }
+        },
+        "required": [
+          "num"
+        ],
+        "additionalProperties": false
+      },
+      "SerialPortNumber": {
+        "description": "A serial port identifier, which determines what I/O ports a guest can use to access a port.",
+        "type": "string",
+        "enum": [
+          "com1",
+          "com2",
+          "com3",
+          "com4"
+        ]
+      },
+      "Slot": {
+        "description": "A stable index which is translated by Propolis into a PCI BDF, visible to the guest.",
+        "type": "integer",
+        "format": "uint8",
+        "minimum": 0
+      },
+      "SoftNpuP9": {
+        "type": "object",
+        "properties": {
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this port.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "SoftNpuPciPort": {
+        "type": "object",
+        "properties": {
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this port.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "SoftNpuPort": {
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the device's backend.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the SoftNpu port.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend_name",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "StorageBackendV0": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/CrucibleStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Crucible"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/FileStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "File"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/BlobStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Blob"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "StorageDeviceV0": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioDisk"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "VirtioDisk"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/NvmeDisk"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "NvmeDisk"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "VersionedInstanceSpec": {
+        "description": "A versioned instance spec.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "spec": {
+                "$ref": "#/components/schemas/InstanceSpecV0"
+              },
+              "version": {
+                "type": "string",
+                "enum": [
+                  "V0"
+                ]
+              }
+            },
+            "required": [
+              "spec",
+              "version"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "VirtioDisk": {
+        "description": "A disk that presents a virtio-block interface to the guest.",
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the disk's backend component.",
+            "type": "string"
+          },
+          "pci_path": {
+            "description": "The PCI bus/device/function at which this disk should be attached.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "backend_name",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "VirtioNetworkBackend": {
+        "description": "A network backend associated with a virtio-net (viona) VNIC on the host.",
+        "type": "object",
+        "properties": {
+          "vnic_name": {
+            "description": "The name of the viona VNIC to use as a backend.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "vnic_name"
+        ],
+        "additionalProperties": false
+      },
+      "VirtioNic": {
+        "description": "A network card that presents a virtio-net interface to the guest.",
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the device's backend.",
+            "type": "string"
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach this device.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "backend_name",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "VolumeConstructionRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "block_size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "read_only_parent": {
+                "nullable": true,
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/VolumeConstructionRequest"
+                  }
+                ]
+              },
+              "sub_volumes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/VolumeConstructionRequest"
+                }
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "volume"
+                ]
+              }
+            },
+            "required": [
+              "block_size",
+              "id",
+              "sub_volumes",
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "block_size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "url"
+                ]
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "block_size",
+              "id",
+              "type",
+              "url"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "block_size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "blocks_per_extent": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "extent_count": {
+                "type": "integer",
+                "format": "uint32",
+                "minimum": 0
+              },
+              "gen": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "opts": {
+                "$ref": "#/components/schemas/CrucibleOpts"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "region"
+                ]
+              }
+            },
+            "required": [
+              "block_size",
+              "blocks_per_extent",
+              "extent_count",
+              "gen",
+              "opts",
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "block_size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "path": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "file"
+                ]
+              }
+            },
+            "required": [
+              "block_size",
+              "id",
+              "path",
+              "type"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

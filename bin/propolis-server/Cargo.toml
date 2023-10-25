@@ -54,7 +54,7 @@ slog-dtrace.workspace = true
 slog-term.workspace = true
 strum = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
-propolis-client = { workspace = true, features = ["generated"] }
+propolis_api_types = { workspace = true }
 propolis-server-config.workspace = true
 rfb.workspace = true
 uuid.workspace = true
@@ -78,4 +78,4 @@ default = []
 omicron-build = ["propolis/omicron-build"]
 
 # Falcon builds require corresponding bits turned on in the dependency libs
-falcon = ["propolis/falcon", "propolis-client/falcon"]
+falcon = ["propolis/falcon", "propolis_api_types/falcon"]

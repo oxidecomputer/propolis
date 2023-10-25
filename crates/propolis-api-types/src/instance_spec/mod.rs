@@ -162,9 +162,6 @@ pub mod components;
 pub mod migration;
 pub mod v0;
 
-#[cfg(feature = "generated")]
-mod openapi_impls;
-
 /// Type alias for keys in the instance spec's maps.
 type SpecKey = String;
 
