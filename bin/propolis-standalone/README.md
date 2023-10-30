@@ -17,6 +17,12 @@ cpus = 4
 bootrom = "/path/to/bootrom/OVMF_CODE.fd"
 memory = 1024
 
+# Exit propolis-standalone process with <code> if instance halts (default: 0)
+# exit_on_halt = <code>
+
+# Exit propolis-standalone process with <code> if instance reboots (default: unset)
+# exit_on_reboot = <code>
+
 [block_dev.alpine_iso]
 type = "file"
 path = "/path/to/alpine-extended-3.12.0-x86_64.iso"

@@ -51,6 +51,16 @@ pub struct Main {
     pub memory: usize,
     pub use_reservoir: Option<bool>,
     pub cpuid_profile: Option<String>,
+    /// Process exitcode to emit if/when instance halts
+    ///
+    /// Default: 0
+    #[serde(default)]
+    pub exit_on_halt: u8,
+    /// Process exitcode to emit if/when instance reboots
+    ///
+    /// Default: None, does not exit on reboot
+    #[serde(default)]
+    pub exit_on_reboot: Option<u8>,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally

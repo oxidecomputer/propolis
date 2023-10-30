@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -193,6 +194,7 @@ struct InstState {
     instance: Option<propolis::Instance>,
     state: State,
     vcpu_tasks: Vec<propolis::tasks::TaskCtrl>,
+    exit_code: Option<u8>,
 }
 
 struct InstInner {
@@ -216,6 +218,7 @@ impl Instance {
                 instance: Some(pinst),
                 state: State::Initialize,
                 vcpu_tasks: Vec::new(),
+                exit_code: None,
             }),
             boot_gen: AtomicUsize::new(0),
             eq: EventQueue::new(),
@@ -404,8 +407,22 @@ impl Instance {
                     for mut vcpu_ctrl in guard.vcpu_tasks.drain(..) {
                         vcpu_ctrl.exit();
                     }
+                    if guard.exit_code.is_none() {
+                        guard.exit_code = Some(inner.config.main.exit_on_halt);
+                    }
                 }
                 State::Reset => {
+                    if let (None, Some(code)) =
+                        (guard.exit_code, inner.config.main.exit_on_reboot)
+                    {
+                        // Emit the configured exit-on-reboot code if one is
+                        // configured an no existing code would already
+                        // supersede it.
+                        guard.exit_code = Some(code);
+                        guard.state = State::Halt;
+                        cur_ev = Some(InstEvent::ReqHalt);
+                        continue;
+                    }
                     let inst = guard.instance.as_ref().unwrap().lock();
                     Self::device_state_transition(State::Reset, &inst, false);
                     inst.machine().reinitialize().unwrap();
@@ -432,13 +449,14 @@ impl Instance {
         }
     }
 
-    fn wait_destroyed(&self) {
+    fn wait_destroyed(&self) -> ExitCode {
         let guard = self.0.state.lock().unwrap();
-        let _guard = self
+        let mut guard = self
             .0
             .cv
             .wait_while(guard, |g| !matches!(g.state, State::Destroy))
             .unwrap();
+        ExitCode::from(guard.exit_code.take().unwrap_or(0))
     }
 
     fn vcpu_loop(
@@ -997,7 +1015,7 @@ struct Args {
     restore: bool,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<ExitCode> {
     let Args { target, snapshot, restore } = Args::parse();
 
     // Ensure proper setup of USDT probes
@@ -1058,6 +1076,5 @@ fn main() -> anyhow::Result<()> {
     );
 
     // wait for instance to be destroyed
-    inst.wait_destroyed();
-    Ok(())
+    Ok(inst.wait_destroyed())
 }
