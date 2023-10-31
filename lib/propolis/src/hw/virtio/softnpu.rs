@@ -42,8 +42,8 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use slog::{error, info, warn, Logger};
 
-// TODO make configurable
-const MTU: usize = 1600;
+// Transit jumbo frames
+const MTU: usize = 9216;
 
 const SOFTNPU_CPU_AUX_PORT: u16 = 1000;
 
@@ -773,8 +773,7 @@ impl ManagementMessageReader {
 
     fn read(&self) -> ManagementRequest {
         loop {
-            let mut buf = Vec::new();
-            buf.resize(10240, 0u8);
+            let mut buf = vec![0; 10240];
             let mut i = 0;
             let mut in_message = false;
             loop {
