@@ -235,8 +235,6 @@ pub trait P9Handler: Sync + Send + 'static {
         let len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
         let typ = MessageType::try_from_primitive(buf[4]).unwrap();
 
-        println!("message: {:?}", typ);
-
         match typ {
             MessageType::Tversion => {
                 self.handle_version(&data[..len], &mut chain, &mem)
