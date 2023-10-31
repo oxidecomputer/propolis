@@ -42,8 +42,8 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use slog::{error, info, warn, Logger};
 
-// TODO make configurable
-const MTU: usize = 1600;
+// Transit jumbo frames
+const MTU: usize = 9216;
 
 const SOFTNPU_CPU_AUX_PORT: u16 = 1000;
 
