@@ -773,8 +773,7 @@ impl ManagementMessageReader {
 
     fn read(&self) -> ManagementRequest {
         loop {
-            let mut buf = Vec::new();
-            buf.resize(10240, 0u8);
+            let mut buf = vec![0; 10240];
             let mut i = 0;
             let mut in_message = false;
             loop {
