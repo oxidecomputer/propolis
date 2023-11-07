@@ -12,7 +12,7 @@ strum = "0.25"
 
 [build-dependencies]
 cc = "1"
-ctest2 = "0.4"
+ctest2 = "0.4.7"
 # Build-time conditions depend on the max API version defined in the crate
 bhyve_api_sys = { path = "../sys" }
 

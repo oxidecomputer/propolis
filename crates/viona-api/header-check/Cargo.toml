@@ -11,7 +11,7 @@ libc = "0.2"
 
 [build-dependencies]
 cc = "1"
-ctest2 = "0.4"
+ctest2 = "0.4.7"
 
 [[test]]
 name = "main"

@@ -108,6 +108,9 @@ fn main() {
         // API V11 saw the addition of the VMM_TIME data class
         "VDC_VMM_TIME" if ver_lt(11) => true,
 
+        // API V16 saw the removal of the force-suspend flag for VM_REINIT
+        "VM_REINIT_F_FORCE_SUSPEND" if ver_gt(15) => true,
+
         _ => false,
     });
 
@@ -123,6 +126,7 @@ fn main() {
         "vm_exit_vmx" => true,
         "vm_exit_svm" => true,
         "vm_exit_msr" => true,
+        "vm_exit_suspend" => true,
         "vm_inst_emul" => true,
         "vm_paging" => true,
 

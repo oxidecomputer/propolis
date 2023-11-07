@@ -17,6 +17,8 @@ use crate::tasks;
 use crate::vmm::VmmHdl;
 use migrate::VcpuReadWrite;
 
+use bhyve_api::ApiVersion;
+
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn vm_entry(vcpuid: u32) {}
@@ -311,8 +313,10 @@ impl Vcpu {
         let mut exit: bhyve_api::vm_exit = Default::default();
         let mut entry = entry.to_raw(self.id, &mut exit);
 
+        let api_version = self.hdl.api_version()?;
+
         if exit_when_consistent {
-            if self.hdl.api_version()? >= bhyve_api::ApiVersion::V15 as u32 {
+            if api_version >= ApiVersion::V15 as u32 {
                 entry.cmd |=
                     bhyve_api::vm_entry_cmds::VEC_FLAG_EXIT_CONSISTENT as u32;
             } else {
@@ -325,20 +329,28 @@ impl Vcpu {
         let _res = unsafe { self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)? };
         probes::vm_exit!(|| (self.id as u32, exit.rip, exit.exitcode as u32));
 
-        Ok(VmExit::from(&exit))
+        Ok(VmExit::parse(&exit, api_version))
     }
 
-    /// Issues a "barrier" to the guest VM by polling a register.
+    /// Issue a "barrier" for the vCPU, forcing an exit from guest context
     pub fn barrier(&self) -> Result<()> {
-        // XXX: without an official interface for this, just force the vCPU out
-        // of guest context (if it is there) by reading %rax.
-        let mut regcmd = bhyve_api::vm_register {
-            cpuid: self.id,
-            regnum: bhyve_api::vm_reg_name::VM_REG_GUEST_RAX as i32,
-            regval: 0,
-        };
-        unsafe {
-            self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+        if self.hdl.api_version()? >= ApiVersion::V16 as u32 {
+            // Use the official barrier operation, if available
+            self.hdl
+                .ioctl_usize(bhyve_api::VM_VCPU_BARRIER, self.id as usize)?;
+        } else {
+            // Prior to first-class support for a barrier, just force the vCPU
+            // out of guest context by reading %rax.  If the vCPU thread happens
+            // to be on its way into VM_RUN, but not already there, this old
+            // method can fail to incur a proper exit.
+            let mut regcmd = bhyve_api::vm_register {
+                cpuid: self.id,
+                regnum: bhyve_api::vm_reg_name::VM_REG_GUEST_RAX as i32,
+                regval: 0,
+            };
+            unsafe {
+                self.hdl.ioctl(bhyve_api::VM_GET_REGISTER, &mut regcmd)?;
+            }
         }
         Ok(())
     }
@@ -366,11 +378,6 @@ impl Vcpu {
     pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
         match exit.kind {
             VmExitKind::Bogus => Some(VmEntry::Run),
-            VmExitKind::ReqIdle => {
-                // another thread came in to use this vCPU it is likely to push
-                // us out for a barrier
-                Some(VmEntry::Run)
-            }
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => self
                     .bus_pio
@@ -496,7 +503,7 @@ pub mod migrate {
     use crate::cpuid;
     use crate::migrate::*;
 
-    use bhyve_api::{vdi_field_entry_v1, vm_reg_name};
+    use bhyve_api::{vdi_field_entry_v1, vm_reg_name, ApiVersion};
     use serde::{Deserialize, Serialize};
 
     pub(super) trait VcpuReadWrite: Sized {
@@ -945,7 +952,7 @@ pub mod migrate {
             // When hosts with illumos#15143 integrated become common, the
             // overall required version for propolis can grow to encompass V10
             // and this check can be elided.
-            if bhyve_api::api_version()? >= bhyve_api::ApiVersion::V10 as u32 {
+            if bhyve_api::api_version()? >= ApiVersion::V10 as u32 {
                 vcpu.hdl
                     .data_op(bhyve_api::VDC_VMM_ARCH, 1)
                     .for_vcpu(vcpu.id)
