@@ -8,6 +8,7 @@ use dropshot::{
     ConfigDropshot, ConfigLogging, ConfigLoggingLevel, HandlerTaskMode,
 };
 use omicron_common::api::internal::nexus::ProducerEndpoint;
+use omicron_common::api::internal::nexus::ProducerKind;
 use oximeter::{
     types::{Cumulative, Sample},
     Metric, MetricsError, Producer, Target,
@@ -125,6 +126,7 @@ pub async fn start_oximeter_server(
 
     let server_info = ProducerEndpoint {
         id,
+        kind: Some(ProducerKind::Instance),
         address: my_address,
         base_route: "/collect".to_string(),
         interval: OXIMETER_STAT_INTERVAL,
