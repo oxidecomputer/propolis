@@ -38,6 +38,14 @@ use p9ds::proto::{
 };
 use slog::{warn, Logger};
 
+/// This const is to add headroom into serialized P9 data packets. These packets
+/// go through a virtio transport. It's been observed with Linux guests that we
+/// cannot fill up an entire `msize` packet running through that transport for
+/// RREAD message types, as the packet gets truncated by a small number of bytes
+/// (13 is most often observed) and the PDU size will no longer match the the
+/// RREAD header stated size.
+const P9FS_VIRTIO_READ_HEADROOM: usize = 20;
+
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn p9fs_cfg_read() {}
@@ -328,6 +336,7 @@ impl HostFSHandler {
             Some(ref f) => f,
             None => {
                 // the file is not open
+                warn!(self.log, "read: file not open: {:?}", &fid.pathbuf,);
                 return write_error(EINVAL as u32, chain, mem);
             }
         };
@@ -345,6 +354,12 @@ impl HostFSHandler {
 
         // bail with empty response if offset is greater than file size
         if metadata.len() < msg.offset {
+            warn!(
+                self.log,
+                "read: offset > file size: {} > {}",
+                msg.offset,
+                metadata.len(),
+            );
             let response = Rread::new(Vec::new());
             let mut out = ispf::to_bytes_le(&response).unwrap();
             let buf = out.as_mut_slice();
@@ -364,7 +379,8 @@ impl HostFSHandler {
             - size_of::<u32>()          // Rread.size
             - size_of::<MessageType>()  // Rread.typ
             - size_of::<u16>()          // Rread.tag
-            - size_of::<u32>(); // Rread.data.len
+            - size_of::<u32>()          // Rread.data.len
+            - P9FS_VIRTIO_READ_HEADROOM;
 
         let buflen =
             std::cmp::min(space_left, (metadata.len() - msg.offset) as usize);
@@ -383,6 +399,7 @@ impl HostFSHandler {
         let response = Rread::new(content);
         let mut out = ispf::to_bytes_le(&response).unwrap();
         let buf = out.as_mut_slice();
+
         write_buf(buf, chain, mem);
     }
 
