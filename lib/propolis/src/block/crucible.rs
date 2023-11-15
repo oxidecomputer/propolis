@@ -22,7 +22,6 @@ use uuid::Uuid;
 pub use nexus_client::Client as NexusClient;
 
 pub struct CrucibleBackend {
-    tokio_rt: tokio::runtime::Handle,
     state: Arc<WorkerState>,
 }
 struct WorkerState {
@@ -149,7 +148,6 @@ impl CrucibleBackend {
         let sectors = total_size / block_size;
 
         Ok(Arc::new(Self {
-            tokio_rt: tokio::runtime::Handle::current(),
             state: Arc::new(WorkerState {
                 attachment: block::backend::Attachment::new(),
                 volume,
@@ -255,8 +253,8 @@ impl Entity for CrucibleBackend {
         "block-crucible"
     }
     fn start(&self) -> anyhow::Result<()> {
-        self.tokio_rt
-            .block_on(async move { self.state.volume.activate().await })?;
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async move { self.state.volume.activate().await })?;
 
         self.state.attachment.start();
         self.spawn_workers();

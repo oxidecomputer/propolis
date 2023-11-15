@@ -571,11 +571,30 @@ impl Record {
     }
 }
 
+/// General trait for emulated devices in the system.
+///
+/// As the VM goes through its lifecycle, the emulated devices which it contains
+/// are so driven through those phases via various event functions (`start`,
+/// `pause`, `resume`, etc).
+///
+/// A collection of these [Entity] implementing trait objects are held in an
+/// [Inventory] for the software driving the VM instance to interact with.
+///
+/// Note: Calling any of these lifecycle methods on an [Entity] should be done
+/// from a context with access to a [Tokio runtime](tokio::runtime::Runtime):
+/// - [Entity::start]
+/// - [Entity::pause]
+/// - [Entity::resume]
+/// - [Entity::paused]
+/// - [Entity::reset]
+/// - [Entity::halt]
+/// - [Entity::migrate]
 pub trait Entity: Send + Sync + 'static {
     /// Unique name for entities for a given type
+    ///
+    /// Intended to be `const` once stabilized for trait functions.
     fn type_name(&self) -> &'static str;
 
-    #[allow(unused_variables)]
     fn child_register(&self) -> Option<Vec<ChildRegister>> {
         None
     }

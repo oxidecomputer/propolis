@@ -929,6 +929,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn reset_entities_and_machine(&self) {
+        let _rtguard = self.runtime_hdl.enter();
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending reset request to {}", rec.name());
             ent.reset();
@@ -940,6 +941,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn start_entities(&self) -> anyhow::Result<()> {
+        let _rtguard = self.runtime_hdl.enter();
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending startup complete to {}", rec.name());
             let res = ent.start();
@@ -951,6 +953,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn pause_entities(&self) {
+        let _rtguard = self.runtime_hdl.enter();
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending pause request to {}", rec.name());
             ent.pause();
@@ -984,6 +987,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn resume_entities(&self) {
+        let _rtguard = self.runtime_hdl.enter();
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending resume request to {}", rec.name());
             ent.resume();
@@ -993,6 +997,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn halt_entities(&self) {
+        let _rtguard = self.runtime_hdl.enter();
         self.for_each_entity(|ent, rec| {
             info!(self.log, "Sending halt request to {}", rec.name());
             ent.halt();
