@@ -54,6 +54,22 @@ impl LpcUart {
             notify_writable: NotifierCell::new(),
         })
     }
+
+    pub fn with_fifo_len(
+        irq_pin: Box<dyn IntrPin>,
+        fifo_len: usize,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(UartState {
+                uart: Uart::with_fifo_len(fifo_len),
+                irq_pin,
+                auto_discard: true,
+                paused: false,
+            }),
+            notify_readable: NotifierCell::new(),
+            notify_writable: NotifierCell::new(),
+        })
+    }
     pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
         let this = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))

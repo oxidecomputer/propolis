@@ -44,7 +44,6 @@ use slog::{error, info, warn, Logger};
 
 // Transit jumbo frames
 const MTU: usize = 9216;
-
 const SOFTNPU_CPU_AUX_PORT: u16 = 1000;
 
 pub const MANAGEMENT_MESSAGE_PREAMBLE: u8 = 0b11100101;
@@ -810,10 +809,10 @@ impl ManagementMessageReader {
                     if p + 1 < buf.len() {
                         &buf[p + 1..]
                     } else {
-                        &buf
+                        continue;
                     }
                 }
-                None => &buf,
+                None => continue,
             };
             match serde_json::from_slice(&msgbuf) {
                 Ok(msg) => return msg,
