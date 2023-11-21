@@ -70,16 +70,16 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", rev = "88f5f1334364e5580fe778c44ac0746a35927351", package = "softnpu" }
 
 # Omicron-related
-internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "add-oximeter-producer-kind" }
-nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "add-oximeter-producer-kind" }
-omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "add-oximeter-producer-kind" }
+internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-zone-package = "0.9.0"
-oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "add-oximeter-producer-kind" }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "add-oximeter-producer-kind" }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "127bdc81defd435cd7462ad600cff9e404537ab2" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "127bdc81defd435cd7462ad600cff9e404537ab2" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "945f040d259ca8013d3fb26f510453da7cd7b1a6" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "945f040d259ca8013d3fb26f510453da7cd7b1a6" }
 
 # External dependencies
 anyhow = "1.0"

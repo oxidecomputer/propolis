@@ -1083,9 +1083,10 @@ mod tests {
             .write(&mut buf)
             .unwrap();
         let output = String::from_utf8(buf).unwrap();
-        expectorate::assert_contents(
-            "../../openapi/propolis-server.json",
-            &output,
-        );
+        #[cfg(feature = "falcon")]
+        let file = "../../openapi/propolis-server-falcon.json";
+        #[cfg(not(feature = "falcon"))]
+        let file = "../../openapi/propolis-server.json";
+        expectorate::assert_contents(file, &output);
     }
 }

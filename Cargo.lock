@@ -155,7 +155,7 @@ dependencies = [
 [[package]]
 name = "api_identity"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "omicron-workspace-hack",
  "proc-macro2",
@@ -690,7 +690,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=127bdc81defd435cd7462ad600cff9e404537ab2#127bdc81defd435cd7462ad600cff9e404537ab2"
+source = "git+https://github.com/oxidecomputer/crucible?rev=945f040d259ca8013d3fb26f510453da7cd7b1a6#945f040d259ca8013d3fb26f510453da7cd7b1a6"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -706,7 +706,7 @@ dependencies = [
  "dropshot",
  "futures",
  "futures-core",
- "itertools 0.11.0",
+ "itertools 0.12.0",
  "libc",
  "omicron-common",
  "oximeter",
@@ -735,7 +735,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=127bdc81defd435cd7462ad600cff9e404537ab2#127bdc81defd435cd7462ad600cff9e404537ab2"
+source = "git+https://github.com/oxidecomputer/crucible?rev=945f040d259ca8013d3fb26f510453da7cd7b1a6#945f040d259ca8013d3fb26f510453da7cd7b1a6"
 dependencies = [
  "base64 0.21.5",
  "crucible-workspace-hack",
@@ -748,7 +748,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=127bdc81defd435cd7462ad600cff9e404537ab2#127bdc81defd435cd7462ad600cff9e404537ab2"
+source = "git+https://github.com/oxidecomputer/crucible?rev=945f040d259ca8013d3fb26f510453da7cd7b1a6#945f040d259ca8013d3fb26f510453da7cd7b1a6"
 dependencies = [
  "anyhow",
  "atty",
@@ -777,7 +777,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=127bdc81defd435cd7462ad600cff9e404537ab2#127bdc81defd435cd7462ad600cff9e404537ab2"
+source = "git+https://github.com/oxidecomputer/crucible?rev=945f040d259ca8013d3fb26f510453da7cd7b1a6#945f040d259ca8013d3fb26f510453da7cd7b1a6"
 dependencies = [
  "anyhow",
  "bincode",
@@ -961,7 +961,7 @@ dependencies = [
 [[package]]
 name = "dns-service-client"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "chrono",
  "http",
@@ -1543,9 +1543,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.9"
+version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd6effc99afb63425aff9b05836f029929e345a6148a14b7ecd5ab67af944482"
+checksum = "8947b1a6fad4393052c7ba1f4cd97bed3e953a95c79c92ad9b051a04611d9fbb"
 dependencies = [
  "bytes",
  "fnv",
@@ -1738,7 +1738,7 @@ dependencies = [
 [[package]]
 name = "internal-dns"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1818,9 +1818,9 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
+checksum = "25db6b064527c5d482d0423354fcd07a89a2dfe07b67892e62411946db7f07b0"
 dependencies = [
  "either",
 ]
@@ -2108,7 +2108,7 @@ dependencies = [
 [[package]]
 name = "nexus-client"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "chrono",
  "futures",
@@ -2315,7 +2315,7 @@ dependencies = [
 [[package]]
 name = "omicron-common"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "anyhow",
  "api_identity",
@@ -2353,7 +2353,7 @@ dependencies = [
 [[package]]
 name = "omicron-passwords"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "argon2",
  "omicron-workspace-hack",
@@ -2478,7 +2478,7 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 [[package]]
 name = "oximeter"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "bytes",
  "chrono",
@@ -2496,7 +2496,7 @@ dependencies = [
 [[package]]
 name = "oximeter-macro-impl"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "omicron-workspace-hack",
  "proc-macro2",
@@ -2507,7 +2507,7 @@ dependencies = [
 [[package]]
 name = "oximeter-producer"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=add-oximeter-producer-kind#af5ec52b2bc067542bb80c825b7259913ee217c5"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#745eac2d0dba169824c11d57be681f1ec4f2ccf4"
 dependencies = [
  "chrono",
  "dropshot",
@@ -4940,9 +4940,9 @@ checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
 
 [[package]]
 name = "uuid"
-version = "1.5.0"
+version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88ad59a7560b41a70d191093a945f0b87bc1deeda46fb237479708a1d6b6cdfc"
+checksum = "5e395fcf16a7a3d8127ec99782007af141946b4795001f876d54fb0d55978560"
 dependencies = [
  "getrandom",
  "serde",
