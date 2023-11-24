@@ -375,7 +375,9 @@ impl HostFSHandler {
             Ok(_) => {}
         }
 
-        let space_left = msize as usize
+        let read_count = u32::min(msize, msg.count);
+
+        let space_left = read_count as usize
             - size_of::<u32>()          // Rread.size
             - size_of::<MessageType>()  // Rread.typ
             - size_of::<u16>()          // Rread.tag
