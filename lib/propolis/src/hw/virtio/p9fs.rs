@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs;
-use std::io::{Read, Seek};
 use std::mem::size_of;
 use std::num::NonZeroU16;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -21,7 +21,7 @@ use crate::vmm::MemCtx;
 
 use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};
-use super::queue::{write_buf, Chain, VirtQueue, VirtQueues};
+use super::queue::{p9_write_file, write_buf, Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 
 use ispf::WireSize;
@@ -332,7 +332,7 @@ impl HostFSHandler {
         mem: &MemCtx,
         msize: u32,
     ) {
-        let mut file = match fid.file {
+        let file = match fid.file {
             Some(ref f) => f,
             None => {
                 // the file is not open
@@ -366,15 +366,6 @@ impl HostFSHandler {
             return write_buf(buf, chain, mem);
         }
 
-        match file.seek(std::io::SeekFrom::Start(msg.offset)) {
-            Err(e) => {
-                let ecode = e.raw_os_error().unwrap_or(0);
-                warn!(self.log, "read: seek: {:?}: {:?}", &fid.pathbuf, e,);
-                return write_error(ecode as u32, chain, mem);
-            }
-            Ok(_) => {}
-        }
-
         let read_count = u32::min(msize, msg.count);
 
         let space_left = read_count as usize
@@ -387,22 +378,7 @@ impl HostFSHandler {
         let buflen =
             std::cmp::min(space_left, (metadata.len() - msg.offset) as usize);
 
-        let mut content: Vec<u8> = vec![0; buflen];
-
-        match file.read_exact(content.as_mut_slice()) {
-            Err(e) => {
-                let ecode = e.raw_os_error().unwrap_or(0);
-                warn!(self.log, "read: exact: {:?}: {:?}", &fid.pathbuf, e,);
-                return write_error(ecode as u32, chain, mem);
-            }
-            Ok(()) => {}
-        }
-
-        let response = Rread::new(content);
-        let mut out = ispf::to_bytes_le(&response).unwrap();
-        let buf = out.as_mut_slice();
-
-        write_buf(buf, chain, mem);
+        p9_write_file(&file.as_raw_fd(), chain, mem, buflen, msg.offset as i64);
     }
 
     fn do_statfs(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
