@@ -21,7 +21,7 @@ use crate::vmm::MemCtx;
 
 use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};
-use super::queue::{p9_write_file, write_buf, Chain, VirtQueue, VirtQueues};
+use super::queue::{write_buf, Chain, VirtQueue, VirtQueues};
 use super::VirtioDevice;
 
 use ispf::WireSize;
@@ -949,4 +949,55 @@ pub(crate) fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
     let mut out = ispf::to_bytes_le(&msg).unwrap();
     let buf = out.as_mut_slice();
     write_buf(buf, chain, mem);
+}
+
+pub(crate) fn p9_write_file(
+    file: &impl std::os::fd::AsRawFd,
+    chain: &mut Chain,
+    mem: &MemCtx,
+    count: usize,
+    offset: i64,
+) {
+    // Form the rread header. Unfortunately we can't do this with the Rread
+    // structure because the count is baked into the data field which is tied
+    // to the length of the vector and filling that vector is what we're
+    // explicitly trying to avoid here.
+    let sz = size_of::<u32>() + // size
+            size_of::<u8>()  + // typ
+            size_of::<u16>() + // tag
+            size_of::<u32>() +  // data.count
+            count; // data
+    let mut header = Vec::with_capacity(11);
+    header.extend_from_slice(&(sz as u32).to_le_bytes());
+    header.push(p9ds::proto::MessageType::Rread as u8);
+    header.extend_from_slice(&0u16.to_le_bytes());
+    header.extend_from_slice(&(count as u32).to_le_bytes());
+
+    // Send the header to the guest from the buffer constructed above. Then
+    // send the actual file data
+    let mut header_done = false;
+    let mut done = 0;
+    let _total = chain.for_remaining_type(false, |addr, len| {
+        let mut remain = len;
+        let mut copied = 0;
+        if !header_done {
+            mem.write_from(addr, &header, header.len()).unwrap();
+            header_done = true;
+            remain -= header.len();
+            copied += header.len();
+        }
+        let addr = GuestAddr(addr.0 + copied as u64);
+        let sub_mapping =
+            mem.direct_writable_region(&GuestRegion(addr, remain)).unwrap();
+
+        let len = usize::min(remain, count);
+        let off = offset + done as i64;
+        let mapped = sub_mapping.pread(file, len, off).unwrap();
+        copied += mapped;
+        done += mapped;
+
+        let need_more = done < count;
+
+        (copied, need_more)
+    });
 }
