@@ -37,6 +37,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Condvar, Mutex, Weak},
     thread::JoinHandle,
+    time::Duration,
 };
 
 use oximeter::types::ProducerRegistry;
@@ -210,12 +211,21 @@ enum MigrateTaskEvent<T> {
 
 /// An event raised by some component in the instance (e.g. a vCPU or the
 /// chipset) that the state worker must handle.
-#[derive(Clone, Copy, Debug)]
+///
+/// The vCPU-sourced events carry a time element (duration since VM boot) as
+/// emitted by the kernel vmm.  This is used to deduplicate events when all
+/// vCPUs running in-kernel are kicked out for the suspend state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuestEvent {
-    VcpuSuspendHalt(i32),
-    VcpuSuspendReset(i32),
-    VcpuSuspendTripleFault(i32),
+    /// VM entered halt state
+    VcpuSuspendHalt(Duration),
+    /// VM entered reboot state
+    VcpuSuspendReset(Duration),
+    /// vCPU encounted triple-fault
+    VcpuSuspendTripleFault(i32, Duration),
+    /// Chipset signaled halt condition
     ChipsetHalt,
+    /// Chipset signaled reboot condition
     ChipsetReset,
 }
 
@@ -325,26 +335,29 @@ impl SharedVmState {
         }
     }
 
-    pub fn suspend_halt_event(&self, vcpu_id: i32) {
+    /// Add a guest event to the queue, so long as it does not appear to be a
+    /// duplicate of an existing event.
+    fn enqueue_guest_event(&self, event: GuestEvent) {
         let mut inner = self.inner.lock().unwrap();
-        inner.guest_event_queue.push_back(GuestEvent::VcpuSuspendHalt(vcpu_id));
-        self.cv.notify_one();
+        if !inner.guest_event_queue.iter().any(|ev| *ev == event) {
+            // Only queue event if nothing else in the queue is a direct match
+            inner.guest_event_queue.push_back(event);
+            self.cv.notify_one();
+        }
     }
 
-    pub fn suspend_reset_event(&self, vcpu_id: i32) {
-        let mut inner = self.inner.lock().unwrap();
-        inner
-            .guest_event_queue
-            .push_back(GuestEvent::VcpuSuspendReset(vcpu_id));
-        self.cv.notify_one();
+    pub fn suspend_halt_event(&self, when: Duration) {
+        self.enqueue_guest_event(GuestEvent::VcpuSuspendHalt(when));
     }
 
-    pub fn suspend_triple_fault_event(&self, vcpu_id: i32) {
-        let mut inner = self.inner.lock().unwrap();
-        inner
-            .guest_event_queue
-            .push_back(GuestEvent::VcpuSuspendTripleFault(vcpu_id));
-        self.cv.notify_one();
+    pub fn suspend_reset_event(&self, when: Duration) {
+        self.enqueue_guest_event(GuestEvent::VcpuSuspendReset(when));
+    }
+
+    pub fn suspend_triple_fault_event(&self, vcpu_id: i32, when: Duration) {
+        self.enqueue_guest_event(GuestEvent::VcpuSuspendTripleFault(
+            vcpu_id, when,
+        ));
     }
 
     pub fn unhandled_vm_exit(
@@ -369,15 +382,11 @@ pub trait ChipsetEventHandler: Send + Sync {
 
 impl ChipsetEventHandler for SharedVmState {
     fn chipset_halt(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.guest_event_queue.push_back(GuestEvent::ChipsetHalt);
-        self.cv.notify_one();
+        self.enqueue_guest_event(GuestEvent::ChipsetHalt);
     }
 
     fn chipset_reset(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.guest_event_queue.push_back(GuestEvent::ChipsetReset);
-        self.cv.notify_one();
+        self.enqueue_guest_event(GuestEvent::ChipsetReset);
     }
 }
 

@@ -225,23 +225,17 @@ where
 
     fn handle_guest_event(&mut self, event: GuestEvent) -> HandleEventOutcome {
         match event {
-            GuestEvent::VcpuSuspendHalt(vcpu_id) => {
-                info!(
-                    self.log,
-                    "Halting due to halt event on vCPU {}", vcpu_id
-                );
+            GuestEvent::VcpuSuspendHalt(_when) => {
+                info!(self.log, "Halting due to VM suspend event",);
                 self.do_halt();
                 HandleEventOutcome::Exit
             }
-            GuestEvent::VcpuSuspendReset(vcpu_id) => {
-                info!(
-                    self.log,
-                    "Resetting due to reset event on vCPU {}", vcpu_id
-                );
+            GuestEvent::VcpuSuspendReset(_when) => {
+                info!(self.log, "Resetting due to VM suspend event");
                 self.do_reboot();
                 HandleEventOutcome::Continue
             }
-            GuestEvent::VcpuSuspendTripleFault(vcpu_id) => {
+            GuestEvent::VcpuSuspendTripleFault(vcpu_id, _when) => {
                 info!(
                     self.log,
                     "Resetting due to triple fault on vCPU {}", vcpu_id
@@ -703,7 +697,10 @@ mod tests {
         );
         let mut driver = make_state_driver(test_objects);
         driver.driver.handle_event(StateDriverEvent::Guest(
-            GuestEvent::VcpuSuspendTripleFault(0),
+            GuestEvent::VcpuSuspendTripleFault(
+                0,
+                std::time::Duration::default(),
+            ),
         ));
 
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));

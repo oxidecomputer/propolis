@@ -86,7 +86,7 @@ pub union vm_exit_payload {
     pub mmio: vm_mmio,
     pub msr: vm_rwmsr,
     pub inst_emul: vm_inst_emul,
-    pub suspend: c_int,
+    pub suspend: vm_exit_suspend,
     pub paging: vm_paging,
     pub vmx: vm_exit_vmx,
     pub svm: vm_exit_svm,
@@ -138,6 +138,18 @@ pub struct vm_exit_svm {
 pub struct vm_exit_msr {
     pub code: u32,
     pub wval: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_exit_suspend {
+    pub how: c_int,
+    /// Source vCPU ID, if any.
+    /// (-1 for non-vCPU-specific suspend conditions)
+    pub source: c_int,
+    /// When suspend condition was raised, measured in nanoseconds since the VM
+    /// boot time.
+    pub when: u64,
 }
 
 #[repr(C)]
@@ -280,6 +292,7 @@ pub struct vm_nmi {
 pub struct vm_suspend {
     /// Acceptable values defined by `vm_suspend_how`
     pub how: u32,
+    pub source: c_int,
 }
 
 // bit definitions for `vm_reinit.flags`

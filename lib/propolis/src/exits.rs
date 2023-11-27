@@ -5,6 +5,7 @@
 //! Describes transitions from VMs to the VMM.
 
 use std::os::raw::c_void;
+use std::time::Duration;
 
 use bhyve_api::{
     vm_entry, vm_entry_cmds, vm_entry_payload, vm_exit, vm_exitcode,
@@ -26,12 +27,12 @@ impl Default for VmExit {
         Self { rip: 0, inst_len: 0, kind: VmExitKind::Bogus }
     }
 }
-impl From<&vm_exit> for VmExit {
-    fn from(exit: &vm_exit) -> Self {
+impl VmExit {
+    pub fn parse(exit: &vm_exit, api_version: u32) -> Self {
         VmExit {
             rip: exit.rip,
             inst_len: exit.inst_length as u8,
-            kind: VmExitKind::from(exit),
+            kind: VmExitKind::parse(exit, api_version),
         }
     }
 }
@@ -116,20 +117,25 @@ impl From<&bhyve_api::vm_inst_emul> for InstEmul {
 pub enum Suspend {
     Halt,
     Reset,
-    TripleFault,
+    TripleFault(i32),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct SuspendDetail {
+    pub kind: Suspend,
+    pub when: Duration,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum VmExitKind {
     Bogus,
-    ReqIdle,
     Inout(InoutReq),
     Mmio(MmioReq),
     Rdmsr(u32),
     Wrmsr(u32, u64),
     VmxError(VmxDetail),
     SvmError(SvmDetail),
-    Suspended(Suspend),
+    Suspended(SuspendDetail),
     InstEmul(InstEmul),
     Debug,
     Paging(u64, i32),
@@ -140,7 +146,6 @@ impl VmExitKind {
     pub const fn code(&self) -> i32 {
         match self {
             VmExitKind::Bogus => vm_exitcode::VM_EXITCODE_BOGUS as i32,
-            VmExitKind::ReqIdle => vm_exitcode::VM_EXITCODE_REQIDLE as i32,
             VmExitKind::Inout(_) => vm_exitcode::VM_EXITCODE_INOUT as i32,
             VmExitKind::Mmio(_) => vm_exitcode::VM_EXITCODE_MMIO as i32,
             VmExitKind::Rdmsr(_) => vm_exitcode::VM_EXITCODE_RDMSR as i32,
@@ -171,7 +176,7 @@ impl VmExitKind {
             // The checks which would emit such codes are performed only after
             // the rest of the vCPU state is made consistent prior to entry into
             // VM context.
-            VmExitKind::Bogus | VmExitKind::ReqIdle | VmExitKind::Debug => true,
+            VmExitKind::Bogus | VmExitKind::Debug => true,
 
             // When the vCPU(s) enter the suspended state, no further forward
             // progress can be made until the instance is reset.
@@ -196,15 +201,24 @@ impl VmExitKind {
         }
     }
 }
-impl From<&vm_exit> for VmExitKind {
-    fn from(exit: &vm_exit) -> Self {
+impl VmExitKind {
+    pub fn parse(exit: &vm_exit, api_version: u32) -> Self {
         let code = match vm_exitcode::from_repr(exit.exitcode) {
             None => return VmExitKind::Unknown(exit.exitcode),
             Some(c) => c,
         };
         match code {
             vm_exitcode::VM_EXITCODE_BOGUS => VmExitKind::Bogus,
-            vm_exitcode::VM_EXITCODE_REQIDLE => VmExitKind::ReqIdle,
+            vm_exitcode::VM_EXITCODE_DEPRECATED2 => {
+                // Prior to v16, this was REQIDLE, which can be translated into
+                // a BOGUS exit.
+                if api_version < bhyve_api::ApiVersion::V16 as u32 {
+                    VmExitKind::Bogus
+                } else {
+                    // At or after v16, we do not expect to see this code
+                    VmExitKind::Unknown(code as i32)
+                }
+            }
             vm_exitcode::VM_EXITCODE_INOUT => {
                 let inout = unsafe { &exit.u.inout };
                 let port = IoPort { port: inout.port, bytes: inout.bytes };
@@ -250,22 +264,30 @@ impl From<&vm_exit> for VmExitKind {
                 })
             }
             vm_exitcode::VM_EXITCODE_SUSPENDED => {
-                let detail = unsafe { exit.u.suspend };
-                match vm_suspend_how::from_repr(detail as u32) {
-                    Some(vm_suspend_how::VM_SUSPEND_RESET) => {
-                        VmExitKind::Suspended(Suspend::Reset)
-                    }
+                let detail = unsafe { &exit.u.suspend };
+                // Prior to v16, the only field in vm_exit.u.suspend was `how`.
+                // The `source` and `when` fields are valid in v16 or later.
+                let valid_detail =
+                    api_version >= bhyve_api::ApiVersion::V16 as u32;
+                let kind = match vm_suspend_how::from_repr(detail.how as u32) {
+                    Some(vm_suspend_how::VM_SUSPEND_RESET) => Suspend::Reset,
                     Some(vm_suspend_how::VM_SUSPEND_POWEROFF)
-                    | Some(vm_suspend_how::VM_SUSPEND_HALT) => {
-                        VmExitKind::Suspended(Suspend::Halt)
-                    }
+                    | Some(vm_suspend_how::VM_SUSPEND_HALT) => Suspend::Halt,
                     Some(vm_suspend_how::VM_SUSPEND_TRIPLEFAULT) => {
-                        VmExitKind::Suspended(Suspend::TripleFault)
+                        Suspend::TripleFault(
+                            valid_detail.then_some(detail.source).unwrap_or(-1),
+                        )
                     }
                     Some(vm_suspend_how::VM_SUSPEND_NONE) | None => {
-                        panic!("invalid vm_suspend_how: {}", detail);
+                        panic!("invalid vm_suspend_how: {}", detail.how);
                     }
-                }
+                };
+                // Just fake a time if there is not a valid one.
+                let when = Duration::from_nanos(
+                    valid_detail.then_some(detail.when).unwrap_or(0),
+                );
+
+                VmExitKind::Suspended(SuspendDetail { kind, when })
             }
             vm_exitcode::VM_EXITCODE_INST_EMUL => {
                 let inst = unsafe { &exit.u.inst_emul };

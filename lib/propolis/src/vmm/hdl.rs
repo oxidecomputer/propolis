@@ -351,8 +351,15 @@ impl VmmHdl {
         unsafe { self.ioctl(bhyve_api::VM_PMTMR_LOCATE, port as *mut usize) }
     }
 
-    pub fn suspend(&self, how: bhyve_api::vm_suspend_how) -> Result<()> {
-        let mut data = bhyve_api::vm_suspend { how: how as u32 };
+    pub fn suspend(
+        &self,
+        how: bhyve_api::vm_suspend_how,
+        source: Option<i32>,
+    ) -> Result<()> {
+        let mut data = bhyve_api::vm_suspend {
+            how: how as u32,
+            source: source.unwrap_or(-1),
+        };
         unsafe { self.ioctl(bhyve_api::VM_SUSPEND, &mut data) }
     }
 
