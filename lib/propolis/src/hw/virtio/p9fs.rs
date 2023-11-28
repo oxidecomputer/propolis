@@ -985,18 +985,13 @@ fn p9_write_file(
     // send the actual file data
     let mut done = 0;
     let _total = chain.for_remaining_type(false, |addr, len| {
-        let mut copied = 0;
-        let addr = addr.offset::<u8>(copied);
         let sub_mapping = mem.writable_region(&GuestRegion(addr, len)).unwrap();
-
         let len = usize::min(len, count);
         let off = offset + done as i64;
         let mapped = sub_mapping.pread(file, len, off).unwrap();
-        copied += mapped;
         done += mapped;
 
         let need_more = done < count;
-
-        (copied, need_more)
+        (mapped, need_more)
     });
 }
