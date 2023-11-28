@@ -11,7 +11,7 @@ use std::sync::{
 
 use propolis::{
     bhyve_api,
-    exits::{self, VmExitKind},
+    exits::{self, SuspendDetail, VmExitKind},
     vcpu::Vcpu,
     VmEntry,
 };
@@ -166,17 +166,19 @@ impl VcpuTasks {
                                        "rip" => exit.rip);
                         VmEntry::Run
                     }
-                    VmExitKind::Suspended(suspend) => {
-                        match suspend {
+                    VmExitKind::Suspended(SuspendDetail { kind, when }) => {
+                        match kind {
                             exits::Suspend::Halt => {
-                                event_handler.suspend_halt_event(vcpu.id);
+                                event_handler.suspend_halt_event(when);
                             }
                             exits::Suspend::Reset => {
-                                event_handler.suspend_reset_event(vcpu.id);
+                                event_handler.suspend_reset_event(when);
                             }
-                            exits::Suspend::TripleFault => {
-                                event_handler
-                                    .suspend_triple_fault_event(vcpu.id);
+                            exits::Suspend::TripleFault(vcpuid) => {
+                                if vcpuid == -1 || vcpuid == vcpu.id {
+                                    event_handler
+                                        .suspend_triple_fault_event(vcpu.id, when);
+                                }
                             }
                         }
 

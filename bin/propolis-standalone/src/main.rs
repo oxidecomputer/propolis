@@ -70,7 +70,7 @@ impl From<propolis::exits::Suspend> for InstEvent {
         match value {
             exits::Suspend::Halt => Self::Halt,
             exits::Suspend::Reset => Self::Reset,
-            exits::Suspend::TripleFault => Self::TripleFault,
+            exits::Suspend::TripleFault(_) => Self::TripleFault,
         }
     }
 }
@@ -465,7 +465,7 @@ impl Instance {
         task: &propolis::tasks::TaskHdl,
         log: slog::Logger,
     ) {
-        use propolis::exits::VmExitKind;
+        use propolis::exits::{SuspendDetail, VmExitKind};
         use propolis::tasks::Event;
 
         let mut entry = VmEntry::Run;
@@ -562,8 +562,25 @@ impl Instance {
                         );
                         VmEntry::Run
                     }
-                    VmExitKind::Suspended(suspend) => {
-                        inner.eq.push(suspend.into(), EventCtx::Vcpu(vcpu.id));
+                    VmExitKind::Suspended(SuspendDetail {
+                        kind,
+                        when: _when,
+                    }) => {
+                        match kind {
+                            exits::Suspend::Halt | exits::Suspend::Reset => {
+                                inner
+                                    .eq
+                                    .push(kind.into(), EventCtx::Vcpu(vcpu.id));
+                            }
+                            exits::Suspend::TripleFault(vcpuid) => {
+                                if vcpuid == -1 || vcpuid == vcpu.id {
+                                    inner.eq.push(
+                                        kind.into(),
+                                        EventCtx::Vcpu(vcpu.id),
+                                    );
+                                }
+                            }
+                        }
                         task.force_hold();
 
                         // The next entry is unimportant as we have queued a

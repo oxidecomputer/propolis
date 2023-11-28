@@ -246,7 +246,8 @@ impl VmmFd {
                 | ioctls::VM_RESUME
                 | ioctls::VM_DESTROY_SELF
                 | ioctls::VM_SET_AUTODESTRUCT
-                | ioctls::VMM_INTERFACE_VERSION,
+                | ioctls::VMM_INTERFACE_VERSION
+                | ioctls::VM_VCPU_BARRIER,
         )
     }
 }
@@ -540,6 +541,9 @@ unsafe fn ioctl(
 /// been introduced in the various bhyve API versions.
 #[repr(u32)]
 pub enum ApiVersion {
+    /// VM Suspend behavior reworked, `VM_VCPU_BARRIER` ioctl added
+    V16 = 16,
+
     /// Add flag for exit-when-consistent as part of `VM_RUN`
     V15 = 15,
 
@@ -580,7 +584,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V15
+        Self::V16
     }
 }
 
