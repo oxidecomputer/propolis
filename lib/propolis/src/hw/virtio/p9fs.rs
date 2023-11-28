@@ -4,10 +4,9 @@
 
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::fs;
+use std::fs::{self, File};
 use std::mem::size_of;
 use std::num::NonZeroU16;
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -378,7 +377,7 @@ impl HostFSHandler {
         let buflen =
             std::cmp::min(space_left, (metadata.len() - msg.offset) as usize);
 
-        p9_write_file(&file.as_raw_fd(), chain, mem, buflen, msg.offset as i64);
+        p9_write_file(&file, chain, mem, buflen, msg.offset as i64);
     }
 
     fn do_statfs(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
@@ -951,8 +950,8 @@ pub(crate) fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
     write_buf(buf, chain, mem);
 }
 
-pub(crate) fn p9_write_file(
-    file: &impl std::os::fd::AsRawFd,
+fn p9_write_file(
+    file: &File,
     chain: &mut Chain,
     mem: &MemCtx,
     count: usize,
@@ -962,35 +961,35 @@ pub(crate) fn p9_write_file(
     // structure because the count is baked into the data field which is tied
     // to the length of the vector and filling that vector is what we're
     // explicitly trying to avoid here.
-    let sz = size_of::<u32>() + // size
-            size_of::<u8>()  + // typ
-            size_of::<u16>() + // tag
-            size_of::<u32>() +  // data.count
-            count; // data
-    let mut header = Vec::with_capacity(11);
-    header.extend_from_slice(&(sz as u32).to_le_bytes());
-    header.push(p9ds::proto::MessageType::Rread as u8);
-    header.extend_from_slice(&0u16.to_le_bytes());
-    header.extend_from_slice(&(count as u32).to_le_bytes());
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    struct Header {
+        size: u32,
+        typ: u8,
+        tag: u16,
+        count: u32,
+    }
+
+    let size = size_of::<Header>() + count;
+
+    let h = Header {
+        size: size as u32,
+        typ: MessageType::Rread as u8,
+        tag: 0,
+        count: count as u32,
+    };
+
+    chain.write(&h, mem);
 
     // Send the header to the guest from the buffer constructed above. Then
     // send the actual file data
-    let mut header_done = false;
     let mut done = 0;
     let _total = chain.for_remaining_type(false, |addr, len| {
-        let mut remain = len;
         let mut copied = 0;
-        if !header_done {
-            mem.write_from(addr, &header, header.len()).unwrap();
-            header_done = true;
-            remain -= header.len();
-            copied += header.len();
-        }
-        let addr = GuestAddr(addr.0 + copied as u64);
-        let sub_mapping =
-            mem.direct_writable_region(&GuestRegion(addr, remain)).unwrap();
+        let addr = addr.offset::<u8>(copied);
+        let sub_mapping = mem.writable_region(&GuestRegion(addr, len)).unwrap();
 
-        let len = usize::min(remain, count);
+        let len = usize::min(len, count);
         let off = offset + done as i64;
         let mapped = sub_mapping.pread(file, len, off).unwrap();
         copied += mapped;

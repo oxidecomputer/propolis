@@ -752,6 +752,7 @@ pub mod migrate {
     }
 }
 
+#[cfg(feature = "falcon")]
 pub(crate) fn write_buf(buf: &[u8], chain: &mut Chain, mem: &MemCtx) {
     // more copy pasta from Chain::write b/c like Chain:read a
     // statically sized type is expected.
