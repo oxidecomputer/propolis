@@ -4,8 +4,7 @@
 
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::fs;
-use std::io::{Read, Seek};
+use std::fs::{self, File};
 use std::mem::size_of;
 use std::num::NonZeroU16;
 use std::os::unix::ffi::OsStrExt;
@@ -332,7 +331,7 @@ impl HostFSHandler {
         mem: &MemCtx,
         msize: u32,
     ) {
-        let mut file = match fid.file {
+        let file = match fid.file {
             Some(ref f) => f,
             None => {
                 // the file is not open
@@ -366,15 +365,6 @@ impl HostFSHandler {
             return write_buf(buf, chain, mem);
         }
 
-        match file.seek(std::io::SeekFrom::Start(msg.offset)) {
-            Err(e) => {
-                let ecode = e.raw_os_error().unwrap_or(0);
-                warn!(self.log, "read: seek: {:?}: {:?}", &fid.pathbuf, e,);
-                return write_error(ecode as u32, chain, mem);
-            }
-            Ok(_) => {}
-        }
-
         let read_count = u32::min(msize, msg.count);
 
         let space_left = read_count as usize
@@ -387,22 +377,7 @@ impl HostFSHandler {
         let buflen =
             std::cmp::min(space_left, (metadata.len() - msg.offset) as usize);
 
-        let mut content: Vec<u8> = vec![0; buflen];
-
-        match file.read_exact(content.as_mut_slice()) {
-            Err(e) => {
-                let ecode = e.raw_os_error().unwrap_or(0);
-                warn!(self.log, "read: exact: {:?}: {:?}", &fid.pathbuf, e,);
-                return write_error(ecode as u32, chain, mem);
-            }
-            Ok(()) => {}
-        }
-
-        let response = Rread::new(content);
-        let mut out = ispf::to_bytes_le(&response).unwrap();
-        let buf = out.as_mut_slice();
-
-        write_buf(buf, chain, mem);
+        p9_write_file(&file, chain, mem, buflen, msg.offset as i64);
     }
 
     fn do_statfs(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
@@ -973,4 +948,50 @@ pub(crate) fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
     let mut out = ispf::to_bytes_le(&msg).unwrap();
     let buf = out.as_mut_slice();
     write_buf(buf, chain, mem);
+}
+
+fn p9_write_file(
+    file: &File,
+    chain: &mut Chain,
+    mem: &MemCtx,
+    count: usize,
+    offset: i64,
+) {
+    // Form the rread header. Unfortunately we can't do this with the Rread
+    // structure because the count is baked into the data field which is tied
+    // to the length of the vector and filling that vector is what we're
+    // explicitly trying to avoid here.
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    struct Header {
+        size: u32,
+        typ: u8,
+        tag: u16,
+        count: u32,
+    }
+
+    let size = size_of::<Header>() + count;
+
+    let h = Header {
+        size: size as u32,
+        typ: MessageType::Rread as u8,
+        tag: 0,
+        count: count as u32,
+    };
+
+    chain.write(&h, mem);
+
+    // Send the header to the guest from the buffer constructed above. Then
+    // send the actual file data
+    let mut done = 0;
+    let _total = chain.for_remaining_type(false, |addr, len| {
+        let sub_mapping = mem.writable_region(&GuestRegion(addr, len)).unwrap();
+        let len = usize::min(len, count);
+        let off = offset + done as i64;
+        let mapped = sub_mapping.pread(file, len, off).unwrap();
+        done += mapped;
+
+        let need_more = done < count;
+        (mapped, need_more)
+    });
 }
