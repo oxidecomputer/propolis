@@ -126,7 +126,7 @@ pub async fn start_oximeter_server(
 
     let server_info = ProducerEndpoint {
         id,
-        kind: Some(ProducerKind::Instance),
+        kind: ProducerKind::Instance,
         address: my_address,
         base_route: "/collect".to_string(),
         interval: OXIMETER_STAT_INTERVAL,
