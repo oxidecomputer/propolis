@@ -30,12 +30,15 @@
 //! components to raise events for the state driver to process (e.g. a request
 //! from a VM's chipset to reboot or halt the VM).
 
+use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
     net::SocketAddr,
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, Condvar, Mutex, Weak},
+    task::{Context, Poll},
     thread::JoinHandle,
     time::Duration,
 };
@@ -970,6 +973,29 @@ impl StateDriverVmController for VmController {
         })
         .unwrap();
 
+        // Create a Future that returns the name of the entity that has finished
+        // pausing: this allows keeping track of which entities have and haven't
+        // completed pausing yet.
+        struct NamedFuture {
+            name: String,
+            future: BoxFuture<'static, ()>,
+        }
+
+        impl std::future::Future for NamedFuture {
+            type Output = String;
+
+            fn poll(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Self::Output> {
+                let mut_self = self.get_mut();
+                match Pin::new(&mut mut_self.future).poll(cx) {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(()) => Poll::Ready(mut_self.name.clone()),
+                }
+            }
+        }
+
         info!(self.log, "Waiting for entities to pause");
         self.runtime_hdl.block_on(async {
             let mut devices = vec![];
@@ -984,14 +1010,35 @@ impl StateDriverVmController for VmController {
                             "Got paused future from entity {}",
                             record.name()
                         );
-                        devices.push(Arc::clone(record.entity()));
+                        devices.push((
+                            record.name().to_string(),
+                            Arc::clone(record.entity()),
+                        ));
                         Ok::<_, ()>(())
                     },
                 )
                 .unwrap();
 
-            let pause_futures = devices.iter().map(|ent| ent.paused());
-            futures::future::join_all(pause_futures).await;
+            let pause_futures = devices.iter().map(|(name, ent)| NamedFuture {
+                name: name.to_string(),
+                future: ent.paused(),
+            });
+            let mut stream: FuturesUnordered<_> =
+                pause_futures.into_iter().collect();
+
+            loop {
+                match stream.next().await {
+                    Some(name) => {
+                        info!(self.log, "entity {} completed pause", name);
+                    }
+
+                    None => {
+                        // done
+                        info!(self.log, "all entities paused");
+                        break;
+                    }
+                }
+            }
         });
     }
 
