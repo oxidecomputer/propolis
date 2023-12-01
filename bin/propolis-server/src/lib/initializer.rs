@@ -599,17 +599,8 @@ impl<'a> MachineInitializer<'a> {
         // NOTE: SoftNpu squats on com4.
         let pio = &self.machine.bus_pio;
         let port = ibmpc::PORT_COM4;
-
-        // The default uart fifo length of 1 has caused reliability problems.
-        // Messages intermittently come through with a missing bytes. It's
-        // fairly easy to make this happen with a fifo length of one by just
-        // sending a stream of softnpu commands in a loop. With a fifo length
-        // of 10, I've not observed any missing bytes, even under a continuous
-        // stream of management commands.
-        let uart = LpcUart::with_fifo_len(
-            chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap(),
-            10,
-        );
+        let uart =
+            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap());
         uart.set_autodiscard(true);
         LpcUart::attach(&uart, pio, port);
         self.inv.register_instance(&uart, "softnpu-uart")?;

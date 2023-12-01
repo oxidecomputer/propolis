@@ -45,9 +45,8 @@ pub struct Uart {
     rx_fifo: Fifo,
     tx_fifo: Fifo,
 }
-
-impl Default for Uart {
-    fn default() -> Self {
+impl Uart {
+    pub fn new() -> Self {
         Uart {
             reg_intr_enable: 0,
             reg_intr_status: ISRC_NONE,
@@ -62,21 +61,9 @@ impl Default for Uart {
 
             thre_intr: false,
             intr_pin: false,
+            // TODO: Don't deal with "real" sized fifos for now
             rx_fifo: Fifo::new(1),
             tx_fifo: Fifo::new(1),
-        }
-    }
-}
-
-impl Uart {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_fifo_len(fifo_size: usize) -> Self {
-        Self {
-            rx_fifo: Fifo::new(fifo_size),
-            tx_fifo: Fifo::new(fifo_size),
-            ..Default::default()
         }
     }
     /// Read UART register
