@@ -444,7 +444,7 @@ pub struct VmGlobalState {
 }
 
 fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
-    if hdl.api_version()? > ApiVersion::V11 as u32 {
+    if hdl.api_version()? > ApiVersion::V11 {
         let info = hdl.data_op(VDC_VMM_TIME, 1).read::<vdi_time_info_v1>()?;
 
         Ok(VmGlobalState { boot_hrtime: info.vt_boot_hrtime })
@@ -460,7 +460,7 @@ fn export_global(hdl: &VmmHdl) -> std::io::Result<VmGlobalState> {
     }
 }
 fn import_global(hdl: &VmmHdl, state: &VmGlobalState) -> std::io::Result<()> {
-    if hdl.api_version()? > ApiVersion::V11 as u32 {
+    if hdl.api_version()? > ApiVersion::V11 {
         let mut info =
             hdl.data_op(VDC_VMM_TIME, 1).read::<vdi_time_info_v1>()?;
 

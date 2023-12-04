@@ -540,6 +540,7 @@ unsafe fn ioctl(
 /// Convenience constants to provide some documentation on what changes have
 /// been introduced in the various bhyve API versions.
 #[repr(u32)]
+#[derive(Copy, Clone)]
 pub enum ApiVersion {
     /// VM Suspend behavior reworked, `VM_VCPU_BARRIER` ioctl added
     V16 = 16,
@@ -588,6 +589,17 @@ impl ApiVersion {
     }
 }
 
+impl PartialEq<ApiVersion> for u32 {
+    fn eq(&self, other: &ApiVersion) -> bool {
+        *self == *other as u32
+    }
+}
+impl PartialOrd<ApiVersion> for u32 {
+    fn partial_cmp(&self, other: &ApiVersion) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(&(*other as u32)))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -596,5 +608,12 @@ mod test {
     fn latest_api_version() {
         let cur = ApiVersion::current();
         assert_eq!(VMM_CURRENT_INTERFACE_VERSION, cur as u32);
+    }
+
+    #[test]
+    fn u32_comparisons() {
+        assert!(4u32 < ApiVersion::V5);
+        assert!(5u32 == ApiVersion::V5);
+        assert!(6u32 > ApiVersion::V5);
     }
 }

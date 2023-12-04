@@ -316,7 +316,7 @@ impl Vcpu {
         let api_version = self.hdl.api_version()?;
 
         if exit_when_consistent {
-            if api_version >= ApiVersion::V15 as u32 {
+            if api_version >= ApiVersion::V15 {
                 entry.cmd |=
                     bhyve_api::vm_entry_cmds::VEC_FLAG_EXIT_CONSISTENT as u32;
             } else {
@@ -334,7 +334,7 @@ impl Vcpu {
 
     /// Issue a "barrier" for the vCPU, forcing an exit from guest context
     pub fn barrier(&self) -> Result<()> {
-        if self.hdl.api_version()? >= ApiVersion::V16 as u32 {
+        if self.hdl.api_version()? >= ApiVersion::V16 {
             // Use the official barrier operation, if available
             self.hdl
                 .ioctl_usize(bhyve_api::VM_VCPU_BARRIER, self.id as usize)?;
@@ -952,7 +952,7 @@ pub mod migrate {
             // When hosts with illumos#15143 integrated become common, the
             // overall required version for propolis can grow to encompass V10
             // and this check can be elided.
-            if bhyve_api::api_version()? >= ApiVersion::V10 as u32 {
+            if bhyve_api::api_version()? >= ApiVersion::V10 {
                 vcpu.hdl
                     .data_op(bhyve_api::VDC_VMM_ARCH, 1)
                     .for_vcpu(vcpu.id)

@@ -304,14 +304,14 @@ pub fn set_vmm_globals() -> Result<Vec<Box<dyn std::any::Any>>> {
 
     let ver = bhyve_api::api_version()?;
 
-    if ver < ApiVersion::V13 as u32 {
+    if ver < ApiVersion::V13 {
         guards.push(Box::new(KernelValueGuard::new(
             "vmm_allow_state_writes",
             1u32,
         )?));
     }
 
-    if ver < ApiVersion::V8 as u32 {
+    if ver < ApiVersion::V8 {
         // Enable global dirty tracking bit on systems where it exists.
         if let Ok(gpt_track_dirty) =
             KernelValueGuard::new("gpt_track_dirty", 1u8)

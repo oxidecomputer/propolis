@@ -212,7 +212,7 @@ impl VmExitKind {
             vm_exitcode::VM_EXITCODE_DEPRECATED2 => {
                 // Prior to v16, this was REQIDLE, which can be translated into
                 // a BOGUS exit.
-                if api_version < bhyve_api::ApiVersion::V16 as u32 {
+                if api_version < bhyve_api::ApiVersion::V16 {
                     VmExitKind::Bogus
                 } else {
                     // At or after v16, we do not expect to see this code
@@ -267,8 +267,7 @@ impl VmExitKind {
                 let detail = unsafe { &exit.u.suspend };
                 // Prior to v16, the only field in vm_exit.u.suspend was `how`.
                 // The `source` and `when` fields are valid in v16 or later.
-                let valid_detail =
-                    api_version >= bhyve_api::ApiVersion::V16 as u32;
+                let valid_detail = api_version >= bhyve_api::ApiVersion::V16;
                 let kind = match vm_suspend_how::from_repr(detail.how as u32) {
                     Some(vm_suspend_how::VM_SUSPEND_RESET) => Suspend::Reset,
                     Some(vm_suspend_how::VM_SUSPEND_POWEROFF)

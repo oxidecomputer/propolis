@@ -105,6 +105,7 @@ unsafe fn ioctl(
 /// Convenience constants to provide some documentation on what changes have
 /// been introduced in the various viona API versions.
 #[repr(u32)]
+#[derive(Copy, Clone)]
 pub enum ApiVersion {
     /// Adds support for non-vnic datalink devices
     V2 = 2,
@@ -117,6 +118,16 @@ impl ApiVersion {
         Self::V2
     }
 }
+impl PartialEq<ApiVersion> for u32 {
+    fn eq(&self, other: &ApiVersion) -> bool {
+        *self == *other as u32
+    }
+}
+impl PartialOrd<ApiVersion> for u32 {
+    fn partial_cmp(&self, other: &ApiVersion) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(&(*other as u32)))
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -126,5 +137,12 @@ mod test {
     fn latest_api_version() {
         let cur = ApiVersion::current();
         assert_eq!(VIONA_CURRENT_INTERFACE_VERSION, cur as u32);
+    }
+
+    #[test]
+    fn u32_comparisons() {
+        assert!(1u32 < ApiVersion::V2);
+        assert!(2u32 == ApiVersion::V2);
+        assert!(3u32 > ApiVersion::V2);
     }
 }
