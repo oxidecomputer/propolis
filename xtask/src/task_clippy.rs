@@ -8,13 +8,16 @@ use anyhow::{bail, Result};
 
 use crate::util::*;
 
-pub(crate) fn cmd_clippy(strict: bool) -> Result<()> {
+pub(crate) fn cmd_clippy(strict: bool, quiet: bool) -> Result<()> {
     let wroot = workspace_root()?;
 
     let run_clippy = |args: &[&str]| -> Result<bool> {
         let mut cmd = Command::new("cargo");
         cmd.arg("clippy").arg("--no-deps").args(args).current_dir(&wroot);
 
+        if quiet {
+            cmd.arg("--quiet");
+        }
         if strict {
             cmd.args(["--", "-Dwarnings"]);
         }
@@ -53,7 +56,7 @@ pub(crate) fn cmd_clippy(strict: bool) -> Result<()> {
     failed |= run_clippy(&["-p", "phd-runner"])?;
 
     if failed {
-        bail!("Clippy failures detected")
+        bail!("Clippy failure(s) detected")
     }
 
     Ok(())

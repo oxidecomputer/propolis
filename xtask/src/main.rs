@@ -6,7 +6,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod task_clippy;
+mod task_fmt;
 mod task_license;
+mod task_prepush;
 mod util;
 
 #[derive(Parser)]
@@ -23,14 +25,36 @@ enum Cmds {
         /// Treat warnings as errors
         #[arg(short, long)]
         strict: bool,
+
+        /// Suppress non-essential output
+        #[arg(short, long)]
+        quiet: bool,
     },
+    /// Check style according to `rustfmt`
+    Fmt,
     /// (Crudely) Check for appropriate license headers
     License,
+    /// Preform pre-push checks (clippy, license, fmt, etc)
+    Prepush,
 }
 
 fn main() -> Result<()> {
     match Args::parse().cmd {
-        Cmds::Clippy { strict } => task_clippy::cmd_clippy(strict),
-        Cmds::License => task_license::cmd_license(),
+        Cmds::Clippy { strict, quiet } => {
+            task_clippy::cmd_clippy(strict, quiet)
+        }
+        Cmds::Fmt => task_fmt::cmd_fmt(),
+        Cmds::License => {
+            task_license::cmd_license()?;
+
+            println!("License checks pass");
+            Ok(())
+        }
+        Cmds::Prepush => {
+            task_prepush::cmd_prepush()?;
+
+            println!("Pre-push checks pass");
+            Ok(())
+        }
     }
 }

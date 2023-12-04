@@ -109,6 +109,5 @@ pub(crate) fn cmd_license() -> Result<()> {
         bail!("License errors detected")
     }
 
-    println!("License checks happy!");
     Ok(())
 }
