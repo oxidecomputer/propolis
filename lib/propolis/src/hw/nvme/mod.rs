@@ -618,6 +618,8 @@ impl PciNvme {
 
         let cur = state.ctrl.cc;
         if new.enabled() && !cur.enabled() {
+            slog::info!(self.log, "Enabling controller");
+
             let mem = self.mem_access();
             let mem = mem.ok_or(NvmeError::MemoryInaccessible)?;
 
@@ -633,6 +635,8 @@ impl PciNvme {
                 state.ctrl.csts.set_ready(true);
             }
         } else if !new.enabled() && cur.enabled() {
+            slog::info!(self.log, "Disabling controller");
+
             // Reset controller state which will set CC.EN=0 and CSTS.RDY=0
             state.reset();
         }
