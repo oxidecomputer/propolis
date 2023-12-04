@@ -12,11 +12,18 @@ use super::bits::*;
 use super::queue::{QueueId, ADMIN_QUEUE_ID};
 use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES};
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn nvme_abort(cid: u16, sqid: u16) {}
+}
+
 impl NvmeCtrl {
     /// Abort command.
     ///
     /// See NVMe 1.0e Section 5.1 Abort command
     pub(super) fn acmd_abort(&self, cmd: &cmds::AbortCmd) -> cmds::Completion {
+        probes::nvme_abort!(|| (cmd.cid, cmd.sqid));
+
         // Verify the SQ in question currently exists
         let sqid = cmd.sqid as usize;
         if sqid >= MAX_NUM_QUEUES || self.sqs[sqid].is_none() {
