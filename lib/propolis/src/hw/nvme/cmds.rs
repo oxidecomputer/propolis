@@ -45,7 +45,7 @@ pub enum AdminCmd {
     /// Identify Command
     Identify(IdentifyCmd),
     /// Abort Command
-    Abort,
+    Abort(AbortCmd),
     /// Set Features Command
     SetFeatures(SetFeaturesCmd),
     /// Get Features Command
@@ -110,7 +110,10 @@ impl AdminCmd {
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
-            bits::ADMIN_OPC_ABORT => AdminCmd::Abort,
+            bits::ADMIN_OPC_ABORT => AdminCmd::Abort(AbortCmd {
+                cid: (raw.cdw10 >> 16) as u16,
+                sqid: raw.cdw10 as u16,
+            }),
             bits::ADMIN_OPC_SET_FEATURES => {
                 AdminCmd::SetFeatures(SetFeaturesCmd {
                     fid: FeatureIdent::from((raw.cdw10 as u8, raw.cdw11)),
@@ -327,6 +330,17 @@ impl IdentifyCmd {
     pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(PAGE_SIZE as u64, self.prp1, self.prp2, mem)
     }
+}
+
+/// Abort Command Parameters
+#[derive(Debug)]
+pub struct AbortCmd {
+    /// The command identifier of the command to be aborted.
+    pub cid: u16,
+
+    /// The ID of the Submission Queue asssociated with the command to be
+    /// aborted.
+    pub sqid: u16,
 }
 
 /// Set Features Command Parameters

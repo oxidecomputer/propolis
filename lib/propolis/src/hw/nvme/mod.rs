@@ -618,6 +618,8 @@ impl PciNvme {
 
         let cur = state.ctrl.cc;
         if new.enabled() && !cur.enabled() {
+            slog::info!(self.log, "Enabling controller");
+
             let mem = self.mem_access();
             let mem = mem.ok_or(NvmeError::MemoryInaccessible)?;
 
@@ -633,6 +635,8 @@ impl PciNvme {
                 state.ctrl.csts.set_ready(true);
             }
         } else if !new.enabled() && cur.enabled() {
+            slog::info!(self.log, "Disabling controller");
+
             // Reset controller state which will set CC.EN=0 and CSTS.RDY=0
             state.reset();
         }
@@ -885,6 +889,7 @@ impl PciNvme {
                 AdminCmd::Unknown(sub)
             });
             let comp = match cmd {
+                AdminCmd::Abort(cmd) => state.acmd_abort(&cmd),
                 AdminCmd::CreateIOCompQ(cmd) => {
                     state.acmd_create_io_cq(&cmd, &mem)
                 }
@@ -910,9 +915,7 @@ impl PciNvme {
                     // this can detect it and stop posting async events.
                     cmds::Completion::generic_err_dnr(bits::STS_INVAL_OPC)
                 }
-                AdminCmd::Abort
-                | AdminCmd::GetFeatures
-                | AdminCmd::Unknown(_) => {
+                AdminCmd::GetFeatures | AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
             };
