@@ -885,6 +885,7 @@ impl PciNvme {
                 AdminCmd::Unknown(sub)
             });
             let comp = match cmd {
+                AdminCmd::Abort(cmd) => state.acmd_abort(&cmd),
                 AdminCmd::CreateIOCompQ(cmd) => {
                     state.acmd_create_io_cq(&cmd, &mem)
                 }
@@ -910,9 +911,7 @@ impl PciNvme {
                     // this can detect it and stop posting async events.
                     cmds::Completion::generic_err_dnr(bits::STS_INVAL_OPC)
                 }
-                AdminCmd::Abort
-                | AdminCmd::GetFeatures
-                | AdminCmd::Unknown(_) => {
+                AdminCmd::GetFeatures | AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
             };

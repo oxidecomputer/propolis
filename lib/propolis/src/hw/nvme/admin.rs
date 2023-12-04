@@ -10,9 +10,28 @@ use crate::vmm::MemCtx;
 
 use super::bits::*;
 use super::queue::{QueueId, ADMIN_QUEUE_ID};
-use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES};
+use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES};
 
 impl NvmeCtrl {
+    /// Abort command.
+    ///
+    /// See NVMe 1.0e Section 5.1 Abort command
+    pub(super) fn acmd_abort(&self, cmd: &cmds::AbortCmd) -> cmds::Completion {
+        // Verify the SQ in question currently exists
+        let sqid = cmd.sqid as usize;
+        if sqid >= MAX_NUM_QUEUES || self.sqs[sqid].is_none() {
+            return cmds::Completion::generic_err_dnr(STS_INVAL_FIELD);
+        }
+
+        // TODO: Support aborting in-flight commands.
+
+        // The NVMe spec does not make any guarantees about being able to
+        // successfully abort commands and allows indicating a failure to
+        // do so back to the host software. We do so here by returning a
+        // "success" value with bit 0 set to '1'.
+        cmds::Completion::success_val(1)
+    }
+
     /// Service Create I/O Completion Queue command.
     ///
     /// See NVMe 1.0e Section 5.3 Create I/O Completion Queue command
