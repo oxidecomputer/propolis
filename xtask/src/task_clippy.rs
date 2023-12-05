@@ -39,16 +39,17 @@ pub(crate) fn cmd_clippy(strict: bool, quiet: bool) -> Result<()> {
         run_clippy(&["-p", "propolis-server", "--features", "omicron-build"])?;
 
     // Check the Falcon bits
-    failed |= run_clippy(&[
-        "--features",
-        "falcon",
-        "-p",
-        "propolis-server",
-        "-p",
-        "propolis-client",
-        "--target",
-        "x86_64-unknown-illumos",
-    ])?;
+    #[cfg(target_os = "illumos")]
+    {
+        failed |= run_clippy(&[
+            "--features",
+            "falcon",
+            "-p",
+            "propolis-server",
+            "-p",
+            "propolis-client",
+        ])?;
+    }
 
     // Check the mock server
     failed |= run_clippy(&["-p", "propolis-mock-server"])?;
