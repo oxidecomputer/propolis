@@ -28,6 +28,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
       with:
         toolchain: stable
+        target: x86_64-unknown-illumos
     - name: Report clippy version
       run: cargo clippy -- --version
     - name: Check clippy

@@ -46,6 +46,8 @@ pub(crate) fn cmd_clippy(strict: bool, quiet: bool) -> Result<()> {
         "propolis-server",
         "-p",
         "propolis-client",
+        "--target",
+        "x86_64-unknown-illumos",
     ])?;
 
     // Check the mock server
