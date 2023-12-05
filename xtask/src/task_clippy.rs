@@ -13,13 +13,16 @@ pub(crate) fn cmd_clippy(strict: bool, quiet: bool) -> Result<()> {
 
     let run_clippy = |args: &[&str]| -> Result<bool> {
         let mut cmd = Command::new("cargo");
-        cmd.arg("clippy").arg("--no-deps").args(args).current_dir(&wroot);
+        cmd.arg("clippy").args(args).current_dir(&wroot);
 
         if quiet {
             cmd.arg("--quiet");
         }
+
+        // no-deps and subsequent options must follow `--`
+        cmd.args(["--", "--no-deps"]);
         if strict {
-            cmd.args(["--", "-Dwarnings"]);
+            cmd.arg("-Dwarnings");
         }
 
         let status = cmd.spawn()?.wait()?;
