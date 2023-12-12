@@ -900,6 +900,7 @@ impl PciNvme {
                     state.acmd_get_log_page(&cmd, &mem)
                 }
                 AdminCmd::Identify(cmd) => state.acmd_identify(&cmd, &mem),
+                AdminCmd::GetFeatures(cmd) => state.acmd_get_features(&cmd),
                 AdminCmd::SetFeatures(cmd) => state.acmd_set_features(&cmd),
                 AdminCmd::DeleteIOCompQ(cqid) => state.acmd_delete_io_cq(cqid),
                 AdminCmd::DeleteIOSubQ(sqid) => state.acmd_delete_io_sq(sqid),
@@ -913,9 +914,9 @@ impl PciNvme {
                     // but returns invalid opcode with the do-not-retry flag
                     // set. Do the same so that guest drivers that check for
                     // this can detect it and stop posting async events.
-                    cmds::Completion::generic_err_dnr(bits::STS_INVAL_OPC)
+                    cmds::Completion::generic_err(bits::STS_INVAL_OPC).dnr()
                 }
-                AdminCmd::GetFeatures | AdminCmd::Unknown(_) => {
+                AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
             };
