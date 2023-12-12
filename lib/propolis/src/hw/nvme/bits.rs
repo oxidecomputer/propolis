@@ -645,6 +645,11 @@ pub const FEAT_ID_ARBITRATION: u8 = 0x01;
 /// See NVMe 1.0e Section 5.12.1.2 Power Management (Feature Identifier 02h)
 pub const FEAT_ID_POWER_MGMT: u8 = 0x02;
 
+/// LBA Range Type
+///
+/// See NVMe 1.0e Section 5.12.1.3 LBA Range Type (Feature Identifier 03h)
+pub const FEAT_ID_LBA_RANGE_TYPE: u8 = 0x03;
+
 /// Temperature Threshold
 ///
 /// See NVMe 1.0e Section 5.12.1.4 Arbitration (Feature Identifier 04h)
@@ -654,6 +659,11 @@ pub const FEAT_ID_TEMP_THRESH: u8 = 0x04;
 ///
 /// See NVMe 1.0e Section 5.12.1.5 Error Recovery (Feature Identifier 05h)
 pub const FEAT_ID_ERROR_RECOVERY: u8 = 0x05;
+
+/// Volatile Write Cache
+///
+/// See NVMe 1.0e Section 5.12.1.6 Volatile Write Cache (Feature Identifier 06h)
+pub const FEAT_ID_VOLATILE_WRITE_CACHE: u8 = 0x06;
 
 /// Number of Queues
 ///

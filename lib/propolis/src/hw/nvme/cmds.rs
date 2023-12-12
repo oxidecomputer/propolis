@@ -8,6 +8,7 @@ use crate::block;
 use crate::common::*;
 use crate::vmm::MemCtx;
 
+use bitstruct::bitstruct;
 use thiserror::Error;
 
 #[usdt::provider(provider = "propolis")]
@@ -49,7 +50,7 @@ pub enum AdminCmd {
     /// Set Features Command
     SetFeatures(SetFeaturesCmd),
     /// Get Features Command
-    GetFeatures,
+    GetFeatures(GetFeaturesCmd),
     /// Asynchronous Event Request Command
     AsyncEventReq,
     /// An unknown admin command
@@ -116,10 +117,16 @@ impl AdminCmd {
             }),
             bits::ADMIN_OPC_SET_FEATURES => {
                 AdminCmd::SetFeatures(SetFeaturesCmd {
-                    fid: FeatureIdent::from((raw.cdw10 as u8, raw.cdw11)),
+                    fid: FeatureIdent::from(raw.cdw10 as u8),
+                    cdw11: raw.cdw11,
                 })
             }
-            bits::ADMIN_OPC_GET_FEATURES => AdminCmd::GetFeatures,
+            bits::ADMIN_OPC_GET_FEATURES => {
+                AdminCmd::GetFeatures(GetFeaturesCmd {
+                    fid: FeatureIdent::from(raw.cdw10 as u8),
+                    cdw11: raw.cdw11,
+                })
+            }
             bits::ADMIN_OPC_ASYNC_EVENT_REQ => AdminCmd::AsyncEventReq,
             _ => AdminCmd::Unknown(raw),
         };
@@ -343,6 +350,17 @@ pub struct AbortCmd {
     pub sqid: u16,
 }
 
+/// Get Features Command Parameters
+#[derive(Debug)]
+pub struct GetFeaturesCmd {
+    /// Feature Identifier (FID)
+    ///
+    /// The feature that attributes are being specified for.
+    pub fid: FeatureIdent,
+
+    pub cdw11: u32,
+}
+
 /// Set Features Command Parameters
 #[derive(Debug)]
 pub struct SetFeaturesCmd {
@@ -350,6 +368,8 @@ pub struct SetFeaturesCmd {
     ///
     /// The feature that attributes are being specified for.
     pub fid: FeatureIdent,
+
+    pub cdw11: u32,
 }
 
 /// Feature Identifiers
@@ -389,16 +409,7 @@ pub enum FeatureIdent {
     ///
     /// Indicates the number of queues requested to the controller.
     /// Only allowed during initialization and cannot change between resets.
-    NumberOfQueues {
-        /// Number of I/O Completion Queues Requested (NCQR)
-        ///
-        /// Does not include Admin Completion Queue. Minimum of 2 shall be requested.
-        ncqr: u16,
-        /// Number of I/O Submission Queues Requested
-        ///
-        /// Does not include Admin Submission Queue. Minimum of 2 shall be requested.
-        nsqr: u16,
-    },
+    NumberOfQueues,
     /// Interrupt Coalescing
     ///
     /// Allows configuring interrupt coalescing settings.
@@ -424,31 +435,198 @@ pub enum FeatureIdent {
     Vendor(u8),
 }
 
-impl From<(u8, u32)> for FeatureIdent {
-    fn from((id, cdw11): (u8, u32)) -> Self {
+impl From<u8> for FeatureIdent {
+    fn from(fid: u8) -> Self {
+        use super::bits::*;
         use FeatureIdent::*;
-        match id {
+        match fid {
             0 => Reserved,
-            1 => Arbitration,
-            2 => PowerManagement,
-            3 => LbaRangeType,
-            4 => TemperatureThreshold,
-            5 => ErrorRecovery,
-            6 => VolatileWriteCache,
-            7 => NumberOfQueues {
-                // Convert from 0's based values
-                ncqr: (cdw11 >> 16) as u16 + 1,
-                nsqr: cdw11 as u16 + 1,
-            },
-            8 => InterruptCoalescing,
-            9 => InterruptVectorConfiguration,
-            0xA => WriteAtomicity,
-            0xB => AsynchronousEventConfiguration,
+            FEAT_ID_ARBITRATION => Arbitration,
+            FEAT_ID_POWER_MGMT => PowerManagement,
+            FEAT_ID_LBA_RANGE_TYPE => LbaRangeType,
+            FEAT_ID_TEMP_THRESH => TemperatureThreshold,
+            FEAT_ID_ERROR_RECOVERY => ErrorRecovery,
+            FEAT_ID_VOLATILE_WRITE_CACHE => VolatileWriteCache,
+            FEAT_ID_NUM_QUEUES => NumberOfQueues,
+            FEAT_ID_INTR_COALESCE => InterruptCoalescing,
+            FEAT_ID_INTR_VEC_CFG => InterruptVectorConfiguration,
+            FEAT_ID_WRITE_ATOMIC => WriteAtomicity,
+            FEAT_ID_ASYNC_EVENT_CFG => AsynchronousEventConfiguration,
             0xC..=0x7F => Reserved,
             0x80 => SoftwareProgressMarker,
             0x81..=0xBF => Reserved,
-            0xC0..=0xFF => Vendor(id),
+            0xC0..=0xFF => Vendor(fid),
         }
+    }
+}
+
+bitstruct! {
+    #[derive(Clone, Copy, Default)]
+    pub struct FeatTemperatureThreshold(pub u32) {
+        /// Temperature Threshold (TMPTH)
+        pub tmpth: u16 = 0..16;
+
+        /// Threshold Temperature Select (TMPSEL)
+        pub tmpsel: ThresholdTemperatureSelect = 16..20;
+
+        /// Threshold Type Select (THSEL)
+        pub thsel: ThresholdTypeSelect = 20..22;
+
+        /// Reserved
+        reserved: u32 = 22..32;
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum ThresholdTemperatureSelect {
+    Composite,
+    Sensor1,
+    Sensor2,
+    Sensor3,
+    Sensor4,
+    Sensor5,
+    Sensor6,
+    Sensor7,
+    Sensor8,
+    Reserved(u8),
+    All,
+}
+impl bitstruct::FromRaw<u8, ThresholdTemperatureSelect>
+    for FeatTemperatureThreshold
+{
+    fn from_raw(raw: u8) -> ThresholdTemperatureSelect {
+        use ThresholdTemperatureSelect::*;
+        match raw {
+            0b0000 => Composite,
+            0b0001 => Sensor1,
+            0b0010 => Sensor2,
+            0b0011 => Sensor3,
+            0b0100 => Sensor4,
+            0b0101 => Sensor5,
+            0b0110 => Sensor6,
+            0b0111 => Sensor7,
+            0b1000 => Sensor8,
+            0b1111 => All,
+            val => Reserved(val),
+        }
+    }
+}
+impl bitstruct::IntoRaw<u8, ThresholdTemperatureSelect>
+    for FeatTemperatureThreshold
+{
+    fn into_raw(target: ThresholdTemperatureSelect) -> u8 {
+        use ThresholdTemperatureSelect::*;
+        match target {
+            Composite => 0b0000,
+            Sensor1 => 0b0001,
+            Sensor2 => 0b0010,
+            Sensor3 => 0b0011,
+            Sensor4 => 0b0100,
+            Sensor5 => 0b0101,
+            Sensor6 => 0b0110,
+            Sensor7 => 0b0111,
+            Sensor8 => 0b1000,
+            All => 0b1111,
+            Reserved(val) => val,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum ThresholdTypeSelect {
+    Over,
+    Under,
+    Reserved(u8),
+}
+impl bitstruct::FromRaw<u8, ThresholdTypeSelect> for FeatTemperatureThreshold {
+    fn from_raw(raw: u8) -> ThresholdTypeSelect {
+        use ThresholdTypeSelect::*;
+        match raw {
+            0b00 => Over,
+            0b01 => Under,
+            val => Reserved(val),
+        }
+    }
+}
+impl bitstruct::IntoRaw<u8, ThresholdTypeSelect> for FeatTemperatureThreshold {
+    fn into_raw(target: ThresholdTypeSelect) -> u8 {
+        use ThresholdTypeSelect::*;
+        match target {
+            Over => 0b00,
+            Under => 0b01,
+            Reserved(val) => val,
+        }
+    }
+}
+
+pub(crate) struct FeatVolatileWriteCache {
+    pub wce: bool,
+}
+impl From<u32> for FeatVolatileWriteCache {
+    fn from(cdw11: u32) -> Self {
+        Self { wce: cdw11 & 0b1 != 0 }
+    }
+}
+impl From<FeatVolatileWriteCache> for u32 {
+    fn from(value: FeatVolatileWriteCache) -> Self {
+        value.wce as u32
+    }
+}
+
+pub(crate) struct FeatNumberQueues {
+    /// Number of I/O Completion Queues Requested/Allocated (NCQR/NCQA)
+    ///
+    /// Does not include Admin Completion Queue. Minimum of 2 shall be requested.
+    pub ncq: u16,
+    /// Number of I/O Submission Queues Requested/Allocated (NSQR/NSQA)
+    ///
+    /// Does not include Admin Submission Queue. Minimum of 2 shall be requested.
+    pub nsq: u16,
+}
+impl TryFrom<u32> for FeatNumberQueues {
+    type Error = ();
+
+    fn try_from(cdw11: u32) -> Result<Self, Self::Error> {
+        let ncqr = (cdw11 >> 16) as u16;
+        let nsqr = cdw11 as u16;
+
+        if ncqr == u16::MAX || nsqr == u16::MAX {
+            // A max value of 65534 is allowed, implying 65535 queues of the
+            // respective type(s).  Reject requests which exceed that.
+            Err(())
+        } else {
+            Ok(Self {
+                // Convert from 0's based values
+                ncq: ncqr + 1,
+                nsq: nsqr + 1,
+            })
+        }
+    }
+}
+// Usable for both the return from SetFeature and GetFeature for NumberOfQueues,
+// we reuse this struct as the format is the same.
+impl From<FeatNumberQueues> for u32 {
+    fn from(value: FeatNumberQueues) -> Self {
+        // Convert to 0's based DW0
+        (value.ncq.saturating_sub(1) as u32) << 16
+            | value.nsq.saturating_sub(1) as u32
+    }
+}
+
+pub(crate) struct FeatInterruptVectorConfig {
+    /// Interrupt Vector (IV)
+    pub iv: u16,
+    /// Coalescing Disable (CD)
+    pub cd: bool,
+}
+impl From<u32> for FeatInterruptVectorConfig {
+    fn from(cdw11: u32) -> Self {
+        Self { iv: cdw11 as u16, cd: cdw11 & (1 << 16) != 0 }
+    }
+}
+impl From<FeatInterruptVectorConfig> for u32 {
+    fn from(value: FeatInterruptVectorConfig) -> Self {
+        value.iv as u32 | (value.cd as u32) << 16
     }
 }
 
@@ -780,7 +958,6 @@ impl Completion {
             status: Self::status_field(
                 StatusCodeType::Generic,
                 bits::STS_SUCCESS,
-                false,
             ),
         }
     }
@@ -792,7 +969,6 @@ impl Completion {
             status: Self::status_field(
                 StatusCodeType::Generic,
                 bits::STS_SUCCESS,
-                false,
             ),
         }
     }
@@ -802,7 +978,7 @@ impl Completion {
         // success doesn't belong in an error
         assert_ne!(status, bits::STS_SUCCESS);
 
-        Self { dw0: 0, status: Self::status_field(sct, status, false) }
+        Self { dw0: 0, status: Self::status_field(sct, status) }
     }
 
     /// Create a generic error Completion result with a specific status
@@ -812,26 +988,25 @@ impl Completion {
 
         Self {
             dw0: 0,
-            status: Self::status_field(StatusCodeType::Generic, status, false),
+            status: Self::status_field(StatusCodeType::Generic, status),
         }
     }
 
-    /// Create a generic error Completion result with a specific status
-    /// and the do-not-retry bit set.
-    pub fn generic_err_dnr(status: u8) -> Self {
-        // success doesn't belong in an error
-        assert_ne!(status, bits::STS_SUCCESS);
-
-        Self {
-            dw0: 0,
-            status: Self::status_field(StatusCodeType::Generic, status, true),
-        }
+    /// Set do-not-retry bit on a Completion already bearing an error status
+    pub fn dnr(mut self) -> Self {
+        assert_ne!(
+            (self.status >> 1) as u8,
+            bits::STS_SUCCESS,
+            "cannot set DNR on non-error"
+        );
+        self.status |= 1 << 15;
+        self
     }
 
     /// Helper method to combine [StatusCodeType] and status code
-    fn status_field(sct: StatusCodeType, sc: u8, dnr: bool) -> u16 {
-        (sc as u16) << 1 | ((sct as u8) as u16) << 9 | (dnr as u16) << 15
-        // | (more as u16) << 14
+    const fn status_field(sct: StatusCodeType, sc: u8) -> u16 {
+        (sc as u16) << 1 | ((sct as u8) as u16) << 9
+        // (more as u16) << 14 | (dnr as u16) << 15
     }
 }
 

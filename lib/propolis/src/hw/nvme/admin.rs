@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::cmp::min;
 use std::mem::size_of;
 
 use crate::common::{GuestAddr, GuestRegion, PAGE_SIZE};
@@ -27,7 +26,7 @@ impl NvmeCtrl {
         // Verify the SQ in question currently exists
         let sqid = cmd.sqid as usize;
         if sqid >= MAX_NUM_QUEUES || self.sqs[sqid].is_none() {
-            return cmds::Completion::generic_err_dnr(STS_INVAL_FIELD);
+            return cmds::Completion::generic_err(STS_INVAL_FIELD).dnr();
         }
 
         // TODO: Support aborting in-flight commands.
@@ -278,6 +277,118 @@ impl NvmeCtrl {
         }
     }
 
+    /// Service Get Features command.
+    ///
+    /// See NVMe 1.0e Section 5.9 Get Features command
+    pub(super) fn acmd_get_features(
+        &self,
+        cmd: &cmds::GetFeaturesCmd,
+    ) -> cmds::Completion {
+        match cmd.fid {
+            // Mandatory features
+            cmds::FeatureIdent::Arbitration => {
+                // no-limit for arbitration burst, all other fields zeroed
+                let val = 0b111;
+                cmds::Completion::success_val(val)
+            }
+            cmds::FeatureIdent::PowerManagement => {
+                // Empty value with unspecified workload hint
+                cmds::Completion::success_val(0)
+            }
+            cmds::FeatureIdent::TemperatureThreshold => {
+                let query = cmds::FeatTemperatureThreshold(cmd.cdw11);
+
+                use cmds::{
+                    ThresholdTemperatureSelect as TempSel,
+                    ThresholdTypeSelect as TypeSel,
+                };
+                match (query.tmpsel(), query.thsel()) {
+                    (TempSel::Reserved(_), _) | (_, TypeSel::Reserved(_)) => {
+                        // squawk about reserved bits being set
+                        cmds::Completion::generic_err(STS_INVAL_FIELD)
+                    }
+                    (TempSel::Composite, typesel) => {
+                        const KELVIN_0C: u16 = 273;
+                        let mut out = cmds::FeatTemperatureThreshold(0);
+                        out.set_tmpsel(TempSel::Composite);
+                        out.set_thsel(typesel);
+                        match typesel {
+                            TypeSel::Over => out.set_tmpth(KELVIN_0C + 100),
+                            TypeSel::Under => out.set_tmpth(0),
+                            TypeSel::Reserved(_) => unreachable!(),
+                        }
+                        cmds::Completion::success_val(out.0)
+                    }
+                    (tempsel, typesel) => {
+                        let mut out = cmds::FeatTemperatureThreshold(0);
+                        out.set_tmpsel(tempsel);
+                        out.set_thsel(typesel);
+                        match typesel {
+                            TypeSel::Over => out.set_tmpth(0xffff),
+                            TypeSel::Under => out.set_tmpth(0),
+                            TypeSel::Reserved(_) => unreachable!(),
+                        }
+                        cmds::Completion::success_val(out.0)
+                    }
+                }
+            }
+            cmds::FeatureIdent::ErrorRecovery => {
+                // Empty value indicating we do none of this
+                cmds::Completion::success_val(0)
+            }
+            cmds::FeatureIdent::NumberOfQueues => {
+                // Until we track the maximums set by the guest, just report the
+                // maximums supported
+                cmds::Completion::success_val(
+                    cmds::FeatNumberQueues {
+                        ncq: MAX_NUM_IO_QUEUES as u16,
+                        nsq: MAX_NUM_IO_QUEUES as u16,
+                    }
+                    .into(),
+                )
+            }
+            cmds::FeatureIdent::InterruptCoalescing => {
+                // A value of 0 indicates no configured coalescing
+                cmds::Completion::success_val(0)
+            }
+            cmds::FeatureIdent::InterruptVectorConfiguration => {
+                let cfg: cmds::FeatInterruptVectorConfig = cmd.cdw11.into();
+
+                // report disabled coalescing for all vectors
+                cmds::Completion::success_val(
+                    cmds::FeatInterruptVectorConfig { iv: cfg.iv, cd: true }
+                        .into(),
+                )
+            }
+            cmds::FeatureIdent::WriteAtomicity => {
+                // Value of 0 indicates no Disable Normal setting
+                cmds::Completion::success_val(0)
+            }
+            cmds::FeatureIdent::AsynchronousEventConfiguration => {
+                // None of the defined events result in AEN transmission
+                cmds::Completion::success_val(0)
+            }
+
+            // Optional features
+            cmds::FeatureIdent::VolatileWriteCache => {
+                // TODO: wire into actual write cache state
+                //
+                // Until that is done, indicate an enabled write cache to ensure
+                // IO flushes for the backends which require it for consistency.
+                cmds::Completion::success_val(
+                    cmds::FeatVolatileWriteCache { wce: true }.into(),
+                )
+            }
+
+            cmds::FeatureIdent::Reserved
+            | cmds::FeatureIdent::LbaRangeType
+            | cmds::FeatureIdent::SoftwareProgressMarker
+            | cmds::FeatureIdent::Vendor(_) => {
+                cmds::Completion::generic_err(STS_INVAL_FIELD).dnr()
+            }
+        }
+    }
+
     /// Service Set Features command.
     ///
     /// See NVMe 1.0e Section 5.12 Set Features command
@@ -286,18 +397,23 @@ impl NvmeCtrl {
         cmd: &cmds::SetFeaturesCmd,
     ) -> cmds::Completion {
         match cmd.fid {
-            cmds::FeatureIdent::NumberOfQueues { ncqr, nsqr } => {
-                if ncqr == 0 || nsqr == 0 {
-                    return cmds::Completion::generic_err(STS_INVAL_FIELD);
-                }
+            cmds::FeatureIdent::NumberOfQueues => {
+                let nq: cmds::FeatNumberQueues = match cmd.cdw11.try_into() {
+                    Ok(f) => f,
+                    Err(_) => {
+                        return cmds::Completion::generic_err(STS_INVAL_FIELD);
+                    }
+                };
+
                 // TODO: error if called after initialization
 
                 // If they ask for too many queues, just return our max possible
-                let ncqa = min(ncqr as u32, MAX_NUM_IO_QUEUES as u32);
-                let nsqa = min(nsqr as u32, MAX_NUM_IO_QUEUES as u32);
+                let clamped = cmds::FeatNumberQueues {
+                    ncq: nq.ncq.min(MAX_NUM_IO_QUEUES as u16),
+                    nsq: nq.nsq.min(MAX_NUM_IO_QUEUES as u16),
+                };
 
-                // `ncqa`/`nsqa` are 0-based values so subtract 1
-                cmds::Completion::success_val((ncqa - 1) << 16 | (nsqa - 1))
+                cmds::Completion::success_val(clamped.into())
             }
             cmds::FeatureIdent::VolatileWriteCache => {
                 // NVMe 1.0e Figure 66 Identify - Identify Controller Data
@@ -319,7 +435,7 @@ impl NvmeCtrl {
             | cmds::FeatureIdent::AsynchronousEventConfiguration
             | cmds::FeatureIdent::SoftwareProgressMarker
             | cmds::FeatureIdent::Vendor(_) => {
-                cmds::Completion::generic_err(STS_INVAL_FIELD)
+                cmds::Completion::generic_err(STS_INVAL_FIELD).dnr()
             }
         }
     }
