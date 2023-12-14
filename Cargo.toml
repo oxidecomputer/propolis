@@ -67,7 +67,7 @@ dlpi = { git = "https://github.com/oxidecomputer/dlpi-sys", branch = "main" }
 ispf = { git = "https://github.com/oxidecomputer/ispf" }
 libloading = "0.7"
 p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
-softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", rev = "ed919c8ae1cadbab9501040585648e50ab52c2de", package = "softnpu" }
+softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", rev = "dbab082dfa89da5db5ca2325c257089d2f130092", package = "softnpu" }
 
 # Omicron-related
 internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }

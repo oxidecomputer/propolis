@@ -2722,7 +2722,7 @@ dependencies = [
 [[package]]
 name = "p4rs"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/p4?branch=mod#e1d66d0cb412b08dfd906654051c0fdaace37d0d"
+source = "git+https://github.com/oxidecomputer/p4?branch=main#b1007658f9638dfc60af75286ff5c108d6b2714c"
 dependencies = [
  "bitvec",
  "colored",
@@ -4385,7 +4385,7 @@ dependencies = [
 [[package]]
 name = "softnpu"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/softnpu?rev=ed919c8ae1cadbab9501040585648e50ab52c2de#ed919c8ae1cadbab9501040585648e50ab52c2de"
+source = "git+https://github.com/oxidecomputer/softnpu?rev=dbab082dfa89da5db5ca2325c257089d2f130092#dbab082dfa89da5db5ca2325c257089d2f130092"
 dependencies = [
  "anstyle",
  "anyhow",
