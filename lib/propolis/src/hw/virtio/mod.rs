@@ -25,16 +25,30 @@ pub use viona::PciVirtioViona;
 pub trait VirtioDevice: Send + Sync + 'static + Entity {
     /// Read/write device-specific virtio configuration space
     fn cfg_rw(&self, ro: RWOp);
+
     /// Get the device-specific virtio feature bits
     fn get_features(&self) -> u32;
+
     /// Set the device-specific virtio feature bits
-    fn set_features(&self, feat: u32);
+    ///
+    /// Returns `Err` if an error occurred while setting the features.  Doing so
+    /// will transition the device to the Failed state.
+    fn set_features(&self, feat: u32) -> Result<(), ()>;
+
     /// Service driver notification for a given virtqueue
     fn queue_notify(&self, vq: &Arc<VirtQueue>);
 
-    #[allow(unused_variables)]
     /// Notification of virtqueue configuration change
-    fn queue_change(&self, vq: &Arc<VirtQueue>, change: VqChange) {}
+    ///
+    /// Returns `Err` if an error occurred while handling the specified
+    /// `VqChange`.  Doing so will transition the device to the Failed state.
+    fn queue_change(
+        &self,
+        _vq: &Arc<VirtQueue>,
+        _change: VqChange,
+    ) -> Result<(), ()> {
+        Ok(())
+    }
 }
 
 pub trait VirtioIntr: Send + 'static {

@@ -29,13 +29,60 @@ use tokio::task::JoinHandle;
 
 const ETHERADDRL: usize = 6;
 
+/// Viona's in-kernel emulation of the device VirtQueues is performed in what it
+/// calls "vrings".  Since the userspace portion of the Viona emulation is
+/// tasked with keeping the vring state in sync with the VirtQueue it
+/// represents, we must track its perceived state.
+#[derive(Copy, Clone, Default, Eq, PartialEq)]
+enum VRingState {
+    /// Initial state of the vring as it comes out of reset
+    ///
+    /// No guest-physical addresses, interrupt configuration, or avail/used
+    /// indices are set on the vring.
+    #[default]
+    Init,
+
+    /// Address(es) to valid VirtQueue data has been loaded into the vring but
+    /// it has not been "kicked" to begin any processing.
+    Ready,
+
+    /// The vring has been "kicked" and it is proceeding to process TX/RX work
+    /// as possible.
+    Run,
+
+    /// The vring has been issued a pause command to temporarily cease
+    /// processing any work.  This is to allow the userspace emulation to gather
+    /// a consistent snapshot of vring state.
+    Paused,
+
+    /// An error occurred while attempting to manipulate the vring.  This could
+    /// be due to invalid configuration from the guest, or programmer error
+    /// leading to unexpected device conditions.  If guest actions reset the
+    /// vring state (by resetting the device, or reprogramming the VirtQueue),
+    /// the vring can transition out of this error state.
+    Error,
+
+    /// An error occurred while attempting to reset the vring state.  This is
+    /// unrecoverable and will assert a "failed" state on the VirtIO device as a
+    /// whole.
+    Fatal,
+}
+
 struct Inner {
     poller: Option<PollerHdl>,
-    ring_paused: [bool; 2],
+    vring_state: [VRingState; 2],
 }
 impl Inner {
     fn new() -> Self {
-        Self { poller: None, ring_paused: [false; 2] }
+        Self { poller: None, vring_state: [Default::default(); 2] }
+    }
+
+    /// Get the `VRingState` for a given VirtQueue
+    fn for_vq(&mut self, vq: &VirtQueue) -> &mut VRingState {
+        let id = vq.id as usize;
+        assert!(id < self.vring_state.len());
+
+        &mut self.vring_state[id]
     }
 }
 
@@ -139,54 +186,108 @@ impl PciVirtioViona {
             if !vq.live.load(Ordering::Acquire) {
                 continue;
             }
-            let mut info = vq.get_state();
-            if info.mapping.valid {
-                let _ = self.hdl.ring_pause(vq.id);
-                inner.ring_paused[vq.id as usize] = true;
 
-                let live = self.hdl.ring_get_state(vq.id).unwrap();
-                assert_eq!(live.mapping.desc_addr, info.mapping.desc_addr);
-                info.used_idx = live.used_idx;
-                info.avail_idx = live.avail_idx;
-                vq.set_state(&info);
-            }
-        }
-    }
+            let rs = inner.for_vq(vq);
+            match *rs {
+                VRingState::Ready | VRingState::Run | VRingState::Paused => {
+                    // Ensure the ring is paused for a consistent snapshot
+                    if *rs != VRingState::Paused {
+                        if self.hdl.ring_pause(vq.id).is_err() {
+                            *rs = VRingState::Error;
+                            continue;
+                        }
+                        *rs = VRingState::Paused;
+                    }
 
-    fn queues_restart(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        for vq in self.virtio_state.queues.iter() {
-            self.hdl
-                .ring_reset(vq.id)
-                .unwrap_or_else(|_| todo!("viona error handling"));
-
-            let info = vq.get_state();
-            if info.mapping.valid {
-                self.hdl
-                    .ring_set_state(vq.id, vq.size, &info)
-                    .unwrap_or_else(|_| todo!("viona error handling"));
-                let intr_cfg = vq.read_intr();
-                self.hdl
-                    .ring_cfg_msi(vq.id, intr_cfg)
-                    .unwrap_or_else(|_| todo!("viona error handling"));
-                if vq.live.load(Ordering::Acquire) {
-                    // If the ring was already running, cut it.
-                    self.hdl
-                        .ring_kick(vq.id)
-                        .unwrap_or_else(|_| todo!("viona error handling"));
+                    if let Ok(live) = self.hdl.ring_get_state(vq.id) {
+                        let base = vq.get_state();
+                        assert_eq!(
+                            live.mapping.desc_addr,
+                            base.mapping.desc_addr
+                        );
+                        vq.set_state(&queue::Info {
+                            used_idx: live.used_idx,
+                            avail_idx: live.avail_idx,
+                            ..base
+                        });
+                    } else {
+                        *rs = VRingState::Error;
+                    }
+                }
+                _ => {
+                    // The vring is in a state where it is either redundant to
+                    // sync the state (Init), or impossible (Error, Fatal)
                 }
             }
-            inner.ring_paused[vq.id as usize] = false;
         }
     }
+
+    fn queues_restart(&self) -> Result<(), ()> {
+        let mut inner = self.inner.lock().unwrap();
+        let mut res = Ok(());
+        for vq in self.virtio_state.queues.iter() {
+            let rs = inner.for_vq(vq);
+
+            // The existing state machine for vrings in Viona does not allow for
+            // a Paused -> Running transition, requiring instead that the vring
+            // be reset and reloaded with state in order to proceed again.
+            if self.hdl.ring_reset(vq.id).is_err() {
+                *rs = VRingState::Fatal;
+                res = Err(());
+                // Although this fatal vring state means the device itself will
+                // require a reset (which itself is unlikely to work), we
+                // continue attempting to reset/restart the other VQs.
+                continue;
+            }
+
+            *rs = VRingState::Init;
+            let info = vq.get_state();
+            if info.mapping.valid {
+                if self.hdl.ring_set_state(vq.id, vq.size, &info).is_err() {
+                    *rs = VRingState::Error;
+                    continue;
+                }
+
+                if let Some(intr_cfg) = vq.read_intr() {
+                    if self.hdl.ring_cfg_msi(vq.id, Some(intr_cfg)).is_err() {
+                        *rs = VRingState::Error;
+                        continue;
+                    }
+                }
+                *rs = VRingState::Ready;
+
+                if vq.live.load(Ordering::Acquire) {
+                    // If the ring was already running, kick it.
+                    if self.hdl.ring_kick(vq.id).is_err() {
+                        *rs = VRingState::Error;
+                        continue;
+                    }
+                    *rs = VRingState::Run;
+                }
+            }
+        }
+        res
+    }
+
     /// Make sure all in-kernel virtqueue processing is stopped
     fn queues_kill(&self) {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         for vq in self.virtio_state.queues.iter() {
-            if vq.live.load(Ordering::Acquire)
-                || inner.ring_paused[vq.id as usize]
-            {
-                let _ = self.hdl.ring_reset(vq.id);
+            let rs = inner.for_vq(vq);
+            match *rs {
+                VRingState::Init => {
+                    // Already at rest
+                }
+                VRingState::Fatal => {
+                    // No sense in attempting a reset
+                }
+                _ => {
+                    if self.hdl.ring_reset(vq.id).is_err() {
+                        *rs = VRingState::Fatal;
+                    } else {
+                        *rs = VRingState::Init;
+                    }
+                }
             }
         }
     }
@@ -234,50 +335,92 @@ impl VirtioDevice for PciVirtioViona {
 
         feat
     }
-    fn set_features(&self, feat: u32) {
-        self.hdl
-            .set_features(feat)
-            .unwrap_or_else(|_| todo!("viona error handling"));
+    fn set_features(&self, feat: u32) -> Result<(), ()> {
+        self.hdl.set_features(feat).map_err(|_| ())
     }
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>) {
-        let inner = self.inner.lock().unwrap();
-        // Kick the ring if it is not paused
-        if !inner.ring_paused[vq.id as usize] {
-            self.hdl
-                .ring_kick(vq.id)
-                .unwrap_or_else(|_| todo!("viona error handling"));
-        }
-    }
-    fn queue_change(&self, vq: &Arc<VirtQueue>, change: VqChange) {
-        match change {
-            VqChange::Reset => {
-                let mut inner = self.inner.lock().unwrap();
-                self.hdl
-                    .ring_reset(vq.id)
-                    .unwrap_or_else(|_| todo!("viona error handling"));
-
-                // Resetting a ring implies that is no longer paused.  This does
-                // not mean that it will immediately start processing ring
-                // descriptors, but rather is no longer exempt from receiving
-                // notifications to do so.
-                inner.ring_paused[vq.id as usize] = false;
-            }
-            VqChange::Address => {
-                let info = vq.get_state();
-                if info.mapping.valid {
-                    self.hdl
-                        .ring_init(vq.id, vq.size, info.mapping.desc_addr)
-                        .unwrap_or_else(|_| todo!("viona error handling"));
+        let mut inner = self.inner.lock().unwrap();
+        let rs = inner.for_vq(vq);
+        match rs {
+            VRingState::Ready | VRingState::Run => {
+                if self.hdl.ring_kick(vq.id).is_err() {
+                    *rs = VRingState::Error;
+                } else {
+                    *rs = VRingState::Run;
                 }
             }
+            _ => {}
+        }
+    }
+    fn queue_change(
+        &self,
+        vq: &Arc<VirtQueue>,
+        change: VqChange,
+    ) -> Result<(), ()> {
+        let mut inner = self.inner.lock().unwrap();
+        let rs = inner.for_vq(vq);
+
+        match change {
+            VqChange::Reset => {
+                if self.hdl.ring_reset(vq.id).is_err() {
+                    *rs = VRingState::Fatal;
+                    return Err(());
+                }
+                *rs = VRingState::Init;
+            }
+            VqChange::Address => {
+                match *rs {
+                    VRingState::Init => {}
+                    VRingState::Ready
+                    | VRingState::Run
+                    | VRingState::Paused
+                    | VRingState::Error => {
+                        // Reset any vring not already in such a state
+                        if self.hdl.ring_reset(vq.id).is_err() {
+                            *rs = VRingState::Fatal;
+                            return Err(());
+                        }
+                        *rs = VRingState::Init;
+                    }
+                    VRingState::Fatal => {
+                        // No sense in trying anything further on a doomed vring
+                        return Err(());
+                    }
+                }
+                let info = vq.get_state();
+                if !info.mapping.valid {
+                    return Ok(());
+                }
+
+                if self
+                    .hdl
+                    .ring_init(vq.id, vq.size, info.mapping.desc_addr)
+                    .is_err()
+                {
+                    // Bad virtqueue configuration is not fatal.  While the
+                    // vring will not transition to running, we will be content
+                    // to wait for the guest to later provide a valid config.
+                    *rs = VRingState::Error;
+                    return Ok(());
+                }
+
+                if let Some(intr_cfg) = vq.read_intr() {
+                    if self.hdl.ring_cfg_msi(vq.id, Some(intr_cfg)).is_err() {
+                        *rs = VRingState::Error;
+                    }
+                }
+                *rs = VRingState::Ready;
+            }
             VqChange::IntrCfg => {
-                let cfg = vq.read_intr();
-                self.hdl
-                    .ring_cfg_msi(vq.id, cfg)
-                    .unwrap_or_else(|_| todo!("viona error handling"));
+                if *rs != VRingState::Fatal {
+                    if self.hdl.ring_cfg_msi(vq.id, vq.read_intr()).is_err() {
+                        *rs = VRingState::Error;
+                    }
+                }
             }
         }
+        Ok(())
     }
 }
 impl Entity for PciVirtioViona {
@@ -299,7 +442,9 @@ impl Entity for PciVirtioViona {
     }
     fn resume(&self) {
         self.poller_start();
-        self.queues_restart();
+        if self.queues_restart().is_err() {
+            self.virtio_state.set_needs_reset(self);
+        }
     }
     fn halt(&self) {
         self.poller_stop(true);

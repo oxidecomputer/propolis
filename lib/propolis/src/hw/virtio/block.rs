@@ -218,8 +218,9 @@ impl VirtioDevice for PciVirtioBlock {
         }
         feat
     }
-    fn set_features(&self, _feat: u32) {
+    fn set_features(&self, _feat: u32) -> Result<(), ()> {
         // XXX: real features
+        Ok(())
     }
 
     fn queue_notify(&self, _vq: &Arc<VirtQueue>) {
