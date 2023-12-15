@@ -18,6 +18,7 @@ rustc --version
 
 banner check
 ptime -m cargo check --features falcon
+ptime -m cargo clippy --features falcon --all-targets
 
 banner build
 ptime -m cargo build --features falcon --release \
