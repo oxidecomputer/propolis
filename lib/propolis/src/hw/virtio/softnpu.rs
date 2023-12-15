@@ -436,7 +436,9 @@ impl VirtioDevice for PciVirtioSoftNpuPort {
         VIRTIO_NET_F_MAC
     }
 
-    fn set_features(&self, _feat: u32) {}
+    fn set_features(&self, _feat: u32) -> std::result::Result<(), ()> {
+        Ok(())
+    }
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>) {
         self.handle_guest_virtio_request(vq);

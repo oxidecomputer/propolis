@@ -144,19 +144,24 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
             // avoid deadlock while modify per-VQ interrupt config
             drop(state);
 
-            match info {
+            let result = match info {
                 pci::MsiUpdate::MaskAll | pci::MsiUpdate::UnmaskAll
                     if val != VIRTIO_MSI_NO_VECTOR =>
                 {
-                    self.queue_change(vq, VqChange::IntrCfg);
+                    self.queue_change(vq, VqChange::IntrCfg)
                 }
                 pci::MsiUpdate::Modify(idx) if val == idx => {
-                    self.queue_change(vq, VqChange::IntrCfg);
+                    self.queue_change(vq, VqChange::IntrCfg)
                 }
-                _ => {}
-            }
+                _ => Ok(()),
+            };
 
             state = vs.state.lock().unwrap();
+            if result.is_err() {
+                // An error updating the VQ interrupt config should set the
+                // device in a failed state.
+                vs.set_failed(self, &mut state);
+            }
         }
         state.intr_mode_updating = false;
         vs.state_cv.notify_all();
@@ -260,8 +265,8 @@ impl PciVirtioState {
             LegacyReg::QueuePfn => {
                 let state = self.state.lock().unwrap();
                 if let Some(queue) = self.queues.get(state.queue_sel) {
-                    let state = queue.get_state();
-                    let addr = state.mapping.desc_addr;
+                    let qs = queue.get_state();
+                    let addr = qs.mapping.desc_addr;
                     ro.write_u32((addr >> PAGE_SHIFT) as u32);
                 } else {
                     // bogus queue
@@ -310,20 +315,28 @@ impl PciVirtioState {
             LegacyReg::FeatDriver => {
                 let nego = wo.read_u32() & self.features_supported(dev);
                 let mut state = self.state.lock().unwrap();
-                state.nego_feat = nego;
-                dev.set_features(nego);
+                match dev.set_features(nego) {
+                    Ok(_) => {
+                        state.nego_feat = nego;
+                    }
+                    Err(_) => {
+                        self.set_failed(dev, &mut state);
+                    }
+                }
             }
             LegacyReg::QueuePfn => {
                 let mut state = self.state.lock().unwrap();
-                let mut success = false;
                 let pfn = wo.read_u32();
                 if let Some(queue) = self.queues.get(state.queue_sel) {
-                    success = queue.map_legacy((pfn as u64) << PAGE_SHIFT);
-                    dev.queue_change(queue, VqChange::Address);
-                }
-                if !success {
-                    // XXX: interrupt needed?
-                    state.status |= Status::FAILED;
+                    let qs_old = queue.get_state();
+                    let new_addr = (pfn as u64) << PAGE_SHIFT;
+                    queue.map_legacy(new_addr);
+
+                    if qs_old.mapping.desc_addr != new_addr {
+                        if dev.queue_change(queue, VqChange::Address).is_err() {
+                            self.set_failed(dev, &mut state);
+                        }
+                    }
                 }
             }
             LegacyReg::QueueSelect => {
@@ -366,7 +379,9 @@ impl PciVirtioState {
 
                         // With the MSI configuration updated for the virtqueue,
                         // notify the device of the change
-                        dev.queue_change(queue, VqChange::IntrCfg);
+                        if dev.queue_change(queue, VqChange::IntrCfg).is_err() {
+                            self.set_failed(dev, &mut state);
+                        }
 
                         state.intr_mode_updating = false;
                         self.state_cv.notify_all();
@@ -395,6 +410,22 @@ impl PciVirtioState {
             state.status = val;
         }
     }
+
+    /// Set the VirtIO device in a Failed state.
+    ///
+    /// This will require the guest OS to reset the device before it can use it
+    /// for anything further.
+    fn set_failed(
+        &self,
+        _dev: &dyn VirtioDevice,
+        state: &mut MutexGuard<VirtioState>,
+    ) {
+        if !state.status.contains(Status::FAILED) {
+            state.status.insert(Status::FAILED);
+            // XXX: interrupt needed?
+        }
+    }
+
     fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16) {
         probes::virtio_vq_notify!(|| (
             dev as *const dyn VirtioDevice as *const c_void as u64,
@@ -416,7 +447,9 @@ impl PciVirtioState {
     ) {
         for queue in self.queues.iter() {
             queue.reset();
-            dev.queue_change(queue, VqChange::Reset);
+            if dev.queue_change(queue, VqChange::Reset).is_err() {
+                self.set_failed(dev, &mut state);
+            }
         }
         state.reset();
         let _ = self.isr_state.read_clear();

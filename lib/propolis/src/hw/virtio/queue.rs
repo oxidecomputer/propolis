@@ -198,7 +198,7 @@ impl VirtQueue {
     /// using legacy-style split virtqueue layout.
     ///
     /// `addr` must be aligned to 4k per the legacy requirements
-    pub fn map_legacy(&self, addr: u64) -> bool {
+    pub fn map_legacy(&self, addr: u64) {
         assert_eq!(addr & (LEGACY_QALIGN - 1), 0);
 
         let size = self.size as usize;
@@ -218,8 +218,6 @@ impl VirtQueue {
         used.map_split(used_addr);
         avail.valid = true;
         used.valid = true;
-
-        true
     }
     pub fn get_state(&self) -> Info {
         let avail = self.avail.lock().unwrap();

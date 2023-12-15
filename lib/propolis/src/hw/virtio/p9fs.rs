@@ -117,7 +117,9 @@ impl VirtioDevice for PciVirtio9pfs {
         VIRTIO_9P_F_MOUNT_TAG
     }
 
-    fn set_features(&self, _feat: u32) {}
+    fn set_features(&self, _feat: u32) -> Result<(), ()> {
+        Ok(())
+    }
 
     fn queue_notify(&self, vq: &Arc<VirtQueue>) {
         self.handler.handle_req(vq);
