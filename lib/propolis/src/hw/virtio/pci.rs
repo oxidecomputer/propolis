@@ -160,7 +160,7 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
             if result.is_err() {
                 // An error updating the VQ interrupt config should set the
                 // device in a failed state.
-                vs.set_failed(self, &mut state);
+                vs.needs_reset_locked(self, &mut state);
             }
         }
         state.intr_mode_updating = false;
@@ -320,7 +320,7 @@ impl PciVirtioState {
                         state.nego_feat = nego;
                     }
                     Err(_) => {
-                        self.set_failed(dev, &mut state);
+                        self.needs_reset_locked(dev, &mut state);
                     }
                 }
             }
@@ -334,7 +334,7 @@ impl PciVirtioState {
 
                     if qs_old.mapping.desc_addr != new_addr {
                         if dev.queue_change(queue, VqChange::Address).is_err() {
-                            self.set_failed(dev, &mut state);
+                            self.needs_reset_locked(dev, &mut state);
                         }
                     }
                 }
@@ -380,7 +380,7 @@ impl PciVirtioState {
                         // With the MSI configuration updated for the virtqueue,
                         // notify the device of the change
                         if dev.queue_change(queue, VqChange::IntrCfg).is_err() {
-                            self.set_failed(dev, &mut state);
+                            self.needs_reset_locked(dev, &mut state);
                         }
 
                         state.intr_mode_updating = false;
@@ -411,19 +411,23 @@ impl PciVirtioState {
         }
     }
 
-    /// Set the VirtIO device in a Failed state.
-    ///
-    /// This will require the guest OS to reset the device before it can use it
-    /// for anything further.
-    fn set_failed(
+    /// Set the "Needs Reset" state on the VirtIO device
+    fn needs_reset_locked(
         &self,
         _dev: &dyn VirtioDevice,
         state: &mut MutexGuard<VirtioState>,
     ) {
-        if !state.status.contains(Status::FAILED) {
-            state.status.insert(Status::FAILED);
+        if !state.status.contains(Status::NEEDS_RESET) {
+            state.status.insert(Status::NEEDS_RESET);
             // XXX: interrupt needed?
         }
+    }
+
+    /// Indicate to the guest that the VirtIO device has encounted an error of
+    /// some sort and requires a reset.
+    pub fn set_needs_reset(&self, _dev: &dyn VirtioDevice) {
+        let mut state = self.state.lock().unwrap();
+        self.needs_reset_locked(_dev, &mut state);
     }
 
     fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16) {
@@ -448,7 +452,7 @@ impl PciVirtioState {
         for queue in self.queues.iter() {
             queue.reset();
             if dev.queue_change(queue, VqChange::Reset).is_err() {
-                self.set_failed(dev, &mut state);
+                self.needs_reset_locked(dev, &mut state);
             }
         }
         state.reset();

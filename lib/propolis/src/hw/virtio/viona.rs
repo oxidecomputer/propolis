@@ -222,8 +222,9 @@ impl PciVirtioViona {
         }
     }
 
-    fn queues_restart(&self) {
+    fn queues_restart(&self) -> Result<(), ()> {
         let mut inner = self.inner.lock().unwrap();
+        let mut res = Ok(());
         for vq in self.virtio_state.queues.iter() {
             let rs = inner.for_vq(vq);
 
@@ -232,6 +233,10 @@ impl PciVirtioViona {
             // be reset and reloaded with state in order to proceed again.
             if self.hdl.ring_reset(vq.id).is_err() {
                 *rs = VRingState::Fatal;
+                res = Err(());
+                // Although this fatal vring state means the device itself will
+                // require a reset (which itself is unlikely to work), we
+                // continue attempting to reset/restart the other VQs.
                 continue;
             }
 
@@ -261,6 +266,7 @@ impl PciVirtioViona {
                 }
             }
         }
+        res
     }
 
     /// Make sure all in-kernel virtqueue processing is stopped
@@ -436,7 +442,9 @@ impl Entity for PciVirtioViona {
     }
     fn resume(&self) {
         self.poller_start();
-        self.queues_restart();
+        if self.queues_restart().is_err() {
+            self.virtio_state.set_needs_reset(self);
+        }
     }
     fn halt(&self) {
         self.poller_stop(true);
