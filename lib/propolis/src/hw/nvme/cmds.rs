@@ -350,7 +350,7 @@ pub struct AbortCmd {
     pub sqid: u16,
 }
 
-/// Set Features Command Parameters
+/// Get Features Command Parameters
 #[derive(Debug)]
 pub struct GetFeaturesCmd {
     /// Feature Identifier (FID)
@@ -437,20 +437,21 @@ pub enum FeatureIdent {
 
 impl From<u8> for FeatureIdent {
     fn from(fid: u8) -> Self {
+        use super::bits::*;
         use FeatureIdent::*;
         match fid {
             0 => Reserved,
-            1 => Arbitration,
-            2 => PowerManagement,
-            3 => LbaRangeType,
-            4 => TemperatureThreshold,
-            5 => ErrorRecovery,
-            6 => VolatileWriteCache,
-            7 => NumberOfQueues,
-            8 => InterruptCoalescing,
-            9 => InterruptVectorConfiguration,
-            0xA => WriteAtomicity,
-            0xB => AsynchronousEventConfiguration,
+            FEAT_ID_ARBITRATION => Arbitration,
+            FEAT_ID_POWER_MGMT => PowerManagement,
+            FEAT_ID_LBA_RANGE_TYPE => LbaRangeType,
+            FEAT_ID_TEMP_THRESH => TemperatureThreshold,
+            FEAT_ID_ERROR_RECOVERY => ErrorRecovery,
+            FEAT_ID_VOLATILE_WRITE_CACHE => VolatileWriteCache,
+            FEAT_ID_NUM_QUEUES => NumberOfQueues,
+            FEAT_ID_INTR_COALESCE => InterruptCoalescing,
+            FEAT_ID_INTR_VEC_CFG => InterruptVectorConfiguration,
+            FEAT_ID_WRITE_ATOMIC => WriteAtomicity,
+            FEAT_ID_ASYNC_EVENT_CFG => AsynchronousEventConfiguration,
             0xC..=0x7F => Reserved,
             0x80 => SoftwareProgressMarker,
             0x81..=0xBF => Reserved,
@@ -568,11 +569,7 @@ impl From<u32> for FeatVolatileWriteCache {
 }
 impl From<FeatVolatileWriteCache> for u32 {
     fn from(value: FeatVolatileWriteCache) -> Self {
-        if value.wce {
-            0b1
-        } else {
-            0
-        }
+        value.wce as u32
     }
 }
 

@@ -372,8 +372,11 @@ impl NvmeCtrl {
             // Optional features
             cmds::FeatureIdent::VolatileWriteCache => {
                 // TODO: wire into actual write cache state
+                //
+                // Until that is done, indicate an enabled write cache to ensure
+                // IO flushes for the backends which require it for consistency.
                 cmds::Completion::success_val(
-                    cmds::FeatVolatileWriteCache { wce: false }.into(),
+                    cmds::FeatVolatileWriteCache { wce: true }.into(),
                 )
             }
 
