@@ -42,6 +42,19 @@ struct Reset {
     pub count: Cumulative<i64>,
 }
 
+/// An Oximeter `Metric` that specifies the number of times an instance's guest
+/// reported a kernel panic using the QEMU `pvpanic` device.
+#[derive(Debug, Default, Copy, Clone, Metric)]
+struct PvPanic {
+    /// The number of times this instance's guest handled a kernel panic.
+    #[datum]
+    pub handled: Cumulative<i64>,
+
+    /// The number of times this instance's guest reported an unhandled panic.
+    #[datum]
+    pub unhandled: Cumulative<i64>,
+}
+
 /// The full set of server-level metrics, collated by
 /// [`ServerStatsOuter::produce`] into the types needed to relay these
 /// statistics to Oximeter.
@@ -53,6 +66,9 @@ struct ServerStats {
 
     /// The reset count for the relevant instance.
     run_count: Reset,
+
+    /// `pvpanic` device panic count for the relevant instance.
+    pvpanic_count: PvPanic,
 }
 
 impl ServerStats {
@@ -60,6 +76,7 @@ impl ServerStats {
         ServerStats {
             stat_name: InstanceUuid { uuid },
             run_count: Default::default(),
+            pvpanic_count: Default::default(),
         }
     }
 }

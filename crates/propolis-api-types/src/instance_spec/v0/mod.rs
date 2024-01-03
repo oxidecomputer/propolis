@@ -113,6 +113,7 @@ pub struct DeviceSpecV0 {
     pub network_devices: HashMap<SpecKey, NetworkDeviceV0>,
     pub serial_ports: HashMap<SpecKey, components::devices::SerialPort>,
     pub pci_pci_bridges: HashMap<SpecKey, components::devices::PciPciBridge>,
+    pub qemu_pvpanic: components::devices::QemuPvpanic,
 
     #[cfg(feature = "falcon")]
     pub softnpu_pci_port: Option<components::devices::SoftNpuPciPort>,
@@ -165,6 +166,15 @@ impl DeviceSpecV0 {
             .map_err(|e| {
                 MigrationCompatibilityError::CollectionMismatch(
                     "PCI bridges".to_string(),
+                    e,
+                )
+            })?;
+
+        self.qemu_pvpanic
+            .can_migrate_from_element(&other.qemu_pvpanic)
+            .map_err(|e| {
+                MigrationCompatibilityError::ElementMismatch(
+                    "QEMU PVPANIC device".to_string(),
                     e,
                 )
             })?;

@@ -214,6 +214,46 @@ pub enum MigrationCompatibilityError {
     ComponentConfiguration(String),
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    Default,
+)]
+#[serde(deny_unknown_fields)]
+pub struct QemuPvpanic {
+    /// Enable the QEMU PVPANIC ISA bus device (I/O port 0x505).
+    pub enable_isa: bool,
+    // TODO(eliza): add support for the PCI PVPANIC device...
+}
+
+impl MigrationElement for QemuPvpanic {
+    fn kind(&self) -> &'static str {
+        "QemuPvpanic"
+    }
+
+    fn can_migrate_from_element(
+        &self,
+        other: &Self,
+    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
+    {
+        if self != other {
+            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
+                "pvpanic configuration mismatch (self: {0:?}, other: {1:?})",
+                self, other
+            ))
+            .into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 //
 // Structs for Falcon devices. These devices don't support live migration.
 //
@@ -384,5 +424,23 @@ mod test {
 
         b2.pci_path = PciPath::new(4, 5, 6).unwrap();
         assert!(b1.can_migrate_from_element(&b2).is_err());
+    }
+
+    #[test]
+    fn incompatible_qemu_pvpanic() {
+        let d1 = QemuPvpanic { enable_isa: true };
+        let d2 = QemuPvpanic { enable_isa: false };
+        assert!(d1.can_migrate_from_element(&d2).is_err());
+    }
+
+    #[test]
+    fn compatible_qemu_pvpanic() {
+        let d1 = QemuPvpanic { enable_isa: true };
+        let d2 = QemuPvpanic { enable_isa: true };
+        assert!(d1.can_migrate_from_element(&d2).is_ok());
+
+        let d1 = QemuPvpanic { enable_isa: false };
+        let d2 = QemuPvpanic { enable_isa: false };
+        assert!(d1.can_migrate_from_element(&d2).is_ok());
     }
 }
