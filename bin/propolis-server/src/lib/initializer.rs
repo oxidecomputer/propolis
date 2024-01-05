@@ -6,6 +6,7 @@ use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
 use std::num::NonZeroUsize;
+use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -326,6 +327,16 @@ impl<'a> MachineInitializer<'a> {
             instance_spec::v0::StorageBackendV0::File(spec) => {
                 info!(self.log, "Creating file disk backend";
                       "path" => &spec.path);
+
+                // Check if raw device is being used and gripe if it isn't
+                let meta = std::fs::metadata(&spec.path)?;
+                if meta.file_type().is_block_device() {
+                    slog::warn!(
+                        self.log,
+                        "Block backend using standard device rather than raw";
+                        "path" => &spec.path
+                    );
+                }
 
                 let nworkers = NonZeroUsize::new(8).unwrap();
                 let be = propolis::block::FileBackend::create(

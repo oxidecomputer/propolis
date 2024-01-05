@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::os::unix::fs::FileTypeExt;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -57,6 +58,14 @@ pub fn block_backend(
     match &be.bdtype as &str {
         "file" => {
             let parsed: FileConfig = opt_deser(&be.options).unwrap();
+
+            // Check if raw device is being used and gripe if it isn't
+            let meta = std::fs::metadata(&parsed.path)
+                .expect("file device path is valid");
+            if meta.file_type().is_block_device() {
+                slog::warn!(log, "Block backend using standard device rather than raw";
+                    "path" => &parsed.path);
+            }
 
             let be = block::FileBackend::create(
                 &parsed.path,
