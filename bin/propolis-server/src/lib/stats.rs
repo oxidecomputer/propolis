@@ -14,6 +14,7 @@ use oximeter::{
     Metric, MetricsError, Producer, Target,
 };
 use oximeter_producer::{Config, Server};
+use propolis::hw::qemu::pvpanic;
 use slog::{error, info, warn, Logger};
 
 use std::net::SocketAddr;
@@ -67,8 +68,8 @@ struct ServerStats {
     /// The reset count for the relevant instance.
     run_count: Reset,
 
-    /// `pvpanic` device panic count for the relevant instance.
-    pvpanic_count: PvPanic,
+    /// Kernel panic counts for the relevant instance.
+    panic_counts: PvPanic,
 }
 
 impl ServerStats {
@@ -76,7 +77,7 @@ impl ServerStats {
         ServerStats {
             stat_name: InstanceUuid { uuid },
             run_count: Default::default(),
-            pvpanic_count: Default::default(),
+            panic_counts: Default::default(),
         }
     }
 }
@@ -85,6 +86,7 @@ impl ServerStats {
 #[derive(Clone, Debug)]
 pub struct ServerStatsOuter {
     server_stats_wrapped: Arc<Mutex<ServerStats>>,
+    pvpanic: Option<Arc<pvpanic::PanicCounts>>,
 }
 
 impl ServerStatsOuter {
@@ -102,7 +104,15 @@ impl Producer for ServerStatsOuter {
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
         let inner = self.server_stats_wrapped.lock().unwrap();
         let name = inner.stat_name;
-        let data = vec![Sample::new(&name, &inner.run_count)?];
+        let mut data = vec![Sample::new(&name, &inner.run_count)?];
+
+        if let Some(pvpanic) = self.pvpanic {
+            let datum = inner.panic_counts.datum_mut();
+            datum.handled.set(pvpanic.host_handled_count() as i64);
+            datum.unhandled.set(pvpanic.guest_handled_count() as i64);
+            data.push(Sample::new(&name, &inner.panic_counts)?);
+        }
+
         Ok(Box::new(data.into_iter()))
     }
 }
@@ -194,10 +204,13 @@ pub async fn start_oximeter_server(
 pub fn register_server_metrics(
     id: Uuid,
     server: &Server,
+    pvpanic: Option<Arc<pvpanic::PanicCounts>>,
 ) -> anyhow::Result<ServerStatsOuter> {
     let stats = ServerStats::new(id);
-    let stats_outer =
-        ServerStatsOuter { server_stats_wrapped: Arc::new(Mutex::new(stats)) };
+    let stats_outer = ServerStatsOuter {
+        server_stats_wrapped: Arc::new(Mutex::new(stats)),
+        pvpanic,
+    };
 
     server.registry().register_producer(stats_outer.clone())?;
 

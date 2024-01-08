@@ -10,12 +10,11 @@ use std::sync::{
 use crate::common::*;
 use crate::pio::{PioBus, PioFn};
 
-#[derive(Clone)]
-pub struct QemuPioPvpanic(Arc<CountsInner>);
+pub struct QemuPioPvpanic {
+    counts: Arc<PanicCOunts>,
+}
 
-pub struct PvpanicCounts(Arc<CountsInner>);
-
-struct CountsInner {
+pub struct PanicCounts {
     host_handled: AtomicUsize,
     guest_handled: AtomicUsize,
 }
@@ -28,23 +27,12 @@ const HOST_HANDLED: u8 = 0b01;
 /// the guest.
 const GUEST_HANDLED: u8 = 0b10;
 
-impl PvpanicCounts {
-    pub fn new() -> Self {
-        Self(Arc::new(CountsInner {
-            host_handled: AtomicUsize::new(0),
-            guest_handled: AtomicUsize::new(0),
-        }))
-    }
-}
-
 impl QemuPioPvpanic {
     const IOPORT: u16 = 0x505;
 
-    pub fn create(
-        &PvpanicCounts(ref counts): &PvpanicCounts,
-        pio: &PioBus,
-    ) -> Self {
-        let this = Self(counts.clone());
+    #[must_use]
+    pub fn create(pio: &PioBus, counts: Arc<PanicCounts>) -> Arc<Self> {
+        let this = Arc::new(Self { counts });
 
         let piodev = this.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| piodev.pio_rw(rwo))
@@ -61,19 +49,31 @@ impl QemuPioPvpanic {
             RWOp::Write(wo) => {
                 let c = wo.read_u8();
                 if c & HOST_HANDLED != 0 {
-                    self.0.host_handled.fetch_add(1, Relaxed);
+                    self.counts.host_handled.fetch_add(1, Relaxed);
                 }
 
                 if c & GUEST_HANDLED != 0 {
-                    self.0.guest_handled.fetch_add(1, Relaxed);
+                    self.counts.guest_handled.fetch_add(1, Relaxed);
                 }
             }
         }
     }
 }
 
+impl PanicCounts {
+    #[must_use]
+    pub fn host_handled_count(&self) -> usize {
+        self.host_handled.load(Relaxed)
+    }
+
+    #[must_use]
+    pub fn guest_handled_count(&self) -> usize {
+        self.guest_handled.load(Relaxed)
+    }
+}
+
 impl Entity for QemuPioPvpanic {
     fn type_name(&self) -> &'static str {
-        "qemu-pvpanic-pio"
+        "qemu-vpanic-pio"
     }
 }
