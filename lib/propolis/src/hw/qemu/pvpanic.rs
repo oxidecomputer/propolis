@@ -68,12 +68,10 @@ impl QemuPioPvpanic {
 }
 
 impl PanicCounts {
-    #[must_use]
     pub fn host_handled_count(&self) -> usize {
         self.host_handled.load(Relaxed)
     }
 
-    #[must_use]
     pub fn guest_handled_count(&self) -> usize {
         self.guest_handled.load(Relaxed)
     }
