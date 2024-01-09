@@ -10,12 +10,8 @@ use std::sync::{
 use crate::common::*;
 use crate::pio::{PioBus, PioFn};
 
-pub struct QemuPioPvpanic {
-    counts: Arc<PanicCounts>,
-}
-
-#[derive(Debug, Default)]
-pub struct PanicCounts {
+#[derive(Debug)]
+pub struct QemuPvpanic {
     host_handled: AtomicUsize,
     guest_handled: AtomicUsize,
 }
@@ -33,18 +29,29 @@ mod probes {
     fn pvpanic_pio_write(value: u8) {}
 }
 
-impl QemuPioPvpanic {
+impl QemuPvpanic {
     const IOPORT: u16 = 0x505;
 
-    #[must_use]
-    pub fn create(pio: &PioBus, counts: Arc<PanicCounts>) -> Arc<Self> {
-        let this = Arc::new(Self { counts });
+    pub fn create() -> Arc<Self> {
+        Arc::new(Self {
+            host_handled: AtomicUsize::new(0),
+            guest_handled: AtomicUsize::new(0),
+        })
+    }
 
-        let piodev = this.clone();
+    pub fn attach_pio(self: &Arc<Self>, pio: &PioBus) {
+        let piodev = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| piodev.pio_rw(rwo))
             as Arc<PioFn>;
         pio.register(Self::IOPORT, 1, piofn).unwrap();
-        this
+    }
+
+    pub fn host_handled_count(&self) -> usize {
+        self.host_handled.load(Relaxed)
+    }
+
+    pub fn guest_handled_count(&self) -> usize {
+        self.guest_handled.load(Relaxed)
     }
 
     fn pio_rw(&self, rwo: RWOp) {
@@ -56,29 +63,19 @@ impl QemuPioPvpanic {
                 let value = wo.read_u8();
                 probes::pvpanic_pio_write!(|| value);
                 if value & HOST_HANDLED != 0 {
-                    self.counts.host_handled.fetch_add(1, Relaxed);
+                    self.host_handled.fetch_add(1, Relaxed);
                 }
 
                 if value & GUEST_HANDLED != 0 {
-                    self.counts.guest_handled.fetch_add(1, Relaxed);
+                    self.guest_handled.fetch_add(1, Relaxed);
                 }
             }
         }
     }
 }
 
-impl PanicCounts {
-    pub fn host_handled_count(&self) -> usize {
-        self.host_handled.load(Relaxed)
-    }
-
-    pub fn guest_handled_count(&self) -> usize {
-        self.guest_handled.load(Relaxed)
-    }
-}
-
-impl Entity for QemuPioPvpanic {
+impl Entity for QemuPvpanic {
     fn type_name(&self) -> &'static str {
-        "qemu-pvpanic-pio"
+        "qemu-pvpanic"
     }
 }

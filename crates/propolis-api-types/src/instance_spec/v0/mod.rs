@@ -113,7 +113,7 @@ pub struct DeviceSpecV0 {
     pub network_devices: HashMap<SpecKey, NetworkDeviceV0>,
     pub serial_ports: HashMap<SpecKey, components::devices::SerialPort>,
     pub pci_pci_bridges: HashMap<SpecKey, components::devices::PciPciBridge>,
-    pub qemu_pvpanic: components::devices::QemuPvpanic,
+    pub qemu_pvpanic: Option<components::devices::QemuPvpanic>,
 
     #[cfg(feature = "falcon")]
     pub softnpu_pci_port: Option<components::devices::SoftNpuPciPort>,

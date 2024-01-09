@@ -21,7 +21,7 @@ use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
-use propolis::hw::qemu::pvpanic::{self, QemuPioPvpanic};
+use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
@@ -281,19 +281,21 @@ impl<'a> MachineInitializer<'a> {
         &self,
         uuid: uuid::Uuid,
     ) -> Result<(), anyhow::Error> {
-        if self.spec.devices.qemu_pvpanic.enable_isa {
-            let counts = Arc::new(pvpanic::PanicCounts::default());
-            let piodev =
-                QemuPioPvpanic::create(&self.machine.bus_pio, counts.clone());
-            self.inv.register(&piodev)?;
+        if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
+            if spec.enable_isa {
+                let pvpanic = QemuPvpanic::create();
+                pvpanic.attach_pio(&self.machine.bus_pio);
+                self.inv.register(&pvpanic)?;
 
-            if let Some(ref registry) = self.producer_registry {
-                let producer = crate::stats::PvpanicProducer::new(uuid, counts);
-                registry.register_producer(producer).map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to register PVPANIC Oximeter producer: {error}"
-                    )
-                })?;
+                if let Some(ref registry) = self.producer_registry {
+                    let producer =
+                        crate::stats::PvpanicProducer::new(uuid, pvpanic);
+                    registry.register_producer(producer).map_err(|error| {
+                        anyhow::anyhow!(
+                            "failed to register PVPANIC Oximeter producer: {error}"
+                        )
+                    })?;
+                }
             }
         }
 

@@ -232,7 +232,7 @@ pub struct QemuPvpanic {
     // TODO(eliza): add support for the PCI PVPANIC device...
 }
 
-impl MigrationElement for QemuPvpanic {
+impl MigrationElement for Option<QemuPvpanic> {
     fn kind(&self) -> &'static str {
         "QemuPvpanic"
     }
@@ -428,19 +428,20 @@ mod test {
 
     #[test]
     fn incompatible_qemu_pvpanic() {
-        let d1 = QemuPvpanic { enable_isa: true };
-        let d2 = QemuPvpanic { enable_isa: false };
+        let d1 = Some(QemuPvpanic { enable_isa: true });
+        let d2 = Some(QemuPvpanic { enable_isa: false });
         assert!(d1.can_migrate_from_element(&d2).is_err());
+        assert!(d1.can_migrate_from_element(&None).is_err());
     }
 
     #[test]
     fn compatible_qemu_pvpanic() {
-        let d1 = QemuPvpanic { enable_isa: true };
-        let d2 = QemuPvpanic { enable_isa: true };
+        let d1 = Some(QemuPvpanic { enable_isa: true });
+        let d2 = Some(QemuPvpanic { enable_isa: true });
         assert!(d1.can_migrate_from_element(&d2).is_ok());
 
-        let d1 = QemuPvpanic { enable_isa: false };
-        let d2 = QemuPvpanic { enable_isa: false };
+        let d1 = Some(QemuPvpanic { enable_isa: false });
+        let d2 = Some(QemuPvpanic { enable_isa: false });
         assert!(d1.can_migrate_from_element(&d2).is_ok());
     }
 }

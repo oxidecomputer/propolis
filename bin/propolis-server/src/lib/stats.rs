@@ -14,7 +14,7 @@ use oximeter::{
     Metric, MetricsError, Producer, Target,
 };
 use oximeter_producer::{Config, Server};
-use propolis::hw::qemu::pvpanic;
+use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use slog::{error, info, warn, Logger};
 
 use std::net::SocketAddr;
@@ -99,7 +99,7 @@ pub struct PvpanicProducer {
     host_handled_panics: PvPanicHostHandled,
     guest_handled_panics: PvPanicGuestHandled,
 
-    counts: Arc<pvpanic::PanicCounts>,
+    counts: Arc<QemuPvpanic>,
 }
 
 impl ServerStatsOuter {
@@ -123,7 +123,7 @@ impl Producer for ServerStatsOuter {
 }
 
 impl PvpanicProducer {
-    pub fn new(id: Uuid, counts: Arc<pvpanic::PanicCounts>) -> Self {
+    pub fn new(id: Uuid, counts: Arc<QemuPvpanic>) -> Self {
         PvpanicProducer {
             stat_name: InstanceUuid { uuid: id },
             host_handled_panics: Default::default(),
