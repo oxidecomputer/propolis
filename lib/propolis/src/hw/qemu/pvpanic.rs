@@ -28,6 +28,11 @@ const HOST_HANDLED: u8 = 0b01;
 /// the guest.
 const GUEST_HANDLED: u8 = 0b10;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn pvpanic_pio_write(value: u8) {}
+}
+
 impl QemuPioPvpanic {
     const IOPORT: u16 = 0x505;
 
@@ -48,12 +53,13 @@ impl QemuPioPvpanic {
                 ro.write_u8(HOST_HANDLED | GUEST_HANDLED);
             }
             RWOp::Write(wo) => {
-                let c = wo.read_u8();
-                if c & HOST_HANDLED != 0 {
+                let value = wo.read_u8();
+                probes::pvpanic_pio_write!(|| value);
+                if value & HOST_HANDLED != 0 {
                     self.counts.host_handled.fetch_add(1, Relaxed);
                 }
 
-                if c & GUEST_HANDLED != 0 {
+                if value & GUEST_HANDLED != 0 {
                     self.counts.guest_handled.fetch_add(1, Relaxed);
                 }
             }
