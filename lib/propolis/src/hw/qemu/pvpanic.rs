@@ -11,9 +11,10 @@ use crate::common::*;
 use crate::pio::{PioBus, PioFn};
 
 pub struct QemuPioPvpanic {
-    counts: Arc<PanicCOunts>,
+    counts: Arc<PanicCounts>,
 }
 
+#[derive(Debug, Default)]
 pub struct PanicCounts {
     host_handled: AtomicUsize,
     guest_handled: AtomicUsize,
@@ -74,6 +75,6 @@ impl PanicCounts {
 
 impl Entity for QemuPioPvpanic {
     fn type_name(&self) -> &'static str {
-        "qemu-vpanic-pio"
+        "qemu-pvpanic-pio"
     }
 }

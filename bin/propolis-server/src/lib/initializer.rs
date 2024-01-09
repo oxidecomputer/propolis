@@ -21,6 +21,7 @@ use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
+use propolis::hw::qemu::pvpanic::{self, QemuPioPvpanic};
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
@@ -273,6 +274,29 @@ impl<'a> MachineInitializer<'a> {
         let poller = chardev::BlockingFileOutput::new(debug_file);
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>);
         self.inv.register(&dbg)?;
+        Ok(())
+    }
+
+    pub fn initialize_qemu_pvpanic(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> Result<(), anyhow::Error> {
+        if self.spec.devices.qemu_pvpanic.enable_isa {
+            let counts = Arc::new(pvpanic::PanicCounts::default());
+            let piodev =
+                QemuPioPvpanic::create(&self.machine.bus_pio, counts.clone());
+            self.inv.register(&piodev)?;
+
+            if let Some(ref registry) = self.producer_registry {
+                let producer = crate::stats::PvpanicProducer::new(uuid, counts);
+                registry.register_producer(producer).map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to register PVPANIC Oximeter producer: {error}"
+                    )
+                })?;
+            }
+        }
+
         Ok(())
     }
 

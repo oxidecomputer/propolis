@@ -458,6 +458,7 @@ impl VmController {
         let ps2ctrl_id = init.initialize_ps2(&chipset)?;
         let ps2ctrl: Option<Arc<PS2Ctrl>> = inv.get_concrete(ps2ctrl_id);
         init.initialize_qemu_debug_port()?;
+        init.initialize_qemu_pvpanic(properties.id)?;
         init.initialize_network_devices(&chipset)?;
         #[cfg(feature = "falcon")]
         init.initialize_softnpu_ports(&chipset)?;
