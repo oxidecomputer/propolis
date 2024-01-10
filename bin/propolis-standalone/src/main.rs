@@ -1031,7 +1031,12 @@ struct Args {
     restore: bool,
 
     /// Maximum log level filter.
-    #[clap(long, env = "PROPOLIS_LOG", default_value_t = LogFilter(slog::Level::Info))]
+    #[clap(
+        long,
+        env = "PROPOLIS_LOG",
+        default_value_t = LogFilter(slog::Level::Info),
+        ignore_case(true),
+    )]
     log_level: LogFilter,
 }
 
