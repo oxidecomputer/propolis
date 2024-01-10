@@ -81,6 +81,7 @@ pub fn block_backend(
             (be, creg)
         }
         "crucible" => create_crucible_backend(be, opts, log),
+        "crucible-mem" => create_crucible_mem_backend(be, opts, log),
         "mem-async" => {
             let parsed: MemAsyncConfig = opt_deser(&be.options).unwrap();
 
@@ -256,6 +257,25 @@ fn create_crucible_backend(
     (be, creg)
 }
 
+#[cfg(feature = "crucible")]
+fn create_crucible_mem_backend(
+    be: &propolis_standalone_config::BlockDevice,
+    opts: block::BackendOpts,
+    log: &slog::Logger,
+) -> (Arc<dyn block::Backend>, ChildRegister) {
+    #[derive(Deserialize)]
+    struct CrucibleMemConfig {
+        size: u64,
+    }
+    let parsed: CrucibleMemConfig = opt_deser(&be.options).unwrap();
+
+    let be = block::CrucibleBackend::create_mem(parsed.size, opts, log.clone())
+        .unwrap();
+    let creg =
+        ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
+    (be, creg)
+}
+
 #[cfg(not(feature = "crucible"))]
 fn create_crucible_backend(
     _be: &propolis_standalone_config::BlockDevice,
@@ -265,5 +285,17 @@ fn create_crucible_backend(
     panic!(
         "Rebuild propolis-standalone with 'crucible' feature enabled in \
            order to use the crucible block backend"
+    );
+}
+
+#[cfg(not(feature = "crucible"))]
+fn create_crucible_mem_backend(
+    _be: &propolis_standalone_config::BlockDevice,
+    _opts: block::BackendOpts,
+    _log: &slog::Logger,
+) -> (Arc<dyn block::Backend>, ChildRegister) {
+    panic!(
+        "Rebuild propolis-standalone with 'crucible' feature enabled in \
+           order to use the crucible-mem block backend"
     );
 }
