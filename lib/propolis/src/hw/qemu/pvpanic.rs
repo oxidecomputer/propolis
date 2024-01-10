@@ -30,6 +30,8 @@ struct Counts {
     guest_handled: usize,
 }
 
+pub const DEVICE_NAME: &str = "qemu-pvpanic";
+
 /// Indicates that a guest panic has happened and should be processed by the
 /// host
 const HOST_HANDLED: u8 = 0b01;
@@ -102,6 +104,6 @@ impl QemuPvpanic {
 
 impl Entity for QemuPvpanic {
     fn type_name(&self) -> &'static str {
-        "qemu-pvpanic"
+        DEVICE_NAME
     }
 }
