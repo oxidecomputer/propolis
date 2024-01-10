@@ -16,7 +16,6 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
-use propolis::inventory::Entity;
 use slog::{o, Drain};
 use strum::IntoEnumIterator;
 use tokio::runtime;
