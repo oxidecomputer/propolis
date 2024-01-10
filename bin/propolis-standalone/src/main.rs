@@ -936,6 +936,7 @@ fn setup_instance(
                     .get("enable_isa")
                     .and_then(|opt| opt.as_bool())
                     .unwrap_or(false);
+                slog::debug!(log, "pvpanic enable_isa={enable_isa}");
                 if enable_isa {
                     let pvpanic = QemuPvpanic::create(
                         log.new(slog::o!("dev" => "pvpanic")),
