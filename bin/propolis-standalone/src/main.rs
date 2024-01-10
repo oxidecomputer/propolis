@@ -1105,6 +1105,8 @@ fn main() -> anyhow::Result<ExitCode> {
     Ok(inst.wait_destroyed())
 }
 
+/// Wrapper around `slog::Level` to implement `clap::ValueEnum`, so that this
+/// type can be parsed from the command line.
 #[derive(Clone, Debug)]
 struct LogFilter(slog::Level);
 
