@@ -7,6 +7,15 @@ use std::sync::{Arc, Mutex};
 use crate::common::*;
 use crate::pio::{PioBus, PioFn};
 
+/// Implements the QEMU [pvpanic device], which
+/// may be used by guests to notify the host when a kernel panic has occurred.
+///
+/// QEMU exposes the pvpanic virtual device as a device on the ISA bus (I/O port
+/// 0x505), a PCI device, and through ACPI. Currently, Propolis only implements
+/// the ISA bus pvpanic device, but the PCI device may be implemented in the
+/// future.
+///
+/// [pvpanic device]: https://www.qemu.org/docs/master/specs/pvpanic.html
 #[derive(Debug)]
 pub struct QemuPvpanic {
     counts: Mutex<Counts>,
@@ -42,6 +51,7 @@ impl QemuPvpanic {
         })
     }
 
+    /// Attaches this pvpanic device to the provided [`PioBus`].
     pub fn attach_pio(self: &Arc<Self>, pio: &PioBus) {
         let piodev = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| piodev.pio_rw(rwo))
