@@ -2,18 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::{
-    atomic::{AtomicUsize, Ordering::Relaxed},
-    Arc,
-};
+use std::sync::{Arc, Mutex};
 
 use crate::common::*;
 use crate::pio::{PioBus, PioFn};
 
 #[derive(Debug)]
 pub struct QemuPvpanic {
-    host_handled: AtomicUsize,
-    guest_handled: AtomicUsize,
+    counts: Mutex<Counts>,
+}
+
+#[derive(Debug)]
+struct Counts {
+    /// Counts the number of guest kernel panics handled by the host.
+    host_handled: usize,
+    /// Counts the number of guest kernel panics handled by the guest.
+    guest_handled: usize,
 }
 
 /// Indicates that a guest panic has happened and should be processed by the
@@ -34,8 +38,7 @@ impl QemuPvpanic {
 
     pub fn create() -> Arc<Self> {
         Arc::new(Self {
-            host_handled: AtomicUsize::new(0),
-            guest_handled: AtomicUsize::new(0),
+            counts: Mutex::new(Counts { host_handled: 0, guest_handled: 0 }),
         })
     }
 
@@ -47,11 +50,11 @@ impl QemuPvpanic {
     }
 
     pub fn host_handled_count(&self) -> usize {
-        self.host_handled.load(Relaxed)
+        self.counts.lock().unwrap().host_handled
     }
 
     pub fn guest_handled_count(&self) -> usize {
-        self.guest_handled.load(Relaxed)
+        self.counts.lock().unwrap().guest_handled
     }
 
     fn pio_rw(&self, rwo: RWOp) {
@@ -62,12 +65,13 @@ impl QemuPvpanic {
             RWOp::Write(wo) => {
                 let value = wo.read_u8();
                 probes::pvpanic_pio_write!(|| value);
+                let mut counts = self.counts.lock().unwrap();
                 if value & HOST_HANDLED != 0 {
-                    self.host_handled.fetch_add(1, Relaxed);
+                    counts.host_handled += 1;
                 }
 
                 if value & GUEST_HANDLED != 0 {
-                    self.guest_handled.fetch_add(1, Relaxed);
+                    counts.guest_handled += 1;
                 }
             }
         }
