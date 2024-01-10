@@ -15,7 +15,7 @@ doctest = false
 anyhow.workspace = true
 atty.workspace = true
 bhyve_api.workspace = true
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 ctrlc.workspace = true
 fatfs.workspace = true
 futures.workspace = true

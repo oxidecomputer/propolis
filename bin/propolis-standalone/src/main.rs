@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
@@ -705,7 +706,7 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
     }
 }
 
-fn build_log() -> slog::Logger {
+fn build_log(level: slog::Level) -> slog::Logger {
     let main_drain = if atty::is(atty::Stream::Stdout) {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::CompactFormat::new(decorator).build().fuse();
@@ -724,7 +725,7 @@ fn build_log() -> slog::Logger {
 
     let (dtrace_drain, probe_reg) = slog_dtrace::Dtrace::new();
 
-    let filtered_main = slog::LevelFilter::new(main_drain, slog::Level::Info);
+    let filtered_main = slog::LevelFilter::new(main_drain, level);
 
     let log = slog::Logger::root(
         slog::Duplicate::new(filtered_main.fuse(), dtrace_drain.fuse()).fuse(),
@@ -1028,15 +1029,20 @@ struct Args {
     /// Restore previously captured snapshot.
     #[clap(short, long, action)]
     restore: bool,
+
+    /// Maximum log level filter.
+    #[clap(long, env = "PROPOLIS_LOG", default_value_t = LogFilter(slog::Level::Info))]
+    log_level: LogFilter,
 }
 
 fn main() -> anyhow::Result<ExitCode> {
-    let Args { target, snapshot, restore } = Args::parse();
+    let Args { target, snapshot, restore, log_level: LogFilter(log_level) } =
+        Args::parse();
 
     // Ensure proper setup of USDT probes
     register_probes().context("Failed to setup USDT probes")?;
 
-    let log = build_log();
+    let log = build_log(log_level);
 
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
@@ -1092,4 +1098,30 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // wait for instance to be destroyed
     Ok(inst.wait_destroyed())
+}
+
+#[derive(Clone, Debug)]
+struct LogFilter(slog::Level);
+
+impl clap::ValueEnum for LogFilter {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            LogFilter(slog::Level::Critical),
+            LogFilter(slog::Level::Error),
+            LogFilter(slog::Level::Warning),
+            LogFilter(slog::Level::Info),
+            LogFilter(slog::Level::Debug),
+            LogFilter(slog::Level::Trace),
+        ]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(clap::builder::PossibleValue::new(self.0.as_str()))
+    }
+}
+
+impl fmt::Display for LogFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
