@@ -19,6 +19,7 @@ use crate::pio::{PioBus, PioFn};
 #[derive(Debug)]
 pub struct QemuPvpanic {
     counts: Mutex<Counts>,
+    log: slog::Logger,
 }
 
 #[derive(Debug)]
@@ -45,9 +46,10 @@ mod probes {
 impl QemuPvpanic {
     const IOPORT: u16 = 0x505;
 
-    pub fn create() -> Arc<Self> {
+    pub fn create(log: slog::Logger) -> Arc<Self> {
         Arc::new(Self {
             counts: Mutex::new(Counts { host_handled: 0, guest_handled: 0 }),
+            log,
         })
     }
 
@@ -75,12 +77,22 @@ impl QemuPvpanic {
             RWOp::Write(wo) => {
                 let value = wo.read_u8();
                 probes::pvpanic_pio_write!(|| value);
+                let host_handled = value & HOST_HANDLED != 0;
+                let guest_handled = value & GUEST_HANDLED != 0;
+                slog::debug!(
+                    self.log,
+                    "guest kernel panic";
+                    "host_handled" => host_handled,
+                    "guest_handled" => guest_handled,
+                );
+
                 let mut counts = self.counts.lock().unwrap();
-                if value & HOST_HANDLED != 0 {
+
+                if host_handled {
                     counts.host_handled += 1;
                 }
 
-                if value & GUEST_HANDLED != 0 {
+                if guest_handled {
                     counts.guest_handled += 1;
                 }
             }

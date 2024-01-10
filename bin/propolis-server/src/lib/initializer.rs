@@ -283,7 +283,9 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), anyhow::Error> {
         if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
             if spec.enable_isa {
-                let pvpanic = QemuPvpanic::create();
+                let pvpanic = QemuPvpanic::create(
+                    self.log.new(slog::o!("dev" => "qemu-pvpanic")),
+                );
                 pvpanic.attach_pio(&self.machine.bus_pio);
                 self.inv.register(&pvpanic)?;
 
