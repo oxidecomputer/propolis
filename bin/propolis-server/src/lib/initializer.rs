@@ -35,7 +35,7 @@ use crate::serial::Serial;
 use crate::server::CrucibleBackendMap;
 pub use nexus_client::Client as NexusClient;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -292,11 +292,9 @@ impl<'a> MachineInitializer<'a> {
                 if let Some(ref registry) = self.producer_registry {
                     let producer =
                         crate::stats::PvpanicProducer::new(uuid, pvpanic);
-                    registry.register_producer(producer).map_err(|error| {
-                        anyhow::anyhow!(
-                            "failed to register PVPANIC Oximeter producer: {error}"
-                        )
-                    })?;
+                    registry.register_producer(producer).context(
+                        "failed to register PVPANIC Oximeter producer",
+                    )?;
                 }
             }
         }

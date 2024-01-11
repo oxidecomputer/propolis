@@ -176,6 +176,22 @@ impl SpecBuilder {
         }
     }
 
+    /// Adds a QEMU pvpanic device.
+    pub fn add_pvpanic_device(
+        &mut self,
+        pvpanic: components::devices::QemuPvpanic,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.spec.devices.qemu_pvpanic.is_some() {
+            return Err(SpecBuilderError::DeviceNameInUse(
+                "pvpanic".to_string(),
+            ));
+        }
+
+        self.spec.devices.qemu_pvpanic = Some(pvpanic);
+
+        Ok(self)
+    }
+
     #[cfg(feature = "falcon")]
     pub fn set_softnpu_pci_port(
         &mut self,

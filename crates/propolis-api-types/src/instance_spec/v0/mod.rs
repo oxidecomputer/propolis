@@ -113,6 +113,19 @@ pub struct DeviceSpecV0 {
     pub network_devices: HashMap<SpecKey, NetworkDeviceV0>,
     pub serial_ports: HashMap<SpecKey, components::devices::SerialPort>,
     pub pci_pci_bridges: HashMap<SpecKey, components::devices::PciPciBridge>,
+
+    /// This field has a default value (`None`) to allow for
+    /// backwards-compatibility when upgrading from a Propolis
+    /// version that does not support this device. If the pvpanic device was not
+    /// present in the spec being deserialized, a `None` will be produced,
+    /// rather than rejecting the spec.
+    #[serde(default)]
+    /// Skip serializing this field if it is `None`. This is so that Propolis
+    /// versions with support for this device are backwards-compatible with
+    /// older versions that don't, as long as the spec doesn't define a pvpanic
+    /// device --- if there is no panic device, skipping the field from the spec
+    /// means that the older version will still accept the spec.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub qemu_pvpanic: Option<components::devices::QemuPvpanic>,
 
     #[cfg(feature = "falcon")]
