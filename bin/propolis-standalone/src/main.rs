@@ -931,12 +931,12 @@ fn setup_instance(
                 chipset.pci_attach(bdf, nvme);
             }
             qemu::pvpanic::DEVICE_NAME => {
-                let enable_mmio = dev
+                let enable_isa = dev
                     .options
-                    .get("enable_mmio")
+                    .get("enable_isa")
                     .and_then(|opt| opt.as_bool())
                     .unwrap_or(false);
-                if enable_mmio {
+                if enable_isa {
                     let pvpanic = QemuPvpanic::create(
                         log.new(slog::o!("dev" => "pvpanic")),
                     );

@@ -282,7 +282,7 @@ impl<'a> MachineInitializer<'a> {
         uuid: uuid::Uuid,
     ) -> Result<(), anyhow::Error> {
         if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
-            if spec.enable_mmio {
+            if spec.enable_isa {
                 let pvpanic = QemuPvpanic::create(
                     self.log.new(slog::o!("dev" => "qemu-pvpanic")),
                 );

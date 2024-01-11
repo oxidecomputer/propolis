@@ -228,7 +228,7 @@ pub enum MigrationCompatibilityError {
 #[serde(deny_unknown_fields)]
 pub struct QemuPvpanic {
     /// Enable the QEMU PVPANIC ISA bus device (I/O port 0x505).
-    pub enable_mmio: bool,
+    pub enable_isa: bool,
     // TODO(eliza): add support for the PCI PVPANIC device...
 }
 
@@ -428,20 +428,20 @@ mod test {
 
     #[test]
     fn incompatible_qemu_pvpanic() {
-        let d1 = Some(QemuPvpanic { enable_mmio: true });
-        let d2 = Some(QemuPvpanic { enable_mmio: false });
+        let d1 = Some(QemuPvpanic { enable_isa: true });
+        let d2 = Some(QemuPvpanic { enable_isa: false });
         assert!(d1.can_migrate_from_element(&d2).is_err());
         assert!(d1.can_migrate_from_element(&None).is_err());
     }
 
     #[test]
     fn compatible_qemu_pvpanic() {
-        let d1 = Some(QemuPvpanic { enable_mmio: true });
-        let d2 = Some(QemuPvpanic { enable_mmio: true });
+        let d1 = Some(QemuPvpanic { enable_isa: true });
+        let d2 = Some(QemuPvpanic { enable_isa: true });
         assert!(d1.can_migrate_from_element(&d2).is_ok());
 
-        let d1 = Some(QemuPvpanic { enable_mmio: false });
-        let d2 = Some(QemuPvpanic { enable_mmio: false });
+        let d1 = Some(QemuPvpanic { enable_isa: false });
+        let d2 = Some(QemuPvpanic { enable_isa: false });
         assert!(d1.can_migrate_from_element(&d2).is_ok());
     }
 }
