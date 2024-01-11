@@ -62,6 +62,7 @@ impl Producer for PvpanicProducer {
 
         self.host_handled_panics.datum_mut().set(host_handled as i64);
         self.guest_handled_panics.datum_mut().set(guest_handled as i64);
+
         let data = vec![
             Sample::new(&self.stat_name, &self.guest_handled_panics)?,
             Sample::new(&self.stat_name, &self.host_handled_panics)?,

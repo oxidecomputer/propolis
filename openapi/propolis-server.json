@@ -1351,13 +1351,13 @@
       "QemuPvpanic": {
         "type": "object",
         "properties": {
-          "enable_isa": {
+          "enable_mmio": {
             "description": "Enable the QEMU PVPANIC ISA bus device (I/O port 0x505).",
             "type": "boolean"
           }
         },
         "required": [
-          "enable_isa"
+          "enable_mmio"
         ],
         "additionalProperties": false
       },
