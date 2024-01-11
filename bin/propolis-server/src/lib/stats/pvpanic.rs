@@ -7,7 +7,7 @@ use oximeter::{
     types::{Cumulative, Sample},
     Metric, MetricsError, Producer,
 };
-use propolis::hw::qemu::pvpanic::QemuPvpanic;
+use propolis::hw::qemu::pvpanic;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -21,7 +21,7 @@ pub struct PvpanicProducer {
     host_handled_panics: PvPanicHostHandled,
     guest_handled_panics: PvPanicGuestHandled,
 
-    counts: Arc<QemuPvpanic>,
+    pvpanic: Arc<pvpanic::QemuPvpanic>,
 }
 
 /// An Oximeter `Metric` that specifies the number of times an instance's guest
@@ -43,12 +43,12 @@ struct PvPanicHostHandled {
 }
 
 impl PvpanicProducer {
-    pub fn new(id: Uuid, counts: Arc<QemuPvpanic>) -> Self {
+    pub fn new(id: Uuid, pvpanic: Arc<pvpanic::QemuPvpanic>) -> Self {
         PvpanicProducer {
             stat_name: InstanceUuid { uuid: id },
             host_handled_panics: Default::default(),
             guest_handled_panics: Default::default(),
-            counts,
+            pvpanic,
         }
     }
 }
@@ -57,12 +57,11 @@ impl Producer for PvpanicProducer {
     fn produce(
         &mut self,
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
-        self.host_handled_panics
-            .datum_mut()
-            .set(self.counts.host_handled_count() as i64);
-        self.guest_handled_panics
-            .datum_mut()
-            .set(self.counts.guest_handled_count() as i64);
+        let pvpanic::PanicCounts { guest_handled, host_handled } =
+            self.pvpanic.panic_counts();
+
+        self.host_handled_panics.datum_mut().set(host_handled as i64);
+        self.guest_handled_panics.datum_mut().set(guest_handled as i64);
         let data = vec![
             Sample::new(&self.stat_name, &self.guest_handled_panics)?,
             Sample::new(&self.stat_name, &self.host_handled_panics)?,

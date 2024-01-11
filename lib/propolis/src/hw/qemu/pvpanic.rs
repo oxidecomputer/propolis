@@ -18,16 +18,18 @@ use crate::pio::{PioBus, PioFn};
 /// [pvpanic device]: https://www.qemu.org/docs/master/specs/pvpanic.html
 #[derive(Debug)]
 pub struct QemuPvpanic {
-    counts: Mutex<Counts>,
+    counts: Mutex<PanicCounts>,
     log: slog::Logger,
 }
 
-#[derive(Debug)]
-struct Counts {
+/// Counts the number of guest kernel panics reported using the [`QemuPvpanic`]
+/// virtual device.
+#[derive(Copy, Clone, Debug)]
+pub struct PanicCounts {
     /// Counts the number of guest kernel panics handled by the host.
-    host_handled: usize,
+    pub host_handled: usize,
     /// Counts the number of guest kernel panics handled by the guest.
-    guest_handled: usize,
+    pub guest_handled: usize,
 }
 
 pub const DEVICE_NAME: &str = "qemu-pvpanic";
@@ -50,7 +52,10 @@ impl QemuPvpanic {
 
     pub fn create(log: slog::Logger) -> Arc<Self> {
         Arc::new(Self {
-            counts: Mutex::new(Counts { host_handled: 0, guest_handled: 0 }),
+            counts: Mutex::new(PanicCounts {
+                host_handled: 0,
+                guest_handled: 0,
+            }),
             log,
         })
     }
@@ -63,12 +68,9 @@ impl QemuPvpanic {
         pio.register(Self::IOPORT, 1, piofn).unwrap();
     }
 
-    pub fn host_handled_count(&self) -> usize {
-        self.counts.lock().unwrap().host_handled
-    }
-
-    pub fn guest_handled_count(&self) -> usize {
-        self.counts.lock().unwrap().guest_handled
+    /// Returns the current panic counts reported by the guest.
+    pub fn panic_counts(&self) -> PanicCounts {
+        *self.counts.lock().unwrap()
     }
 
     fn pio_rw(&self, rwo: RWOp) {
