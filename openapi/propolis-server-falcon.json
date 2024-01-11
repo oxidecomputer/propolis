@@ -631,6 +631,14 @@
               "$ref": "#/components/schemas/PciPciBridge"
             }
           },
+          "qemu_pvpanic": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/QemuPvpanic"
+              }
+            ]
+          },
           "serial_ports": {
             "type": "object",
             "additionalProperties": {
@@ -1402,6 +1410,19 @@
         "required": [
           "downstream_bus",
           "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "QemuPvpanic": {
+        "type": "object",
+        "properties": {
+          "enable_isa": {
+            "description": "Enable the QEMU PVPANIC ISA bus device (I/O port 0x505).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enable_isa"
         ],
         "additionalProperties": false
       },
