@@ -222,8 +222,12 @@ impl ServerSpecBuilder {
                 },
             )?;
 
-        let builder =
+        let mut builder =
             SpecBuilder::new(properties.vcpus, properties.memory, enable_pcie);
+
+        builder.add_pvpanic_device(components::devices::QemuPvpanic {
+            enable_isa: true,
+        })?;
 
         Ok(Self { builder })
     }

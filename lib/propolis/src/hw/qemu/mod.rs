@@ -4,4 +4,5 @@
 
 pub mod debug;
 pub mod fwcfg;
+pub mod pvpanic;
 pub mod ramfb;

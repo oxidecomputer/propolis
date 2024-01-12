@@ -21,6 +21,7 @@ use propolis::hw::chipset::Chipset;
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
+use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
@@ -34,7 +35,7 @@ use crate::serial::Serial;
 use crate::server::CrucibleBackendMap;
 pub use nexus_client::Client as NexusClient;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -273,6 +274,31 @@ impl<'a> MachineInitializer<'a> {
         let poller = chardev::BlockingFileOutput::new(debug_file);
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>);
         self.inv.register(&dbg)?;
+        Ok(())
+    }
+
+    pub fn initialize_qemu_pvpanic(
+        &self,
+        uuid: uuid::Uuid,
+    ) -> Result<(), anyhow::Error> {
+        if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
+            if spec.enable_isa {
+                let pvpanic = QemuPvpanic::create(
+                    self.log.new(slog::o!("dev" => "qemu-pvpanic")),
+                );
+                pvpanic.attach_pio(&self.machine.bus_pio);
+                self.inv.register(&pvpanic)?;
+
+                if let Some(ref registry) = self.producer_registry {
+                    let producer =
+                        crate::stats::PvpanicProducer::new(uuid, pvpanic);
+                    registry.register_producer(producer).context(
+                        "failed to register PVPANIC Oximeter producer",
+                    )?;
+                }
+            }
+        }
+
         Ok(())
     }
 

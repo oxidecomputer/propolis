@@ -15,15 +15,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
+use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use slog::{o, Drain};
 use strum::IntoEnumIterator;
 use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::hw::chipset::{i440fx, Chipset};
-use propolis::hw::ibmpc;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
+use propolis::hw::{ibmpc, qemu};
 use propolis::intr_pins::FuncPin;
 use propolis::usdt::register_probes;
 use propolis::vcpu::Vcpu;
@@ -928,6 +929,20 @@ fn setup_instance(
                 block::attach(backend, nvme.clone());
 
                 chipset.pci_attach(bdf, nvme);
+            }
+            qemu::pvpanic::DEVICE_NAME => {
+                let enable_isa = dev
+                    .options
+                    .get("enable_isa")
+                    .and_then(|opt| opt.as_bool())
+                    .unwrap_or(false);
+                if enable_isa {
+                    let pvpanic = QemuPvpanic::create(
+                        log.new(slog::o!("dev" => "pvpanic")),
+                    );
+                    pvpanic.attach_pio(pio);
+                    inv.register(&pvpanic)?;
+                }
             }
             _ => {
                 slog::error!(log, "unrecognized driver"; "name" => name);

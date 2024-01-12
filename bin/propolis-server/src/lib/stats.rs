@@ -22,6 +22,9 @@ use uuid::Uuid;
 
 use crate::server::MetricsEndpointConfig;
 
+mod pvpanic;
+pub use self::pvpanic::PvpanicProducer;
+
 const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
     tokio::time::Duration::from_secs(30);
 
