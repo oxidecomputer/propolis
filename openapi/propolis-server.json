@@ -625,7 +625,6 @@
           },
           "qemu_pvpanic": {
             "nullable": true,
-            "description": "This field has a default value (`None`) to allow for backwards-compatibility when upgrading from a Propolis version that does not support this device. If the pvpanic device was not present in the spec being deserialized, a `None` will be produced, rather than rejecting the spec. Skip serializing this field if it is `None`. This is so that Propolis versions with support for this device are backwards-compatible with older versions that don't, as long as the spec doesn't define a pvpanic device --- if there is no panic device, skipping the field from the spec means that the older version will still accept the spec.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/QemuPvpanic"
