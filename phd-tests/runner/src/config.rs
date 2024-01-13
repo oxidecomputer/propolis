@@ -87,6 +87,14 @@ pub struct RunOptions {
     #[clap(long, value_parser, default_value = "ovmf")]
     pub default_bootrom_artifact: String,
 
+    /// The Git SHA to use for the `crucible-downstairs` artifact.
+    ///
+    /// By default, this SHA is determined based on the Propolis Cargo
+    /// workspace's dependency on `crucible-upstairs`, so that the downstairs
+    /// binary is built from the same Git revision as the upstairs library.
+    #[clap(long, value_parser, default_value = DEFAULT_CRUCIBLE_SHA)]
+    pub crucible_downstairs_rev: String,
+
     /// Only run tests whose fully-qualified names contain this string.
     /// Can be specified multiple times.
     #[clap(long, value_parser)]
@@ -97,6 +105,8 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     pub exclude_filter: Vec<String>,
 }
+
+const DEFAULT_CRUCIBLE_SHA: &str = env!("PHD_RUNNER_CRUCIBLE_SHA");
 
 #[derive(Args, Debug)]
 #[clap(verbatim_doc_comment)]

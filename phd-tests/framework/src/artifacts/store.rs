@@ -4,12 +4,13 @@
 
 use crate::{
     artifacts::{
-        manifest::Manifest, ArtifactSource, DEFAULT_PROPOLIS_ARTIFACT,
+        manifest::Manifest, ArtifactSource, CRUCIBLE_DOWNSTAIRS_ARTIFACT,
+        DEFAULT_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
 };
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use camino::{Utf8Path, Utf8PathBuf};
 use ring::digest::{Digest, SHA256};
 use std::collections::BTreeMap;
@@ -106,10 +107,11 @@ impl StoredArtifact {
         // artifact can be reacquired.
         let source_uris = match &self.description.source {
             ArtifactSource::Buildomat { repo, series, commit, .. } => {
-                let buildomat_uri = format!(
-                    "https://buildomat.eng.oxide.computer/public/file\
-                            /{}/{}/{}/{}",
-                    repo, series, commit, self.description.filename
+                let buildomat_uri = buildomat_url(
+                    repo,
+                    series,
+                    commit,
+                    &self.description.filename,
                 );
 
                 vec![buildomat_uri]
@@ -250,14 +252,58 @@ impl Store {
         Ok(())
     }
 
+    pub fn add_crucible_downstairs_from_rev(
+        &mut self,
+        rev: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.artifacts.contains_key(CRUCIBLE_DOWNSTAIRS_ARTIFACT), "artifact store already contains key {CRUCIBLE_DOWNSTAIRS_ARTIFACT}");
+
+        const REPO: &str = "oxidecomputer/crucible";
+        const SERIES: &str = "nightly-image";
+
+        let sha256 = (|| {
+            let client = reqwest::blocking::ClientBuilder::new()
+                .timeout(Duration::from_secs(5))
+                .build()?;
+            let req = client
+                .get(buildomat_url(
+                    REPO,
+                    SERIES,
+                    rev,
+                    "crucible-nightly.sha256.txt",
+                ))
+                .build()?;
+            let bytes = client.execute(req)?.bytes()?;
+            Ok::<_, anyhow::Error>(String::from_utf8(bytes.to_vec())?)
+        })()
+        .with_context(|| {
+            format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{rev}")
+        })?;
+
+        let artifact = super::Artifact {
+            filename: "crucible-nightly.tar.gz".to_string(),
+            kind: super::ArtifactKind::CrucibleDownstairs,
+            source: super::ArtifactSource::Buildomat {
+                repo: "oxidecomputer/crucible".to_string(),
+                series: "nightly-image".to_string(),
+                commit: rev.to_string(),
+                sha256,
+            },
+        };
+
+        let _old = self.artifacts.insert(
+            CRUCIBLE_DOWNSTAIRS_ARTIFACT.to_string(),
+            Mutex::new(StoredArtifact::new(artifact)),
+        );
+        assert!(_old.is_none());
+        Ok(())
+    }
+
     pub fn get_guest_os_image(
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<(Utf8PathBuf, GuestOsKind)> {
-        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
-            anyhow::anyhow!("artifact {} not found in store", artifact_name)
-        })?;
-
+        let entry = self.get_artifact(artifact_name)?;
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::GuestOs(kind) => {
@@ -276,10 +322,7 @@ impl Store {
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
-        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
-            anyhow::anyhow!("artifact {} not found in store", artifact_name)
-        })?;
-
+        let entry = self.get_artifact(artifact_name)?;
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::Bootrom => {
@@ -296,10 +339,7 @@ impl Store {
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
-        let entry = self.artifacts.get(artifact_name).ok_or_else(|| {
-            anyhow::anyhow!("artifact {} not found in store", artifact_name)
-        })?;
-
+        let entry = self.get_artifact(artifact_name)?;
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::PropolisServer => {
@@ -311,6 +351,40 @@ impl Store {
             )),
         }
     }
+
+    pub fn get_crucible_downstairs(&self) -> anyhow::Result<Utf8PathBuf> {
+        let entry = self.get_artifact(CRUCIBLE_DOWNSTAIRS_ARTIFACT)?;
+        let mut guard = entry.lock().unwrap();
+        match guard.description.kind {
+            super::ArtifactKind::CrucibleDownstairs => {
+                guard.ensure(&self.local_dir, &self.remote_server_uris)
+            }
+            _ => Err(anyhow::anyhow!(
+                "artifact {CRUCIBLE_DOWNSTAIRS_ARTIFACT} is not a Crucible downstairs binary",
+            )),
+        }
+    }
+
+    fn get_artifact(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<&Mutex<StoredArtifact>> {
+        self.artifacts.get(name).ok_or_else(|| {
+            anyhow::anyhow!("artifact {} not found in store", name)
+        })
+    }
+}
+
+fn buildomat_url(
+    repo: impl AsRef<str>,
+    series: impl AsRef<str>,
+    commit: impl AsRef<str>,
+    file: impl AsRef<str>,
+) -> String {
+    format!(
+        "https://buildomat.eng.oxide.computer/public/file/public/file/{}/{}/{}/{}",
+        repo.as_ref(), series.as_ref(), commit.as_ref(), file.as_ref(),
+    )
 }
 
 fn sha256_digest(file: &mut File) -> anyhow::Result<Digest> {

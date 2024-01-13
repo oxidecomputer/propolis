@@ -74,7 +74,7 @@ pub struct Framework {
 
 pub struct FrameworkParameters {
     pub propolis_server_path: Utf8PathBuf,
-    pub crucible_downstairs_cmd: Option<Utf8PathBuf>,
+    pub crucible_downstairs_rev: String,
 
     pub tmp_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
@@ -116,7 +116,6 @@ impl Framework {
         let disk_factory = DiskFactory::new(
             &params.tmp_directory,
             artifact_store.clone(),
-            params.crucible_downstairs_cmd.clone().as_ref(),
             port_allocator.clone(),
             params.server_log_mode,
         );

@@ -44,7 +44,7 @@ fn main() {
 fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
     let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
-        crucible_downstairs_cmd: run_opts.crucible_downstairs_cmd.clone(),
+        crucible_downstairs_rev: todo!(),
         tmp_directory: run_opts.tmp_directory.clone(),
         artifact_toml: run_opts.artifact_toml_path.clone(),
         server_log_mode: run_opts.server_logging_mode,
@@ -54,6 +54,8 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         port_range: 9000..10000,
     };
+
+    // https://buildomat.eng.oxide.computer/wg/0/artefact/01HKZ9B1W2T8FWP7T91WX2G2TX/gO8sphupG9813SJ4y8jPfqC9kMiB24M28b5BmLjQgjoyanqs/01HKZ9BHA5CHADFTJVXPMPKNXF/01HKZASQWRFCDBDHAG7G4H8MKA/crucible-nightly.tar.gz
 
     let ctx = Framework::new(ctx_params)
         .expect("should be able to set up a test context");

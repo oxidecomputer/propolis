@@ -13,12 +13,15 @@ pub use store::Store as ArtifactStore;
 
 pub const DEFAULT_PROPOLIS_ARTIFACT: &str = "__DEFAULT_PROPOLIS";
 
+pub const CRUCIBLE_DOWNSTAIRS_ARTIFACT: &str = "crucible-downstairs";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ArtifactKind {
     GuestOs(crate::guest_os::GuestOsKind),
     Bootrom,
     PropolisServer,
+    CrucibleDownstairs,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -33,8 +33,8 @@ mod file;
 /// Errors that can arise while working with disks.
 #[derive(Debug, Error)]
 pub enum DiskError {
-    #[error("Disk factory has no Crucible downstairs path")]
-    NoCrucibleDownstairsPath,
+    #[error("Disk factory has no Crucible downstairs artifact")]
+    NoCrucibleDownstairs,
 
     #[error(transparent)]
     PortAllocatorError(#[from] PortAllocatorError),
@@ -115,10 +115,6 @@ pub(crate) struct DiskFactory {
     /// when those are used as a disk source.
     artifact_store: Rc<ArtifactStore>,
 
-    /// The path to the Crucible downstairs binary to launch to serve Crucible
-    /// disks.
-    crucible_downstairs_binary: Option<PathBuf>,
-
     /// The port allocator to use to allocate ports to Crucible server
     /// processes.
     port_allocator: Rc<PortAllocator>,
@@ -134,22 +130,20 @@ impl DiskFactory {
     pub fn new(
         storage_dir: &impl AsRef<Path>,
         artifact_store: Rc<ArtifactStore>,
-        crucible_downstairs_binary: Option<&impl AsRef<Path>>,
         port_allocator: Rc<PortAllocator>,
         log_mode: ServerLogMode,
     ) -> Self {
         Self {
             storage_dir: storage_dir.as_ref().to_path_buf(),
             artifact_store,
-            crucible_downstairs_binary: crucible_downstairs_binary
-                .map(|p| p.as_ref().to_path_buf()),
             port_allocator,
             log_mode,
         }
     }
 
     pub fn crucible_enabled(&self) -> bool {
-        self.crucible_downstairs_binary.is_some()
+        // self.crucible_downstairs_artifact.is_some()
+        true
     }
 }
 
@@ -206,10 +200,7 @@ impl DiskFactory {
         disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
-        let binary_path = self
-            .crucible_downstairs_binary
-            .as_ref()
-            .ok_or(DiskError::NoCrucibleDownstairsPath)?;
+        let binary_path = self.artifact_store.get_crucible_downstairs()?;
 
         let DiskSource::Artifact(artifact_name) = source;
         let (artifact_path, guest_os) =
@@ -224,7 +215,7 @@ impl DiskFactory {
             name,
             disk_size_gib,
             block_size,
-            binary_path,
+            &binary_path.as_std_path(),
             &ports,
             &self.storage_dir,
             Some(&artifact_path),
