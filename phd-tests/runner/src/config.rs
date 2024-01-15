@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use phd_framework::server_log_mode::ServerLogMode;
@@ -36,8 +37,12 @@ pub struct RunOptions {
     pub propolis_server_cmd: Utf8PathBuf,
 
     /// The command to use to launch Crucible downstairs servers.
+    ///
+    /// If this is not present, then a Crucible revision will be determined
+    /// based on the current Git revision of `propolis`' dependency on the
+    /// `crucible` crate.
     #[clap(long, value_parser)]
-    pub crucible_downstairs_cmd: Option<Utf8PathBuf>,
+    crucible_downstairs_cmd: Option<Utf8PathBuf>,
 
     /// The directory into which to write temporary files (config TOMLs, log
     /// files, etc.) generated during test execution.
@@ -87,14 +92,6 @@ pub struct RunOptions {
     #[clap(long, value_parser, default_value = "ovmf")]
     pub default_bootrom_artifact: String,
 
-    /// The Git SHA to use for the `crucible-downstairs` artifact.
-    ///
-    /// By default, this SHA is determined based on the Propolis Cargo
-    /// workspace's dependency on `crucible-upstairs`, so that the downstairs
-    /// binary is built from the same Git revision as the upstairs library.
-    #[clap(long, value_parser, default_value = DEFAULT_CRUCIBLE_SHA)]
-    pub crucible_downstairs_rev: String,
-
     /// Only run tests whose fully-qualified names contain this string.
     /// Can be specified multiple times.
     #[clap(long, value_parser)]
@@ -105,8 +102,6 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     pub exclude_filter: Vec<String>,
 }
-
-const DEFAULT_CRUCIBLE_SHA: &str = env!("PHD_RUNNER_CRUCIBLE_SHA");
 
 #[derive(Args, Debug)]
 #[clap(verbatim_doc_comment)]
@@ -120,4 +115,77 @@ pub struct ListOptions {
     /// string. Can be specified multiple times.
     #[clap(long, value_parser)]
     pub exclude_filter: Vec<String>,
+}
+
+impl RunOptions {
+    pub fn crucible_downstairs(
+        &self,
+    ) -> anyhow::Result<phd_framework::CrucibleDownstairsSource> {
+        // If a local crucible-downstairs command was provided on the command
+        // line, use that.
+        if let Some(cmd) = self.crucible_downstairs_cmd.clone() {
+            return Ok(phd_framework::CrucibleDownstairsSource::Local(cmd));
+        }
+
+        // Otherwise, determine the Git SHA of the workspace's Cargo git dep on
+        // crucible-upstairs, and use the same revision for the downstairs
+        // binary artifact.
+        fn extract_crucible_dep_sha(
+            src: &cargo_metadata::Source,
+        ) -> anyhow::Result<&str> {
+            const CRUCIBLE_REPO: &str =
+                "https://github.com/oxidecomputer/crucible";
+
+            let src = src.repr.strip_prefix("git+").ok_or_else(|| {
+                anyhow::anyhow!("Crucible package's source should be from git")
+            })?;
+
+            if !src.starts_with(CRUCIBLE_REPO) {
+                println!("cargo:warning=expected Crucible package's source to be {CRUCIBLE_REPO:?}, but is {src:?}");
+            }
+
+            let rev = src.split("?rev=").nth(1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Crucible package's source should have a revision"
+                )
+            })?;
+            let mut parts = rev.split('#');
+            let sha = parts.next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Crucible package's source should have a revision"
+                )
+            })?;
+            assert_eq!(Some(sha), parts.next());
+            Ok(sha)
+        }
+
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .exec()
+            .context("Failed to get cargo metadata")?;
+
+        let crucible_pkg = metadata
+            .packages
+            .iter()
+            .find(|pkg| pkg.name == "crucible")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Failed to find Crucible package in cargo metadata"
+                )
+            })?;
+
+        let crucible_src = crucible_pkg.source.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Crucible package should not be a workspace member, and therefore should have source metadata")
+            })?;
+
+        let crucible_sha =
+            extract_crucible_dep_sha(crucible_src).with_context(|| {
+                format!(
+                    "Failed to extract Crucible source SHA from {crucible_src:?}"
+                )
+            })?;
+
+        Ok(phd_framework::CrucibleDownstairsSource::BuildomatGitRev(
+            crucible_sha.to_string(),
+        ))
+    }
 }

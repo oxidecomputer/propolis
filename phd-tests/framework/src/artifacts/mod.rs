@@ -21,7 +21,7 @@ enum ArtifactKind {
     GuestOs(crate::guest_os::GuestOsKind),
     Bootrom,
     PropolisServer,
-    CrucibleDownstairsTarball,
+    CrucibleDownstairs,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,4 +51,8 @@ struct Artifact {
     /// The source to use to obtain this artifact if it's not present on the
     /// host system.
     source: ArtifactSource,
+
+    /// If present, this artifact is a tarball, and the provided file should be
+    /// extracted.
+    untar: Option<camino::Utf8PathBuf>,
 }

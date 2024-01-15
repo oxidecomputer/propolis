@@ -88,14 +88,7 @@ impl StoredArtifact {
             if hash_equals(&maybe_path, expected_digest).is_ok() {
                 info!(%maybe_path,
                       "Valid artifact already exists, caching its path");
-                if self.description.kind
-                    == ArtifactKind::CrucibleDownstairsTarball
-                {
-                    return self.extract_crucible_downstairs(&maybe_path);
-                } else {
-                    self.cached_path = Some(maybe_path.clone());
-                    return Ok(maybe_path);
-                }
+                return self.cache_path(maybe_path);
             } else {
                 info!(%maybe_path, "Existing artifact is invalid, deleting it");
                 std::fs::remove_file(&maybe_path)?;
@@ -176,13 +169,7 @@ impl StoredArtifact {
             permissions.set_readonly(true);
             new_file.set_permissions(permissions)?;
 
-            if self.description.kind == ArtifactKind::CrucibleDownstairsTarball
-            {
-                return self.extract_crucible_downstairs(&maybe_path);
-            } else {
-                self.cached_path = Some(maybe_path.clone());
-                return Ok(maybe_path);
-            }
+            return self.cache_path(maybe_path);
         }
 
         Err(anyhow::anyhow!(
@@ -191,25 +178,28 @@ impl StoredArtifact {
         ))
     }
 
-    fn extract_crucible_downstairs(
+    fn cache_path(
         &mut self,
-        tarball_path: &Utf8Path,
+        mut path: Utf8PathBuf,
     ) -> anyhow::Result<Utf8PathBuf> {
-        assert_eq!(
-            ArtifactKind::CrucibleDownstairsTarball,
-            self.description.kind
-        );
+        if let Some(ref untar_path) = self.description.untar {
+            // This artifact is a tarball, and a file must be extracted from it.
+            let filename = untar_path.file_name().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "untar path '{}' has no file name component",
+                    untar_path
+                )
+            })?;
+            let extracted_path = path.with_file_name(filename);
 
-        let extracted_path = tarball_path.with_file_name("crucible-downstairs");
-        let path = if !extracted_path.exists() {
-            info!(%extracted_path, "Extracting Crucible downstairs binary");
-            let bin_path = ["target", "release", "crucible-downstairs"]
-                .iter()
-                .collect::<Utf8PathBuf>();
-            extract_tar_gz(tarball_path, &bin_path)?
-        } else {
-            info!(%extracted_path, "Crucible downstairs binary already extracted");
-            extracted_path
+            path = if !extracted_path.exists() {
+                info!(%extracted_path, %untar_path, "Extracting artifact from tarball");
+
+                extract_tar_gz(&path, untar_path)?
+            } else {
+                info!(%extracted_path, "Artifact already extracted from tarball");
+                extracted_path
+            }
         };
 
         self.cached_path = Some(path.clone());
@@ -248,92 +238,87 @@ impl Store {
         &mut self,
         propolis_server_cmd: &Utf8Path,
     ) -> anyhow::Result<()> {
-        if self.artifacts.contains_key(DEFAULT_PROPOLIS_ARTIFACT) {
-            anyhow::bail!(
-                "artifact store already contains key {}",
-                DEFAULT_PROPOLIS_ARTIFACT
-            );
-        }
-
-        let full_path = propolis_server_cmd.canonicalize_utf8()?;
-        let filename = full_path.file_name().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Propolis server command '{}' contains no file component",
-                propolis_server_cmd
-            )
-        })?;
-        let dir = full_path.parent().ok_or_else(|| {
-            anyhow::anyhow!(
-                "canonicalized Propolis path '{}' has no directory component",
-                full_path
-            )
-        })?;
-
-        let artifact = super::Artifact {
-            filename: filename.to_string(),
-            kind: super::ArtifactKind::PropolisServer,
-            source: super::ArtifactSource::LocalPath {
-                path: dir.to_path_buf(),
-                sha256: None,
-            },
-        };
-
-        let _old = self.artifacts.insert(
-            DEFAULT_PROPOLIS_ARTIFACT.to_string(),
-            Mutex::new(StoredArtifact::new(artifact)),
-        );
-        assert!(_old.is_none());
-        Ok(())
+        tracing::info!(%propolis_server_cmd, "Adding Propolis server from local command");
+        self.add_local_artifact(
+            propolis_server_cmd,
+            DEFAULT_PROPOLIS_ARTIFACT,
+            ArtifactKind::PropolisServer,
+        )
     }
 
-    pub fn add_crucible_downstairs_from_rev(
+    pub fn add_crucible_downstairs(
         &mut self,
-        rev: &str,
+        source: &crate::CrucibleDownstairsSource,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!self.artifacts.contains_key(CRUCIBLE_DOWNSTAIRS_ARTIFACT), "artifact store already contains key {CRUCIBLE_DOWNSTAIRS_ARTIFACT}");
 
-        const REPO: &str = "oxidecomputer/crucible";
-        const SERIES: &str = "nightly-image";
-        let sha256_url =
-            buildomat_url(REPO, SERIES, rev, "crucible-nightly.sha256.txt");
-        let sha256 = (|| {
-            let client = reqwest::blocking::ClientBuilder::new()
-                .timeout(Duration::from_secs(5))
-                .build()?;
-            let req = client.get(&sha256_url).build()?;
-            let rsp = client.execute(req)?;
-            let status = rsp.status();
-            anyhow::ensure!(
-                status == reqwest::StatusCode::OK,
-                "HTTP status: {status}"
-            );
-            let sha256 = String::from_utf8(rsp.bytes()?.to_vec())?
-                // the text file downloaded from Buildomat has a trailing newline,
-                // so get rid of that...
-                .trim().to_string();
-            Ok::<_, anyhow::Error>(sha256)
-        })()
-        .with_context(|| {
-            format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{rev}\nurl={sha256_url}")
-        })?;
+        match source {
+            crate::CrucibleDownstairsSource::Local(
+                ref crucible_downstairs_cmd,
+            ) => {
+                tracing::info!(%crucible_downstairs_cmd, "Adding crucible-downstairs from local command");
+                self.add_local_artifact(
+                    crucible_downstairs_cmd,
+                    CRUCIBLE_DOWNSTAIRS_ARTIFACT,
+                    ArtifactKind::CrucibleDownstairs,
+                )
+            }
+            crate::CrucibleDownstairsSource::BuildomatGitRev(ref rev) => {
+                tracing::info!(%rev, "Adding crucible-downstairs from Buildomat Git revision");
 
-        let artifact = super::Artifact {
-            filename: "crucible-nightly.tar.gz".to_string(),
-            kind: super::ArtifactKind::CrucibleDownstairsTarball,
-            source: super::ArtifactSource::Buildomat {
-                repo: "oxidecomputer/crucible".to_string(),
-                series: "nightly-image".to_string(),
-                commit: rev.to_string(),
-                sha256,
-            },
-        };
+                const REPO: &str = "oxidecomputer/crucible";
+                const SERIES: &str = "nightly-image";
+                let sha256_url = buildomat_url(
+                    REPO,
+                    SERIES,
+                    rev,
+                    "crucible-nightly.sha256.txt",
+                );
+                let sha256 = (|| {
+                    let client = reqwest::blocking::ClientBuilder::new()
+                        .timeout(Duration::from_secs(5))
+                        .build()?;
+                    let req = client.get(&sha256_url).build()?;
+                    let rsp = client.execute(req)?;
+                    let status = rsp.status();
+                    anyhow::ensure!(
+                        status == reqwest::StatusCode::OK,
+                        "HTTP status: {status}"
+                    );
+                    let sha256 = String::from_utf8(rsp.bytes()?.to_vec())?
+                        // the text file downloaded from Buildomat has a trailing newline,
+                        // so get rid of that...
+                        .trim().to_string();
+                    Ok::<_, anyhow::Error>(sha256)
+                })()
+                .with_context(|| {
+                    format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{rev}\nurl={sha256_url}")
+                })?;
 
-        let _old = self.artifacts.insert(
-            CRUCIBLE_DOWNSTAIRS_ARTIFACT.to_string(),
-            Mutex::new(StoredArtifact::new(artifact)),
-        );
-        assert!(_old.is_none());
-        Ok(())
+                let artifact = super::Artifact {
+                    filename: "crucible-nightly.tar.gz".to_string(),
+                    kind: ArtifactKind::CrucibleDownstairs,
+                    source: ArtifactSource::Buildomat {
+                        repo: "oxidecomputer/crucible".to_string(),
+                        series: "nightly-image".to_string(),
+                        commit: rev.to_string(),
+                        sha256,
+                    },
+                    untar: Some(
+                        ["target", "release", "crucible-downstairs"]
+                            .iter()
+                            .collect::<Utf8PathBuf>(),
+                    ),
+                };
+
+                let _old = self.artifacts.insert(
+                    CRUCIBLE_DOWNSTAIRS_ARTIFACT.to_string(),
+                    Mutex::new(StoredArtifact::new(artifact)),
+                );
+                assert!(_old.is_none());
+                Ok(())
+            }
+        }
     }
 
     pub fn get_guest_os_image(
@@ -393,7 +378,7 @@ impl Store {
         let entry = self.get_artifact(CRUCIBLE_DOWNSTAIRS_ARTIFACT)?;
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
-            super::ArtifactKind::CrucibleDownstairsTarball => {
+            super::ArtifactKind::CrucibleDownstairs => {
                 guard.ensure(&self.local_dir, &self.remote_server_uris)
             }
             _ => Err(anyhow::anyhow!(
@@ -409,6 +394,51 @@ impl Store {
         self.artifacts.get(name).ok_or_else(|| {
             anyhow::anyhow!("artifact {} not found in store", name)
         })
+    }
+
+    fn add_local_artifact(
+        &mut self,
+        cmd: &Utf8Path,
+        artifact_name: &str,
+        kind: super::ArtifactKind,
+    ) -> anyhow::Result<()> {
+        if self.artifacts.contains_key(artifact_name) {
+            anyhow::bail!(
+                "artifact store already contains key {artifact_name:?}"
+            );
+        }
+
+        let full_path = cmd.canonicalize_utf8()?;
+        let filename = full_path.file_name().ok_or_else(|| {
+            anyhow::anyhow!(
+                "local artifact command '{}' contains no file component",
+                cmd
+            )
+        })?;
+        let dir = full_path.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "canonicalized local artifact path '{}' has no directory component",
+                full_path
+            )
+        })?;
+
+        let artifact = super::Artifact {
+            filename: filename.to_string(),
+            kind,
+            source: super::ArtifactSource::LocalPath {
+                path: dir.to_path_buf(),
+                sha256: None,
+            },
+            untar: None,
+        };
+
+        let _old: Option<Mutex<StoredArtifact>> = self.artifacts.insert(
+            artifact_name.to_string(),
+            Mutex::new(StoredArtifact::new(artifact)),
+        );
+        assert!(_old.is_none());
+
+        Ok(())
     }
 }
 

@@ -74,7 +74,7 @@ pub struct Framework {
 
 pub struct FrameworkParameters {
     pub propolis_server_path: Utf8PathBuf,
-    pub crucible_downstairs_rev: String,
+    pub crucible_downstairs: CrucibleDownstairsSource,
 
     pub tmp_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
@@ -86,6 +86,12 @@ pub struct FrameworkParameters {
     pub default_bootrom_artifact: String,
 
     pub port_range: Range<u16>,
+}
+
+#[derive(Debug)]
+pub enum CrucibleDownstairsSource {
+    BuildomatGitRev(String),
+    Local(Utf8PathBuf),
 }
 
 // The framework implementation includes some "runner-only" functions
@@ -112,11 +118,11 @@ impl Framework {
             })?;
 
         artifact_store
-            .add_crucible_downstairs_from_rev(&params.crucible_downstairs_rev)
+            .add_crucible_downstairs(&params.crucible_downstairs)
             .with_context(|| {
                 format!(
-                    "adding Crucible downstairs '{}' from options",
-                    &params.crucible_downstairs_rev
+                    "adding Crucible downstairs '{:?}' from options",
+                    &params.crucible_downstairs
                 )
             })?;
 
