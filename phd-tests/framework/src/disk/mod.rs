@@ -140,11 +140,6 @@ impl DiskFactory {
             log_mode,
         }
     }
-
-    pub fn crucible_enabled(&self) -> bool {
-        // self.crucible_downstairs_artifact.is_some()
-        true
-    }
 }
 
 impl DiskFactory {

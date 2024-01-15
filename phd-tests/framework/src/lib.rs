@@ -70,11 +70,13 @@ pub struct Framework {
     pub(crate) artifact_store: Rc<artifacts::ArtifactStore>,
     pub(crate) disk_factory: DiskFactory,
     pub(crate) port_allocator: Rc<PortAllocator>,
+
+    pub(crate) crucible_enabled: bool,
 }
 
 pub struct FrameworkParameters {
     pub propolis_server_path: Utf8PathBuf,
-    pub crucible_downstairs: CrucibleDownstairsSource,
+    pub crucible_downstairs: Option<CrucibleDownstairsSource>,
 
     pub tmp_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
@@ -117,14 +119,24 @@ impl Framework {
                 )
             })?;
 
-        artifact_store
-            .add_crucible_downstairs(&params.crucible_downstairs)
-            .with_context(|| {
-                format!(
-                    "adding Crucible downstairs '{:?}' from options",
-                    &params.crucible_downstairs
-                )
-            })?;
+        let crucible_enabled = match params.crucible_downstairs {
+            Some(crucible_downstairs) => {
+                artifact_store
+                    .add_crucible_downstairs(&crucible_downstairs)
+                    .with_context(|| {
+                        format!(
+                            "adding Crucible downstairs '{crucible_downstairs:?}' from options",
+                        )
+                    })?;
+                true
+            }
+            None => {
+                tracing::warn!(
+                    "Crucible disabled. Crucible tests will be skipped"
+                );
+                false
+            }
+        };
 
         let artifact_store = Rc::new(artifact_store);
         let port_allocator = Rc::new(PortAllocator::new(params.port_range));
@@ -145,6 +157,7 @@ impl Framework {
             artifact_store,
             disk_factory,
             port_allocator,
+            crucible_enabled,
         })
     }
 
@@ -233,6 +246,6 @@ impl Framework {
     /// creation of Crucible disks. This can be used to skip tests that require
     /// Crucible support.
     pub fn crucible_enabled(&self) -> bool {
-        self.disk_factory.crucible_enabled()
+        self.crucible_enabled
     }
 }

@@ -44,6 +44,13 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     crucible_downstairs_cmd: Option<Utf8PathBuf>,
 
+    /// Disable Crucible.
+    ///
+    /// If this is set, no crucible-downstairs binary will be downloaded, and
+    /// tests which use Crucible will be skipped.
+    #[clap(long, conflicts_with("crucible_downstairs_cmd"))]
+    no_crucible: bool,
+
     /// The directory into which to write temporary files (config TOMLs, log
     /// files, etc.) generated during test execution.
     #[clap(long, value_parser)]
@@ -120,11 +127,18 @@ pub struct ListOptions {
 impl RunOptions {
     pub fn crucible_downstairs(
         &self,
-    ) -> anyhow::Result<phd_framework::CrucibleDownstairsSource> {
+    ) -> anyhow::Result<Option<phd_framework::CrucibleDownstairsSource>> {
+        // Crucible tests are disabled.
+        if self.no_crucible {
+            return Ok(None);
+        }
+
         // If a local crucible-downstairs command was provided on the command
         // line, use that.
         if let Some(cmd) = self.crucible_downstairs_cmd.clone() {
-            return Ok(phd_framework::CrucibleDownstairsSource::Local(cmd));
+            return Ok(Some(phd_framework::CrucibleDownstairsSource::Local(
+                cmd,
+            )));
         }
 
         // Otherwise, determine the Git SHA of the workspace's Cargo git dep on
@@ -184,8 +198,8 @@ impl RunOptions {
                 )
             })?;
 
-        Ok(phd_framework::CrucibleDownstairsSource::BuildomatGitRev(
+        Ok(Some(phd_framework::CrucibleDownstairsSource::BuildomatGitRev(
             crucible_sha.to_string(),
-        ))
+        )))
     }
 }
