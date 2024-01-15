@@ -15,13 +15,13 @@ pub const DEFAULT_PROPOLIS_ARTIFACT: &str = "__DEFAULT_PROPOLIS";
 
 pub const CRUCIBLE_DOWNSTAIRS_ARTIFACT: &str = "crucible-downstairs";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum ArtifactKind {
     GuestOs(crate::guest_os::GuestOsKind),
     Bootrom,
     PropolisServer,
-    CrucibleDownstairs,
+    CrucibleDownstairsTarball,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -44,7 +44,7 @@ fn main() {
 fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
     let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
-        crucible_downstairs_rev: todo!(),
+        crucible_downstairs_rev: env!("PHD_RUNNER_CRUCIBLE_SHA").to_string(),
         tmp_directory: run_opts.tmp_directory.clone(),
         artifact_toml: run_opts.artifact_toml_path.clone(),
         server_log_mode: run_opts.server_logging_mode,

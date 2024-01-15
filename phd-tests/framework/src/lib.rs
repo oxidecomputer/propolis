@@ -111,6 +111,15 @@ impl Framework {
                 )
             })?;
 
+        artifact_store
+            .add_crucible_downstairs_from_rev(&params.crucible_downstairs_rev)
+            .with_context(|| {
+                format!(
+                    "adding Crucible downstairs '{}' from options",
+                    &params.crucible_downstairs_rev
+                )
+            })?;
+
         let artifact_store = Rc::new(artifact_store);
         let port_allocator = Rc::new(PortAllocator::new(params.port_range));
         let disk_factory = DiskFactory::new(

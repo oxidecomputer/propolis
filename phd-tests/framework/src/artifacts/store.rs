@@ -4,8 +4,8 @@
 
 use crate::{
     artifacts::{
-        manifest::Manifest, ArtifactSource, CRUCIBLE_DOWNSTAIRS_ARTIFACT,
-        DEFAULT_PROPOLIS_ARTIFACT,
+        manifest::Manifest, ArtifactKind, ArtifactSource,
+        CRUCIBLE_DOWNSTAIRS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
 };
@@ -88,9 +88,14 @@ impl StoredArtifact {
             if hash_equals(&maybe_path, expected_digest).is_ok() {
                 info!(%maybe_path,
                       "Valid artifact already exists, caching its path");
-
-                self.cached_path = Some(maybe_path.clone());
-                return Ok(maybe_path);
+                if self.description.kind
+                    == ArtifactKind::CrucibleDownstairsTarball
+                {
+                    return self.extract_crucible_downstairs(&maybe_path);
+                } else {
+                    self.cached_path = Some(maybe_path.clone());
+                    return Ok(maybe_path);
+                }
             } else {
                 info!(%maybe_path, "Existing artifact is invalid, deleting it");
                 std::fs::remove_file(&maybe_path)?;
@@ -159,20 +164,24 @@ impl StoredArtifact {
 
             let mut new_file = std::fs::File::create(&maybe_path)?;
             new_file.write_all(&response.bytes()?)?;
-            match hash_equals(&maybe_path, expected_digest) {
-                Ok(_) => {
-                    // Make the newly-downloaded artifact read-only to try to
-                    // ensure tests won't change it. Disks created from an
-                    // artifact can be edited to be writable.
-                    let mut permissions = new_file.metadata()?.permissions();
-                    permissions.set_readonly(true);
-                    new_file.set_permissions(permissions)?;
-                    self.cached_path = Some(maybe_path.clone());
-                    return Ok(maybe_path);
-                }
-                Err(e) => {
-                    info!(?e, uri, "Failed to verify digest for artifact");
-                }
+            if let Err(e) = hash_equals(&maybe_path, expected_digest) {
+                info!(?e, uri, "Failed to verify digest for artifact");
+                continue;
+            }
+
+            // Make the newly-downloaded artifact read-only to try to
+            // ensure tests won't change it. Disks created from an
+            // artifact can be edited to be writable.
+            let mut permissions = new_file.metadata()?.permissions();
+            permissions.set_readonly(true);
+            new_file.set_permissions(permissions)?;
+
+            if self.description.kind == ArtifactKind::CrucibleDownstairsTarball
+            {
+                return self.extract_crucible_downstairs(&maybe_path);
+            } else {
+                self.cached_path = Some(maybe_path.clone());
+                return Ok(maybe_path);
             }
         }
 
@@ -180,6 +189,31 @@ impl StoredArtifact {
             "failed to locate or obtain artifact at path {}",
             maybe_path
         ))
+    }
+
+    fn extract_crucible_downstairs(
+        &mut self,
+        tarball_path: &Utf8Path,
+    ) -> anyhow::Result<Utf8PathBuf> {
+        assert_eq!(
+            ArtifactKind::CrucibleDownstairsTarball,
+            self.description.kind
+        );
+
+        let extracted_path = tarball_path.with_file_name("crucible-downstairs");
+        let path = if !extracted_path.exists() {
+            info!(%extracted_path, "Extracting Crucible downstairs binary");
+            let bin_path = ["target", "release", "crucible-downstairs"]
+                .iter()
+                .collect::<Utf8PathBuf>();
+            extract_tar_gz(tarball_path, &bin_path)?
+        } else {
+            info!(%extracted_path, "Crucible downstairs binary already extracted");
+            extracted_path
+        };
+
+        self.cached_path = Some(path.clone());
+        Ok(path)
     }
 }
 
@@ -260,29 +294,32 @@ impl Store {
 
         const REPO: &str = "oxidecomputer/crucible";
         const SERIES: &str = "nightly-image";
-
+        let sha256_url =
+            buildomat_url(REPO, SERIES, rev, "crucible-nightly.sha256.txt");
         let sha256 = (|| {
             let client = reqwest::blocking::ClientBuilder::new()
                 .timeout(Duration::from_secs(5))
                 .build()?;
-            let req = client
-                .get(buildomat_url(
-                    REPO,
-                    SERIES,
-                    rev,
-                    "crucible-nightly.sha256.txt",
-                ))
-                .build()?;
-            let bytes = client.execute(req)?.bytes()?;
-            Ok::<_, anyhow::Error>(String::from_utf8(bytes.to_vec())?)
+            let req = client.get(&sha256_url).build()?;
+            let rsp = client.execute(req)?;
+            let status = rsp.status();
+            anyhow::ensure!(
+                status == reqwest::StatusCode::OK,
+                "HTTP status: {status}"
+            );
+            let sha256 = String::from_utf8(rsp.bytes()?.to_vec())?
+                // the text file downloaded from Buildomat has a trailing newline,
+                // so get rid of that...
+                .trim().to_string();
+            Ok::<_, anyhow::Error>(sha256)
         })()
         .with_context(|| {
-            format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{rev}")
+            format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{rev}\nurl={sha256_url}")
         })?;
 
         let artifact = super::Artifact {
             filename: "crucible-nightly.tar.gz".to_string(),
-            kind: super::ArtifactKind::CrucibleDownstairs,
+            kind: super::ArtifactKind::CrucibleDownstairsTarball,
             source: super::ArtifactSource::Buildomat {
                 repo: "oxidecomputer/crucible".to_string(),
                 series: "nightly-image".to_string(),
@@ -356,7 +393,7 @@ impl Store {
         let entry = self.get_artifact(CRUCIBLE_DOWNSTAIRS_ARTIFACT)?;
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
-            super::ArtifactKind::CrucibleDownstairs => {
+            super::ArtifactKind::CrucibleDownstairsTarball => {
                 guard.ensure(&self.local_dir, &self.remote_server_uris)
             }
             _ => Err(anyhow::anyhow!(
@@ -382,8 +419,11 @@ fn buildomat_url(
     file: impl AsRef<str>,
 ) -> String {
     format!(
-        "https://buildomat.eng.oxide.computer/public/file/public/file/{}/{}/{}/{}",
-        repo.as_ref(), series.as_ref(), commit.as_ref(), file.as_ref(),
+        "https://buildomat.eng.oxide.computer/public/file/{}/{}/{}/{}",
+        repo.as_ref(),
+        series.as_ref(),
+        commit.as_ref(),
+        file.as_ref(),
     )
 }
 
@@ -417,4 +457,69 @@ fn hash_equals(path: &Utf8Path, expected_digest: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn extract_tar_gz(
+    tarball_path: &Utf8Path,
+    bin_path: &Utf8Path,
+) -> anyhow::Result<Utf8PathBuf> {
+    (|| {
+        let dir_path =
+            tarball_path.parent().context("Tarball path missing parent")?;
+
+        if tarball_path.extension() == Some("gz") {
+            tracing::debug!("Extracting gzipped tarball...");
+            let file = File::open(tarball_path)?;
+            let gz = flate2::read::GzDecoder::new(file);
+            return extract_tarball(bin_path, dir_path, gz);
+        }
+
+        if tarball_path.extension() == Some("tar") {
+            tracing::debug!("Extracting tarball...");
+            let file = File::open(tarball_path)?;
+            return extract_tarball(bin_path, dir_path, file);
+        }
+
+        bail!("File '{tarball_path}' is (probably) not a tarball?")
+    })()
+    .with_context(|| {
+        format!(
+            "Failed to extract file '{bin_path}' from tarball '{tarball_path}'"
+        )
+    })
+}
+
+fn extract_tarball(
+    bin_path: &Utf8Path,
+    dir_path: &Utf8Path,
+    file: impl std::io::Read,
+) -> anyhow::Result<Utf8PathBuf> {
+    let mut archive = tar::Archive::new(file);
+
+    let entries =
+        archive.entries().context("Failed to iterate over tarball entries")?;
+    for entry in entries {
+        let mut entry = match entry {
+            Ok(e) => e,
+            Err(error) => {
+                tracing::warn!(%error, "skipping bad tarball entry");
+                continue;
+            }
+        };
+        let path = entry.path().context("Tarball entry path was not UTF-8")?;
+        if path == bin_path {
+            let filename = bin_path
+                .file_name()
+                .expect("binary path in tarball must include a filename");
+            let out_path = dir_path.join(filename);
+            entry.unpack(&out_path).with_context(|| {
+                format!(
+                    "Failed to unpack '{bin_path} 'from tarball to {out_path}"
+                )
+            })?;
+            return Ok(out_path);
+        }
+    }
+
+    Err(anyhow::anyhow!("No file named '{bin_path}' found in tarball"))
 }
