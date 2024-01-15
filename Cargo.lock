@@ -2762,17 +2762,12 @@ dependencies = [
 [[package]]
 name = "p4rs"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/p4?branch=main#b1007658f9638dfc60af75286ff5c108d6b2714c"
+source = "git+https://github.com/oxidecomputer/p4?branch=counter#10f1f6cf2dd43057d19269177ccaf9463bb32fb2"
 dependencies = [
  "bitvec",
- "colored",
  "num",
  "serde",
  "serde_json",
- "slog",
- "slog-async",
- "slog-envlogger",
- "slog-term",
  "usdt",
 ]
 
@@ -4445,7 +4440,7 @@ dependencies = [
 [[package]]
 name = "softnpu"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/softnpu?rev=dbab082dfa89da5db5ca2325c257089d2f130092#dbab082dfa89da5db5ca2325c257089d2f130092"
+source = "git+https://github.com/oxidecomputer/softnpu?branch=counter#7b7831c68a621df42d85d2bb6e9e5ee12bc716ba"
 dependencies = [
  "anstyle",
  "anyhow",

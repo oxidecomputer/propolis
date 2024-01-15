@@ -29,7 +29,7 @@ use super::{
     VirtioDevice,
 };
 
-use softnpu_lib::mgmt::ManagementRequest;
+use softnpu_lib::mgmt::{ManagementRequest, ManagementResponse};
 use softnpu_lib::p4rs::{self, packet_in, packet_out, Pipeline};
 
 use crate::hw::virtio::p9fs::{write_error, P9Handler, PciVirtio9pfs};
@@ -693,6 +693,27 @@ fn handle_management_message(
                 None => return,
             };
             pl.1.remove_table_entry(&tm.table, &tm.keyset_data);
+        }
+        ManagementRequest::TableCounters(tc) => {
+            let pl = match &mut *pl_opt {
+                Some(pl) => pl,
+                None => return,
+            };
+            let response = match pl.1.get_table_counters(&tc.table) {
+                None => ManagementResponse::TableCountersResponse(None),
+                Some(counters) => {
+                    let entries = counters.entries.lock().unwrap().clone();
+                    ManagementResponse::TableCountersResponse(Some(entries))
+                }
+            };
+            let buf = serde_json::to_vec(&response).unwrap();
+            for b in &buf {
+                while !uart.write(*b) {
+                    // If we cannot write to the uart, yield and come back once
+                    // scheduled again.
+                    std::thread::yield_now();
+                }
+            }
         }
         ManagementRequest::RadixRequest => {
             // the data is being sent back as ascii text because this is the
