@@ -5,7 +5,7 @@
 use crate::{
     artifacts::{
         buildomat, manifest::Manifest, ArtifactKind, ArtifactSource,
-        CRUCIBLE_DOWNSTAIRS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT,
+        CRUCIBLE_DOWNSTAIRS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT, HEAD_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
 };
@@ -241,11 +241,42 @@ impl Store {
         )
     }
 
+    pub fn add_propolis_from_head(&mut self) -> anyhow::Result<()> {
+        tracing::info!("Adding Propolis server from Git HEAD");
+        anyhow::ensure!(
+            !self.artifacts.contains_key(HEAD_PROPOLIS_ARTIFACT),
+            "artifact store already contains key {HEAD_PROPOLIS_ARTIFACT}",
+        );
+
+        let repo = buildomat::Repo::new("oxidecomputer/propolis");
+        let series = buildomat::Series::new("image");
+        let filename = Utf8PathBuf::from("propolis-server.tar.gz");
+        let artifact =
+            repo.artifact_for_branch_head(series, "master", &filename)?;
+        let artifact = super::Artifact {
+            filename,
+            kind: ArtifactKind::PropolisServer,
+            source: ArtifactSource::Buildomat(artifact),
+            untar: Some("propolis-server".into()),
+        };
+
+
+        let _old = self.artifacts.insert(
+            HEAD_PROPOLIS_ARTIFACT.to_string(),
+            Mutex::new(StoredArtifact::new(artifact)),
+        );
+        assert!(_old.is_none());
+        Ok(())
+    }
+
     pub fn add_crucible_downstairs(
         &mut self,
         source: &crate::CrucibleDownstairsSource,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.artifacts.contains_key(CRUCIBLE_DOWNSTAIRS_ARTIFACT), "artifact store already contains key {CRUCIBLE_DOWNSTAIRS_ARTIFACT}");
+        anyhow::ensure!(
+            !self.artifacts.contains_key(CRUCIBLE_DOWNSTAIRS_ARTIFACT), 
+            "artifact store already contains key {CRUCIBLE_DOWNSTAIRS_ARTIFACT}",
+        );
 
         match source {
             crate::CrucibleDownstairsSource::Local(
@@ -264,7 +295,7 @@ impl Store {
                 let series = buildomat::Series::new("nightly-image");
                 let filename = Utf8PathBuf::from("crucible-nightly.tar.gz");
                 let artifact =
-                    repo.resolve_artifact(series, commit.clone(), &filename)?;
+                    repo.artifact_for_commit(series, commit.clone(), &filename)?;
 
                 let artifact = super::Artifact {
                     filename,

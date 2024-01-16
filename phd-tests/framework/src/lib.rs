@@ -119,6 +119,8 @@ impl Framework {
                 )
             })?;
 
+        artifact_store.add_propolis_from_head()?;
+
         let crucible_enabled = match params.crucible_downstairs {
             Some(crucible_downstairs) => {
                 artifact_store

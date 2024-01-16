@@ -1,7 +1,7 @@
 use anyhow::Context;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
-use std::{str::FromStr, time::Duration};
+use std::{fmt, str::FromStr, time::Duration};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -30,36 +30,43 @@ impl Repo {
         Self(s.to_string())
     }
 
-    pub(super) fn get_branch_head_commit(
-        &self,
-        branch: &str,
-    ) -> anyhow::Result<Commit> {
-        let repo = &self.0;
-        get_text_file(format!("{BASE_URI}/branch/{repo}/{branch}"))?.parse()
-    }
-
-    pub(super) fn resolve_artifact(
+    pub(super) fn artifact_for_commit(
         self,
         series: Series,
         commit: Commit,
         filename: impl AsRef<Utf8Path>,
     ) -> anyhow::Result<BuildomatArtifact> {
         let filename = filename.as_ref();
-        let sha256 = self.get_sha256(&series, &commit, filename).with_context(|| {
-            format!("Failed to get SHA256 for {self:?} {series:?} {commit:?} File({filename:?})")
-        })?;
+        let sha256 = self.get_sha256(&series, &commit, filename)?;
 
         Ok(BuildomatArtifact { repo: self, series, commit, sha256 })
     }
 
+    pub(super) fn artifact_for_branch_head(
+        self,
+        series: Series,
+        branch: &str,
+        filename: impl AsRef<Utf8Path>,
+    ) -> anyhow::Result<BuildomatArtifact> {
+        let commit =
+            get_text_file(format!("{BASE_URI}/branch/{self}/{branch}"))
+                .and_then(Commit::from_str)
+                .with_context(|| {
+                    format!(
+                        "Failed to determine HEAD commit for {self}@{branch}"
+                    )
+                })?;
+        self.artifact_for_commit(series, commit, filename)
+    }
+
     fn get_sha256(
         &self,
-        Series(ref series): &Series,
-        Commit(ref commit): &Commit,
+        series: &Series,
+        commit: &Commit,
         filename: &Utf8Path,
     ) -> anyhow::Result<String> {
-        let repo = &self.0;
-        let filename = filename
+        (|| {
+            let filename = filename
             .file_name()
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -87,8 +94,17 @@ impl Repo {
                 )
             })?;
         get_text_file(format!(
-            "{BASE_URI}/file/{repo}/{series}/{commit}/{filename}.sha256.txt"
+            "{BASE_URI}/file/{self}/{series}/{commit}/{filename}.sha256.txt"
         ))
+        })().with_context(|| {
+            format!("Failed to get SHA256 for {self}@{commit}, series: {series}, file: {filename})")
+        })
+    }
+}
+
+impl fmt::Display for Repo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "repo: {}", self.0)
     }
 }
 
@@ -134,9 +150,21 @@ impl<'de> Deserialize<'de> for Commit {
     }
 }
 
+impl fmt::Display for Commit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl Series {
     pub(super) fn new(s: impl ToString) -> Self {
         Self(s.to_string())
+    }
+}
+
+impl fmt::Display for Series {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
