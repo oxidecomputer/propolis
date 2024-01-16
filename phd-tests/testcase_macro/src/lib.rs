@@ -53,9 +53,7 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
                         let phd_testcase::TestSkippedError::TestSkipped(msg) = skipped;
                         phd_testcase::TestOutcome::Skipped(msg.clone())
                     } else {
-                        let msg = format!("{}\n    error backtrace: {}",
-                                          e.to_string(),
-                                          e.backtrace());
+                        let msg = format!("{e:?}");
                         phd_testcase::TestOutcome::Failed(Some(msg))
                     }
                 }
