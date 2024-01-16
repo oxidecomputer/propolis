@@ -612,7 +612,7 @@ impl TestVm {
     async fn send_serial_str_async(&self, string: &str) -> Result<()> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(string.as_bytes());
-        bytes.extend_from_slice(&[b'\n']);
+        bytes.push(b'\n');
         self.send_serial_bytes_async(bytes).await
     }
 
