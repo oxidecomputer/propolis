@@ -1254,15 +1254,35 @@ pub mod migrate {
     }
     impl VcpuReadWrite for LapicV1 {
         fn read(vcpu: &Vcpu) -> Result<Self> {
-            let vdi = vcpu
+            let mut vdi = vcpu
                 .hdl
                 .data_op(bhyve_api::VDC_LAPIC, 1)
                 .for_vcpu(vcpu.id)
                 .read::<bhyve_api::vdi_lapic_v1>()?;
 
+            if vcpu.hdl.api_version()? <= ApiVersion::V16 {
+                // Fix up invalid LAPIC timer data from illumos#16183
+                if vdi.vl_timer_target != 0 && vdi.vl_lapic.vlp_icr_timer == 0 {
+                    vdi.vl_timer_target = 0;
+                }
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "post-illumos#16183 kernel emitting bad ICR timer data",
+                ));
+            }
+
             Ok(vdi.into())
         }
         fn write(self, vcpu: &Vcpu) -> Result<()> {
+            // Be wary of illumos#16183 payloads
+            if self.timer_target != 0 && self.page.icr_timer == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ICR-timer does not match timer target time",
+                ));
+            }
+
             vcpu.hdl
                 .data_op(bhyve_api::VDC_LAPIC, 1)
                 .for_vcpu(vcpu.id)
