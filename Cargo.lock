@@ -1938,7 +1938,7 @@ dependencies = [
 [[package]]
 name = "ispf"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/ispf#7f571c6cc437474183aa1a0f808821ee6ed7a948"
+source = "git+https://github.com/oxidecomputer/ispf#f78443a98397f7818b1e7a487dbb7d5cad625496"
 dependencies = [
  "serde",
 ]
@@ -2762,7 +2762,7 @@ dependencies = [
 [[package]]
 name = "p4rs"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/p4?branch=counter#10f1f6cf2dd43057d19269177ccaf9463bb32fb2"
+source = "git+https://github.com/oxidecomputer/p4?branch=counter#2e5fe2407d4fd0b342a994f1e5c0789497cee4d4"
 dependencies = [
  "bitvec",
  "num",
@@ -4440,7 +4440,7 @@ dependencies = [
 [[package]]
 name = "softnpu"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/softnpu?branch=counter#7b7831c68a621df42d85d2bb6e9e5ee12bc716ba"
+source = "git+https://github.com/oxidecomputer/softnpu?branch=counter#b7759f9c375459ab93ff14d99da4b4faafe71e0c"
 dependencies = [
  "anstyle",
  "anyhow",
@@ -5914,9 +5914,9 @@ dependencies = [
 [[package]]
 name = "zone"
 version = "0.3.0"
-source = "git+https://github.com/oxidecomputer/zone#5503b472dd87a3e6443624e1b42844882d6f769c"
+source = "git+https://github.com/oxidecomputer/zone#65647e678fec739d4e9a6897bf2ee48e1fb051a5"
 dependencies = [
- "itertools 0.10.5",
+ "itertools 0.12.0",
  "thiserror",
  "zone_cfg_derive 0.3.0",
 ]
@@ -5937,7 +5937,7 @@ dependencies = [
 [[package]]
 name = "zone_cfg_derive"
 version = "0.3.0"
-source = "git+https://github.com/oxidecomputer/zone#5503b472dd87a3e6443624e1b42844882d6f769c"
+source = "git+https://github.com/oxidecomputer/zone#65647e678fec739d4e9a6897bf2ee48e1fb051a5"
 dependencies = [
  "heck",
  "proc-macro-error",
@@ -5949,14 +5949,10 @@ dependencies = [
 [[package]]
 name = "ztest"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/falcon#7910ec7d1f283c4a9c3c5f42b25ec03a0a8ab87e"
+source = "git+https://github.com/oxidecomputer/falcon#a223368cbb036279b3ddc1c803ce5a0219440204"
 dependencies = [
  "anyhow",
  "libnet",
- "slog",
- "slog-async",
- "slog-envlogger",
- "slog-term",
  "tokio",
  "zone 0.3.0",
 ]
