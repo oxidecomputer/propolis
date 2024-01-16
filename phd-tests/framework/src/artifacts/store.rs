@@ -257,7 +257,10 @@ impl Store {
             filename,
             kind: ArtifactKind::PropolisServer,
             source: ArtifactSource::Buildomat(artifact),
-            untar: Some("propolis-server".into()),
+            untar: Some(
+                ["root", "opt", "oxide", "propolis-server", "bin", "propolis-server"]
+                    .iter()
+                    .collect::<Utf8PathBuf>(),),
         };
 
 
