@@ -104,7 +104,7 @@ impl Repo {
 
 impl fmt::Display for Repo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "repo: {}", self.0)
+        self.0.fmt(f)
     }
 }
 
