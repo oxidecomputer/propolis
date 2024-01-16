@@ -9,14 +9,24 @@
 
 use super::{CommandSequence, CommandSequenceEntry, GuestOs};
 
+/// Provides a guest OS adapter for Windows Server 2022 images. This adapter
+/// assumes the following:
+///
+/// - The image has been generalized (by running `sysprep /generalize`) and is
+///   configured so that on first boot it will skip the out-of-box experience
+///   (OOBE) and initialize the local administrator account with the appropriate
+///   password. See [MSDN's Windows Setup
+///   documentation](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/generalize?view=windows-11)
+///   for more details.
+/// - Cygwin is installed to C:\cygwin and can be launched by invoking
+///   C:\cygwin\cygwin.bat.
 pub(super) struct WindowsServer2022;
 
 impl GuestOs for WindowsServer2022 {
     fn get_login_sequence(&self) -> CommandSequence {
         CommandSequence(vec![
-            // The image is generalized and needs to be specialized. Let it boot
-            // once, then wait for it to boot again and only then start waiting
-            // for the command prompt to become available.
+            // Assume the image will need to reboot one last time after being
+            // specialized.
             CommandSequenceEntry::WaitFor(
                 "Computer is booting, SAC started and initialized.",
             ),
