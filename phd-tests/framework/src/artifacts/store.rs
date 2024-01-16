@@ -4,7 +4,7 @@
 
 use crate::{
     artifacts::{
-        manifest::Manifest, ArtifactKind, ArtifactSource,
+        buildomat, manifest::Manifest, ArtifactKind, ArtifactSource,
         CRUCIBLE_DOWNSTAIRS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
@@ -69,7 +69,7 @@ impl StoredArtifact {
         }
 
         let expected_digest = match &self.description.source {
-            ArtifactSource::Buildomat { sha256, .. } => sha256,
+            ArtifactSource::Buildomat(ref artifact) => &artifact.sha256,
             ArtifactSource::RemoteServer { sha256 } => sha256,
             ArtifactSource::LocalPath { .. } => {
                 unreachable!("local path case handled above")
@@ -104,13 +104,8 @@ impl StoredArtifact {
         // reacquire it. First, construct the set of source URIs from which the
         // artifact can be reacquired.
         let source_uris = match &self.description.source {
-            ArtifactSource::Buildomat { repo, series, commit, .. } => {
-                let buildomat_uri = buildomat_url(
-                    repo,
-                    series,
-                    commit,
-                    &self.description.filename,
-                );
+            ArtifactSource::Buildomat(artifact) => {
+                let buildomat_uri = artifact.uri(&self.description.filename);
 
                 vec![buildomat_uri]
             }
@@ -265,45 +260,16 @@ impl Store {
             }
             crate::CrucibleDownstairsSource::BuildomatGitRev(ref commit) => {
                 tracing::info!(%commit, "Adding crucible-downstairs from Buildomat Git revision");
-
-                const REPO: &str = "oxidecomputer/crucible";
-                const SERIES: &str = "nightly-image";
-                let sha256_url = buildomat_url(
-                    REPO,
-                    SERIES,
-                    commit,
-                    "crucible-nightly.sha256.txt",
-                );
-                let sha256 = (|| {
-                    let client = reqwest::blocking::ClientBuilder::new()
-                        .timeout(Duration::from_secs(5))
-                        .build()?;
-                    let req = client.get(&sha256_url).build()?;
-                    let rsp = client.execute(req)?;
-                    let status = rsp.status();
-                    anyhow::ensure!(
-                        status == reqwest::StatusCode::OK,
-                        "HTTP status: {status}"
-                    );
-                    let sha256 = String::from_utf8(rsp.bytes()?.to_vec())?
-                        // the text file downloaded from Buildomat has a trailing newline,
-                        // so get rid of that...
-                        .trim().to_string();
-                    Ok::<_, anyhow::Error>(sha256)
-                })()
-                .with_context(|| {
-                    format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{commit}\nurl={sha256_url}")
-                })?;
+                let repo = buildomat::Repo::new("oxidecomputer/crucible");
+                let series = buildomat::Series::new("nightly-image");
+                let filename = Utf8PathBuf::from("crucible-nightly.tar.gz");
+                let artifact =
+                    repo.resolve_artifact(series, commit.clone(), &filename)?;
 
                 let artifact = super::Artifact {
-                    filename: "crucible-nightly.tar.gz".to_string(),
+                    filename,
                     kind: ArtifactKind::CrucibleDownstairs,
-                    source: ArtifactSource::Buildomat {
-                        repo: "oxidecomputer/crucible".to_string(),
-                        series: "nightly-image".to_string(),
-                        commit: commit.clone(),
-                        sha256,
-                    },
+                    source: ArtifactSource::Buildomat(artifact),
                     untar: Some(
                         ["target", "release", "crucible-downstairs"]
                             .iter()
@@ -423,7 +389,7 @@ impl Store {
         })?;
 
         let artifact = super::Artifact {
-            filename: filename.to_string(),
+            filename: Utf8PathBuf::from(filename),
             kind,
             source: super::ArtifactSource::LocalPath {
                 path: dir.to_path_buf(),
@@ -440,20 +406,6 @@ impl Store {
 
         Ok(())
     }
-}
-
-fn buildomat_url(
-    repo: impl AsRef<str>,
-    series: impl AsRef<str>,
-    commit: &super::Commit,
-    file: impl AsRef<str>,
-) -> String {
-    format!(
-        "https://buildomat.eng.oxide.computer/public/file/{}/{}/{commit}/{}",
-        repo.as_ref(),
-        series.as_ref(),
-        file.as_ref(),
-    )
 }
 
 fn sha256_digest(file: &mut File) -> anyhow::Result<Digest> {

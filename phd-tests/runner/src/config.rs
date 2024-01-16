@@ -146,7 +146,7 @@ pub struct ListOptions {
 #[derive(Debug, Clone)]
 enum CrucibleCommit {
     Auto,
-    Explicit(artifacts::Commit),
+    Explicit(artifacts::buildomat::Commit),
 }
 
 impl FromStr for CrucibleCommit {
