@@ -79,7 +79,7 @@ pub struct RunOptions {
         conflicts_with("current_propolis_cmd"),
         value_parser
     )]
-    current_propolis_commit: Option<Commit>,
+    current_propolis_commit: Option<artifacts::buildomat::Commit>,
 
     /// The path of a local command to use as the "current" Propolis server for
     /// migration-from-current tests.
@@ -259,15 +259,15 @@ impl RunOptions {
         // If a local command for the "current" propolis artifact was provided,
         // use that.
         if let Some(ref cmd) = self.current_propolis_cmd {
-            return Ok(Some(CurrentPropolisSource::Local(cmd)));
+            return Some(CurrentPropolisSource::Local(cmd));
         }
 
         if let Some(ref branch) = self.current_propolis_branch {
-            return Ok(Some(CurrentPropolisSource::BuildomatBranch(branch)));
+            return Some(CurrentPropolisSource::BuildomatBranch(branch));
         }
 
         if let Some(ref commit) = self.current_propolis_commit {
-            return Ok(Some(CurrentPropolisSource::BuildomatGitRev(commit)));
+            return Some(CurrentPropolisSource::BuildomatGitRev(commit));
         }
 
         None
