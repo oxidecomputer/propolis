@@ -249,7 +249,12 @@ impl Store {
         );
 
         let repo = buildomat::Repo::new("oxidecomputer/propolis");
-        let series = buildomat::Series::new("image");
+        // fetch the `phd_build` series, rather than the release `image` series,
+        // to get a debug executable. the `phd_build` executable:
+        // - contains debug assertions
+        // - doesn't try to use the VMM kernel memory reservoir, which may not
+        //   work nicely in the test environment
+        let series = buildomat::Series::new("phd_build");
         let filename = Utf8PathBuf::from("propolis-server.tar.gz");
         let artifact =
             repo.artifact_for_branch_head(series, "master", &filename)?;
@@ -257,10 +262,7 @@ impl Store {
             filename,
             kind: ArtifactKind::PropolisServer,
             source: ArtifactSource::Buildomat(artifact),
-            untar: Some(
-                ["root", "opt", "oxide", "propolis-server", "bin", "propolis-server"]
-                    .iter()
-                    .collect::<Utf8PathBuf>(),),
+            untar: Some("propolis-server".into())
         };
 
 
