@@ -133,6 +133,33 @@ path = "/home/oxide/propolis/target/debug"
 # sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 ```
 
+## Guest OS support
+
+Different guest OS images may have different feature sets and login
+requirements. The PHD framework abstracts these differences out guest OS
+adapters that implement the `GuestOs` trait, whose methods supply PHD with
+guest-specific information like the sequence of commands needed to log on or the
+expected guest command prompt.
+
+The full list of supported OSes is defined in the framework's
+[guest OS module](framework/src/guest_os/mod.rs). Each guest OS artifact in the
+artifact TOML (see above) must have a `kind` that corresponds to a variant of
+the `GuestOsKind` enum in this module.
+
+Some guest OSes are presumed to use password-based login credentials. These are
+encoded into the logon sequences for each adapter and reproduced below:
+
+| Guest adapter       | Username        | Password     |
+|---------------------|-----------------|--------------|
+| Alpine Linux        | `root`          |              |
+| Debian 11 (nocloud) | `root`          |              |
+| Ubuntu 20.04        | `ubuntu`        | `1!Passw0rd` |
+| Windows Server 2022 | `Administrator` | `0xide#1Fan` |
+
+If you add a custom image to your artifact file, you must make sure either to
+configure the image to accept the credentials its adapter supplies or to change
+the adapter to provide the correct credentials.
+
 ## Authoring tests
 
 PHD's test cases live in the `tests` crate. To write a new test, add a function
