@@ -57,8 +57,6 @@ fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
         port_range: 9000..10000,
     };
 
-    // https://buildomat.eng.oxide.computer/wg/0/artefact/01HKZ9B1W2T8FWP7T91WX2G2TX/gO8sphupG9813SJ4y8jPfqC9kMiB24M28b5BmLjQgjoyanqs/01HKZ9BHA5CHADFTJVXPMPKNXF/01HKZASQWRFCDBDHAG7G4H8MKA/crucible-nightly.tar.gz
-
     let ctx = Framework::new(ctx_params)
         .expect("should be able to set up a test context");
 
