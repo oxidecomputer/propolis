@@ -543,7 +543,7 @@ fn extract_tarball(
             let out_path = dir_path.join(filename);
             entry.unpack(&out_path).with_context(|| {
                 format!(
-                    "Failed to unpack '{bin_path} 'from tarball to {out_path}"
+                    "Failed to unpack '{bin_path}' from tarball to {out_path}"
                 )
             })?;
             return Ok(out_path);
