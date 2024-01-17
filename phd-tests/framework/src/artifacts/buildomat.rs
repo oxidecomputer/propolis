@@ -50,7 +50,7 @@ impl Repo {
     ) -> anyhow::Result<BuildomatArtifact> {
         let commit =
             get_text_file(format!("{BASE_URI}/branch/{self}/{branch}"))
-                .and_then(Commit::from_str)
+                .and_then(|s| Commit::from_str(&s))
                 .with_context(|| {
                     format!(
                         "Failed to determine HEAD commit for {self}@{branch}"
@@ -147,12 +147,6 @@ impl<'de> Deserialize<'de> for Commit {
     {
         let s = String::deserialize(deserializer)?;
         FromStr::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-impl fmt::Display for Commit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
     }
 }
 
