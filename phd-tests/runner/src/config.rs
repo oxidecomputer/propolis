@@ -255,7 +255,7 @@ impl RunOptions {
         }
     }
 
-    pub fn current_propolis(&self) -> Option<CurrentPropolisSource> {
+    pub fn current_propolis(&self) -> Option<CurrentPropolisSource<'_>> {
         // If a local command for the "current" propolis artifact was provided,
         // use that.
         if let Some(ref cmd) = self.current_propolis_cmd {
