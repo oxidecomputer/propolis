@@ -92,7 +92,7 @@ pub struct FrameworkParameters {
 
 #[derive(Debug)]
 pub enum CrucibleDownstairsSource {
-    BuildomatGitRev(String),
+    BuildomatGitRev(artifacts::Commit),
     Local(Utf8PathBuf),
 }
 

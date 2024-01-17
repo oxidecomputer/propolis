@@ -263,15 +263,15 @@ impl Store {
                     ArtifactKind::CrucibleDownstairs,
                 )
             }
-            crate::CrucibleDownstairsSource::BuildomatGitRev(ref rev) => {
-                tracing::info!(%rev, "Adding crucible-downstairs from Buildomat Git revision");
+            crate::CrucibleDownstairsSource::BuildomatGitRev(ref commit) => {
+                tracing::info!(%commit, "Adding crucible-downstairs from Buildomat Git revision");
 
                 const REPO: &str = "oxidecomputer/crucible";
                 const SERIES: &str = "nightly-image";
                 let sha256_url = buildomat_url(
                     REPO,
                     SERIES,
-                    rev,
+                    commit,
                     "crucible-nightly.sha256.txt",
                 );
                 let sha256 = (|| {
@@ -292,7 +292,7 @@ impl Store {
                     Ok::<_, anyhow::Error>(sha256)
                 })()
                 .with_context(|| {
-                    format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{rev}\nurl={sha256_url}")
+                    format!("Failed to get Buildomat SHA256 for {REPO}/{SERIES}/{commit}\nurl={sha256_url}")
                 })?;
 
                 let artifact = super::Artifact {
@@ -301,7 +301,7 @@ impl Store {
                     source: ArtifactSource::Buildomat {
                         repo: "oxidecomputer/crucible".to_string(),
                         series: "nightly-image".to_string(),
-                        commit: rev.to_string(),
+                        commit: commit.clone(),
                         sha256,
                     },
                     untar: Some(
@@ -445,14 +445,13 @@ impl Store {
 fn buildomat_url(
     repo: impl AsRef<str>,
     series: impl AsRef<str>,
-    commit: impl AsRef<str>,
+    commit: &super::Commit,
     file: impl AsRef<str>,
 ) -> String {
     format!(
-        "https://buildomat.eng.oxide.computer/public/file/{}/{}/{}/{}",
+        "https://buildomat.eng.oxide.computer/public/file/{}/{}/{commit}/{}",
         repo.as_ref(),
         series.as_ref(),
-        commit.as_ref(),
         file.as_ref(),
     )
 }
