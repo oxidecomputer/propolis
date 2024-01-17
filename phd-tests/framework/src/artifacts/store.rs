@@ -5,9 +5,11 @@
 use crate::{
     artifacts::{
         buildomat, manifest::Manifest, ArtifactKind, ArtifactSource,
-        CRUCIBLE_DOWNSTAIRS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT, HEAD_PROPOLIS_ARTIFACT,
+        CRUCIBLE_DOWNSTAIRS_ARTIFACT, CURRENT_PROPOLIS_ARTIFACT,
+        DEFAULT_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
+    CurrentPropolisSource,
 };
 
 use anyhow::{bail, Context};
@@ -241,33 +243,53 @@ impl Store {
         )
     }
 
-    pub fn add_propolis_from_head(&mut self) -> anyhow::Result<()> {
-        tracing::info!("Adding Propolis server from Git HEAD");
+    pub fn add_current_propolis(
+        &mut self,
+        source: crate::CurrentPropolisSource<'_>,
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !self.artifacts.contains_key(HEAD_PROPOLIS_ARTIFACT),
-            "artifact store already contains key {HEAD_PROPOLIS_ARTIFACT}",
+            !self.artifacts.contains_key(CURRENT_PROPOLIS_ARTIFACT),
+            "artifact store already contains key {CURRENT_PROPOLIS_ARTIFACT}",
         );
 
-        let repo = buildomat::Repo::new("oxidecomputer/propolis");
+        const REPO: buildomat::Repo =
+            buildomat::Repo::from_static("oxidecomputer/propolis");
+        let commit = match source {
+            CurrentPropolisSource::BuildomatBranch(branch) => {
+                tracing::info!("Adding 'current' Propolis server from Buildomat Git branch '{branch}'");
+                REPO.get_branch_head(branch)?
+            }
+            CurrentPropolisSource::BuildomatGitRev(commit) => {
+                tracing::info!("Adding 'current' Propolis server from Buildomat Git commit '{commit}'");
+                commit.clone()
+            }
+            CurrentPropolisSource::Local(cmd) => {
+                tracing::info!("Adding 'current' Propolis server from local command '{cmd}'");
+                return self.add_local_artifact(
+                    cmd,
+                    CURRENT_PROPOLIS_ARTIFACT,
+                    ArtifactKind::PropolisServer,
+                );
+            }
+        };
+
         // fetch the `phd_build` series, rather than the release `image` series,
         // to get a debug executable. the `phd_build` executable:
         // - contains debug assertions
         // - doesn't try to use the VMM kernel memory reservoir, which may not
         //   work nicely in the test environment
-        let series = buildomat::Series::new("phd_build");
-        let filename = Utf8PathBuf::from("propolis-server.tar.gz");
-        let artifact =
-            repo.artifact_for_branch_head(series, "master", &filename)?;
+        let series = buildomat::Series::from_static("phd_build");
+        let filename = Utf8PathBuf::from("propolis-nightly.tar.gz");
+        let source = REPO.artifact_for_commit(series, commit, &filename)?;
         let artifact = super::Artifact {
             filename,
             kind: ArtifactKind::PropolisServer,
-            source: ArtifactSource::Buildomat(artifact),
-            untar: Some("propolis-server".into())
+            source: ArtifactSource::Buildomat(source),
+            untar: Some("propolis-server".into()),
         };
 
-
         let _old = self.artifacts.insert(
-            HEAD_PROPOLIS_ARTIFACT.to_string(),
+            CURRENT_PROPOLIS_ARTIFACT.to_string(),
             Mutex::new(StoredArtifact::new(artifact)),
         );
         assert!(_old.is_none());
@@ -279,7 +301,7 @@ impl Store {
         source: &crate::CrucibleDownstairsSource,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !self.artifacts.contains_key(CRUCIBLE_DOWNSTAIRS_ARTIFACT), 
+            !self.artifacts.contains_key(CRUCIBLE_DOWNSTAIRS_ARTIFACT),
             "artifact store already contains key {CRUCIBLE_DOWNSTAIRS_ARTIFACT}",
         );
 
@@ -296,11 +318,15 @@ impl Store {
             }
             crate::CrucibleDownstairsSource::BuildomatGitRev(ref commit) => {
                 tracing::info!(%commit, "Adding crucible-downstairs from Buildomat Git revision");
-                let repo = buildomat::Repo::new("oxidecomputer/crucible");
-                let series = buildomat::Series::new("nightly-image");
+                let repo =
+                    buildomat::Repo::from_static("oxidecomputer/crucible");
+                let series = buildomat::Series::from_static("nightly-image");
                 let filename = Utf8PathBuf::from("crucible-nightly.tar.gz");
-                let artifact =
-                    repo.artifact_for_commit(series, commit.clone(), &filename)?;
+                let artifact = repo.artifact_for_commit(
+                    series,
+                    commit.clone(),
+                    &filename,
+                )?;
 
                 let artifact = super::Artifact {
                     filename,

@@ -1,11 +1,11 @@
 use anyhow::Context;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
-use std::{fmt, str::FromStr, time::Duration};
+use std::{borrow::Cow, fmt, str::FromStr, time::Duration};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(super) struct Repo(String);
+pub(super) struct Repo(Cow<'static, str>);
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 #[serde(transparent)]
@@ -13,7 +13,7 @@ pub struct Commit(String);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(super) struct Series(String);
+pub(super) struct Series(Cow<'static, str>);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BuildomatArtifact {
@@ -26,8 +26,8 @@ pub struct BuildomatArtifact {
 const BASE_URI: &str = "https://buildomat.eng.oxide.computer/public";
 
 impl Repo {
-    pub(super) fn new(s: impl ToString) -> Self {
-        Self(s.to_string())
+    pub(super) const fn from_static(s: &'static str) -> Self {
+        Self(Cow::Borrowed(s))
     }
 
     pub(super) fn artifact_for_commit(
@@ -42,21 +42,15 @@ impl Repo {
         Ok(BuildomatArtifact { repo: self, series, commit, sha256 })
     }
 
-    pub(super) fn artifact_for_branch_head(
-        self,
-        series: Series,
+    pub(super) fn get_branch_head(
+        &self,
         branch: &str,
-        filename: impl AsRef<Utf8Path>,
-    ) -> anyhow::Result<BuildomatArtifact> {
-        let commit =
-            get_text_file(format!("{BASE_URI}/branch/{self}/{branch}"))
-                .and_then(|s| Commit::from_str(&s))
-                .with_context(|| {
-                    format!(
-                        "Failed to determine HEAD commit for {self}@{branch}"
-                    )
-                })?;
-        self.artifact_for_commit(series, commit, filename)
+    ) -> anyhow::Result<Commit> {
+        get_text_file(format!("{BASE_URI}/branch/{self}/{branch}"))
+            .and_then(|s| Commit::from_str(&s))
+            .with_context(|| {
+                format!("Failed to determine HEAD commit for {self}@{branch}")
+            })
     }
 
     fn get_sha256(
@@ -151,8 +145,8 @@ impl<'de> Deserialize<'de> for Commit {
 }
 
 impl Series {
-    pub(super) fn new(s: impl ToString) -> Self {
-        Self(s.to_string())
+    pub(super) const fn from_static(s: &'static str) -> Self {
+        Self(Cow::Borrowed(s))
     }
 }
 

@@ -14,7 +14,7 @@ pub use store::Store as ArtifactStore;
 
 pub const DEFAULT_PROPOLIS_ARTIFACT: &str = "__DEFAULT_PROPOLIS";
 pub const CRUCIBLE_DOWNSTAIRS_ARTIFACT: &str = "__DEFAULT_CRUCIBLE_DOWNSTAIRS";
-pub const HEAD_PROPOLIS_ARTIFACT: &str = "__HEAD_PROPOLIS";
+pub const CURRENT_PROPOLIS_ARTIFACT: &str = "__CURRENT_PROPOLIS";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]

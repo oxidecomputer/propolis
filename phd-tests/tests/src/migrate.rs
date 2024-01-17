@@ -19,13 +19,17 @@ fn smoke_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-fn can_migrate_from_head(ctx: &Framework) {
+fn can_migrate_from_current(ctx: &Framework) {
+    if !ctx.current_propolis_enabled() {
+        phd_skip!("No 'current' Propolis revision available");
+    }
+
     run_smoke_test(
         ctx,
         // Spawn a source VM using the latest master branch HEAD Propolis artifact.
         |ctx| {
             let mut env = ctx.environment_builder();
-            env.propolis(artifacts::HEAD_PROPOLIS_ARTIFACT);
+            env.propolis(artifacts::CURRENT_PROPOLIS_ARTIFACT);
             let cfg = ctx.vm_config_builder("migration_head_source");
             ctx.spawn_vm(&cfg, Some(&env))
         },

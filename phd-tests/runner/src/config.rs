@@ -7,6 +7,7 @@ use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use phd_framework::{
     artifacts, server_log_mode::ServerLogMode, CrucibleDownstairsSource,
+    CurrentPropolisSource,
 };
 use std::str::FromStr;
 
@@ -40,6 +41,65 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     pub propolis_server_cmd: Utf8PathBuf,
 
+    /// Git branch name to use for the "current" Propolis server artifact for
+    /// migration-from-current tests.
+    ///
+    /// If this argument is provided, PHD will download the latest Propolis
+    /// server artifact from Buildomat for the provided branch name, and use it
+    /// to test migration from that Propolis version to the Propolis revision
+    /// under test.
+    ///
+    /// This argument conflicts with the `--current-propolis-commit` and
+    /// `--current-propolis-cmd` arguments. If none of these arguments are
+    /// provided, no "current" Propolis server artifact will be added to the
+    /// artifact store, and migration-from-current tests will be skipped.
+    #[clap(
+        long,
+        conflicts_with("current_propolis_commit"),
+        conflicts_with("current_propolis_cmd"),
+        value_parser
+    )]
+    current_propolis_branch: Option<String>,
+
+    /// Git commit hash to use for the "current" Propolis server artifact for
+    /// migration-from-current tests.
+    ///
+    /// If this argument is provided, PHD will download the Propolis server
+    /// artifact from Buildomat for the provided commit hash, and use it
+    /// to test migration from that Propolis version to the Propolis revision
+    /// under test.
+    ///
+    /// This argument conflicts with the `--current-propolis-branch` and
+    /// `--current-propolis-cmd` arguments. If none of these arguments are
+    /// provided, no "current" Propolis server artifact will be added to the
+    /// artifact store, and migration-from-current tests will be skipped.
+    #[clap(
+        long,
+        conflicts_with("current_propolis_branch"),
+        conflicts_with("current_propolis_cmd"),
+        value_parser
+    )]
+    current_propolis_commit: Option<Commit>,
+
+    /// The path of a local command to use as the "current" Propolis server for
+    /// migration-from-current tests.
+    ///
+    /// If this argument is provided, PHD will use the provided command to run
+    /// to test migration from that Propolis binary to the Propolis revision
+    /// under test.
+    ///
+    /// This argument conflicts with the `--current-propolis-branch` and
+    /// `--current-propolis-commit` arguments. If none of these arguments are
+    /// provided, no "current" Propolis server artifact will be added to the
+    /// artifact store, and migration-from-current tests will be skipped.
+    #[clap(
+        long,
+        conflicts_with("current_propolis_commit"),
+        conflicts_with("current_propolis_branch"),
+        value_parser
+    )]
+    current_propolis_cmd: Option<Utf8PathBuf>,
+
     /// The path of a local command to use to launch Crucible downstairs
     /// servers.
     ///
@@ -67,8 +127,8 @@ pub struct RunOptions {
     /// Crucible downstairs servers. If neither the `--crucible-downstairs-cmd`
     /// OR `--crucible-downstairs-commit` arguments are provided, then PHD will
     /// not run tests that require Crucible.
-    #[clap(long, conflicts_with("crucible_downstairs_cmd"))]
-    crucible_downstairs_commit: Option<CrucibleCommit>,
+    #[clap(long, conflicts_with("crucible_downstairs_cmd"), value_parser)]
+    crucible_downstairs_commit: Option<ArtifactCommit>,
 
     /// The directory into which to write temporary files (config TOMLs, log
     /// files, etc.) generated during test execution.
@@ -144,23 +204,23 @@ pub struct ListOptions {
 }
 
 #[derive(Debug, Clone)]
-enum CrucibleCommit {
+enum ArtifactCommit {
     Auto,
     Explicit(artifacts::buildomat::Commit),
 }
 
-impl FromStr for CrucibleCommit {
+impl FromStr for ArtifactCommit {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
 
         if s.eq_ignore_ascii_case("auto") {
-            return Ok(CrucibleCommit::Auto);
+            return Ok(ArtifactCommit::Auto);
         }
 
         s.parse().context(
             "Crucible commit must be either 'auto' or a valid Git commit hash",
-        ).map(CrucibleCommit::Explicit)
+        ).map(ArtifactCommit::Explicit)
     }
 }
 
@@ -175,10 +235,10 @@ impl RunOptions {
         }
 
         match self.crucible_downstairs_commit {
-            Some(CrucibleCommit::Explicit(ref commit)) => Ok(Some(
+            Some(ArtifactCommit::Explicit(ref commit)) => Ok(Some(
                 CrucibleDownstairsSource::BuildomatGitRev(commit.clone()),
             )),
-            Some(CrucibleCommit::Auto) => {
+            Some(ArtifactCommit::Auto) => {
                 // Otherwise, use the Git revision of the workspace's Cargo git dep on
                 // crucible-upstairs, and use the same revision for the downstairs
                 // binary artifact.
@@ -193,5 +253,23 @@ impl RunOptions {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn current_propolis(&self) -> Option<CurrentPropolisSource> {
+        // If a local command for the "current" propolis artifact was provided,
+        // use that.
+        if let Some(ref cmd) = self.current_propolis_cmd {
+            return Ok(Some(CurrentPropolisSource::Local(cmd)));
+        }
+
+        if let Some(ref branch) = self.current_propolis_branch {
+            return Ok(Some(CurrentPropolisSource::BuildomatBranch(branch)));
+        }
+
+        if let Some(ref commit) = self.current_propolis_commit {
+            return Ok(Some(CurrentPropolisSource::BuildomatGitRev(commit)));
+        }
+
+        None
     }
 }

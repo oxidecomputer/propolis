@@ -72,11 +72,13 @@ pub struct Framework {
     pub(crate) port_allocator: Rc<PortAllocator>,
 
     pub(crate) crucible_enabled: bool,
+    pub(crate) current_propolis_enabled: bool,
 }
 
-pub struct FrameworkParameters {
+pub struct FrameworkParameters<'a> {
     pub propolis_server_path: Utf8PathBuf,
     pub crucible_downstairs: Option<CrucibleDownstairsSource>,
+    pub current_propolis: Option<CurrentPropolisSource<'a>>,
 
     pub tmp_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
@@ -96,6 +98,13 @@ pub enum CrucibleDownstairsSource {
     Local(Utf8PathBuf),
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum CurrentPropolisSource<'a> {
+    BuildomatGitRev(&'a artifacts::buildomat::Commit),
+    BuildomatBranch(&'a str),
+    Local(&'a Utf8PathBuf),
+}
+
 // The framework implementation includes some "runner-only" functions
 // (constructing and resetting a framework) that are marked `pub`. This could be
 // improved by splitting the "test case" functions into a trait and giving test
@@ -103,7 +112,7 @@ pub enum CrucibleDownstairsSource {
 impl Framework {
     /// Builds a brand new framework. Called from the test runner, which creates
     /// one framework and then distributes it to tests.
-    pub fn new(params: FrameworkParameters) -> anyhow::Result<Self> {
+    pub fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
         let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
             params.tmp_directory.clone(),
             &params.artifact_toml,
@@ -118,8 +127,6 @@ impl Framework {
                     &params.propolis_server_path
                 )
             })?;
-
-        artifact_store.add_propolis_from_head()?;
 
         let crucible_enabled = match params.crucible_downstairs {
             Some(crucible_downstairs) => {
@@ -136,6 +143,19 @@ impl Framework {
                 tracing::warn!(
                     "Crucible disabled. Crucible tests will be skipped"
                 );
+                false
+            }
+        };
+
+        let current_propolis_enabled = match params.current_propolis {
+            Some(source) => {
+                artifact_store
+                    .add_current_propolis(source)
+                    .with_context(|| format!("adding 'current' Propolis server '{source:?}' from options"))?;
+                true
+            }
+            None => {
+                tracing::warn!("No 'current' Propolis server provided. Migration-from-current tests will be skipped.");
                 false
             }
         };
@@ -160,6 +180,7 @@ impl Framework {
             disk_factory,
             port_allocator,
             crucible_enabled,
+            current_propolis_enabled,
         })
     }
 
@@ -249,5 +270,11 @@ impl Framework {
     /// Crucible support.
     pub fn crucible_enabled(&self) -> bool {
         self.crucible_enabled
+    }
+
+    /// Indicates whether a "current" Propolis server artifact is available for
+    /// migration-from-current tests.
+    pub fn current_propolis_enabled(&self) -> bool {
+        self.current_propolis_enabled
     }
 }
