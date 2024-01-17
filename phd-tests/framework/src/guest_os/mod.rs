@@ -38,7 +38,7 @@ pub(super) trait GuestOs {
 }
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum GuestOsKind {
     Alpine,

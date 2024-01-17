@@ -453,6 +453,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-platform"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ceed8ef69d8518a5dda55c07425450b58a4e1946f4951eab6d7191ee86c2443d"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "cargo_metadata"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d886547e41f740c616ae73108f6eb70afe6d940c7bc697cb30f13daec073037"
+dependencies = [
+ "camino",
+ "cargo-platform",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "cc"
 version = "1.0.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1301,9 +1324,9 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.0.27"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6c98ee8095e9d1dcbf2fcc6d95acccb90d1c81db1e44725c6a984b1dbdfb010"
+checksum = "46303f565772937ffe1d394a4fac6f411c6013172fadde9dcdb1e147a086940e"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
@@ -2957,6 +2980,7 @@ dependencies = [
  "camino",
  "cfg-if",
  "errno 0.2.8",
+ "flate2",
  "futures",
  "hex",
  "libc",
@@ -2971,6 +2995,7 @@ dependencies = [
  "slog",
  "slog-async",
  "slog-term",
+ "tar",
  "thiserror",
  "tokio",
  "tokio-tungstenite",
@@ -2987,6 +3012,7 @@ dependencies = [
  "anyhow",
  "backtrace",
  "camino",
+ "cargo_metadata",
  "clap 4.4.0",
  "phd-framework",
  "phd-tests",

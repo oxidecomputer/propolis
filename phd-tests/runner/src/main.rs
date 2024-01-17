@@ -17,7 +17,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 use crate::execute::ExecutionStats;
 use crate::fixtures::TestFixtures;
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let runner_args = ProcessArgs::parse();
     set_tracing_subscriber(&runner_args);
 
@@ -33,18 +33,20 @@ fn main() {
 
     match &runner_args.command {
         config::Command::Run(opts) => {
-            let exit_code = run_tests(opts).tests_failed;
+            let exit_code = run_tests(opts)?.tests_failed;
             debug!(exit_code);
             std::process::exit(exit_code.try_into().unwrap());
         }
         config::Command::List(opts) => list_tests(opts),
     }
+
+    Ok(())
 }
 
-fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
+fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
     let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
-        crucible_downstairs_cmd: run_opts.crucible_downstairs_cmd.clone(),
+        crucible_downstairs: run_opts.crucible_downstairs()?,
         tmp_directory: run_opts.tmp_directory.clone(),
         artifact_toml: run_opts.artifact_toml_path.clone(),
         server_log_mode: run_opts.server_logging_mode,
@@ -81,7 +83,7 @@ fn run_tests(run_opts: &RunOptions) -> ExecutionStats {
         execution_stats.duration.as_secs_f64()
     );
 
-    execution_stats
+    Ok(execution_stats)
 }
 
 fn list_tests(list_opts: &ListOptions) {

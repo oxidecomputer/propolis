@@ -21,3 +21,7 @@ tracing-appender.workspace = true
 tracing-bunyan-formatter.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
+
+[build-dependencies]
+anyhow.workspace = true
+cargo_metadata.workspace = true
