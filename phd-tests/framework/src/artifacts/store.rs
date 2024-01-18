@@ -264,7 +264,7 @@ impl Store {
         // - doesn't try to use the VMM kernel memory reservoir, which may not
         //   work nicely in the test environment
         let series = buildomat::Series::from_static("phd_build");
-        let filename = Utf8PathBuf::from("propolis-nightly.tar.gz");
+        let filename = Utf8PathBuf::from("propolis-server.tar.gz");
         let source = REPO.artifact_for_commit(
             series,
             commit,
