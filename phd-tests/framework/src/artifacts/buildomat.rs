@@ -1,7 +1,7 @@
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
+use super::DownloadConfig;
 use anyhow::Context;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
@@ -39,9 +39,10 @@ impl Repo {
         series: Series,
         commit: Commit,
         filename: impl AsRef<Utf8Path>,
+        downloader: &DownloadConfig,
     ) -> anyhow::Result<BuildomatArtifact> {
         let filename = filename.as_ref();
-        let sha256 = self.get_sha256(&series, &commit, filename)?;
+        let sha256 = self.get_sha256(&series, &commit, filename, downloader)?;
 
         Ok(BuildomatArtifact { repo: self, series, commit, sha256 })
     }
@@ -50,11 +51,21 @@ impl Repo {
         &self,
         branch: &str,
     ) -> anyhow::Result<Commit> {
-        get_text_file(format!("{BASE_URI}/branch/{self}/{branch}"))
-            .and_then(|s| Commit::from_str(&s))
-            .with_context(|| {
-                format!("Failed to determine HEAD commit for {self}@{branch}")
-            })
+        (|| {
+            let uri = format!("{BASE_URI}/branch/{self}/{branch}");
+            let client = reqwest::blocking::ClientBuilder::new()
+                .timeout(Duration::from_secs(5))
+                .build()?;
+            let req = client.get(uri).build()?;
+            let rsp = client.execute(req)?;
+            let status = rsp.status();
+            anyhow::ensure!(status.is_success(), "HTTP status: {status}");
+            let bytes = rsp.bytes()?;
+            str_from_bytes(&bytes)?.parse::<Commit>()
+        })()
+        .with_context(|| {
+            format!("Failed to determine HEAD commit for {self}@{branch}")
+        })
     }
 
     fn get_sha256(
@@ -62,38 +73,39 @@ impl Repo {
         series: &Series,
         commit: &Commit,
         filename: &Utf8Path,
+        downloader: &DownloadConfig,
     ) -> anyhow::Result<String> {
         (|| {
             let filename = filename
-            .file_name()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Buildomat filename has no filename: {filename:?}"
-                )
-            })?
-            // Strip the file extension, if any.
-            //
-            // Note: we use `Utf8PathBuf::file_name` and then split on '.'s
-            // rather than using `Utf8PathBuf::file_stem`, because the latter
-            // only strips off the rightmost file extension, rather than all
-            // extensions. So, "foo.tar.gz" has a `file_stem()` of "foo.tar",
-            // rather than "foo".
-            //
-            // TODO(eliza): `std::path::Path` has an unstable `file_prefix()`
-            // method, which does exactly what we would want here (see
-            // https://github.com/rust-lang/rust/issues/86319). If this is
-            // stabilized, and `camino` adds a `file_prefix()` method wrapping
-            // it, this code can be replaced with just `filename.file_prefix()`.
-            .split('.')
-            .next()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Buildomat filename has no filename prefix: {filename:?}"
-                )
-            })?;
-        get_text_file(format!(
-            "{BASE_URI}/file/{self}/{series}/{commit}/{filename}.sha256.txt"
-        ))
+                .file_name()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Buildomat filename has no filename: {filename:?}"
+                    )
+                })?
+                // Strip the file extension, if any.
+                //
+                // Note: we use `Utf8PathBuf::file_name` and then split on '.'s
+                // rather than using `Utf8PathBuf::file_stem`, because the latter
+                // only strips off the rightmost file extension, rather than all
+                // extensions. So, "foo.tar.gz" has a `file_stem()` of "foo.tar",
+                // rather than "foo".
+                //
+                // TODO(eliza): `std::path::Path` has an unstable `file_prefix()`
+                // method, which does exactly what we would want here (see
+                // https://github.com/rust-lang/rust/issues/86319). If this is
+                // stabilized, and `camino` adds a `file_prefix()` method wrapping
+                // it, this code can be replaced with just `filename.file_prefix()`.
+                .split('.')
+                .next()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Buildomat filename has no filename prefix: {filename:?}"
+                    )
+                })?;
+            let uri = format!("{BASE_URI}/file/{self}/{series}/{commit}/{filename}.sha256.txt");
+            let bytes = downloader.download_buildomat_uri(&uri)?;
+            str_from_bytes(&bytes).map(String::from)
         })().with_context(|| {
             format!("Failed to get SHA256 for {self}@{commit}, series: {series}, file: {filename})")
         })
@@ -185,26 +197,60 @@ impl fmt::Display for BuildomatArtifact {
     }
 }
 
-fn get_text_file(url: impl AsRef<str>) -> anyhow::Result<String> {
-    let url = url.as_ref();
-    (|| {
+impl super::DownloadConfig {
+    pub(super) fn download_buildomat_uri(
+        &self,
+        uri: &str,
+    ) -> anyhow::Result<bytes::Bytes> {
+        tracing::info!(timeout = ?self.timeout, "Downloading '{uri}' from Buildomat");
         let client = reqwest::blocking::ClientBuilder::new()
-            .timeout(Duration::from_secs(5))
+            .timeout(self.timeout)
             .build()?;
-        let req = client.get(url).build()?;
-        let rsp = client.execute(req)?;
-        let status = rsp.status();
-        anyhow::ensure!(
-            status == reqwest::StatusCode::OK,
-            "HTTP status: {status}"
-        );
+        let try_download = || {
+            let request = client
+                .get(uri)
+                .build()
+                // failing to build the request is a permanent (non-retryable)
+                // error, because any retries will use the same URI and request
+                // configuration, so they'd fail as well.
+                .map_err(|e| backoff::Error::permanent(e.into()))?;
 
-        let file = String::from_utf8(rsp.bytes()?.to_vec())?
-            // the text file downloaded from Buildomat has a trailing newline,
-            // so get rid of that...
-            .trim()
-            .to_string();
-        Ok(file)
-    })()
-    .with_context(|| format!("Failed to download Buildomat text file {url:?}"))
+            let response = client
+                .execute(request)
+                .map_err(|e| backoff::Error::transient(e.into()))?;
+            if !response.status().is_success() {
+                // when downloading a file from buildomat, we currently retry
+                // all errors, since buildomat returns 500s when an artifact
+                // doesn't exist. hopefully, this will be fixed upstream soon.
+                let err = anyhow::anyhow!(
+                    "Downloading {uri} returned HTTP error {}",
+                    response.status()
+                );
+                return Err(backoff::Error::transient(err));
+            }
+            Ok(response)
+        };
+
+        let log_retry = |error, wait| {
+            tracing::info!(%error, "Downloading '{uri}' failed, trying again in {wait:?}...");
+        };
+
+        let bytes = backoff::retry_notify(
+            self.buildomat_backoff.clone(),
+            try_download,
+            log_retry,
+        )
+        .map_err(|e| match e {
+            backoff::Error::Permanent(e) => e,
+            backoff::Error::Transient { err, .. } => err,
+        })
+        .with_context(|| format!("Failed to download '{uri}'"))?
+        .bytes()?;
+
+        Ok(bytes)
+    }
+}
+
+fn str_from_bytes(bytes: &bytes::Bytes) -> anyhow::Result<&str> {
+    Ok(std::str::from_utf8(bytes.as_ref())?.trim())
 }

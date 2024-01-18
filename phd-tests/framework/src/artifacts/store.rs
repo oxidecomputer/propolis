@@ -5,8 +5,8 @@
 use crate::{
     artifacts::{
         buildomat, manifest::Manifest, ArtifactKind, ArtifactSource,
-        CRUCIBLE_DOWNSTAIRS_ARTIFACT, CURRENT_PROPOLIS_ARTIFACT,
-        DEFAULT_PROPOLIS_ARTIFACT,
+        DownloadConfig, CRUCIBLE_DOWNSTAIRS_ARTIFACT,
+        CURRENT_PROPOLIS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
     CurrentPropolisSource,
@@ -107,13 +107,16 @@ impl StoredArtifact {
         // reacquire it.
         let bytes = match &self.description.source {
             ArtifactSource::Buildomat(source) => downloader
-                .download_buildomat(
+                .download_buildomat_artifact(
                     source,
                     &self.description.filename,
                     expected_digest,
                 )?,
             ArtifactSource::RemoteServer { .. } => downloader
-                .download_remote(&self.description.filename, expected_digest)?,
+                .download_remote_artifact(
+                    &self.description.filename,
+                    expected_digest,
+                )?,
             ArtifactSource::LocalPath { .. } => {
                 unreachable!("local path case handled above")
             }
@@ -262,7 +265,12 @@ impl Store {
         //   work nicely in the test environment
         let series = buildomat::Series::from_static("phd_build");
         let filename = Utf8PathBuf::from("propolis-nightly.tar.gz");
-        let source = REPO.artifact_for_commit(series, commit, &filename)?;
+        let source = REPO.artifact_for_commit(
+            series,
+            commit,
+            &filename,
+            &self.downloader,
+        )?;
         let artifact = super::Artifact {
             filename,
             kind: ArtifactKind::PropolisServer,
@@ -308,6 +316,7 @@ impl Store {
                     series,
                     commit.clone(),
                     &filename,
+                    &self.downloader,
                 )?;
 
                 let artifact = super::Artifact {
@@ -556,73 +565,19 @@ fn extract_tarball(
     Err(anyhow::anyhow!("No file named '{bin_path}' found in tarball"))
 }
 
-#[derive(Debug)]
-struct DownloadConfig {
-    timeout: Duration,
-    buildomat_backoff: backoff::ExponentialBackoff,
-    remote_server_uris: Vec<String>,
-}
-
 impl DownloadConfig {
-    fn download_buildomat(
+    fn download_buildomat_artifact(
         &self,
         source: &buildomat::BuildomatArtifact,
         filename: &Utf8Path,
         expected_digest: &str,
     ) -> anyhow::Result<bytes::Bytes> {
-        info!(timeout = ?self.timeout, "Downloading {filename} from {source}");
-        let client = reqwest::blocking::ClientBuilder::new()
-            .timeout(self.timeout)
-            .build()?;
-        let uri = source.uri(filename);
-        let try_download = || {
-            let request = client
-                .get(&uri)
-                .build()
-                // failing to build the request is a permanent (non-retryable)
-                // error, because any retries will use the same URI and request
-                // configuration, so they'd fail as well.
-                .map_err(|e| backoff::Error::permanent(e.into()))?;
-
-            let response = client
-                .execute(request)
-                .map_err(|e| backoff::Error::transient(e.into()))?;
-            if !response.status().is_success() {
-                // when downloading a file from buildomat, we currently retry
-                // all errors, since buildomat returns 500s when an artifact
-                // doesn't exist. hopefully, this will be fixed upstream soon.
-                let err = anyhow::anyhow!(
-                    "Downloading {uri} returned HTTP error {}",
-                    response.status()
-                );
-                return Err(backoff::Error::transient(err));
-            }
-            Ok(response)
-        };
-
-        let log_retry = |error, wait| {
-            info!(%error, "Downloading {filename} from {source} failed, trying again in {wait:?}...");
-        };
-
-        let bytes = backoff::retry_notify(
-            self.buildomat_backoff.clone(),
-            try_download,
-            log_retry,
-        )
-        .map_err(|e| match e {
-            backoff::Error::Permanent(e) => e,
-            backoff::Error::Transient { err, .. } => err,
-        })
-        .with_context(|| {
-            format!("Failed to download {filename} from {source}")
-        })?
-        .bytes()?;
-
+        let bytes = self.download_buildomat_uri(&source.uri(filename))?;
         hash_equals(Cursor::new(bytes.as_ref()), expected_digest)?;
         Ok(bytes)
     }
 
-    fn download_remote(
+    fn download_remote_artifact(
         &self,
         filename: &Utf8Path,
         expected_digest: &str,

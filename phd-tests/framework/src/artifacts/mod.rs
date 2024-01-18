@@ -5,6 +5,7 @@
 //! Support for working with files consumed by PHD test runs.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub mod buildomat;
 mod manifest;
@@ -56,4 +57,11 @@ struct Artifact {
     /// If present, this artifact is a tarball, and the provided file should be
     /// extracted.
     untar: Option<camino::Utf8PathBuf>,
+}
+
+#[derive(Debug)]
+struct DownloadConfig {
+    timeout: Duration,
+    buildomat_backoff: backoff::ExponentialBackoff,
+    remote_server_uris: Vec<String>,
 }
