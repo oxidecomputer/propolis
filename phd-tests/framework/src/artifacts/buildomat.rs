@@ -132,8 +132,8 @@ impl FromStr for Commit {
     }
 }
 
-impl std::fmt::Display for Commit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Commit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
@@ -170,6 +170,18 @@ impl BuildomatArtifact {
         } = self;
         let filename = filename.as_ref();
         format!("{BASE_URI}/file/{repo}/{series}/{commit}/{filename}")
+    }
+}
+
+impl fmt::Display for BuildomatArtifact {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            repo: Repo(ref repo),
+            series: Series(ref series),
+            commit: Commit(ref commit),
+            ..
+        } = self;
+        write!(f, "Buildomat {repo}/{series}@{commit}")
     }
 }
 

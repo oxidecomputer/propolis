@@ -1,0 +1,29 @@
+[main]
+name = "testvm"
+cpus = 4
+bootrom = "/home/eliza/edk2/Build/OvmfX64/RELEASE_ILLGCC/FV/OVMF_CODE.fd"
+memory = 1024
+
+# Exit propolis-standalone process with <code> if instance halts (default: 0)
+# exit_on_halt = <code>
+
+# Exit propolis-standalone process with <code> if instance reboots (default: unset)
+# exit_on_reboot = <code>
+
+[block_dev.alpine_iso]
+type = "file"
+path = "alpine-standard-3.19.0-x86_64.iso"
+
+[dev.block0]
+driver = "pci-virtio-block"
+block_dev = "alpine_iso"
+pci-path = "0.4.0"
+
+[dev.net0]
+driver = "pci-virtio-viona"
+vnic = "vnic_eliza0"
+pci-path = "0.5.0"
+
+[dev.pvpanic]
+driver = "qemu-pvpanic"
+enable_isa = true

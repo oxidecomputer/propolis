@@ -13,14 +13,15 @@ use crate::{
 };
 
 use anyhow::{bail, Context};
+use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
 use ring::digest::{Digest, SHA256};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 struct StoredArtifact {
@@ -36,7 +37,7 @@ impl StoredArtifact {
     fn ensure(
         &mut self,
         local_dir: &Utf8Path,
-        remote_uris: &[String],
+        downloader: &DownloadConfig,
     ) -> anyhow::Result<Utf8PathBuf> {
         // If the artifact already exists and has been verified, return the path
         // to it straightaway.
@@ -58,7 +59,7 @@ impl StoredArtifact {
             // This facilitates the use of local build outputs whose hashes
             // frequently change. If a digest was passed, make sure it matches.
             if let Some(digest) = sha256 {
-                hash_equals(&path, digest)?;
+                file_hash_equals(&path, digest)?;
             } else if !path.is_file() {
                 anyhow::bail!("artifact path {} is not a file", path);
             }
@@ -87,7 +88,7 @@ impl StoredArtifact {
 
         info!(%maybe_path, "checking for existing copy of artifact");
         if maybe_path.is_file() {
-            if hash_equals(&maybe_path, expected_digest).is_ok() {
+            if file_hash_equals(&maybe_path, expected_digest).is_ok() {
                 info!(%maybe_path,
                       "Valid artifact already exists, caching its path");
                 return self.cache_path(maybe_path);
@@ -103,27 +104,16 @@ impl StoredArtifact {
         }
 
         // The artifact is not in the expected place or has the wrong digest, so
-        // reacquire it. First, construct the set of source URIs from which the
-        // artifact can be reacquired.
-        let source_uris = match &self.description.source {
-            ArtifactSource::Buildomat(artifact) => {
-                let buildomat_uri = artifact.uri(&self.description.filename);
-
-                vec![buildomat_uri]
-            }
-            ArtifactSource::RemoteServer { .. } => {
-                if remote_uris.is_empty() {
-                    anyhow::bail!(
-                        "can't acquire artifact from remote server with no \
-                         remote URIs"
-                    );
-                }
-
-                remote_uris
-                    .iter()
-                    .map(|uri| format!("{}/{}", uri, self.description.filename))
-                    .collect()
-            }
+        // reacquire it.
+        let bytes = match &self.description.source {
+            ArtifactSource::Buildomat(source) => downloader
+                .download_buildomat(
+                    source,
+                    &self.description.filename,
+                    expected_digest,
+                )?,
+            ArtifactSource::RemoteServer { .. } => downloader
+                .download_remote(&self.description.filename, expected_digest)?,
             ArtifactSource::LocalPath { .. } => {
                 unreachable!("local path case handled above")
             }
@@ -132,47 +122,17 @@ impl StoredArtifact {
         // There is at least one plausible place from which to try to obtain the
         // artifact. Create the directory that will hold it.
         std::fs::create_dir_all(maybe_path.parent().unwrap())?;
-        let download_timeout = Duration::from_secs(600);
-        for uri in &source_uris {
-            info!(%maybe_path,
-                  uri,
-                  "Downloading artifact with timeout {:?}",
-                  download_timeout);
+        let mut new_file = std::fs::File::create(&maybe_path)?;
+        new_file.write_all(&bytes)?;
 
-            let client = reqwest::blocking::ClientBuilder::new()
-                .timeout(download_timeout)
-                .build()?;
+        // Make the newly-downloaded artifact read-only to try to
+        // ensure tests won't change it. Disks created from an
+        // artifact can be edited to be writable.
+        let mut permissions = new_file.metadata()?.permissions();
+        permissions.set_readonly(true);
+        new_file.set_permissions(permissions)?;
 
-            let request = client.get(uri).build()?;
-            let response = match client.execute(request) {
-                Ok(resp) => resp,
-                Err(e) => {
-                    info!(?e, uri, "Error obtaining artifact from source");
-                    continue;
-                }
-            };
-
-            let mut new_file = std::fs::File::create(&maybe_path)?;
-            new_file.write_all(&response.bytes()?)?;
-            if let Err(e) = hash_equals(&maybe_path, expected_digest) {
-                info!(?e, uri, "Failed to verify digest for artifact");
-                continue;
-            }
-
-            // Make the newly-downloaded artifact read-only to try to
-            // ensure tests won't change it. Disks created from an
-            // artifact can be edited to be writable.
-            let mut permissions = new_file.metadata()?.permissions();
-            permissions.set_readonly(true);
-            new_file.set_permissions(permissions)?;
-
-            return self.cache_path(maybe_path);
-        }
-
-        Err(anyhow::anyhow!(
-            "failed to locate or obtain artifact at path {}",
-            maybe_path
-        ))
+        self.cache_path(maybe_path)
     }
 
     fn cache_path(
@@ -208,25 +168,47 @@ impl StoredArtifact {
 pub struct Store {
     local_dir: Utf8PathBuf,
     artifacts: BTreeMap<String, Mutex<StoredArtifact>>,
-    remote_server_uris: Vec<String>,
+    downloader: DownloadConfig,
 }
 
 impl Store {
     pub fn from_toml_path(
         local_dir: Utf8PathBuf,
         toml_path: &Utf8Path,
+        max_buildomat_wait: Duration,
     ) -> anyhow::Result<Self> {
-        Ok(Self::from_manifest(local_dir, Manifest::from_toml_path(toml_path)?))
+        Ok(Self::from_manifest(
+            local_dir,
+            Manifest::from_toml_path(toml_path)?,
+            max_buildomat_wait,
+        ))
     }
 
-    fn from_manifest(local_dir: Utf8PathBuf, manifest: Manifest) -> Self {
+    fn from_manifest(
+        local_dir: Utf8PathBuf,
+        manifest: Manifest,
+        max_buildomat_wait: Duration,
+    ) -> Self {
         let Manifest { artifacts, remote_server_uris } = manifest;
         let artifacts = artifacts
             .into_iter()
             .map(|(k, v)| (k, Mutex::new(StoredArtifact::new(v))))
             .collect();
 
-        let store = Self { local_dir, artifacts, remote_server_uris };
+        let buildomat_backoff = backoff::ExponentialBackoffBuilder::new()
+            .with_max_elapsed_time(Some(max_buildomat_wait))
+            .with_initial_interval(Duration::from_secs(1))
+            .build();
+
+        let store = Self {
+            local_dir,
+            artifacts,
+            downloader: DownloadConfig {
+                timeout: Duration::from_secs(600),
+                buildomat_backoff,
+                remote_server_uris,
+            },
+        };
         info!(?store, "Created new artifact store from manifest");
         store
     }
@@ -357,8 +339,7 @@ impl Store {
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::GuestOs(kind) => {
-                let path =
-                    guard.ensure(&self.local_dir, &self.remote_server_uris)?;
+                let path = guard.ensure(&self.local_dir, &self.downloader)?;
                 Ok((path, kind))
             }
             _ => Err(anyhow::anyhow!(
@@ -376,7 +357,7 @@ impl Store {
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::Bootrom => {
-                guard.ensure(&self.local_dir, &self.remote_server_uris)
+                guard.ensure(&self.local_dir, &self.downloader)
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {} is not a bootrom",
@@ -393,7 +374,7 @@ impl Store {
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::PropolisServer => {
-                guard.ensure(&self.local_dir, &self.remote_server_uris)
+                guard.ensure(&self.local_dir, &self.downloader)
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {} is not a Propolis server",
@@ -407,7 +388,7 @@ impl Store {
         let mut guard = entry.lock().unwrap();
         match guard.description.kind {
             super::ArtifactKind::CrucibleDownstairs => {
-                guard.ensure(&self.local_dir, &self.remote_server_uris)
+                guard.ensure(&self.local_dir, &self.downloader)
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {CRUCIBLE_DOWNSTAIRS_ARTIFACT} is not a Crucible downstairs binary",
@@ -470,9 +451,9 @@ impl Store {
     }
 }
 
-fn sha256_digest(file: &mut File) -> anyhow::Result<Digest> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut reader = BufReader::new(file);
+fn sha256_digest(mut reader: impl std::io::Read) -> anyhow::Result<Digest> {
+    // file.seek(SeekFrom::Start(0))?;
+    // let mut reader = BufReader::new(file);
     let mut context = ring::digest::Context::new(&SHA256);
     let mut buffer = [0; 1024];
 
@@ -487,16 +468,24 @@ fn sha256_digest(file: &mut File) -> anyhow::Result<Digest> {
     Ok(context.finish())
 }
 
-fn hash_equals(path: &Utf8Path, expected_digest: &str) -> anyhow::Result<()> {
-    let mut file = File::open(path)?;
-    let digest = hex::encode(sha256_digest(&mut file)?.as_ref());
+fn file_hash_equals(
+    path: impl AsRef<std::path::Path>,
+    expected_digest: &str,
+) -> anyhow::Result<()> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    hash_equals(&mut reader, expected_digest)
+}
+
+fn hash_equals<R: Read + Seek>(
+    mut bytes: R,
+    expected_digest: &str,
+) -> anyhow::Result<()> {
+    // let mut file = File::open(path)?;
+    bytes.seek(SeekFrom::Start(0))?;
+    let digest = hex::encode(sha256_digest(&mut bytes)?.as_ref());
     if digest != expected_digest {
-        bail!(
-            "Digest of {} was {}, expected {}",
-            path,
-            digest,
-            expected_digest
-        );
+        bail!("Digest was {digest}, expected {expected_digest}");
     }
 
     Ok(())
@@ -565,4 +554,120 @@ fn extract_tarball(
     }
 
     Err(anyhow::anyhow!("No file named '{bin_path}' found in tarball"))
+}
+
+#[derive(Debug)]
+struct DownloadConfig {
+    timeout: Duration,
+    buildomat_backoff: backoff::ExponentialBackoff,
+    remote_server_uris: Vec<String>,
+}
+
+impl DownloadConfig {
+    fn download_buildomat(
+        &self,
+        source: &buildomat::BuildomatArtifact,
+        filename: &Utf8Path,
+        expected_digest: &str,
+    ) -> anyhow::Result<bytes::Bytes> {
+        info!(timeout = ?self.timeout, "Downloading {filename} from {source}");
+        let client = reqwest::blocking::ClientBuilder::new()
+            .timeout(self.timeout)
+            .build()?;
+        let uri = source.uri(filename);
+        let try_download = || {
+            let request = client
+                .get(&uri)
+                .build()
+                // failing to build the request is a permanent (non-retryable)
+                // error, because any retries will use the same URI and request
+                // configuration, so they'd fail as well.
+                .map_err(|e| backoff::Error::permanent(e.into()))?;
+
+            let response = client
+                .execute(request)
+                .map_err(|e| backoff::Error::transient(e.into()))?;
+            if !response.status().is_success() {
+                // when downloading a file from buildomat, we currently retry
+                // all errors, since buildomat returns 500s when an artifact
+                // doesn't exist. hopefully, this will be fixed upstream soon.
+                let err = anyhow::anyhow!(
+                    "Downloading {uri} returned HTTP error {}",
+                    response.status()
+                );
+                return Err(backoff::Error::transient(err));
+            }
+            Ok(response)
+        };
+
+        let log_retry = |error, wait| {
+            info!(%error, "Downloading {filename} from {source} failed, trying again in {wait:?}...");
+        };
+
+        let bytes = backoff::retry_notify(
+            self.buildomat_backoff.clone(),
+            try_download,
+            log_retry,
+        )
+        .map_err(|e| match e {
+            backoff::Error::Permanent(e) => e,
+            backoff::Error::Transient { err, .. } => err,
+        })
+        .with_context(|| {
+            format!("Failed to download {filename} from {source}")
+        })?
+        .bytes()?;
+
+        hash_equals(Cursor::new(bytes.as_ref()), expected_digest)?;
+        Ok(bytes)
+    }
+
+    fn download_remote(
+        &self,
+        filename: &Utf8Path,
+        expected_digest: &str,
+    ) -> anyhow::Result<Bytes> {
+        anyhow::ensure!(
+            !self.remote_server_uris.is_empty(),
+            "can't acquire artifact {filename} from remote server with no \
+            remote URIs"
+        );
+
+        let client = reqwest::blocking::ClientBuilder::new()
+            .timeout(self.timeout)
+            .build()?;
+
+        for remote in &self.remote_server_uris {
+            let uri = format!("{remote}/{filename}");
+            info!(timeout = ?self.timeout, "Downloading {filename} from {uri}");
+
+            let request = client.get(&uri).build()?;
+            let response = match client.execute(request) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    warn!(?e, uri, "Error obtaining artifact from source");
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                warn!(status = %response.status(), ?response, "HTTP error downloading {filename} from {uri}");
+                continue;
+            }
+
+            let bytes = response.bytes()?;
+            if let Err(error) =
+                hash_equals(Cursor::new(bytes.as_ref()), expected_digest)
+            {
+                warn!(%error, "Hash mismatch downloading {filename} from {uri}");
+                continue;
+            } else {
+                return Ok(bytes);
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Failed to download {filename} from any remote URI",
+        ))
+    }
 }

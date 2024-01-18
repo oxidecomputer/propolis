@@ -187,6 +187,18 @@ pub struct RunOptions {
     /// string. Can be specified multiple times.
     #[clap(long, value_parser)]
     pub exclude_filter: Vec<String>,
+
+    /// Maximum duration (in seconds) to wait for an artifact to become
+    /// available in Buildomat.
+    ///
+    /// This determines the total amount of time that PHD will spend retrying a
+    /// failed attempts to download a particular artifact from Buildomat. A
+    /// fairly generous duration allows PHD to wait for some time in case an
+    /// artifact that does not currently exist is in the process of being built.
+    // TODO(eliza): this could parse a `Duration` with units, instead of a
+    // number of seconds, but i'm lazy...
+    #[clap(long, value_parser, default_value_t = 60 * 20)]
+    pub max_buildomat_wait_secs: u64,
 }
 
 #[derive(Args, Debug)]

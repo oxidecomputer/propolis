@@ -90,6 +90,7 @@ pub struct FrameworkParameters<'a> {
     pub default_bootrom_artifact: String,
 
     pub port_range: Range<u16>,
+    pub max_buildomat_wait: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -116,6 +117,7 @@ impl Framework {
         let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
             params.tmp_directory.clone(),
             &params.artifact_toml,
+            params.max_buildomat_wait,
         )
         .context("creating PHD framework")?;
 

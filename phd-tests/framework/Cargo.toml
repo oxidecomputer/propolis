@@ -10,6 +10,7 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 backoff.workspace = true
+bytes.workspace = true
 bhyve_api.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 cfg-if.workspace = true
