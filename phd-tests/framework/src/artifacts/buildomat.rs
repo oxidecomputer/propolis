@@ -202,7 +202,11 @@ impl super::DownloadConfig {
         &self,
         uri: &str,
     ) -> anyhow::Result<bytes::Bytes> {
-        tracing::info!(timeout = ?self.timeout, "Downloading '{uri}' from Buildomat");
+        tracing::info!(
+            timeout = ?self.timeout,
+            %uri,
+            "Downloading file from Buildomat...",
+        );
         let client = reqwest::blocking::ClientBuilder::new()
             .timeout(self.timeout)
             .build()?;
@@ -223,7 +227,7 @@ impl super::DownloadConfig {
                 // all errors, since buildomat returns 500s when an artifact
                 // doesn't exist. hopefully, this will be fixed upstream soon.
                 let err = anyhow::anyhow!(
-                    "Downloading {uri} returned HTTP error {}",
+                    "Buildomat returned HTTP error {}",
                     response.status()
                 );
                 return Err(backoff::Error::transient(err));
@@ -232,7 +236,11 @@ impl super::DownloadConfig {
         };
 
         let log_retry = |error, wait| {
-            tracing::info!(%error, "Downloading '{uri}' failed, trying again in {wait:?}...");
+            tracing::info!(
+                %error,
+                %uri,
+                "Buildomat download failed, trying again in {wait:?}..."
+            );
         };
 
         let bytes = backoff::retry_notify(
@@ -244,7 +252,7 @@ impl super::DownloadConfig {
             backoff::Error::Permanent(e) => e,
             backoff::Error::Transient { err, .. } => err,
         })
-        .with_context(|| format!("Failed to download '{uri}'"))?
+        .with_context(|| format!("Failed to download '{uri}' from Buildomat"))?
         .bytes()?;
 
         Ok(bytes)
