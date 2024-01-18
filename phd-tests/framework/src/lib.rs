@@ -27,7 +27,7 @@
 //! environment. The `spawn_successor_vm` function provides a shorthand way to
 //! do this.
 
-use std::{ops::Range, rc::Rc};
+use std::{fmt, ops::Range, rc::Rc};
 
 use anyhow::Context;
 use artifacts::DEFAULT_PROPOLIS_ARTIFACT;
@@ -131,14 +131,14 @@ impl Framework {
             })?;
 
         let crucible_enabled = match params.crucible_downstairs {
-            Some(crucible_downstairs) => {
-                artifact_store
-                    .add_crucible_downstairs(&crucible_downstairs)
-                    .with_context(|| {
+            Some(source) => {
+                artifact_store.add_crucible_downstairs(&source).with_context(
+                    || {
                         format!(
-                            "adding Crucible downstairs '{crucible_downstairs:?}' from options",
+                            "adding Crucible downstairs {source} from options",
                         )
-                    })?;
+                    },
+                )?;
                 true
             }
             None => {
@@ -153,7 +153,7 @@ impl Framework {
             Some(source) => {
                 artifact_store
                     .add_current_propolis(source)
-                    .with_context(|| format!("adding 'current' Propolis server '{source:?}' from options"))?;
+                    .with_context(|| format!("adding 'current' Propolis server {source} from options"))?;
                 true
             }
             None => {
@@ -278,5 +278,30 @@ impl Framework {
     /// migration-from-current tests.
     pub fn current_propolis_enabled(&self) -> bool {
         self.current_propolis_enabled
+    }
+}
+
+impl fmt::Display for CrucibleDownstairsSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BuildomatGitRev(commit) => {
+                write!(f, "Buildomat Git commit '{commit}'")
+            }
+            Self::Local(path) => write!(f, "local path '{path}'"),
+        }
+    }
+}
+
+impl fmt::Display for CurrentPropolisSource<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BuildomatBranch(branch) => {
+                write!(f, "Buildomat branch '{branch}'")
+            }
+            Self::BuildomatGitRev(commit) => {
+                write!(f, "Buildomat Git commit '{commit}'")
+            }
+            Self::Local(path) => write!(f, "local path '{path}'"),
+        }
     }
 }
