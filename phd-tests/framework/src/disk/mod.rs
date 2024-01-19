@@ -186,13 +186,15 @@ impl DiskFactory {
     ///   If the source data is stored as a file on the local disk, the
     ///   resulting disk's `VolumeConstructionRequest`s will specify that this
     ///   file should be used as a read-only parent volume.
-    /// - disk_size_gib: The disk's expected size in GiB.
+    /// - min_disk_size_gib: The disk's minimum size in GiB. If the size of the
+    ///   `source` artifact is larger than the minimum size, the disk will be
+    ///   the size of the source artifact, instead.
     /// - block_size: The disk's block size.
     pub(crate) fn create_crucible_disk(
         &self,
         name: String,
         source: DiskSource,
-        disk_size_gib: u64,
+        min_disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
         let binary_path = self.artifact_store.get_crucible_downstairs()?;
@@ -208,7 +210,7 @@ impl DiskFactory {
 
         CrucibleDisk::new(
             name,
-            disk_size_gib,
+            min_disk_size_gib,
             block_size,
             &binary_path.as_std_path(),
             &ports,
