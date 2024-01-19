@@ -26,7 +26,7 @@ pub enum DiskInterface {
 #[derive(Clone, Copy, Debug)]
 pub enum DiskBackend {
     File,
-    Crucible { disk_size_gib: u64, block_size: crate::disk::BlockSize },
+    Crucible { min_disk_size_gib: u64, block_size: crate::disk::BlockSize },
 }
 
 #[derive(Clone, Debug)]
@@ -156,13 +156,13 @@ impl VmConfig {
                             &req.source_artifact
                         )
                     })?,
-                DiskBackend::Crucible { disk_size_gib, block_size } => {
+                DiskBackend::Crucible { min_disk_size_gib, block_size } => {
                     framework
                         .disk_factory
                         .create_crucible_disk(
                             name,
                             source,
-                            disk_size_gib,
+                            min_disk_size_gib,
                             block_size,
                         )
                         .with_context(|| {

@@ -11,6 +11,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use anyhow::Context;
 use propolis_client::types::{
     CrucibleOpts, CrucibleStorageBackend, StorageBackendV0,
     VolumeConstructionRequest,
@@ -96,7 +97,7 @@ impl CrucibleDisk {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         backend_name: String,
-        disk_size_gib: u64,
+        min_disk_size_gib: u64,
         block_size: BlockSize,
         downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
         downstairs_ports: &[u16],
@@ -111,12 +112,51 @@ impl CrucibleDisk {
         // MiB (to match Omicron's extent size at the time this module was
         // authored); this can be parameterized later if needed.
         const EXTENT_SIZE: u64 = 64 << 20;
+        const GIBIBYTE: u64 = 1 << 30;
 
         assert!(EXTENT_SIZE > block_size.bytes());
         assert!(EXTENT_SIZE % block_size.bytes() == 0);
 
+        let disk_size_gib = match read_only_parent {
+            // If there's a read-only parent, ensure the disk is large enough to
+            // fit the entire parent, even if its size exceeds the minimum
+            // requested disk size.
+            Some(parent) => {
+                let path = parent.as_ref();
+                let meta = std::fs::metadata(path).with_context(|| {
+                    format!(
+                        "Failed to get fs metadata for read-only parent '{}'",
+                        path.display()
+                    )
+                })?;
+                let parent_bytes = meta.len();
+                let mut parent_gib = parent_bytes / GIBIBYTE;
+                // if the parent's size is not evenly divisible by 1 GiB, add 1
+                // GiB to the required size to ensure the parent is not truncated.
+                if parent_bytes % GIBIBYTE > 0 {
+                    parent_gib += 1;
+                }
+
+                if parent_gib > min_disk_size_gib {
+                    info!(
+                        parent.size_bytes = parent_bytes,
+                        parent.size_gib = parent_gib,
+                        min.size_gib = min_disk_size_gib,
+                        "Increasing minimum disk size to ensure read-only \
+                        parent is not truncated",
+                    );
+                    parent_gib
+                } else {
+                    min_disk_size_gib
+                }
+            }
+            // If no read-only parent is specified, just use the minimum
+            // requested disk size.
+            None => min_disk_size_gib,
+        };
+
         let blocks_per_extent: u64 = EXTENT_SIZE / block_size.bytes();
-        let extents_in_disk = (disk_size_gib * (1 << 30)) / EXTENT_SIZE;
+        let extents_in_disk = (disk_size_gib * GIBIBYTE) / EXTENT_SIZE;
 
         // Create the region directories for each region.
         let mut data_dirs = vec![];

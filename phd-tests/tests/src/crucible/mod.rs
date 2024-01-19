@@ -19,7 +19,7 @@ fn add_crucible_boot_disk_or_skip(
     artifact: &str,
     interface: DiskInterface,
     pci_slot: u8,
-    disk_size_gib: u64,
+    min_disk_size_gib: u64,
     block_size: BlockSize,
 ) -> phd_testcase::Result<()> {
     if !ctx.crucible_enabled() {
@@ -29,7 +29,7 @@ fn add_crucible_boot_disk_or_skip(
     config.boot_disk(
         artifact,
         interface,
-        DiskBackend::Crucible { disk_size_gib, block_size },
+        DiskBackend::Crucible { min_disk_size_gib, block_size },
         pci_slot,
     );
 
