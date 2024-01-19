@@ -566,6 +566,14 @@ fn extract_tarball(
 }
 
 impl DownloadConfig {
+    /// Download the artifact named `filename` from the provided Buildomat
+    /// `source`.
+    ///
+    /// This method will retry the download if Buildomat returns an error that
+    /// indicates a file does not yet exist, for up to the configurable maximum
+    /// retry duration. This retry logic serves as a mechanism for PHD to wait
+    /// for an artifact we expect to exist to be published, when the build that
+    /// publishes that artifact is still in progress.
     fn download_buildomat_artifact(
         &self,
         source: &buildomat::BuildomatArtifact,
@@ -577,6 +585,14 @@ impl DownloadConfig {
         Ok(bytes)
     }
 
+    /// Download the artifact named `filename` from one of the configured
+    /// `remote_server_uris`.
+    ///
+    /// If downloading from one remote URI fails (such as due to a network
+    /// error, the server returning a non-200 HTTP status code, or a hash
+    /// mismatch), this method will try the next remote URI in the list until
+    /// the file has been downloaded successfully or all remote server URIs have
+    /// been tried.
     fn download_remote_artifact(
         &self,
         filename: &Utf8Path,

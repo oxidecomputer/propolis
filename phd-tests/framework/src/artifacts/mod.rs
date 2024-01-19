@@ -62,6 +62,14 @@ struct Artifact {
 #[derive(Debug)]
 struct DownloadConfig {
     timeout: Duration,
+    /// Retry backoff settings used when downloading files from Buildomat.
+    ///
+    /// Retries for Buildomat artifact sources are configured separately from
+    /// retries for remote URI artifact sources (which we don't currently retry;
+    /// but probably should). This is because we use a very long maximum
+    /// duration for retries for Buildomat artifacts, as a way of waiting for an
+    /// in-progress build to complete (20 minutes by default). On the other
+    /// hand, we probably don't want to retry a download from S3 for 20 minutes.
     buildomat_backoff: backoff::ExponentialBackoff,
     remote_server_uris: Vec<String>,
 }
