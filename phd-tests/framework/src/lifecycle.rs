@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use anyhow::Context;
 use tracing::info;
 use uuid::Uuid;
 
@@ -69,6 +70,7 @@ impl Framework {
                     vm = new_vm;
                 }
                 Action::MigrateToPropolis(propolis) => {
+                    use propolis_client::types::MigrationState;
                     info!(
                         vm_name = original_name,
                         propolis_artifact = propolis,
@@ -82,12 +84,24 @@ impl Framework {
                     env.propolis(propolis);
                     let mut new_vm =
                         self.spawn_successor_vm(&new_vm_name, &vm, Some(&env))?;
-
+                    let migration_id = Uuid::new_v4();
                     new_vm.migrate_from(
                         &vm,
-                        Uuid::new_v4(),
+                        migration_id,
                         Duration::from_secs(120),
                     )?;
+
+                    // Explicitly check migration status on both the source and target to make
+                    // sure it is available even after migration has finished.
+                    let src_migration_state = vm
+                        .get_migration_state(migration_id)
+                        .context("Failed to get source VM migration state")?;
+                    assert_eq!(src_migration_state, MigrationState::Finish);
+                    let target_migration_state = new_vm
+                        .get_migration_state(migration_id)
+                        .context("Failed to get target VM migration state")?;
+                    assert_eq!(target_migration_state, MigrationState::Finish);
+
                     vm = new_vm;
                 }
             }
