@@ -225,7 +225,8 @@ impl super::DownloadConfig {
             if !response.status().is_success() {
                 // when downloading a file from buildomat, we currently retry
                 // all errors, since buildomat returns 500s when an artifact
-                // doesn't exist. hopefully, this will be fixed upstream soon.
+                // doesn't exist. hopefully, this will be fixed upstream soon:
+                // https://github.com/oxidecomputer/buildomat/pull/48
                 let err = anyhow::anyhow!(
                     "Buildomat returned HTTP error {}",
                     response.status()
