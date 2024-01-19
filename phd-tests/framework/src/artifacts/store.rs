@@ -5,11 +5,11 @@
 use crate::{
     artifacts::{
         buildomat, manifest::Manifest, ArtifactKind, ArtifactSource,
-        DownloadConfig, CRUCIBLE_DOWNSTAIRS_ARTIFACT,
-        CURRENT_PROPOLIS_ARTIFACT, DEFAULT_PROPOLIS_ARTIFACT,
+        DownloadConfig, BASE_PROPOLIS_ARTIFACT, CRUCIBLE_DOWNSTAIRS_ARTIFACT,
+        DEFAULT_PROPOLIS_ARTIFACT,
     },
     guest_os::GuestOsKind,
-    CurrentPropolisSource,
+    BasePropolisSource,
 };
 
 use anyhow::{bail, Context};
@@ -230,29 +230,29 @@ impl Store {
 
     pub fn add_current_propolis(
         &mut self,
-        source: crate::CurrentPropolisSource<'_>,
+        source: crate::BasePropolisSource<'_>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !self.artifacts.contains_key(CURRENT_PROPOLIS_ARTIFACT),
-            "artifact store already contains key {CURRENT_PROPOLIS_ARTIFACT}",
+            !self.artifacts.contains_key(BASE_PROPOLIS_ARTIFACT),
+            "artifact store already contains key {BASE_PROPOLIS_ARTIFACT}",
         );
 
         const REPO: buildomat::Repo =
             buildomat::Repo::from_static("oxidecomputer/propolis");
         let commit = match source {
-            CurrentPropolisSource::BuildomatBranch(branch) => {
+            BasePropolisSource::BuildomatBranch(branch) => {
                 tracing::info!("Adding 'current' Propolis server from Buildomat Git branch '{branch}'");
                 REPO.get_branch_head(branch)?
             }
-            CurrentPropolisSource::BuildomatGitRev(commit) => {
+            BasePropolisSource::BuildomatGitRev(commit) => {
                 tracing::info!("Adding 'current' Propolis server from Buildomat Git commit '{commit}'");
                 commit.clone()
             }
-            CurrentPropolisSource::Local(cmd) => {
+            BasePropolisSource::Local(cmd) => {
                 tracing::info!("Adding 'current' Propolis server from local command '{cmd}'");
                 return self.add_local_artifact(
                     cmd,
-                    CURRENT_PROPOLIS_ARTIFACT,
+                    BASE_PROPOLIS_ARTIFACT,
                     ArtifactKind::PropolisServer,
                 );
             }
@@ -279,7 +279,7 @@ impl Store {
         };
 
         let _old = self.artifacts.insert(
-            CURRENT_PROPOLIS_ARTIFACT.to_string(),
+            BASE_PROPOLIS_ARTIFACT.to_string(),
             Mutex::new(StoredArtifact::new(artifact)),
         );
         assert!(_old.is_none());

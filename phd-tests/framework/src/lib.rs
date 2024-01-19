@@ -72,13 +72,13 @@ pub struct Framework {
     pub(crate) port_allocator: Rc<PortAllocator>,
 
     pub(crate) crucible_enabled: bool,
-    pub(crate) current_propolis_enabled: bool,
+    pub(crate) migration_base_enabled: bool,
 }
 
 pub struct FrameworkParameters<'a> {
     pub propolis_server_path: Utf8PathBuf,
     pub crucible_downstairs: Option<CrucibleDownstairsSource>,
-    pub current_propolis: Option<CurrentPropolisSource<'a>>,
+    pub base_propolis: Option<BasePropolisSource<'a>>,
 
     pub tmp_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
@@ -100,7 +100,7 @@ pub enum CrucibleDownstairsSource {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum CurrentPropolisSource<'a> {
+pub enum BasePropolisSource<'a> {
     BuildomatGitRev(&'a artifacts::buildomat::Commit),
     BuildomatBranch(&'a str),
     Local(&'a Utf8PathBuf),
@@ -149,15 +149,15 @@ impl Framework {
             }
         };
 
-        let current_propolis_enabled = match params.current_propolis {
+        let migration_base_enabled = match params.base_propolis {
             Some(source) => {
                 artifact_store
                     .add_current_propolis(source)
-                    .with_context(|| format!("adding 'current' Propolis server {source} from options"))?;
+                    .with_context(|| format!("adding 'migration base' Propolis server {source} from options"))?;
                 true
             }
             None => {
-                tracing::warn!("No 'current' Propolis server provided. Migration-from-current tests will be skipped.");
+                tracing::warn!("No 'migration base' Propolis server provided. Migration-from-base tests will be skipped.");
                 false
             }
         };
@@ -182,7 +182,7 @@ impl Framework {
             disk_factory,
             port_allocator,
             crucible_enabled,
-            current_propolis_enabled,
+            migration_base_enabled,
         })
     }
 
@@ -274,10 +274,10 @@ impl Framework {
         self.crucible_enabled
     }
 
-    /// Indicates whether a "current" Propolis server artifact is available for
-    /// migration-from-current tests.
-    pub fn current_propolis_enabled(&self) -> bool {
-        self.current_propolis_enabled
+    /// Indicates whether a "migration base" Propolis server artifact is
+    /// available for migration-from-base tests.
+    pub fn migration_base_enabled(&self) -> bool {
+        self.migration_base_enabled
     }
 }
 
@@ -292,7 +292,7 @@ impl fmt::Display for CrucibleDownstairsSource {
     }
 }
 
-impl fmt::Display for CurrentPropolisSource<'_> {
+impl fmt::Display for BasePropolisSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BuildomatBranch(branch) => {

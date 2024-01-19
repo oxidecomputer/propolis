@@ -22,29 +22,30 @@ fn serial_history(ctx: &Framework) {
     )?;
 }
 
-mod from_current {
+/// Tests for migrating from a "migration base" Propolis revision (e.g. the
+/// latest commit to the `master` git branch) to the revision under test.
+mod from_base {
     use super::*;
 
     #[phd_testcase]
-    fn can_migrate_from_current(ctx: &Framework) {
-        run_smoke_test(ctx, spawn_current_vm(ctx, "migration_from_current")?)?;
+    fn can_migrate_from_base(ctx: &Framework) {
+        run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base")?)?;
     }
 
     #[phd_testcase]
     fn serial_history(ctx: &Framework) {
         run_serial_history_test(
             ctx,
-            spawn_current_vm(ctx, "migration_serial_history_current")?,
+            spawn_base_vm(ctx, "migration_serial_history_base")?,
         )?;
     }
 
-    // Tests migrating from the "current" propolis artifact to the Propolis
-    // version under test, back to "current", and back to the version under
+    // Tests migrating from the "migration base" propolis artifact to the Propolis
+    // version under test, back to "base", and back to the version under
     // test.
     #[phd_testcase]
-    fn migration_from_current_and_back(ctx: &Framework) {
-        let mut source =
-            spawn_current_vm(ctx, "migration_from_current_and_back")?;
+    fn migration_from_base_and_back(ctx: &Framework) {
+        let mut source = spawn_base_vm(ctx, "migration_from_base_and_back")?;
         source.launch()?;
         source.wait_to_boot()?;
         let lsout = source.run_shell_command("ls foo.bar 2> /dev/null")?;
@@ -58,7 +59,7 @@ mod from_current {
             source,
             &[
                 Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
-                Action::MigrateToPropolis(artifacts::CURRENT_PROPOLIS_ARTIFACT),
+                Action::MigrateToPropolis(artifacts::BASE_PROPOLIS_ARTIFACT),
                 Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
             ],
             |target: &TestVm| {
@@ -71,13 +72,13 @@ mod from_current {
         )?;
     }
 
-    fn spawn_current_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
-        if !ctx.current_propolis_enabled() {
-            phd_skip!("No 'current' Propolis revision available");
+    fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
+        if !ctx.migration_base_enabled() {
+            phd_skip!("No 'migration base' Propolis revision available");
         }
 
         let mut env = ctx.environment_builder();
-        env.propolis(artifacts::CURRENT_PROPOLIS_ARTIFACT);
+        env.propolis(artifacts::BASE_PROPOLIS_ARTIFACT);
         let cfg = ctx.vm_config_builder(name);
         ctx.spawn_vm(&cfg, Some(&env))
     }

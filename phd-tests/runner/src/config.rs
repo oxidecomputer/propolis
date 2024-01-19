@@ -6,8 +6,8 @@ use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use phd_framework::{
-    artifacts, server_log_mode::ServerLogMode, CrucibleDownstairsSource,
-    CurrentPropolisSource,
+    artifacts, server_log_mode::ServerLogMode, BasePropolisSource,
+    CrucibleDownstairsSource,
 };
 use std::str::FromStr;
 
@@ -41,64 +41,64 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     pub propolis_server_cmd: Utf8PathBuf,
 
-    /// Git branch name to use for the "current" Propolis server artifact for
-    /// migration-from-current tests.
+    /// Git branch name to use for the "migration base" Propolis server artifact
+    /// for migration-from-base tests.
     ///
     /// If this argument is provided, PHD will download the latest Propolis
     /// server artifact from Buildomat for the provided branch name, and use it
     /// to test migration from that Propolis version to the Propolis revision
     /// under test.
     ///
-    /// This argument conflicts with the `--current-propolis-commit` and
-    /// `--current-propolis-cmd` arguments. If none of these arguments are
-    /// provided, no "current" Propolis server artifact will be added to the
-    /// artifact store, and migration-from-current tests will be skipped.
+    /// This argument conflicts with the `--base-propolis-commit` and
+    /// `--base-propolis-cmd` arguments. If none of these arguments are
+    /// provided, no "base" Propolis server artifact will be added to the
+    /// artifact store, and migration-from-base tests will be skipped.
     #[clap(
         long,
-        conflicts_with("current_propolis_commit"),
-        conflicts_with("current_propolis_cmd"),
+        conflicts_with("base_propolis_commit"),
+        conflicts_with("base_propolis_cmd"),
         value_parser
     )]
-    current_propolis_branch: Option<String>,
+    base_propolis_branch: Option<String>,
 
-    /// Git commit hash to use for the "current" Propolis server artifact for
-    /// migration-from-current tests.
+    /// Git commit hash to use for the "migration base" Propolis server artifact for
+    /// migration from base tests.
     ///
     /// If this argument is provided, PHD will download the Propolis server
     /// artifact from Buildomat for the provided commit hash, and use it
     /// to test migration from that Propolis version to the Propolis revision
     /// under test.
     ///
-    /// This argument conflicts with the `--current-propolis-branch` and
-    /// `--current-propolis-cmd` arguments. If none of these arguments are
-    /// provided, no "current" Propolis server artifact will be added to the
-    /// artifact store, and migration-from-current tests will be skipped.
+    /// This argument conflicts with the `--base-propolis-branch` and
+    /// `--base-propolis-cmd` arguments. If none of these arguments are
+    /// provided, no "base" Propolis server artifact will be added to the
+    /// artifact store, and migration-from-base tests will be skipped.
     #[clap(
         long,
-        conflicts_with("current_propolis_branch"),
-        conflicts_with("current_propolis_cmd"),
+        conflicts_with("base_propolis_branch"),
+        conflicts_with("base_propolis_cmd"),
         value_parser
     )]
-    current_propolis_commit: Option<artifacts::buildomat::Commit>,
+    base_propolis_commit: Option<artifacts::buildomat::Commit>,
 
-    /// The path of a local command to use as the "current" Propolis server for
-    /// migration-from-current tests.
+    /// The path of a local command to use as the "migration base" Propolis
+    /// server for migration-from-base tests.
     ///
     /// If this argument is provided, PHD will use the provided command to run
     /// to test migration from that Propolis binary to the Propolis revision
     /// under test.
     ///
-    /// This argument conflicts with the `--current-propolis-branch` and
-    /// `--current-propolis-commit` arguments. If none of these arguments are
-    /// provided, no "current" Propolis server artifact will be added to the
-    /// artifact store, and migration-from-current tests will be skipped.
+    /// This argument conflicts with the `--base-propolis-branch` and
+    /// `--base-propolis-commit` arguments. If none of these arguments are
+    /// provided, no "base" Propolis server artifact will be added to the
+    /// artifact store, and migration-from-base tests will be skipped.
     #[clap(
         long,
-        conflicts_with("current_propolis_commit"),
-        conflicts_with("current_propolis_branch"),
+        conflicts_with("base_propolis_commit"),
+        conflicts_with("base_propolis_branch"),
         value_parser
     )]
-    current_propolis_cmd: Option<Utf8PathBuf>,
+    base_propolis_cmd: Option<Utf8PathBuf>,
 
     /// The path of a local command to use to launch Crucible downstairs
     /// servers.
@@ -267,19 +267,19 @@ impl RunOptions {
         }
     }
 
-    pub fn current_propolis(&self) -> Option<CurrentPropolisSource<'_>> {
-        // If a local command for the "current" propolis artifact was provided,
+    pub fn base_propolis(&self) -> Option<BasePropolisSource<'_>> {
+        // If a local command for the "base" propolis artifact was provided,
         // use that.
-        if let Some(ref cmd) = self.current_propolis_cmd {
-            return Some(CurrentPropolisSource::Local(cmd));
+        if let Some(ref cmd) = self.base_propolis_cmd {
+            return Some(BasePropolisSource::Local(cmd));
         }
 
-        if let Some(ref branch) = self.current_propolis_branch {
-            return Some(CurrentPropolisSource::BuildomatBranch(branch));
+        if let Some(ref branch) = self.base_propolis_branch {
+            return Some(BasePropolisSource::BuildomatBranch(branch));
         }
 
-        if let Some(ref commit) = self.current_propolis_commit {
-            return Some(CurrentPropolisSource::BuildomatGitRev(commit));
+        if let Some(ref commit) = self.base_propolis_commit {
+            return Some(BasePropolisSource::BuildomatGitRev(commit));
         }
 
         None

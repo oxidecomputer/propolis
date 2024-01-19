@@ -59,8 +59,8 @@ set +e
 	--emit-bunyan \
 	run \
 	--propolis-server-cmd $propolis \
+	--base-propolis-branch master \
 	--crucible-downstairs-commit auto \
-	--current-propolis-branch master \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir \
 	--artifact-directory $tmpdir | \
