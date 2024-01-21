@@ -5,20 +5,17 @@
 //! Support for working with files consumed by PHD test runs.
 
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::time::Duration;
 
+pub mod buildomat;
 mod manifest;
 mod store;
 
 pub use store::Store as ArtifactStore;
 
 pub const DEFAULT_PROPOLIS_ARTIFACT: &str = "__DEFAULT_PROPOLIS";
-
 pub const CRUCIBLE_DOWNSTAIRS_ARTIFACT: &str = "__DEFAULT_CRUCIBLE_DOWNSTAIRS";
-
-#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
-#[serde(transparent)]
-pub struct Commit(String);
+pub const BASE_PROPOLIS_ARTIFACT: &str = "__BASE_PROPOLIS";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -34,7 +31,7 @@ enum ArtifactKind {
 enum ArtifactSource {
     /// Get the artifact from Buildomat. This downloads from
     /// https://buildomat.eng.oxide.computer/public/file/REPO/SERIES/COMMIT.
-    Buildomat { repo: String, series: String, commit: Commit, sha256: String },
+    Buildomat(buildomat::BuildomatArtifact),
 
     /// Get the artifact from the manifest's list of remote artifact servers.
     RemoteServer { sha256: String },
@@ -48,7 +45,7 @@ enum ArtifactSource {
 struct Artifact {
     /// The artifact file's name. When reacquiring an artifact from its source,
     /// this filename is appended to the URI generated from that source.
-    filename: String,
+    filename: camino::Utf8PathBuf,
 
     /// The kind of artifact this is.
     kind: ArtifactKind,
@@ -62,44 +59,17 @@ struct Artifact {
     untar: Option<camino::Utf8PathBuf>,
 }
 
-impl FromStr for Commit {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-
-        // Ensure this looks like a valid Git commit.
-        anyhow::ensure!(
-            s.len() == 40,
-            "Buildomat requires full (40-character) Git commit hashes"
-        );
-
-        for c in s.chars() {
-            if !c.is_ascii_hexdigit() {
-                anyhow::bail!(
-                    "'{c}' is not a valid hexadecimal digit; Git \
-                    commit hashes should consist of the characters \
-                    [0-9, a-f, A-F]"
-                );
-            }
-        }
-
-        Ok(Self(s.to_string()))
-    }
-}
-
-impl std::fmt::Display for Commit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Commit {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        FromStr::from_str(&s).map_err(serde::de::Error::custom)
-    }
+#[derive(Debug)]
+struct DownloadConfig {
+    timeout: Duration,
+    /// Retry backoff settings used when downloading files from Buildomat.
+    ///
+    /// Retries for Buildomat artifact sources are configured separately from
+    /// retries for remote URI artifact sources (which we don't currently retry;
+    /// but probably should). This is because we use a very long maximum
+    /// duration for retries for Buildomat artifacts, as a way of waiting for an
+    /// in-progress build to complete (20 minutes by default). On the other
+    /// hand, we probably don't want to retry a download from S3 for 20 minutes.
+    buildomat_backoff: backoff::ExponentialBackoff,
+    remote_server_uris: Vec<String>,
 }

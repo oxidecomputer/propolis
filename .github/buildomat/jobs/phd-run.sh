@@ -58,8 +58,9 @@ set +e
 (RUST_BACKTRACE=1 ptime -m pfexec $runner \
 	--emit-bunyan \
 	run \
-	--crucible-downstairs-commit auto \
 	--propolis-server-cmd $propolis \
+	--base-propolis-branch master \
+	--crucible-downstairs-commit auto \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir \
 	--artifact-directory $tmpdir | \

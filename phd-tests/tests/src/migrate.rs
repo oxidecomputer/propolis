@@ -4,48 +4,84 @@
 
 use std::time::Duration;
 
+use phd_framework::{artifacts, lifecycle::Action, TestVm};
 use phd_testcase::*;
 use propolis_client::types::MigrationState;
 use uuid::Uuid;
 
 #[phd_testcase]
 fn smoke_test(ctx: &Framework) {
-    let mut source = ctx.spawn_default_vm("migration_smoke_source")?;
+    run_smoke_test(ctx, ctx.spawn_default_vm("migration_smoke")?)?;
+}
 
-    source.launch()?;
-    source.wait_to_boot()?;
-    let lsout = source.run_shell_command("ls foo.bar 2> /dev/null")?;
-    assert_eq!(lsout, "");
-    source.run_shell_command("touch ./foo.bar")?;
-    source.run_shell_command("sync ./foo.bar")?;
+#[phd_testcase]
+fn serial_history(ctx: &Framework) {
+    run_serial_history_test(
+        ctx,
+        ctx.spawn_default_vm("migration_serial_history")?,
+    )?;
+}
 
-    let mut target =
-        ctx.spawn_successor_vm("migration_smoke_target", &source, None)?;
+/// Tests for migrating from a "migration base" Propolis revision (e.g. the
+/// latest commit to the `master` git branch) to the revision under test.
+mod from_base {
+    use super::*;
 
-    let serial_hist_pre = source.get_serial_console_history(0)?;
-    assert!(!serial_hist_pre.data.is_empty());
+    #[phd_testcase]
+    fn can_migrate_from_base(ctx: &Framework) {
+        run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base")?)?;
+    }
 
-    let migration_id = Uuid::new_v4();
-    target.migrate_from(&source, migration_id, Duration::from_secs(60))?;
+    #[phd_testcase]
+    fn serial_history(ctx: &Framework) {
+        run_serial_history_test(
+            ctx,
+            spawn_base_vm(ctx, "migration_serial_history_base")?,
+        )?;
+    }
 
-    // Explicitly check migration status on both the source and target to make
-    // sure it is available even after migration has finished.
-    let src_migration_state = source.get_migration_state(migration_id)?;
-    assert_eq!(src_migration_state, MigrationState::Finish);
-    let target_migration_state = target.get_migration_state(migration_id)?;
-    assert_eq!(target_migration_state, MigrationState::Finish);
+    // Tests migrating from the "migration base" propolis artifact to the Propolis
+    // version under test, back to "base", and back to the version under
+    // test.
+    #[phd_testcase]
+    fn migration_from_base_and_back(ctx: &Framework) {
+        let mut source = spawn_base_vm(ctx, "migration_from_base_and_back")?;
+        source.launch()?;
+        source.wait_to_boot()?;
+        let lsout = source.run_shell_command("ls foo.bar 2> /dev/null")?;
+        assert_eq!(lsout, "");
 
-    let serial_hist_post = target.get_serial_console_history(0)?;
-    assert_eq!(
-        serial_hist_pre.data,
-        serial_hist_post.data[..serial_hist_pre.data.len()]
-    );
-    assert!(
-        serial_hist_pre.last_byte_offset <= serial_hist_post.last_byte_offset
-    );
+        // create an empty file on the source VM.
+        source.run_shell_command("touch ./foo.bar")?;
+        source.run_shell_command("sync ./foo.bar")?;
 
-    let lsout = target.run_shell_command("ls foo.bar")?;
-    assert_eq!(lsout, "foo.bar");
+        ctx.lifecycle_test(
+            source,
+            &[
+                Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
+                Action::MigrateToPropolis(artifacts::BASE_PROPOLIS_ARTIFACT),
+                Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
+            ],
+            |target: &TestVm| {
+                // the file should still exist on the target VM after migration.
+                let lsout = target
+                    .run_shell_command("ls foo.bar")
+                    .expect("`ls foo.bar` should succeed");
+                assert_eq!(lsout, "foo.bar");
+            },
+        )?;
+    }
+
+    fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
+        if !ctx.migration_base_enabled() {
+            phd_skip!("No 'migration base' Propolis revision available");
+        }
+
+        let mut env = ctx.environment_builder();
+        env.propolis(artifacts::BASE_PROPOLIS_ARTIFACT);
+        let cfg = ctx.vm_config_builder(name);
+        ctx.spawn_vm(&cfg, Some(&env))
+    }
 }
 
 #[phd_testcase]
@@ -104,4 +140,56 @@ fn multiple_migrations(ctx: &Framework) {
         vm2.run_shell_command("echo I have migrated!")?,
         "I have migrated!"
     );
+}
+
+fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
+    source.launch()?;
+    source.wait_to_boot()?;
+    let lsout = source.run_shell_command("ls foo.bar 2> /dev/null")?;
+    assert_eq!(lsout, "");
+
+    // create an empty file on the source VM.
+    source.run_shell_command("touch ./foo.bar")?;
+    source.run_shell_command("sync ./foo.bar")?;
+
+    ctx.lifecycle_test(
+        source,
+        &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
+        |target: &TestVm| {
+            // the file should still exist on the target VM after migration.
+            let lsout = target
+                .run_shell_command("ls foo.bar")
+                .expect("`ls foo.bar` should succeed after migration");
+            assert_eq!(lsout, "foo.bar");
+        },
+    )
+}
+
+fn run_serial_history_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
+    source.launch()?;
+    source.wait_to_boot()?;
+
+    let out = source.run_shell_command("echo hello from the source VM!")?;
+    assert_eq!(out, "hello from the source VM!");
+
+    let serial_hist_pre = source.get_serial_console_history(0)?;
+    assert!(!serial_hist_pre.data.is_empty());
+
+    ctx.lifecycle_test(
+        source,
+        &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
+        |target| {
+            let serial_hist_post = target.get_serial_console_history(0).expect(
+                "getting serial console history from the second VM should work",
+            );
+            assert_eq!(
+                serial_hist_pre.data,
+                serial_hist_post.data[..serial_hist_pre.data.len()]
+            );
+            assert!(
+                serial_hist_pre.last_byte_offset
+                    <= serial_hist_post.last_byte_offset
+            );
+        },
+    )
 }

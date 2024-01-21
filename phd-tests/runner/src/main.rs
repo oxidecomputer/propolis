@@ -9,6 +9,7 @@ mod fixtures;
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_tests::phd_testcase::{Framework, FrameworkParameters};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -47,6 +48,7 @@ fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
     let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
         crucible_downstairs: run_opts.crucible_downstairs()?,
+        base_propolis: run_opts.base_propolis(),
         tmp_directory: run_opts.tmp_directory.clone(),
         artifact_toml: run_opts.artifact_toml_path.clone(),
         server_log_mode: run_opts.server_logging_mode,
@@ -55,6 +57,9 @@ fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
         default_guest_os_artifact: run_opts.default_guest_artifact.clone(),
         default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
         port_range: 9000..10000,
+        max_buildomat_wait: Duration::from_secs(
+            run_opts.max_buildomat_wait_secs,
+        ),
     };
 
     let ctx = Framework::new(ctx_params)

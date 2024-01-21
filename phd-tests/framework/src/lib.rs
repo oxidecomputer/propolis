@@ -27,7 +27,7 @@
 //! environment. The `spawn_successor_vm` function provides a shorthand way to
 //! do this.
 
-use std::{ops::Range, rc::Rc};
+use std::{fmt, ops::Range, rc::Rc};
 
 use anyhow::Context;
 use artifacts::DEFAULT_PROPOLIS_ARTIFACT;
@@ -72,11 +72,13 @@ pub struct Framework {
     pub(crate) port_allocator: Rc<PortAllocator>,
 
     pub(crate) crucible_enabled: bool,
+    pub(crate) migration_base_enabled: bool,
 }
 
-pub struct FrameworkParameters {
+pub struct FrameworkParameters<'a> {
     pub propolis_server_path: Utf8PathBuf,
     pub crucible_downstairs: Option<CrucibleDownstairsSource>,
+    pub base_propolis: Option<BasePropolisSource<'a>>,
 
     pub tmp_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
@@ -88,12 +90,20 @@ pub struct FrameworkParameters {
     pub default_bootrom_artifact: String,
 
     pub port_range: Range<u16>,
+    pub max_buildomat_wait: std::time::Duration,
 }
 
 #[derive(Debug)]
 pub enum CrucibleDownstairsSource {
-    BuildomatGitRev(artifacts::Commit),
+    BuildomatGitRev(artifacts::buildomat::Commit),
     Local(Utf8PathBuf),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum BasePropolisSource<'a> {
+    BuildomatGitRev(&'a artifacts::buildomat::Commit),
+    BuildomatBranch(&'a str),
+    Local(&'a Utf8PathBuf),
 }
 
 // The framework implementation includes some "runner-only" functions
@@ -103,10 +113,11 @@ pub enum CrucibleDownstairsSource {
 impl Framework {
     /// Builds a brand new framework. Called from the test runner, which creates
     /// one framework and then distributes it to tests.
-    pub fn new(params: FrameworkParameters) -> anyhow::Result<Self> {
+    pub fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
         let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
             params.tmp_directory.clone(),
             &params.artifact_toml,
+            params.max_buildomat_wait,
         )
         .context("creating PHD framework")?;
 
@@ -120,20 +131,33 @@ impl Framework {
             })?;
 
         let crucible_enabled = match params.crucible_downstairs {
-            Some(crucible_downstairs) => {
-                artifact_store
-                    .add_crucible_downstairs(&crucible_downstairs)
-                    .with_context(|| {
+            Some(source) => {
+                artifact_store.add_crucible_downstairs(&source).with_context(
+                    || {
                         format!(
-                            "adding Crucible downstairs '{crucible_downstairs:?}' from options",
+                            "adding Crucible downstairs {source} from options",
                         )
-                    })?;
+                    },
+                )?;
                 true
             }
             None => {
                 tracing::warn!(
                     "Crucible disabled. Crucible tests will be skipped"
                 );
+                false
+            }
+        };
+
+        let migration_base_enabled = match params.base_propolis {
+            Some(source) => {
+                artifact_store
+                    .add_current_propolis(source)
+                    .with_context(|| format!("adding 'migration base' Propolis server {source} from options"))?;
+                true
+            }
+            None => {
+                tracing::warn!("No 'migration base' Propolis server provided. Migration-from-base tests will be skipped.");
                 false
             }
         };
@@ -158,6 +182,7 @@ impl Framework {
             disk_factory,
             port_allocator,
             crucible_enabled,
+            migration_base_enabled,
         })
     }
 
@@ -247,5 +272,36 @@ impl Framework {
     /// Crucible support.
     pub fn crucible_enabled(&self) -> bool {
         self.crucible_enabled
+    }
+
+    /// Indicates whether a "migration base" Propolis server artifact is
+    /// available for migration-from-base tests.
+    pub fn migration_base_enabled(&self) -> bool {
+        self.migration_base_enabled
+    }
+}
+
+impl fmt::Display for CrucibleDownstairsSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BuildomatGitRev(commit) => {
+                write!(f, "Buildomat Git commit '{commit}'")
+            }
+            Self::Local(path) => write!(f, "local path '{path}'"),
+        }
+    }
+}
+
+impl fmt::Display for BasePropolisSource<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BuildomatBranch(branch) => {
+                write!(f, "Buildomat branch '{branch}'")
+            }
+            Self::BuildomatGitRev(commit) => {
+                write!(f, "Buildomat Git commit '{commit}'")
+            }
+            Self::Local(path) => write!(f, "local path '{path}'"),
+        }
     }
 }

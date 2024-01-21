@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-pub use anyhow::Result;
+pub use anyhow::{Context, Result};
 pub use inventory::submit as inventory_submit;
 pub use phd_framework;
 pub use phd_testcase_macros::*;
