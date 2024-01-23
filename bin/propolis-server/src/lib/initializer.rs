@@ -591,17 +591,31 @@ impl<'a> MachineInitializer<'a> {
                     purposes only! I'm not going to let you do that."
                 );
             } else {
-                let fail_exports = dev.get("fail_exports").unwrap_or(0);
-                let fail_imports = dev.get("fail_imports").unwrap_or(0);
+                const FAIL_EXPORTS: &str = "fail_exports";
+                const FAIL_IMPORTS: &str = "fail_imports";
+                let fail_exports = dev.get(FAIL_EXPORTS).unwrap_or(0);
+                let fail_imports = dev.get(FAIL_IMPORTS).unwrap_or(0);
+                if fail_exports == 0 && fail_imports == 0 {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Migration failure device will do nothing if both \
+                            `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0! \
+                            ({FAIL_EXPORTS}={:?}, {FAIL_IMPORTS}={:?})",
+                            dev.get_string(FAIL_EXPORTS),
+                            dev.get_string(FAIL_IMPORTS)
+                        ),
+                    ));
+                }
                 info!(
                     self.log,
                     "Injecting migration failure device";
-                    "fail_exports" => %fail_exports,
-                    "fail_imports" => %fail_imports,
+                    FAIL_EXPORTS => ?fail_exports,
+                    FAIL_IMPORTS => ?fail_imports,
                 );
                 let dev = MigrationFailureDevice::new(&self.log)
                     .fail_exports(fail_exports)
-                    .fail_imports(fail_exports);
+                    .fail_imports(fail_imports);
                 self.inv.register(&Arc::new(dev))?;
             }
         }
