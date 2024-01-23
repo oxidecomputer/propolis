@@ -244,20 +244,13 @@ impl TestVm {
                 .await
             {
                 match e {
-                    propolis_client::Error::CommunicationError(e) => {
+                    propolis_client::Error::CommunicationError(_) => {
                         info!(%e, "retriable error from instance_spec_ensure");
-                        Err(backoff::Error::transient(anyhow!(
-                            "retriable error from instance_spec_ensure \
-                                    ({:?})",
-                            e
-                        )))
+                        Err(backoff::Error::transient(e))
                     }
                     _ => {
                         error!(%e, "permanent error from instance_spec_ensure");
-                        Err(backoff::Error::permanent(anyhow!(
-                            "error from instance spec ensure: {:?}",
-                            e
-                        )))
+                        Err(backoff::Error::permanent(e))
                     }
                 }
             } else {
