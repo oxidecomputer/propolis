@@ -159,6 +159,7 @@ impl VmConfig {
         let config_toml_contents =
             toml::ser::to_string(&propolis_server_config::Config {
                 bootrom: bootrom.clone().into(),
+                devices: self.devices.clone(),
                 ..Default::default()
             })
             .context("serializing Propolis server config")?;
