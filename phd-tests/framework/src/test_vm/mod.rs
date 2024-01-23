@@ -27,7 +27,7 @@ use propolis_client::types::{
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
 use tokio::{sync::mpsc, time::timeout};
-use tracing::{info, info_span, instrument, warn, Instrument};
+use tracing::{error, info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
 type PropolisClientError =
@@ -226,18 +226,53 @@ impl TestVm {
             migrate,
         };
 
-        let mut retries = 3;
-        while let Err(e) =
-            self.client.instance_spec_ensure().body(&ensure_req).send().await
-        {
-            info!("Error {} while creating instance, will retry", e);
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            retries -= 1;
-            if retries == 0 {
-                tracing::error!("Failed to create instance after 3 retries");
-                anyhow::bail!(e);
-            }
-        }
+        // There is a brief period where the Propolis server process has begun
+        // to run but hasn't started its Dropshot server yet. Ensure requests
+        // that land in that window will fail, so retry them. This shouldn't
+        // ever take more than a couple of seconds (if it does, that should be
+        // considered a bug impacting VM startup times).
+        backoff::future::retry(
+            backoff::ExponentialBackoff {
+                max_elapsed_time: Some(std::time::Duration::from_secs(2)),
+                ..Default::default()
+            },
+            || async {
+                if let Err(e) = self
+                    .client
+                    .instance_spec_ensure()
+                    .body(&ensure_req)
+                    .send()
+                    .await
+                {
+                    match e {
+                        propolis_client::Error::CommunicationError(e) => {
+                            info!(%e,
+                                  "retriable error from instance_spec_ensure");
+                            Err(backoff::Error::Transient {
+                                err: anyhow!(
+                                    "retriable error from instance_spec_ensure \
+                                    ({:?})",
+                                    e
+                                ),
+                                retry_after: None,
+                            })
+                        }
+                        _ => {
+                            error!(%e,
+                                   "permanent error from instance_spec_ensure");
+
+                            Err(backoff::Error::permanent(anyhow!(
+                                "error from instance spec ensure: {:?}",
+                                e
+                            )))
+                        }
+                    }
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await?;
 
         let serial_conn = self
             .client

@@ -9,7 +9,7 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
-backoff.workspace = true
+backoff = { workspace = true, features = ["tokio"] }
 bytes.workspace = true
 bhyve_api.workspace = true
 camino = { workspace = true, features = ["serde1"] }
