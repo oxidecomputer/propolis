@@ -235,46 +235,42 @@ impl TestVm {
         // that land in that window will fail, so retry them. This shouldn't
         // ever take more than a couple of seconds (if it does, that should be
         // considered a bug impacting VM startup times).
+        let ensure_fn = || async {
+            if let Err(e) = self
+                .client
+                .instance_spec_ensure()
+                .body(&ensure_req)
+                .send()
+                .await
+            {
+                match e {
+                    propolis_client::Error::CommunicationError(e) => {
+                        info!(%e, "retriable error from instance_spec_ensure");
+                        Err(backoff::Error::transient(anyhow!(
+                            "retriable error from instance_spec_ensure \
+                                    ({:?})",
+                            e
+                        )))
+                    }
+                    _ => {
+                        error!(%e, "permanent error from instance_spec_ensure");
+                        Err(backoff::Error::permanent(anyhow!(
+                            "error from instance spec ensure: {:?}",
+                            e
+                        )))
+                    }
+                }
+            } else {
+                Ok(())
+            }
+        };
+
         backoff::future::retry(
             backoff::ExponentialBackoff {
                 max_elapsed_time: Some(std::time::Duration::from_secs(2)),
                 ..Default::default()
             },
-            || async {
-                if let Err(e) = self
-                    .client
-                    .instance_spec_ensure()
-                    .body(&ensure_req)
-                    .send()
-                    .await
-                {
-                    match e {
-                        propolis_client::Error::CommunicationError(e) => {
-                            info!(%e,
-                                  "retriable error from instance_spec_ensure");
-                            Err(backoff::Error::Transient {
-                                err: anyhow!(
-                                    "retriable error from instance_spec_ensure \
-                                    ({:?})",
-                                    e
-                                ),
-                                retry_after: None,
-                            })
-                        }
-                        _ => {
-                            error!(%e,
-                                   "permanent error from instance_spec_ensure");
-
-                            Err(backoff::Error::permanent(anyhow!(
-                                "error from instance spec ensure: {:?}",
-                                e
-                            )))
-                        }
-                    }
-                } else {
-                    Ok(())
-                }
-            },
+            ensure_fn,
         )
         .await?;
 
@@ -517,14 +513,11 @@ impl TestVm {
             if current == target {
                 Ok(())
             } else {
-                Err(backoff::Error::Transient {
-                    err: anyhow!(
-                        "not in desired state yet: current {:?}, target {:?}",
-                        current,
-                        target
-                    ),
-                    retry_after: None,
-                })
+                Err(backoff::Error::transient(anyhow!(
+                    "not in desired state yet: current {:?}, target {:?}",
+                    current,
+                    target
+                )))
             }
         };
 
