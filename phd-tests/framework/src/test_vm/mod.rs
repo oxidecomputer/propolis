@@ -17,6 +17,7 @@ use crate::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::types::{
     InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
@@ -73,6 +74,7 @@ pub struct TestVm {
     server: server::PropolisServer,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
+    data_dir: Utf8PathBuf,
 
     guest_os: Box<dyn GuestOs>,
     tracing_span: tracing::Span,
@@ -153,6 +155,7 @@ impl TestVm {
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
+        let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
             &vm_spec.vm_name,
@@ -169,6 +172,7 @@ impl TestVm {
             server,
             spec: vm_spec,
             environment_spec,
+            data_dir,
             guest_os,
             tracing_span: span,
             state: VmState::New,
@@ -282,7 +286,13 @@ impl TestVm {
             .await
             .map_err(|e| anyhow::Error::msg(e.to_string()))?
             .into_inner();
-        let console = SerialConsole::new(serial_conn, BufferKind::Raw).await;
+
+        let console = SerialConsole::new(
+            serial_conn,
+            BufferKind::Raw,
+            self.serial_log_file_path(),
+        )
+        .await?;
 
         let instance_description =
             self.client.instance_get().send().await.with_context(|| {
@@ -659,6 +669,15 @@ impl TestVm {
     /// Indicates whether this VM's guest OS has a read-only filesystem.
     pub fn guest_os_has_read_only_fs(&self) -> bool {
         self.guest_os.read_only_fs()
+    }
+
+    /// Generates a path to a file into which the VM's serial console adapter
+    /// can log serial console output.
+    fn serial_log_file_path(&self) -> Utf8PathBuf {
+        let filename = format!("{}.serial.log", self.spec.vm_name);
+        let mut path = self.data_dir.clone();
+        path.push(filename);
+        path
     }
 }
 

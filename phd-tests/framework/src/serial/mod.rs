@@ -6,6 +6,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use anyhow::Result;
+use camino::Utf8PathBuf;
 use futures::{SinkExt, StreamExt};
 use reqwest::Upgraded;
 use tokio::{
@@ -82,7 +84,11 @@ impl SerialConsole {
     /// - `serial_conn`: An upgraded websocket connection obtained from
     ///   successfully connecting to Propolis's serial console API.
     /// - `buffer_kind`: Supplies the buffering discipline to start with.
-    pub async fn new(serial_conn: Upgraded, buffer_kind: BufferKind) -> Self {
+    pub async fn new(
+        serial_conn: Upgraded,
+        buffer_kind: BufferKind,
+        log_path: Utf8PathBuf,
+    ) -> Result<Self> {
         let ws =
             WebSocketStream::from_raw_socket(serial_conn, Role::Client, None)
                 .await;
@@ -92,14 +98,14 @@ impl SerialConsole {
         let ws_span = info_span!("Serial websocket task");
         ws_span.follows_from(tracing::Span::current());
 
-        let buffer = Arc::new(Mutex::new(new_buffer(buffer_kind)));
+        let buffer = Arc::new(Mutex::new(new_buffer(buffer_kind, log_path)?));
         let buffer_for_task = buffer.clone();
         let ws_task = tokio::spawn(
             async move { websocket_handler(ws, buffer_for_task, ws_rx).await }
                 .instrument(ws_span),
         );
 
-        Self { ws_task, ws_tx, buffer }
+        Ok(Self { ws_task, ws_tx, buffer })
     }
 
     /// Sends the supplied `bytes` to the guest.
@@ -138,10 +144,15 @@ impl Drop for SerialConsole {
 }
 
 /// Creates a new serial console buffer of the supplied kind.
-fn new_buffer(kind: BufferKind) -> Box<dyn Buffer> {
+fn new_buffer(
+    kind: BufferKind,
+    log_path: Utf8PathBuf,
+) -> Result<Box<dyn Buffer>> {
     match kind {
-        BufferKind::Raw => Box::new(raw_buffer::RawBuffer::new()),
-        BufferKind::Vt80x24 => unimplemented!(),
+        BufferKind::Raw => Ok(Box::new(raw_buffer::RawBuffer::new(log_path)?)),
+        BufferKind::Vt80x24 => unimplemented!(
+            "80x24 terminal emulation not yet implemented, see propolis#601"
+        ),
     }
 }
 

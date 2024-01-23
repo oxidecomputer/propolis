@@ -5,6 +5,12 @@
 //! Implements a "raw" buffer for serial console output that processes
 //! characters and newlines but ignores VT100 control characters.
 
+use std::io::{BufWriter, Write};
+
+use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
+use tracing::error;
+
 use super::{Buffer, OutputWaiter};
 
 /// Wraps up the contents of a raw buffer in a single struct that can implement
@@ -12,8 +18,9 @@ use super::{Buffer, OutputWaiter};
 /// [`vte::Parser`] and call its `advance` method with a mutable reference to
 /// the buffer contents as the first argument without running afoul of mutable
 /// borrowing rules.
-#[derive(Default)]
 struct Inner {
+    log: std::io::BufWriter<std::fs::File>,
+    line_buffer: String,
     wait_buffer: String,
     waiter: Option<OutputWaiter>,
 }
@@ -22,6 +29,13 @@ impl Inner {
     /// Pushes `c` to the buffer's contents and attempts to satisfy active
     /// waits.
     fn push_character(&mut self, c: char) {
+        if c == '\n' {
+            writeln!(self.log, "{}", &self.line_buffer).unwrap();
+            self.line_buffer.clear();
+        } else {
+            self.line_buffer.push(c);
+        }
+
         self.wait_buffer.push(c);
         if let Some(waiter) = self.waiter.take() {
             self.satisfy_or_set_wait(waiter);
@@ -66,6 +80,14 @@ impl Inner {
     }
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Err(e) = self.log.flush() {
+            error!(%e, "failed to flush serial console log during drop");
+        }
+    }
+}
+
 impl vte::Perform for Inner {
     fn print(&mut self, c: char) {
         self.push_character(c);
@@ -87,8 +109,18 @@ pub(super) struct RawBuffer {
 
 impl RawBuffer {
     /// Constructs a new buffer.
-    pub(super) fn new() -> Self {
-        Self { inner: Inner::default(), parser: vte::Parser::new() }
+    pub(super) fn new(log_path: Utf8PathBuf) -> Result<Self> {
+        let log_file = std::fs::File::create(&log_path).with_context(|| {
+            format!("opening serial console log file {}", log_path)
+        })?;
+        let writer = BufWriter::new(log_file);
+        let inner = Inner {
+            log: writer,
+            line_buffer: String::new(),
+            wait_buffer: String::new(),
+            waiter: None,
+        };
+        Ok(Self { inner, parser: vte::Parser::new() })
     }
 }
 
