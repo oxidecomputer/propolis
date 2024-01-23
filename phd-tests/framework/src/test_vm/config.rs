@@ -92,22 +92,24 @@ impl VmConfig {
     }
 
     pub fn fail_migration_exports(&mut self, exports: u32) -> &mut Self {
-        self.devices
+        let _prev = self
+            .devices
             .entry(MIGRATION_FAILURE_DEVICE.to_owned())
             .or_insert_with(default_migration_failure_device)
             .options
-            .insert("fail_exports".to_string(), exports.into())
-            .expect("fail_exports already configured");
+            .insert("fail_exports".to_string(), exports.into());
+        assert_eq!(_prev, None, "fail_exports already configured");
         self
     }
 
     pub fn fail_migration_imports(&mut self, imports: u32) -> &mut Self {
-        self.devices
+        let _prev = self
+            .devices
             .entry(MIGRATION_FAILURE_DEVICE.to_owned())
             .or_insert_with(default_migration_failure_device)
             .options
-            .insert("fail_imports".to_string(), imports.into())
-            .expect("fail_imports already configured");
+            .insert("fail_imports".to_string(), imports.into());
+        assert_eq!(_prev, None, "fail_imports already configured");
         self
     }
 
