@@ -35,7 +35,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
     net::SocketAddr,
-    path::PathBuf,
     pin::Pin,
     sync::{Arc, Condvar, Mutex, Weak},
     task::{Context, Poll},
@@ -66,6 +65,7 @@ use crate::{
     initializer::{build_instance, MachineInitializer},
     migrate::MigrateError,
     serial::Serial,
+    server::StaticConfig,
     vm::request_queue::ExternalRequest,
 };
 
@@ -398,14 +398,14 @@ impl VmController {
     pub fn new(
         instance_spec: VersionedInstanceSpec,
         properties: InstanceProperties,
-        use_reservoir: bool,
-        bootrom: PathBuf,
+        &StaticConfig { vm: ref toml_config, use_reservoir, .. }: &StaticConfig,
         oximeter_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: Logger,
         runtime_hdl: tokio::runtime::Handle,
         stop_ch: oneshot::Sender<()>,
     ) -> anyhow::Result<Arc<Self>> {
+        let bootrom = &toml_config.bootrom;
         info!(log, "initializing new VM";
               "spec" => #?instance_spec,
               "properties" => #?properties,
@@ -460,6 +460,7 @@ impl VmController {
         init.initialize_qemu_debug_port()?;
         init.initialize_qemu_pvpanic(properties.id)?;
         init.initialize_network_devices(&chipset)?;
+        init.initialize_test_devices(&toml_config.devices)?;
         #[cfg(feature = "falcon")]
         init.initialize_softnpu_ports(&chipset)?;
         #[cfg(feature = "falcon")]

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -44,7 +45,10 @@ pub struct VmConfig {
     bootrom_artifact: String,
     boot_disk: DiskRequest,
     data_disks: Vec<DiskRequest>,
+    devices: BTreeMap<String, propolis_server_config::Device>,
 }
+
+const MIGRATION_FAILURE_DEVICE: &str = "test-migration-failure";
 
 impl VmConfig {
     pub(crate) fn new(
@@ -68,6 +72,7 @@ impl VmConfig {
             bootrom_artifact: bootrom.to_owned(),
             boot_disk,
             data_disks: Vec::new(),
+            devices: BTreeMap::new(),
         }
     }
 
@@ -83,6 +88,28 @@ impl VmConfig {
 
     pub fn bootrom(&mut self, artifact: &str) -> &mut Self {
         self.bootrom_artifact = artifact.to_owned();
+        self
+    }
+
+    pub fn fail_migration_exports(&mut self, exports: u32) -> &mut Self {
+        let _prev = self
+            .devices
+            .entry(MIGRATION_FAILURE_DEVICE.to_owned())
+            .or_insert_with(default_migration_failure_device)
+            .options
+            .insert("fail_exports".to_string(), exports.into());
+        assert_eq!(_prev, None, "fail_exports already configured");
+        self
+    }
+
+    pub fn fail_migration_imports(&mut self, imports: u32) -> &mut Self {
+        let _prev = self
+            .devices
+            .entry(MIGRATION_FAILURE_DEVICE.to_owned())
+            .or_insert_with(default_migration_failure_device)
+            .options
+            .insert("fail_imports".to_string(), imports.into());
+        assert_eq!(_prev, None, "fail_imports already configured");
         self
     }
 
@@ -132,6 +159,7 @@ impl VmConfig {
         let config_toml_contents =
             toml::ser::to_string(&propolis_server_config::Config {
                 bootrom: bootrom.clone().into(),
+                devices: self.devices.clone(),
                 ..Default::default()
             })
             .context("serializing Propolis server config")?;
@@ -239,5 +267,12 @@ impl VmConfig {
             guest_os_kind,
             config_toml_contents,
         })
+    }
+}
+
+fn default_migration_failure_device() -> propolis_server_config::Device {
+    propolis_server_config::Device {
+        driver: MIGRATION_FAILURE_DEVICE.to_owned(),
+        options: Default::default(),
     }
 }

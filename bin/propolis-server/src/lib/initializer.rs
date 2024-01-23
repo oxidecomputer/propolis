@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
@@ -29,7 +30,8 @@ use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
-use slog::info;
+use propolis_server_config::Device as TomlDevice;
+use slog::{info, warn};
 
 use crate::serial::Serial;
 use crate::server::CrucibleBackendMap;
@@ -572,6 +574,62 @@ impl<'a> MachineInitializer<'a> {
             let _ = self.inv.register_instance(&viona, bdf.to_string())?;
             chipset.device().pci_attach(bdf, viona);
         }
+        Ok(())
+    }
+
+    pub fn initialize_test_devices(
+        &self,
+        toml_cfg: &BTreeMap<String, TomlDevice>,
+    ) -> Result<(), Error> {
+        use propolis::hw::testdev::{
+            MigrationFailureDevice, MigrationFailures,
+        };
+
+        if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
+            if cfg!(feature = "omicron-build") {
+                warn!(
+                    self.log,
+                    "The migration failure device is intended for testing \
+                    purposes only! I'm not going to let you do that."
+                );
+            } else {
+                const FAIL_EXPORTS: &str = "fail_exports";
+                const FAIL_IMPORTS: &str = "fail_imports";
+                let fail_exports = dev
+                    .options
+                    .get(FAIL_EXPORTS)
+                    .and_then(|val| val.as_integer())
+                    .unwrap_or(0);
+                let fail_imports = dev
+                    .options
+                    .get(FAIL_IMPORTS)
+                    .and_then(|val| val.as_integer())
+                    .unwrap_or(0);
+
+                if fail_exports <= 0 && fail_imports <= 0 {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "migration failure device will do nothing if both \
+                            `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0! \
+                            ({FAIL_EXPORTS}={:?}, {FAIL_IMPORTS}={:?})",
+                            dev.options.get(FAIL_EXPORTS),
+                            dev.options.get(FAIL_IMPORTS)
+                        ),
+                    ));
+                }
+
+                let dev = MigrationFailureDevice::create(
+                    &self.log,
+                    MigrationFailures {
+                        exports: fail_exports as usize,
+                        imports: fail_imports as usize,
+                    },
+                );
+                self.inv.register(&dev)?;
+            }
+        }
+
         Ok(())
     }
 
