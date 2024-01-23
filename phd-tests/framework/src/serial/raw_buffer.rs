@@ -30,7 +30,7 @@ impl Inner {
     /// waits.
     fn push_character(&mut self, c: char) {
         if c == '\n' {
-            writeln!(self.log, "{}", &self.line_buffer).unwrap();
+            self.log.write_all(self.line_buffer.as_bytes()).unwrap();
             self.line_buffer.clear();
         } else {
             self.line_buffer.push(c);
