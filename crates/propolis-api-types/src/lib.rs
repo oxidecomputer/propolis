@@ -32,6 +32,12 @@ pub struct InstancePathParams {
     pub instance_id: Uuid,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct InstanceMetadata {
+    pub silo_id: Uuid,
+    pub project_id: Uuid,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
@@ -175,6 +181,8 @@ pub struct InstanceProperties {
     pub name: String,
     /// Free-form text description of an Instance.
     pub description: String,
+    /// Metadata used to track statistics for this Instance.
+    pub metadata: InstanceMetadata,
 
     /// ID of the image used to initialize this Instance.
     pub image_id: Uuid,
@@ -184,6 +192,13 @@ pub struct InstanceProperties {
     pub memory: u64,
     /// Number of vCPUs to be allocated to the Instance.
     pub vcpus: u8,
+}
+
+impl InstanceProperties {
+    /// Return the name of the VM as managed by the VMM.
+    pub fn vm_name(&self) -> String {
+        self.id.to_string()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

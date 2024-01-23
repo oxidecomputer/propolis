@@ -14,6 +14,7 @@ use std::{
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use futures::{future, SinkExt};
+use propolis_client::types::InstanceMetadata;
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -79,6 +80,14 @@ enum Command {
         // cloud_init ISO file
         #[clap(long, action)]
         cloud_init: Option<PathBuf>,
+
+        /// A UUID to use for the instance's silo, attached to instance metrics.
+        #[clap(long)]
+        silo_id: Option<Uuid>,
+
+        /// A UUID to use for the instance's project, attached to instance metrics.
+        #[clap(long)]
+        project_id: Option<Uuid>,
     },
 
     /// Get the properties of a propolis instance
@@ -187,11 +196,14 @@ async fn new_instance(
     memory: u64,
     disks: Vec<DiskRequest>,
     cloud_init_bytes: Option<String>,
+    silo_id: Uuid,
+    project_id: Uuid,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
         name,
         description: "propolis-cli generated instance".to_string(),
+        metadata: InstanceMetadata { silo_id, project_id },
         // TODO: Use real UUID
         image_id: Uuid::default(),
         // TODO: Use real UUID
@@ -620,6 +632,8 @@ async fn main() -> anyhow::Result<()> {
             memory,
             crucible_disks,
             cloud_init,
+            silo_id,
+            project_id,
         } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
@@ -642,6 +656,8 @@ async fn main() -> anyhow::Result<()> {
                 memory,
                 disks,
                 cloud_init_bytes,
+                silo_id.unwrap_or_else(Uuid::new_v4),
+                project_id.unwrap_or_else(Uuid::new_v4),
             )
             .await?
         }

@@ -22,7 +22,7 @@ use core::result::Result as StdResult;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        InstanceGetResponse, InstanceMigrateInitiateRequest,
+        InstanceGetResponse, InstanceMetadata, InstanceMigrateInitiateRequest,
         InstanceProperties, InstanceSerialConsoleHistoryResponse,
         InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
         InstanceStateRequested, MigrationState, VersionedInstanceSpec,
@@ -288,6 +288,10 @@ impl TestVm {
         let properties = InstanceProperties {
             id: self.id,
             name: format!("phd-vm-{}", self.id),
+            metadata: InstanceMetadata {
+                project_id: Uuid::new_v4(),
+                silo_id: Uuid::new_v4(),
+            },
             description: "Pheidippides-managed VM".to_string(),
             image_id: Uuid::default(),
             bootrom_id: Uuid::default(),

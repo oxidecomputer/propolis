@@ -914,6 +914,23 @@
           "instance"
         ]
       },
+      "InstanceMetadata": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "silo_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "project_id",
+          "silo_id"
+        ]
+      },
       "InstanceMigrateInitiateRequest": {
         "type": "object",
         "properties": {
@@ -991,6 +1008,14 @@
             "format": "uint64",
             "minimum": 0
           },
+          "metadata": {
+            "description": "Metadata used to track statistics for this Instance.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMetadata"
+              }
+            ]
+          },
           "name": {
             "description": "Human-readable name of the Instance.",
             "type": "string"
@@ -1008,6 +1033,7 @@
           "id",
           "image_id",
           "memory",
+          "metadata",
           "name",
           "vcpus"
         ]

@@ -73,6 +73,7 @@ internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "mai
 nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-zone-package = "0.9.0"
+oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
 oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
@@ -115,6 +116,7 @@ http = "0.2.9"
 hyper = "0.14"
 indicatif = "0.17.3"
 inventory = "0.3.0"
+kstat-rs = "0.2.3"
 lazy_static = "1.4"
 libc = "0.2"
 mockall = "0.11"
