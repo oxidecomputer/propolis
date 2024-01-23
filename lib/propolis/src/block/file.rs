@@ -10,12 +10,14 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 
 use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
+use crate::tasks::ThreadGroup;
 use crate::util::ioctl;
 use crate::vmm::{MappingExt, MemCtx};
+
+use anyhow::Context;
 
 // XXX: completely arb for now
 const MAX_WORKERS: usize = 32;
@@ -28,10 +30,10 @@ pub struct FileBackend {
     state: Arc<WorkerState>,
 
     worker_count: NonZeroUsize,
-    workers: Mutex<Vec<JoinHandle<()>>>,
+    workers: ThreadGroup,
 }
 struct WorkerState {
-    attachment: block::backend::Attachment,
+    attachment: block::BackendAttachment,
     fp: File,
 
     /// Write-Cache-Enable state (if supported) of the underlying device
@@ -53,7 +55,7 @@ impl WorkerState {
         };
 
         let state = WorkerState {
-            attachment: block::backend::Attachment::new(),
+            attachment: block::BackendAttachment::new(),
             fp,
             wce_state: Mutex::new(wce_state),
             skip_flush,
@@ -184,20 +186,18 @@ impl FileBackend {
         Ok(Arc::new(Self {
             state: WorkerState::new(fp, info, skip_flush),
             worker_count,
-            workers: Mutex::new(Vec::new()),
+            workers: ThreadGroup::new(),
         }))
     }
     fn spawn_workers(&self) -> std::io::Result<()> {
-        let mut guard = self.workers.lock().unwrap();
-        assert!(guard.is_empty(), "existing workers should not be present");
-
-        let join_handles = (0..self.worker_count.get())
+        let spawn_results = (0..self.worker_count.get())
             .map(|n| {
                 let worker_state = self.state.clone();
-                let worker_acc = self.state.attachment.accessor_mem(|mem| {
-                    mem.expect("backend is attached")
-                        .child(Some(format!("worker {n}")))
-                });
+                let worker_acc = self
+                    .state
+                    .attachment
+                    .accessor_mem(|mem| mem.child(Some(format!("worker {n}"))))
+                    .expect("backend is attached");
 
                 std::thread::Builder::new()
                     .name(format!("file worker {n}"))
@@ -205,15 +205,14 @@ impl FileBackend {
                         worker_state.processing_loop(worker_acc);
                     })
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
-        *guard = join_handles;
-        Ok(())
+        self.workers.extend(spawn_results.into_iter())
     }
 }
 
 impl block::Backend for FileBackend {
-    fn attachment(&self) -> &block::backend::Attachment {
+    fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
     }
 
@@ -221,18 +220,18 @@ impl block::Backend for FileBackend {
         self.state.info
     }
     fn start(&self) -> anyhow::Result<()> {
-        self.spawn_workers()?;
         self.state.attachment.start();
-        Ok(())
-    }
-    fn halt(&self) {
-        self.state.attachment.halt();
-
-        // Wait for the workers to finish up
-        let mut guard = self.workers.lock().unwrap();
-        for worker in guard.drain(..) {
-            let _ = worker.join();
+        if let Err(e) = self.spawn_workers() {
+            self.state.attachment.stop();
+            self.workers.block_until_joined();
+            Err(e).context("failure while spawning workers")
+        } else {
+            Ok(())
         }
+    }
+    fn stop(&self) {
+        self.state.attachment.stop();
+        self.workers.block_until_joined();
     }
 }
 

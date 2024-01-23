@@ -357,8 +357,13 @@ impl Instance {
                 }
             }
             State::Halt => {
-                for (_name, be) in guard.inventory.block.iter() {
-                    be.halt();
+                for (name, be) in guard.inventory.block.iter() {
+                    be.stop();
+                    if let Err(err) = be.detach() {
+                        eprintln!(
+                            "Error during detach of block backend {name}: {err:?}"
+                        );
+                    }
                 }
             }
             _ => {}
@@ -978,7 +983,7 @@ fn setup_instance(
                         .register_instance(&vioblk, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(backend, vioblk.clone());
+                    block::attach(vioblk.clone(), backend).unwrap();
                     chipset_pci_attach(bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
@@ -1013,7 +1018,7 @@ fn setup_instance(
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(backend, nvme.clone());
+                    block::attach(nvme.clone(), backend).unwrap();
                     chipset_pci_attach(bdf, nvme);
                 }
                 qemu::pvpanic::DEVICE_NAME => {

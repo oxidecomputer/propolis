@@ -494,9 +494,9 @@ pub struct PciNvme {
     /// PCI device state
     pci_state: pci::DeviceState,
 
-    block_attach: block::device::Attachment,
+    block_attach: block::DeviceAttachment,
 
-    block_tracking: block::device::Tracking<Permit>,
+    block_tracking: block::tracking::Tracking<Permit>,
 
     /// Logger resource
     log: slog::Logger,
@@ -612,8 +612,8 @@ impl PciNvme {
         Arc::new_cyclic(|weak| PciNvme {
             state: Mutex::new(state),
             pci_state,
-            block_attach: block::device::Attachment::new(),
-            block_tracking: block::device::Tracking::new(
+            block_attach: block::DeviceAttachment::new(),
+            block_tracking: block::tracking::Tracking::new(
                 weak.clone() as Weak<dyn block::Device>
             ),
             log,
