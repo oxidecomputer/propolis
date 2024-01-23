@@ -95,8 +95,10 @@ mod failure_recovery {
             cfg.fail_migration_imports(1);
             ctx.spawn_vm(&cfg, None)?
         };
-        let mut target =
-            ctx.spawn_successor_vm("import_failure_target", &source, None)?;
+        let mut target1 =
+            ctx.spawn_successor_vm("import_failure_target1", &source, None)?;
+        let mut target2 =
+            ctx.spawn_successor_vm("import_failure_target2", &source, None)?;
 
         source.launch()?;
         source.wait_to_boot()?;
@@ -104,13 +106,13 @@ mod failure_recovery {
         // TODO(eliza): make some pages dirty somehow...
 
         // first migration should fail.
-        let error = target
+        let error = target1
             .migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
         // try again. this time, it should work!
-        target.migrate_from(
+        target2.migrate_from(
             &source,
             Uuid::new_v4(),
             Duration::from_secs(60),
@@ -126,8 +128,10 @@ mod failure_recovery {
             cfg.fail_migration_exports(1);
             ctx.spawn_vm(&cfg, None)?
         };
-        let mut target =
-            ctx.spawn_successor_vm("exportfailure_target", &source, None)?;
+        let mut target1 =
+            ctx.spawn_successor_vm("export_failure_target1", &source, None)?;
+        let mut target2 =
+            ctx.spawn_successor_vm("export_failure_target2", &source, None)?;
 
         source.launch()?;
         source.wait_to_boot()?;
@@ -135,13 +139,13 @@ mod failure_recovery {
         // TODO(eliza): make some pages dirty somehow...
 
         // first migration should fail.
-        let error = target
+        let error = target1
             .migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
         // try again. this time, it should work!
-        target.migrate_from(
+        target2.migrate_from(
             &source,
             Uuid::new_v4(),
             Duration::from_secs(60),
