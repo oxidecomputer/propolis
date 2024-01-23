@@ -27,7 +27,7 @@ use propolis_client::types::{
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
-use tokio::{sync::mpsc, time::timeout};
+use tokio::{sync::oneshot, time::timeout};
 use tracing::{error, info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
@@ -612,17 +612,18 @@ impl TestVm {
         timeout_duration: Duration,
     ) -> Result<Option<String>> {
         let line = line.to_string();
-        let (preceding_tx, mut preceding_rx) = mpsc::unbounded_channel();
+        let (preceding_tx, preceding_rx) = oneshot::channel();
         match &self.state {
             VmState::Ensured { serial } => {
                 serial.register_wait_for_string(line.clone(), preceding_tx);
-                let t = timeout(timeout_duration, preceding_rx.recv()).await;
+                let t = timeout(timeout_duration, preceding_rx).await;
                 match t {
                     Err(timeout_elapsed) => {
                         serial.cancel_wait_for_string();
                         Err(anyhow!(timeout_elapsed))
                     }
-                    Ok(received_string) => Ok(received_string),
+                    Ok(Err(e)) => Err(e.into()),
+                    Ok(Ok(received_string)) => Ok(Some(received_string)),
                 }
             }
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),

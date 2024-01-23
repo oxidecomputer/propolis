@@ -11,7 +11,10 @@ use camino::Utf8PathBuf;
 use futures::{SinkExt, StreamExt};
 use reqwest::Upgraded;
 use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    sync::{
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
     task::JoinHandle,
 };
 use tokio_tungstenite::{
@@ -30,7 +33,7 @@ struct OutputWaiter {
 
     /// When the wait is satisfied, send the contents of the buffer prior to
     /// (and exclusive of) the waited-for string to this channel.
-    preceding_tx: UnboundedSender<String>,
+    preceding_tx: oneshot::Sender<String>,
 }
 
 /// An interface for objects that handle and buffer characters and commands a
@@ -117,7 +120,7 @@ impl SerialConsole {
     pub fn register_wait_for_string(
         &self,
         wanted: String,
-        preceding_tx: UnboundedSender<String>,
+        preceding_tx: oneshot::Sender<String>,
     ) {
         self.buffer
             .lock()
