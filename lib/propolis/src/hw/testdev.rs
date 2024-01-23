@@ -2,20 +2,33 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Devices intended for testing purposes.
+//!
+//! These devices do things which are generally unwanted in real life, such as
+//! "intentionally breaking Propolis", "intentionally breaking the guest OS", or
+//! some combination of the two.
+
 use crate::inventory::Entity;
 use crate::migrate::*;
 
 use serde::{Deserialize, Serialize};
 
 use slog::info;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 /// A test device for simulating migration failures.
 pub struct MigrationFailureDevice {
     log: slog::Logger,
     exports: AtomicUsize,
-    fail_exports: usize,
-    fail_imports: usize,
+    fail: MigrationFailures,
+}
+
+pub struct MigrationFailures {
+    pub exports: usize,
+    pub imports: usize,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -26,21 +39,16 @@ struct MigrationFailurePayloadV1 {
 
 impl MigrationFailureDevice {
     pub const NAME: &'static str = "test-migration-failure";
-    pub fn new(log: &slog::Logger) -> Self {
-        Self {
-            log: log.new(slog::o!("component" => "test", "dev" => Self::NAME)),
-            exports: AtomicUsize::new(0),
-            fail_exports: 0,
-            fail_imports: 0,
-        }
-    }
 
-    pub fn fail_exports(self, fail_exports: usize) -> Self {
-        Self { fail_exports, ..self }
-    }
-
-    pub fn fail_imports(self, fail_exports: usize) -> Self {
-        Self { fail_exports, ..self }
+    pub fn create(log: &slog::Logger, fail: MigrationFailures) -> Arc<Self> {
+        let log =
+            log.new(slog::o!("component" => "testdev", "dev" => Self::NAME));
+        info!(log,
+            "Injecting simulated migration failures";
+            "fail_exports" => %fail.exports,
+            "fail_imports" => %fail.imports,
+        );
+        Arc::new(Self { log, exports: AtomicUsize::new(0), fail })
     }
 }
 
@@ -59,12 +67,12 @@ impl MigrateSingle for MigrationFailureDevice {
         _ctx: &MigrateCtx,
     ) -> Result<PayloadOutput, MigrateStateError> {
         let export_num = self.exports.fetch_add(1, Ordering::Relaxed);
-        if export_num < self.fail_exports {
+        if export_num < self.fail.exports {
             info!(
                 self.log,
                 "failing export";
                 "export_num" => %export_num,
-                "fail_exports" => %self.fail_exports
+                "fail_exports" => %self.fail.exports
             );
             return Err(MigrateStateError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -72,7 +80,7 @@ impl MigrateSingle for MigrationFailureDevice {
             )));
         }
 
-        let fail_import = export_num < self.fail_imports;
+        let fail_import = export_num < self.fail.imports;
         info!(
             self.log,
             "exporting device";

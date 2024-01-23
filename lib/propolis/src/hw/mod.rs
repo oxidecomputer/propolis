@@ -10,6 +10,6 @@ pub mod nvme;
 pub mod pci;
 pub mod ps2;
 pub mod qemu;
-pub mod test_util;
+pub mod testdev;
 pub mod uart;
 pub mod virtio;

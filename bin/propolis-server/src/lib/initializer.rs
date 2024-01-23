@@ -581,7 +581,9 @@ impl<'a> MachineInitializer<'a> {
         &self,
         toml_cfg: &BTreeMap<String, TomlDevice>,
     ) -> Result<(), Error> {
-        use propolis::hw::test_util::MigrationFailureDevice;
+        use propolis::hw::testdev::{
+            MigrationFailureDevice, MigrationFailures,
+        };
 
         if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
             if cfg!(feature = "omicron-build") {
@@ -603,6 +605,7 @@ impl<'a> MachineInitializer<'a> {
                     .get(FAIL_IMPORTS)
                     .and_then(|val| val.as_integer())
                     .unwrap_or(0);
+
                 if fail_exports <= 0 && fail_imports <= 0 {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
@@ -615,16 +618,15 @@ impl<'a> MachineInitializer<'a> {
                         ),
                     ));
                 }
-                info!(
-                    self.log,
-                    "Injecting migration failure device";
-                    FAIL_EXPORTS => ?fail_exports,
-                    FAIL_IMPORTS => ?fail_imports,
+
+                let dev = MigrationFailureDevice::create(
+                    &self.log,
+                    MigrationFailures {
+                        exports: fail_exports as usize,
+                        imports: fail_imports as usize,
+                    },
                 );
-                let dev = MigrationFailureDevice::new(&self.log)
-                    .fail_exports(fail_exports as usize)
-                    .fail_imports(fail_imports as usize);
-                self.inv.register(&Arc::new(dev))?;
+                self.inv.register(&dev)?;
             }
         }
 
