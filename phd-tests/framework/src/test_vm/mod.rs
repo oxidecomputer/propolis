@@ -9,7 +9,7 @@ use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
 
 use crate::{
     guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind},
-    serial::SerialConsole,
+    serial::{BufferKind, SerialConsole},
     test_vm::{
         environment::Environment, server::ServerProcessParameters, spec::VmSpec,
     },
@@ -247,7 +247,7 @@ impl TestVm {
             .await
             .map_err(|e| anyhow::Error::msg(e.to_string()))?
             .into_inner();
-        let console = SerialConsole::new(serial_conn).await?;
+        let console = SerialConsole::new(serial_conn, BufferKind::Raw).await;
 
         let instance_description =
             self.client.instance_get().send().await.with_context(|| {
@@ -567,16 +567,14 @@ impl TestVm {
         timeout_duration: Duration,
     ) -> Result<Option<String>> {
         let line = line.to_string();
-        let (preceding_tx, mut preceding_rx) = mpsc::channel(1);
+        let (preceding_tx, mut preceding_rx) = mpsc::unbounded_channel();
         match &self.state {
             VmState::Ensured { serial } => {
-                serial
-                    .register_wait_for_string(line.clone(), preceding_tx)
-                    .await?;
+                serial.register_wait_for_string(line.clone(), preceding_tx);
                 let t = timeout(timeout_duration, preceding_rx.recv()).await;
                 match t {
                     Err(timeout_elapsed) => {
-                        serial.cancel_wait_for_string().await;
+                        serial.cancel_wait_for_string();
                         Err(anyhow!(timeout_elapsed))
                     }
                     Ok(received_string) => Ok(received_string),
@@ -618,7 +616,7 @@ impl TestVm {
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
         match &self.state {
-            VmState::Ensured { serial } => serial.send_bytes(bytes).await,
+            VmState::Ensured { serial } => serial.send_bytes(bytes),
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
