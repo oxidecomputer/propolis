@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use strum::FromRepr;
@@ -50,6 +51,7 @@ pub struct Main {
     pub bootrom: String,
     pub memory: usize,
     pub use_reservoir: Option<bool>,
+    pub qemu_debug_file: Option<PathBuf>,
     pub cpuid_profile: Option<String>,
     /// Process exitcode to emit if/when instance halts
     ///
