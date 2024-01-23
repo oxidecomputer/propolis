@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
 use crate::block;
+use crate::tasks::TaskGroup;
 use crate::vmm::MemCtx;
 
 /// Block device backend which uses anonymous memory as its storage.
@@ -19,16 +20,24 @@ use crate::vmm::MemCtx;
 pub struct MemAsyncBackend {
     work_state: Arc<WorkingState>,
 
-    workers: NonZeroUsize,
+    worker_count: NonZeroUsize,
+    workers: TaskGroup,
 }
 struct WorkingState {
-    attachment: block::backend::Attachment,
+    attachment: block::BackendAttachment,
     seg: MmapSeg,
     info: block::DeviceInfo,
 }
 impl WorkingState {
     async fn processing_loop(&self, acc_mem: MemAccessor) {
-        while let Some(req) = self.attachment.wait_for_req().await {
+        let waiter = match self.attachment.waiter() {
+            None => {
+                // Backend was detached
+                return;
+            }
+            Some(w) => w,
+        };
+        while let Some(req) = waiter.for_req().await {
             if self.info.read_only && req.oper().is_write() {
                 req.complete(block::Result::ReadOnly);
                 continue;
@@ -98,7 +107,7 @@ impl MemAsyncBackend {
     pub fn create(
         size: u64,
         opts: block::BackendOpts,
-        workers: NonZeroUsize,
+        worker_count: NonZeroUsize,
     ) -> Result<Arc<Self>> {
         let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
@@ -118,7 +127,7 @@ impl MemAsyncBackend {
 
         Ok(Arc::new(Self {
             work_state: Arc::new(WorkingState {
-                attachment: block::backend::Attachment::new(),
+                attachment: block::BackendAttachment::new(),
                 info: block::DeviceInfo {
                     block_size,
                     total_size: size / u64::from(block_size),
@@ -127,23 +136,25 @@ impl MemAsyncBackend {
                 seg,
             }),
 
-            workers,
+            worker_count,
+            workers: TaskGroup::new(),
         }))
     }
 
     fn spawn_workers(&self) {
-        for n in 0..self.workers.get() {
+        self.workers.extend((0..self.worker_count.get()).map(|n| {
             let worker_state = self.work_state.clone();
-            let worker_acc =
-                self.work_state.attachment.accessor_mem(|acc_mem| {
-                    acc_mem
-                        .expect("backend is attached")
-                        .child(Some(format!("worker {n}")))
-                });
+            let worker_acc = self
+                .work_state
+                .attachment
+                .accessor_mem(|acc_mem| {
+                    acc_mem.child(Some(format!("worker {n}")))
+                })
+                .expect("backend is attached");
             tokio::spawn(async move {
                 worker_state.processing_loop(worker_acc).await
-            });
-        }
+            })
+        }))
     }
 }
 
@@ -198,12 +209,17 @@ impl block::Backend for MemAsyncBackend {
     fn info(&self) -> block::DeviceInfo {
         self.work_state.info
     }
-    fn attachment(&self) -> &block::backend::Attachment {
+    fn attachment(&self) -> &block::BackendAttachment {
         &self.work_state.attachment
     }
     fn start(&self) -> anyhow::Result<()> {
         self.work_state.attachment.start();
         self.spawn_workers();
         Ok(())
+    }
+
+    fn stop(&self) {
+        self.work_state.attachment.stop();
+        self.workers.block_until_joined();
     }
 }

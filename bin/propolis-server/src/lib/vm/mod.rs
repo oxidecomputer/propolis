@@ -1094,8 +1094,14 @@ impl StateDriverVmController for VmController {
             dev.halt();
         });
         for (name, backend) in self.vm_objects.block_backends.iter() {
-            debug!(self.log, "Halting block backend {}", name);
-            backend.halt();
+            debug!(self.log, "Stopping and detaching block backend {}", name);
+            backend.stop();
+            if let Err(err) = backend.detach() {
+                error!(
+                    self.log,
+                    "Error while detaching block backend {name}: {err:?}",
+                );
+            }
         }
     }
 

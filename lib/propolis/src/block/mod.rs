@@ -5,9 +5,9 @@
 //! Implements an interface to virtualized block devices.
 
 use std::borrow::Borrow;
-use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
+use crate::attachment::DetachError;
 use crate::common::*;
 use crate::vmm::{MemCtx, SubMapping};
 
@@ -25,8 +25,10 @@ pub use in_memory::InMemoryBackend;
 mod mem_async;
 pub use mem_async::MemAsyncBackend;
 
-pub mod backend;
-pub mod device;
+pub mod attachment;
+pub mod tracking;
+
+pub use attachment::{attach, BackendAttachment, DeviceAttachment};
 
 pub type ByteOffset = usize;
 pub type ByteLen = usize;
@@ -116,11 +118,11 @@ pub struct Request {
     /// request
     regions: Vec<GuestRegion>,
 
-    /// Store [`device::TrackingMarker`] when this request is tracked by a
-    /// [`device::Tracking`] for that device.  It is through this marker that
+    /// Store [`tracking::TrackingMarker`] when this request is tracked by a
+    /// [`tracking::Tracking`] for that device.  It is through this marker that
     /// the result of the block request is communicated back to the device
     /// emulation for processing.
-    marker: Option<device::TrackingMarker>,
+    marker: Option<tracking::TrackingMarker>,
 }
 impl Request {
     pub fn new_read(
@@ -210,9 +212,11 @@ pub struct BackendOpts {
     pub skip_flush: Option<bool>,
 }
 
-/// API to access a virtualized block device.
+/// Top-level trait for block devices (frontends) to translate guest block IO
+/// requests into [Request]s for the attached [Backend]
 pub trait Device: Send + Sync + 'static {
-    fn attachment(&self) -> &device::Attachment;
+    /// Access to the [DeviceAttachment] representing this device.
+    fn attachment(&self) -> &DeviceAttachment;
 
     /// Retrieve the next request (if any)
     fn next(&self) -> Option<Request>;
@@ -224,26 +228,41 @@ pub trait Device: Send + Sync + 'static {
     fn accessor_mem(&self) -> MemAccessor;
 
     /// Optional on-attach handler to update device state with new `DeviceInfo`
-    fn attach(&self, _info: DeviceInfo) {}
+    fn on_attach(&self, _info: DeviceInfo) {}
 }
 
+/// Top-level trait for block backends which will attach to [Device]s in order
+/// to process [Request]s posted by the guest.
 pub trait Backend: Send + Sync + 'static {
-    fn attachment(&self) -> &backend::Attachment;
+    /// Access to the [BackendAttachment] representing this backend.
+    fn attachment(&self) -> &BackendAttachment;
 
+    /// Query [DeviceInfo] from the backend
     fn info(&self) -> DeviceInfo;
 
-    /// Start backend processing
+    /// Start attempting to process [Request]s from [Device] (if attached)
     ///
-    /// Backend should spawn any necessary worker tasks/threads and begin
-    /// polling the [backend::Attachment] for requests to be available.
+    /// Spawning of any tasks required to do such request processing can be done
+    /// as part of this start-up.
     fn start(&self) -> anyhow::Result<()>;
 
-    /// Halt backend processing
+    /// Stop attempting to process new [Request]s from [Device] (if attached)
     ///
-    /// Backend should cease processing requests, shutdown any spawned
-    /// tasks/threads, and call `halt` on the [backend::Attachment];
-    fn halt(&self) {
-        self.attachment().halt();
+    /// Any in-flight processing of requests should be concluded before this
+    /// call returns.
+    ///
+    /// If any tasks were spawned as part of [Backend::start()], they should be
+    /// brought to rest as part of this call.
+    fn stop(&self);
+
+    /// Attempt to detach from associated [Device]
+    ///
+    /// Any attached backend should be [stopped](Backend::stop()) and detached
+    /// prior to its references being dropped.  An attached [Backend]/[Device]
+    /// pair holds mutual references and thus will not be reaped if all other
+    /// external references are dropped.
+    fn detach(&self) -> std::result::Result<(), DetachError> {
+        self.attachment().detach()
     }
 }
 
@@ -252,34 +271,7 @@ pub enum CacheMode {
     WriteBack,
 }
 
-/// Attach a block backend to a corresponding device
-///
-/// # Panics
-///
-/// If `backend` or `device` are already attached
-pub fn attach(backend: Arc<dyn Backend>, device: Arc<dyn Device>) {
-    let dev_attach = device.attachment();
-    let backend_attach = backend.attachment();
-
-    let mut devlock = dev_attach.0.lock().unwrap();
-    let mut belock = backend_attach.0.state.lock().unwrap();
-
-    if devlock.is_some() {
-        panic!("device is already attached");
-    }
-    if belock.is_some() {
-        panic!("backend is already attached");
-    }
-
-    *devlock = Some(device::AttachInner::new(&backend_attach, &backend));
-    *belock = Some(backend::AttachState::new(&dev_attach, &device));
-
-    // notify device that it has become attached
-    let binfo = backend.info();
-    device.attach(binfo);
-}
-
-/// Unique ID assigned (by [`device::Tracking`] to a given block [`Request`].
+/// Unique ID assigned (by [`tracking::Tracking`] to a given block [`Request`].
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct ReqId(u64);
 impl ReqId {

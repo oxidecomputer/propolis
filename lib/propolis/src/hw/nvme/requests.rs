@@ -33,11 +33,11 @@ mod probes {
 }
 
 impl block::Device for PciNvme {
-    fn attachment(&self) -> &block::device::Attachment {
+    fn attachment(&self) -> &block::DeviceAttachment {
         &self.block_attach
     }
 
-    fn attach(&self, info: block::DeviceInfo) {
+    fn on_attach(&self, info: block::DeviceInfo) {
         self.state.lock().unwrap().update_block_info(info);
     }
 

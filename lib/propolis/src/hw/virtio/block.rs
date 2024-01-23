@@ -35,8 +35,8 @@ pub struct PciVirtioBlock {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
 
-    block_attach: block::device::Attachment,
-    block_tracking: block::device::Tracking<CompletionPayload>,
+    block_attach: block::DeviceAttachment,
+    block_tracking: block::tracking::Tracking<CompletionPayload>,
 }
 impl PciVirtioBlock {
     pub fn new(queue_size: u16) -> Arc<Self> {
@@ -60,8 +60,8 @@ impl PciVirtioBlock {
         Arc::new_cyclic(|weak| Self {
             pci_state,
             virtio_state,
-            block_attach: block::device::Attachment::new(),
-            block_tracking: block::device::Tracking::new(
+            block_attach: block::DeviceAttachment::new(),
+            block_tracking: block::tracking::Tracking::new(
                 weak.clone() as Weak<dyn block::Device>
             ),
         })
@@ -236,7 +236,7 @@ impl PciVirtio for PciVirtioBlock {
     }
 }
 impl block::Device for PciVirtioBlock {
-    fn attachment(&self) -> &block::device::Attachment {
+    fn attachment(&self) -> &block::DeviceAttachment {
         &self.block_attach
     }
 

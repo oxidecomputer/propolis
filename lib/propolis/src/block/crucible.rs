@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
+use crate::tasks::TaskGroup;
 use crate::vmm::MemCtx;
 
 use crucible::{
@@ -24,21 +25,28 @@ pub use nexus_client::Client as NexusClient;
 
 pub struct CrucibleBackend {
     state: Arc<WorkerState>,
+    workers: TaskGroup,
 }
 struct WorkerState {
-    attachment: block::backend::Attachment,
+    attachment: block::BackendAttachment,
     volume: Volume,
     info: block::DeviceInfo,
     skip_flush: bool,
 }
 impl WorkerState {
     async fn process_loop(&self, acc_mem: MemAccessor) {
+        let waiter = match self.attachment.waiter() {
+            None => {
+                return;
+            }
+            Some(w) => w,
+        };
         // Start with a read buffer of a single block
         // It will be resized larger (and remain so) if subsequent read
         // operations required additional space.
         let mut readbuf = Buffer::new(1, self.info.block_size as usize);
         loop {
-            let req = match self.attachment.wait_for_req().await {
+            let req = match waiter.for_req().await {
                 Some(r) => r,
                 None => {
                     // bail
@@ -153,7 +161,7 @@ impl CrucibleBackend {
 
         Ok(Arc::new(Self {
             state: Arc::new(WorkerState {
-                attachment: block::backend::Attachment::new(),
+                attachment: block::BackendAttachment::new(),
                 volume,
                 info: block::DeviceInfo {
                     block_size: block_size as u32,
@@ -162,6 +170,7 @@ impl CrucibleBackend {
                 },
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
+            workers: TaskGroup::new(),
         }))
     }
 
@@ -190,7 +199,7 @@ impl CrucibleBackend {
 
             Ok(Arc::new(CrucibleBackend {
                 state: Arc::new(WorkerState {
-                    attachment: block::backend::Attachment::new(),
+                    attachment: block::BackendAttachment::new(),
                     volume,
                     info: block::DeviceInfo {
                         block_size: block_size as u32,
@@ -199,6 +208,7 @@ impl CrucibleBackend {
                     },
                     skip_flush: opts.skip_flush.unwrap_or(false),
                 }),
+                workers: TaskGroup::new(),
             }))
         })
         .map_err(CrucibleError::into)
@@ -267,18 +277,19 @@ impl CrucibleBackend {
     fn spawn_workers(&self) {
         // TODO: make this tunable?
         let worker_count = 8;
-
-        for n in 0..worker_count {
+        self.workers.extend((0..worker_count).map(|n| {
             let worker_state = self.state.clone();
-            let worker_acc = self.state.attachment.accessor_mem(|acc_mem| {
-                acc_mem
-                    .expect("backend is attached")
-                    .child(Some(format!("crucible worker {n}")))
-            });
+            let worker_acc = self
+                .state
+                .attachment
+                .accessor_mem(|acc_mem| {
+                    acc_mem.child(Some(format!("crucible worker {n}")))
+                })
+                .expect("backend is attached");
             tokio::spawn(
                 async move { worker_state.process_loop(worker_acc).await },
-            );
-        }
+            )
+        }))
     }
 
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
@@ -287,7 +298,7 @@ impl CrucibleBackend {
 }
 
 impl block::Backend for CrucibleBackend {
-    fn attachment(&self) -> &block::backend::Attachment {
+    fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
     }
     fn info(&self) -> DeviceInfo {
@@ -299,8 +310,11 @@ impl block::Backend for CrucibleBackend {
 
         self.state.attachment.start();
         self.spawn_workers();
-
         Ok(())
+    }
+    fn stop(&self) {
+        self.state.attachment.stop();
+        self.workers.block_until_joined();
     }
 }
 

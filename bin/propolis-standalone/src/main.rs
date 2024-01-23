@@ -316,6 +316,7 @@ impl Instance {
         state: State,
         guard: &MutexGuard<InstState>,
         first_boot: bool,
+        log: &slog::Logger,
     ) {
         for (name, device) in guard.inventory.devs.iter() {
             match state {
@@ -359,8 +360,16 @@ impl Instance {
                 }
             }
             State::Halt => {
-                for (_name, be) in guard.inventory.block.iter() {
-                    be.halt();
+                for (name, be) in guard.inventory.block.iter() {
+                    be.stop();
+                    if let Err(err) = be.detach() {
+                        slog::error!(
+                            log,
+                            "Error during detach of block backend {}: {:?}",
+                            name,
+                            err
+                        );
+                    }
                 }
             }
             _ => {}
@@ -425,6 +434,7 @@ impl Instance {
                         State::Run,
                         &guard,
                         inner.boot_gen.load(Ordering::Acquire) == 0,
+                        &log,
                     );
                     if needs_resume {
                         let machine = guard.machine.as_ref().unwrap();
@@ -449,6 +459,7 @@ impl Instance {
                         State::Quiesce,
                         &guard,
                         false,
+                        &log,
                     );
                     let machine = guard.machine.as_ref().unwrap();
                     machine.hdl.pause().expect("pause should complete");
@@ -461,7 +472,12 @@ impl Instance {
                     }
                 }
                 State::Halt => {
-                    Self::device_state_transition(State::Halt, &guard, false);
+                    Self::device_state_transition(
+                        State::Halt,
+                        &guard,
+                        false,
+                        &log,
+                    );
                     for mut vcpu_ctrl in guard.vcpu_tasks.drain(..) {
                         vcpu_ctrl.exit();
                     }
@@ -481,7 +497,12 @@ impl Instance {
                         cur_ev = Some(InstEvent::ReqHalt);
                         continue;
                     }
-                    Self::device_state_transition(State::Reset, &guard, false);
+                    Self::device_state_transition(
+                        State::Reset,
+                        &guard,
+                        false,
+                        &log,
+                    );
                     let machine = guard.machine.as_ref().unwrap();
                     machine.reinitialize().unwrap();
                     machine.vcpu_x86_setup().unwrap();
@@ -1104,7 +1125,7 @@ fn setup_instance(
                         .register_instance(&vioblk, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(backend, vioblk.clone());
+                    block::attach(vioblk.clone(), backend).unwrap();
                     chipset_pci_attach(bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
@@ -1139,7 +1160,7 @@ fn setup_instance(
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(backend, nvme.clone());
+                    block::attach(nvme.clone(), backend).unwrap();
                     chipset_pci_attach(bdf, nvme);
                 }
                 qemu::pvpanic::DEVICE_NAME => {

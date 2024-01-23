@@ -2,12 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll, Waker};
+use std::thread;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use thiserror::Error;
+use tokio::task;
 
 pub type NotifyFn = dyn Fn() + Send + Sync + 'static;
 
@@ -409,6 +413,98 @@ impl Drop for CtrlHeld<'_> {
                 let mut ctrl = inner.ctrl.lock().unwrap();
                 inner.unrequest_hold(&mut ctrl);
             }
+        }
+    }
+}
+
+/// Holds a group of tokio task [task::JoinHandle]s to be later joined as a
+/// group when they have all concluded.
+pub struct TaskGroup(Mutex<Vec<task::JoinHandle<()>>>);
+impl TaskGroup {
+    pub fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    /// Add to the group of contained tasks
+    pub fn extend<I>(&self, tasks: I)
+    where
+        I: Iterator<Item = task::JoinHandle<()>>,
+    {
+        let mut guard = self.0.lock().unwrap();
+        guard.extend(tasks);
+    }
+
+    /// Block until all held tasks have been joined, returning any resulting
+    /// [task::JoinError]s after doing so.
+    pub fn block_until_joined(&self) -> Option<Vec<task::JoinError>> {
+        let mut guard = self.0.lock().unwrap();
+        let workers = std::mem::replace(&mut *guard, Vec::new());
+        if workers.is_empty() {
+            return None;
+        }
+
+        let rt = tokio::runtime::Handle::current();
+        let errors = rt.block_on(async {
+            FuturesUnordered::from_iter(workers)
+                .filter_map(|res| futures::future::ready(res.err()))
+                .collect::<Vec<_>>()
+                .await
+        });
+        if errors.is_empty() {
+            None
+        } else {
+            Some(errors)
+        }
+    }
+}
+
+/// Convenience type alias for the [thread::JoinHandle::join()] error type
+pub type ThreadErr = Box<dyn Any + Send + 'static>;
+
+/// Holds a group of thread [thread::JoinHandle]s to be later joined as a group
+/// when they have all concluded.
+pub struct ThreadGroup(Mutex<Vec<thread::JoinHandle<()>>>);
+impl ThreadGroup {
+    pub fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+
+    /// Add to group of contained threads
+    ///
+    /// The first (if any) [std::io::Error] encountered while among the
+    /// `threads` items will determine the return from this function.  All
+    /// non-error [thread::JoinHandle]s will be added to the group even if one
+    /// or more items are an `Error`.
+    pub fn extend<I>(&self, threads: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = std::io::Result<thread::JoinHandle<()>>>,
+    {
+        let mut guard = self.0.lock().unwrap();
+        let mut status = Ok(());
+        for result in threads {
+            match result {
+                Err(e) => {
+                    // record the first error
+                    if status.is_ok() {
+                        status = Err(e);
+                    }
+                }
+                Ok(hdl) => guard.push(hdl),
+            }
+        }
+        status
+    }
+
+    /// Block until all contained [thread::JoinHandle]s have been joined,
+    /// returning any resulting [ThreadErr]s after doing so.
+    pub fn block_until_joined(&self) -> Option<Vec<ThreadErr>> {
+        let mut guard = self.0.lock().unwrap();
+        let errors =
+            guard.drain(..).filter_map(|t| t.join().err()).collect::<Vec<_>>();
+        if errors.is_empty() {
+            None
+        } else {
+            Some(errors)
         }
     }
 }

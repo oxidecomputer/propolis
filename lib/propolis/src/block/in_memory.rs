@@ -8,15 +8,19 @@ use std::sync::{Arc, Mutex};
 
 use crate::accessors::MemAccessor;
 use crate::block;
+use crate::tasks::ThreadGroup;
 use crate::vmm::{MemCtx, SubMapping};
+
+use anyhow::Context;
 
 pub struct InMemoryBackend {
     state: Arc<WorkingState>,
 
     worker_count: NonZeroUsize,
+    workers: ThreadGroup,
 }
 struct WorkingState {
-    attachment: block::backend::Attachment,
+    attachment: block::BackendAttachment,
     bytes: Mutex<Vec<u8>>,
     info: block::DeviceInfo,
 }
@@ -104,7 +108,7 @@ impl InMemoryBackend {
 
         Ok(Arc::new(Self {
             state: Arc::new(WorkingState {
-                attachment: block::backend::Attachment::new(),
+                attachment: block::BackendAttachment::new(),
                 bytes: Mutex::new(bytes),
                 info: block::DeviceInfo {
                     block_size,
@@ -113,28 +117,31 @@ impl InMemoryBackend {
                 },
             }),
             worker_count,
+            workers: ThreadGroup::new(),
         }))
     }
     fn spawn_workers(&self) -> Result<()> {
-        for n in 0..self.worker_count.get() {
+        let spawn_results = (0..self.worker_count.get()).map(|n| {
             let worker_state = self.state.clone();
-            let worker_acc = self.state.attachment.accessor_mem(|mem| {
-                mem.expect("backend is attached")
-                    .child(Some(format!("worker {n}")))
-            });
+            let worker_acc = self
+                .state
+                .attachment
+                .accessor_mem(|mem| mem.child(Some(format!("worker {n}"))))
+                .expect("backend is attached");
 
-            let _join = std::thread::Builder::new()
+            std::thread::Builder::new()
                 .name(format!("in-memory worker {n}"))
                 .spawn(move || {
                     worker_state.processing_loop(worker_acc);
-                })?;
-        }
-        Ok(())
+                })
+        });
+
+        self.workers.extend(spawn_results.into_iter())
     }
 }
 
 impl block::Backend for InMemoryBackend {
-    fn attachment(&self) -> &block::backend::Attachment {
+    fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
     }
     fn info(&self) -> block::DeviceInfo {
@@ -142,8 +149,17 @@ impl block::Backend for InMemoryBackend {
     }
     fn start(&self) -> anyhow::Result<()> {
         self.state.attachment.start();
-        self.spawn_workers()?;
-        Ok(())
+        if let Err(e) = self.spawn_workers() {
+            self.state.attachment.stop();
+            self.workers.block_until_joined();
+            Err(e).context("failure while spawning workers")
+        } else {
+            Ok(())
+        }
+    }
+    fn stop(&self) {
+        self.state.attachment.stop();
+        self.workers.block_until_joined();
     }
 }
 
