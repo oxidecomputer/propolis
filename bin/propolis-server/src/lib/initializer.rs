@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
@@ -29,7 +30,8 @@ use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
-use slog::info;
+use propolis_server_config::Device as TomlDevice;
+use slog::{info, warn};
 
 use crate::serial::Serial;
 use crate::server::CrucibleBackendMap;
@@ -572,6 +574,38 @@ impl<'a> MachineInitializer<'a> {
             let _ = self.inv.register_instance(&viona, bdf.to_string())?;
             chipset.device().pci_attach(bdf, viona);
         }
+        Ok(())
+    }
+
+    pub fn initialize_test_devices(
+        &self,
+        toml_cfg: &BTreeMap<String, TomlDevice>,
+    ) -> Result<(), Error> {
+        use propolis::hw::test_util::MigrationFailureDevice;
+
+        if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
+            if cfg!(feature = "omicron-build") {
+                warn!(
+                    self.log,
+                    "The migration failure device is intended for testing \
+                    purposes only! I'm not going to let you do that."
+                );
+            } else {
+                let fail_exports = dev.get("fail_exports").unwrap_or(0);
+                let fail_imports = dev.get("fail_imports").unwrap_or(0);
+                info!(
+                    self.log,
+                    "Injecting migration failure device";
+                    "fail_exports" => %fail_exports,
+                    "fail_imports" => %fail_imports,
+                );
+                let dev = MigrationFailureDevice::new(&self.log)
+                    .fail_exports(fail_exports)
+                    .fail_imports(fail_exports);
+                self.inv.register(&Arc::new(dev))?;
+            }
+        }
+
         Ok(())
     }
 

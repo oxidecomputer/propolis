@@ -497,18 +497,15 @@ async fn instance_ensure_common(
     // admittedly a big kludge until this can be better refactored.
     let vm = {
         let properties = properties.clone();
-        let use_reservoir = server_context.static_config.use_reservoir;
-        let bootrom = server_context.static_config.vm.bootrom.clone();
+        let server_context = server_context.clone();
         let log = server_context.log.clone();
         let hdl = tokio::runtime::Handle::current();
         let ctrl_hdl = hdl.clone();
-
         let vm_hdl = hdl.spawn_blocking(move || {
             VmController::new(
                 instance_spec,
                 properties,
-                use_reservoir,
-                bootrom,
+                &server_context.static_config,
                 producer_registry,
                 nexus_client,
                 log,

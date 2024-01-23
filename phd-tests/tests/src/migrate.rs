@@ -7,6 +7,7 @@ use std::time::Duration;
 use phd_framework::{artifacts, lifecycle::Action, TestVm};
 use phd_testcase::*;
 use propolis_client::types::MigrationState;
+use tracing::info;
 use uuid::Uuid;
 
 #[phd_testcase]
@@ -140,6 +141,60 @@ fn multiple_migrations(ctx: &Framework) {
         vm2.run_shell_command("echo I have migrated!")?,
         "I have migrated!"
     );
+}
+
+#[phd_testcase]
+fn import_failure_recovery(ctx: &Framework) {
+    let mut source = {
+        let mut cfg = ctx.vm_config_builder("import_failure_source");
+        cfg.fail_migration_imports(1);
+        ctx.spawn_vm(&cfg, None)?
+    };
+    let mut target =
+        ctx.spawn_successor_vm("import_failure_target", &source, None)?;
+
+    source.launch()?;
+    source.wait_to_boot()?;
+
+    // TODO(eliza): make some pages dirty somehow...
+
+    // first migration should fail.
+    let error = target
+        .migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))
+        .unwrap_err();
+    info!(%error, "first migration failed as expected");
+
+    // try again. this time, it should work!
+    target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
+
+    // TODO(eliza): ensure that the dirty pages were migrated somehow...
+}
+
+#[phd_testcase]
+fn export_failure_recovery(ctx: &Framework) {
+    let mut source = {
+        let mut cfg = ctx.vm_config_builder("export_failure_source");
+        cfg.fail_migration_exports(1);
+        ctx.spawn_vm(&cfg, None)?
+    };
+    let mut target =
+        ctx.spawn_successor_vm("exportfailure_target", &source, None)?;
+
+    source.launch()?;
+    source.wait_to_boot()?;
+
+    // TODO(eliza): make some pages dirty somehow...
+
+    // first migration should fail.
+    let error = target
+        .migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))
+        .unwrap_err();
+    info!(%error, "first migration failed as expected");
+
+    // try again. this time, it should work!
+    target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
+
+    // TODO(eliza): ensure that the dirty pages were migrated somehow...
 }
 
 fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
