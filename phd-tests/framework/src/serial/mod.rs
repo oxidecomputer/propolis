@@ -18,7 +18,7 @@ use tokio_tungstenite::{
     tungstenite::{protocol::Role, Message},
     WebSocketStream,
 };
-use tracing::{debug, error, info, info_span, Instrument};
+use tracing::{debug, error, info};
 
 mod raw_buffer;
 
@@ -94,16 +94,10 @@ impl SerialConsole {
                 .await;
 
         let (ws_tx, ws_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let ws_span = info_span!("Serial websocket task");
-        ws_span.follows_from(tracing::Span::current());
-
         let buffer = Arc::new(Mutex::new(new_buffer(buffer_kind, log_path)?));
         let buffer_for_task = buffer.clone();
-        let ws_task = tokio::spawn(
-            async move { websocket_handler(ws, buffer_for_task, ws_rx).await }
-                .instrument(ws_span),
-        );
+        let ws_task =
+            tokio::spawn(websocket_handler(ws, buffer_for_task, ws_rx));
 
         Ok(Self { ws_task, ws_tx, buffer })
     }
@@ -166,6 +160,7 @@ fn new_buffer(
 ///   The task posts newly-written bytes from the guest back to this buffer.
 /// - `input_rx`: Receives bytes from a serial console's owner to send out to
 ///   the target Propolis's serial console.
+#[tracing::instrument(level = "info", name = "serial websocket task", skip_all)]
 async fn websocket_handler(
     mut ws: WebSocketStream<Upgraded>,
     buffer: Arc<Mutex<Box<dyn Buffer>>>,
