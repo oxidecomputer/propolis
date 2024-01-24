@@ -4,8 +4,6 @@
 
 //! Interfaces to access a guest's serial console.
 
-use std::sync::{Arc, Mutex};
-
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use futures::{SinkExt, StreamExt};
@@ -63,6 +61,19 @@ pub enum BufferKind {
     Vt80x24,
 }
 
+/// The set of commands that the serial console can send to its processing task.
+enum TaskCommand {
+    /// Send the supplied bytes to the VM.
+    SendBytes(Vec<u8>),
+
+    /// Register to be notified if and when a supplied string appears in the
+    /// serial console's buffer.
+    RegisterWait(OutputWaiter),
+
+    /// Cancel any outstanding wait for bytes to appear in the buffer.
+    CancelWait,
+}
+
 /// A connection to a guest serial console made available on a particular guest
 /// serial port.
 pub struct SerialConsole {
@@ -70,13 +81,8 @@ pub struct SerialConsole {
     /// Propolis server that serves this console.
     ws_task: JoinHandle<()>,
 
-    /// Bytes sent to this channel are received by the websocket task, which
-    /// sends them to Propolis.
-    ws_tx: UnboundedSender<Vec<u8>>,
-
-    /// The buffer for this serial console, shared by the console itself and by
-    /// its websocket handler task.
-    buffer: Arc<Mutex<Box<dyn Buffer>>>,
+    /// Used to send commands to the worker thread for this console.
+    cmd_tx: UnboundedSender<TaskCommand>,
 }
 
 impl SerialConsole {
@@ -96,18 +102,20 @@ impl SerialConsole {
             WebSocketStream::from_raw_socket(serial_conn, Role::Client, None)
                 .await;
 
-        let (ws_tx, ws_rx) = tokio::sync::mpsc::unbounded_channel();
-        let buffer = Arc::new(Mutex::new(new_buffer(buffer_kind, log_path)?));
-        let buffer_for_task = buffer.clone();
-        let ws_task =
-            tokio::spawn(websocket_handler(ws, buffer_for_task, ws_rx));
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let ws_task = tokio::spawn(serial_task(
+            ws,
+            new_buffer(buffer_kind, log_path)?,
+            cmd_rx,
+        ));
 
-        Ok(Self { ws_task, ws_tx, buffer })
+        Ok(Self { ws_task, cmd_tx })
     }
 
-    /// Sends the supplied `bytes` to the guest.
+    /// Directs the console worker thread to send the supplied `bytes` to the
+    /// guest.
     pub fn send_bytes(&self, bytes: Vec<u8>) -> anyhow::Result<()> {
-        self.ws_tx.send(bytes)?;
+        self.cmd_tx.send(TaskCommand::SendBytes(bytes))?;
         Ok(())
     }
 
@@ -115,22 +123,24 @@ impl SerialConsole {
     /// appear in the console buffer. When a match is found, the buffer sends
     /// all buffered characters preceding the match to `preceding_tx`, consuming
     /// those characters and the matched string. If the buffer already contains
-    /// one or more matches at the time this call is made, the last match is
-    /// used to satisfy the wait immediately.
+    /// one or more matches at the time the waiter is registered, the last match
+    /// is used to satisfy the wait immediately.
     pub fn register_wait_for_string(
         &self,
         wanted: String,
         preceding_tx: oneshot::Sender<String>,
-    ) {
-        self.buffer
-            .lock()
-            .unwrap()
-            .register_wait_for_output(OutputWaiter { wanted, preceding_tx });
+    ) -> Result<()> {
+        self.cmd_tx.send(TaskCommand::RegisterWait(OutputWaiter {
+            wanted,
+            preceding_tx,
+        }))?;
+        Ok(())
     }
 
     /// Cancels the outstanding wait on the current buffer, if there was one.
-    pub fn cancel_wait_for_string(&self) {
-        let _ = self.buffer.lock().unwrap().cancel_wait_for_output();
+    pub fn cancel_wait_for_string(&self) -> Result<()> {
+        self.cmd_tx.send(TaskCommand::CancelWait)?;
+        Ok(())
     }
 }
 
@@ -163,18 +173,40 @@ fn new_buffer(
 ///   The task posts newly-written bytes from the guest back to this buffer.
 /// - `input_rx`: Receives bytes from a serial console's owner to send out to
 ///   the target Propolis's serial console.
-#[tracing::instrument(level = "info", name = "serial websocket task", skip_all)]
-async fn websocket_handler(
+#[tracing::instrument(level = "info", name = "serial console task", skip_all)]
+async fn serial_task(
     mut ws: WebSocketStream<Upgraded>,
-    buffer: Arc<Mutex<Box<dyn Buffer>>>,
-    mut input_rx: UnboundedReceiver<Vec<u8>>,
+    mut buffer: Box<dyn Buffer>,
+    mut cmd_rx: UnboundedReceiver<TaskCommand>,
 ) {
     loop {
         tokio::select! {
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else {
+                    debug!("serial console command channel was closed");
+                    break;
+                };
+                match cmd {
+                    TaskCommand::SendBytes(bytes) => {
+                        if let Err(e) = ws.send(Message::Binary(bytes)).await {
+                            error!(
+                                ?e,
+                                "failed to send input to serial console websocket"
+                            );
+                        }
+                    }
+                    TaskCommand::RegisterWait(waiter) => {
+                        buffer.register_wait_for_output(waiter);
+                    }
+                    TaskCommand::CancelWait => {
+                        buffer.cancel_wait_for_output();
+                    }
+                }
+            }
             msg = ws.next() => {
                 match msg {
                     Some(Ok(Message::Binary(bytes))) => {
-                        buffer.lock().unwrap().process_bytes(&bytes);
+                        buffer.process_bytes(&bytes);
                     }
                     Some(Ok(Message::Close(..))) => {
                         debug!("serial websocket closed");
@@ -190,20 +222,7 @@ async fn websocket_handler(
                     _ => continue,
                 }
             },
-            input = input_rx.recv() => {
-                match input {
-                    Some(bytes) => {
-                        if let Err(e) = ws.send(Message::Binary(bytes)).await {
-                            error!(?e, "failed to send input to serial socket");
-                            break;
-                        }
-                    }
-                    None => {
-                        debug!("serial socket input channel was closed");
-                        break;
-                    }
-                }
-            }
-        }
+
+        };
     }
 }

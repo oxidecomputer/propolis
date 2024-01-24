@@ -601,11 +601,11 @@ impl TestVm {
         let (preceding_tx, preceding_rx) = oneshot::channel();
         match &self.state {
             VmState::Ensured { serial } => {
-                serial.register_wait_for_string(line.clone(), preceding_tx);
+                serial.register_wait_for_string(line.clone(), preceding_tx)?;
                 let t = timeout(timeout_duration, preceding_rx).await;
                 match t {
                     Err(timeout_elapsed) => {
-                        serial.cancel_wait_for_string();
+                        serial.cancel_wait_for_string()?;
                         Err(anyhow!(timeout_elapsed))
                     }
                     Ok(Err(e)) => Err(e.into()),
