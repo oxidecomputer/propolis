@@ -53,6 +53,7 @@ pub mod test_vm;
 
 /// An instance of the PHD test framework.
 pub struct Framework {
+    pub(crate) tokio_rt: tokio::runtime::Runtime,
     pub(crate) tmp_directory: Utf8PathBuf,
     pub(crate) server_log_mode: ServerLogMode,
 
@@ -173,6 +174,9 @@ impl Framework {
         );
 
         Ok(Self {
+            tokio_rt: tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?,
             tmp_directory: params.tmp_directory,
             server_log_mode: params.server_log_mode,
             default_guest_cpus: params.default_guest_cpus,

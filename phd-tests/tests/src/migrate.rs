@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::time::Duration;
-
-use phd_framework::{artifacts, lifecycle::Action, TestVm};
+use phd_framework::{
+    artifacts, lifecycle::Action, test_vm::MigrationTimeout, TestVm,
+};
 use phd_testcase::*;
 use propolis_client::types::MigrationState;
 use uuid::Uuid;
@@ -110,7 +110,7 @@ fn incompatible_vms(ctx: &Framework) {
 
         let migration_id = Uuid::new_v4();
         assert!(target
-            .migrate_from(&source, migration_id, Duration::from_secs(60))
+            .migrate_from(&source, migration_id, MigrationTimeout::default())
             .is_err());
 
         // Explicitly check migration status on both the source and target to
@@ -133,9 +133,9 @@ fn multiple_migrations(ctx: &Framework) {
 
     vm0.launch()?;
     vm0.wait_to_boot()?;
-    vm1.migrate_from(&vm0, Uuid::new_v4(), Duration::from_secs(60))?;
+    vm1.migrate_from(&vm0, Uuid::new_v4(), MigrationTimeout::default())?;
     assert_eq!(vm1.run_shell_command("echo Hello world")?, "Hello world");
-    vm2.migrate_from(&vm1, Uuid::new_v4(), Duration::from_secs(60))?;
+    vm2.migrate_from(&vm1, Uuid::new_v4(), MigrationTimeout::default())?;
     assert_eq!(
         vm2.run_shell_command("echo I have migrated!")?,
         "I have migrated!"

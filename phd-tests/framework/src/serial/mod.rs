@@ -5,23 +5,18 @@
 //! Interfaces to access a guest's serial console.
 
 use anyhow::Result;
-use camino::Utf8PathBuf;
-use futures::{SinkExt, StreamExt};
-use reqwest::Upgraded;
-use tokio::{
-    sync::{
-        mpsc::{UnboundedReceiver, UnboundedSender},
-        oneshot,
-    },
-    task::JoinHandle,
+use camino::{Utf8Path, Utf8PathBuf};
+use futures::SinkExt;
+use propolis_client::support::InstanceSerialConsoleHelper;
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    oneshot,
 };
-use tokio_tungstenite::{
-    tungstenite::{protocol::Role, Message},
-    WebSocketStream,
-};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info};
 
 mod raw_buffer;
+mod vt80x24;
 
 /// Describes a request to wait for a string to appear on the serial console or
 /// in the console's back buffer.
@@ -49,13 +44,13 @@ trait Buffer: Send {
 }
 
 /// The kind of buffering discipline to use for a guest's serial output.
+#[derive(Debug)]
 pub enum BufferKind {
     /// Assume that the guest will output characters and command bytes (like
     /// carriage returns and line feeds) "in the raw" without trying to
     /// implement its own buffering or scrollback.
     Raw,
 
-    #[allow(dead_code)]
     /// Assume that the guest believes it is sending commands to drive a
     /// VT100-compatible 80x24 terminal and emulate that terminal.
     Vt80x24,
@@ -72,15 +67,22 @@ enum TaskCommand {
 
     /// Cancel any outstanding wait for bytes to appear in the buffer.
     CancelWait,
+
+    /// Change the buffer kind to the supplied kind. Note that this command
+    /// discards the current buffer's contents and cancels any active waits.
+    ChangeBufferKind(BufferKind),
+
+    /// Insert the supplied delay between each byte written to the serial
+    /// console (to avoid keyboard debouncing logic in the guest). If the delay
+    /// is set to 0, the serial task will send Vecs of bytes to the guest in a
+    /// single message.
+    SetGuestWriteDelay(std::time::Duration),
 }
 
 /// A connection to a guest serial console made available on a particular guest
 /// serial port.
+#[derive(Clone)]
 pub struct SerialConsole {
-    /// A handle to a tokio task that handles websocket messages to and from the
-    /// Propolis server that serves this console.
-    ws_task: JoinHandle<()>,
-
     /// Used to send commands to the worker thread for this console.
     cmd_tx: UnboundedSender<TaskCommand>,
 }
@@ -94,22 +96,14 @@ impl SerialConsole {
     ///   successfully connecting to Propolis's serial console API.
     /// - `buffer_kind`: Supplies the buffering discipline to start with.
     pub async fn new(
-        serial_conn: Upgraded,
+        serial_helper: InstanceSerialConsoleHelper,
         buffer_kind: BufferKind,
         log_path: Utf8PathBuf,
     ) -> Result<Self> {
-        let ws =
-            WebSocketStream::from_raw_socket(serial_conn, Role::Client, None)
-                .await;
-
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        let ws_task = tokio::spawn(serial_task(
-            ws,
-            new_buffer(buffer_kind, log_path)?,
-            cmd_rx,
-        ));
+        tokio::spawn(serial_task(serial_helper, buffer_kind, log_path, cmd_rx));
 
-        Ok(Self { ws_task, cmd_tx })
+        Ok(Self { cmd_tx })
     }
 
     /// Directs the console worker thread to send the supplied `bytes` to the
@@ -142,24 +136,33 @@ impl SerialConsole {
         self.cmd_tx.send(TaskCommand::CancelWait)?;
         Ok(())
     }
-}
 
-impl Drop for SerialConsole {
-    fn drop(&mut self) {
-        self.ws_task.abort();
+    /// Changes the buffering discipline for this console.
+    pub fn change_buffer_kind(&self, kind: BufferKind) -> Result<()> {
+        self.cmd_tx.send(TaskCommand::ChangeBufferKind(kind))?;
+        Ok(())
+    }
+
+    /// Sets the delay to insert between sending individual bytes to the guest.
+    pub fn set_guest_write_delay(
+        &self,
+        delay: std::time::Duration,
+    ) -> Result<()> {
+        self.cmd_tx.send(TaskCommand::SetGuestWriteDelay(delay))?;
+        Ok(())
     }
 }
 
 /// Creates a new serial console buffer of the supplied kind.
 fn new_buffer(
     kind: BufferKind,
-    log_path: Utf8PathBuf,
+    log_path: impl AsRef<Utf8Path>,
 ) -> Result<Box<dyn Buffer>> {
     match kind {
-        BufferKind::Raw => Ok(Box::new(raw_buffer::RawBuffer::new(log_path)?)),
-        BufferKind::Vt80x24 => unimplemented!(
-            "80x24 terminal emulation not yet implemented, see propolis#601"
-        ),
+        BufferKind::Raw => Ok(Box::new(raw_buffer::RawBuffer::new(
+            log_path.as_ref().to_path_buf(),
+        )?)),
+        BufferKind::Vt80x24 => Ok(Box::new(vt80x24::Vt80x24::new())),
     }
 }
 
@@ -175,10 +178,13 @@ fn new_buffer(
 ///   the target Propolis's serial console.
 #[tracing::instrument(level = "info", name = "serial console task", skip_all)]
 async fn serial_task(
-    mut ws: WebSocketStream<Upgraded>,
-    mut buffer: Box<dyn Buffer>,
+    mut stream: InstanceSerialConsoleHelper,
+    initial_buffer_kind: BufferKind,
+    log_path: Utf8PathBuf,
     mut cmd_rx: UnboundedReceiver<TaskCommand>,
 ) {
+    let mut buffer = new_buffer(initial_buffer_kind, &log_path).unwrap();
+    let mut debounce = std::time::Duration::from_secs(0);
     loop {
         tokio::select! {
             cmd = cmd_rx.recv() => {
@@ -188,11 +194,24 @@ async fn serial_task(
                 };
                 match cmd {
                     TaskCommand::SendBytes(bytes) => {
-                        if let Err(e) = ws.send(Message::Binary(bytes)).await {
-                            error!(
-                                ?e,
-                                "failed to send input to serial console websocket"
-                            );
+                        if debounce.is_zero() {
+                            if let Err(e) = stream.send(Message::Binary(bytes)).await {
+                                error!(
+                                    ?e,
+                                    "failed to send input to serial console websocket"
+                                );
+                            }
+                        } else {
+                            for b in bytes {
+                                if let Err(e) = stream.send(Message::Binary(vec![b])).await {
+                                    error!(
+                                        ?e,
+                                        "failed to send input to serial console websocket"
+                                    );
+                                }
+
+                                tokio::time::sleep(debounce).await;
+                            }
                         }
                     }
                     TaskCommand::RegisterWait(waiter) => {
@@ -201,23 +220,30 @@ async fn serial_task(
                     TaskCommand::CancelWait => {
                         buffer.cancel_wait_for_output();
                     }
+                    TaskCommand::ChangeBufferKind(kind) => {
+                        buffer = new_buffer(kind, &log_path).unwrap();
+                    }
+                    TaskCommand::SetGuestWriteDelay(delay) => {
+                        debounce = delay;
+                    }
                 }
             }
-            msg = ws.next() => {
-                match msg {
-                    Some(Ok(Message::Binary(bytes))) => {
+            msg = stream.recv() => {
+                let Some(Ok(msg)) = msg else {
+                    info!("serial websocket closed unexpectedly");
+                    break;
+                };
+
+                match msg.process().await {
+                    Ok(Message::Binary(bytes)) => {
                         buffer.process_bytes(&bytes);
                     }
-                    Some(Ok(Message::Close(..))) => {
+                    Ok(Message::Close(..)) => {
                         debug!("serial websocket closed");
                         break;
                     }
-                    Some(Ok(Message::Text(s))) => {
+                    Ok(Message::Text(s)) => {
                         info!(s, "serial socket control message");
-                    }
-                    None => {
-                        info!("serial websocket closed unexpectedly");
-                        break;
                     }
                     _ => continue,
                 }

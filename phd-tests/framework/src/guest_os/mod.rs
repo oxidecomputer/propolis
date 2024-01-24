@@ -12,15 +12,26 @@ use serde::{Deserialize, Serialize};
 mod alpine;
 mod debian11_nocloud;
 mod ubuntu22_04;
+mod windows;
+mod windows_server_2019;
 mod windows_server_2022;
 
 /// An entry in a sequence of interactions with the guest's command prompt.
+#[derive(Debug)]
 pub(super) enum CommandSequenceEntry {
     /// Wait for the supplied string to appear on the guest serial console.
     WaitFor(&'static str),
 
     /// Write the specified string as a command to the guest serial console.
     WriteStr(&'static str),
+
+    /// Change the serial console buffering discipline to the supplied
+    /// discipline.
+    ChangeSerialConsoleBuffer(crate::serial::BufferKind),
+
+    /// Set a delay between writing individual bytes to the guest serial console
+    /// to avoid keyboard debouncing logic in guests.
+    SetSerialByteWriteDelay(std::time::Duration),
 }
 
 pub(super) struct CommandSequence(pub Vec<CommandSequenceEntry>);
@@ -35,6 +46,16 @@ pub(super) trait GuestOs {
 
     /// Indicates whether the guest has a read-only filesystem.
     fn read_only_fs(&self) -> bool;
+
+    /// Some guests need to amend incoming shell commands from tests in order to
+    /// get output to display on the serial console in a way those guests can
+    /// accept (e.g. by clearing the screen immediately before running each
+    /// command). If a guest requires this kind of amendment for a given
+    /// command, this function returns `Some(amended_command)`. Otherwise it
+    /// returns `None`.
+    fn amend_shell_command(&self, _cmd: &str) -> Option<String> {
+        None
+    }
 }
 
 #[allow(dead_code)]
@@ -44,6 +65,7 @@ pub enum GuestOsKind {
     Alpine,
     Debian11NoCloud,
     Ubuntu2204,
+    WindowsServer2019,
     WindowsServer2022,
 }
 
@@ -71,6 +93,9 @@ pub(super) fn get_guest_os_adapter(kind: GuestOsKind) -> Box<dyn GuestOs> {
             Box::new(debian11_nocloud::Debian11NoCloud)
         }
         GuestOsKind::Ubuntu2204 => Box::new(ubuntu22_04::Ubuntu2204),
+        GuestOsKind::WindowsServer2019 => {
+            Box::new(windows_server_2019::WindowsServer2019)
+        }
         GuestOsKind::WindowsServer2022 => {
             Box::new(windows_server_2022::WindowsServer2022)
         }

@@ -19,16 +19,19 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
-use propolis_client::types::{
-    InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
-    InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
-    InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-    MigrationState, VersionedInstanceSpec,
+use propolis_client::{
+    support::{InstanceSerialConsoleHelper, WSClientOffset},
+    types::{
+        InstanceGetResponse, InstanceMigrateInitiateRequest,
+        InstanceProperties, InstanceSerialConsoleHistoryResponse,
+        InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
+        InstanceStateRequested, MigrationState, VersionedInstanceSpec,
+    },
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
 use tokio::{sync::oneshot, time::timeout};
-use tracing::{error, info, info_span, instrument, warn, Instrument};
+use tracing::{debug, error, info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
 type PropolisClientError =
@@ -56,6 +59,34 @@ pub enum VmStateError {
     InstanceAlreadyEnsured,
 }
 
+/// Specifies the timeout to apply to an attempt to migrate.
+pub enum MigrationTimeout {
+    /// Time out after the specified duration.
+    Explicit(std::time::Duration),
+
+    /// Allow MIGRATION_SECS_PER_GUEST_GIB seconds per GiB of guest memory.
+    InferFromMemorySize,
+}
+
+/// Specifies the mechanism a new VM should use to obtain a serial console.
+enum InstanceConsoleSource<'a> {
+    /// Connect a new console to the VM's server's serial console endpoint.
+    New,
+
+    // Clone an existing console connection from the supplied VM.
+    InheritFrom(&'a TestVm),
+}
+
+/// The number of seconds to add to the migration timeout per GiB of memory in
+/// the migrating VM.
+const MIGRATION_SECS_PER_GUEST_GIB: u64 = 90;
+
+impl Default for MigrationTimeout {
+    fn default() -> Self {
+        Self::InferFromMemorySize
+    }
+}
+
 enum VmState {
     New,
     Ensured { serial: SerialConsole },
@@ -69,7 +100,7 @@ enum VmState {
 /// serial console.
 pub struct TestVm {
     id: Uuid,
-    rt: tokio::runtime::Runtime,
+    rt: tokio::runtime::Handle,
     client: Client,
     server: server::PropolisServer,
     spec: VmSpec,
@@ -117,14 +148,19 @@ impl TestVm {
             .build(framework)
             .context("building environment for new VM")?
         {
-            Environment::Local(params) => {
-                Self::start_local_vm(id, spec, environment.clone(), params)
-            }
+            Environment::Local(params) => Self::start_local_vm(
+                id,
+                framework.tokio_rt.handle().clone(),
+                spec,
+                environment.clone(),
+                params,
+            ),
         }
     }
 
     fn start_local_vm(
         vm_id: Uuid,
+        rt: tokio::runtime::Handle,
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
         params: ServerProcessParameters,
@@ -152,8 +188,6 @@ impl TestVm {
 
         let span =
             info_span!(parent: None, "VM", vm = %vm_spec.vm_name, %vm_id);
-        let rt =
-            tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
@@ -197,9 +231,10 @@ impl TestVm {
 
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
-    async fn instance_ensure_async(
+    async fn instance_ensure_async<'a>(
         &self,
         migrate: Option<InstanceMigrateInitiateRequest>,
+        console_source: InstanceConsoleSource<'a>,
     ) -> Result<SerialConsole> {
         let _span = self.tracing_span.enter();
         let (vcpus, memory_mib) = match self.state {
@@ -267,21 +302,29 @@ impl TestVm {
         )
         .await?;
 
-        let serial_conn = self
-            .client
-            .instance_serial()
-            .most_recent(0)
-            .send()
-            .await
-            .map_err(|e| anyhow::Error::msg(e.to_string()))?
-            .into_inner();
-
-        let console = SerialConsole::new(
-            serial_conn,
-            BufferKind::Raw,
-            self.serial_log_file_path(),
+        let helper = InstanceSerialConsoleHelper::new(
+            std::net::SocketAddr::V4(self.server.server_addr()),
+            WSClientOffset::MostRecent(0),
+            None,
         )
         .await?;
+
+        let console = match console_source {
+            InstanceConsoleSource::New => {
+                SerialConsole::new(
+                    helper,
+                    BufferKind::Raw,
+                    self.serial_log_file_path(),
+                )
+                .await?
+            }
+            InstanceConsoleSource::InheritFrom(vm) => match &vm.state {
+                VmState::New => anyhow::bail!(
+                    "tried to inherit console from an unstarted VM"
+                ),
+                VmState::Ensured { serial } => (*serial).clone(),
+            },
+        };
 
         let instance_description =
             self.client.instance_get().send().await.with_context(|| {
@@ -317,7 +360,8 @@ impl TestVm {
         match self.state {
             VmState::New => {
                 let console = self.rt.block_on(async {
-                    self.instance_ensure_async(None).await
+                    self.instance_ensure_async(None, InstanceConsoleSource::New)
+                        .await
                 })?;
                 self.state = VmState::Ensured { serial: console };
             }
@@ -396,30 +440,43 @@ impl TestVm {
         &mut self,
         source: &Self,
         migration_id: Uuid,
-        timeout_duration: Duration,
+        timeout: MigrationTimeout,
     ) -> Result<()> {
+        let timeout_duration = match timeout {
+            MigrationTimeout::Explicit(val) => val,
+            MigrationTimeout::InferFromMemorySize => {
+                let mem_mib = self.spec.instance_spec.devices.board.memory_mb;
+                std::time::Duration::from_secs(
+                    (MIGRATION_SECS_PER_GUEST_GIB * mem_mib) / 1024,
+                )
+            }
+        };
+
         let _vm_guard = self.tracing_span.enter();
         match self.state {
             VmState::New => {
                 info!(
                     ?migration_id,
+                    ?timeout_duration,
                     "Migrating from source at address {}",
                     source.server.server_addr()
                 );
 
-                let console = self.rt.block_on(async {
-                    self.instance_ensure_async(Some(
-                        InstanceMigrateInitiateRequest {
+                let serial = self.rt.block_on(async {
+                    self.instance_ensure_async(
+                        Some(InstanceMigrateInitiateRequest {
                             migration_id,
                             src_addr: source.server.server_addr().to_string(),
                             src_uuid: Uuid::default(),
-                        },
-                    ))
+                        }),
+                        InstanceConsoleSource::InheritFrom(source),
+                    )
                     .await
                 })?;
-                self.state = VmState::Ensured { serial: console };
 
-                let span = info_span!("Migrate", ?migration_id);
+                self.state = VmState::Ensured { serial };
+
+                let span = info_span!("migrate", ?migration_id);
                 let _guard = span.enter();
                 let watch_migrate =
                     || -> Result<(), backoff::Error<anyhow::Error>> {
@@ -539,6 +596,7 @@ impl TestVm {
                 timeout_duration,
                 async move {
                     for step in boot_sequence.0 {
+                        debug!(?step, "executing command in boot sequence");
                         match step {
                             CommandSequenceEntry::WaitFor(s) => {
                                 self.wait_for_serial_output_async(
@@ -548,7 +606,18 @@ impl TestVm {
                                 .await?;
                             }
                             CommandSequenceEntry::WriteStr(s) => {
-                                self.send_serial_str_async(s).await?
+                                self.send_serial_str_async(s).await?;
+                                self.send_serial_str_async("\n").await?;
+                            }
+                            CommandSequenceEntry::ChangeSerialConsoleBuffer(
+                                kind,
+                            ) => {
+                                self.change_serial_buffer_kind(kind)?;
+                            }
+                            CommandSequenceEntry::SetSerialByteWriteDelay(
+                                duration,
+                            ) => {
+                                self.set_serial_byte_write_delay(duration)?;
                             }
                         }
                     }
@@ -621,24 +690,29 @@ impl TestVm {
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
     pub fn run_shell_command(&self, cmd: &str) -> Result<String> {
-        self.send_serial_str(cmd)?;
+        let amended = self.guest_os.amend_shell_command(cmd);
+        let to_send = amended.as_ref().map(String::as_str).unwrap_or(cmd);
 
         // If the command is multi-line, it won't be echoed literally.
         // instead, it will (probably) have each line begin with an `>`. so,
         // fix that.
-        let mut echo_cmd = cmd.trim_end().replace('\n', "\n> ");
-        echo_cmd.push('\n');
+        let to_send = to_send.trim_end().replace('\n', "\n> ");
+        self.send_serial_str(&to_send)?;
 
-        self.wait_for_serial_output(&echo_cmd, Duration::from_secs(15))
-            .context("Failed to wait for command line")?;
-        let mut out = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .context("Failed to wait for prompt running shell command")?;
-        out.truncate(out.trim_end().len());
-        Ok(out)
+        // Consume the amended command from the buffer so that it doesn't show
+        // up in the command output.
+        self.wait_for_serial_output(&to_send, Duration::from_secs(15))?;
+        self.send_serial_str("\n")?;
+
+        let out = self.wait_for_serial_output(
+            self.guest_os.get_shell_prompt(),
+            Duration::from_secs(300),
+        )?;
+
+        // Trim both ends of the output to get rid of any echoed newlines and/or
+        // whitespace that were inserted when sending '\n' to start processing
+        // the command.
+        Ok(out.trim().to_string())
     }
 
     fn send_serial_str(&self, string: &str) -> Result<()> {
@@ -646,15 +720,33 @@ impl TestVm {
     }
 
     async fn send_serial_str_async(&self, string: &str) -> Result<()> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(string.as_bytes());
-        bytes.push(b'\n');
-        self.send_serial_bytes_async(bytes).await
+        if !string.is_empty() {
+            self.send_serial_bytes_async(Vec::from(string.as_bytes())).await
+        } else {
+            Ok(())
+        }
     }
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
         match &self.state {
             VmState::Ensured { serial } => serial.send_bytes(bytes),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
+        }
+    }
+
+    fn change_serial_buffer_kind(&self, kind: BufferKind) -> Result<()> {
+        match &self.state {
+            VmState::Ensured { serial } => serial.change_buffer_kind(kind),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
+        }
+    }
+
+    fn set_serial_byte_write_delay(
+        &self,
+        delay: std::time::Duration,
+    ) -> Result<()> {
+        match &self.state {
+            VmState::Ensured { serial } => serial.set_guest_write_delay(delay),
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }

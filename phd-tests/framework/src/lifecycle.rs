@@ -2,13 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::time::Duration;
-
 use anyhow::Context;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{Framework, TestVm};
+use crate::{test_vm::MigrationTimeout, Framework, TestVm};
 
 /// The set of actions that can be taken on a VM undergoing lifecycle testing.
 pub enum Action<'a> {
@@ -88,11 +86,12 @@ impl Framework {
                     new_vm.migrate_from(
                         &vm,
                         migration_id,
-                        Duration::from_secs(120),
+                        MigrationTimeout::default(),
                     )?;
 
-                    // Explicitly check migration status on both the source and target to make
-                    // sure it is available even after migration has finished.
+                    // Explicitly check migration status on both the source and
+                    // target to make sure it is available even after migration
+                    // has finished.
                     let src_migration_state = vm
                         .get_migration_state(migration_id)
                         .context("Failed to get source VM migration state")?;
