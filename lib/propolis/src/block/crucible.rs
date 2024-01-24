@@ -32,8 +32,10 @@ struct WorkerState {
 }
 impl WorkerState {
     async fn process_loop(&self, acc_mem: MemAccessor) {
-        let read_only = self.info.read_only;
-        let skip_flush = self.skip_flush;
+        // Start with a read buffer of a single block
+        // It will be resized larger (and remain so) if subsequent read
+        // operations required additional space.
+        let mut readbuf = Buffer::new(1, self.info.block_size as usize);
         loop {
             let req = match self.attachment.wait_for_req().await {
                 Some(r) => r,
@@ -45,9 +47,10 @@ impl WorkerState {
             let res = if let Some(memctx) = acc_mem.access() {
                 match process_request(
                     &self.volume,
-                    read_only,
-                    skip_flush,
+                    &self.info,
+                    self.skip_flush,
                     &req,
+                    &mut readbuf,
                     &memctx,
                 )
                 .await
@@ -312,6 +315,9 @@ pub enum Error {
     #[error("backend is read-only")]
     ReadOnly,
 
+    #[error("offset or length not multiple of blocksize")]
+    BlocksizeMismatch,
+
     #[error("copied length {0} did not match expectation {1}")]
     CopyError(usize, usize),
 
@@ -330,30 +336,52 @@ impl From<Error> for block::Result {
     }
 }
 
+/// Calculate offset (in crucible::Block form) and length in blocksize
+fn block_offset_count(
+    off_bytes: usize,
+    len_bytes: usize,
+    block_size: usize,
+) -> Result<(crucible::Block, usize), Error> {
+    if off_bytes % block_size == 0 && len_bytes % block_size == 0 {
+        Ok((
+            crucible::Block::new(
+                (off_bytes / block_size) as u64,
+                block_size.trailing_zeros(),
+            ),
+            len_bytes / block_size,
+        ))
+    } else {
+        Err(Error::BlocksizeMismatch)
+    }
+}
+
 async fn process_request(
     block: &(dyn BlockIO + Send + Sync),
-    read_only: bool,
+    info: &block::DeviceInfo,
     skip_flush: bool,
     req: &block::Request,
+    readbuf: &mut Buffer,
     mem: &MemCtx,
 ) -> Result<(), Error> {
+    let block_size = info.block_size as usize;
+
     match req.oper() {
         block::Operation::Read(off, len) => {
+            let (off_blocks, len_blocks) =
+                block_offset_count(off, len, block_size)?;
+
             let maps =
                 req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
 
-            let offset = block.byte_offset_to_block(off as u64).await?;
-
             // Perform one large read from crucible, and write from data into
             // mappings
-            let data = Buffer::new(len);
-            let _ = block.read(offset, data.clone()).await?;
+            readbuf.reset(len_blocks, block_size);
+            let _ = block.read(off_blocks, readbuf).await?;
 
-            let source = data.as_vec().await;
             let mut nwritten = 0;
             for mapping in maps {
                 nwritten += mapping.write_bytes(
-                    &source[nwritten..(nwritten + mapping.len())],
+                    &readbuf[nwritten..(nwritten + mapping.len())],
                 )?;
             }
 
@@ -362,9 +390,12 @@ async fn process_request(
             }
         }
         block::Operation::Write(off, len) => {
-            if read_only {
+            if info.read_only {
                 return Err(Error::ReadOnly);
             }
+
+            let (off_blocks, _len_blocks) =
+                block_offset_count(off, len, block_size)?;
 
             // Read from all the mappings into vec, and perform one large write
             // to crucible
@@ -380,8 +411,7 @@ async fn process_request(
                 return Err(Error::CopyError(nread, len));
             }
 
-            let offset = block.byte_offset_to_block(off as u64).await?;
-            let _ = block.write(offset, crucible::Bytes::from(vec)).await?;
+            let _ = block.write(off_blocks, crucible::Bytes::from(vec)).await?;
         }
         block::Operation::Flush => {
             if !skip_flush {
@@ -391,4 +421,40 @@ async fn process_request(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::block_offset_count;
+
+    #[test]
+    fn err_on_bad_offset() {
+        let bs = 512;
+        assert!(block_offset_count(bs - 1, bs * 2, bs).is_err());
+        assert!(block_offset_count(bs + 1, bs * 2, bs).is_err());
+    }
+
+    #[test]
+    fn err_on_bad_size() {
+        let bs = 512;
+        assert!(block_offset_count(0, bs + 1, bs).is_err());
+        assert!(block_offset_count(0, bs - 1, bs).is_err());
+    }
+
+    #[test]
+    fn ok_for_valid() {
+        let bs = 512;
+        assert!(block_offset_count(0, bs, bs).is_ok());
+        assert!(block_offset_count(bs * 3, bs * 4, bs).is_ok());
+    }
+
+    #[test]
+    fn block_calc_ok() {
+        let bs = 512;
+        let off = bs * 4;
+        let (block, _len) = block_offset_count(off, 0, bs).unwrap();
+
+        assert_eq!(block.block_size_in_bytes(), bs as u32);
+        assert_eq!(block.bytes(), off);
+    }
 }
