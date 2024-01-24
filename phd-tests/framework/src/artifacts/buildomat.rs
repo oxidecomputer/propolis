@@ -221,7 +221,7 @@ impl super::DownloadConfig {
             let request = client
                 .get(uri)
                 .build()
-                // failing to build the request is a permanent (non-retryable)
+                // failing to build the request is a permanent (non-retriable)
                 // error, because any retries will use the same URI and request
                 // configuration, so they'd fail as well.
                 .map_err(|e| backoff::Error::permanent(e.into()))?;

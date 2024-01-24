@@ -53,6 +53,7 @@ impl Drop for Downstairs {
     fn drop(&mut self) {
         info!(?self, "Stopping Crucible downstairs process");
         let _ = self.process_handle.kill();
+        let _ = self.process_handle.wait();
     }
 }
 

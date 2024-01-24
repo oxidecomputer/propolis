@@ -9,7 +9,7 @@ use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
 
 use crate::{
     guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind},
-    serial::SerialConsole,
+    serial::{BufferKind, SerialConsole},
     test_vm::{
         environment::Environment, server::ServerProcessParameters, spec::VmSpec,
     },
@@ -17,6 +17,7 @@ use crate::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::types::{
     InstanceGetResponse, InstanceMigrateInitiateRequest, InstanceProperties,
@@ -26,8 +27,8 @@ use propolis_client::types::{
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
-use tokio::{sync::mpsc, time::timeout};
-use tracing::{info, info_span, instrument, warn, Instrument};
+use tokio::{sync::oneshot, time::timeout};
+use tracing::{error, info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
 type PropolisClientError =
@@ -73,6 +74,7 @@ pub struct TestVm {
     server: server::PropolisServer,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
+    data_dir: Utf8PathBuf,
 
     guest_os: Box<dyn GuestOs>,
     tracing_span: tracing::Span,
@@ -153,6 +155,7 @@ impl TestVm {
         let rt =
             tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
 
+        let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
             &vm_spec.vm_name,
@@ -169,6 +172,7 @@ impl TestVm {
             server,
             spec: vm_spec,
             environment_spec,
+            data_dir,
             guest_os,
             tracing_span: span,
             state: VmState::New,
@@ -226,18 +230,42 @@ impl TestVm {
             migrate,
         };
 
-        let mut retries = 3;
-        while let Err(e) =
-            self.client.instance_spec_ensure().body(&ensure_req).send().await
-        {
-            info!("Error {} while creating instance, will retry", e);
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            retries -= 1;
-            if retries == 0 {
-                tracing::error!("Failed to create instance after 3 retries");
-                anyhow::bail!(e);
+        // There is a brief period where the Propolis server process has begun
+        // to run but hasn't started its Dropshot server yet. Ensure requests
+        // that land in that window will fail, so retry them. This shouldn't
+        // ever take more than a couple of seconds (if it does, that should be
+        // considered a bug impacting VM startup times).
+        let ensure_fn = || async {
+            if let Err(e) = self
+                .client
+                .instance_spec_ensure()
+                .body(&ensure_req)
+                .send()
+                .await
+            {
+                match e {
+                    propolis_client::Error::CommunicationError(_) => {
+                        info!(%e, "retriable error from instance_spec_ensure");
+                        Err(backoff::Error::transient(e))
+                    }
+                    _ => {
+                        error!(%e, "permanent error from instance_spec_ensure");
+                        Err(backoff::Error::permanent(e))
+                    }
+                }
+            } else {
+                Ok(())
             }
-        }
+        };
+
+        backoff::future::retry(
+            backoff::ExponentialBackoff {
+                max_elapsed_time: Some(std::time::Duration::from_secs(2)),
+                ..Default::default()
+            },
+            ensure_fn,
+        )
+        .await?;
 
         let serial_conn = self
             .client
@@ -247,7 +275,13 @@ impl TestVm {
             .await
             .map_err(|e| anyhow::Error::msg(e.to_string()))?
             .into_inner();
-        let console = SerialConsole::new(serial_conn).await?;
+
+        let console = SerialConsole::new(
+            serial_conn,
+            BufferKind::Raw,
+            self.serial_log_file_path(),
+        )
+        .await?;
 
         let instance_description =
             self.client.instance_get().send().await.with_context(|| {
@@ -472,14 +506,11 @@ impl TestVm {
             if current == target {
                 Ok(())
             } else {
-                Err(backoff::Error::Transient {
-                    err: anyhow!(
-                        "not in desired state yet: current {:?}, target {:?}",
-                        current,
-                        target
-                    ),
-                    retry_after: None,
-                })
+                Err(backoff::Error::transient(anyhow!(
+                    "not in desired state yet: current {:?}, target {:?}",
+                    current,
+                    target
+                )))
             }
         };
 
@@ -567,19 +598,18 @@ impl TestVm {
         timeout_duration: Duration,
     ) -> Result<Option<String>> {
         let line = line.to_string();
-        let (preceding_tx, mut preceding_rx) = mpsc::channel(1);
+        let (preceding_tx, preceding_rx) = oneshot::channel();
         match &self.state {
             VmState::Ensured { serial } => {
-                serial
-                    .register_wait_for_string(line.clone(), preceding_tx)
-                    .await?;
-                let t = timeout(timeout_duration, preceding_rx.recv()).await;
+                serial.register_wait_for_string(line.clone(), preceding_tx)?;
+                let t = timeout(timeout_duration, preceding_rx).await;
                 match t {
                     Err(timeout_elapsed) => {
-                        serial.cancel_wait_for_string().await;
+                        serial.cancel_wait_for_string()?;
                         Err(anyhow!(timeout_elapsed))
                     }
-                    Ok(received_string) => Ok(received_string),
+                    Ok(Err(e)) => Err(e.into()),
+                    Ok(Ok(received_string)) => Ok(Some(received_string)),
                 }
             }
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
@@ -618,7 +648,7 @@ impl TestVm {
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
         match &self.state {
-            VmState::Ensured { serial } => serial.send_bytes(bytes).await,
+            VmState::Ensured { serial } => serial.send_bytes(bytes),
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
@@ -626,6 +656,15 @@ impl TestVm {
     /// Indicates whether this VM's guest OS has a read-only filesystem.
     pub fn guest_os_has_read_only_fs(&self) -> bool {
         self.guest_os.read_only_fs()
+    }
+
+    /// Generates a path to a file into which the VM's serial console adapter
+    /// can log serial console output.
+    fn serial_log_file_path(&self) -> Utf8PathBuf {
+        let filename = format!("{}.serial.log", self.spec.vm_name);
+        let mut path = self.data_dir.clone();
+        path.push(filename);
+        path
     }
 }
 
