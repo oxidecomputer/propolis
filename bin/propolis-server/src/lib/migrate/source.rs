@@ -232,7 +232,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
     ) -> Result<(), MigrateError> {
-        info!(self.log(), "offering ram"; "discipline" => ?offer_discipline);
+        info!(self.log(), "offering ram");
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
         let mut bits = [0u8; 4096];
