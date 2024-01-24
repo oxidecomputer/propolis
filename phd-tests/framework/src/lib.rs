@@ -81,6 +81,7 @@ pub struct FrameworkParameters<'a> {
     pub base_propolis: Option<BasePropolisSource<'a>>,
 
     pub tmp_directory: Utf8PathBuf,
+    pub artifact_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
     pub server_log_mode: ServerLogMode,
 
@@ -115,7 +116,7 @@ impl Framework {
     /// one framework and then distributes it to tests.
     pub fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
         let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
-            params.tmp_directory.clone(),
+            params.artifact_directory.clone(),
             &params.artifact_toml,
             params.max_buildomat_wait,
         )

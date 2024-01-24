@@ -50,6 +50,7 @@ fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
         crucible_downstairs: run_opts.crucible_downstairs()?,
         base_propolis: run_opts.base_propolis(),
         tmp_directory: run_opts.tmp_directory.clone(),
+        artifact_directory: run_opts.artifact_directory(),
         artifact_toml: run_opts.artifact_toml_path.clone(),
         server_log_mode: run_opts.server_logging_mode,
         default_guest_cpus: run_opts.default_guest_cpus,
