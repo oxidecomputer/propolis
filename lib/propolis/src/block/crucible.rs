@@ -336,6 +336,25 @@ impl From<Error> for block::Result {
     }
 }
 
+/// Calculate offset (in crucible::Block form) and length in blocksize
+fn block_offset_count(
+    off_bytes: usize,
+    len_bytes: usize,
+    block_size: usize,
+) -> Result<(crucible::Block, usize), Error> {
+    if off_bytes % block_size == 0 && len_bytes % block_size == 0 {
+        Ok((
+            crucible::Block::new(
+                (off_bytes / block_size) as u64,
+                block_size.trailing_zeros(),
+            ),
+            len_bytes / block_size,
+        ))
+    } else {
+        Err(Error::BlocksizeMismatch)
+    }
+}
+
 async fn process_request(
     block: &(dyn BlockIO + Send + Sync),
     info: &block::DeviceInfo,
@@ -345,25 +364,6 @@ async fn process_request(
     mem: &MemCtx,
 ) -> Result<(), Error> {
     let block_size = info.block_size as usize;
-
-    // Calculate offset (in crucible::Block form) and length in blocksize
-    fn block_offset_count(
-        off_bytes: usize,
-        len_bytes: usize,
-        block_size: usize,
-    ) -> Result<(crucible::Block, usize), Error> {
-        if off_bytes % block_size == 0 || len_bytes % block_size == 0 {
-            Ok((
-                crucible::Block::new(
-                    (off_bytes / block_size) as u64,
-                    block_size.trailing_zeros(),
-                ),
-                len_bytes / block_size,
-            ))
-        } else {
-            Err(Error::BlocksizeMismatch)
-        }
-    }
 
     match req.oper() {
         block::Operation::Read(off, len) => {
@@ -421,4 +421,40 @@ async fn process_request(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::block_offset_count;
+
+    #[test]
+    fn err_on_bad_offset() {
+        let bs = 512;
+        assert!(block_offset_count(bs - 1, bs * 2, bs).is_err());
+        assert!(block_offset_count(bs + 1, bs * 2, bs).is_err());
+    }
+
+    #[test]
+    fn err_on_bad_size() {
+        let bs = 512;
+        assert!(block_offset_count(0, bs + 1, bs).is_err());
+        assert!(block_offset_count(0, bs - 1, bs).is_err());
+    }
+
+    #[test]
+    fn ok_for_valid() {
+        let bs = 512;
+        assert!(block_offset_count(0, bs, bs).is_ok());
+        assert!(block_offset_count(bs * 3, bs * 4, bs).is_ok());
+    }
+
+    #[test]
+    fn block_calc_ok() {
+        let bs = 512;
+        let off = bs * 4;
+        let (block, _len) = block_offset_count(off, 0, bs).unwrap();
+
+        assert_eq!(block.block_size_in_bytes(), bs as u32);
+        assert_eq!(block.bytes(), off);
+    }
 }
