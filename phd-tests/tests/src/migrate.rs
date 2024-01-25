@@ -85,25 +85,58 @@ mod from_base {
     }
 }
 
-mod failure_recovery {
+/// Tests for migrations while a process is running on the guest.
+mod running_process {
     use super::*;
 
     #[phd_testcase]
-    fn import_failure(ctx: &Framework) {
-        let mut source = {
-            let mut cfg = ctx.vm_config_builder("import_failure_source");
-            cfg.fail_migration_imports(1);
-            ctx.spawn_vm(&cfg, None)?
-        };
-        let mut target1 =
-            ctx.spawn_successor_vm("import_failure_target1", &source, None)?;
-        let mut target2 =
-            ctx.spawn_successor_vm("import_failure_target2", &source, None)?;
+    fn migrate_running_process(ctx: &Framework) {
+        let mut source =
+            ctx.spawn_default_vm("migrate_running_process_source")?;
+        let mut target = ctx.spawn_successor_vm(
+            "migrate_running_process_target",
+            &source,
+            None,
+        )?;
 
         source.launch()?;
         source.wait_to_boot()?;
 
-        // TODO(eliza): make some pages dirty somehow...
+        mk_dirt(&source)?;
+
+        target.migrate_from(
+            &source,
+            Uuid::new_v4(),
+            Duration::from_secs(60),
+        )?;
+
+        check_dirt(&target)?;
+    }
+
+    #[phd_testcase]
+    fn import_failure(ctx: &Framework) {
+        let mut source = {
+            let mut cfg = ctx.vm_config_builder(
+                "migrate_running_process::import_failure_source",
+            );
+            cfg.fail_migration_imports(1);
+            ctx.spawn_vm(&cfg, None)?
+        };
+        let mut target1 = ctx.spawn_successor_vm(
+            "migrate_running_process::import_failure_target1",
+            &source,
+            None,
+        )?;
+        let mut target2 = ctx.spawn_successor_vm(
+            "migrate_running_process::import_failure_target2",
+            &source,
+            None,
+        )?;
+
+        source.launch()?;
+        source.wait_to_boot()?;
+
+        mk_dirt(&source)?;
 
         // first migration should fail.
         let error = target1
@@ -118,25 +151,33 @@ mod failure_recovery {
             Duration::from_secs(60),
         )?;
 
-        // TODO(eliza): ensure that the dirty pages were migrated somehow...
+        check_dirt(&target2)?;
     }
 
     #[phd_testcase]
     fn export_failure(ctx: &Framework) {
         let mut source = {
-            let mut cfg = ctx.vm_config_builder("export_failure_source");
+            let mut cfg = ctx.vm_config_builder(
+                "migrate_running_process::export_failure_source",
+            );
             cfg.fail_migration_exports(1);
             ctx.spawn_vm(&cfg, None)?
         };
-        let mut target1 =
-            ctx.spawn_successor_vm("export_failure_target1", &source, None)?;
-        let mut target2 =
-            ctx.spawn_successor_vm("export_failure_target2", &source, None)?;
+        let mut target1 = ctx.spawn_successor_vm(
+            "migrate_running_process::export_failure_target1",
+            &source,
+            None,
+        )?;
+        let mut target2 = ctx.spawn_successor_vm(
+            "migrate_running_process::export_failure_target2",
+            &source,
+            None,
+        )?;
 
         source.launch()?;
         source.wait_to_boot()?;
 
-        // TODO(eliza): make some pages dirty somehow...
+        mk_dirt(&source)?;
 
         // first migration should fail.
         let error = target1
@@ -151,7 +192,37 @@ mod failure_recovery {
             Duration::from_secs(60),
         )?;
 
-        // TODO(eliza): ensure that the dirty pages were migrated somehow...
+        check_dirt(&target2)?;
+    }
+
+    /// Starts a process on the guest VM which stores a bunch of strings in
+    /// memory and then suspends itself, waiting to be brought to the
+    /// foreground. Once the process is resumed, it checks the contents of the
+    /// string to ensure that they're still valid.
+    ///
+    /// Resuming this process after migration allows us to check that the
+    /// guest's memory was migrated correctly.
+    fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        vm.run_shell_command(concat!(
+            "cat >dirt.sh <<'EOF'\n",
+            include_str!("../testdata/posix_dirt.sh"),
+            "\nEOF"
+        ))?;
+        vm.run_shell_command("chmod +x dirt.sh")?;
+        let run_dirt = vm.run_shell_command("./dirt.sh")?;
+        assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
+        assert!(
+            run_dirt.contains("Stopped"),
+            "dirt.sh didn't suspend: {run_dirt:?}"
+        );
+
+        Ok(())
+    }
+
+    fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        let output = vm.run_shell_command("fg")?;
+        assert!(output.contains("all good"), "dirt.sh failed: {output:?}");
+        Ok(())
     }
 }
 
