@@ -137,8 +137,11 @@ pub struct RunOptions {
 
     /// The directory in which artifacts (guest OS images, bootroms, etc.)
     /// are to be stored.
+    ///
+    /// If this argument is not provided, artifacts will be stored in the
+    /// directory passed to `--tmp-directory`.
     #[clap(long, value_parser)]
-    pub artifact_directory: Utf8PathBuf,
+    artifact_directory: Option<Utf8PathBuf>,
 
     /// If true, direct Propolis servers created by the runner to log to
     /// stdout/stderr handles inherited from the runner.
@@ -237,6 +240,10 @@ impl FromStr for ArtifactCommit {
 }
 
 impl RunOptions {
+    pub fn artifact_directory(&self) -> Utf8PathBuf {
+        self.artifact_directory.as_ref().unwrap_or(&self.tmp_directory).clone()
+    }
+
     pub fn crucible_downstairs(
         &self,
     ) -> anyhow::Result<Option<CrucibleDownstairsSource>> {
