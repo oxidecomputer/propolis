@@ -103,7 +103,7 @@ mod failure_recovery {
         source.launch()?;
         source.wait_to_boot()?;
 
-        // TODO(eliza): make some pages dirty somehow...
+        mk_dirt(&source)?;
 
         // first migration should fail.
         let error = target1
@@ -118,7 +118,7 @@ mod failure_recovery {
             Duration::from_secs(60),
         )?;
 
-        // TODO(eliza): ensure that the dirty pages were migrated somehow...
+        check_dirt(&target2)?;
     }
 
     #[phd_testcase]
@@ -136,7 +136,7 @@ mod failure_recovery {
         source.launch()?;
         source.wait_to_boot()?;
 
-        // TODO(eliza): make some pages dirty somehow...
+        mk_dirt(&source)?;
 
         // first migration should fail.
         let error = target1
@@ -151,7 +151,27 @@ mod failure_recovery {
             Duration::from_secs(60),
         )?;
 
-        // TODO(eliza): ensure that the dirty pages were migrated somehow...
+        check_dirt(&target2)?;
+    }
+
+    fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        let dirt_script = concat!(
+            "echo \'",
+            include_str!("../testdata/posix_dirt.sh"),
+            "\' > dirt.sh"
+        );
+        vm.run_shell_command(dirt_script)?;
+        vm.run_shell_command("chmod +x dirt.sh")?;
+        let run_dirt = vm.run_shell_command("./dirt.sh")?;
+        assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
+
+        Ok(())
+    }
+
+    fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        let output = vm.run_shell_command("fg")?;
+        assert!(output.contains("all good"), "dirt.sh failed: {output:?}");
+        Ok(())
     }
 }
 
