@@ -31,6 +31,8 @@ impl Inner {
     fn push_character(&mut self, c: char) {
         if c == '\n' {
             self.log.write_all(self.line_buffer.as_bytes()).unwrap();
+            self.log.write_all(b"\n").unwrap();
+            self.log.flush().unwrap();
             self.line_buffer.clear();
         } else {
             self.line_buffer.push(c);
