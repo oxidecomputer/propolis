@@ -156,12 +156,25 @@ mod failure_recovery {
 
     #[phd_testcase]
     fn baseline(ctx: &Framework) {
-        let mut vm = ctx.spawn_default_vm("migration_failure_baseline")?;
-        vm.launch()?;
-        vm.wait_to_boot()?;
+        let mut source =
+            ctx.spawn_default_vm("migration_failure_baseline_source")?;
+        source.launch()?;
+        source.wait_to_boot()?;
 
-        mk_dirt(&vm)?;
-        check_dirt(&vm)?;
+        mk_dirt(&source)?;
+
+        let mut target = ctx.spawn_successor_vm(
+            "migration_failure_baseline_target",
+            &source,
+            None,
+        )?;
+        target.migrate_from(
+            &source,
+            Uuid::new_v4(),
+            Duration::from_secs(60),
+        )?;
+
+        check_dirt(&target)?;
     }
 
     fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
