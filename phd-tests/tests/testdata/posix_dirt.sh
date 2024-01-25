@@ -12,9 +12,7 @@ done
 
 echo "made dirt"
 
-# ash doesn't have a suspend builtin, but fortunately, we can make our own!
 kill -s TSTP $$
-
 
 echo "$DIRT" > dirt.txt
 i=0
