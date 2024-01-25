@@ -56,6 +56,7 @@ fn main() -> anyhow::Result<()> {
     let mut propolis_base_branch = None;
     let mut propolis_local_path = None;
     let mut crucible_commit = None;
+    let mut artifacts_toml = None;
     while let Some(arg) = args.next() {
         macro_rules! args {
             ($($arg:path => $var:ident),+$(,)?) => {
@@ -77,6 +78,7 @@ fn main() -> anyhow::Result<()> {
             args::PROPOLIS_BASE => propolis_base_branch,
             args::PROPOLIS_CMD => propolis_local_path,
             args::CRUCIBLE_COMMIT => crucible_commit,
+            args::ARTIFACTS_TOML => artifacts_toml,
         }
     }
 
@@ -112,13 +114,19 @@ fn main() -> anyhow::Result<()> {
 
     mkdir(&tmp_dir, "temp directory")?;
 
-    let artifact_toml = relativize(&meta.workspace_root)
-        .join("phd-tests")
-        .join("artifacts.toml");
-    if artifact_toml.exists() {
-        cargo_log!("Found", "artifacts.toml at `{artifact_toml}`")
+    let artifacts_toml =
+        artifacts_toml.map(Utf8PathBuf::from).unwrap_or_else(|| {
+            // if there's no explicitly overridden `artifacts.toml` path,
+            // determine the default one from the workspace path.
+            relativize(&meta.workspace_root)
+                .join("phd-tests")
+                .join("artifacts.toml")
+        });
+
+    if artifacts_toml.exists() {
+        cargo_log!("Found", "artifacts.toml at `{artifacts_toml}`")
     } else {
-        anyhow::bail!("Missing artifacts config `{artifact_toml}`!");
+        anyhow::bail!("Missing artifacts config `{artifacts_toml}`!");
     }
 
     let status = run_exit_code(
@@ -131,12 +139,12 @@ fn main() -> anyhow::Result<()> {
             .arg(crucible_commit.as_deref().unwrap_or("auto"))
             .arg(args::PROPOLIS_BASE)
             .arg(propolis_base_branch.as_deref().unwrap_or("master"))
+            .arg(args::ARTIFACTS_TOML)
+            .arg(&artifacts_toml)
             .arg("--artifact-directory")
             .arg(&artifact_dir)
             .arg("--tmp-directory")
             .arg(&tmp_dir)
-            .arg("--artifact-toml-path")
-            .arg(&artifact_toml)
             .args(bonus_args),
     )?;
 
@@ -148,6 +156,7 @@ mod args {
     pub(super) const PROPOLIS_CMD: &str = "--propolis-server-cmd";
     pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
     pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
+    pub(super) const ARTIFACTS_TOML: &str = "--artifact-toml-path";
 }
 
 fn build_bin(name: impl AsRef<str>) -> anyhow::Result<escargot::CargoRun> {
