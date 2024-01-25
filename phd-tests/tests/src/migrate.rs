@@ -85,20 +85,28 @@ mod from_base {
     }
 }
 
-mod failure_recovery {
+mod running_process {
     use super::*;
 
     #[phd_testcase]
     fn import_failure(ctx: &Framework) {
         let mut source = {
-            let mut cfg = ctx.vm_config_builder("import_failure_source");
+            let mut cfg = ctx.vm_config_builder(
+                "migrate_running_process::import_failure_source",
+            );
             cfg.fail_migration_imports(1);
             ctx.spawn_vm(&cfg, None)?
         };
-        let mut target1 =
-            ctx.spawn_successor_vm("import_failure_target1", &source, None)?;
-        let mut target2 =
-            ctx.spawn_successor_vm("import_failure_target2", &source, None)?;
+        let mut target1 = ctx.spawn_successor_vm(
+            "migrate_running_process::import_failure_target1",
+            &source,
+            None,
+        )?;
+        let mut target2 = ctx.spawn_successor_vm(
+            "migrate_running_process::import_failure_target2",
+            &source,
+            None,
+        )?;
 
         source.launch()?;
         source.wait_to_boot()?;
@@ -124,14 +132,22 @@ mod failure_recovery {
     #[phd_testcase]
     fn export_failure(ctx: &Framework) {
         let mut source = {
-            let mut cfg = ctx.vm_config_builder("export_failure_source");
+            let mut cfg = ctx.vm_config_builder(
+                "migrate_running_process::export_failure_source",
+            );
             cfg.fail_migration_exports(1);
             ctx.spawn_vm(&cfg, None)?
         };
-        let mut target1 =
-            ctx.spawn_successor_vm("export_failure_target1", &source, None)?;
-        let mut target2 =
-            ctx.spawn_successor_vm("export_failure_target2", &source, None)?;
+        let mut target1 = ctx.spawn_successor_vm(
+            "migrate_running_process::export_failure_target1",
+            &source,
+            None,
+        )?;
+        let mut target2 = ctx.spawn_successor_vm(
+            "migrate_running_process::export_failure_target2",
+            &source,
+            None,
+        )?;
 
         source.launch()?;
         source.wait_to_boot()?;
@@ -157,14 +173,14 @@ mod failure_recovery {
     #[phd_testcase]
     fn baseline(ctx: &Framework) {
         let mut source =
-            ctx.spawn_default_vm("migration_failure_baseline_source")?;
+            ctx.spawn_default_vm("migrate_running_process_source")?;
         source.launch()?;
         source.wait_to_boot()?;
 
         mk_dirt(&source)?;
 
         let mut target = ctx.spawn_successor_vm(
-            "migration_failure_baseline_target",
+            "migrate_running_process_target",
             &source,
             None,
         )?;
