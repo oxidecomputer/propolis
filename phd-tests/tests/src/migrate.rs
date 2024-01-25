@@ -154,16 +154,29 @@ mod failure_recovery {
         check_dirt(&target2)?;
     }
 
+    #[phd_testcase]
+    fn baseline(ctx: &Framework) {
+        let mut vm = ctx.spawn_default_vm("migration_failure_baseline")?;
+        vm.launch()?;
+        vm.wait_to_boot()?;
+
+        mk_dirt(&vm)?;
+        check_dirt(&vm)?;
+    }
+
     fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
-        let dirt_script = concat!(
-            "echo \'",
+        vm.run_shell_command(concat!(
+            "cat >dirt.sh <<'EOF'\n",
             include_str!("../testdata/posix_dirt.sh"),
-            "\' > dirt.sh"
-        );
-        vm.run_shell_command(dirt_script)?;
+            "\nEOF"
+        ))?;
         vm.run_shell_command("chmod +x dirt.sh")?;
         let run_dirt = vm.run_shell_command("./dirt.sh")?;
         assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
+        assert!(
+            run_dirt.contains("Stopped"),
+            "dirt.sh didn't suspend: {run_dirt:?}"
+        );
 
         Ok(())
     }
