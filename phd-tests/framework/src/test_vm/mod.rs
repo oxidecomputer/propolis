@@ -623,14 +623,20 @@ impl TestVm {
     pub fn run_shell_command(&self, cmd: &str) -> Result<String> {
         self.send_serial_str(cmd)?;
 
-        let mut echo_cmd = cmd.to_string();
+        // If the command is multi-line, it won't be echoed literally.
+        // instead, it will (probably) have each line begin with an `>`. so,
+        // fix that.
+        let mut echo_cmd = cmd.trim_end().replace('\n', "\n> ");
         echo_cmd.push('\n');
 
-        self.wait_for_serial_output(&echo_cmd, Duration::from_secs(15))?;
-        let mut out = self.wait_for_serial_output(
-            self.guest_os.get_shell_prompt(),
-            Duration::from_secs(300),
-        )?;
+        self.wait_for_serial_output(&echo_cmd, Duration::from_secs(15))
+            .context("Failed to wait for command line")?;
+        let mut out = self
+            .wait_for_serial_output(
+                self.guest_os.get_shell_prompt(),
+                Duration::from_secs(300),
+            )
+            .context("Failed to wait for prompt running shell command")?;
         out.truncate(out.trim_end().len());
         Ok(out)
     }
