@@ -453,17 +453,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-phd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "camino",
- "cargo_metadata",
- "escargot",
- "owo-colors",
-]
-
-[[package]]
 name = "cargo-platform"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6211,9 +6200,13 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "camino",
+ "cargo_metadata",
  "clap 4.4.0",
+ "escargot",
  "glob",
  "globset",
+ "owo-colors",
  "serde",
  "serde_json",
  "serde_yaml",

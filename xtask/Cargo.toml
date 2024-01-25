@@ -10,8 +10,12 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+camino.workspace = true
+cargo_metadata.workspace = true
 clap = { workspace = true, features = ["derive"] }
+escargot.workspace = true
 serde = { workspace = true, features = ["derive"] }
+owo-colors = { workspace = true, features = ["supports-colors"] }
 serde_json = { workspace = true }
 serde_yaml = { version = "0.9" }
 glob = { version = "0.3.1" }

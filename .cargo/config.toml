@@ -1,6 +1,5 @@
 [alias]
 xtask = "run --package xtask --quiet --"
-phd = "run --package cargo-phd --quiet --"
 
 [env]
 # Currently required by Falcon due to

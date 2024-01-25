@@ -40,30 +40,34 @@ macro_rules! cargo_warn {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
     let phd_runner = build_bin("phd-runner")?;
 
-    let mut args = std::env::args().skip(1);
+    let mut arg_iter = phd_args.iter().map(String::as_str);
     // If the `phd-runner` subcommand is not `run`, just forward straight to
     // phd-runner without any extra processing.
-    if args.next().as_deref() != Some(args::RUN) {
-        let status =
-            run_exit_code(phd_runner.command().args(std::env::args().skip(1)))?;
+    if arg_iter.next() != Some("run") {
+        let status = run_exit_code(phd_runner.command().args(phd_args))?;
         std::process::exit(status);
     }
 
+    // Bash-script-style arg parsing, rather than using `clap`, because we
+    // want to filter out the args we default regardless of their position in
+    // the input. A `clap` parser can only accept unrecognized args if they're
+    // trailing after all recognized args, which isn't the behavior we want, as
+    // we don't know what order the `phd-runner` command line will come in.
     let mut bonus_args = Vec::new();
     let mut propolis_base_branch = None;
     let mut propolis_local_path = None;
     let mut crucible_commit = None;
     let mut artifacts_toml = None;
-    while let Some(arg) = args.next() {
+    while let Some(arg) = arg_iter.next() {
         macro_rules! args {
             ($($arg:path => $var:ident),+$(,)?) => {
                 match arg.as_ref() {
                     $(
                         $arg => {
-                            let val = args.next().ok_or_else(|| {
+                            let val = arg_iter.next().ok_or_else(|| {
                                 anyhow::anyhow!("Missing value for argument `{}`", $arg)
                             })?;
                             cargo_log!("Overridden", "{} {val:?}", $arg);
@@ -136,9 +140,9 @@ fn main() -> anyhow::Result<()> {
             .arg(args::PROPOLIS_CMD)
             .arg(&propolis_local_path)
             .arg(args::CRUCIBLE_COMMIT)
-            .arg(crucible_commit.as_deref().unwrap_or("auto"))
+            .arg(crucible_commit.unwrap_or("auto"))
             .arg(args::PROPOLIS_BASE)
-            .arg(propolis_base_branch.as_deref().unwrap_or("master"))
+            .arg(propolis_base_branch.unwrap_or("master"))
             .arg(args::ARTIFACTS_TOML)
             .arg(&artifacts_toml)
             .arg("--artifact-directory")

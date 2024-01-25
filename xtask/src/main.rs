@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 mod task_clippy;
 mod task_fmt;
 mod task_license;
+mod task_phd;
 mod task_prepush;
 mod util;
 
@@ -36,6 +37,13 @@ enum Cmds {
     License,
     /// Preform pre-push checks (clippy, license, fmt, etc)
     Prepush,
+    /// Run the PHD test suite
+    #[clap(disable_help_subcommand = true)]
+    Phd {
+        /// Arguments to pass to `phd-runner`.
+        #[clap(trailing_var_arg = true)]
+        phd_args: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -50,6 +58,7 @@ fn main() -> Result<()> {
             println!("License checks pass");
             Ok(())
         }
+        Cmds::Phd { phd_args } => task_phd::cmd_phd(phd_args),
         Cmds::Prepush => {
             task_prepush::cmd_prepush()?;
 
