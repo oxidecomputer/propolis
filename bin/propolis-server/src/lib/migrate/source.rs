@@ -185,7 +185,27 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             req_ram_range,
             vmm_ram_range
         );
-        self.offer_ram(vmm_ram_range, req_ram_range).await?;
+
+        // TODO(#387): Ideally, both the pre-pause and post-pause phases would
+        // offer just dirty pages. To do this safely, the source must remember
+        // all the pages it has ever offered to any target so that they can be
+        // re-offered if migration fails and is later retried.
+        //
+        // Offering all pages before pausing guarantees that all modified pages
+        // will be transferred without having to do any extra tracking (but uses
+        // host CPU time and network bandwidth inefficiently).
+        self.offer_ram(
+            vmm_ram_range,
+            req_ram_range,
+            match phase {
+                MigratePhase::RamPushPrePause => RamOfferDiscipline::OfferAll,
+                MigratePhase::RamPushPostPause => {
+                    RamOfferDiscipline::OfferDirty
+                }
+                _ => unreachable!(),
+            },
+        )
+        .await?;
 
         loop {
             let m = self.read_msg().await?;
@@ -231,6 +251,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         &mut self,
         vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
+        offer_discipline: RamOfferDiscipline,
     ) -> Result<(), MigrateError> {
         info!(self.log(), "offering ram");
         let vmm_ram_start = *vmm_ram_range.start();
@@ -255,10 +276,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (start_gpa..end_gpa).step_by(step) {
+            // Always capture the dirty page mask even if the offer discipline
+            // says to offer all pages. This ensures that pages that are
+            // transferred now and not touched again will not be offered again.
             self.track_dirty(GuestAddr(gpa), &mut bits).await?;
-            if bits.iter().all(|&b| b == 0) {
-                continue;
+            match offer_discipline {
+                RamOfferDiscipline::OfferAll => {
+                    for byte in bits.iter_mut() {
+                        *byte = 0xff;
+                    }
+                }
+                RamOfferDiscipline::OfferDirty => {
+                    if bits.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                }
             }
+
             let end = end_gpa.min(gpa + step as u64);
             self.send_msg(memx::make_mem_offer(gpa, end, &bits)).await?;
         }
