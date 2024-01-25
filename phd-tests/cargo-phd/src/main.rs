@@ -144,15 +144,14 @@ fn main() -> anyhow::Result<()> {
 }
 
 mod args {
-    pub(super) const RUN: &'static str = "run";
-    pub(super) const PROPOLIS_CMD: &'static str = "--propolis-server-cmd";
-    pub(super) const PROPOLIS_BASE: &'static str = "--base-propolis-branch";
-    pub(super) const CRUCIBLE_COMMIT: &'static str =
-        "--crucible-downstairs-commit";
+    pub(super) const RUN: &str = "run";
+    pub(super) const PROPOLIS_CMD: &str = "--propolis-server-cmd";
+    pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
+    pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
 }
 
 fn build_bin(name: impl AsRef<str>) -> anyhow::Result<escargot::CargoRun> {
-    const PROFILE: &'static str = if cfg!(debug_assertions) {
+    const PROFILE: &str = if cfg!(debug_assertions) {
         "dev [unoptimized + debuginfo]"
     } else {
         "release [optimized]"
@@ -189,16 +188,16 @@ fn mkdir(
 }
 
 fn run_exit_code(cmd: &mut Command) -> anyhow::Result<i32> {
-    cargo_log!("Running", "{:#?}", PrettyCmd(&cmd));
+    cargo_log!("Running", "{:#?}", PrettyCmd(cmd));
     cmd.status()
         .with_context(|| {
-            format!("Failed to execute command {:?}", PrettyCmd(&cmd))
+            format!("Failed to execute command {:?}", PrettyCmd(cmd))
         })?
         .code()
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Command {:?} exited without a status code",
-                PrettyCmd(&cmd)
+                PrettyCmd(cmd)
             )
         })
 }
@@ -223,7 +222,7 @@ fn delete_old_tmps(
     let mut deleted = 0;
     let mut sz = 0;
     let mut errs = 0;
-    for entry in fs::read_dir(&tmp_dir)
+    for entry in fs::read_dir(tmp_dir)
         .with_context(|| format!("Failed to read `{tmp_dir}`"))?
     {
         let entry = match entry {
@@ -323,7 +322,7 @@ impl std::fmt::Debug for PrettyCmd<'_> {
     }
 }
 
-fn relativize<'a>(path: &'a Utf8Path) -> &'a Utf8Path {
+fn relativize(path: &Utf8Path) -> &Utf8Path {
     use std::sync::OnceLock;
 
     static PWD: OnceLock<Utf8PathBuf> = OnceLock::new();
