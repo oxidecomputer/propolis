@@ -205,7 +205,7 @@ mod running_process {
     fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
         vm.run_shell_command(concat!(
             "cat >dirt.sh <<'EOF'\n",
-            include_str!("../testdata/posix_dirt.sh"),
+            include_str!("../testdata/dirt.sh"),
             "\nEOF"
         ))?;
         vm.run_shell_command("chmod +x dirt.sh")?;
