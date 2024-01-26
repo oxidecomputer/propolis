@@ -55,7 +55,7 @@ ls $propolis
 # Disable errexit so that we still upload logs on failure
 set +e
 
-(RUST_BACKTRACE=1 RUST_LOG=debug ptime -m pfexec $runner \
+(RUST_BACKTRACE=1 RUST_LOG="info,phd=debug" ptime -m pfexec $runner \
 	--emit-bunyan \
 	run \
 	--propolis-server-cmd $propolis \
