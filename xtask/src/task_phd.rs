@@ -61,6 +61,7 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
     let mut propolis_local_path = None;
     let mut crucible_commit = None;
     let mut artifacts_toml = None;
+    let mut artifact_dir = None;
     while let Some(arg) = arg_iter.next() {
         macro_rules! args {
             ($($arg:path => $var:ident),+$(,)?) => {
@@ -83,6 +84,7 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
             args::PROPOLIS_CMD => propolis_local_path,
             args::CRUCIBLE_COMMIT => crucible_commit,
             args::ARTIFACTS_TOML => artifacts_toml,
+            args::ARTIFACTS_DIR => artifact_dir,
         }
     }
 
@@ -103,7 +105,14 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
         .exec()
         .context("Failed to run cargo metadata")?;
     let phd_dir = relativize(&meta.target_directory).join("phd");
-    let artifact_dir = phd_dir.join("artifacts");
+
+    let artifact_dir =
+        artifact_dir.map(Utf8PathBuf::from).unwrap_or_else(|| {
+            // if there's no explicitly overridden `artifact_dir` path, use
+            // `target/phd/artifacts`.
+            phd_dir.join("artifacts")
+        });
+
     mkdir(&artifact_dir, "artifact directory")?;
 
     let tmp_dir = {
@@ -161,6 +170,7 @@ mod args {
     pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
     pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
     pub(super) const ARTIFACTS_TOML: &str = "--artifact-toml-path";
+    pub(super) const ARTIFACTS_DIR: &str = "--artifact-directory";
 }
 
 fn build_bin(name: impl AsRef<str>) -> anyhow::Result<escargot::CargoRun> {
