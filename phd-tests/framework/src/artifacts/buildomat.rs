@@ -6,6 +6,7 @@ use anyhow::Context;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt, str::FromStr, time::Duration};
+use tracing::{debug, info};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -209,7 +210,7 @@ impl super::DownloadConfig {
         &self,
         uri: &str,
     ) -> anyhow::Result<bytes::Bytes> {
-        tracing::info!(
+        debug!(
             timeout = ?self.timeout,
             %uri,
             "Downloading file from Buildomat...",
@@ -244,7 +245,7 @@ impl super::DownloadConfig {
         };
 
         let log_retry = |error, wait| {
-            tracing::info!(
+            warn!(
                 %error,
                 %uri,
                 "Buildomat download failed, trying again in {wait:?}..."

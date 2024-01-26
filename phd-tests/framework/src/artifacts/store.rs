@@ -21,7 +21,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 struct StoredArtifact {
@@ -42,7 +42,7 @@ impl StoredArtifact {
         // If the artifact already exists and has been verified, return the path
         // to it straightaway.
         if let Some(path) = &self.cached_path {
-            info!(%path, "Verified artifact already exists");
+            debug!(%path, "Verified artifact already exists");
             return Ok(path.clone());
         }
 
@@ -53,7 +53,7 @@ impl StoredArtifact {
         {
             let mut path = path.clone();
             path.push(self.description.filename.as_str());
-            info!(%path, ?sha256, "Examining locally-sourced artifact");
+            debug!(%path, ?sha256, "Examining locally-sourced artifact");
 
             // Local files can have a digest but aren't required to have one.
             // This facilitates the use of local build outputs whose hashes
@@ -66,7 +66,7 @@ impl StoredArtifact {
 
             // The file is in the right place and has the right hash (if that
             // was checked), so mark it as cached and return the cached path.
-            info!(%path, "Locally-sourced artifact is valid, caching its path");
+            debug!(%path, "Locally-sourced artifact is valid, caching its path");
             self.cached_path = Some(path.clone());
             return Ok(path.clone());
         }
@@ -86,14 +86,14 @@ impl StoredArtifact {
         maybe_path
             .push(format!("{}/{}", expected_digest, self.description.filename));
 
-        info!(%maybe_path, "checking for existing copy of artifact");
+        debug!(%maybe_path, "checking for existing copy of artifact");
         if maybe_path.is_file() {
             if file_hash_equals(&maybe_path, expected_digest).is_ok() {
-                info!(%maybe_path,
+                debug!(%maybe_path,
                       "Valid artifact already exists, caching its path");
                 return self.cache_path(maybe_path);
             } else {
-                info!(%maybe_path, "Existing artifact is invalid, deleting it");
+                warn!(%maybe_path, "Existing artifact is invalid, deleting it");
                 std::fs::remove_file(&maybe_path)?;
             }
         } else if maybe_path.exists() {
@@ -153,11 +153,11 @@ impl StoredArtifact {
             let extracted_path = path.with_file_name(filename);
 
             path = if !extracted_path.exists() {
-                info!(%extracted_path, %untar_path, "Extracting artifact from tarball");
+                debug!(%extracted_path, %untar_path, "Extracting artifact from tarball");
 
                 extract_tar_gz(&path, untar_path)?
             } else {
-                info!(%extracted_path, "Artifact already extracted from tarball");
+                debug!(%extracted_path, "Artifact already extracted from tarball");
                 extracted_path
             }
         };
@@ -212,7 +212,7 @@ impl Store {
                 remote_server_uris,
             },
         };
-        info!(?store, "Created new artifact store from manifest");
+        debug!(?store, "Created new artifact store from manifest");
         store
     }
 
@@ -220,7 +220,7 @@ impl Store {
         &mut self,
         propolis_server_cmd: &Utf8Path,
     ) -> anyhow::Result<()> {
-        tracing::info!(%propolis_server_cmd, "Adding Propolis server from local command");
+        info!(%propolis_server_cmd, "Adding Propolis server from local command");
         self.add_local_artifact(
             propolis_server_cmd,
             DEFAULT_PROPOLIS_ARTIFACT,
@@ -241,15 +241,15 @@ impl Store {
             buildomat::Repo::from_static("oxidecomputer/propolis");
         let commit = match source {
             BasePropolisSource::BuildomatBranch(branch) => {
-                tracing::info!("Adding 'current' Propolis server from Buildomat Git branch '{branch}'");
+                info!("Adding 'current' Propolis server from Buildomat Git branch '{branch}'");
                 REPO.get_branch_head(branch)?
             }
             BasePropolisSource::BuildomatGitRev(commit) => {
-                tracing::info!("Adding 'current' Propolis server from Buildomat Git commit '{commit}'");
+                info!("Adding 'current' Propolis server from Buildomat Git commit '{commit}'");
                 commit.clone()
             }
             BasePropolisSource::Local(cmd) => {
-                tracing::info!("Adding 'current' Propolis server from local command '{cmd}'");
+                info!("Adding 'current' Propolis server from local command '{cmd}'");
                 return self.add_local_artifact(
                     cmd,
                     BASE_PROPOLIS_ARTIFACT,
@@ -299,7 +299,7 @@ impl Store {
             crate::CrucibleDownstairsSource::Local(
                 ref crucible_downstairs_cmd,
             ) => {
-                tracing::info!(%crucible_downstairs_cmd, "Adding crucible-downstairs from local command");
+                info!(%crucible_downstairs_cmd, "Adding crucible-downstairs from local command");
                 self.add_local_artifact(
                     crucible_downstairs_cmd,
                     CRUCIBLE_DOWNSTAIRS_ARTIFACT,
@@ -307,7 +307,7 @@ impl Store {
                 )
             }
             crate::CrucibleDownstairsSource::BuildomatGitRev(ref commit) => {
-                tracing::info!(%commit, "Adding crucible-downstairs from Buildomat Git revision");
+                info!(%commit, "Adding crucible-downstairs from Buildomat Git revision");
                 let repo =
                     buildomat::Repo::from_static("oxidecomputer/crucible");
                 let series = buildomat::Series::from_static("nightly-image");
@@ -543,7 +543,7 @@ fn extract_tarball(
         let mut entry = match entry {
             Ok(e) => e,
             Err(error) => {
-                tracing::warn!(%error, "skipping bad tarball entry");
+                warn!(%error, "skipping bad tarball entry");
                 continue;
             }
         };
@@ -610,7 +610,7 @@ impl DownloadConfig {
 
         for remote in &self.remote_server_uris {
             let uri = format!("{remote}/{filename}");
-            info!(timeout = ?self.timeout, "Downloading {filename} from {uri}");
+            debug!(timeout = ?self.timeout, "Downloading {filename} from {uri}");
 
             let request = client.get(&uri).build()?;
             let response = match client.execute(request) {
