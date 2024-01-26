@@ -174,11 +174,6 @@ mod args {
 }
 
 fn build_bin(name: impl AsRef<str>) -> anyhow::Result<escargot::CargoRun> {
-    const PROFILE: &str = if cfg!(debug_assertions) {
-        "dev [unoptimized + debuginfo]"
-    } else {
-        "release [optimized]"
-    };
     let name = name.as_ref();
     cargo_log!("Compiling", "{name}");
 
@@ -186,12 +181,15 @@ fn build_bin(name: impl AsRef<str>) -> anyhow::Result<escargot::CargoRun> {
     let bin = escargot::CargoBuild::new()
         .package(name)
         .bin(name)
-        .current_release()
         .current_target()
         .run()
         .with_context(|| format!("Failed to build {name}"))?;
     let t1 = t0.elapsed();
-    cargo_log!("Finished", "{name} {PROFILE} in {:0.2}s", t1.as_secs_f64());
+    cargo_log!(
+        "Finished",
+        "{name} dev [unoptimized + debuginfo] in {:0.2}s",
+        t1.as_secs_f64()
+    );
     Ok(bin)
 }
 
