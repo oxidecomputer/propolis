@@ -73,7 +73,7 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
                 $var = Some(val);
             }};
         }
-        match arg.as_ref() {
+        match arg {
             args::PROPOLIS_BASE => take_next_arg!(propolis_base_branch),
             args::PROPOLIS_CMD => take_next_arg!(propolis_local_path),
             args::CRUCIBLE_COMMIT => take_next_arg!(crucible_commit),
