@@ -6,7 +6,7 @@ use anyhow::Context;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, fmt, str::FromStr, time::Duration};
-use tracing::{debug, info};
+use tracing::{debug, warn};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
