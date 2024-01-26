@@ -133,9 +133,7 @@ impl Vt80x24 {
             // the "pre-existing" space in that column.
             let (old_col, old_row) = self.surface.cursor_position();
             self.surface.add_change(make_absolute_cursor_position(0, 0));
-            self.surface.add_change(Change::Text(
-                std::iter::repeat(' ').take(char_count).collect(),
-            ));
+            self.surface.add_change(Change::Text(" ".repeat(char_count)));
             let seq = self
                 .surface
                 .add_change(make_absolute_cursor_position(old_col, old_row));

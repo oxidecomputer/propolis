@@ -691,7 +691,7 @@ impl TestVm {
     /// to the serial console after the command was sent.
     pub fn run_shell_command(&self, cmd: &str) -> Result<String> {
         let amended = self.guest_os.amend_shell_command(cmd);
-        let to_send = amended.as_ref().map(String::as_str).unwrap_or(cmd);
+        let to_send = amended.as_deref().unwrap_or(cmd);
 
         // If the command is multi-line, it won't be echoed literally.
         // instead, it will (probably) have each line begin with an `>`. so,
