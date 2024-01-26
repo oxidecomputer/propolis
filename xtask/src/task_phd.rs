@@ -41,7 +41,7 @@ macro_rules! cargo_warn {
 }
 
 pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
-    let phd_runner = build_bin("phd-runner")?;
+    let phd_runner = build_bin("phd-runner", false)?;
 
     let mut arg_iter = phd_args.iter().map(String::as_str);
     // If the `phd-runner` subcommand is not `run`, just forward straight to
@@ -62,36 +62,45 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
     let mut crucible_commit = None;
     let mut artifacts_toml = None;
     let mut artifact_dir = None;
+    let mut propolis_release_mode = false;
     while let Some(arg) = arg_iter.next() {
-        macro_rules! args {
-            ($($arg:path => $var:ident),+$(,)?) => {
-                match arg.as_ref() {
-                    $(
-                        $arg => {
-                            let val = arg_iter.next().ok_or_else(|| {
-                                anyhow::anyhow!("Missing value for argument `{}`", $arg)
-                            })?;
-                            cargo_log!("Overridden", "{} {val:?}", $arg);
-                            $var = Some(val);
-                        }
-                    ),+
-                    _ => bonus_args.push(arg),
-                }
-            }
+        macro_rules! take_next_arg {
+            ($var:ident) => {{
+                let val = arg_iter.next().ok_or_else(|| {
+                    anyhow::anyhow!("Missing value for argument `{}`", arg)
+                })?;
+                cargo_log!("Overridden", "{} {val:?}", arg);
+                $var = Some(val);
+            }};
         }
-        args! {
-            args::PROPOLIS_BASE => propolis_base_branch,
-            args::PROPOLIS_CMD => propolis_local_path,
-            args::CRUCIBLE_COMMIT => crucible_commit,
-            args::ARTIFACTS_TOML => artifacts_toml,
-            args::ARTIFACTS_DIR => artifact_dir,
+        match arg.as_ref() {
+            args::PROPOLIS_BASE => take_next_arg!(propolis_base_branch),
+            args::PROPOLIS_CMD => take_next_arg!(propolis_local_path),
+            args::CRUCIBLE_COMMIT => take_next_arg!(crucible_commit),
+            args::ARTIFACTS_TOML => take_next_arg!(artifacts_toml),
+            args::ARTIFACTS_DIR => take_next_arg!(artifact_dir),
+            args::PROPOLIS_RELEASE | args::PROPOLIS_RELEASE_SHORT => {
+                propolis_release_mode = true;
+            }
+            _ => bonus_args.push(arg),
         }
     }
 
     let propolis_local_path = match propolis_local_path {
-        Some(path) => path.into(),
+        Some(path) => {
+            if propolis_release_mode {
+                cargo_warn!(
+                    "setting `{}` to build propolis-server in release mode \
+                    does nothing if an existing propolis binary path is \
+                    provided using `{}`",
+                    args::PROPOLIS_RELEASE,
+                    args::PROPOLIS_CMD,
+                );
+            }
+            path.into()
+        }
         None => {
-            let bin = build_bin("propolis-server")?;
+            let bin = build_bin("propolis-server", propolis_release_mode)?;
             let path = bin
                 .path()
                 .try_into()
@@ -171,25 +180,30 @@ mod args {
     pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
     pub(super) const ARTIFACTS_TOML: &str = "--artifact-toml-path";
     pub(super) const ARTIFACTS_DIR: &str = "--artifact-directory";
+    pub(super) const PROPOLIS_RELEASE: &str = "--release";
+    pub(super) const PROPOLIS_RELEASE_SHORT: &str = "-r";
 }
 
-fn build_bin(name: impl AsRef<str>) -> anyhow::Result<escargot::CargoRun> {
+fn build_bin(
+    name: impl AsRef<str>,
+    release: bool,
+) -> anyhow::Result<escargot::CargoRun> {
     let name = name.as_ref();
     cargo_log!("Compiling", "{name}");
 
+    let mut cmd =
+        escargot::CargoBuild::new().package(name).bin(name).current_target();
+    let profile = if release {
+        cmd = cmd.release();
+        "release [optimized]"
+    } else {
+        "dev [unoptimized + debuginfo]"
+    };
+
     let t0 = time::Instant::now();
-    let bin = escargot::CargoBuild::new()
-        .package(name)
-        .bin(name)
-        .current_target()
-        .run()
-        .with_context(|| format!("Failed to build {name}"))?;
+    let bin = cmd.run().with_context(|| format!("Failed to build {name}"))?;
     let t1 = t0.elapsed();
-    cargo_log!(
-        "Finished",
-        "{name} dev [unoptimized + debuginfo] in {:0.2}s",
-        t1.as_secs_f64()
-    );
+    cargo_log!("Finished", "{name} {profile} in {:0.2}s", t1.as_secs_f64());
     Ok(bin)
 }
 
