@@ -5,6 +5,7 @@
 pub use phd_testcase;
 
 mod crucible;
+mod framework;
 mod hw;
 mod migrate;
 mod server_state_machine;
