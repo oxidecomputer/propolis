@@ -99,6 +99,14 @@ impl Vt80x24 {
     /// immediately satisfiable, stores `waiter` to try again later.
     fn satisfy_or_set_wait(&mut self, waiter: OutputWaiter) {
         assert!(self.waiter.is_none());
+
+        let _too_long = waiter.wanted.lines().find(|line| line.len() > 80);
+        assert_eq!(
+            _too_long, None,
+            "vt80x24 waits for lines of more than 80 characters will never be \
+            satisfied"
+        );
+
         let mut contents = self.surface.screen_chars_to_string();
         trace!(?contents, "termwiz contents");
         if let Some(idx) = contents.rfind(&waiter.wanted) {
@@ -119,7 +127,9 @@ impl Vt80x24 {
             // Then move the cursor to the top left and "type" as many blank
             // spaces as there were characters in the buffer. Note that termwiz
             // inserts extra '\n' characters at the end of every line that need
-            // to be ignored.
+            // to be ignored here. (It's assumed that none of the actual
+            // terminal cells contain a '\n' control character--if one of those
+            // is printed the cursor moves instead.)
             let char_count = contents.chars().filter(|c| *c != '\n').count();
 
             // Before typing anything, remember the old cursor position so that

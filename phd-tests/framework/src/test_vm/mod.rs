@@ -68,15 +68,6 @@ pub enum MigrationTimeout {
     InferFromMemorySize,
 }
 
-/// Specifies the mechanism a new VM should use to obtain a serial console.
-enum InstanceConsoleSource<'a> {
-    /// Connect a new console to the VM's server's serial console endpoint.
-    New,
-
-    // Clone an existing console connection from the supplied VM.
-    InheritFrom(&'a TestVm),
-}
-
 /// The number of seconds to add to the migration timeout per GiB of memory in
 /// the migrating VM.
 const MIGRATION_SECS_PER_GUEST_GIB: u64 = 90;
@@ -85,6 +76,21 @@ impl Default for MigrationTimeout {
     fn default() -> Self {
         Self::InferFromMemorySize
     }
+}
+
+impl From<std::time::Duration> for MigrationTimeout {
+    fn from(value: std::time::Duration) -> Self {
+        Self::Explicit(value)
+    }
+}
+
+/// Specifies the mechanism a new VM should use to obtain a serial console.
+enum InstanceConsoleSource<'a> {
+    /// Connect a new console to the VM's server's serial console endpoint.
+    New,
+
+    // Clone an existing console connection from the supplied VM.
+    InheritFrom(&'a TestVm),
 }
 
 enum VmState {
@@ -440,9 +446,9 @@ impl TestVm {
         &mut self,
         source: &Self,
         migration_id: Uuid,
-        timeout: MigrationTimeout,
+        timeout: impl Into<MigrationTimeout>,
     ) -> Result<()> {
-        let timeout_duration = match timeout {
+        let timeout_duration = match Into::<MigrationTimeout>::into(timeout) {
             MigrationTimeout::Explicit(val) => val,
             MigrationTimeout::InferFromMemorySize => {
                 let mem_mib = self.spec.instance_spec.devices.board.memory_mb;
