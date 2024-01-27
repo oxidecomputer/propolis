@@ -5,6 +5,8 @@
 //! Guest OS adaptations for Windows Server 2019 images. See [the general
 //! Windows module](mod@super::windows) documentation for more information.
 
+use std::borrow::Cow;
+
 use super::{CommandSequence, GuestOs, GuestOsKind};
 
 /// The guest adapter for Windows Server 2019 images. See [the general
@@ -25,7 +27,7 @@ impl GuestOs for WindowsServer2019 {
         false
     }
 
-    fn amend_shell_command(&self, cmd: &str) -> Option<String> {
+    fn amend_shell_command<'a>(&self, cmd: &'a str) -> Cow<'a, str> {
         // The simplest way to ensure that the 80x24 terminal buffer contains
         // just the output of the most recent command and the subsequent prompt
         // is to ask Windows to clear the screen and run the command in a single
@@ -38,8 +40,6 @@ impl GuestOs for WindowsServer2019 {
         // anything to the terminal; when this happens, it doesn't re-send the
         // new command prompt, since it's "already there" on the output terminal
         // (even though it may have been cleared from the match buffer).
-        let mut new_cmd = "reset; ".to_owned();
-        new_cmd.push_str(cmd);
-        Some(new_cmd)
+        Cow::from(format!("reset; {}", cmd))
     }
 }

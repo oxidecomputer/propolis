@@ -10,7 +10,7 @@ use std::io::{BufWriter, Write};
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use termwiz::escape::parser::Parser;
-use tracing::error;
+use tracing::{error, trace};
 
 use super::{Buffer, OutputWaiter};
 
@@ -119,7 +119,9 @@ impl Buffer for RawBuffer {
                 Action::Control(ControlCode::LineFeed) => {
                     self.push_character('\n')
                 }
-                _ => {}
+                _ => {
+                    trace!(?action, "raw buffer ignored action");
+                }
             }
         }
     }

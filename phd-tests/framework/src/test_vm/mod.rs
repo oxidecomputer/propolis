@@ -690,8 +690,7 @@ impl TestVm {
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
     pub fn run_shell_command(&self, cmd: &str) -> Result<String> {
-        let amended = self.guest_os.amend_shell_command(cmd);
-        let to_send = amended.as_deref().unwrap_or(cmd);
+        let to_send = self.guest_os.amend_shell_command(cmd);
 
         // If the command is multi-line, it won't be echoed literally.
         // instead, it will (probably) have each line begin with an `>`. so,

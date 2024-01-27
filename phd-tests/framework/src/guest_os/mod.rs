@@ -5,7 +5,7 @@
 //! Traits and objects that abstract over differences between guest OS
 //! distributions.
 
-use std::str::FromStr;
+use std::{borrow::Cow, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -50,11 +50,10 @@ pub(super) trait GuestOs {
     /// Some guests need to amend incoming shell commands from tests in order to
     /// get output to display on the serial console in a way those guests can
     /// accept (e.g. by clearing the screen immediately before running each
-    /// command). If a guest requires this kind of amendment for a given
-    /// command, this function returns `Some(amended_command)`. Otherwise it
-    /// returns `None`.
-    fn amend_shell_command(&self, _cmd: &str) -> Option<String> {
-        None
+    /// command). This function amends an incoming command according to the
+    /// guest adapter's instructions.
+    fn amend_shell_command<'a>(&self, cmd: &'a str) -> Cow<'a, str> {
+        Cow::Borrowed(cmd)
     }
 }
 
