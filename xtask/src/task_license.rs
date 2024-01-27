@@ -4,7 +4,6 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -50,7 +49,7 @@ fn check_file(fp: File, needle: &[String]) -> Result<Option<String>> {
 
 pub(crate) fn cmd_license() -> Result<()> {
     // Find licenserc file
-    let ws_root = PathBuf::from(workspace_root()?);
+    let ws_root = workspace_root()?;
     let mut lic_path = ws_root.clone();
     lic_path.push(".licenserc.yaml");
 
@@ -83,9 +82,7 @@ pub(crate) fn cmd_license() -> Result<()> {
     for item in config.header.paths.iter() {
         let mut glob_path = ws_root.clone();
         glob_path.push(item);
-        let entries = glob::glob(
-            glob_path.to_str().context("glob path not utf-8 valid")?,
-        )?;
+        let entries = glob::glob(glob_path.as_str())?;
 
         for entry in entries {
             let item_path = entry.context("item path not readable")?;
