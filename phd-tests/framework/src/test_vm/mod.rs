@@ -696,19 +696,26 @@ impl TestVm {
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
     pub fn run_shell_command(&self, cmd: &str) -> Result<String> {
+        // Send the command out the serial port, including any amendments
+        // required by the guest. Do not send the final '\n' keystroke that
+        // actually issues the command.
         let to_send = self.guest_os.amend_shell_command(cmd);
-
-        // If the command is multi-line, it won't be echoed literally.
-        // instead, it will (probably) have each line begin with an `>`. so,
-        // fix that.
-        let to_send = to_send.trim_end().replace('\n', "\n> ");
         self.send_serial_str(&to_send)?;
 
-        // Consume the amended command from the buffer so that it doesn't show
-        // up in the command output.
-        self.wait_for_serial_output(&to_send, Duration::from_secs(15))?;
+        // Wait for the command to be echoed back. This ensures that the echoed
+        // command is consumed from the buffer such that it won't be returned
+        // as output when waiting for the post-command shell prompt to appear.
+        //
+        // Tests may send multi-line commands. Assume these won't be echoed
+        // literally and that each line will instead be preceded by `> `.
+        let echo = to_send.trim_end().replace('\n', "\n> ");
+        self.wait_for_serial_output(&echo, Duration::from_secs(15))?;
         self.send_serial_str("\n")?;
 
+        // Once the command has run, the guest should display another prompt.
+        // Treat the unconsumed buffered text before this point as the command
+        // output. (Note again that the command itself was already consumed by
+        // the wait above.)
         let out = self.wait_for_serial_output(
             self.guest_os.get_shell_prompt(),
             Duration::from_secs(300),
