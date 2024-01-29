@@ -116,6 +116,6 @@ impl MigrateSingle for MigrationFailureDevice {
 
 impl Schema<'_> for MigrationFailurePayloadV1 {
     fn id() -> SchemaId {
-        (MigrationFailureDevice::NAME, 1)
+        ("testdev-migration-failure", 1)
     }
 }
