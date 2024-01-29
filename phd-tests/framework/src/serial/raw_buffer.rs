@@ -17,11 +17,18 @@ use super::{Buffer, OutputWaiter};
 /// A "raw" serial console buffer that handles incoming characters and newline
 /// control bytes and nothing else.
 pub(super) struct RawBuffer {
+    // The actual buffer is factored out to a separate struct from the `Parser`,
+    // so that we can mutably borrow the `Parser` while calling mutating methods
+    // on the buffer in `Parser::parse`; see `process_bytes`.
+    buffer: Inner,
+    parser: Parser,
+}
+
+struct Inner {
     log: std::io::BufWriter<std::fs::File>,
     line_buffer: String,
     wait_buffer: String,
     waiter: Option<OutputWaiter>,
-    parser: Parser,
 }
 
 impl RawBuffer {
@@ -32,14 +39,45 @@ impl RawBuffer {
         })?;
         let writer = BufWriter::new(log_file);
         Ok(Self {
-            log: writer,
-            line_buffer: String::new(),
-            wait_buffer: String::new(),
-            waiter: None,
+            buffer: Inner {
+                log: writer,
+                line_buffer: String::new(),
+                wait_buffer: String::new(),
+                waiter: None,
+            },
             parser: Parser::new(),
         })
     }
+}
 
+impl Buffer for RawBuffer {
+    fn process_bytes(&mut self, bytes: &[u8]) {
+        use termwiz::escape::{Action, ControlCode};
+        let Self { buffer, parser } = self;
+        parser.parse(bytes, |action| match action {
+            Action::Print(c) => buffer.push_character(c),
+            Action::PrintString(s) => {
+                buffer.push_str(&s);
+            }
+            Action::Control(ControlCode::LineFeed) => {
+                buffer.push_character('\n')
+            }
+            _ => {
+                trace!(?action, "raw buffer ignored action");
+            }
+        });
+    }
+
+    fn register_wait_for_output(&mut self, waiter: OutputWaiter) {
+        self.buffer.satisfy_or_set_wait(waiter);
+    }
+
+    fn cancel_wait_for_output(&mut self) -> Option<OutputWaiter> {
+        self.buffer.waiter.take()
+    }
+}
+
+impl Inner {
     /// Pushes `c` to the buffer's contents and attempts to satisfy active
     /// waits.
     fn push_character(&mut self, c: char) {
@@ -106,36 +144,7 @@ impl RawBuffer {
     }
 }
 
-impl Buffer for RawBuffer {
-    fn process_bytes(&mut self, bytes: &[u8]) {
-        use termwiz::escape::{Action, ControlCode};
-        let actions = self.parser.parse_as_vec(bytes);
-        for action in actions {
-            match action {
-                Action::Print(c) => self.push_character(c),
-                Action::PrintString(s) => {
-                    self.push_str(&s);
-                }
-                Action::Control(ControlCode::LineFeed) => {
-                    self.push_character('\n')
-                }
-                _ => {
-                    trace!(?action, "raw buffer ignored action");
-                }
-            }
-        }
-    }
-
-    fn register_wait_for_output(&mut self, waiter: OutputWaiter) {
-        self.satisfy_or_set_wait(waiter);
-    }
-
-    fn cancel_wait_for_output(&mut self) -> Option<OutputWaiter> {
-        self.waiter.take()
-    }
-}
-
-impl Drop for RawBuffer {
+impl Drop for Inner {
     fn drop(&mut self) {
         if let Err(e) = self.log.flush() {
             error!(%e, "failed to flush serial console log during drop");
