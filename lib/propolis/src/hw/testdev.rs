@@ -7,17 +7,16 @@
 //! These devices do things which are generally unwanted in real life, such as
 //! "intentionally breaking Propolis", "intentionally breaking the guest OS", or
 //! some combination of the two.
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use crate::inventory::Entity;
 use crate::migrate::*;
 
 use serde::{Deserialize, Serialize};
-
 use slog::info;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
 
 /// A test device for simulating migration failures.
 pub struct MigrationFailureDevice {
