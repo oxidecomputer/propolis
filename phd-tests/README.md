@@ -148,8 +148,9 @@ running `phd-runner` directly:
 
 - Automatically rebuilding the `propolis-server` binary whenever the source code
   changes, to prevent accidentally running tests against a stale build.
-- Automatically [managing a PHD artifact store and test temporary directories]
-  (#artifact-store-and-temporary-directory-management) in `target/phd`.
+- Automatically [managing a PHD artifact store and test temporary
+  directories](#artifact-store-and-temporary-directory-management) in
+  `target/phd`.
 - Providing [reasonable defaults](#default-arguments) (which may be overridden)
   for [arguments required by the `phd-runner` CLI](#runtime-options).
 
