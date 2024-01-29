@@ -908,7 +908,10 @@ fn setup_instance(
 
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name, 0x100, &hdl,
-                    )?;
+                    )
+                    .with_context(|| {
+                        format!("Could not connect to VioNA VNIC '{vnic_name}'")
+                    })?;
                     inv.register_instance(&viona, bdf.to_string())?;
                     chipset.pci_attach(bdf, viona);
                 }
