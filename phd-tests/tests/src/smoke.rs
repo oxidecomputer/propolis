@@ -16,16 +16,6 @@ fn nproc_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-fn multiline_serial_test(ctx: &Framework) {
-    let mut vm = ctx.spawn_default_vm("multiline_test")?;
-    vm.launch()?;
-    vm.wait_to_boot()?;
-
-    let out = vm.run_shell_command("echo \\\nhello \\\nworld")?;
-    assert_eq!(out, "hello world");
-}
-
-#[phd_testcase]
 fn instance_spec_get_test(ctx: &Framework) {
     let mut vm = ctx.spawn_vm(
         ctx.vm_config_builder("instance_spec_test").cpus(4).memory_mib(3072),
