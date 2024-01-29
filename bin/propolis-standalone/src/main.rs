@@ -879,6 +879,8 @@ fn setup_instance(
 
     for (name, dev) in config.devices.iter() {
         let driver = &dev.driver as &str;
+        slog::debug!(log, "creating device"; "name" => ?name, "driver" => %driver);
+
         let bdf = if driver.starts_with("pci-") {
             config::parse_bdf(
                 dev.options.get("pci-path").unwrap().as_str().unwrap(),
@@ -953,7 +955,7 @@ fn setup_instance(
                     }
                 }
                 _ => {
-                    slog::error!(log, "unrecognized driver"; "name" => name);
+                    slog::error!(log, "unrecognized driver {driver}"; "name" => name);
                     return Err(Error::new(
                         ErrorKind::Other,
                         "Unrecognized driver",
