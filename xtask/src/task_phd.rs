@@ -79,7 +79,13 @@ pub(crate) struct RunArgs {
 
     /// Arguments to pass to `phd-runner run`.
     ///
-    /// Use `cargo xtask phd runner-help` for details on the arguments passed to `phd-runner`.
+    /// If the `--propolis-server-cmd`, `--crucible-downstairs-commit`,
+    /// `--base-propolis-branch`, `--artifact-toml-path`, or
+    /// `--artifact-directory` arguments are passed here, they will override
+    /// `cargo xtask phd`'s default values for those arguments.
+    ///
+    /// Use `cargo xtask phd runner-help` for details on the arguments passed to
+    /// `phd-runner`.
     #[clap(trailing_var_arg = true)]
     phd_args: Vec<String>,
 }
@@ -221,7 +227,7 @@ impl Cmd {
         let status = run_exit_code(
             phd_runner
                 .command()
-                .arg(args::RUN)
+                .arg("run")
                 .arg(args::PROPOLIS_CMD)
                 .arg(&propolis_local_path)
                 .arg(args::CRUCIBLE_COMMIT)
@@ -242,7 +248,6 @@ impl Cmd {
 }
 
 mod args {
-    pub(super) const RUN: &str = "run";
     pub(super) const PROPOLIS_CMD: &str = "--propolis-server-cmd";
     pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
     pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
