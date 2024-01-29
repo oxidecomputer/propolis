@@ -41,9 +41,25 @@ macro_rules! cargo_warn {
 }
 
 pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
+    let mut arg_iter = phd_args.iter().map(String::as_str).peekable();
+
+    let meta = cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("Failed to run cargo metadata")?;
+    let phd_dir = relativize(&meta.target_directory).join("phd");
+
+    let mut tmp_dir = phd_dir.join("tmp");
+    let now = time::SystemTime::now();
+
+    if arg_iter.peek() == Some(&"tidy") {
+        delete_old_tmps(tmp_dir, now)?;
+        cargo_log!("Tidying up", "old temporary directories...");
+        std::process::exit(0);
+    }
+
     let phd_runner = build_bin("phd-runner", false)?;
 
-    let mut arg_iter = phd_args.iter().map(String::as_str);
     // If the `phd-runner` subcommand is not `run`, just forward straight to
     // phd-runner without any extra processing.
     if arg_iter.next() != Some("run") {
@@ -109,12 +125,6 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
         }
     };
 
-    let meta = cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .context("Failed to run cargo metadata")?;
-    let phd_dir = relativize(&meta.target_directory).join("phd");
-
     let artifact_dir =
         artifact_dir.map(Utf8PathBuf::from).unwrap_or_else(|| {
             // if there's no explicitly overridden `artifact_dir` path, use
@@ -125,8 +135,6 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
     mkdir(&artifact_dir, "artifact directory")?;
 
     let tmp_dir = {
-        let mut tmp_dir = phd_dir.join("tmp");
-        let now = time::SystemTime::now();
         delete_old_tmps(&tmp_dir, now)?;
         tmp_dir.push(
             now.duration_since(time::UNIX_EPOCH).unwrap().as_secs().to_string(),
@@ -277,18 +285,18 @@ fn delete_old_tmps(
                 continue;
             }
         };
-        let accessed = match meta.accessed() {
+        let modified = match meta.modified() {
             Ok(a) => a,
             Err(e) => {
                 errs += 1;
                 cargo_warn!(
-                    "couldn't get last accessed time for `{}`: {e}",
+                    "couldn't get last modified time for `{}`: {e}",
                     path.display(),
                 );
                 continue;
             }
         };
-        if let Ok(age) = now.duration_since(accessed) {
+        if let Ok(age) = now.duration_since(modified) {
             const DAY_SECS: u64 = 60 * 60 * 24;
             if age.as_secs() > DAY_SECS {
                 match fs::remove_dir_all(&path) {
