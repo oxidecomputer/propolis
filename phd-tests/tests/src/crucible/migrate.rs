@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::time::Duration;
-
+use phd_framework::test_vm::MigrationTimeout;
 use phd_testcase::*;
 use tracing::info;
 use uuid::Uuid;
@@ -29,7 +28,11 @@ fn smoke_test(ctx: &Framework) {
     let mut target =
         ctx.spawn_successor_vm("crucible_migrate_smoke_target", &source, None)?;
 
-    target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
+    target.migrate_from(
+        &source,
+        Uuid::new_v4(),
+        MigrationTimeout::default(),
+    )?;
     let lsout = target.run_shell_command("ls foo.bar")?;
     assert_eq!(lsout, "foo.bar");
 }
@@ -66,7 +69,11 @@ fn load_test(ctx: &Framework) {
     // Start copying the generated file into a second file, then start a
     // migration while that copy is in progress.
     source.run_shell_command("dd if=./rand.txt of=./rand_new.txt &")?;
-    target.migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))?;
+    target.migrate_from(
+        &source,
+        Uuid::new_v4(),
+        MigrationTimeout::default(),
+    )?;
 
     // Wait for the background command to finish running, then compute the
     // hash of the copied file. If all went well this will match the hash of

@@ -9,23 +9,37 @@ use std::io::{BufWriter, Write};
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use tracing::error;
+use termwiz::escape::parser::Parser;
+use tracing::{error, trace};
 
 use super::{Buffer, OutputWaiter};
 
-/// Wraps up the contents of a raw buffer in a single struct that can implement
-/// [`vte::Perform`]. This allows the "outer" buffer to contain a
-/// [`vte::Parser`] and call its `advance` method with a mutable reference to
-/// the buffer contents as the first argument without running afoul of mutable
-/// borrowing rules.
-struct Inner {
+/// A "raw" serial console buffer that handles incoming characters and newline
+/// control bytes and nothing else.
+pub(super) struct RawBuffer {
     log: std::io::BufWriter<std::fs::File>,
     line_buffer: String,
     wait_buffer: String,
     waiter: Option<OutputWaiter>,
+    parser: Parser,
 }
 
-impl Inner {
+impl RawBuffer {
+    /// Constructs a new buffer.
+    pub(super) fn new(log_path: Utf8PathBuf) -> Result<Self> {
+        let log_file = std::fs::File::create(&log_path).with_context(|| {
+            format!("opening serial console log file {}", log_path)
+        })?;
+        let writer = BufWriter::new(log_file);
+        Ok(Self {
+            log: writer,
+            line_buffer: String::new(),
+            wait_buffer: String::new(),
+            waiter: None,
+            parser: Parser::new(),
+        })
+    }
+
     /// Pushes `c` to the buffer's contents and attempts to satisfy active
     /// waits.
     fn push_character(&mut self, c: char) {
@@ -39,6 +53,16 @@ impl Inner {
         }
 
         self.wait_buffer.push(c);
+        if let Some(waiter) = self.waiter.take() {
+            self.satisfy_or_set_wait(waiter);
+        }
+    }
+
+    /// Pushes `s` to the buffer's contents and attempts to satisfy active
+    /// waits. `s` is presumed not to contain any control characters.
+    fn push_str(&mut self, s: &str) {
+        self.line_buffer.push_str(s);
+        self.wait_buffer.push_str(s);
         if let Some(waiter) = self.waiter.take() {
             self.satisfy_or_set_wait(waiter);
         }
@@ -82,62 +106,39 @@ impl Inner {
     }
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        if let Err(e) = self.log.flush() {
-            error!(%e, "failed to flush serial console log during drop");
-        }
-    }
-}
-
-impl vte::Perform for Inner {
-    fn print(&mut self, c: char) {
-        self.push_character(c);
-    }
-
-    fn execute(&mut self, byte: u8) {
-        if byte == b'\n' {
-            self.push_character('\n');
-        }
-    }
-}
-
-/// A "raw" serial console buffer that handles incoming characters and newline
-/// control bytes and nothing else.
-pub(super) struct RawBuffer {
-    inner: Inner,
-    parser: vte::Parser,
-}
-
-impl RawBuffer {
-    /// Constructs a new buffer.
-    pub(super) fn new(log_path: Utf8PathBuf) -> Result<Self> {
-        let log_file = std::fs::File::create(&log_path).with_context(|| {
-            format!("opening serial console log file {}", log_path)
-        })?;
-        let writer = BufWriter::new(log_file);
-        let inner = Inner {
-            log: writer,
-            line_buffer: String::new(),
-            wait_buffer: String::new(),
-            waiter: None,
-        };
-        Ok(Self { inner, parser: vte::Parser::new() })
-    }
-}
-
 impl Buffer for RawBuffer {
     fn process_bytes(&mut self, bytes: &[u8]) {
-        for b in bytes {
-            self.parser.advance(&mut self.inner, *b);
+        use termwiz::escape::{Action, ControlCode};
+        let actions = self.parser.parse_as_vec(bytes);
+        for action in actions {
+            match action {
+                Action::Print(c) => self.push_character(c),
+                Action::PrintString(s) => {
+                    self.push_str(&s);
+                }
+                Action::Control(ControlCode::LineFeed) => {
+                    self.push_character('\n')
+                }
+                _ => {
+                    trace!(?action, "raw buffer ignored action");
+                }
+            }
         }
     }
 
     fn register_wait_for_output(&mut self, waiter: OutputWaiter) {
-        self.inner.satisfy_or_set_wait(waiter);
+        self.satisfy_or_set_wait(waiter);
     }
 
     fn cancel_wait_for_output(&mut self) -> Option<OutputWaiter> {
-        self.inner.waiter.take()
+        self.waiter.take()
+    }
+}
+
+impl Drop for RawBuffer {
+    fn drop(&mut self) {
+        if let Err(e) = self.log.flush() {
+            error!(%e, "failed to flush serial console log during drop");
+        }
     }
 }
