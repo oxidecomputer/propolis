@@ -607,16 +607,13 @@ impl<'a> MachineInitializer<'a> {
                     .unwrap_or(0);
 
                 if fail_exports <= 0 && fail_imports <= 0 {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "migration failure device will do nothing if both \
-                            `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0! \
-                            ({FAIL_EXPORTS}={:?}, {FAIL_IMPORTS}={:?})",
-                            dev.options.get(FAIL_EXPORTS),
-                            dev.options.get(FAIL_IMPORTS)
-                        ),
-                    ));
+                    info!(
+                        self.log,
+                        "migration failure device will not fail, as both
+                        `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
+                        FAIL_EXPORTS => ?fail_exports,
+                        FAIL_IMPORTS => ?fail_imports,
+                    );
                 }
 
                 let dev = MigrationFailureDevice::create(

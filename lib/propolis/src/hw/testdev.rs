@@ -23,6 +23,7 @@ use std::sync::{
 pub struct MigrationFailureDevice {
     log: slog::Logger,
     exports: AtomicUsize,
+    imports: AtomicUsize,
     fail: MigrationFailures,
 }
 
@@ -32,10 +33,7 @@ pub struct MigrationFailures {
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
-struct MigrationFailurePayloadV1 {
-    /// If set, an attempt to import this device should fail.
-    fail_import: bool,
-}
+struct MigrationFailurePayloadV1 {}
 
 impl MigrationFailureDevice {
     pub const NAME: &'static str = "test-migration-failure";
@@ -48,7 +46,12 @@ impl MigrationFailureDevice {
             "fail_exports" => %fail.exports,
             "fail_imports" => %fail.imports,
         );
-        Arc::new(Self { log, exports: AtomicUsize::new(0), fail })
+        Arc::new(Self {
+            log,
+            exports: AtomicUsize::new(0),
+            imports: AtomicUsize::new(0),
+            fail,
+        })
     }
 }
 
@@ -80,14 +83,12 @@ impl MigrateSingle for MigrationFailureDevice {
             )));
         }
 
-        let fail_import = export_num < self.fail.imports;
         info!(
             self.log,
             "exporting device";
             "export_num" => %export_num,
-            "will_fail_import" => %fail_import,
         );
-        Ok(MigrationFailurePayloadV1 { fail_import }.into())
+        Ok(MigrationFailurePayloadV1 {}.into())
     }
 
     fn import(
@@ -95,8 +96,16 @@ impl MigrateSingle for MigrationFailureDevice {
         mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let MigrationFailurePayloadV1 { fail_import } = offer.parse()?;
-        if fail_import {
+        let import_num = self.imports.fetch_add(1, Ordering::Relaxed);
+        let fail = import_num < self.fail.imports;
+        info!(
+            self.log,
+            "exporting device";
+            "import_num" => %import_num,
+            "will_fail" => %fail,
+        );
+        let MigrationFailurePayloadV1 {} = offer.parse()?;
+        if fail {
             info!(self.log, "failing import");
             return Err(MigrateStateError::ImportFailed(
                 "you have no chance to survive, make your time".to_string(),

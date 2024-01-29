@@ -115,18 +115,28 @@ mod running_process {
 
     #[phd_testcase]
     fn import_failure(ctx: &Framework) {
-        let mut source = {
-            let mut cfg = ctx.vm_config_builder(
-                "migrate_running_process::import_failure_source",
-            );
-            cfg.fail_migration_imports(1);
-            ctx.spawn_vm(&cfg, None)?
+        let mut cfg = ctx.vm_config_builder(
+            "migrate_running_process::import_failure_source",
+        );
+        // Ensure the migration failure device is present in the VM config for
+        // the source as well as the target, so that the source will offer the
+        // device.
+        cfg.fail_migration_imports(0);
+        let mut source = ctx.spawn_vm(&cfg, None)?;
+
+        let mut target1 = {
+            // Configure the target to fail when it imports the migration
+            // failure device.
+            cfg.named("migrate_running_process::import_failure_target1")
+                .fail_migration_imports(1);
+
+            // N.B. that we don't use `spawn_successor_vm` here, because we must
+            // add the `fail_migration_imports` option to the new VM's
+            // `VmConfig`. Instead, we use `spawn_vm`, and pass the source VM's
+            // environment to ensure it's inherited.
+            ctx.spawn_vm(&cfg, Some(&source.environment_spec()))?
         };
-        let mut target1 = ctx.spawn_successor_vm(
-            "migrate_running_process::import_failure_target1",
-            &source,
-            None,
-        )?;
+
         let mut target2 = ctx.spawn_successor_vm(
             "migrate_running_process::import_failure_target2",
             &source,

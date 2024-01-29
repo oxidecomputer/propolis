@@ -91,25 +91,26 @@ impl VmConfig {
         self
     }
 
+    pub fn named(&mut self, name: impl ToString) -> &mut Self {
+        self.vm_name = name.to_string();
+        self
+    }
+
     pub fn fail_migration_exports(&mut self, exports: u32) -> &mut Self {
-        let _prev = self
-            .devices
+        self.devices
             .entry(MIGRATION_FAILURE_DEVICE.to_owned())
             .or_insert_with(default_migration_failure_device)
             .options
             .insert("fail_exports".to_string(), exports.into());
-        assert_eq!(_prev, None, "fail_exports already configured");
         self
     }
 
     pub fn fail_migration_imports(&mut self, imports: u32) -> &mut Self {
-        let _prev = self
-            .devices
+        self.devices
             .entry(MIGRATION_FAILURE_DEVICE.to_owned())
             .or_insert_with(default_migration_failure_device)
             .options
             .insert("fail_imports".to_string(), imports.into());
-        assert_eq!(_prev, None, "fail_imports already configured");
         self
     }
 
