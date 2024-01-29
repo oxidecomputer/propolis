@@ -107,7 +107,7 @@ mod running_process {
         target.migrate_from(
             &source,
             Uuid::new_v4(),
-            Duration::from_secs(60),
+            MigrationTimeout::default(),
         )?;
 
         check_dirt(&target)?;
@@ -140,7 +140,7 @@ mod running_process {
 
         // first migration should fail.
         let error = target1
-            .migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
@@ -148,7 +148,7 @@ mod running_process {
         target2.migrate_from(
             &source,
             Uuid::new_v4(),
-            Duration::from_secs(60),
+            MigrationTimeout::default(),
         )?;
 
         check_dirt(&target2)?;
@@ -181,7 +181,7 @@ mod running_process {
 
         // first migration should fail.
         let error = target1
-            .migrate_from(&source, Uuid::new_v4(), Duration::from_secs(60))
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
@@ -189,7 +189,7 @@ mod running_process {
         target2.migrate_from(
             &source,
             Uuid::new_v4(),
-            Duration::from_secs(60),
+            MigrationTimeout::default(),
         )?;
 
         check_dirt(&target2)?;
