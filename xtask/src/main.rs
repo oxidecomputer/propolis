@@ -38,11 +38,9 @@ enum Cmds {
     /// Preform pre-push checks (clippy, license, fmt, etc)
     Prepush,
     /// Run the PHD test suite
-    #[clap(disable_help_subcommand = true)]
     Phd {
-        /// Arguments to pass to `phd-runner`.
-        #[clap(trailing_var_arg = true)]
-        phd_args: Vec<String>,
+        #[clap(subcommand)]
+        cmd: task_phd::Cmd,
     },
 }
 
@@ -58,7 +56,7 @@ fn main() -> Result<()> {
             println!("License checks pass");
             Ok(())
         }
-        Cmds::Phd { phd_args } => task_phd::cmd_phd(phd_args),
+        Cmds::Phd { cmd } => cmd.run(),
         Cmds::Prepush => {
             task_prepush::cmd_prepush()?;
 
