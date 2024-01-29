@@ -163,7 +163,7 @@ pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
             .arg(propolis_base_branch.unwrap_or("master"))
             .arg(args::ARTIFACTS_TOML)
             .arg(&artifacts_toml)
-            .arg("--artifact-directory")
+            .arg(args::ARTIFACTS_DIR)
             .arg(&artifact_dir)
             .arg("--tmp-directory")
             .arg(&tmp_dir)

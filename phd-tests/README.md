@@ -20,15 +20,19 @@ sufficiently modern to run the Propolis server of interest).
 
 ## Quickstart
 
-To get started running PHD tests:
+The simplest way to get started running PHD tests is to use the [`cargo xtask
+phd`](#cargo-xtask) Cargo [xtask](https://github.com/matklad/cargo-xtask). To
+get started running PHD tests, run the following command:
 
-1. Build the `propolis-server` target (e.g. with `cargo build --bin
-   propolis-server`).
-1. From the `phd-tests` directory, run `./quickstart.sh $PROPOLIS_PATH`, where
-   `$PROPOLIS_PATH` is the path to the server binary built in the previous step.
+```shell
+pfexec cargo xtask phd run
+```
 
-That's it! PHD will obtain a guest OS image and a bootrom and run its tests
+That's it! The xtask will automatically build `propolis-server` and `phd-runner`
+binaries, and PHD will obtain a guest OS image and a bootrom and run its tests
 against them.
+
+See [here](#cargo-xtask) for more details on using `cargo xtask phd`.
 
 ## Building & executing the runner
 
@@ -133,6 +137,64 @@ path = "/home/oxide/propolis/target/debug"
 # sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 ```
 
+## Cargo `xtask`
+
+A [Cargo `xtask` command](https://github.com/matklad/cargo-xtask), [`cargo xtask
+phd`](../xtask/src/task_phd.rs) is provided to make running PHD tests locally in
+development as simple as possible.
+
+Using `cargo xtask phd` provides the following additional features compared to
+running `phd-runner` directly:
+
+- Automatically rebuilding the `propolis-server` binary whenever the source code
+  changes, to prevent accidentally running tests against a stale build.
+- Automatically [managing a PHD artifact store and test temporary directories]
+  (#artifact-store-and-temporary-directory-management) in `target/phd`.
+- Providing [reasonable defaults](#default-arguments) (which may be overridden)
+  for [arguments required by the `phd-runner` CLI](#runtime-options).
+
+### Artifact store and temporary directory management
+
+`cargo xtask phd` will automatically create and manage directories
+for the PHD artifact store and test temporary directories.
+
+By default, the the artifact store directory used by `cargo xtask phd` is
+`target/phd/artifacts`[^1]. If the `--artifact-directory <PATH>` command-line
+argument is present, `cargo xtask phd` will use the provided path for the
+artifact store, instead. In both cases, if the artifact store directory or its
+parent directories do not exist, `cargo xtask phd` will create them.
+
+Every time `cargo xtask phd` is invoked, a new test temporary directory will be
+created in `target/phd/tmp/{UNIX_TIMESTAMP_IN_SECONDS}`. By creating a new
+temporary
+directory for each test run, the logs and other output emitted by previous runs
+are not overwritten, so that two test runs can be compared.
+
+To limit the amount of disk space used for storing output from old test runs,
+`cargo xtask phd run` will automatically delete any test temporary directories
+that are older than one day. This behavior can be suppressed by setting the
+`PHD_NOTIDY` environment variable to a value (e.g. `PHD_NOTIDY=1 cargo xtask phd
+run`).
+
+### Default arguments
+
+`cargo xtask phd run` will set reasonable default values for
+[`phd-runner`'s CLI arguments](#runtime-options), if those arguments
+are not present when `cargo xtask phd run` is invoked. The following arguments
+are given default values when using `cargo xtask phd run`:
+
+- `--propolis-server-cmd`: The path to a `propolis-server` binary built by
+  `cargo xtask phd`
+- `--base-propolis-branch`: `master`
+- `--crucible-downstairs-commit`: `auto`
+- `--artifact-toml-path`:
+  [`{WORKSPACE_ROOT}/phd-tests/artifacts.toml`](../artifacts.toml)
+- `--artifact-directory`:
+  [`target/phd/artifacts`](#artifact-store-and-temporary-directory-management)
+
+Any additional command-line arguments for which `cargo xtask phd` does not
+provide a default are passed directly to the `phd-runner` binary.
+
 ## Guest OS support
 
 Different guest OS images may have different feature sets and login
@@ -222,3 +284,8 @@ PHD is arranged into the following crates:
 - `tests` contains individual test cases.
 - `runner` implements the test runner, its command-line configuration, and its
   test fixtures.
+
+[^1]: Technically, this uses the value of
+    [`$CARGO_TARGET_DIR`](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads),
+    so if that's overridden, `cargo xtask phd` will use whatever the Cargo
+    target dir is.
