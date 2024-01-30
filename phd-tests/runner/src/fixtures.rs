@@ -49,8 +49,8 @@ impl TestFixtures {
     /// during unwinding, this cleanup fixture will run whenever the
     /// corresponding setup fixture has run.
     #[instrument(skip_all)]
-    pub fn test_cleanup(&mut self) -> Result<()> {
-        self.test_context.reset();
+    pub async fn test_cleanup(&mut self) -> Result<()> {
+        self.test_context.reset().await;
         Ok(())
     }
 }

@@ -34,6 +34,7 @@ use artifacts::DEFAULT_PROPOLIS_ARTIFACT;
 use camino::Utf8PathBuf;
 
 use disk::DiskFactory;
+use futures::{stream::FuturesUnordered, StreamExt};
 use port_allocator::PortAllocator;
 use server_log_mode::ServerLogMode;
 pub use test_vm::TestVm;
@@ -73,6 +74,11 @@ pub struct Framework {
 
     pub(crate) crucible_enabled: bool,
     pub(crate) migration_base_enabled: bool,
+
+    vm_drop_tx: tokio::sync::mpsc::UnboundedSender<tokio::task::JoinHandle<()>>,
+    vm_drop_rx: std::sync::Mutex<
+        tokio::sync::mpsc::UnboundedReceiver<tokio::task::JoinHandle<()>>,
+    >,
 }
 
 pub struct FrameworkParameters<'a> {
@@ -174,6 +180,7 @@ impl Framework {
             params.server_log_mode,
         );
 
+        let (vm_drop_tx, vm_drop_rx) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
             tmp_directory: params.tmp_directory,
             server_log_mode: params.server_log_mode,
@@ -186,13 +193,16 @@ impl Framework {
             port_allocator,
             crucible_enabled,
             migration_base_enabled,
+            vm_drop_tx,
+            vm_drop_rx: std::sync::Mutex::new(vm_drop_rx),
         })
     }
 
     /// Resets the state of any stateful objects in the framework to prepare it
     /// to run a new test case.
-    pub fn reset(&self) {
+    pub async fn reset(&self) {
         self.port_allocator.reset();
+        self.wait_for_dropped_vms().await;
     }
 
     /// Creates a new VM configuration builder using the default configuration
@@ -289,6 +299,22 @@ impl Framework {
     /// available for migration-from-base tests.
     pub fn migration_base_enabled(&self) -> bool {
         self.migration_base_enabled
+    }
+
+    pub(crate) fn vm_drop_channel(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedSender<tokio::task::JoinHandle<()>> {
+        self.vm_drop_tx.clone()
+    }
+
+    async fn wait_for_dropped_vms(&self) {
+        let futs = FuturesUnordered::new();
+        let mut guard = self.vm_drop_rx.lock().unwrap();
+        while let Ok(task) = guard.try_recv() {
+            futs.push(task);
+        }
+
+        let _results: Vec<_> = futs.collect().await;
     }
 }
 

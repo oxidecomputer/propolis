@@ -107,7 +107,7 @@ enum VmState {
 pub struct TestVm {
     id: Uuid,
     client: Client,
-    server: server::PropolisServer,
+    server: Option<server::PropolisServer>,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
     data_dir: Utf8PathBuf,
@@ -116,6 +116,9 @@ pub struct TestVm {
     tracing_span: tracing::Span,
 
     state: VmState,
+
+    drop_task_tx:
+        tokio::sync::mpsc::UnboundedSender<tokio::task::JoinHandle<()>>,
 }
 
 impl TestVm {
@@ -154,9 +157,13 @@ impl TestVm {
             .await
             .context("building environment for new VM")?
         {
-            Environment::Local(params) => {
-                Self::start_local_vm(id, spec, environment.clone(), params)
-            }
+            Environment::Local(params) => Self::start_local_vm(
+                id,
+                spec,
+                environment.clone(),
+                params,
+                framework.vm_drop_channel(),
+            ),
         }
     }
 
@@ -165,6 +172,9 @@ impl TestVm {
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
         params: ServerProcessParameters,
+        drop_task_tx: tokio::sync::mpsc::UnboundedSender<
+            tokio::task::JoinHandle<()>,
+        >,
     ) -> Result<Self> {
         let config_filename = format!("{}.config.toml", &vm_spec.vm_name);
         let mut config_toml_path = params.data_dir.to_path_buf();
@@ -203,13 +213,14 @@ impl TestVm {
         Ok(Self {
             id: vm_id,
             client,
-            server,
+            server: Some(server),
             spec: vm_spec,
             environment_spec,
             data_dir,
             guest_os,
             tracing_span: span,
             state: VmState::New,
+            drop_task_tx,
         })
     }
 
@@ -303,7 +314,12 @@ impl TestVm {
         .await?;
 
         let helper = InstanceSerialConsoleHelper::new(
-            std::net::SocketAddr::V4(self.server.server_addr()),
+            std::net::SocketAddr::V4(
+                self.server
+                    .as_ref()
+                    .expect("server should be alive")
+                    .server_addr(),
+            ),
             WSClientOffset::MostRecent(0),
             None,
         )
@@ -440,18 +456,24 @@ impl TestVm {
         let _vm_guard = self.tracing_span.enter();
         match self.state {
             VmState::New => {
+                let server_addr = source
+                    .server
+                    .as_ref()
+                    .expect("source server should be alive")
+                    .server_addr();
+
                 info!(
                     ?migration_id,
                     ?timeout_duration,
                     "Migrating from source at address {}",
-                    source.server.server_addr()
+                    server_addr
                 );
 
                 let serial = self
                     .instance_ensure_internal(
                         Some(InstanceMigrateInitiateRequest {
                             migration_id,
-                            src_addr: source.server.server_addr().to_string(),
+                            src_addr: server_addr.to_string(),
                             src_uuid: Uuid::default(),
                         }),
                         InstanceConsoleSource::InheritFrom(source),
@@ -752,54 +774,96 @@ impl TestVm {
     }
 }
 
-/*
 impl Drop for TestVm {
     fn drop(&mut self) {
-        let rt = tokio::runtime::Handle::current();
-        std::thread::scope(|s| {
-            s.spawn(move || {
-                rt.block_on(async {
-                    let _span = self.tracing_span.enter();
+        if let VmState::New = self.state {
+            return;
+        }
 
-                    if let VmState::New = self.state {
-                        // Instance never ensured, nothing to do.
-                        return;
-                    }
+        // Propolis processes don't automatically release their bhyve VMMs on
+        // process shutdown--this has to be done explicitly by stopping the VM.
+        // Unfortunately, the Propolis client is fully asynchronous, and because
+        // VMs might get dropped from an async context, it's not possible to use
+        // `block_on` here to guarantee that VMMs are synchronously cleaned up
+        // when a `TestVm` is dropped.
+        //
+        // As an alternative, destructure the client and server and hand them
+        // off to their own separate task. (The server needs to be moved into
+        // the task explicitly so that its `Drop` impl, which terminates the
+        // server process, won't run until this work is complete.)
+        //
+        // Send the task back to the framework so that the test runner can wait
+        // for all under-destruction VMs to be reaped before exiting.
+        let client = self.client.clone();
+        let server = self.server.take();
+        let span = self.tracing_span.clone();
+        let task = tokio::task::spawn(
+            async move {
+                let _server = server;
+                match client
+                    .instance_get()
+                    .send()
+                    .await
+                    .map(|r| r.instance.state)
+                {
+                    Ok(InstanceState::Destroyed) => return,
+                    Err(e) => warn!(
+                        ?e,
+                        "error getting instance state from dropped VM"
+                    ),
+                    Ok(_) => {}
+                }
 
-                    match self.get().await.map(|r| r.instance.state) {
-                        Ok(InstanceState::Destroyed) => {
-                            // Instance already destroyed, nothing to do.
+                info!("stopping test VM on drop");
+                if let Err(e) = client
+                    .instance_state_put()
+                    .body(InstanceStateRequested::Stop)
+                    .send()
+                    .await
+                {
+                    error!(?e, "error stopping dropping VM");
+                    return;
+                }
+
+                let check_destroyed = || async {
+                    match client
+                        .instance_get()
+                        .send()
+                        .await
+                        .map(|r| r.instance.state)
+                    {
+                        Ok(InstanceState::Destroyed) => Ok(()),
+                        Ok(state) => {
+                            Err(backoff::Error::transient(anyhow::anyhow!(
+                                "instance not destroyed yet (state: {:?})",
+                                state
+                            )))
                         }
-                        Ok(_) => {
-                            // Instance is up, best-effort attempt to let it
-                            // clean up gracefully.
-                            info!("Cleaning up Test VM on drop");
-                            if let Err(err) = self.stop().await {
-                                warn!(
-                                    ?err,
-                                    "Stop request failed for Test VM cleanup"
-                                );
-                                return;
-                            }
-                            if let Err(err) = self
-                                .wait_for_state(
-                                    InstanceState::Destroyed,
-                                    Duration::from_secs(5),
-                                )
-                                .await
-                            {
-                                warn!(?err, "Test VM failed to clean up");
-                            }
-                        }
-                        Err(err) => {
-                            // Instance should've been ensured by this point so
-                            // an error is unexpected.
-                            warn!(?err, "Unexpected error from instance");
+                        Err(e) => {
+                            error!(%e, "failed to get state of dropping VM");
+                            Err(backoff::Error::permanent(e.into()))
                         }
                     }
-                });
-            });
-        });
+                };
+
+                if backoff::future::retry(
+                    backoff::ExponentialBackoff {
+                        max_elapsed_time: Some(std::time::Duration::from_secs(
+                            5,
+                        )),
+                        ..Default::default()
+                    },
+                    check_destroyed,
+                )
+                .await
+                .is_err()
+                {
+                    error!("dropped VM not destroyed after 5 seconds");
+                }
+            }
+            .instrument(span),
+        );
+
+        let _ = self.drop_task_tx.send(task);
     }
 }
-*/

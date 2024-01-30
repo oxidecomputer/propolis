@@ -151,7 +151,7 @@ pub async fn run_tests_with_ctx(
         }
 
         execution.status = Status::Ran(test_outcome);
-        if let Err(e) = fixtures.test_cleanup() {
+        if let Err(e) = fixtures.test_cleanup().await {
             error!("Error running cleanup fixture: {}", e);
             break 'exec_loop;
         }
