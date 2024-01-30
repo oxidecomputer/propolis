@@ -814,7 +814,7 @@ impl Drop for TestVm {
                     Ok(_) => {}
                 }
 
-                info!("stopping test VM on drop");
+                debug!("stopping test VM on drop");
                 if let Err(e) = client
                     .instance_state_put()
                     .body(InstanceStateRequested::Stop)

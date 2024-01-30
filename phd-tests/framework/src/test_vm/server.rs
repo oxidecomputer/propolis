@@ -8,7 +8,7 @@ use std::{fmt::Debug, net::SocketAddrV4};
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::server_log_mode::ServerLogMode;
 
@@ -89,7 +89,7 @@ impl PropolisServer {
 impl Drop for PropolisServer {
     fn drop(&mut self) {
         let pid = self.server.id().to_string();
-        info!(
+        debug!(
             pid,
             %self.address,
             "Killing Propolis server that was dropped"
@@ -104,7 +104,7 @@ impl Drop for PropolisServer {
             .wait()
             .expect("should be able to wait on a phd-spawned propolis");
 
-        info!(pid,
+        debug!(pid,
               %self.address,
               "Successfully waited for demise of Propolis server that was dropped");
     }
