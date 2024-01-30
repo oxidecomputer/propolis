@@ -113,10 +113,8 @@ pub async fn run_tests_with_ctx(
         let test_ctx = ctx.clone();
         let tc = execution.tc;
         let test_outcome =
-            match tokio::task::spawn(
-                async move { tc.run(test_ctx.as_ref()).await },
-            )
-            .await
+            match tokio::spawn(async move { tc.run(test_ctx.as_ref()).await })
+                .await
             {
                 Ok(outcome) => outcome,
                 Err(_) => TestOutcome::Failed(Some(

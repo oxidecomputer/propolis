@@ -797,7 +797,7 @@ impl Drop for TestVm {
         let client = self.client.clone();
         let server = self.server.take();
         let span = self.tracing_span.clone();
-        let task = tokio::task::spawn(
+        let task = tokio::spawn(
             async move {
                 let _server = server;
                 match client
