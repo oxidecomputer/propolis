@@ -10,8 +10,9 @@ async fn lspci_lifecycle_test(ctx: &Framework) {
     const LSPCI: &str = "sudo lspci -vvx";
     const LSHW: &str = "sudo lshw -notime";
 
-    let mut vm =
-        ctx.spawn_vm(&ctx.vm_config_builder("lspci_lifecycle_test"), None)?;
+    let mut vm = ctx
+        .spawn_vm(&ctx.vm_config_builder("lspci_lifecycle_test"), None)
+        .await?;
 
     vm.launch().await?;
     vm.wait_to_boot().await?;

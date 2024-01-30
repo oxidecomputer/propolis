@@ -11,7 +11,7 @@ use propolis_client::types::InstanceState;
 async fn boot_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_boot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
-    let mut vm = ctx.spawn_vm(&config, None)?;
+    let mut vm = ctx.spawn_vm(&config, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
 }
@@ -21,7 +21,7 @@ async fn shutdown_persistence_test(ctx: &Framework) {
     let mut config =
         ctx.vm_config_builder("crucible_shutdown_persistence_test");
     super::add_default_boot_disk(ctx, &mut config)?;
-    let mut vm = ctx.spawn_vm(&config, None)?;
+    let mut vm = ctx.spawn_vm(&config, None).await?;
     if vm.guest_os_has_read_only_fs() {
         phd_skip!(
             "Can't run data persistence test on a guest with a read-only file
@@ -47,11 +47,9 @@ async fn shutdown_persistence_test(ctx: &Framework) {
 
     // Increment the disk's generation before attaching it to a new VM.
     disk.set_generation(2);
-    let mut vm = ctx.spawn_successor_vm(
-        "crucible_shutdown_persistence_test_2",
-        &vm,
-        None,
-    )?;
+    let mut vm = ctx
+        .spawn_successor_vm("crucible_shutdown_persistence_test_2", &vm, None)
+        .await?;
 
     vm.launch().await?;
     vm.wait_to_boot().await?;

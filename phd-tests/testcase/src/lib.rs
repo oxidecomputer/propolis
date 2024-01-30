@@ -23,7 +23,7 @@ pub enum TestOutcome {
     /// The test passed.
     Passed,
 
-    /// The test failed; the payload is an optional failure message.
+    /// The test failed.
     Failed(Option<String>),
 
     /// The test chose to be skipped, i.e. it detected a parameter or condition

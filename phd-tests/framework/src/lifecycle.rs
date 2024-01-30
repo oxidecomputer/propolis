@@ -62,8 +62,9 @@ impl Framework {
                     let new_vm_name =
                         format!("{}_lifecycle_{}", original_name, idx);
                     vm.stop().await?;
-                    let mut new_vm =
-                        self.spawn_successor_vm(&new_vm_name, &vm, None)?;
+                    let mut new_vm = self
+                        .spawn_successor_vm(&new_vm_name, &vm, None)
+                        .await?;
                     new_vm.launch().await?;
                     new_vm.wait_to_boot().await?;
                     vm = new_vm;
@@ -81,8 +82,9 @@ impl Framework {
 
                     let mut env = self.environment_builder();
                     env.propolis(propolis);
-                    let mut new_vm =
-                        self.spawn_successor_vm(&new_vm_name, &vm, Some(&env))?;
+                    let mut new_vm = self
+                        .spawn_successor_vm(&new_vm_name, &vm, Some(&env))
+                        .await?;
                     let migration_id = Uuid::new_v4();
                     new_vm
                         .migrate_from(

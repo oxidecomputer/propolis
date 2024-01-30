@@ -11,7 +11,7 @@ use propolis_client::types::InstanceState;
 
 #[phd_testcase]
 async fn instance_start_stop_test(ctx: &Framework) {
-    let mut vm = ctx.spawn_default_vm("instance_ensure_running_test")?;
+    let mut vm = ctx.spawn_default_vm("instance_ensure_running_test").await?;
 
     vm.instance_ensure().await?;
     let instance = vm.get().await?.instance;
@@ -27,7 +27,8 @@ async fn instance_start_stop_test(ctx: &Framework) {
 
 #[phd_testcase]
 async fn instance_stop_causes_destroy_test(ctx: &Framework) {
-    let mut vm = ctx.spawn_default_vm("instance_stop_causes_destroy_test")?;
+    let mut vm =
+        ctx.spawn_default_vm("instance_stop_causes_destroy_test").await?;
 
     vm.launch().await?;
     vm.stop().await?;
@@ -51,7 +52,7 @@ async fn instance_stop_causes_destroy_test(ctx: &Framework) {
 #[phd_testcase]
 async fn instance_reset_test(ctx: &Framework) {
     let mut vm =
-        ctx.spawn_default_vm("instance_reset_returns_to_running_test")?;
+        ctx.spawn_default_vm("instance_reset_returns_to_running_test").await?;
 
     assert!(vm.reset().await.is_err());
     vm.launch().await?;
@@ -82,7 +83,7 @@ async fn instance_reset_test(ctx: &Framework) {
 #[phd_testcase]
 async fn instance_reset_requires_running_test(ctx: &Framework) {
     let mut vm =
-        ctx.spawn_default_vm("instance_reset_requires_running_test")?;
+        ctx.spawn_default_vm("instance_reset_requires_running_test").await?;
 
     assert!(vm.reset().await.is_err());
     vm.launch().await?;

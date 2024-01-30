@@ -3344,6 +3344,7 @@ dependencies = [
  "clap 4.4.0",
  "phd-framework",
  "phd-tests",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-bunyan-formatter",
@@ -3356,6 +3357,7 @@ name = "phd-testcase"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "inventory",
  "phd-framework",
  "phd-testcase-macros",
@@ -3366,6 +3368,7 @@ dependencies = [
 name = "phd-testcase-macros"
 version = "0.1.0"
 dependencies = [
+ "proc-macro-error",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
@@ -3375,6 +3378,7 @@ dependencies = [
 name = "phd-tests"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "http 0.2.11",
  "phd-testcase",
  "propolis-client",

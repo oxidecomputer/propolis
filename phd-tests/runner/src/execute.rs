@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
@@ -56,8 +57,8 @@ thread_local! {
 }
 
 /// Executes a set of tests using the supplied test context.
-pub fn run_tests_with_ctx(
-    ctx: &Framework,
+pub async fn run_tests_with_ctx(
+    ctx: &Arc<Framework>,
     mut fixtures: TestFixtures,
     run_opts: &RunOptions,
 ) -> ExecutionStats {
@@ -109,12 +110,19 @@ pub fn run_tests_with_ctx(
         }
 
         stats.tests_not_run -= 1;
-        let test_outcome = std::panic::catch_unwind(|| {
-            ctx.tokio_rt.block_on(async { execution.tc.run(ctx).await })
-        })
-        .unwrap_or_else(|_| {
-            PANIC_MSG.with(|val| TestOutcome::Failed(val.take()))
-        });
+        let test_ctx = ctx.clone();
+        let tc = execution.tc;
+        let test_outcome =
+            match tokio::task::spawn(
+                async move { tc.run(test_ctx.as_ref()).await },
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(_) => TestOutcome::Failed(Some(
+                    "test task panicked, see test logs".to_string(),
+                )),
+            };
 
         info!(
             "test {} ... {}{}",

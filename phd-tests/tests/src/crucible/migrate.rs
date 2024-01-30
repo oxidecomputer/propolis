@@ -11,7 +11,7 @@ use uuid::Uuid;
 async fn smoke_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_migrate_smoke_source");
     super::add_default_boot_disk(ctx, &mut config)?;
-    let mut source = ctx.spawn_vm(&config, None)?;
+    let mut source = ctx.spawn_vm(&config, None).await?;
     let disk_handles = source.cloned_disk_handles();
     let disk = disk_handles[0].as_crucible().unwrap();
     disk.set_generation(1);
@@ -25,8 +25,9 @@ async fn smoke_test(ctx: &Framework) {
     source.run_shell_command("sync ./foo.bar").await?;
 
     disk.set_generation(2);
-    let mut target =
-        ctx.spawn_successor_vm("crucible_migrate_smoke_target", &source, None)?;
+    let mut target = ctx
+        .spawn_successor_vm("crucible_migrate_smoke_target", &source, None)
+        .await?;
 
     target
         .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
@@ -39,7 +40,7 @@ async fn smoke_test(ctx: &Framework) {
 async fn load_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_load_test_source");
     super::add_default_boot_disk(ctx, &mut config)?;
-    let mut source = ctx.spawn_vm(&config, None)?;
+    let mut source = ctx.spawn_vm(&config, None).await?;
     let disk_handles = source.cloned_disk_handles();
     let disk = disk_handles[0].as_crucible().unwrap();
     disk.set_generation(1);
@@ -48,8 +49,9 @@ async fn load_test(ctx: &Framework) {
     source.wait_to_boot().await?;
 
     disk.set_generation(2);
-    let mut target =
-        ctx.spawn_successor_vm("crucible_load_test_target", &source, None)?;
+    let mut target = ctx
+        .spawn_successor_vm("crucible_load_test_target", &source, None)
+        .await?;
 
     // Create some random data.
     let block_count = 10;

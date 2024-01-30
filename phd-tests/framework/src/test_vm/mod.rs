@@ -106,7 +106,6 @@ enum VmState {
 /// serial console.
 pub struct TestVm {
     id: Uuid,
-    rt: tokio::runtime::Handle,
     client: Client,
     server: server::PropolisServer,
     spec: VmSpec,
@@ -139,7 +138,7 @@ impl TestVm {
     ///   this location.
     /// - guest_os_kind: The kind of guest OS this VM will host.
     #[instrument(skip_all)]
-    pub(crate) fn new(
+    pub(crate) async fn new(
         framework: &Framework,
         spec: VmSpec,
         environment: &EnvironmentSpec,
@@ -152,21 +151,17 @@ impl TestVm {
 
         match environment
             .build(framework)
+            .await
             .context("building environment for new VM")?
         {
-            Environment::Local(params) => Self::start_local_vm(
-                id,
-                framework.tokio_rt.handle().clone(),
-                spec,
-                environment.clone(),
-                params,
-            ),
+            Environment::Local(params) => {
+                Self::start_local_vm(id, spec, environment.clone(), params)
+            }
         }
     }
 
     fn start_local_vm(
         vm_id: Uuid,
-        rt: tokio::runtime::Handle,
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
         params: ServerProcessParameters,
@@ -207,7 +202,6 @@ impl TestVm {
         let guest_os = guest_os::get_guest_os_adapter(vm_spec.guest_os_kind);
         Ok(Self {
             id: vm_id,
-            rt,
             client,
             server,
             spec: vm_spec,
@@ -758,11 +752,13 @@ impl TestVm {
     }
 }
 
+/*
 impl Drop for TestVm {
     fn drop(&mut self) {
+        let rt = tokio::runtime::Handle::current();
         std::thread::scope(|s| {
             s.spawn(move || {
-                self.rt.block_on(async {
+                rt.block_on(async {
                     let _span = self.tracing_span.enter();
 
                     if let VmState::New = self.state {
@@ -806,3 +802,4 @@ impl Drop for TestVm {
         });
     }
 }
+*/

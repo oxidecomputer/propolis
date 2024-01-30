@@ -9,7 +9,7 @@ use phd_testcase::*;
 
 #[phd_testcase]
 async fn multiline_serial_test(ctx: &Framework) {
-    let mut vm = ctx.spawn_default_vm("multiline_test")?;
+    let mut vm = ctx.spawn_default_vm("multiline_test").await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
 

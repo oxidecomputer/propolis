@@ -16,6 +16,7 @@ camino.workspace = true
 clap = { workspace = true, features = ["derive"] }
 phd-framework.workspace = true
 phd-tests.workspace = true
+tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-bunyan-formatter.workspace = true

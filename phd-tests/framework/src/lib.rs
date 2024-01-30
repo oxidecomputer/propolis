@@ -53,7 +53,6 @@ pub mod test_vm;
 
 /// An instance of the PHD test framework.
 pub struct Framework {
-    pub tokio_rt: tokio::runtime::Runtime,
     pub(crate) tmp_directory: Utf8PathBuf,
     pub(crate) server_log_mode: ServerLogMode,
 
@@ -115,7 +114,7 @@ pub enum BasePropolisSource<'a> {
 impl Framework {
     /// Builds a brand new framework. Called from the test runner, which creates
     /// one framework and then distributes it to tests.
-    pub fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
+    pub async fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
         let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
             params.artifact_directory.clone(),
             &params.artifact_toml,
@@ -134,13 +133,14 @@ impl Framework {
 
         let crucible_enabled = match params.crucible_downstairs {
             Some(source) => {
-                artifact_store.add_crucible_downstairs(&source).with_context(
-                    || {
+                artifact_store
+                    .add_crucible_downstairs(&source)
+                    .await
+                    .with_context(|| {
                         format!(
                             "adding Crucible downstairs {source} from options",
                         )
-                    },
-                )?;
+                    })?;
                 true
             }
             None => {
@@ -155,6 +155,7 @@ impl Framework {
             Some(source) => {
                 artifact_store
                     .add_current_propolis(source)
+                    .await
                     .with_context(|| format!("adding 'migration base' Propolis server {source} from options"))?;
                 true
             }
@@ -174,9 +175,6 @@ impl Framework {
         );
 
         Ok(Self {
-            tokio_rt: tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?,
             tmp_directory: params.tmp_directory,
             server_log_mode: params.server_log_mode,
             default_guest_cpus: params.default_guest_cpus,
@@ -218,23 +216,30 @@ impl Framework {
     /// Spawns a test VM using the default configuration returned from
     /// `vm_builder` and the default environment returned from
     /// `environment_builder`.
-    pub fn spawn_default_vm(&self, vm_name: &str) -> anyhow::Result<TestVm> {
-        self.spawn_vm(&self.vm_config_builder(vm_name), None)
+    pub async fn spawn_default_vm(
+        &self,
+        vm_name: &str,
+    ) -> anyhow::Result<TestVm> {
+        self.spawn_vm(&self.vm_config_builder(vm_name), None).await
     }
 
     /// Spawns a new test VM using the supplied `config`. If `environment` is
     /// `Some`, the VM is spawned using the supplied environment; otherwise it
     /// is spawned using the default `environment_builder`.
-    pub fn spawn_vm(
+    pub async fn spawn_vm(
         &self,
         config: &VmConfig,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
         TestVm::new(
             self,
-            config.vm_spec(self).context("building VM config for test VM")?,
+            config
+                .vm_spec(self)
+                .await
+                .context("building VM config for test VM")?,
             environment.unwrap_or(&self.environment_builder()),
         )
+        .await
         .context("constructing test VM")
     }
 
@@ -243,7 +248,7 @@ impl Framework {
     /// predecessor's backing objects (e.g. disk handles). If `environment` is
     /// `None`, the successor is launched using the predecessor's environment
     /// spec.
-    pub fn spawn_successor_vm(
+    pub async fn spawn_successor_vm(
         &self,
         vm_name: &str,
         vm: &TestVm,
@@ -263,6 +268,7 @@ impl Framework {
             vm_spec,
             environment.unwrap_or(&vm.environment_spec()),
         )
+        .await
     }
 
     /// Yields this framework instance's default guest OS artifact name. This

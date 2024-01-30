@@ -123,6 +123,7 @@ num_enum = "0.5.11"
 owo-colors = "4"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
+proc-macro-error = "1"
 progenitor = { git = "https://github.com/oxidecomputer/progenitor", ref = "v0.5.0" }
 quote = "1.0"
 rand = "0.8"

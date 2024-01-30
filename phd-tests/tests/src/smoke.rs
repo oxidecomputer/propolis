@@ -7,7 +7,7 @@ use phd_testcase::*;
 #[phd_testcase]
 async fn nproc_test(ctx: &Framework) {
     let mut vm =
-        ctx.spawn_vm(ctx.vm_config_builder("nproc_test").cpus(6), None)?;
+        ctx.spawn_vm(ctx.vm_config_builder("nproc_test").cpus(6), None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
@@ -17,10 +17,14 @@ async fn nproc_test(ctx: &Framework) {
 
 #[phd_testcase]
 async fn instance_spec_get_test(ctx: &Framework) {
-    let mut vm = ctx.spawn_vm(
-        ctx.vm_config_builder("instance_spec_test").cpus(4).memory_mib(3072),
-        None,
-    )?;
+    let mut vm = ctx
+        .spawn_vm(
+            ctx.vm_config_builder("instance_spec_test")
+                .cpus(4)
+                .memory_mib(3072),
+            None,
+        )
+        .await?;
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;

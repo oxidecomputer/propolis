@@ -12,14 +12,14 @@ use uuid::Uuid;
 
 #[phd_testcase]
 async fn smoke_test(ctx: &Framework) {
-    run_smoke_test(ctx, ctx.spawn_default_vm("migration_smoke")?).await?;
+    run_smoke_test(ctx, ctx.spawn_default_vm("migration_smoke").await?).await?;
 }
 
 #[phd_testcase]
 async fn serial_history(ctx: &Framework) {
     run_serial_history_test(
         ctx,
-        ctx.spawn_default_vm("migration_serial_history")?,
+        ctx.spawn_default_vm("migration_serial_history").await?,
     )
     .await?;
 }
@@ -31,14 +31,15 @@ mod from_base {
 
     #[phd_testcase]
     async fn can_migrate_from_base(ctx: &Framework) {
-        run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base")?).await?;
+        run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base").await?)
+            .await?;
     }
 
     #[phd_testcase]
     async fn serial_history(ctx: &Framework) {
         run_serial_history_test(
             ctx,
-            spawn_base_vm(ctx, "migration_serial_history_base")?,
+            spawn_base_vm(ctx, "migration_serial_history_base").await?,
         )
         .await?;
     }
@@ -48,7 +49,8 @@ mod from_base {
     // test.
     #[phd_testcase]
     async fn migration_from_base_and_back(ctx: &Framework) {
-        let mut source = spawn_base_vm(ctx, "migration_from_base_and_back")?;
+        let mut source =
+            spawn_base_vm(ctx, "migration_from_base_and_back").await?;
         source.launch().await?;
         source.wait_to_boot().await?;
         let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
@@ -79,7 +81,7 @@ mod from_base {
         .await?;
     }
 
-    fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
+    async fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
         if !ctx.migration_base_enabled() {
             phd_skip!("No 'migration base' Propolis revision available");
         }
@@ -87,7 +89,7 @@ mod from_base {
         let mut env = ctx.environment_builder();
         env.propolis(artifacts::BASE_PROPOLIS_ARTIFACT);
         let cfg = ctx.vm_config_builder(name);
-        ctx.spawn_vm(&cfg, Some(&env))
+        ctx.spawn_vm(&cfg, Some(&env)).await
     }
 }
 
@@ -253,18 +255,20 @@ async fn incompatible_vms(ctx: &Framework) {
     builders[1].memory_mib(1024);
 
     for (i, cfg) in builders.into_iter().enumerate() {
-        let mut source = ctx.spawn_vm(
-            ctx.vm_config_builder(&format!(
-                "migration_incompatible_source_{}",
-                i
-            ))
-            .cpus(4)
-            .memory_mib(512),
-            None,
-        )?;
+        let mut source = ctx
+            .spawn_vm(
+                ctx.vm_config_builder(&format!(
+                    "migration_incompatible_source_{}",
+                    i
+                ))
+                .cpus(4)
+                .memory_mib(512),
+                None,
+            )
+            .await?;
 
         source.launch().await?;
-        let mut target = ctx.spawn_vm(&cfg, None)?;
+        let mut target = ctx.spawn_vm(&cfg, None).await?;
 
         let migration_id = Uuid::new_v4();
         assert!(target
@@ -285,11 +289,11 @@ async fn incompatible_vms(ctx: &Framework) {
 
 #[phd_testcase]
 async fn multiple_migrations(ctx: &Framework) {
-    let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0")?;
+    let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0").await?;
     let mut vm1 =
-        ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None)?;
+        ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None).await?;
     let mut vm2 =
-        ctx.spawn_successor_vm("multiple_migrations_2", &vm1, None)?;
+        ctx.spawn_successor_vm("multiple_migrations_2", &vm1, None).await?;
 
     vm0.launch().await?;
     vm0.wait_to_boot().await?;
