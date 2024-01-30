@@ -35,7 +35,7 @@ pub enum TestOutcome {
 /// A wrapper for test functions. This is needed to allow [`TestCase`] to have a
 /// `const` constructor for the inventory crate.
 pub struct TestFunction {
-    pub f: fn(&Framework) -> TestOutcome,
+    pub f: fn(&Framework) -> futures::future::BoxFuture<'_, TestOutcome>,
 }
 
 /// A description of a single test case.
@@ -75,8 +75,8 @@ impl TestCase {
 
     /// Runs the test case's body with the supplied test context and returns its
     /// outcome.
-    pub fn run(&self, ctx: &Framework) -> TestOutcome {
-        (self.function.f)(ctx)
+    pub async fn run(&self, ctx: &Framework) -> TestOutcome {
+        (self.function.f)(ctx).await
     }
 }
 

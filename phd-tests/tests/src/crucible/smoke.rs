@@ -8,16 +8,16 @@ use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
 #[phd_testcase]
-fn boot_test(ctx: &Framework) {
+async fn boot_test(ctx: &Framework) {
     let mut config = ctx.vm_config_builder("crucible_boot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
     let mut vm = ctx.spawn_vm(&config, None)?;
-    vm.launch()?;
-    vm.wait_to_boot()?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
 }
 
 #[phd_testcase]
-fn shutdown_persistence_test(ctx: &Framework) {
+async fn shutdown_persistence_test(ctx: &Framework) {
     let mut config =
         ctx.vm_config_builder("crucible_shutdown_persistence_test");
     super::add_default_boot_disk(ctx, &mut config)?;
@@ -32,17 +32,18 @@ fn shutdown_persistence_test(ctx: &Framework) {
     let disk_handles = vm.cloned_disk_handles();
     let disk = disk_handles[0].as_crucible().unwrap();
     disk.set_generation(1);
-    vm.launch()?;
-    vm.wait_to_boot()?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
 
     // Verify that the test file doesn't exist yet, then touch it, flush it, and
     // shut down the VM.
-    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null")?;
+    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
     assert_eq!(lsout, "");
-    vm.run_shell_command("touch ./foo.bar")?;
-    vm.run_shell_command("sync ./foo.bar")?;
-    vm.stop()?;
-    vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))?;
+    vm.run_shell_command("touch ./foo.bar").await?;
+    vm.run_shell_command("sync ./foo.bar").await?;
+    vm.stop().await?;
+    vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
+        .await?;
 
     // Increment the disk's generation before attaching it to a new VM.
     disk.set_generation(2);
@@ -52,10 +53,10 @@ fn shutdown_persistence_test(ctx: &Framework) {
         None,
     )?;
 
-    vm.launch()?;
-    vm.wait_to_boot()?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
 
     // The touched file from the previous VM should be present in the new one.
-    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null")?;
+    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
     assert_eq!(lsout, "foo.bar");
 }

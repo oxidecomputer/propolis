@@ -109,10 +109,12 @@ pub fn run_tests_with_ctx(
         }
 
         stats.tests_not_run -= 1;
-        let test_outcome = std::panic::catch_unwind(|| execution.tc.run(ctx))
-            .unwrap_or_else(|_| {
-                PANIC_MSG.with(|val| TestOutcome::Failed(val.take()))
-            });
+        let test_outcome = std::panic::catch_unwind(|| {
+            ctx.tokio_rt.block_on(async { execution.tc.run(ctx).await })
+        })
+        .unwrap_or_else(|_| {
+            PANIC_MSG.with(|val| TestOutcome::Failed(val.take()))
+        });
 
         info!(
             "test {} ... {}{}",

@@ -53,7 +53,7 @@ pub mod test_vm;
 
 /// An instance of the PHD test framework.
 pub struct Framework {
-    pub(crate) tokio_rt: tokio::runtime::Runtime,
+    pub tokio_rt: tokio::runtime::Runtime,
     pub(crate) tmp_directory: Utf8PathBuf,
     pub(crate) server_log_mode: ServerLogMode,
 

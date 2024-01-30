@@ -8,6 +8,7 @@ test = false
 doctest = false
 
 [dependencies]
+futures.workspace = true
 inventory.workspace = true
 thiserror.workspace = true
 phd-framework.workspace = true
