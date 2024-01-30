@@ -309,9 +309,11 @@ impl Framework {
 
     async fn wait_for_dropped_vms(&self) {
         let futs = FuturesUnordered::new();
-        let mut guard = self.vm_drop_rx.lock().unwrap();
-        while let Ok(task) = guard.try_recv() {
-            futs.push(task);
+        {
+            let mut guard = self.vm_drop_rx.lock().unwrap();
+            while let Ok(task) = guard.try_recv() {
+                futs.push(task);
+            }
         }
 
         let _results: Vec<_> = futs.collect().await;

@@ -53,7 +53,7 @@ impl Repo {
         &self,
         branch: &str,
     ) -> anyhow::Result<Commit> {
-        (|| async {
+        async {
             let uri = format!("{BASE_URI}/branch/{self}/{branch}");
             let client = reqwest::ClientBuilder::new()
                 .timeout(Duration::from_secs(5))
@@ -64,7 +64,7 @@ impl Repo {
             anyhow::ensure!(status.is_success(), "HTTP status: {status}");
             let bytes = rsp.bytes().await?;
             str_from_bytes(&bytes)?.parse::<Commit>()
-        })()
+        }
         .await
         .with_context(|| {
             format!("Failed to determine HEAD commit for {self}@{branch}")
@@ -78,7 +78,7 @@ impl Repo {
         filename: &Utf8Path,
         downloader: &DownloadConfig,
     ) -> anyhow::Result<String> {
-        (|| async {
+        async {
             let filename = filename
                 .file_name()
                 .ok_or_else(|| {
@@ -109,7 +109,7 @@ impl Repo {
             let uri = format!("{BASE_URI}/file/{self}/{series}/{commit}/{filename}.sha256.txt");
             let bytes = downloader.download_buildomat_uri(&uri).await?;
             str_from_bytes(&bytes).map(String::from)
-        })().await.with_context(|| {
+        }.await.with_context(|| {
             format!("Failed to get SHA256 for {self}@{commit}, series: {series}, file: {filename})")
         })
     }
