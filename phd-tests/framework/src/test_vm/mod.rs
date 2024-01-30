@@ -237,7 +237,7 @@ impl TestVm {
 
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
-    async fn instance_ensure_async<'a>(
+    async fn instance_ensure_internal<'a>(
         &self,
         migrate: Option<InstanceMigrateInitiateRequest>,
         console_source: InstanceConsoleSource<'a>,
@@ -354,21 +354,20 @@ impl TestVm {
     /// Sets the VM to the running state. If the VM has not yet been launched
     /// (by sending a Propolis instance-ensure request to it), send that request
     /// first.
-    pub fn launch(&mut self) -> Result<()> {
-        self.instance_ensure()?;
-        self.run()?;
+    pub async fn launch(&mut self) -> Result<()> {
+        self.instance_ensure().await?;
+        self.run().await?;
         Ok(())
     }
 
     /// Sends an instance ensure request to this VM's server, but does not run
     /// the VM.
-    pub fn instance_ensure(&mut self) -> Result<()> {
+    pub async fn instance_ensure(&mut self) -> Result<()> {
         match self.state {
             VmState::New => {
-                let console = self.rt.block_on(async {
-                    self.instance_ensure_async(None, InstanceConsoleSource::New)
-                        .await
-                })?;
+                let console = self
+                    .instance_ensure_internal(None, InstanceConsoleSource::New)
+                    .await?;
                 self.state = VmState::Ensured { serial: console };
             }
             VmState::Ensured { .. } => {}
@@ -379,28 +378,22 @@ impl TestVm {
 
     /// Sets the VM to the running state without first sending an instance
     /// ensure request.
-    pub fn run(&self) -> PropolisClientResult<()> {
-        self.rt.block_on(async {
-            self.put_instance_state_async(InstanceStateRequested::Run).await
-        })
+    pub async fn run(&self) -> PropolisClientResult<()> {
+        self.put_instance_state(InstanceStateRequested::Run).await
     }
 
     /// Stops the VM.
-    pub fn stop(&self) -> PropolisClientResult<()> {
-        self.rt.block_on(async {
-            self.put_instance_state_async(InstanceStateRequested::Stop).await
-        })
+    pub async fn stop(&self) -> PropolisClientResult<()> {
+        self.put_instance_state(InstanceStateRequested::Stop).await
     }
 
     /// Resets the VM by requesting the `Reboot` state from the server (as
     /// distinct from requesting a reboot from within the guest).
-    pub fn reset(&self) -> PropolisClientResult<()> {
-        self.rt.block_on(async {
-            self.put_instance_state_async(InstanceStateRequested::Reboot).await
-        })
+    pub async fn reset(&self) -> PropolisClientResult<()> {
+        self.put_instance_state(InstanceStateRequested::Reboot).await
     }
 
-    async fn put_instance_state_async(
+    async fn put_instance_state(
         &self,
         state: InstanceStateRequested,
     ) -> PropolisClientResult<()> {
@@ -410,13 +403,9 @@ impl TestVm {
     }
 
     /// Issues a Propolis client `instance_get` request.
-    pub fn get(&self) -> Result<InstanceGetResponse> {
+    pub async fn get(&self) -> Result<InstanceGetResponse> {
         let _span = self.tracing_span.enter();
         info!("Sending instance get request to server");
-        self.rt.block_on(async { self.get_async().await })
-    }
-
-    async fn get_async(&self) -> Result<InstanceGetResponse> {
         self.client
             .instance_get()
             .send()
@@ -425,13 +414,9 @@ impl TestVm {
             .with_context(|| anyhow!("failed to query instance properties"))
     }
 
-    pub fn get_spec(&self) -> Result<InstanceSpecGetResponse> {
+    pub async fn get_spec(&self) -> Result<InstanceSpecGetResponse> {
         let _span = self.tracing_span.enter();
         info!("Sending instance spec get request to server");
-        self.rt.block_on(async { self.get_spec_async().await })
-    }
-
-    async fn get_spec_async(&self) -> Result<InstanceSpecGetResponse> {
         self.client
             .instance_spec_get()
             .send()
@@ -442,7 +427,7 @@ impl TestVm {
 
     /// Starts this instance by issuing an ensure request that specifies a
     /// migration from `source` and then running the target.
-    pub fn migrate_from(
+    pub async fn migrate_from(
         &mut self,
         source: &Self,
         migration_id: Uuid,
@@ -468,8 +453,8 @@ impl TestVm {
                     source.server.server_addr()
                 );
 
-                let serial = self.rt.block_on(async {
-                    self.instance_ensure_async(
+                let serial = self
+                    .instance_ensure_internal(
                         Some(InstanceMigrateInitiateRequest {
                             migration_id,
                             src_addr: source.server.server_addr().to_string(),
@@ -477,44 +462,46 @@ impl TestVm {
                         }),
                         InstanceConsoleSource::InheritFrom(source),
                     )
-                    .await
-                })?;
+                    .await?;
 
                 self.state = VmState::Ensured { serial };
 
                 let span = info_span!("migrate", ?migration_id);
                 let _guard = span.enter();
-                let watch_migrate =
-                    || -> Result<(), backoff::Error<anyhow::Error>> {
-                        let state = self
-                            .get_migration_state(migration_id)
-                            .map_err(backoff::Error::Permanent)?;
-                        match state {
-                            MigrationState::Finish => {
-                                info!("Migration completed successfully");
-                                Ok(())
-                            }
-                            MigrationState::Error => {
-                                info!(
-                                    "Instance reported error during migration"
-                                );
-                                Err(backoff::Error::Permanent(anyhow!(
-                                    "error during migration"
-                                )))
-                            }
-                            _ => Err(backoff::Error::Transient {
-                                err: anyhow!("migration not done yet"),
-                                retry_after: None,
-                            }),
+                let migrate_fn = || async {
+                    let state = self
+                        .get_migration_state(migration_id)
+                        .await
+                        .map_err(backoff::Error::Permanent)?;
+                    match state {
+                        MigrationState::Finish => {
+                            info!("Migration completed successfully");
+                            Ok(())
                         }
-                    };
-
-                let backoff = backoff::ExponentialBackoff {
-                    max_elapsed_time: Some(timeout_duration),
-                    ..Default::default()
+                        MigrationState::Error => {
+                            info!("Instance reported error during migration");
+                            Err(backoff::Error::Permanent(anyhow!(
+                                "error during migration"
+                            )))
+                        }
+                        _ => Err(backoff::Error::Transient {
+                            err: anyhow!("migration not done yet"),
+                            retry_after: None,
+                        }),
+                    }
                 };
-                backoff::retry(backoff, watch_migrate)
-                    .map_err(|e| anyhow!("error during migration: {}", e))
+
+                backoff::future::retry(
+                    backoff::ExponentialBackoff {
+                        max_elapsed_time: Some(timeout_duration),
+                        ..Default::default()
+                    },
+                    migrate_fn,
+                )
+                .await
+                .context("live migration")?;
+
+                Ok(())
             }
             VmState::Ensured { .. } => {
                 Err(VmStateError::InstanceAlreadyEnsured.into())
@@ -522,37 +509,33 @@ impl TestVm {
         }
     }
 
-    pub fn get_migration_state(
+    pub async fn get_migration_state(
         &self,
         migration_id: Uuid,
     ) -> Result<MigrationState> {
-        self.rt.block_on(async {
-            Ok(self
-                .client
-                .instance_migrate_status()
-                .migration_id(migration_id)
-                .send()
-                .await?
-                .state)
-        })
+        Ok(self
+            .client
+            .instance_migrate_status()
+            .migration_id(migration_id)
+            .send()
+            .await?
+            .state)
     }
 
-    pub fn get_serial_console_history(
+    pub async fn get_serial_console_history(
         &self,
         from_start: u64,
     ) -> Result<InstanceSerialConsoleHistoryResponse> {
-        self.rt.block_on(async {
-            Ok(self
-                .client
-                .instance_serial_history_get()
-                .from_start(from_start)
-                .send()
-                .await?
-                .into_inner())
-        })
+        Ok(self
+            .client
+            .instance_serial_history_get()
+            .from_start(from_start)
+            .send()
+            .await?
+            .into_inner())
     }
 
-    pub fn wait_for_state(
+    pub async fn wait_for_state(
         &self,
         target: InstanceState,
         timeout_duration: Duration,
@@ -563,9 +546,14 @@ impl TestVm {
             timeout_duration, target
         );
 
-        let wait_fn = || -> Result<(), backoff::Error<anyhow::Error>> {
-            let current =
-                self.get().map_err(backoff::Error::Permanent)?.instance.state;
+        let wait_fn = || async {
+            let current = self
+                .get()
+                .await
+                .map_err(backoff::Error::Permanent)?
+                .instance
+                .state;
+
             if current == target {
                 Ok(())
             } else {
@@ -577,12 +565,17 @@ impl TestVm {
             }
         };
 
-        let backoff = backoff::ExponentialBackoff {
-            max_elapsed_time: Some(timeout_duration),
-            ..Default::default()
-        };
-        backoff::retry(backoff, wait_fn)
-            .map_err(|e| anyhow!("error waiting for instance state: {}", e))
+        backoff::future::retry(
+            backoff::ExponentialBackoff {
+                max_elapsed_time: Some(timeout_duration),
+                ..Default::default()
+            },
+            wait_fn,
+        )
+        .await
+        .context("waiting for instance state")?;
+
+        Ok(())
     }
 
     /// Waits for the guest to reach a login prompt and then logs in. Note that
@@ -591,49 +584,49 @@ impl TestVm {
     ///
     /// This routine consumes all of the serial console input that precedes the
     /// initial login prompt and the login prompt itself.
-    pub fn wait_to_boot(&self) -> Result<()> {
+    pub async fn wait_to_boot(&self) -> Result<()> {
         let timeout_duration = Duration::from_secs(300);
         let _span = self.tracing_span.enter();
         info!("Waiting {:?} for guest to boot", timeout_duration);
 
         let boot_sequence = self.guest_os.get_login_sequence();
-        let _ = self.rt.block_on(async {
-            timeout(
-                timeout_duration,
-                async move {
-                    for step in boot_sequence.0 {
-                        debug!(?step, "executing command in boot sequence");
-                        match step {
-                            CommandSequenceEntry::WaitFor(s) => {
-                                self.wait_for_serial_output_async(
-                                    s,
-                                    Duration::MAX,
-                                )
+        match timeout(
+            timeout_duration,
+            async move {
+                for step in boot_sequence.0 {
+                    debug!(?step, "executing command in boot sequence");
+                    match step {
+                        CommandSequenceEntry::WaitFor(s) => {
+                            self.wait_for_serial_output(s, Duration::MAX)
                                 .await?;
-                            }
-                            CommandSequenceEntry::WriteStr(s) => {
-                                self.send_serial_str_async(s).await?;
-                                self.send_serial_str_async("\n").await?;
-                            }
-                            CommandSequenceEntry::ChangeSerialConsoleBuffer(
-                                kind,
-                            ) => {
-                                self.change_serial_buffer_kind(kind)?;
-                            }
-                            CommandSequenceEntry::SetSerialByteWriteDelay(
-                                duration,
-                            ) => {
-                                self.set_serial_byte_write_delay(duration)?;
-                            }
+                        }
+                        CommandSequenceEntry::WriteStr(s) => {
+                            self.send_serial_str(s).await?;
+                            self.send_serial_str("\n").await?;
+                        }
+                        CommandSequenceEntry::ChangeSerialConsoleBuffer(
+                            kind,
+                        ) => {
+                            self.change_serial_buffer_kind(kind)?;
+                        }
+                        CommandSequenceEntry::SetSerialByteWriteDelay(
+                            duration,
+                        ) => {
+                            self.set_serial_byte_write_delay(duration)?;
                         }
                     }
-                    Ok::<(), anyhow::Error>(())
                 }
-                .instrument(info_span!("wait_to_boot")),
-            )
-            .await
-            .map_err(|e| anyhow!(e))
-        })?;
+                Ok::<(), anyhow::Error>(())
+            }
+            .instrument(info_span!("wait_to_boot")),
+        )
+        .await
+        {
+            Err(_) => anyhow::bail!("timed out while waiting to boot"),
+            Ok(inner) => {
+                inner.context("executing guest login sequence")?;
+            }
+        };
 
         info!("Guest has booted");
         Ok(())
@@ -642,10 +635,10 @@ impl TestVm {
     /// Waits for up to `timeout_duration` for `line` to appear on the guest
     /// serial console, then returns the unconsumed portion of the serial
     /// console buffer that preceded the requested string.
-    pub fn wait_for_serial_output(
+    pub async fn wait_for_serial_output(
         &self,
         line: &str,
-        timeout_duration: std::time::Duration,
+        timeout_duration: Duration,
     ) -> Result<String> {
         let _span = self.tracing_span.enter();
         info!(
@@ -654,53 +647,42 @@ impl TestVm {
             "Waiting for output on serial console"
         );
 
-        let received: Option<String> = self.rt.block_on(async {
-            self.wait_for_serial_output_async(line, timeout_duration).await
-        })?;
-
-        received.ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Channel unexpectedly closed while waiting for string",
-            )
-            .into()
-        })
-    }
-
-    async fn wait_for_serial_output_async(
-        &self,
-        line: &str,
-        timeout_duration: Duration,
-    ) -> Result<Option<String>> {
-        let line = line.to_string();
-        let (preceding_tx, preceding_rx) = oneshot::channel();
-        match &self.state {
-            VmState::Ensured { serial } => {
-                serial.register_wait_for_string(line.clone(), preceding_tx)?;
-                let t = timeout(timeout_duration, preceding_rx).await;
-                match t {
-                    Err(timeout_elapsed) => {
-                        serial.cancel_wait_for_string()?;
-                        Err(anyhow!(timeout_elapsed))
+        let received = {
+            let line = line.to_string();
+            let (preceding_tx, preceding_rx) = oneshot::channel();
+            match &self.state {
+                VmState::Ensured { serial } => {
+                    serial
+                        .register_wait_for_string(line.clone(), preceding_tx)?;
+                    let t = timeout(timeout_duration, preceding_rx).await;
+                    match t {
+                        Err(timeout_elapsed) => {
+                            serial.cancel_wait_for_string()?;
+                            Err(anyhow!(timeout_elapsed))
+                        }
+                        Ok(Err(e)) => Err(e.into()),
+                        Ok(Ok(received_string)) => Ok(Some(received_string)),
                     }
-                    Ok(Err(e)) => Err(e.into()),
-                    Ok(Ok(received_string)) => Ok(Some(received_string)),
                 }
+                VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
             }
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+        };
+
+        received?.ok_or_else(|| {
+            anyhow!("wait_for_serial_output recv channel unexpectedly closed")
+        })
     }
 
     /// Runs the shell command `cmd` by sending it to the serial console, then
     /// waits for another shell prompt to appear using
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
-    pub fn run_shell_command(&self, cmd: &str) -> Result<String> {
+    pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
         // Send the command out the serial port, including any amendments
         // required by the guest. Do not send the final '\n' keystroke that
         // actually issues the command.
         let to_send = self.guest_os.amend_shell_command(cmd);
-        self.send_serial_str(&to_send)?;
+        self.send_serial_str(&to_send).await?;
 
         // Wait for the command to be echoed back. This ensures that the echoed
         // command is consumed from the buffer such that it won't be returned
@@ -709,17 +691,19 @@ impl TestVm {
         // Tests may send multi-line commands. Assume these won't be echoed
         // literally and that each line will instead be preceded by `> `.
         let echo = to_send.trim_end().replace('\n', "\n> ");
-        self.wait_for_serial_output(&echo, Duration::from_secs(15))?;
-        self.send_serial_str("\n")?;
+        self.wait_for_serial_output(&echo, Duration::from_secs(15)).await?;
+        self.send_serial_str("\n").await?;
 
         // Once the command has run, the guest should display another prompt.
         // Treat the unconsumed buffered text before this point as the command
         // output. (Note again that the command itself was already consumed by
         // the wait above.)
-        let out = self.wait_for_serial_output(
-            self.guest_os.get_shell_prompt(),
-            Duration::from_secs(300),
-        )?;
+        let out = self
+            .wait_for_serial_output(
+                self.guest_os.get_shell_prompt(),
+                Duration::from_secs(300),
+            )
+            .await?;
 
         // Trim both ends of the output to get rid of any echoed newlines and/or
         // whitespace that were inserted when sending '\n' to start processing
@@ -727,11 +711,7 @@ impl TestVm {
         Ok(out.trim().to_string())
     }
 
-    fn send_serial_str(&self, string: &str) -> Result<()> {
-        self.rt.block_on(async { self.send_serial_str_async(string).await })
-    }
-
-    async fn send_serial_str_async(&self, string: &str) -> Result<()> {
+    async fn send_serial_str(&self, string: &str) -> Result<()> {
         if !string.is_empty() {
             self.send_serial_bytes_async(Vec::from(string.as_bytes())).await
         } else {
@@ -780,35 +760,49 @@ impl TestVm {
 
 impl Drop for TestVm {
     fn drop(&mut self) {
-        let _span = self.tracing_span.enter();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                self.rt.block_on(async {
+                    let _span = self.tracing_span.enter();
 
-        if let VmState::New = self.state {
-            // Instance never ensured, nothing to do.
-            return;
-        }
+                    if let VmState::New = self.state {
+                        // Instance never ensured, nothing to do.
+                        return;
+                    }
 
-        match self.get().map(|r| r.instance.state) {
-            Ok(InstanceState::Destroyed) => {
-                // Instance already destroyed, nothing to do.
-            }
-            Ok(_) => {
-                // Instance is up, best-effort attempt to let it clean up gracefully.
-                info!("Cleaning up Test VM on drop");
-                if let Err(err) = self.stop() {
-                    warn!(?err, "Stop request failed for Test VM cleanup");
-                    return;
-                }
-                if let Err(err) = self.wait_for_state(
-                    InstanceState::Destroyed,
-                    Duration::from_secs(5),
-                ) {
-                    warn!(?err, "Test VM failed to clean up");
-                }
-            }
-            Err(err) => {
-                // Instance should've been ensured by this point so an error is unexpected.
-                warn!(?err, "Unexpected error from instance");
-            }
-        }
+                    match self.get().await.map(|r| r.instance.state) {
+                        Ok(InstanceState::Destroyed) => {
+                            // Instance already destroyed, nothing to do.
+                        }
+                        Ok(_) => {
+                            // Instance is up, best-effort attempt to let it
+                            // clean up gracefully.
+                            info!("Cleaning up Test VM on drop");
+                            if let Err(err) = self.stop().await {
+                                warn!(
+                                    ?err,
+                                    "Stop request failed for Test VM cleanup"
+                                );
+                                return;
+                            }
+                            if let Err(err) = self
+                                .wait_for_state(
+                                    InstanceState::Destroyed,
+                                    Duration::from_secs(5),
+                                )
+                                .await
+                            {
+                                warn!(?err, "Test VM failed to clean up");
+                            }
+                        }
+                        Err(err) => {
+                            // Instance should've been ensured by this point so
+                            // an error is unexpected.
+                            warn!(?err, "Unexpected error from instance");
+                        }
+                    }
+                });
+            });
+        });
     }
 }

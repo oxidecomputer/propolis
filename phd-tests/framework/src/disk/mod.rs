@@ -10,7 +10,6 @@
 
 use std::{
     path::{Path, PathBuf},
-    rc::Rc,
     sync::Arc,
 };
 
@@ -62,7 +61,7 @@ impl BlockSize {
 }
 
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
-pub trait DiskConfig: std::fmt::Debug {
+pub trait DiskConfig: std::fmt::Debug + Send + Sync {
     /// Yields the backend spec for this disk's storage backend.
     fn backend_spec(&self) -> (String, StorageBackendV0);
 
@@ -113,11 +112,11 @@ pub(crate) struct DiskFactory {
 
     /// A reference to the artifact store to use to look up guest OS artifacts
     /// when those are used as a disk source.
-    artifact_store: Rc<ArtifactStore>,
+    artifact_store: Arc<ArtifactStore>,
 
     /// The port allocator to use to allocate ports to Crucible server
     /// processes.
-    port_allocator: Rc<PortAllocator>,
+    port_allocator: Arc<PortAllocator>,
 
     /// The logging discipline to use for Crucible server processes.
     log_mode: ServerLogMode,
@@ -129,8 +128,8 @@ impl DiskFactory {
     /// supplied `artifact_store`.
     pub fn new(
         storage_dir: &impl AsRef<Path>,
-        artifact_store: Rc<ArtifactStore>,
-        port_allocator: Rc<PortAllocator>,
+        artifact_store: Arc<ArtifactStore>,
+        port_allocator: Arc<PortAllocator>,
         log_mode: ServerLogMode,
     ) -> Self {
         Self {
