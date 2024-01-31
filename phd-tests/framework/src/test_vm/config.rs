@@ -263,8 +263,7 @@ async fn make_disk(
             .await
             .with_context(|| {
                 format!(
-                    "creating new Crucible-backed disk from \
-                                    '{}'",
+                    "creating new Crucible-backed disk from '{}'",
                     &req.source_artifact
                 )
             })?
