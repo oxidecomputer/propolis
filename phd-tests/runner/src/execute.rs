@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,15 +46,6 @@ struct Execution {
     status: Status,
 }
 
-// The executor will install a global panic hook that allows a thread that
-// panics to store a message for the executor to log after unwinding. A
-// `RefCell` is safe here because this message is stored once per thread, and a
-// thread running the panic hook is by definition not running the code that
-// handles a caught panic.
-thread_local! {
-    static PANIC_MSG: RefCell<Option<String>> = RefCell::new(None);
-}
-
 /// Executes a set of tests using the supplied test context.
 pub async fn run_tests_with_ctx(
     ctx: &Arc<Framework>,
@@ -86,15 +76,6 @@ pub async fn run_tests_with_ctx(
     }
 
     fixtures.execution_setup().unwrap();
-
-    std::panic::set_hook(Box::new(|info| {
-        PANIC_MSG.with(|val| {
-            let backtrace = backtrace::Backtrace::new();
-            let msg = format!("{}\n    backtrace:\n{:#?}", info, backtrace);
-            eprintln!("Caught a panic: {}", msg);
-            *val.borrow_mut() = Some(msg);
-        });
-    }));
 
     info!("Running {} test(s)", executions.len());
     let start_time = Instant::now();
