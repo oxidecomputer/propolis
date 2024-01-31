@@ -4,7 +4,7 @@
 
 //! Routines and data structures for working with Propolis server processes.
 
-use std::{fmt::Debug, net::SocketAddrV4};
+use std::{fmt::Debug, net::SocketAddrV4, os::unix::process::CommandExt};
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -62,18 +62,52 @@ impl PropolisServer {
         let (server_stdout, server_stderr) =
             log_mode.get_handles(&data_dir, vm_name)?;
 
+        // In the normal course of events, dropping a `TestVm` will spawn a task
+        // that takes ownership of its `PropolisServer` and then sends Propolis
+        // client calls to gracefully stop the VM running in that server (if
+        // there is one). This ensures (modulo any bugs in Propolis itself) that
+        // any Propolis servers hosting a running VM will have a chance to
+        // destroy their kernel VMMs before the servers themselves go away.
+        //
+        // The PHD runner tries to give VMs a chance to tear down gracefully on
+        // Ctrl-C by installing a custom SIGINT handler and using it to tell
+        // running test tasks to shut down instead of completing their tests.
+        // This allows the tests' VMs to be dropped gracefully. The trouble is
+        // that with no additional intervention, pressing Ctrl-C to interrupt a
+        // PHD runner process will typically cause SIGINTs to be delivered to
+        // every process in the foreground process group, including both the
+        // runner and all its Propolis server children. This breaks the `TestVm`
+        // cleanup logic: by the time the VM is cleaned up, its server process
+        // is already gone (due to the signal), so its VMM can't be cleaned up.
+        //
+        // To get around this, spawn Propolis server processes with a pre-`exec`
+        // hook that directs them to ignore SIGINT. They will still be killed
+        // during `TestVm` cleanup, assuming that executes normally; if the
+        // runner is rudely terminated after that, the server process is still
+        // preserved for investigation (and can still be cleaned up by other
+        // means, e.g. SIGKILL).
+        //
+        // Note that it's undesirable for PHD to try to clean up leaked kernel
+        // VMMs itself: leaking a kernel VMM after gracefully stopping a
+        // Propolis server VM indicates a Propolis server bug.
         let server = PropolisServer {
-            server: std::process::Command::new("pfexec")
-                .args([
-                    server_path.as_str(),
-                    "run",
-                    config_toml_path.as_str(),
-                    server_addr.to_string().as_str(),
-                    vnc_addr.to_string().as_str(),
-                ])
-                .stdout(server_stdout)
-                .stderr(server_stderr)
-                .spawn()?,
+            server: unsafe {
+                std::process::Command::new("pfexec")
+                    .args([
+                        server_path.as_str(),
+                        "run",
+                        config_toml_path.as_str(),
+                        server_addr.to_string().as_str(),
+                        vnc_addr.to_string().as_str(),
+                    ])
+                    .stdout(server_stdout)
+                    .stderr(server_stderr)
+                    .pre_exec(move || {
+                        libc::signal(libc::SIGINT, libc::SIG_IGN);
+                        Ok(())
+                    })
+                    .spawn()?
+            },
             address: server_addr,
         };
 
