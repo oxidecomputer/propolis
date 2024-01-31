@@ -577,6 +577,7 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
+    #[cfg(not(feature = "omicron-build"))]
     pub fn initialize_test_devices(
         &self,
         toml_cfg: &BTreeMap<String, TomlDevice>,
@@ -586,45 +587,37 @@ impl<'a> MachineInitializer<'a> {
         };
 
         if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
-            if cfg!(feature = "omicron-build") {
-                warn!(
+            const FAIL_EXPORTS: &str = "fail_exports";
+            const FAIL_IMPORTS: &str = "fail_imports";
+            let fail_exports = dev
+                .options
+                .get(FAIL_EXPORTS)
+                .and_then(|val| val.as_integer())
+                .unwrap_or(0);
+            let fail_imports = dev
+                .options
+                .get(FAIL_IMPORTS)
+                .and_then(|val| val.as_integer())
+                .unwrap_or(0);
+
+            if fail_exports <= 0 && fail_imports <= 0 {
+                info!(
                     self.log,
-                    "The migration failure device is intended for testing \
-                    purposes only! I'm not going to let you do that."
+                    "migration failure device will not fail, as both
+                    `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
+                    FAIL_EXPORTS => ?fail_exports,
+                    FAIL_IMPORTS => ?fail_imports,
                 );
-            } else {
-                const FAIL_EXPORTS: &str = "fail_exports";
-                const FAIL_IMPORTS: &str = "fail_imports";
-                let fail_exports = dev
-                    .options
-                    .get(FAIL_EXPORTS)
-                    .and_then(|val| val.as_integer())
-                    .unwrap_or(0);
-                let fail_imports = dev
-                    .options
-                    .get(FAIL_IMPORTS)
-                    .and_then(|val| val.as_integer())
-                    .unwrap_or(0);
-
-                if fail_exports <= 0 && fail_imports <= 0 {
-                    info!(
-                        self.log,
-                        "migration failure device will not fail, as both
-                        `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
-                        FAIL_EXPORTS => ?fail_exports,
-                        FAIL_IMPORTS => ?fail_imports,
-                    );
-                }
-
-                let dev = MigrationFailureDevice::create(
-                    &self.log,
-                    MigrationFailures {
-                        exports: fail_exports as usize,
-                        imports: fail_imports as usize,
-                    },
-                );
-                self.inv.register(&dev)?;
             }
+
+            let dev = MigrationFailureDevice::create(
+                &self.log,
+                MigrationFailures {
+                    exports: fail_exports as usize,
+                    imports: fail_imports as usize,
+                },
+            );
+            self.inv.register(&dev)?;
         }
 
         Ok(())

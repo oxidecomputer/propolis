@@ -460,7 +460,15 @@ impl VmController {
         init.initialize_qemu_debug_port()?;
         init.initialize_qemu_pvpanic(properties.id)?;
         init.initialize_network_devices(&chipset)?;
+
+        #[cfg(not(feature = "omicron-build"))]
         init.initialize_test_devices(&toml_config.devices)?;
+        #[cfg(feature = "omicron-build")]
+        info!(
+            log,
+            "`omicron-build` feature enabled, ignoring any test devices"
+        );
+
         #[cfg(feature = "falcon")]
         init.initialize_softnpu_ports(&chipset)?;
         #[cfg(feature = "falcon")]
