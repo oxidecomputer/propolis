@@ -41,6 +41,10 @@ pub use test_vm::TestVm;
 use test_vm::{
     environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
 };
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
 
 pub mod artifacts;
 pub mod disk;
@@ -75,10 +79,14 @@ pub struct Framework {
     pub(crate) crucible_enabled: bool,
     pub(crate) migration_base_enabled: bool,
 
-    vm_drop_tx: tokio::sync::mpsc::UnboundedSender<tokio::task::JoinHandle<()>>,
-    vm_drop_rx: std::sync::Mutex<
-        tokio::sync::mpsc::UnboundedReceiver<tokio::task::JoinHandle<()>>,
-    >,
+    /// Buffers cleanup tasks that need to be run after a test case completes.
+    /// [`Self::cleanup_task_channel`] returns a clone of this sender that
+    /// framework users can use to register these tasks (without having to hold
+    /// a reference to the `Framework`).
+    cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
+
+    /// The receiver side of [`cleanup_task_tx`].
+    cleanup_task_rx: tokio::sync::Mutex<UnboundedReceiver<JoinHandle<()>>>,
 }
 
 pub struct FrameworkParameters<'a> {
@@ -180,7 +188,8 @@ impl Framework {
             params.server_log_mode,
         );
 
-        let (vm_drop_tx, vm_drop_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (cleanup_task_tx, cleanup_task_rx) =
+            tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
             tmp_directory: params.tmp_directory,
             server_log_mode: params.server_log_mode,
@@ -193,8 +202,8 @@ impl Framework {
             port_allocator,
             crucible_enabled,
             migration_base_enabled,
-            vm_drop_tx,
-            vm_drop_rx: std::sync::Mutex::new(vm_drop_rx),
+            cleanup_task_tx,
+            cleanup_task_rx: tokio::sync::Mutex::new(cleanup_task_rx),
         })
     }
 
@@ -202,7 +211,7 @@ impl Framework {
     /// to run a new test case.
     pub async fn reset(&self) {
         self.port_allocator.reset();
-        self.wait_for_dropped_vms().await;
+        self.wait_for_cleanup_tasks().await;
     }
 
     /// Creates a new VM configuration builder using the default configuration
@@ -301,21 +310,36 @@ impl Framework {
         self.migration_base_enabled
     }
 
-    pub(crate) fn vm_drop_channel(
+    /// Yields a sender to which the caller can submit tasks that will be
+    /// `await`ed after the calling test case completes.
+    pub(crate) fn cleanup_task_channel(
         &self,
-    ) -> tokio::sync::mpsc::UnboundedSender<tokio::task::JoinHandle<()>> {
-        self.vm_drop_tx.clone()
+    ) -> UnboundedSender<JoinHandle<()>> {
+        self.cleanup_task_tx.clone()
     }
 
-    async fn wait_for_dropped_vms(&self) {
+    /// Runs any currently-queued cleanup tasks in this `Framework` to
+    /// completion.
+    ///
+    /// This routine synchronizes access to the cleanup task queue such that
+    /// when it returns, any cleanup tasks that were previously queued by the
+    /// calling thread are guaranteed to have been completed (though not
+    /// necessarily by the calling thread itself, i.e., another, earlier caller
+    /// may have awaited the task).
+    async fn wait_for_cleanup_tasks(&self) {
         let futs = FuturesUnordered::new();
-        {
-            let mut guard = self.vm_drop_rx.lock().unwrap();
-            while let Ok(task) = guard.try_recv() {
-                futs.push(task);
-            }
+
+        let mut guard = self.cleanup_task_rx.lock().await;
+        while let Ok(task) = guard.try_recv() {
+            futs.push(task);
         }
 
+        // Hold the lock while awaiting the tasks to block subsequent callers.
+        // This is needed to guarantee that all tasks submitted by a thread are
+        // retired when that thread returns from this call: without the lock, T1
+        // can submit a task, T2 can remove it from the queue but not fully
+        // retire it, and a subsequent call from T1 will see an empty queue and
+        // return immediately even though its task is still active.
         let _results: Vec<_> = futs.collect().await;
     }
 }

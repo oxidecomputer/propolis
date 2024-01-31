@@ -30,7 +30,11 @@ use propolis_client::{
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
-use tokio::{sync::oneshot, time::timeout};
+use tokio::{
+    sync::{mpsc::UnboundedSender, oneshot},
+    task::JoinHandle,
+    time::timeout,
+};
 use tracing::{debug, error, info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
 
@@ -117,8 +121,10 @@ pub struct TestVm {
 
     state: VmState,
 
-    drop_task_tx:
-        tokio::sync::mpsc::UnboundedSender<tokio::task::JoinHandle<()>>,
+    /// Sending a task handle to this channel will ensure that the task runs to
+    /// completion as part of the post-test cleanup fixture (i.e. before any
+    /// other tests run).
+    cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
 }
 
 impl TestVm {
@@ -162,7 +168,7 @@ impl TestVm {
                 spec,
                 environment.clone(),
                 params,
-                framework.vm_drop_channel(),
+                framework.cleanup_task_channel(),
             ),
         }
     }
@@ -172,9 +178,7 @@ impl TestVm {
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
         params: ServerProcessParameters,
-        drop_task_tx: tokio::sync::mpsc::UnboundedSender<
-            tokio::task::JoinHandle<()>,
-        >,
+        cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
     ) -> Result<Self> {
         let config_filename = format!("{}.config.toml", &vm_spec.vm_name);
         let mut config_toml_path = params.data_dir.to_path_buf();
@@ -220,7 +224,7 @@ impl TestVm {
             guest_os,
             tracing_span: span,
             state: VmState::New,
-            drop_task_tx,
+            cleanup_task_tx,
         })
     }
 
@@ -864,6 +868,6 @@ impl Drop for TestVm {
             .instrument(span),
         );
 
-        let _ = self.drop_task_tx.send(task);
+        let _ = self.cleanup_task_tx.send(task);
     }
 }
