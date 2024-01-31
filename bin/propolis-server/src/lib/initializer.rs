@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
@@ -11,7 +10,10 @@ use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::serial::Serial;
+use crate::server::CrucibleBackendMap;
 use crucible_client_types::VolumeConstructionRequest;
+pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
@@ -30,12 +32,7 @@ use propolis::instance::Instance;
 use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
-use propolis_server_config::Device as TomlDevice;
-use slog::{info, warn};
-
-use crate::serial::Serial;
-use crate::server::CrucibleBackendMap;
-pub use nexus_client::Client as NexusClient;
+use slog::info;
 
 use anyhow::{Context, Result};
 
@@ -580,7 +577,10 @@ impl<'a> MachineInitializer<'a> {
     #[cfg(not(feature = "omicron-build"))]
     pub fn initialize_test_devices(
         &self,
-        toml_cfg: &BTreeMap<String, TomlDevice>,
+        toml_cfg: &std::collections::BTreeMap<
+            String,
+            propolis_server_config::Device,
+        >,
     ) -> Result<(), Error> {
         use propolis::hw::testdev::{
             MigrationFailureDevice, MigrationFailures,
