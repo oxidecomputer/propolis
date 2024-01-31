@@ -103,6 +103,8 @@ pub async fn run_tests_with_ctx(
         let mut sigint_rx_task = sigint_rx.clone();
         let test_outcome = match tokio::spawn(async move {
             tokio::select! {
+                // Ensure interrupt signals are always handled instead of
+                // continuing to run the test.
                 biased;
                 result = sigint_rx_task.changed() => {
                     assert!(
