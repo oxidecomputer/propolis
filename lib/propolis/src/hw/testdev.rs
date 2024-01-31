@@ -99,7 +99,7 @@ impl MigrateSingle for MigrationFailureDevice {
         let fail = import_num < self.fail.imports;
         info!(
             self.log,
-            "exporting device";
+            "importing device";
             "import_num" => %import_num,
             "will_fail" => %fail,
         );
