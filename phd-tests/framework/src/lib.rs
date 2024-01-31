@@ -55,6 +55,7 @@ mod port_allocator;
 mod serial;
 pub mod server_log_mode;
 pub mod test_vm;
+pub(crate) mod zfs;
 
 /// An instance of the PHD test framework.
 pub struct Framework {

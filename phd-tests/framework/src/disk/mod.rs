@@ -14,6 +14,7 @@ use std::{
 };
 
 use anyhow::Context;
+use camino::Utf8PathBuf;
 use propolis_client::types::StorageBackendV0;
 use thiserror::Error;
 
@@ -145,11 +146,10 @@ impl DiskFactory {
     async fn get_guest_artifact_info(
         &self,
         artifact_name: &str,
-    ) -> Result<(PathBuf, GuestOsKind), DiskError> {
+    ) -> Result<(Utf8PathBuf, GuestOsKind), DiskError> {
         self.artifact_store
             .get_guest_os_image(artifact_name)
             .await
-            .map(|(utf8, kind)| (utf8.into_std_path_buf(), kind))
             .with_context(|| {
                 format!("failed to get guest OS artifact '{}'", artifact_name)
             })
@@ -167,13 +167,8 @@ impl DiskFactory {
         let (artifact_path, guest_os) =
             self.get_guest_artifact_info(artifact_name).await?;
 
-        FileBackedDisk::new_from_artifact(
-            name,
-            &artifact_path,
-            &self.storage_dir,
-            Some(guest_os),
-        )
-        .map(Arc::new)
+        FileBackedDisk::new_from_artifact(name, &artifact_path, Some(guest_os))
+            .map(Arc::new)
     }
 
     /// Creates a new Crucible-backed disk by creating three region files to
