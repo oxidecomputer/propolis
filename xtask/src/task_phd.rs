@@ -228,19 +228,19 @@ impl Cmd {
             phd_runner
                 .command()
                 .arg("run")
-                .arg(args::PROPOLIS_CMD)
-                .arg(&propolis_local_path)
-                .arg(args::CRUCIBLE_COMMIT)
-                .arg(crucible_commit.unwrap_or("auto"))
-                .arg(args::PROPOLIS_BASE)
-                .arg(propolis_base_branch.unwrap_or("master"))
-                .arg(args::ARTIFACTS_TOML)
-                .arg(&artifacts_toml)
-                .arg("--artifact-directory")
-                .arg(&artifact_dir)
-                .arg("--tmp-directory")
-                .arg(&tmp_dir)
-                .args(bonus_args),
+              .arg(args::PROPOLIS_CMD)
+              .arg(&propolis_local_path)
+              .arg(args::CRUCIBLE_COMMIT)
+              .arg(crucible_commit.unwrap_or("auto"))
+              .arg(args::PROPOLIS_BASE)
+              .arg(propolis_base_branch.unwrap_or("master"))
+              .arg(args::ARTIFACTS_TOML)
+              .arg(&artifacts_toml)
+              .arg(args::ARTIFACTS_DIR)
+              .arg(&artifact_dir)
+              .arg("--tmp-directory")
+              .arg(&tmp_dir)
+              .args(bonus_args),
         )?;
 
         std::process::exit(status);

@@ -879,6 +879,8 @@ fn setup_instance(
 
     for (name, dev) in config.devices.iter() {
         let driver = &dev.driver as &str;
+        slog::debug!(log, "creating device"; "name" => ?name, "driver" => %driver);
+
         let bdf = if driver.starts_with("pci-") {
             config::parse_bdf(
                 dev.options.get("pci-path").unwrap().as_str().unwrap(),
@@ -886,73 +888,86 @@ fn setup_instance(
         } else {
             None
         };
-        match driver {
-            "pci-virtio-block" => {
-                let (backend, creg) = config::block_backend(&config, dev, log);
-                let bdf = bdf.unwrap();
+        let create_device = || -> anyhow::Result<()> {
+            match driver {
+                "pci-virtio-block" => {
+                    let (backend, creg) =
+                        config::block_backend(&config, dev, log);
+                    let bdf = bdf.unwrap();
 
-                let vioblk = hw::virtio::PciVirtioBlock::new(0x100);
-                let id = inv.register_instance(&vioblk, bdf.to_string())?;
-                let _be_id = inv.register_child(creg, id)?;
+                    let vioblk = hw::virtio::PciVirtioBlock::new(0x100);
+                    let id = inv.register_instance(&vioblk, bdf.to_string())?;
+                    let _be_id = inv.register_child(creg, id)?;
 
-                block::attach(backend, vioblk.clone());
+                    block::attach(backend, vioblk.clone());
 
-                chipset.pci_attach(bdf, vioblk);
-            }
-            "pci-virtio-viona" => {
-                let vnic_name =
-                    dev.options.get("vnic").unwrap().as_str().unwrap();
-                let bdf = bdf.unwrap();
-
-                let viona =
-                    hw::virtio::PciVirtioViona::new(vnic_name, 0x100, &hdl)?;
-                inv.register_instance(&viona, bdf.to_string())?;
-                chipset.pci_attach(bdf, viona);
-            }
-            "pci-nvme" => {
-                let (backend, creg) = config::block_backend(&config, dev, log);
-                let bdf = bdf.unwrap();
-
-                let dev_serial = dev
-                    .options
-                    .get("block_dev")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                let log = log.new(slog::o!("dev" => format!("nvme-{}", name)));
-                let nvme = hw::nvme::PciNvme::create(dev_serial, log);
-
-                let id = inv.register_instance(&nvme, bdf.to_string())?;
-                let _be_id = inv.register_child(creg, id)?;
-
-                block::attach(backend, nvme.clone());
-
-                chipset.pci_attach(bdf, nvme);
-            }
-            qemu::pvpanic::DEVICE_NAME => {
-                let enable_isa = dev
-                    .options
-                    .get("enable_isa")
-                    .and_then(|opt| opt.as_bool())
-                    .unwrap_or(false);
-                if enable_isa {
-                    let pvpanic = QemuPvpanic::create(
-                        log.new(slog::o!("dev" => "pvpanic")),
-                    );
-                    pvpanic.attach_pio(pio);
-                    inv.register(&pvpanic)?;
+                    chipset.pci_attach(bdf, vioblk);
                 }
-            }
-            _ => {
-                slog::error!(log, "unrecognized driver"; "name" => name);
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unrecognized driver",
-                )
-                .into());
-            }
-        }
+                "pci-virtio-viona" => {
+                    let vnic_name =
+                        dev.options.get("vnic").unwrap().as_str().unwrap();
+                    let bdf = bdf.unwrap();
+
+                    let viona = hw::virtio::PciVirtioViona::new(
+                        vnic_name, 0x100, &hdl,
+                    )
+                    .with_context(|| {
+                        format!("Could not connect to VioNA VNIC '{vnic_name}'")
+                    })?;
+                    inv.register_instance(&viona, bdf.to_string())?;
+                    chipset.pci_attach(bdf, viona);
+                }
+                "pci-nvme" => {
+                    let (backend, creg) =
+                        config::block_backend(&config, dev, log);
+                    let bdf = bdf.unwrap();
+
+                    let dev_serial = dev
+                        .options
+                        .get("block_dev")
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string();
+                    let log =
+                        log.new(slog::o!("dev" => format!("nvme-{}", name)));
+                    let nvme = hw::nvme::PciNvme::create(dev_serial, log);
+
+                    let id = inv.register_instance(&nvme, bdf.to_string())?;
+                    let _be_id = inv.register_child(creg, id)?;
+
+                    block::attach(backend, nvme.clone());
+
+                    chipset.pci_attach(bdf, nvme);
+                }
+                qemu::pvpanic::DEVICE_NAME => {
+                    let enable_isa = dev
+                        .options
+                        .get("enable_isa")
+                        .and_then(|opt| opt.as_bool())
+                        .unwrap_or(false);
+                    if enable_isa {
+                        let pvpanic = QemuPvpanic::create(
+                            log.new(slog::o!("dev" => "pvpanic")),
+                        );
+                        pvpanic.attach_pio(pio);
+                        inv.register(&pvpanic)?;
+                    }
+                }
+                _ => {
+                    slog::error!(log, "unrecognized driver {driver}"; "name" => name);
+                    return Err(Error::new(
+                        ErrorKind::Other,
+                        "Unrecognized driver",
+                    )
+                    .into());
+                }
+            };
+            Ok(())
+        };
+        create_device().with_context(|| {
+            format!("Failed to create {driver} device '{name}'")
+        })?;
     }
 
     let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
