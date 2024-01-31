@@ -850,7 +850,7 @@ impl Drop for TestVm {
                     }
                 };
 
-                if backoff::future::retry(
+                let destroyed = backoff::future::retry(
                     backoff::ExponentialBackoff {
                         max_elapsed_time: Some(std::time::Duration::from_secs(
                             5,
@@ -859,10 +859,10 @@ impl Drop for TestVm {
                     },
                     check_destroyed,
                 )
-                .await
-                .is_err()
-                {
-                    error!("dropped VM not destroyed after 5 seconds");
+                .await;
+
+                if let Err(e) = destroyed {
+                    error!(%e, "dropped VM not destroyed after 5 seconds");
                 }
             }
             .instrument(span),
