@@ -4,7 +4,7 @@
 
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
-use std::{env, fs, process::Command, time};
+use std::{fs, process::Command, time};
 
 macro_rules! cargo_log {
     ($tag:literal, $($arg:tt)*) => {
@@ -40,148 +40,219 @@ macro_rules! cargo_warn {
     }
 }
 
-pub(crate) fn cmd_phd(phd_args: Vec<String>) -> anyhow::Result<()> {
-    let phd_runner = build_bin("phd-runner", false)?;
+#[derive(clap::Subcommand, Debug, Clone)]
+pub(crate) enum Cmd {
+    /// Run the PHD test suite.
+    Run {
+        #[clap(flatten)]
+        args: RunArgs,
+    },
 
-    let mut arg_iter = phd_args.iter().map(String::as_str);
-    // If the `phd-runner` subcommand is not `run`, just forward straight to
-    // phd-runner without any extra processing.
-    if arg_iter.next() != Some("run") {
-        let status = run_exit_code(phd_runner.command().args(phd_args))?;
-        std::process::exit(status);
-    }
+    /// Delete any temporary directories older than one day.
+    Tidy,
 
-    // Bash-script-style arg parsing, rather than using `clap`, because we
-    // want to filter out the args we default regardless of their position in
-    // the input. A `clap` parser can only accept unrecognized args if they're
-    // trailing after all recognized args, which isn't the behavior we want, as
-    // we don't know what order the `phd-runner` command line will come in.
-    let mut bonus_args = Vec::new();
-    let mut propolis_base_branch = None;
-    let mut propolis_local_path = None;
-    let mut crucible_commit = None;
-    let mut artifacts_toml = None;
-    let mut artifact_dir = None;
-    let mut propolis_release_mode = false;
-    while let Some(arg) = arg_iter.next() {
-        macro_rules! take_next_arg {
-            ($var:ident) => {{
-                let val = arg_iter.next().ok_or_else(|| {
-                    anyhow::anyhow!("Missing value for argument `{}`", arg)
-                })?;
-                cargo_log!("Overridden", "{} {val:?}", arg);
-                $var = Some(val);
-            }};
-        }
-        match arg {
-            args::PROPOLIS_BASE => take_next_arg!(propolis_base_branch),
-            args::PROPOLIS_CMD => take_next_arg!(propolis_local_path),
-            args::CRUCIBLE_COMMIT => take_next_arg!(crucible_commit),
-            args::ARTIFACTS_TOML => take_next_arg!(artifacts_toml),
-            args::ARTIFACTS_DIR => take_next_arg!(artifact_dir),
-            args::PROPOLIS_RELEASE | args::PROPOLIS_RELEASE_SHORT => {
-                propolis_release_mode = true;
-            }
-            _ => bonus_args.push(arg),
-        }
-    }
+    /// List PHD tests
+    List {
+        /// Arguments to pass to `phd-runner list`.
+        #[clap(trailing_var_arg = true)]
+        phd_args: Vec<String>,
+    },
 
-    let propolis_local_path = match propolis_local_path {
-        Some(path) => {
-            if propolis_release_mode {
-                cargo_warn!(
-                    "setting `{}` to build propolis-server in release mode \
-                    does nothing if an existing propolis binary path is \
-                    provided using `{}`",
-                    args::PROPOLIS_RELEASE,
-                    args::PROPOLIS_CMD,
-                );
-            }
-            path.into()
-        }
-        None => {
-            let bin = build_bin("propolis-server", propolis_release_mode)?;
-            let path = bin
-                .path()
-                .try_into()
-                .context("Propolis server path is not UTF-8")?;
-            relativize(path).to_path_buf()
-        }
-    };
+    /// Display `phd-runner`'s help output.
+    RunnerHelp {
+        /// Arguments to pass to `phd-runner help`.
+        #[clap(trailing_var_arg = true)]
+        phd_args: Vec<String>,
+    },
+}
 
-    let meta = cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .context("Failed to run cargo metadata")?;
-    let phd_dir = relativize(&meta.target_directory).join("phd");
+#[derive(clap::Parser, Debug, Clone)]
+pub(crate) struct RunArgs {
+    /// Build `propolis-server` in release mode.
+    #[clap(long = "release", short = 'r')]
+    propolis_release_mode: bool,
 
-    let artifact_dir =
-        artifact_dir.map(Utf8PathBuf::from).unwrap_or_else(|| {
-            // if there's no explicitly overridden `artifact_dir` path, use
-            // `target/phd/artifacts`.
-            phd_dir.join("artifacts")
-        });
+    /// If set, temporary directories older than one day will not be
+    /// deleted.
+    #[clap(long)]
+    no_tidy: bool,
 
-    mkdir(&artifact_dir, "artifact directory")?;
+    /// Arguments to pass to `phd-runner run`.
+    ///
+    /// If the `--propolis-server-cmd`, `--crucible-downstairs-commit`,
+    /// `--base-propolis-branch`, `--artifact-toml-path`, or
+    /// `--artifact-directory` arguments are passed here, they will override
+    /// `cargo xtask phd`'s default values for those arguments.
+    ///
+    /// Use `cargo xtask phd runner-help` for details on the arguments passed to
+    /// `phd-runner`.
+    #[clap(trailing_var_arg = true)]
+    phd_args: Vec<String>,
+}
 
-    let tmp_dir = {
+impl Cmd {
+    pub(crate) fn run(self) -> anyhow::Result<()> {
+        let meta = cargo_metadata::MetadataCommand::new()
+            .no_deps()
+            .exec()
+            .context("Failed to run cargo metadata")?;
+        let phd_dir = relativize(&meta.target_directory).join("phd");
+
         let mut tmp_dir = phd_dir.join("tmp");
         let now = time::SystemTime::now();
-        delete_old_tmps(&tmp_dir, now)?;
-        tmp_dir.push(
-            now.duration_since(time::UNIX_EPOCH).unwrap().as_secs().to_string(),
-        );
-        tmp_dir
-    };
 
-    mkdir(&tmp_dir, "temp directory")?;
+        let RunArgs { propolis_release_mode, no_tidy, phd_args } = match self {
+            Self::Run { args } => args,
+            Self::Tidy => {
+                cargo_log!("Tidying up", "old temporary directories...");
+                delete_old_tmps(tmp_dir, now)?;
+                return Ok(());
+            }
+            Self::List { phd_args } => {
+                let phd_runner = build_bin("phd-runner", false)?;
+                let status =
+                    run_exit_code(phd_runner.command().args(phd_args))?;
+                std::process::exit(status);
+            }
 
-    let artifacts_toml =
-        artifacts_toml.map(Utf8PathBuf::from).unwrap_or_else(|| {
-            // if there's no explicitly overridden `artifacts.toml` path,
-            // determine the default one from the workspace path.
-            relativize(&meta.workspace_root)
-                .join("phd-tests")
-                .join("artifacts.toml")
-        });
+            Self::RunnerHelp { phd_args } => {
+                let phd_runner = build_bin("phd-runner", false)?;
+                let status = run_exit_code(
+                    phd_runner.command().arg("help").args(phd_args),
+                )?;
+                std::process::exit(status);
+            }
+        };
 
-    if artifacts_toml.exists() {
-        cargo_log!("Found", "artifacts.toml at `{artifacts_toml}`")
-    } else {
-        anyhow::bail!("Missing artifacts config `{artifacts_toml}`!");
+        // Bash-script-style arg parsing, rather than using `clap`, because we
+        // want to filter out the args we default regardless of their position in
+        // the input. A `clap` parser can only accept unrecognized args if they're
+        // trailing after all recognized args, which isn't the behavior we want, as
+        // we don't know what order the `phd-runner` command line will come in.
+        let mut arg_iter = phd_args.iter().map(String::as_str);
+        let mut bonus_args = Vec::new();
+        let mut propolis_base_branch = None;
+        let mut propolis_local_path = None;
+        let mut crucible_commit = None;
+        let mut artifacts_toml = None;
+        let mut artifact_dir = None;
+        while let Some(arg) = arg_iter.next() {
+            macro_rules! take_next_arg {
+                ($var:ident) => {{
+                    let val = arg_iter.next().ok_or_else(|| {
+                        anyhow::anyhow!("Missing value for argument `{}`", arg)
+                    })?;
+                    cargo_log!("Overridden", "{} {val:?}", arg);
+                    $var = Some(val);
+                }};
+            }
+            match arg {
+                args::PROPOLIS_BASE => take_next_arg!(propolis_base_branch),
+                args::PROPOLIS_CMD => take_next_arg!(propolis_local_path),
+                args::CRUCIBLE_COMMIT => take_next_arg!(crucible_commit),
+                args::ARTIFACTS_TOML => take_next_arg!(artifacts_toml),
+                args::ARTIFACTS_DIR => take_next_arg!(artifact_dir),
+
+                _ => bonus_args.push(arg),
+            }
+        }
+
+        let propolis_local_path = match propolis_local_path {
+            Some(path) => {
+                if propolis_release_mode {
+                    cargo_warn!(
+                        "setting `--release` to build propolis-server in release mode \
+                        does nothing if an existing propolis binary path is \
+                        provided using `{}`",
+                        args::PROPOLIS_CMD,
+                    );
+                }
+                path.into()
+            }
+            None => {
+                let bin = build_bin("propolis-server", propolis_release_mode)?;
+                let path = bin
+                    .path()
+                    .try_into()
+                    .context("Propolis server path is not UTF-8")?;
+                relativize(path).to_path_buf()
+            }
+        };
+
+        let artifact_dir =
+            artifact_dir.map(Utf8PathBuf::from).unwrap_or_else(|| {
+                // if there's no explicitly overridden `artifact_dir` path, use
+                // `target/phd/artifacts`.
+                phd_dir.join("artifacts")
+            });
+
+        mkdir(&artifact_dir, "artifact directory")?;
+
+        let tmp_dir = {
+            if no_tidy {
+                cargo_log!(
+                    "Skipping",
+                    "temp directory cleanup; disabled by `--no-tidy`"
+                );
+            } else {
+                delete_old_tmps(&tmp_dir, now)?;
+            }
+            tmp_dir.push(
+                now.duration_since(time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string(),
+            );
+            tmp_dir
+        };
+
+        mkdir(&tmp_dir, "temp directory")?;
+
+        let artifacts_toml =
+            artifacts_toml.map(Utf8PathBuf::from).unwrap_or_else(|| {
+                // if there's no explicitly overridden `artifacts.toml` path,
+                // determine the default one from the workspace path.
+                relativize(&meta.workspace_root)
+                    .join("phd-tests")
+                    .join("artifacts.toml")
+            });
+
+        if artifacts_toml.exists() {
+            cargo_log!("Found", "artifacts.toml at `{artifacts_toml}`")
+        } else {
+            anyhow::bail!("Missing artifacts config `{artifacts_toml}`!");
+        }
+
+        let phd_runner = build_bin("phd-runner", false)?;
+        let status = run_exit_code(
+            phd_runner
+                .command()
+                .arg("run")
+                .arg(args::PROPOLIS_CMD)
+                .arg(&propolis_local_path)
+                .arg(args::CRUCIBLE_COMMIT)
+                .arg(crucible_commit.unwrap_or("auto"))
+                .arg(args::PROPOLIS_BASE)
+                .arg(propolis_base_branch.unwrap_or("master"))
+                .arg(args::ARTIFACTS_TOML)
+                .arg(&artifacts_toml)
+                .arg(args::ARTIFACTS_DIR)
+                .arg(&artifact_dir)
+                .arg("--tmp-directory")
+                .arg(&tmp_dir)
+                .args(bonus_args),
+        )?;
+
+        std::process::exit(status);
     }
-
-    let status = run_exit_code(
-        phd_runner
-            .command()
-            .arg(args::RUN)
-            .arg(args::PROPOLIS_CMD)
-            .arg(&propolis_local_path)
-            .arg(args::CRUCIBLE_COMMIT)
-            .arg(crucible_commit.unwrap_or("auto"))
-            .arg(args::PROPOLIS_BASE)
-            .arg(propolis_base_branch.unwrap_or("master"))
-            .arg(args::ARTIFACTS_TOML)
-            .arg(&artifacts_toml)
-            .arg(args::ARTIFACTS_DIR)
-            .arg(&artifact_dir)
-            .arg("--tmp-directory")
-            .arg(&tmp_dir)
-            .args(bonus_args),
-    )?;
-
-    std::process::exit(status);
 }
 
 mod args {
-    pub(super) const RUN: &str = "run";
     pub(super) const PROPOLIS_CMD: &str = "--propolis-server-cmd";
     pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
     pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
     pub(super) const ARTIFACTS_TOML: &str = "--artifact-toml-path";
     pub(super) const ARTIFACTS_DIR: &str = "--artifact-directory";
-    pub(super) const PROPOLIS_RELEASE: &str = "--release";
-    pub(super) const PROPOLIS_RELEASE_SHORT: &str = "-r";
 }
 
 fn build_bin(
@@ -246,13 +317,6 @@ fn delete_old_tmps(
     if !tmp_dir.exists() {
         return Ok(());
     }
-    if env::var_os("PHD_NOTIDY").is_some() {
-        cargo_log!(
-            "Skipping",
-            "temp directory cleanup; disabled by `PHD_NOTIDY`"
-        );
-        return Ok(());
-    }
 
     let mut deleted = 0;
     let mut sz = 0;
@@ -277,18 +341,18 @@ fn delete_old_tmps(
                 continue;
             }
         };
-        let accessed = match meta.accessed() {
+        let modified = match meta.modified() {
             Ok(a) => a,
             Err(e) => {
                 errs += 1;
                 cargo_warn!(
-                    "couldn't get last accessed time for `{}`: {e}",
+                    "couldn't get last modified time for `{}`: {e}",
                     path.display(),
                 );
                 continue;
             }
         };
-        if let Ok(age) = now.duration_since(accessed) {
+        if let Ok(age) = now.duration_since(modified) {
             const DAY_SECS: u64 = 60 * 60 * 24;
             if age.as_secs() > DAY_SECS {
                 match fs::remove_dir_all(&path) {
