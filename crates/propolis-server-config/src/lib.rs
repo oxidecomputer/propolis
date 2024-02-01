@@ -82,7 +82,7 @@ pub struct PciBridge {
 
 /// A hard-coded device, either enabled by default or accessible locally
 /// on a machine.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Device {
     pub driver: String,
 

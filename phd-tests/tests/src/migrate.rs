@@ -7,6 +7,7 @@ use phd_framework::{
 };
 use phd_testcase::*;
 use propolis_client::types::MigrationState;
+use tracing::info;
 use uuid::Uuid;
 
 #[phd_testcase]
@@ -81,6 +82,157 @@ mod from_base {
         env.propolis(artifacts::BASE_PROPOLIS_ARTIFACT);
         let cfg = ctx.vm_config_builder(name);
         ctx.spawn_vm(&cfg, Some(&env))
+    }
+}
+
+/// Tests for migrations while a process is running on the guest.
+mod running_process {
+    use super::*;
+
+    #[phd_testcase]
+    fn migrate_running_process(ctx: &Framework) {
+        let mut source =
+            ctx.spawn_default_vm("migrate_running_process_source")?;
+        let mut target = ctx.spawn_successor_vm(
+            "migrate_running_process_target",
+            &source,
+            None,
+        )?;
+
+        source.launch()?;
+        source.wait_to_boot()?;
+
+        mk_dirt(&source)?;
+
+        target.migrate_from(
+            &source,
+            Uuid::new_v4(),
+            MigrationTimeout::default(),
+        )?;
+
+        check_dirt(&target)?;
+    }
+
+    #[phd_testcase]
+    fn import_failure(ctx: &Framework) {
+        let mut cfg = ctx.vm_config_builder(
+            "migrate_running_process::import_failure_source",
+        );
+        // Ensure the migration failure device is present in the VM config for
+        // the source as well as the target, so that the source will offer the
+        // device.
+        cfg.fail_migration_imports(0);
+        let mut source = ctx.spawn_vm(&cfg, None)?;
+
+        let mut target1 = {
+            // Configure the target to fail when it imports the migration
+            // failure device.
+            cfg.named("migrate_running_process::import_failure_target1")
+                .fail_migration_imports(1);
+
+            // N.B. that we don't use `spawn_successor_vm` here, because we must
+            // add the `fail_migration_imports` option to the new VM's
+            // `VmConfig`. Instead, we use `spawn_vm`, and pass the source VM's
+            // environment to ensure it's inherited.
+            ctx.spawn_vm(&cfg, Some(&source.environment_spec()))?
+        };
+
+        let mut target2 = ctx.spawn_successor_vm(
+            "migrate_running_process::import_failure_target2",
+            &source,
+            None,
+        )?;
+
+        source.launch()?;
+        source.wait_to_boot()?;
+
+        mk_dirt(&source)?;
+
+        // first migration should fail.
+        let error = target1
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .unwrap_err();
+        info!(%error, "first migration failed as expected");
+
+        // try again. this time, it should work!
+        target2.migrate_from(
+            &source,
+            Uuid::new_v4(),
+            MigrationTimeout::default(),
+        )?;
+
+        check_dirt(&target2)?;
+    }
+
+    #[phd_testcase]
+    fn export_failure(ctx: &Framework) {
+        let mut source = {
+            let mut cfg = ctx.vm_config_builder(
+                "migrate_running_process::export_failure_source",
+            );
+            cfg.fail_migration_exports(1);
+            ctx.spawn_vm(&cfg, None)?
+        };
+        let mut target1 = ctx.spawn_successor_vm(
+            "migrate_running_process::export_failure_target1",
+            &source,
+            None,
+        )?;
+        let mut target2 = ctx.spawn_successor_vm(
+            "migrate_running_process::export_failure_target2",
+            &source,
+            None,
+        )?;
+
+        source.launch()?;
+        source.wait_to_boot()?;
+
+        mk_dirt(&source)?;
+
+        // first migration should fail.
+        let error = target1
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .unwrap_err();
+        info!(%error, "first migration failed as expected");
+
+        // try again. this time, it should work!
+        target2.migrate_from(
+            &source,
+            Uuid::new_v4(),
+            MigrationTimeout::default(),
+        )?;
+
+        check_dirt(&target2)?;
+    }
+
+    /// Starts a process on the guest VM which stores a bunch of strings in
+    /// memory and then suspends itself, waiting to be brought to the
+    /// foreground. Once the process is resumed, it checks the contents of the
+    /// string to ensure that they're still valid.
+    ///
+    /// Resuming this process after migration allows us to check that the
+    /// guest's memory was migrated correctly.
+    fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        vm.run_shell_command(concat!(
+            "cat >dirt.sh <<'EOF'\n",
+            include_str!("../testdata/dirt.sh"),
+            "\nEOF"
+        ))?;
+        vm.run_shell_command("chmod +x dirt.sh")?;
+        let run_dirt = vm.run_shell_command("./dirt.sh")?;
+        assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
+        assert!(
+            run_dirt.contains("Stopped"),
+            "dirt.sh didn't suspend: {run_dirt:?}"
+        );
+
+        Ok(())
+    }
+
+    fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        let output = vm.run_shell_command("fg")?;
+        assert!(output.contains("all good"), "dirt.sh failed: {output:?}");
+        Ok(())
     }
 }
 

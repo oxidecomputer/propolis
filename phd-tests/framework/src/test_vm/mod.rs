@@ -231,7 +231,7 @@ impl TestVm {
         self.spec.clone()
     }
 
-    pub(crate) fn environment_spec(&self) -> EnvironmentSpec {
+    pub fn environment_spec(&self) -> EnvironmentSpec {
         self.environment_spec.clone()
     }
 

@@ -10,7 +10,10 @@ use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::serial::Serial;
+use crate::server::CrucibleBackendMap;
 use crucible_client_types::VolumeConstructionRequest;
+pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
@@ -30,10 +33,6 @@ use propolis::inventory::{self, EntityID, Inventory};
 use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
 use slog::info;
-
-use crate::serial::Serial;
-use crate::server::CrucibleBackendMap;
-pub use nexus_client::Client as NexusClient;
 
 use anyhow::{Context, Result};
 
@@ -572,6 +571,55 @@ impl<'a> MachineInitializer<'a> {
             let _ = self.inv.register_instance(&viona, bdf.to_string())?;
             chipset.device().pci_attach(bdf, viona);
         }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "omicron-build"))]
+    pub fn initialize_test_devices(
+        &self,
+        toml_cfg: &std::collections::BTreeMap<
+            String,
+            propolis_server_config::Device,
+        >,
+    ) -> Result<(), Error> {
+        use propolis::hw::testdev::{
+            MigrationFailureDevice, MigrationFailures,
+        };
+
+        if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
+            const FAIL_EXPORTS: &str = "fail_exports";
+            const FAIL_IMPORTS: &str = "fail_imports";
+            let fail_exports = dev
+                .options
+                .get(FAIL_EXPORTS)
+                .and_then(|val| val.as_integer())
+                .unwrap_or(0);
+            let fail_imports = dev
+                .options
+                .get(FAIL_IMPORTS)
+                .and_then(|val| val.as_integer())
+                .unwrap_or(0);
+
+            if fail_exports <= 0 && fail_imports <= 0 {
+                info!(
+                    self.log,
+                    "migration failure device will not fail, as both
+                    `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
+                    FAIL_EXPORTS => ?fail_exports,
+                    FAIL_IMPORTS => ?fail_imports,
+                );
+            }
+
+            let dev = MigrationFailureDevice::create(
+                &self.log,
+                MigrationFailures {
+                    exports: fail_exports as usize,
+                    imports: fail_imports as usize,
+                },
+            );
+            self.inv.register(&dev)?;
+        }
+
         Ok(())
     }
 
