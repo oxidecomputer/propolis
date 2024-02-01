@@ -504,10 +504,9 @@ impl TestVm {
                                 "error during migration"
                             )))
                         }
-                        _ => Err(backoff::Error::Transient {
-                            err: anyhow!("migration not done yet"),
-                            retry_after: None,
-                        }),
+                        _ => Err(backoff::Error::transient(anyhow!(
+                            "migration not done yet"
+                        ))),
                     }
                 };
 
