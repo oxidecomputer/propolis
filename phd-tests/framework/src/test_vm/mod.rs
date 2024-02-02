@@ -88,6 +88,34 @@ impl From<std::time::Duration> for MigrationTimeout {
     }
 }
 
+/// Specifies the timeout to apply when waiting for output to appear on the
+/// serial console.
+#[derive(Debug)]
+pub enum SerialOutputTimeout {
+    /// Time out after the specified duration.
+    Explicit(std::time::Duration),
+
+    /// The caller is waiting for the serial console as part of a larger
+    /// operation with its own timeout, so don't set an explicit timeout on this
+    /// wait.
+    CallerTimeout,
+}
+
+impl From<std::time::Duration> for SerialOutputTimeout {
+    fn from(value: std::time::Duration) -> Self {
+        Self::Explicit(value)
+    }
+}
+
+impl From<SerialOutputTimeout> for std::time::Duration {
+    fn from(value: SerialOutputTimeout) -> Self {
+        match value {
+            SerialOutputTimeout::Explicit(t) => t,
+            SerialOutputTimeout::CallerTimeout => Duration::MAX,
+        }
+    }
+}
+
 /// Specifies the mechanism a new VM should use to obtain a serial console.
 enum InstanceConsoleSource<'a> {
     /// Connect a new console to the VM's server's serial console endpoint.
@@ -609,38 +637,34 @@ impl TestVm {
         info!("Waiting {:?} for guest to boot", timeout_duration);
 
         let boot_sequence = self.guest_os.get_login_sequence();
-        match timeout(
-            timeout_duration,
-            async move {
-                for step in boot_sequence.0 {
-                    debug!(?step, "executing command in boot sequence");
-                    match step {
-                        CommandSequenceEntry::WaitFor(s) => {
-                            self.wait_for_serial_output(s, Duration::MAX)
-                                .await?;
-                        }
-                        CommandSequenceEntry::WriteStr(s) => {
-                            self.send_serial_str(s).await?;
-                            self.send_serial_str("\n").await?;
-                        }
-                        CommandSequenceEntry::ChangeSerialConsoleBuffer(
-                            kind,
-                        ) => {
-                            self.change_serial_buffer_kind(kind)?;
-                        }
-                        CommandSequenceEntry::SetSerialByteWriteDelay(
-                            duration,
-                        ) => {
-                            self.set_serial_byte_write_delay(duration)?;
-                        }
+        let boot = async move {
+            for step in boot_sequence.0 {
+                debug!(?step, "executing command in boot sequence");
+                match step {
+                    CommandSequenceEntry::WaitFor(s) => {
+                        self.wait_for_serial_output(
+                            s,
+                            SerialOutputTimeout::CallerTimeout,
+                        )
+                        .await?;
+                    }
+                    CommandSequenceEntry::WriteStr(s) => {
+                        self.send_serial_str(s).await?;
+                        self.send_serial_str("\n").await?;
+                    }
+                    CommandSequenceEntry::ChangeSerialConsoleBuffer(kind) => {
+                        self.change_serial_buffer_kind(kind)?;
+                    }
+                    CommandSequenceEntry::SetSerialByteWriteDelay(duration) => {
+                        self.set_serial_byte_write_delay(duration)?;
                     }
                 }
-                Ok::<(), anyhow::Error>(())
             }
-            .instrument(info_span!("wait_to_boot")),
-        )
-        .await
-        {
+            Ok::<(), anyhow::Error>(())
+        }
+        .instrument(info_span!("wait_to_boot"));
+
+        match timeout(timeout_duration, boot).await {
             Err(_) => anyhow::bail!("timed out while waiting to boot"),
             Ok(inner) => {
                 inner.context("executing guest login sequence")?;
@@ -657,9 +681,10 @@ impl TestVm {
     pub async fn wait_for_serial_output(
         &self,
         line: &str,
-        timeout_duration: Duration,
+        timeout_duration: impl Into<SerialOutputTimeout>,
     ) -> Result<String> {
         let _span = self.tracing_span.enter();
+        let timeout_duration: SerialOutputTimeout = timeout_duration.into();
         info!(
             target = line,
             ?timeout_duration,
@@ -673,7 +698,8 @@ impl TestVm {
                 VmState::Ensured { serial } => {
                     serial
                         .register_wait_for_string(line.clone(), preceding_tx)?;
-                    let t = timeout(timeout_duration, preceding_rx).await;
+                    let t =
+                        timeout(timeout_duration.into(), preceding_rx).await;
                     match t {
                         Err(timeout_elapsed) => {
                             serial.cancel_wait_for_string()?;
