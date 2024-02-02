@@ -3301,6 +3301,7 @@ name = "phd-framework"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "backoff",
  "base64 0.21.7",
  "bhyve_api",
@@ -3378,6 +3379,7 @@ dependencies = [
 name = "phd-tests"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "http 0.2.11",
  "phd-testcase",
