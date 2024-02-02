@@ -394,10 +394,7 @@ impl Instance {
                 State::Save => {
                     let guard = &mut *guard;
                     let inst = guard.instance.as_ref().unwrap();
-                    let save_res =
-                        tokio::runtime::Handle::current().block_on(async {
-                            snapshot::save(inst, &inner.config, &log).await
-                        });
+                    let save_res = snapshot::save(inst, &inner.config, &log);
                     if let Err(err) = save_res {
                         slog::error!(log, "Snapshot error {:?}", err);
                     }
@@ -1090,8 +1087,7 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // Create the VM afresh or restore it from a snapshot
     let (inst, com1_sock) = if restore {
-        let (inst, com1_sock) =
-            rt.block_on(async { snapshot::restore(&target, &log).await })?;
+        let (inst, com1_sock) = snapshot::restore(&target, &log)?;
         (inst, com1_sock)
     } else {
         let config = config::parse(&target)?;

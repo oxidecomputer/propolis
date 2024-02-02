@@ -5,19 +5,8 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use strum::FromRepr;
 
 pub use cpuid_profile_config::*;
-
-#[derive(FromRepr, Eq, PartialEq)]
-#[repr(u8)]
-pub enum SnapshotTag {
-    Config = 0,
-    Global = 1,
-    Device = 2,
-    Lowmem = 3,
-    Himem = 4,
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {

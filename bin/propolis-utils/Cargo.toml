@@ -5,11 +5,6 @@ license = "MPL-2.0"
 edition = "2021"
 
 [[bin]]
-name = "savex"
-test = false
-doctest = false
-
-[[bin]]
 name = "cpuid-gen"
 test = false
 doctest = false

@@ -17,7 +17,7 @@ use propolis::hw::pci::Bdf;
 use propolis::inventory::ChildRegister;
 
 use crate::cidata::build_cidata_be;
-pub use propolis_standalone_config::{Config, SnapshotTag};
+pub use propolis_standalone_config::Config;
 use propolis_standalone_config::{CpuVendor, CpuidEntry, Device};
 
 #[derive(Deserialize)]

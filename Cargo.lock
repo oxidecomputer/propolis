@@ -3978,6 +3978,7 @@ dependencies = [
  "slog-dtrace",
  "slog-term",
  "strum",
+ "tar",
  "tokio",
  "toml 0.7.8",
  "uuid",
@@ -3990,7 +3991,6 @@ dependencies = [
  "cpuid_profile_config",
  "serde",
  "serde_derive",
- "strum",
  "toml 0.7.8",
 ]
 

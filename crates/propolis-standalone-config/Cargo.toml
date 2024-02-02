@@ -12,5 +12,4 @@ doctest = false
 cpuid_profile_config.workspace = true
 serde.workspace = true
 serde_derive.workspace = true
-strum = { workspace = true, features = ["derive"] }
 toml.workspace = true
