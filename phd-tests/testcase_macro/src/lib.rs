@@ -44,8 +44,12 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
     let fn_vis = item_fn.vis.clone();
     let fn_sig = item_fn.sig.clone();
     let fn_block = item_fn.block.stmts;
+
     let remade_fn = quote! {
-        #[tracing::instrument(level = "info", name = #fn_name, skip_all)]
+        #[tracing::instrument(level = "info",
+                              name = #fn_name,
+                              fields(module = module_path!()),
+                              skip_all)]
         #fn_vis #fn_sig -> TestOutcome {
             let res: phd_testcase::Result<()> = async {
                 #(#fn_block)*
