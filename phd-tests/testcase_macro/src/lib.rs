@@ -46,15 +46,12 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
     let fn_block = item_fn.block.stmts;
 
     let remade_fn = quote! {
-        #[tracing::instrument(level = "info",
-                              name = #fn_name,
-                              fields(module = module_path!()),
-                              skip_all)]
         #fn_vis #fn_sig -> TestOutcome {
+            use tracing::Instrument;
             let res: phd_testcase::Result<()> = async {
                 #(#fn_block)*
                 Ok(())
-            }.await;
+            }.instrument(tracing::info_span!(#fn_name, module = module_path!())).await;
             match res {
                 Ok(()) => phd_testcase::TestOutcome::Passed,
                 Err(e) => {

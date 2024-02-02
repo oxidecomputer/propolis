@@ -145,7 +145,6 @@ pub struct TestVm {
     data_dir: Utf8PathBuf,
 
     guest_os: Box<dyn GuestOs>,
-    tracing_span: tracing::Span,
 
     state: VmState,
 
@@ -229,9 +228,6 @@ impl TestVm {
                 )
             })?;
 
-        let span =
-            info_span!(parent: None, "VM", vm = %vm_spec.vm_name, %vm_id);
-
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
@@ -250,7 +246,6 @@ impl TestVm {
             environment_spec,
             data_dir,
             guest_os,
-            tracing_span: span,
             state: VmState::New,
             cleanup_task_tx,
         })
@@ -274,12 +269,12 @@ impl TestVm {
 
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
+    #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn instance_ensure_internal<'a>(
         &self,
         migrate: Option<InstanceMigrateInitiateRequest>,
         console_source: InstanceConsoleSource<'a>,
     ) -> Result<SerialConsole> {
-        let _span = self.tracing_span.enter();
         let (vcpus, memory_mib) = match self.state {
             VmState::New => (
                 self.spec.instance_spec.devices.board.cpus,
@@ -435,18 +430,18 @@ impl TestVm {
         self.put_instance_state(InstanceStateRequested::Reboot).await
     }
 
+    #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn put_instance_state(
         &self,
         state: InstanceStateRequested,
     ) -> PropolisClientResult<()> {
-        let _span = self.tracing_span.enter();
         info!(?state, "Requesting instance state change");
         self.client.instance_state_put().body(state).send().await
     }
 
     /// Issues a Propolis client `instance_get` request.
+    #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     pub async fn get(&self) -> Result<InstanceGetResponse> {
-        let _span = self.tracing_span.enter();
         info!("Sending instance get request to server");
         self.client
             .instance_get()
@@ -456,8 +451,8 @@ impl TestVm {
             .with_context(|| anyhow!("failed to query instance properties"))
     }
 
+    #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     pub async fn get_spec(&self) -> Result<InstanceSpecGetResponse> {
-        let _span = self.tracing_span.enter();
         info!("Sending instance spec get request to server");
         self.client
             .instance_spec_get()
@@ -469,6 +464,15 @@ impl TestVm {
 
     /// Starts this instance by issuing an ensure request that specifies a
     /// migration from `source` and then running the target.
+    #[instrument(
+        skip_all,
+        fields(
+            source = source.spec.vm_name,
+            target = self.spec.vm_name,
+            source_id = %source.id,
+            target_id = %self.id
+        )
+    )]
     pub async fn migrate_from(
         &mut self,
         source: &Self,
@@ -485,7 +489,6 @@ impl TestVm {
             }
         };
 
-        let _vm_guard = self.tracing_span.enter();
         match self.state {
             VmState::New => {
                 let server_addr = source
@@ -582,12 +585,12 @@ impl TestVm {
             .into_inner())
     }
 
+    #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     pub async fn wait_for_state(
         &self,
         target: InstanceState,
         timeout_duration: Duration,
     ) -> Result<()> {
-        let _span = self.tracing_span.enter();
         info!(
             "Waiting {:?} for server to reach state {:?}",
             timeout_duration, target
@@ -633,11 +636,15 @@ impl TestVm {
     /// initial login prompt and the login prompt itself.
     pub async fn wait_to_boot(&self) -> Result<()> {
         let timeout_duration = Duration::from_secs(300);
-        let _span = self.tracing_span.enter();
-        info!("Waiting {:?} for guest to boot", timeout_duration);
-
         let boot_sequence = self.guest_os.get_login_sequence();
         let boot = async move {
+            info!(
+                vm = self.spec.vm_name,
+                vm_id = %self.id,
+                ?timeout_duration,
+                "waiting for guest to boot"
+            );
+
             for step in boot_sequence.0 {
                 debug!(?step, "executing command in boot sequence");
                 match step {
@@ -660,6 +667,8 @@ impl TestVm {
                     }
                 }
             }
+
+            info!("Guest has booted");
             Ok::<(), anyhow::Error>(())
         }
         .instrument(info_span!("wait_to_boot"));
@@ -671,19 +680,18 @@ impl TestVm {
             }
         };
 
-        info!("Guest has booted");
         Ok(())
     }
 
     /// Waits for up to `timeout_duration` for `line` to appear on the guest
     /// serial console, then returns the unconsumed portion of the serial
     /// console buffer that preceded the requested string.
+    #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     pub async fn wait_for_serial_output(
         &self,
         line: &str,
         timeout_duration: impl Into<SerialOutputTimeout>,
     ) -> Result<String> {
-        let _span = self.tracing_span.enter();
         let timeout_duration: SerialOutputTimeout = timeout_duration.into();
         info!(
             target = line,
@@ -825,7 +833,6 @@ impl Drop for TestVm {
         // for all under-destruction VMs to be reaped before exiting.
         let client = self.client.clone();
         let server = self.server.take();
-        let span = self.tracing_span.clone();
         let task = tokio::spawn(
             async move {
                 let _server = server;
@@ -890,7 +897,9 @@ impl Drop for TestVm {
                     error!(%e, "dropped VM not destroyed after 5 seconds");
                 }
             }
-            .instrument(span),
+            .instrument(
+                info_span!("VM cleanup", vm = self.spec.vm_name, vm_id = %self.id),
+            ),
         );
 
         let _ = self.cleanup_task_tx.send(task);
