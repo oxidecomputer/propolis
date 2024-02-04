@@ -2,7 +2,7 @@
 #:
 #: name = "phd-run"
 #: variety = "basic"
-#: target = "lab-2.0-opte-0.23"
+#: target = "lab-2.0-opte"
 #: output_rules = [
 #:	"/tmp/phd-runner.log",
 #:	"/tmp/phd-tmp-files.tar.gz",
