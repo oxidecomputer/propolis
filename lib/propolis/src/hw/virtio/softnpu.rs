@@ -261,7 +261,7 @@ impl SoftNpu {
     }
 }
 
-impl Entity for SoftNpu {
+impl Lifecycle for SoftNpu {
     fn type_name(&self) -> &'static str {
         "softnpu"
     }
@@ -402,7 +402,7 @@ impl PciVirtioSoftNpuPort {
     }
 }
 
-impl Entity for PciVirtioSoftNpuPort {
+impl Lifecycle for PciVirtioSoftNpuPort {
     fn type_name(&self) -> &'static str {
         "pci-virtio-softnpu-port"
     }

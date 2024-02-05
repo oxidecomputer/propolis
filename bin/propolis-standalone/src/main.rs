@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
@@ -192,8 +192,40 @@ impl State {
     }
 }
 
+#[derive(Default)]
+struct Inventory {
+    devs: BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>,
+    block: BTreeMap<String, Arc<dyn propolis::block::Backend>>,
+}
+impl Inventory {
+    fn register<D: propolis::common::Lifecycle>(&mut self, dev: &Arc<D>) {
+        self.devs.insert(
+            dev.type_name().into(),
+            dev.clone() as Arc<dyn propolis::common::Lifecycle>,
+        );
+    }
+    fn register_instance<D: propolis::common::Lifecycle>(
+        &mut self,
+        dev: &Arc<D>,
+        name: &str,
+    ) {
+        self.devs.insert(
+            format!("{}-{name}", dev.type_name()),
+            dev.clone() as Arc<dyn propolis::common::Lifecycle>,
+        );
+    }
+    fn register_block(
+        &mut self,
+        be: &Arc<dyn propolis::block::Backend>,
+        name: String,
+    ) {
+        self.block.insert(name, be.clone());
+    }
+}
+
 struct InstState {
-    instance: Option<propolis::Instance>,
+    machine: Option<propolis::Machine>,
+    inventory: Inventory,
     state: State,
     vcpu_tasks: Vec<propolis::tasks::TaskCtrl>,
     exit_code: Option<u8>,
@@ -210,14 +242,15 @@ struct InstInner {
 struct Instance(Arc<InstInner>);
 impl Instance {
     fn new(
-        pinst: propolis::Instance,
+        machine: propolis::Machine,
         config: config::Config,
         from_restore: bool,
         log: slog::Logger,
     ) -> Self {
         let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
-                instance: Some(pinst),
+                machine: Some(machine),
+                inventory: Inventory::default(),
                 state: State::Initialize,
                 vcpu_tasks: Vec::new(),
                 exit_code: None,
@@ -231,9 +264,9 @@ impl Instance {
         // Some gymnastics required for the split borrow through the MutexGuard
         let mut state_guard = this.0.state.lock().unwrap();
         let state = &mut *state_guard;
-        let guard = state.instance.as_ref().unwrap().lock();
+        let machine = state.machine.as_ref().unwrap();
 
-        for vcpu in guard.machine().vcpus.iter().map(Arc::clone) {
+        for vcpu in machine.vcpus.iter().map(Arc::clone) {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
 
@@ -247,7 +280,6 @@ impl Instance {
                 .unwrap();
             state.vcpu_tasks.push(ctrl);
         }
-        drop(guard);
         drop(state_guard);
 
         let rt_hdl = runtime::Handle::current();
@@ -267,43 +299,56 @@ impl Instance {
 
     fn device_state_transition(
         state: State,
-        inst_guard: &propolis::instance::InstanceGuard,
+        guard: &MutexGuard<InstState>,
         first_boot: bool,
     ) {
-        let inv_guard = inst_guard.inventory().lock();
-
-        for (_eid, record) in inv_guard.iter(propolis::inventory::Order::Pre) {
-            let ent = record.entity();
+        for (name, device) in guard.inventory.devs.iter() {
             match state {
                 State::Run => {
                     if first_boot {
-                        ent.start().unwrap_or_else(|_| {
-                            panic!("entity {} failed to start", record.name())
+                        device.start().unwrap_or_else(|_| {
+                            panic!("device {} failed to start", name)
                         });
                     } else {
-                        ent.resume();
+                        device.resume();
                     }
                 }
-                State::Quiesce => ent.pause(),
-                State::Halt => ent.halt(),
-                State::Reset => ent.reset(),
+                State::Quiesce => device.pause(),
+                State::Halt => device.halt(),
+                State::Reset => device.reset(),
                 _ => panic!("invalid device state transition {:?}", state),
             }
         }
         if matches!(state, State::Quiesce) {
             let tasks: futures::stream::FuturesUnordered<
                 BoxFuture<'static, ()>,
-            > = inv_guard
-                .iter(propolis::inventory::Order::Pre)
-                .map(|(_eid, record)| record.entity().paused())
+            > = guard
+                .inventory
+                .devs
+                .values()
+                .map(|device| device.paused())
                 .collect();
-            drop(inv_guard);
 
             // Wait for all of the pause futures to complete
             tokio::runtime::Handle::current().block_on(async move {
                 use futures::stream::StreamExt;
                 let _: Vec<()> = tasks.collect().await;
             });
+        }
+
+        // Drive block backends through their necessary states too
+        match state {
+            State::Run if first_boot => {
+                for (_name, be) in guard.inventory.block.iter() {
+                    be.start().expect("blockdev start succeeds");
+                }
+            }
+            State::Halt => {
+                for (_name, be) in guard.inventory.block.iter() {
+                    be.halt();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -319,9 +364,8 @@ impl Instance {
             // Initialized vCPUs to standard x86 state, unless this instance is
             // being restored from a snapshot, in which case the snapshot state
             // will be injected prior to start-up.
-            let inst = guard.instance.as_ref().unwrap().lock();
-            inst.machine().vcpu_x86_setup().unwrap();
-            drop(inst);
+            let machine = guard.machine.as_ref().unwrap();
+            machine.vcpu_x86_setup().unwrap();
         }
 
         // If instance was restored from previously-saved state, the kernel VMM
@@ -362,20 +406,19 @@ impl Instance {
                 }
                 State::Run => {
                     // start device emulation and vCPUs
-                    let inst = guard.instance.as_ref().unwrap().lock();
                     Self::device_state_transition(
                         State::Run,
-                        &inst,
+                        &guard,
                         inner.boot_gen.load(Ordering::Acquire) == 0,
                     );
                     if needs_resume {
-                        inst.machine()
+                        let machine = guard.machine.as_ref().unwrap();
+                        machine
                             .hdl
                             .resume()
                             .expect("restored instance can resume running");
                         needs_resume = false;
                     }
-                    drop(inst);
 
                     // TODO: bail if any vCPU tasks have exited already
                     for vcpu_task in guard.vcpu_tasks.iter_mut() {
@@ -387,22 +430,23 @@ impl Instance {
                     for vcpu_task in guard.vcpu_tasks.iter_mut() {
                         let _ = vcpu_task.hold();
                     }
-                    let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Quiesce, &inst, false);
-                    inst.machine().hdl.pause().expect("pause should complete");
+                    Self::device_state_transition(
+                        State::Quiesce,
+                        &guard,
+                        false,
+                    );
+                    let machine = guard.machine.as_ref().unwrap();
+                    machine.hdl.pause().expect("pause should complete");
                 }
                 State::Save => {
                     let guard = &mut *guard;
-                    let inst = guard.instance.as_ref().unwrap();
-                    let save_res = snapshot::save(inst, &inner.config, &log);
+                    let save_res = snapshot::save(guard, &inner.config, &log);
                     if let Err(err) = save_res {
                         slog::error!(log, "Snapshot error {:?}", err);
                     }
                 }
                 State::Halt => {
-                    let guard = &mut *guard;
-                    let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Halt, &inst, false);
+                    Self::device_state_transition(State::Halt, &guard, false);
                     for mut vcpu_ctrl in guard.vcpu_tasks.drain(..) {
                         vcpu_ctrl.exit();
                     }
@@ -422,19 +466,16 @@ impl Instance {
                         cur_ev = Some(InstEvent::ReqHalt);
                         continue;
                     }
-                    let inst = guard.instance.as_ref().unwrap().lock();
-                    Self::device_state_transition(State::Reset, &inst, false);
-                    inst.machine().reinitialize().unwrap();
-                    inst.machine().vcpu_x86_setup().unwrap();
+                    Self::device_state_transition(State::Reset, &guard, false);
+                    let machine = guard.machine.as_ref().unwrap();
+                    machine.reinitialize().unwrap();
+                    machine.vcpu_x86_setup().unwrap();
                     inner.boot_gen.fetch_add(1, Ordering::Release);
-                    inst.machine()
-                        .hdl
-                        .resume()
-                        .expect("resume should complete");
+                    machine.hdl.resume().expect("resume should complete");
                 }
                 State::Destroy => {
-                    // Drop the instance
-                    let _ = guard.instance.take().unwrap();
+                    // Drop the machine
+                    let _ = guard.machine.take().unwrap();
 
                     // Communicate that destruction is complete
                     slog::info!(&log, "Instance destroyed");
@@ -625,38 +666,24 @@ impl Instance {
         (Arc::new(power_pin), Arc::new(reset_pin))
     }
 
-    fn lock(&self) -> Option<InnerGuard> {
+    fn lock(&self) -> Option<MutexGuard<'_, InstState>> {
         let guard = self.0.state.lock().unwrap();
-        guard.instance.as_ref()?;
-        Some(InnerGuard(guard))
+        // Make sure machine is still "live"
+        guard.machine.as_ref()?;
+        Some(guard)
     }
     fn eq(&self) -> Arc<EventQueue> {
         self.0.eq.clone()
     }
 }
 
-/// Project access to the inner [`propolis::Instance`] in [`Instance`]
-struct InnerGuard<'a>(MutexGuard<'a, InstState>);
-impl std::ops::Deref for InnerGuard<'_> {
-    type Target = propolis::Instance;
-
-    fn deref(&self) -> &propolis::Instance {
-        self.0.instance.as_ref().unwrap()
-    }
-}
-impl std::ops::DerefMut for InnerGuard<'_> {
-    fn deref_mut(&mut self) -> &mut propolis::Instance {
-        self.0.instance.as_mut().unwrap()
-    }
-}
-
-fn build_instance(
+fn build_machine(
     name: &str,
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
     use_reservoir: bool,
-) -> Result<propolis::Instance> {
+) -> Result<propolis::Machine> {
     let mut builder = Builder::new(
         name,
         propolis::vmm::CreateOpts {
@@ -683,7 +710,7 @@ fn build_instance(
         "dev64",
     )?;
 
-    Ok(propolis::Instance::create(builder.finalize()?))
+    builder.finalize()
 }
 
 fn open_bootrom(path: &str) -> Result<(File, usize)> {
@@ -793,9 +820,10 @@ fn setup_instance(
 
     slog::info!(log, "Creating VM with {} vCPUs, {} lowmem, {} highmem",
         cpus, lowmem, highmem;);
-    let pinst = build_instance(vm_name, cpus, lowmem, highmem, use_reservoir)
-        .context("Failed to create VM Instance")?;
-    let inst = Instance::new(pinst, config.clone(), from_restore, log.clone());
+    let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
+        .context("Failed to create VM Machine")?;
+    let inst =
+        Instance::new(machine, config.clone(), from_restore, log.clone());
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
@@ -804,16 +832,57 @@ fn setup_instance(
         UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
 
     // Get necessary access to innards, now that it is nestled in `Instance`
-    let inst_inner = inst.lock().unwrap();
-    let guard = inst_inner.lock();
-    let inv = guard.inventory();
-    let machine = guard.machine();
+    let mut inst_guard = inst.lock().unwrap();
+    // Split borrows require this dance
+    let guard = &mut *inst_guard;
+    let machine = guard.machine.as_ref().unwrap();
     let hdl = machine.hdl.clone();
 
     populate_rom(machine, "bootrom", &romfp, rom_len)?;
     drop(romfp);
 
-    let rtc = &machine.kernel_devs.rtc;
+    // Add vCPUs to inventory, since they count as devices
+    for vcpu in machine.vcpus.iter() {
+        guard.inventory.register_instance(vcpu, &vcpu.id.to_string())
+    }
+
+    let (power_pin, reset_pin) = inst.generate_pins();
+    let pci_topo =
+        propolis::hw::pci::topology::Builder::new().finish(machine)?.topology;
+
+    let chipset_hb = i440fx::I440FxHostBridge::create(
+        pci_topo,
+        i440fx::Opts {
+            power_pin: Some(power_pin),
+            reset_pin: Some(reset_pin),
+            ..Default::default()
+        },
+    );
+    let chipset_lpc = i440fx::Piix3Lpc::create(machine.hdl.clone());
+    let chipset_pm = i440fx::Piix3PM::create(
+        machine.hdl.clone(),
+        chipset_hb.power_pin(),
+        log.new(slog::o!("device" => "piix3pm")),
+    );
+
+    let chipset_pci_attach = |bdf, pcidev| {
+        chipset_hb.pci_attach(bdf, pcidev, chipset_lpc.route_lintr(bdf));
+    };
+
+    chipset_pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone());
+    chipset_pci_attach(i440fx::DEFAULT_LPC_BDF, chipset_lpc.clone());
+    chipset_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
+
+    chipset_hb.attach(machine);
+    chipset_lpc.attach(&machine.bus_pio);
+    chipset_pm.attach(&machine.bus_pio);
+
+    guard.inventory.register(&chipset_hb);
+    guard.inventory.register(&chipset_lpc);
+    guard.inventory.register(&chipset_pm);
+
+    // RTC: populate time and CMOS
+    let rtc = chipset_lpc.rtc.as_ref();
     rtc.memsize_to_nvram(lowmem as u32, highmem as u64)?;
     rtc.set_time(
         SystemTime::now()
@@ -821,26 +890,15 @@ fn setup_instance(
             .expect("system time precedes UNIX epoch"),
     )?;
 
-    let (power_pin, reset_pin) = inst.generate_pins();
-    let pci_topo =
-        propolis::hw::pci::topology::Builder::new().finish(inv, machine)?;
-    let chipset = i440fx::I440Fx::create(
-        machine,
-        pci_topo,
-        i440fx::Opts {
-            power_pin: Some(power_pin),
-            reset_pin: Some(reset_pin),
-            ..Default::default()
-        },
-        log.new(slog::o!("dev" => "chipset")),
-    );
-    inv.register(&chipset)?;
+    // HPET
+    let hpet = propolis::hw::bhyve::BhyveHpet::create(hdl.clone());
+    guard.inventory.register(&hpet);
 
     // UARTs
-    let com1 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM1).unwrap());
-    let com2 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM2).unwrap());
-    let com3 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM3).unwrap());
-    let com4 = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
+    let com1 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap());
+    let com2 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap());
+    let com3 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap());
+    let com4 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap());
 
     com1_sock.spawn(
         Arc::clone(&com1) as Arc<dyn Sink>,
@@ -858,21 +916,26 @@ fn setup_instance(
     LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
     LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
     LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
-    inv.register_instance(&com1, "com1")?;
-    inv.register_instance(&com2, "com2")?;
-    inv.register_instance(&com3, "com3")?;
-    inv.register_instance(&com4, "com4")?;
+    guard.inventory.register_instance(&com1, "com1");
+    guard.inventory.register_instance(&com2, "com2");
+    guard.inventory.register_instance(&com3, "com3");
+    guard.inventory.register_instance(&com4, "com4");
 
     // PS/2
     let ps2_ctrl = PS2Ctrl::create();
-    ps2_ctrl.attach(pio, chipset.as_ref());
-    inv.register(&ps2_ctrl)?;
+    ps2_ctrl.attach(
+        pio,
+        chipset_lpc.irq_pin(ibmpc::IRQ_PS2_PRI).unwrap(),
+        chipset_lpc.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap(),
+        chipset_hb.reset_pin(),
+    );
+    guard.inventory.register(&ps2_ctrl);
 
     let debug_file = std::fs::File::create("debug.out")?;
     let debug_out = chardev::BlockingFileOutput::new(debug_file);
     let debug_device = hw::qemu::debug::QemuDebugPort::create(pio);
     debug_out.attach(Arc::clone(&debug_device) as Arc<dyn BlockingSource>);
-    inv.register(&debug_device)?;
+    guard.inventory.register(&debug_device);
 
     for (name, dev) in config.devices.iter() {
         let driver = &dev.driver as &str;
@@ -885,20 +948,22 @@ fn setup_instance(
         } else {
             None
         };
-        let create_device = || -> anyhow::Result<()> {
+        let mut create_device = || -> anyhow::Result<()> {
             match driver {
                 "pci-virtio-block" => {
-                    let (backend, creg) =
+                    let (backend, name) =
                         config::block_backend(&config, dev, log);
                     let bdf = bdf.unwrap();
 
                     let vioblk = hw::virtio::PciVirtioBlock::new(0x100);
-                    let id = inv.register_instance(&vioblk, bdf.to_string())?;
-                    let _be_id = inv.register_child(creg, id)?;
+
+                    guard
+                        .inventory
+                        .register_instance(&vioblk, &bdf.to_string());
+                    guard.inventory.register_block(&backend, name);
 
                     block::attach(backend, vioblk.clone());
-
-                    chipset.pci_attach(bdf, vioblk);
+                    chipset_pci_attach(bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
@@ -907,15 +972,12 @@ fn setup_instance(
 
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name, 0x100, &hdl,
-                    )
-                    .with_context(|| {
-                        format!("Could not connect to VioNA VNIC '{vnic_name}'")
-                    })?;
-                    inv.register_instance(&viona, bdf.to_string())?;
-                    chipset.pci_attach(bdf, viona);
+                    )?;
+                    guard.inventory.register_instance(&viona, &bdf.to_string());
+                    chipset_pci_attach(bdf, viona);
                 }
                 "pci-nvme" => {
-                    let (backend, creg) =
+                    let (backend, name) =
                         config::block_backend(&config, dev, log);
                     let bdf = bdf.unwrap();
 
@@ -930,12 +992,11 @@ fn setup_instance(
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
                     let nvme = hw::nvme::PciNvme::create(dev_serial, log);
 
-                    let id = inv.register_instance(&nvme, bdf.to_string())?;
-                    let _be_id = inv.register_child(creg, id)?;
+                    guard.inventory.register_instance(&nvme, &bdf.to_string());
+                    guard.inventory.register_block(&backend, name);
 
                     block::attach(backend, nvme.clone());
-
-                    chipset.pci_attach(bdf, nvme);
+                    chipset_pci_attach(bdf, nvme);
                 }
                 qemu::pvpanic::DEVICE_NAME => {
                     let enable_isa = dev
@@ -948,7 +1009,7 @@ fn setup_instance(
                             log.new(slog::o!("dev" => "pvpanic")),
                         );
                         pvpanic.attach_pio(pio);
-                        inv.register(&pvpanic)?;
+                        guard.inventory.register(&pvpanic);
                     }
                 }
                 _ => {
@@ -982,8 +1043,8 @@ fn setup_instance(
     let fwcfg_dev = fwcfg.finalize();
     fwcfg_dev.attach(pio, &machine.acc_mem);
 
-    inv.register(&fwcfg_dev)?;
-    inv.register(&ramfb)?;
+    guard.inventory.register(&fwcfg_dev);
+    guard.inventory.register(&ramfb);
 
     let cpuid_profile = config::parse_cpuid(&config)?;
 
@@ -1007,8 +1068,7 @@ fn setup_instance(
         vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;
     }
-    drop(guard);
-    drop(inst_inner);
+    drop(inst_guard);
 
     Ok((inst, com1_sock))
 }

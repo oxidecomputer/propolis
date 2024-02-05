@@ -10,6 +10,7 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 
 use super::bus::Bus;
+use super::topology::{self, Topology};
 use super::{bits, Bdf, PcieCfgDecoder};
 
 // Common test prep setup
@@ -37,6 +38,10 @@ impl Scaffold {
             self.acc_mem.child(None),
             self.acc_msi.child(None),
         )
+    }
+
+    pub(crate) fn basic_topo(&self) -> Arc<Topology> {
+        topology::Topology::new_test(self.create_bus())
     }
 }
 

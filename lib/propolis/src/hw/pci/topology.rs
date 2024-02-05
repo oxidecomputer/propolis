@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::common::RWOp;
 use crate::hw::ids;
-use crate::inventory::{Inventory, RegistrationError};
 use crate::vmm::Machine;
 
 use super::bridge::Bridge;
@@ -43,9 +42,6 @@ pub enum PciTopologyError {
 
     #[error("A PCI device was already attached at {0:?}")]
     DeviceAlreadyAttached(Bdf),
-
-    #[error("Failed to register a bridge with error {0:?}")]
-    BridgeRegistrationError(RegistrationError),
 }
 
 impl From<PciTopologyError> for IoError {
@@ -64,7 +60,6 @@ impl From<PciTopologyError> for IoError {
                 ErrorKind::AlreadyExists,
                 format!("Device at {} already attached", bdf),
             ),
-            BridgeRegistrationError(e) => IoError::from(e),
         }
     }
 }
@@ -153,6 +148,21 @@ impl Topology {
             let _old = guard.routed_buses.remove(&routed_id);
             assert!(_old.is_some());
         }
+    }
+
+    #[cfg(test)]
+    /// Create a basic (bus 0 only) topology for unit tests
+    pub(crate) fn new_test(bus0: Bus) -> Arc<Self> {
+        let mut logical_buses = BTreeMap::new();
+        let mut inner = Inner { routed_buses: BTreeMap::new() };
+        logical_buses.insert(LogicalBusId(0), BusIndex(0));
+        inner.routed_buses.insert(RoutedBusId(0), BusIndex(0));
+
+        Arc::new(Self {
+            buses: vec![bus0],
+            logical_buses,
+            inner: Mutex::new(inner),
+        })
     }
 }
 
@@ -258,9 +268,8 @@ impl Builder {
     /// logical bus number is invalid).
     pub fn finish(
         self,
-        inventory: &Inventory,
         machine: &Machine,
-    ) -> Result<Arc<Topology>, PciTopologyError> {
+    ) -> Result<FinishedTopology, PciTopologyError> {
         let mut buses = Vec::new();
         let mut logical_buses = BTreeMap::new();
         let mut inner = Inner::new();
@@ -299,49 +308,54 @@ impl Builder {
             inner: Mutex::new(inner),
         });
 
-        for bridge in &self.bridges {
-            let new_bridge = Bridge::new(
-                bridge.vendor_id,
-                bridge.device_id,
-                &topology,
-                bridge.downstream_bus_id,
-            );
-            if let Err(e) =
-                inventory.register_instance(&new_bridge, bridge.attachment_addr)
-            {
-                return Err(PciTopologyError::BridgeRegistrationError(e));
-            }
-            topology.pci_attach(
-                LogicalBusId(bridge.attachment_addr.bus.get()),
-                bridge.attachment_addr.location,
-                new_bridge,
-                None,
-            )?;
-        }
+        let bridges = self
+            .bridges
+            .iter()
+            .map(|bdesc| {
+                let bridge = Bridge::new(
+                    bdesc.vendor_id,
+                    bdesc.device_id,
+                    &topology,
+                    bdesc.downstream_bus_id,
+                );
+                topology.pci_attach(
+                    LogicalBusId(bdesc.attachment_addr.bus.get()),
+                    bdesc.attachment_addr.location,
+                    bridge.clone(),
+                    None,
+                )?;
 
-        Ok(topology)
+                Ok((bdesc.attachment_addr, bridge))
+            })
+            .collect::<Result<Vec<(Bdf, Arc<Bridge>)>, _>>()?;
+
+        Ok(FinishedTopology { topology, bridges })
     }
+}
+
+pub struct FinishedTopology {
+    pub topology: Arc<Topology>,
+    pub bridges: Vec<(Bdf, Arc<Bridge>)>,
 }
 
 #[cfg(test)]
 mod test {
     use crate::common::ReadOp;
-    use crate::instance::Instance;
+    use crate::vmm::Machine;
 
     use super::*;
 
     #[test]
     fn build_without_bridges() {
-        let inst = Instance::new_test().unwrap();
+        let machine = Machine::new_test().unwrap();
         let builder = Builder::new();
 
-        let guard = inst.lock();
-        assert!(builder.finish(guard.inventory(), guard.machine()).is_ok());
+        assert!(builder.finish(&machine).is_ok());
     }
 
     #[test]
     fn build_with_bridges() {
-        let inst = Instance::new_test().unwrap();
+        let machine = Machine::new_test().unwrap();
         let mut builder = Builder::new();
 
         assert!(builder
@@ -357,8 +371,7 @@ mod test {
             ))
             .is_ok());
 
-        let guard = inst.lock();
-        assert!(builder.finish(guard.inventory(), guard.machine()).is_ok());
+        assert!(builder.finish(&machine).is_ok());
     }
 
     #[test]
@@ -397,7 +410,7 @@ mod test {
 
     #[test]
     fn cfg_read() {
-        let inst = Instance::new_test().unwrap();
+        let machine = Machine::new_test().unwrap();
         let mut builder = Builder::new();
         assert!(builder
             .add_bridge(BridgeDescription::new(
@@ -406,9 +419,7 @@ mod test {
             ))
             .is_ok());
 
-        let guard = inst.lock();
-        let topology =
-            builder.finish(guard.inventory(), guard.machine()).unwrap();
+        let topology = builder.finish(&machine).unwrap().topology;
         let mut buf = [0u8; 1];
         let mut ro = ReadOp::from_buf(0, &mut buf);
         assert!(topology
@@ -427,25 +438,9 @@ mod test {
             .is_none());
     }
 
-    fn inventory_count(inv: &Inventory) -> usize {
-        let mut count = 0;
-        inv.for_each_node(
-            crate::inventory::Order::Pre,
-            |_, _| -> Result<(), ()> {
-                count += 1;
-                Ok(())
-            },
-        )
-        .unwrap();
-        count
-    }
-
     #[test]
-    fn registered_bridges() {
-        let inst = Instance::new_test().unwrap();
-
-        let guard = inst.lock();
-        let before = inventory_count(guard.inventory());
+    fn created_bridges() {
+        let machine = Machine::new_test().unwrap();
 
         let mut builder = Builder::new();
         assert!(builder
@@ -454,9 +449,10 @@ mod test {
                 Bdf::new(0, 1, 0).unwrap()
             ))
             .is_ok());
-        let _topology =
-            builder.finish(guard.inventory(), guard.machine()).unwrap();
-        let after = inventory_count(guard.inventory());
-        assert!(after > before);
+        let FinishedTopology { bridges, .. } =
+            builder.finish(&machine).unwrap();
+
+        assert_eq!(bridges.len(), 1);
+        assert_eq!(bridges[0].0, Bdf::new(0, 1, 0).unwrap());
     }
 }

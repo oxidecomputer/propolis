@@ -52,7 +52,7 @@ pub(super) struct StateDriver<
     runtime_hdl: tokio::runtime::Handle,
 
     /// A reference to the command sink to which this driver should send its
-    /// requests to send messages to entities or update other VM controller
+    /// requests to send messages to devices or update other VM controller
     /// state.
     controller: Arc<V>,
 
@@ -69,7 +69,7 @@ pub(super) struct StateDriver<
     /// updates.
     state_gen: u64,
 
-    /// Whether the worker's VM's entities are paused.
+    /// Whether the worker's VM's devices are paused.
     paused: bool,
 
     /// The sender side of the monitor that reflects the instance's current
@@ -285,13 +285,13 @@ where
             }
         }
 
-        match self.controller.start_entities() {
+        match self.controller.start_devices() {
             Ok(()) => {
                 self.vcpu_tasks.resume_all();
                 self.publish_steady_state(ApiInstanceState::Running);
             }
             Err(e) => {
-                error!(&self.log, "Failed to start entities: {:?}", e);
+                error!(&self.log, "Failed to start devices: {:?}", e);
                 self.publish_steady_state(ApiInstanceState::Failed);
             }
         }
@@ -304,19 +304,18 @@ where
 
         // Reboot is implemented as a pause -> reset -> resume transition.
         //
-        // First, pause the vCPUs and all entities so no partially-completed
+        // First, pause the vCPUs and all devices so no partially-completed
         // work is present.
         self.vcpu_tasks.pause_all();
-        self.controller.pause_entities();
+        self.controller.pause_devices();
 
         // Reset all the entities and the VM's bhyve state, then reset the
         // vCPUs. The vCPU reset must come after the bhyve reset.
-        self.controller.reset_entities_and_machine();
+        self.controller.reset_devices_and_machine();
         self.reset_vcpus();
 
-        // Resume entities so they're ready to do more work, then
-        // resume vCPUs.
-        self.controller.resume_entities();
+        // Resume devices so they're ready to do more work, then resume vCPUs.
+        self.controller.resume_devices();
         self.vcpu_tasks.resume_all();
 
         // Notify the request queue that this reboot request was processed.
@@ -340,7 +339,7 @@ where
         }
 
         self.vcpu_tasks.exit_all();
-        self.controller.halt_entities();
+        self.controller.halt_devices();
         self.publish_steady_state(ApiInstanceState::Stopped);
     }
 
@@ -423,7 +422,7 @@ where
         start_tx.send(()).unwrap();
 
         // Wait either for the migration task to exit or for it to ask the
-        // worker to pause or resume the instance's entities.
+        // worker to pause or resume the instance's devices.
         loop {
             let action = self.runtime_hdl.block_on(async {
                 Self::next_migrate_task_event(
@@ -438,7 +437,7 @@ where
                 // If the task exited, bubble its result back up to the main
                 // state worker loop to decide on the instance's next state.
                 //
-                // If migration failed while entities were paused, this instance
+                // If migration failed while devices were paused, this instance
                 // is allowed to resume, so resume its components here.
                 MigrateTaskEvent::TaskExited(res) => {
                     if res.is_ok() {
@@ -514,7 +513,7 @@ where
         assert!(!self.paused);
         probes::state_driver_pause!(|| ());
         self.vcpu_tasks.pause_all();
-        self.controller.pause_entities();
+        self.controller.pause_devices();
         self.controller.pause_vm();
         self.paused = true;
     }
@@ -523,7 +522,7 @@ where
         assert!(self.paused);
         probes::state_driver_resume!(|| ());
         self.controller.resume_vm();
-        self.controller.resume_entities();
+        self.controller.resume_devices();
         self.vcpu_tasks.resume_all();
         self.paused = false;
     }
@@ -639,7 +638,7 @@ mod tests {
         let mut seq = Sequence::new();
 
         // First, reboot has to pause everything. It doesn't actually matter
-        // whether vCPUs or entities pause first, but there's no way to specify
+        // whether vCPUs or devices pause first, but there's no way to specify
         // that these events must be sequenced before other expectations but
         // have no ordering with respect to each other.
         vcpu_ctrl
@@ -648,16 +647,16 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|| ());
         vm_ctrl
-            .expect_pause_entities()
+            .expect_pause_devices()
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| ());
 
-        // The entities and--importantly--the bhyve VM itself must be reset
+        // The devices and--importantly--the bhyve VM itself must be reset
         // before resetting any vCPU state (so that bhyve will accept the ioctls
         // sent to the vCPUs during the reset process).
         vm_ctrl
-            .expect_reset_entities_and_machine()
+            .expect_reset_devices_and_machine()
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| ());
@@ -673,10 +672,10 @@ mod tests {
             .returning(|| ());
 
         // Entities and vCPUs can technically be resumed in either order, but
-        // resuming entities first allows them to be ready when the vCPUs start
+        // resuming devices first allows them to be ready when the vCPUs start
         // creating work for them to do.
         vm_ctrl
-            .expect_resume_entities()
+            .expect_resume_devices()
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| ());
@@ -739,7 +738,7 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|| ());
         vm_ctrl
-            .expect_start_entities()
+            .expect_start_devices()
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| Ok(()));
@@ -758,7 +757,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn entity_start_failure_causes_instance_failure() {
+    async fn device_start_failure_causes_instance_failure() {
         let mut test_objects = make_default_mocks();
         let vm_ctrl = &mut test_objects.vm_ctrl;
         let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
@@ -774,10 +773,10 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|| ());
         vm_ctrl
-            .expect_start_entities()
+            .expect_start_devices()
             .times(1)
             .in_sequence(&mut seq)
-            .returning(|| bail!("injected failure into start_entities!"));
+            .returning(|| bail!("injected failure into start_devices!"));
 
         let mut driver = make_state_driver(test_objects);
 
@@ -793,7 +792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn entities_pause_before_halting() {
+    async fn devices_pause_before_halting() {
         let mut test_objects = make_default_mocks();
         let vm_ctrl = &mut test_objects.vm_ctrl;
         let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
@@ -804,7 +803,7 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|| ());
         vm_ctrl
-            .expect_pause_entities()
+            .expect_pause_devices()
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| ());
@@ -819,7 +818,7 @@ mod tests {
             .in_sequence(&mut seq)
             .returning(|| ());
         vm_ctrl
-            .expect_halt_entities()
+            .expect_halt_devices()
             .times(1)
             .in_sequence(&mut seq)
             .returning(|| ());
@@ -833,7 +832,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn entities_pause_once_when_halting_after_migration_out() {
+    async fn devices_pause_once_when_halting_after_migration_out() {
         let migration_id = Uuid::new_v4();
         let (start_tx, start_rx) = tokio::sync::oneshot::channel();
         let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
@@ -852,11 +851,11 @@ mod tests {
         // order the state driver to halt. This should produce exactly one set
         // of pause commands and one set of halt commands with no resume
         // commands.
-        vm_ctrl.expect_pause_entities().times(1).returning(|| ());
+        vm_ctrl.expect_pause_devices().times(1).returning(|| ());
         vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
         vcpu_ctrl.expect_exit_all().times(1).returning(|| ());
-        vm_ctrl.expect_halt_entities().times(1).returning(|| ());
-        vm_ctrl.expect_resume_entities().never();
+        vm_ctrl.expect_halt_devices().times(1).returning(|| ());
+        vm_ctrl.expect_resume_devices().never();
         vcpu_ctrl.expect_resume_all().never();
         vm_ctrl.expect_pause_vm().times(1).returning(|| ());
         vm_ctrl.expect_resume_vm().never();
@@ -937,9 +936,9 @@ mod tests {
 
         // This test will simulate a migration out up through pausing the
         // source, then fail migration. This should pause and resume all the
-        // entities and the vCPUs.
-        vm_ctrl.expect_pause_entities().times(1).returning(|| ());
-        vm_ctrl.expect_resume_entities().times(1).returning(|| ());
+        // devices and the vCPUs.
+        vm_ctrl.expect_pause_devices().times(1).returning(|| ());
+        vm_ctrl.expect_resume_devices().times(1).returning(|| ());
         vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
 
@@ -1022,7 +1021,7 @@ mod tests {
 
         vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
         vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
-        vm_ctrl.expect_start_entities().times(1).returning(|| Ok(()));
+        vm_ctrl.expect_start_devices().times(1).returning(|| Ok(()));
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
 
         let mut pause_seq = Sequence::new();
@@ -1176,9 +1175,9 @@ mod tests {
             .returning(|| ());
 
         vm_ctrl
-            .expect_start_entities()
+            .expect_start_devices()
             .times(1)
-            .returning(|| bail!("injected failure into start_entities!"));
+            .returning(|| bail!("injected failure into start_devices!"));
 
         let mut driver = make_state_driver(test_objects);
 
@@ -1235,9 +1234,9 @@ mod tests {
         let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
 
         // A call to start a VM after a successful migration should start vCPUs
-        // and entities without resetting anything.
+        // and devices without resetting anything.
         vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
-        vm_ctrl.expect_start_entities().times(1).returning(|| Ok(()));
+        vm_ctrl.expect_start_devices().times(1).returning(|| Ok(()));
 
         // As noted below, the instance state is being magicked directly into a
         // `Migrating` state, rather than executing the logic which would

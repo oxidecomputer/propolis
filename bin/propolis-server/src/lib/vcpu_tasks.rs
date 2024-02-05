@@ -47,13 +47,13 @@ pub(crate) trait VcpuTaskController {
 
 impl VcpuTasks {
     pub(crate) fn new(
-        instance: propolis::instance::InstanceGuard,
+        machine: &propolis::Machine,
         event_handler: Arc<super::vm::SharedVmState>,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
         let generation = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
-        for vcpu in instance.machine().vcpus.iter().map(Arc::clone) {
+        for vcpu in machine.vcpus.iter().map(Arc::clone) {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
             let task_log = log.new(slog::o!("vcpu" => vcpu.id));

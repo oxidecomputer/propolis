@@ -4,10 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::inventory::Entity;
+use crate::common::Lifecycle;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
+/// Bhyve VMM-emulated IO-APIC (Intel 82093AA)
 pub struct BhyveIoApic {
     hdl: Arc<VmmHdl>,
 }
@@ -17,28 +18,29 @@ impl BhyveIoApic {
     }
 }
 
-impl Entity for BhyveIoApic {
+impl Lifecycle for BhyveIoApic {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-ioapic"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Single(self)
+        Migrator::Multi(self)
     }
 }
-impl MigrateSingle for BhyveIoApic {
+impl MigrateMulti for BhyveIoApic {
     fn export(
         &self,
+        output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
-    ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::IoApicV1::read(&self.hdl)?.into())
+    ) -> Result<(), MigrateStateError> {
+        output.push(migrate::IoApicV1::read(&self.hdl)?.into())
     }
 
     fn import(
         &self,
-        mut offer: PayloadOffer,
+        offer: &mut PayloadOffers,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        offer.parse::<migrate::IoApicV1>()?.write(&self.hdl)?;
+        offer.take::<migrate::IoApicV1>()?.write(&self.hdl)?;
         Ok(())
     }
 }

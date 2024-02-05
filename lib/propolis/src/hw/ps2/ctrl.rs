@@ -8,7 +8,6 @@ use std::mem::replace;
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
@@ -316,7 +315,13 @@ impl PS2Ctrl {
     pub fn create() -> Arc<Self> {
         Arc::new(Self { state: Mutex::new(PS2State::default()) })
     }
-    pub fn attach(self: &Arc<Self>, bus: &PioBus, chipset: &dyn Chipset) {
+    pub fn attach(
+        self: &Arc<Self>,
+        bus: &PioBus,
+        pri_pin: Box<dyn IntrPin>,
+        aux_pin: Box<dyn IntrPin>,
+        reset_pin: Arc<dyn IntrPin>,
+    ) {
         let this = Arc::clone(self);
         let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
             as Arc<PioFn>;
@@ -325,9 +330,9 @@ impl PS2Ctrl {
         bus.register(ibmpc::PORT_PS2_CMD_STATUS, 1, piofn).unwrap();
 
         let mut state = self.state.lock().unwrap();
-        state.pri_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_PRI).unwrap());
-        state.aux_pin = Some(chipset.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap());
-        state.reset_pin = Some(chipset.reset_pin());
+        state.pri_pin = Some(pri_pin);
+        state.aux_pin = Some(aux_pin);
+        state.reset_pin = Some(reset_pin);
     }
 
     pub fn key_event(&self, ke: KeyEvent) {
@@ -590,7 +595,7 @@ impl PS2Ctrl {
         self.update_intr(&mut state);
     }
 }
-impl Entity for PS2Ctrl {
+impl Lifecycle for PS2Ctrl {
     fn type_name(&self) -> &'static str {
         "lpc-ps2ctrl"
     }

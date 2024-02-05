@@ -104,7 +104,7 @@ impl QemuPvpanic {
     }
 }
 
-impl Entity for QemuPvpanic {
+impl Lifecycle for QemuPvpanic {
     fn type_name(&self) -> &'static str {
         DEVICE_NAME
     }

@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::accessors::MemAccessor;
 use crate::block;
-use crate::inventory::Entity;
 use crate::vmm::{MemCtx, SubMapping};
 
 pub struct InMemoryBackend {
@@ -141,19 +140,10 @@ impl block::Backend for InMemoryBackend {
     fn info(&self) -> block::DeviceInfo {
         self.state.info
     }
-}
-
-impl Entity for InMemoryBackend {
-    fn type_name(&self) -> &'static str {
-        "block-in-memory"
-    }
     fn start(&self) -> anyhow::Result<()> {
         self.state.attachment.start();
         self.spawn_workers()?;
         Ok(())
-    }
-    fn halt(&self) {
-        self.state.attachment.halt();
     }
 }
 

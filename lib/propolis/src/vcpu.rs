@@ -7,9 +7,9 @@
 use std::io::{Error, ErrorKind, Result};
 use std::sync::Arc;
 
+use crate::common::Lifecycle;
 use crate::cpuid;
 use crate::exits::*;
-use crate::inventory::Entity;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
@@ -435,7 +435,7 @@ impl Vcpu {
     }
 }
 
-impl Entity for Vcpu {
+impl Lifecycle for Vcpu {
     fn type_name(&self) -> &'static str {
         "bhyve-vcpu"
     }

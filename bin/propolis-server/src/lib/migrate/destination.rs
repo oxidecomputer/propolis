@@ -4,8 +4,7 @@
 
 use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
-use propolis::common::{GuestAddr, PAGE_SIZE};
-use propolis::inventory::Entity;
+use propolis::common::{GuestAddr, Lifecycle, PAGE_SIZE};
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
@@ -320,19 +319,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Devices: {devices:#?}");
 
         {
-            let instance_guard = self.vm_controller.instance().lock();
-            let inv = instance_guard.inventory();
-            let migrate_ctx = MigrateCtx {
-                mem: &instance_guard.machine().acc_mem.access().unwrap(),
-            };
+            let machine = self.vm_controller.machine();
+            let migrate_ctx =
+                MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
             for device in devices {
                 info!(
                     self.log(),
                     "Applying state to device {}", device.instance_name
                 );
 
-                let target = inv
-                    .get_by_name(&device.instance_name)
+                let target = self
+                    .vm_controller
+                    .device_by_name(&device.instance_name)
                     .ok_or_else(|| {
                         MigrateError::UnknownDevice(
                             device.instance_name.clone(),
@@ -373,10 +371,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         // Take a snapshot of the host hrtime/wall clock time, then adjust
         // time data appropriately.
-        let vmm_hdl = {
-            let instance_guard = self.vm_controller.instance().lock();
-            &instance_guard.machine().hdl.clone()
-        };
+        let vmm_hdl = &self.vm_controller.machine().hdl.clone();
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -451,7 +446,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
     fn import_device(
         &self,
-        target: &Arc<dyn Entity>,
+        target: &Arc<dyn Lifecycle>,
         device: &Device,
         migrate_ctx: &MigrateCtx,
     ) -> Result<(), MigrateError> {
@@ -644,8 +639,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let instance_guard = self.vm_controller.instance().lock();
-        let memctx = instance_guard.machine().acc_mem.access().unwrap();
+        let machine = self.vm_controller.machine();
+        let memctx = machine.acc_mem.access().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
         Ok(())

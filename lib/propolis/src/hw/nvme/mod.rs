@@ -1007,7 +1007,7 @@ impl MigrateMulti for PciNvme {
     }
 }
 
-impl Entity for PciNvme {
+impl Lifecycle for PciNvme {
     fn type_name(&self) -> &'static str {
         "pci-nvme"
     }

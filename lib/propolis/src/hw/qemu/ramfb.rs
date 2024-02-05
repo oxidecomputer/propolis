@@ -180,7 +180,7 @@ impl Item for RamFb {
         Ok(())
     }
 }
-impl Entity for RamFb {
+impl Lifecycle for RamFb {
     fn type_name(&self) -> &'static str {
         "qemu-ramfb"
     }

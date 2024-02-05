@@ -44,7 +44,7 @@ impl BlockingSource for QemuDebugPort {
     }
 }
 
-impl Entity for QemuDebugPort {
+impl Lifecycle for QemuDebugPort {
     fn type_name(&self) -> &'static str {
         "qemu-lpc-debug"
     }

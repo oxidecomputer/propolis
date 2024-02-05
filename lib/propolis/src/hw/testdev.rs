@@ -12,7 +12,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::inventory::Entity;
+use crate::common::Lifecycle;
 use crate::migrate::*;
 
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ impl MigrationFailureDevice {
     }
 }
 
-impl Entity for MigrationFailureDevice {
+impl Lifecycle for MigrationFailureDevice {
     fn type_name(&self) -> &'static str {
         MigrationFailureDevice::NAME
     }

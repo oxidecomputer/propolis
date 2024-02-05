@@ -364,7 +364,7 @@ impl BitAnd<usize> for GuestAddr {
     }
 }
 
-pub use crate::inventory::Entity;
+pub use crate::lifecycle::Lifecycle;
 
 pub const PAGE_SIZE: usize = 0x1000;
 pub const PAGE_OFFSET: usize = 0xfff;

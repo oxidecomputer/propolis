@@ -231,6 +231,20 @@ pub trait Backend: Send + Sync + 'static {
     fn attachment(&self) -> &backend::Attachment;
 
     fn info(&self) -> DeviceInfo;
+
+    /// Start backend processing
+    ///
+    /// Backend should spawn any necessary worker tasks/threads and begin
+    /// polling the [backend::Attachment] for requests to be available.
+    fn start(&self) -> anyhow::Result<()>;
+
+    /// Halt backend processing
+    ///
+    /// Backend should cease processing requests, shutdown any spawned
+    /// tasks/threads, and call `halt` on the [backend::Attachment];
+    fn halt(&self) {
+        self.attachment().halt();
+    }
 }
 
 pub enum CacheMode {

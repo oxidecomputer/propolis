@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
 use crate::block;
-use crate::inventory::Entity;
 use crate::vmm::MemCtx;
 
 /// Block device backend which uses anonymous memory as its storage.
@@ -202,18 +201,9 @@ impl block::Backend for MemAsyncBackend {
     fn attachment(&self) -> &block::backend::Attachment {
         &self.work_state.attachment
     }
-}
-
-impl Entity for MemAsyncBackend {
-    fn type_name(&self) -> &'static str {
-        "block-memory-async"
-    }
     fn start(&self) -> anyhow::Result<()> {
         self.work_state.attachment.start();
         self.spawn_workers();
         Ok(())
-    }
-    fn halt(&self) {
-        self.work_state.attachment.halt();
     }
 }

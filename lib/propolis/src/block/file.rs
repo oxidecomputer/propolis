@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
-use crate::inventory::Entity;
 use crate::vmm::{MappingExt, MemCtx};
 
 // XXX: completely arb for now
@@ -160,17 +159,9 @@ impl block::Backend for FileBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-}
-impl Entity for FileBackend {
-    fn type_name(&self) -> &'static str {
-        "block-file"
-    }
     fn start(&self) -> anyhow::Result<()> {
         self.spawn_workers()?;
         self.state.attachment.start();
         Ok(())
-    }
-    fn halt(&self) {
-        self.state.attachment.halt();
     }
 }

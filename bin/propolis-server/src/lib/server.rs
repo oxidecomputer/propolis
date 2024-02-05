@@ -46,6 +46,10 @@ use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
 
+pub(crate) type DeviceMap =
+    BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
+pub(crate) type BlockBackendMap =
+    BTreeMap<String, Arc<dyn propolis::block::Backend>>;
 pub(crate) type CrucibleBackendMap =
     BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
 
@@ -529,17 +533,14 @@ async fn instance_ensure_common(
         let vnc_fb = crate::vnc::RamFb::new(fb_spec);
 
         // Get a reference to the PS2 controller so that we can pass keyboard input.
-        let ps2ctrl = vm.ps2ctrl().unwrap();
+        let ps2ctrl = vm.ps2ctrl().clone();
 
         // Get a reference to the outward-facing VNC server in this process.
         let vnc_server = server_context.services.vnc_server.clone();
 
         // Initialize the Propolis VNC adapter with references to the VM's Instance,
         // framebuffer, and PS2 controller.
-        vnc_server
-            .server
-            .initialize(vnc_fb, Arc::clone(ps2ctrl), vm.clone())
-            .await;
+        vnc_server.server.initialize(vnc_fb, ps2ctrl, vm.clone()).await;
 
         // Hook up the framebuffer notifier to update the Propolis VNC adapter
         let notifier_server_ref = vnc_server.clone();

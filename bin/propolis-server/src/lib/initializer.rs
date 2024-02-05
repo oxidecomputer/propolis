@@ -11,16 +11,16 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::server::CrucibleBackendMap;
+use crate::server::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
+use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
-use propolis::common::PAGE_SIZE;
-use propolis::hw::chipset::i440fx;
-use propolis::hw::chipset::i440fx::I440Fx;
-use propolis::hw::chipset::Chipset;
+use propolis::common::{Lifecycle, PAGE_SIZE};
+use propolis::hw::bhyve::BhyveHpet;
+use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -28,35 +28,13 @@ use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
-use propolis::instance::Instance;
-use propolis::inventory::{self, EntityID, Inventory};
+use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
 use slog::info;
 
-use anyhow::{Context, Result};
-
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
-
-fn open_bootrom<P: AsRef<std::path::Path>>(path: P) -> Result<(File, usize)> {
-    let fp = File::open(path.as_ref())?;
-    let len = fp.metadata()?.len();
-    if len % (PAGE_SIZE as u64) != 0 {
-        Err(Error::new(
-            ErrorKind::InvalidData,
-            format!(
-                "rom {} length {:x} not aligned to {:x}",
-                path.as_ref().to_string_lossy(),
-                len,
-                PAGE_SIZE
-            ),
-        )
-        .into())
-    } else {
-        Ok((fp, len as usize))
-    }
-}
 
 fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
     const MB: usize = 1024 * 1024;
@@ -72,7 +50,7 @@ pub fn build_instance(
     spec: &InstanceSpecV0,
     use_reservoir: bool,
     _log: slog::Logger,
-) -> Result<Instance> {
+) -> Result<Machine> {
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
     let create_opts = propolis::vmm::CreateOpts {
         force: true,
@@ -98,46 +76,65 @@ pub fn build_instance(
         "dev64",
     )?;
 
-    Ok(Instance::create(builder.finalize()?))
+    Ok(builder.finalize()?)
 }
 
-pub struct RegisteredChipset(Arc<I440Fx>, EntityID);
+pub struct RegisteredChipset {
+    chipset: Arc<dyn Chipset>,
+    isa: Arc<i440fx::Piix3Lpc>,
+}
 impl RegisteredChipset {
-    pub fn device(&self) -> &Arc<I440Fx> {
-        &self.0
+    pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
+        self.chipset.pci_attach(bdf, dev, self.isa.route_lintr(bdf));
+    }
+    pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn intr_pins::IntrPin>> {
+        self.isa.irq_pin(irq)
+    }
+    fn reset_pin(&self) -> Arc<dyn intr_pins::IntrPin> {
+        self.chipset.reset_pin()
     }
 }
 
 struct StorageBackendInstance {
     be: Arc<dyn block::Backend>,
-    child: inventory::ChildRegister,
     crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
 }
 
 pub struct MachineInitializer<'a> {
-    log: slog::Logger,
-    machine: &'a Machine,
-    inv: &'a Inventory,
-    spec: &'a InstanceSpecV0,
-    producer_registry: Option<ProducerRegistry>,
+    pub(crate) log: slog::Logger,
+    pub(crate) machine: &'a Machine,
+    pub(crate) devices: DeviceMap,
+    pub(crate) block_backends: BlockBackendMap,
+    pub(crate) crucible_backends: CrucibleBackendMap,
+    pub(crate) spec: &'a InstanceSpecV0,
+    pub(crate) producer_registry: Option<ProducerRegistry>,
 }
 
 impl<'a> MachineInitializer<'a> {
-    pub fn new(
-        log: slog::Logger,
-        machine: &'a Machine,
-        inv: &'a Inventory,
-        spec: &'a InstanceSpecV0,
-        producer_registry: Option<ProducerRegistry>,
-    ) -> Self {
-        MachineInitializer { log, machine, inv, spec, producer_registry }
-    }
-
-    pub fn initialize_rom<P: AsRef<std::path::Path>>(
-        &self,
-        path: P,
+    pub fn initialize_rom(
+        &mut self,
+        path: &std::path::Path,
     ) -> Result<(), Error> {
-        let (romfp, rom_len) = open_bootrom(path.as_ref())
+        fn open_bootrom(path: &std::path::Path) -> Result<(File, usize)> {
+            let fp = File::open(path)?;
+            let len = fp.metadata()?.len();
+            if len % (PAGE_SIZE as u64) != 0 {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "rom {} length {:x} not aligned to {:x}",
+                        path.to_string_lossy(),
+                        len,
+                        PAGE_SIZE
+                    ),
+                )
+                .into())
+            } else {
+                Ok((fp, len as usize))
+            }
+        }
+
+        let (romfp, rom_len) = open_bootrom(path)
             .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
 
         let mem = self.machine.acc_mem.access().unwrap();
@@ -152,10 +149,13 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_kernel_devs(&self) -> Result<(), Error> {
+    pub fn initialize_rtc(
+        &self,
+        chipset: &RegisteredChipset,
+    ) -> Result<(), Error> {
         let (lowmem, highmem) = get_spec_guest_ram_limits(self.spec);
 
-        let rtc = &self.machine.kernel_devs.rtc;
+        let rtc = chipset.isa.rtc.as_ref();
         rtc.memsize_to_nvram(lowmem as u32, highmem as u64)?;
         rtc.set_time(
             SystemTime::now()
@@ -166,8 +166,14 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
+    pub fn initialize_hpet(&mut self) -> Result<(), Error> {
+        let hpet = BhyveHpet::create(self.machine.hdl.clone());
+        self.devices.insert(hpet.type_name().into(), hpet.clone());
+        Ok(())
+    }
+
     pub fn initialize_chipset(
-        &self,
+        &mut self,
         event_handler: &Arc<dyn super::vm::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
@@ -186,7 +192,8 @@ impl<'a> MachineInitializer<'a> {
             );
             pci_builder.add_bridge(desc)?;
         }
-        let pci_topology = pci_builder.finish(self.inv, self.machine)?;
+        let pci::topology::FinishedTopology { topology: pci_topology, bridges } =
+            pci_builder.finish(self.machine)?;
 
         match self.spec.devices.board.chipset {
             instance_spec::components::board::Chipset::I440Fx(i440fx) => {
@@ -211,24 +218,64 @@ impl<'a> MachineInitializer<'a> {
                     }),
                 ));
 
-                let chipset = I440Fx::create(
-                    self.machine,
+                let chipset_hb = i440fx::I440FxHostBridge::create(
                     pci_topology,
                     i440fx::Opts {
                         power_pin: Some(power_pin),
                         reset_pin: Some(reset_pin),
                         enable_pcie: i440fx.enable_pcie,
                     },
-                    self.log.new(slog::o!("dev" => "chipset")),
                 );
-                let id = self.inv.register(&chipset)?;
-                Ok(RegisteredChipset(chipset, id))
+                let chipset_lpc =
+                    i440fx::Piix3Lpc::create(self.machine.hdl.clone());
+
+                let chipset_pm = i440fx::Piix3PM::create(
+                    self.machine.hdl.clone(),
+                    chipset_hb.power_pin(),
+                    self.log.new(slog::o!("device" => "piix3pm")),
+                );
+
+                let do_pci_attach = |bdf, dev: Arc<dyn pci::Endpoint>| {
+                    chipset_hb.pci_attach(
+                        bdf,
+                        dev,
+                        chipset_lpc.route_lintr(bdf),
+                    );
+                };
+
+                // Attach chipset devices to PCI and buses
+                do_pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone());
+                chipset_hb.attach(self.machine);
+
+                do_pci_attach(i440fx::DEFAULT_LPC_BDF, chipset_lpc.clone());
+                chipset_lpc.attach(&self.machine.bus_pio);
+
+                do_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
+                chipset_pm.attach(&self.machine.bus_pio);
+
+                self.devices
+                    .insert(chipset_hb.type_name().into(), chipset_hb.clone());
+                self.devices.insert(
+                    chipset_lpc.type_name().into(),
+                    chipset_lpc.clone(),
+                );
+                self.devices.insert(chipset_pm.type_name().into(), chipset_pm);
+
+                // Record attachment for any bridges in PCI topology too
+                for (bdf, bridge) in bridges {
+                    self.devices.insert(
+                        format!("{}-{bdf}", bridge.type_name()),
+                        bridge,
+                    );
+                }
+
+                Ok(RegisteredChipset { chipset: chipset_hb, isa: chipset_lpc })
             }
         }
     }
 
     pub fn initialize_uart(
-        &self,
+        &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
         use instance_spec::components::devices::SerialPortNumber;
@@ -242,10 +289,10 @@ impl<'a> MachineInitializer<'a> {
                 SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
             };
 
-            let dev = LpcUart::new(chipset.device().irq_pin(irq).unwrap());
+            let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, &self.machine.bus_pio, port);
-            self.inv.register_instance(&dev, name)?;
+            self.devices.insert(name.clone(), dev.clone());
             if matches!(serial_spec.num, SerialPortNumber::Com1) {
                 assert!(com1.is_none());
                 com1 = Some(dev);
@@ -258,26 +305,35 @@ impl<'a> MachineInitializer<'a> {
     }
 
     pub fn initialize_ps2(
-        &self,
+        &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<EntityID, Error> {
+    ) -> Result<Arc<PS2Ctrl>, Error> {
         let ps2_ctrl = PS2Ctrl::create();
-        ps2_ctrl.attach(&self.machine.bus_pio, chipset.device().as_ref());
-        let id = self.inv.register(&ps2_ctrl)?;
-        Ok(id)
+
+        ps2_ctrl.attach(
+            &self.machine.bus_pio,
+            chipset.irq_pin(ibmpc::IRQ_PS2_PRI).unwrap(),
+            chipset.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap(),
+            chipset.reset_pin(),
+        );
+        self.devices.insert(ps2_ctrl.type_name().into(), ps2_ctrl.clone());
+
+        Ok(ps2_ctrl)
     }
 
-    pub fn initialize_qemu_debug_port(&self) -> Result<(), Error> {
+    pub fn initialize_qemu_debug_port(&mut self) -> Result<(), Error> {
         let dbg = QemuDebugPort::create(&self.machine.bus_pio);
         let debug_file = std::fs::File::create("debug.out")?;
         let poller = chardev::BlockingFileOutput::new(debug_file);
+
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>);
-        self.inv.register(&dbg)?;
+        self.devices.insert(dbg.type_name().into(), dbg);
+
         Ok(())
     }
 
     pub fn initialize_qemu_pvpanic(
-        &self,
+        &mut self,
         uuid: uuid::Uuid,
     ) -> Result<(), anyhow::Error> {
         if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
@@ -286,7 +342,8 @@ impl<'a> MachineInitializer<'a> {
                     self.log.new(slog::o!("dev" => "qemu-pvpanic")),
                 );
                 pvpanic.attach_pio(&self.machine.bus_pio);
-                self.inv.register(&pvpanic)?;
+                self.devices
+                    .insert(pvpanic.type_name().into(), pvpanic.clone());
 
                 if let Some(ref registry) = self.producer_registry {
                     let producer =
@@ -341,13 +398,8 @@ impl<'a> MachineInitializer<'a> {
                     ),
                 )?;
 
-                let child = inventory::ChildRegister::new(
-                    &be,
-                    Some(be.get_uuid()?.to_string()),
-                );
-
                 let crucible = Some((be.get_uuid()?, be.clone()));
-                Ok(StorageBackendInstance { be, child, crucible })
+                Ok(StorageBackendInstance { be, crucible })
             }
             instance_spec::v0::StorageBackendV0::File(spec) => {
                 info!(self.log, "Creating file disk backend";
@@ -373,9 +425,7 @@ impl<'a> MachineInitializer<'a> {
                     nworkers,
                 )?;
 
-                let child =
-                    inventory::ChildRegister::new(&be, Some(spec.path.clone()));
-                Ok(StorageBackendInstance { be, child, crucible: None })
+                Ok(StorageBackendInstance { be, crucible: None })
             }
             instance_spec::v0::StorageBackendV0::Blob(spec) => {
                 let bytes = base64::Engine::decode(
@@ -407,12 +457,7 @@ impl<'a> MachineInitializer<'a> {
                     nworkers,
                 )?;
 
-                let child = inventory::ChildRegister::new(
-                    &be,
-                    Some(backend_name.to_string()),
-                );
-
-                Ok(StorageBackendInstance { be, child, crucible: None })
+                Ok(StorageBackendInstance { be, crucible: None })
             }
         }
     }
@@ -423,16 +468,15 @@ impl<'a> MachineInitializer<'a> {
     /// On success, returns a map from Crucible backend IDs to Crucible
     /// backends.
     pub fn initialize_storage_devices(
-        &self,
+        &mut self,
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
-    ) -> Result<CrucibleBackendMap, Error> {
+    ) -> Result<(), Error> {
         enum DeviceInterface {
             Virtio,
             Nvme,
         }
 
-        let mut crucible_backends: CrucibleBackendMap = Default::default();
         for (name, device_spec) in &self.spec.devices.storage_devices {
             info!(
                 self.log,
@@ -465,13 +509,6 @@ impl<'a> MachineInitializer<'a> {
                     )
                 })?;
 
-            let StorageBackendInstance { be: backend, child, crucible } = self
-                .create_storage_backend_from_spec(
-                    backend_spec,
-                    backend_name,
-                    &nexus_client,
-                )?;
-
             let bdf: pci::Bdf = pci_path.try_into().map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidInput,
@@ -482,14 +519,22 @@ impl<'a> MachineInitializer<'a> {
                 )
             })?;
 
+            let StorageBackendInstance { be: backend, crucible } = self
+                .create_storage_backend_from_spec(
+                    backend_spec,
+                    backend_name,
+                    &nexus_client,
+                )?;
+
+            self.block_backends.insert(backend_name.clone(), backend.clone());
             match device_interface {
                 DeviceInterface::Virtio => {
                     let vioblk = virtio::PciVirtioBlock::new(0x100);
-                    let id =
-                        self.inv.register_instance(&vioblk, bdf.to_string())?;
-                    let _ = self.inv.register_child(child, id).unwrap();
+
+                    self.devices
+                        .insert(format!("pci-virtio-{}", bdf), vioblk.clone());
                     block::attach(backend, vioblk.clone());
-                    chipset.device().pci_attach(bdf, vioblk);
+                    chipset.pci_attach(bdf, vioblk);
                 }
                 DeviceInterface::Nvme => {
                     let nvme = nvme::PciNvme::create(
@@ -498,15 +543,15 @@ impl<'a> MachineInitializer<'a> {
                             slog::o!("component" => format!("nvme-{}", name)),
                         ),
                     );
-                    let id =
-                        self.inv.register_instance(&nvme, bdf.to_string())?;
-                    let _ = self.inv.register_child(child, id).unwrap();
+                    self.devices
+                        .insert(format!("pci-nvme-{bdf}"), nvme.clone());
                     block::attach(backend, nvme.clone());
-                    chipset.device().pci_attach(bdf, nvme);
+                    chipset.pci_attach(bdf, nvme);
                 }
             };
+
             if let Some((id, backend)) = crucible {
-                let prev = crucible_backends.insert(id, backend);
+                let prev = self.crucible_backends.insert(id, backend);
                 if prev.is_some() {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
@@ -515,11 +560,11 @@ impl<'a> MachineInitializer<'a> {
                 }
             }
         }
-        Ok(crucible_backends)
+        Ok(())
     }
 
     pub fn initialize_network_devices(
-        &self,
+        &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
         for (name, vnic_spec) in &self.spec.devices.network_devices {
@@ -568,15 +613,16 @@ impl<'a> MachineInitializer<'a> {
                 0x100,
                 &self.machine.hdl,
             )?;
-            let _ = self.inv.register_instance(&viona, bdf.to_string())?;
-            chipset.device().pci_attach(bdf, viona);
+            self.devices
+                .insert(format!("pci-virtio-viona-{}", bdf), viona.clone());
+            chipset.pci_attach(bdf, viona);
         }
         Ok(())
     }
 
     #[cfg(not(feature = "omicron-build"))]
     pub fn initialize_test_devices(
-        &self,
+        &mut self,
         toml_cfg: &std::collections::BTreeMap<
             String,
             propolis_server_config::Device,
@@ -617,7 +663,7 @@ impl<'a> MachineInitializer<'a> {
                     imports: fail_imports as usize,
                 },
             );
-            self.inv.register(&dev)?;
+            self.devices.insert(MigrationFailureDevice::NAME.into(), dev);
         }
 
         Ok(())
@@ -625,7 +671,7 @@ impl<'a> MachineInitializer<'a> {
 
     #[cfg(feature = "falcon")]
     pub fn initialize_softnpu_ports(
-        &self,
+        &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
         // Check to make sure we actually have both a pci port and at least one
@@ -682,13 +728,10 @@ impl<'a> MachineInitializer<'a> {
         // Set up an LPC uart for ASIC management comms from the guest.
         //
         // NOTE: SoftNpu squats on com4.
-        let pio = &self.machine.bus_pio;
-        let port = ibmpc::PORT_COM4;
-        let uart =
-            LpcUart::new(chipset.device().irq_pin(ibmpc::IRQ_COM4).unwrap());
+        let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
         uart.set_autodiscard(true);
-        LpcUart::attach(&uart, pio, port);
-        self.inv.register_instance(&uart, "softnpu-uart")?;
+        LpcUart::attach(&uart, &self.machine.bus_pio, ibmpc::PORT_COM4);
+        self.devices.insert("softnpu-uart".to_string(), uart.clone());
 
         // Start with no pipeline. The guest must load the initial P4 program.
         let pipeline = Arc::new(std::sync::Mutex::new(None));
@@ -704,7 +747,7 @@ impl<'a> MachineInitializer<'a> {
         );
         let vio9p =
             virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
-        self.inv.register_instance(&vio9p, "softnpu-p9fs")?;
+        self.devices.insert("softnpu-p9fs".to_string(), vio9p.clone());
         let bdf: pci::Bdf = self
             .spec
             .devices
@@ -727,7 +770,7 @@ impl<'a> MachineInitializer<'a> {
                     ),
                 )
             })?;
-        chipset.device().pci_attach(bdf, vio9p.clone());
+        chipset.pci_attach(bdf, vio9p.clone());
 
         // Create the SoftNpu device.
         let queue_size = 0x8000;
@@ -746,9 +789,7 @@ impl<'a> MachineInitializer<'a> {
                 format!("register softnpu: {}", io_err),
             )
         })?;
-        self.inv
-            .register(&softnpu)
-            .map_err(|e| -> std::io::Error { e.into() })?;
+        self.devices.insert("softnpu-main".to_string(), softnpu.clone());
 
         // Create the SoftNpu PCI port.
         let bdf: pci::Bdf = pci_port.pci_path.try_into().map_err(|e| {
@@ -757,23 +798,16 @@ impl<'a> MachineInitializer<'a> {
                 format!("Couldn't get PCI BDF for SoftNpu pci port: {}", e),
             )
         })?;
-        self.inv
-            .register_instance(&softnpu.pci_port, bdf.to_string())
-            .map_err(|e| -> std::io::Error {
-                let io_err: std::io::Error = e.into();
-                std::io::Error::new(
-                    io_err.kind(),
-                    format!("register softnpu port: {}", io_err),
-                )
-            })?;
-        chipset.device().pci_attach(bdf, softnpu.pci_port.clone());
+        self.devices
+            .insert("softnpu-pciport".to_string(), softnpu.pci_port.clone());
+        chipset.pci_attach(bdf, softnpu.pci_port.clone());
 
         Ok(())
     }
 
     #[cfg(feature = "falcon")]
     pub fn initialize_9pfs(
-        &self,
+        &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
         // Check that there is actually a p9fs device to register, if not bail
@@ -797,15 +831,15 @@ impl<'a> MachineInitializer<'a> {
             self.log.clone(),
         );
         let vio9p = virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(handler));
-        self.inv
-            .register(&vio9p)
-            .map_err(|e| -> std::io::Error { e.into() })?;
-
-        chipset.device().pci_attach(bdf, vio9p);
+        self.devices.insert("falcon-p9fs".to_string(), vio9p.clone());
+        chipset.pci_attach(bdf, vio9p);
         Ok(())
     }
 
-    pub fn initialize_fwcfg(&self, cpus: u8) -> Result<EntityID, Error> {
+    pub fn initialize_fwcfg(
+        &mut self,
+        cpus: u8,
+    ) -> Result<Arc<ramfb::RamFb>, Error> {
         let mut fwcfg = fwcfg::FwCfgBuilder::new();
         fwcfg
             .add_legacy(
@@ -822,14 +856,17 @@ impl<'a> MachineInitializer<'a> {
         let fwcfg_dev = fwcfg.finalize();
         fwcfg_dev.attach(&self.machine.bus_pio, &self.machine.acc_mem);
 
-        self.inv.register(&fwcfg_dev)?;
-        let ramfb_id = self.inv.register(&ramfb)?;
-        Ok(ramfb_id)
+        self.devices.insert(fwcfg_dev.type_name().into(), fwcfg_dev);
+        self.devices.insert(ramfb.type_name().into(), ramfb.clone());
+        Ok(ramfb)
     }
 
-    pub fn initialize_cpus(&self) -> Result<(), Error> {
+    pub fn initialize_cpus(&mut self) -> Result<(), Error> {
         for vcpu in self.machine.vcpus.iter() {
             vcpu.set_default_capabs().unwrap();
+
+            // The vCPUs behave like devices, so add them to the list as well
+            self.devices.insert(format!("vcpu-{}", vcpu.id), vcpu.clone());
         }
         Ok(())
     }

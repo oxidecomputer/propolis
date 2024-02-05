@@ -4,10 +4,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::inventory::Entity;
+use crate::common::Lifecycle;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
+/// Bhyve VMM-emulated ACPI PM timer (Intel PIIX3/4-ish)
 pub struct BhyvePmTimer {
     hdl: Arc<VmmHdl>,
     inner: Mutex<Inner>,
@@ -45,7 +46,7 @@ impl BhyvePmTimer {
     }
 }
 
-impl Entity for BhyvePmTimer {
+impl Lifecycle for BhyvePmTimer {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-pmtimer"
     }

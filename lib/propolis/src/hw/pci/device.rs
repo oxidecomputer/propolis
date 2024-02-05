@@ -1255,8 +1255,6 @@ pub mod migrate {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::hw::pci::test::Scaffold;
-    use crate::hw::pci::{Bus, BusLocation};
 
     #[test]
     #[should_panic]
@@ -1277,16 +1275,6 @@ pub(crate) mod test {
         // 4k for entries + 4k PBA
         let (_cfg, bar_size) = MsixCfg::new(256, BarN::BAR1);
         assert_eq!(bar_size, 8192);
-    }
-
-    pub(crate) fn setup_cfg(
-        scaffold: &Scaffold,
-        dev: Arc<dyn Endpoint>,
-    ) -> Bus {
-        let bus = scaffold.create_bus();
-        // just attach at slot 0 func 0
-        bus.attach(BusLocation::new(0, 0).unwrap(), dev, None);
-        bus
     }
 
     /// For a given [Device], perform reads of the entire PCI cfg space, 4-bytes

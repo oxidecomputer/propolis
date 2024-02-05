@@ -15,7 +15,6 @@ use cpuid_profile_config::*;
 use propolis::block;
 use propolis::cpuid;
 use propolis::hw::pci::Bdf;
-use propolis::inventory::ChildRegister;
 
 use crate::cidata::build_cidata_be;
 
@@ -131,7 +130,7 @@ pub fn block_backend(
     config: &Config,
     dev: &Device,
     log: &slog::Logger,
-) -> (Arc<dyn block::Backend>, ChildRegister) {
+) -> (Arc<dyn block::Backend>, String) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
     let be = config.block_devs.get(backend_name).unwrap();
     let opts = block::BackendOpts {
@@ -140,7 +139,7 @@ pub fn block_backend(
         skip_flush: be.block_opts.skip_flush,
     };
 
-    match &be.bdtype as &str {
+    let be = match &be.bdtype as &str {
         "file" => {
             let parsed: FileConfig = opt_deser(&be.options).unwrap();
 
@@ -152,7 +151,7 @@ pub fn block_backend(
                     "path" => &parsed.path);
             }
 
-            let be = block::FileBackend::create(
+            block::FileBackend::create(
                 &parsed.path,
                 opts,
                 NonZeroUsize::new(
@@ -160,17 +159,14 @@ pub fn block_backend(
                 )
                 .unwrap(),
             )
-            .unwrap();
-
-            let creg = ChildRegister::new(&be, Some(parsed.path));
-            (be, creg)
+            .unwrap()
         }
         "crucible" => create_crucible_backend(be, opts, log),
         "crucible-mem" => create_crucible_mem_backend(be, opts, log),
         "mem-async" => {
             let parsed: MemAsyncConfig = opt_deser(&be.options).unwrap();
 
-            let be = block::MemAsyncBackend::create(
+            block::MemAsyncBackend::create(
                 parsed.size,
                 opts,
                 NonZeroUsize::new(
@@ -178,20 +174,14 @@ pub fn block_backend(
                 )
                 .unwrap(),
             )
-            .unwrap();
-
-            let creg = ChildRegister::new(&be, None);
-            (be, creg)
+            .unwrap()
         }
-        "cloudinit" => {
-            let be = build_cidata_be(config).unwrap();
-            let creg = ChildRegister::new(&be, None);
-            (be, creg)
-        }
+        "cloudinit" => build_cidata_be(config).unwrap(),
         _ => {
             panic!("unrecognized block dev type {}!", be.bdtype);
         }
-    }
+    };
+    (be, backend_name.into())
 }
 
 pub fn parse(path: &str) -> anyhow::Result<Config> {
@@ -253,7 +243,7 @@ fn create_crucible_backend(
     be: &BlockDevice,
     opts: block::BackendOpts,
     log: &slog::Logger,
-) -> (Arc<dyn block::Backend>, ChildRegister) {
+) -> Arc<dyn block::Backend> {
     use slog::info;
     use std::net::SocketAddr;
     use uuid::Uuid;
@@ -335,11 +325,7 @@ fn create_crucible_backend(
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
-    let be = block::CrucibleBackend::create(req, opts, None, None, log.clone())
-        .unwrap();
-    let creg =
-        ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
-    (be, creg)
+    block::CrucibleBackend::create(req, opts, None, None, log.clone()).unwrap()
 }
 
 #[cfg(feature = "crucible")]
@@ -347,18 +333,14 @@ fn create_crucible_mem_backend(
     be: &BlockDevice,
     opts: block::BackendOpts,
     log: &slog::Logger,
-) -> (Arc<dyn block::Backend>, ChildRegister) {
+) -> Arc<dyn block::Backend> {
     #[derive(Deserialize)]
     struct CrucibleMemConfig {
         size: u64,
     }
     let parsed: CrucibleMemConfig = opt_deser(&be.options).unwrap();
 
-    let be = block::CrucibleBackend::create_mem(parsed.size, opts, log.clone())
-        .unwrap();
-    let creg =
-        ChildRegister::new(&be, Some(be.get_uuid().unwrap().to_string()));
-    (be, creg)
+    block::CrucibleBackend::create_mem(parsed.size, opts, log.clone()).unwrap()
 }
 
 #[cfg(not(feature = "crucible"))]
@@ -366,7 +348,7 @@ fn create_crucible_backend(
     _be: &BlockDevice,
     _opts: block::BackendOpts,
     _log: &slog::Logger,
-) -> (Arc<dyn block::Backend>, ChildRegister) {
+) -> Arc<dyn block::Backend> {
     panic!(
         "Rebuild propolis-standalone with 'crucible' feature enabled in \
            order to use the crucible block backend"
@@ -378,7 +360,7 @@ fn create_crucible_mem_backend(
     _be: &BlockDevice,
     _opts: block::BackendOpts,
     _log: &slog::Logger,
-) -> (Arc<dyn block::Backend>, ChildRegister) {
+) -> Arc<dyn block::Backend> {
     panic!(
         "Rebuild propolis-standalone with 'crucible' feature enabled in \
            order to use the crucible-mem block backend"

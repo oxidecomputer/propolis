@@ -12,8 +12,7 @@ use super::cfgspace::{CfgBuilder, CfgReg};
 use super::topology::{LogicalBusId, RoutedBusId, Topology};
 use super::{bits::*, Endpoint, Ident};
 use super::{BarN, BusNum, StdCfgReg};
-use crate::common::{RWOp, ReadOp, WriteOp};
-use crate::inventory::Entity;
+use crate::common::{Lifecycle, RWOp, ReadOp, WriteOp};
 use crate::migrate::Migrator;
 use crate::util::regmap::RegMap;
 
@@ -279,15 +278,15 @@ impl Bridge {
             // Writable bridge registers.
             BridgeReg::PrimaryBus => {
                 let mut guard = self.inner.lock().unwrap();
-                guard.primary_bus = BusNum::new(wo.read_u8()).unwrap()
+                guard.primary_bus = BusNum::new(wo.read_u8())
             }
             BridgeReg::SecondaryBus => {
                 let mut guard = self.inner.lock().unwrap();
-                guard.set_secondary_bus(BusNum::new(wo.read_u8()).unwrap())
+                guard.set_secondary_bus(BusNum::new(wo.read_u8()))
             }
             BridgeReg::SubordinateBus => {
                 let mut guard = self.inner.lock().unwrap();
-                guard.subordinate_bus = BusNum::new(wo.read_u8()).unwrap()
+                guard.subordinate_bus = BusNum::new(wo.read_u8())
             }
             BridgeReg::MemoryBase => {
                 let mut guard = self.inner.lock().unwrap();
@@ -341,7 +340,7 @@ impl Endpoint for Bridge {
     }
 }
 
-impl Entity for Bridge {
+impl Lifecycle for Bridge {
     fn type_name(&self) -> &'static str {
         "pci-bridge"
     }
@@ -379,9 +378,9 @@ impl Inner {
             topology: Arc::downgrade(topology),
             downstream_bus_id,
             reg_command: RegCmd::empty(),
-            primary_bus: BusNum::new(0).unwrap(),
-            secondary_bus: BusNum::new(0).unwrap(),
-            subordinate_bus: BusNum::new(0).unwrap(),
+            primary_bus: BusNum::new(0),
+            secondary_bus: BusNum::new(0),
+            subordinate_bus: BusNum::new(0),
             memory_base: 0,
             memory_limit: 0,
         }
@@ -406,9 +405,9 @@ impl Inner {
     }
 
     fn reset(&mut self) {
-        self.primary_bus = BusNum::new(0).unwrap();
-        self.set_secondary_bus(BusNum::new(0).unwrap());
-        self.subordinate_bus = BusNum::new(0).unwrap();
+        self.primary_bus = BusNum::new(0);
+        self.set_secondary_bus(BusNum::new(0));
+        self.subordinate_bus = BusNum::new(0);
         self.memory_base = 0;
         self.memory_limit = 0;
     }
@@ -417,9 +416,11 @@ impl Inner {
 #[cfg(test)]
 mod test {
     use crate::hw::ids;
-    use crate::hw::pci::topology::{BridgeDescription, Builder, LogicalBusId};
+    use crate::hw::pci::topology::{
+        BridgeDescription, Builder, FinishedTopology, LogicalBusId,
+    };
     use crate::hw::pci::{Bdf, Endpoint};
-    use crate::instance::Instance;
+    use crate::vmm::Machine;
 
     use super::*;
 
@@ -429,7 +430,7 @@ mod test {
     const OFFSET_SECONDARY_BUS: usize = 0x19;
 
     struct Env {
-        _instance: Instance,
+        _machine: Machine,
         topology: Arc<Topology>,
     }
 
@@ -442,12 +443,10 @@ mod test {
                 }
             }
 
-            let instance = Instance::new_test().unwrap();
-            let guard = instance.lock();
-            let topology =
-                builder.finish(guard.inventory(), guard.machine()).unwrap();
-            drop(guard);
-            Self { _instance: instance, topology }
+            let machine = Machine::new_test().unwrap();
+            let FinishedTopology { topology, bridges: _bridges } =
+                builder.finish(&machine).unwrap();
+            Self { _machine: machine, topology }
         }
 
         fn make_bridge(&self) -> Arc<Bridge> {

@@ -254,7 +254,7 @@ impl block::Device for PciVirtioBlock {
         self.pci_state.acc_mem.child(Some("block backend".to_string()))
     }
 }
-impl Entity for PciVirtioBlock {
+impl Lifecycle for PciVirtioBlock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-block"
     }

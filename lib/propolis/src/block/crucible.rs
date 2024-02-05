@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
-use crate::inventory::Entity;
 use crate::vmm::MemCtx;
 
 use crucible::{BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume};
@@ -288,12 +287,6 @@ impl block::Backend for CrucibleBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-}
-
-impl Entity for CrucibleBackend {
-    fn type_name(&self) -> &'static str {
-        "block-crucible"
-    }
     fn start(&self) -> anyhow::Result<()> {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move { self.state.volume.activate().await })?;
@@ -302,9 +295,6 @@ impl Entity for CrucibleBackend {
         self.spawn_workers();
 
         Ok(())
-    }
-    fn halt(&self) {
-        self.state.attachment.halt();
     }
 }
 

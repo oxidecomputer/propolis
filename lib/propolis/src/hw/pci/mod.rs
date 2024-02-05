@@ -31,8 +31,8 @@ pub use device::*;
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct BusNum(u8);
 impl BusNum {
-    pub const fn new(n: u8) -> Option<Self> {
-        Some(Self(n))
+    pub const fn new(n: u8) -> Self {
+        Self(n)
     }
     pub const fn get(&self) -> u8 {
         self.0
@@ -41,11 +41,27 @@ impl BusNum {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct DevNum(u8);
 impl DevNum {
+    /// Attempts to make a new PCI [DevNum]
+    ///
+    /// Returns [`Option::None`] if `n` is outside the range for a valid PCI
+    /// device.
     pub const fn new(n: u8) -> Option<Self> {
         if n <= bits::MASK_DEV {
             Some(Self(n))
         } else {
             None
+        }
+    }
+    /// Create a new [DevNum]
+    ///
+    /// # Panics
+    ///
+    /// If `n` is outside the range for a valid PCI device
+    pub const fn new_unchecked(n: u8) -> Self {
+        if n <= bits::MASK_DEV {
+            Self(n)
+        } else {
+            panic!("device number exceeds max");
         }
     }
     pub const fn get(&self) -> u8 {
@@ -55,11 +71,27 @@ impl DevNum {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct FuncNum(u8);
 impl FuncNum {
+    /// Attempts to make a new PCI [FuncNum]
+    ///
+    /// Returns [`Option::None`] if `n` is outside the range for a valid PCI
+    /// function.
     pub const fn new(n: u8) -> Option<Self> {
         if n <= bits::MASK_FUNC {
             Some(Self(n))
         } else {
             None
+        }
+    }
+    /// Create a new [FuncNum]
+    ///
+    /// # Panics
+    ///
+    /// If `n` is outside the range for a valid PCI function
+    pub const fn new_unchecked(n: u8) -> Self {
+        if n <= bits::MASK_FUNC {
+            Self(n)
+        } else {
+            panic!("function number exceeds max");
         }
     }
     pub const fn get(&self) -> u8 {
@@ -75,12 +107,27 @@ pub struct BusLocation {
 }
 
 impl BusLocation {
+    /// Attempts to make a new PCI [BusLocation]
+    ///
+    /// Returns [`Option::None`] if the `dev` or `func` are outside their
+    /// respective valid ranges.
     pub const fn new(dev: u8, func: u8) -> Option<Self> {
         let dnum = DevNum::new(dev);
         let fnum = FuncNum::new(func);
         match (dnum, fnum) {
             (Some(d), Some(f)) => Some(Self { dev: d, func: f }),
             _ => None,
+        }
+    }
+    /// Create a new PCI [BusLocation]
+    ///
+    /// # Panics
+    ///
+    /// If `dev` or `func` are outside their respective valid ranges
+    pub const fn new_unchecked(dev: u8, func: u8) -> Self {
+        Self {
+            dev: DevNum::new_unchecked(dev),
+            func: FuncNum::new_unchecked(func),
         }
     }
 }
@@ -144,17 +191,27 @@ impl TryFrom<propolis_types::PciPath> for Bdf {
 }
 
 impl Bdf {
-    /// Attempts to make a new BDF.
+    /// Attempts to make a new PCI [Bdf].
     ///
     /// Returns [`Option::None`] if the values would not fit within a BDF.
     pub const fn new(bus: u8, dev: u8, func: u8) -> Option<Self> {
         // Until the `?` operator is supported in `const fn`s, this more verbose
         // implementation is required.
-        let bnum = BusNum::new(bus);
-        let loc = BusLocation::new(dev, func);
-        match (bnum, loc) {
-            (Some(b), Some(l)) => Some(Self { bus: b, location: l }),
-            _ => None,
+        if let Some(location) = BusLocation::new(dev, func) {
+            Some(Self { bus: BusNum::new(bus), location })
+        } else {
+            None
+        }
+    }
+    /// Create a new PCI [Bdf]
+    ///
+    /// # Panics
+    ///
+    /// If `dev` or `func` are outside their respective valid ranges
+    pub const fn new_unchecked(bus: u8, dev: u8, func: u8) -> Self {
+        Self {
+            bus: BusNum::new(bus),
+            location: BusLocation::new_unchecked(dev, func),
         }
     }
 }

@@ -22,7 +22,7 @@ use queue::VirtQueue;
 pub use block::PciVirtioBlock;
 pub use viona::PciVirtioViona;
 
-pub trait VirtioDevice: Send + Sync + 'static + Entity {
+pub trait VirtioDevice: Send + Sync + 'static + Lifecycle {
     /// Read/write device-specific virtio configuration space
     fn cfg_rw(&self, ro: RWOp);
 

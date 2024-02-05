@@ -653,7 +653,7 @@ impl FwCfg {
     }
 }
 
-impl Entity for FwCfg {
+impl Lifecycle for FwCfg {
     fn type_name(&self) -> &'static str {
         "qemu-fwcfg"
     }

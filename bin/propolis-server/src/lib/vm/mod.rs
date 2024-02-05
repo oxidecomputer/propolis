@@ -45,7 +45,7 @@ use std::{
 use oximeter::types::ProducerRegistry;
 use propolis::{
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
-    Instance,
+    vmm::Machine,
 };
 use propolis_api_types::{
     instance_spec::VersionedInstanceSpec, InstanceProperties,
@@ -54,7 +54,7 @@ use propolis_api_types::{
     InstanceStateRequested as ApiInstanceStateRequested,
     MigrationState as ApiMigrationState,
 };
-use slog::{error, info, Logger};
+use slog::{debug, error, info, Logger};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::oneshot;
@@ -65,7 +65,7 @@ use crate::{
     initializer::{build_instance, MachineInitializer},
     migrate::MigrateError,
     serial::Serial,
-    server::StaticConfig,
+    server::{BlockBackendMap, CrucibleBackendMap, DeviceMap, StaticConfig},
     vm::request_queue::ExternalRequest,
 };
 
@@ -147,8 +147,8 @@ impl From<VmControllerError> for dropshot::HttpError {
 /// A collection of objects that describe an instance and references to that
 /// instance and its components.
 pub(crate) struct VmObjects {
-    /// The underlying Propolis `Instance` this controller is managing.
-    instance: Option<Instance>,
+    /// The underlying Propolis `Machine` this controller is managing.
+    machine: Option<Machine>,
 
     /// The instance properties supplied when this controller was created.
     properties: InstanceProperties,
@@ -156,18 +156,24 @@ pub(crate) struct VmObjects {
     /// The instance spec used to create this controller's VM.
     spec: tokio::sync::Mutex<VersionedInstanceSpec>,
 
+    /// Map of the emulated devices associated with the VM
+    devices: DeviceMap,
+
+    /// Map of the instance's active block backends.
+    block_backends: BlockBackendMap,
+
+    /// Map of the instance's active Crucible backends.
+    crucible_backends: CrucibleBackendMap,
+
     /// A wrapper around the instance's first COM port, suitable for providing a
     /// connection to a guest's serial console.
     com1: Arc<Serial<LpcUart>>,
 
-    /// An optional reference to the guest's virtual framebuffer.
+    /// An optional reference to the guest's framebuffer.
     framebuffer: Option<Arc<RamFb>>,
 
-    /// An optional reference to the guest's virtual ps2 controller.
-    ps2ctrl: Option<Arc<PS2Ctrl>>,
-
-    /// A map of the instance's active Crucible backends.
-    crucible_backends: BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>>,
+    /// A reference to the guest's PS/2 controller.
+    ps2ctrl: Arc<PS2Ctrl>,
 
     /// A notification receiver to which the state worker publishes the most
     /// recent instance state information.
@@ -189,7 +195,7 @@ pub enum MigrateSourceCommand {
     /// Update the externally-visible migration state.
     UpdateState(ApiMigrationState),
 
-    /// Pause the instance's entities and CPUs.
+    /// Pause the instance's devices and CPUs.
     Pause,
 }
 
@@ -399,7 +405,7 @@ impl VmController {
         instance_spec: VersionedInstanceSpec,
         properties: InstanceProperties,
         &StaticConfig { vm: ref toml_config, use_reservoir, .. }: &StaticConfig,
-        oximeter_registry: Option<ProducerRegistry>,
+        producer_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: Logger,
         runtime_hdl: tokio::runtime::Handle,
@@ -417,7 +423,7 @@ impl VmController {
         // Set up the 'shell' instance into which the rest of this routine will
         // add components.
         let VersionedInstanceSpec::V0(v0_spec) = &instance_spec;
-        let instance = build_instance(
+        let machine = build_instance(
             &properties.id.to_string(),
             v0_spec,
             use_reservoir,
@@ -437,26 +443,25 @@ impl VmController {
         let worker_state = Arc::new(SharedVmState::new(&log));
 
         // Create and initialize devices in the new instance.
-        let instance_inner = instance.lock();
-        let inv = instance_inner.inventory();
-        let machine = instance_inner.machine();
-        let init = MachineInitializer::new(
-            log.clone(),
-            machine,
-            inv,
-            v0_spec,
-            oximeter_registry,
-        );
+        let mut init = MachineInitializer {
+            log: log.clone(),
+            machine: &machine,
+            devices: DeviceMap::new(),
+            block_backends: BlockBackendMap::new(),
+            crucible_backends: CrucibleBackendMap::new(),
+            spec: v0_spec,
+            producer_registry,
+        };
 
-        init.initialize_rom(bootrom)?;
-        init.initialize_kernel_devs()?;
+        init.initialize_rom(bootrom.as_path())?;
         let chipset = init.initialize_chipset(
             &(worker_state.clone() as Arc<dyn ChipsetEventHandler>),
         )?;
+        init.initialize_rtc(&chipset)?;
+        init.initialize_hpet()?;
 
         let com1 = Arc::new(init.initialize_uart(&chipset)?);
-        let ps2ctrl_id = init.initialize_ps2(&chipset)?;
-        let ps2ctrl: Option<Arc<PS2Ctrl>> = inv.get_concrete(ps2ctrl_id);
+        let ps2ctrl = init.initialize_ps2(&chipset)?;
         init.initialize_qemu_debug_port()?;
         init.initialize_qemu_pvpanic(properties.id)?;
         init.initialize_network_devices(&chipset)?;
@@ -473,29 +478,35 @@ impl VmController {
         init.initialize_softnpu_ports(&chipset)?;
         #[cfg(feature = "falcon")]
         init.initialize_9pfs(&chipset)?;
-        let crucible_backends =
-            init.initialize_storage_devices(&chipset, nexus_client)?;
-        let framebuffer_id =
-            init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-        let framebuffer: Option<Arc<RamFb>> = inv.get_concrete(framebuffer_id);
+        init.initialize_storage_devices(&chipset, nexus_client)?;
+        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
         init.initialize_cpus()?;
         let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
-            instance_inner,
+            &machine,
             worker_state.clone(),
             log.new(slog::o!("component" => "vcpu_tasks")),
         )?;
+
+        let MachineInitializer {
+            devices,
+            block_backends,
+            crucible_backends,
+            ..
+        } = init;
 
         // The instance is fully set up; pass it to the new controller.
         let shared_state_for_worker = worker_state.clone();
         let controller = Arc::new_cyclic(|this| Self {
             vm_objects: VmObjects {
-                instance: Some(instance),
+                machine: Some(machine),
                 properties,
                 spec: tokio::sync::Mutex::new(instance_spec),
-                com1,
-                framebuffer,
-                ps2ctrl,
+                devices,
+                block_backends,
                 crucible_backends,
+                com1,
+                framebuffer: Some(ramfb),
+                ps2ctrl,
                 monitor_rx,
             },
             worker_state,
@@ -539,13 +550,13 @@ impl VmController {
         &self.vm_objects.properties
     }
 
-    pub fn instance(&self) -> &Instance {
-        // Unwrap safety: The instance is created when the controller is created
+    pub fn machine(&self) -> &Machine {
+        // Unwrap safety: The machine is created when the controller is created
         // and removed only when the controller is dropped.
         self.vm_objects
-            .instance
+            .machine
             .as_ref()
-            .expect("VM controller always has a valid instance")
+            .expect("VM controller always has a valid machine")
     }
 
     pub async fn instance_spec(
@@ -562,8 +573,8 @@ impl VmController {
         self.vm_objects.framebuffer.as_ref()
     }
 
-    pub fn ps2ctrl(&self) -> Option<&Arc<PS2Ctrl>> {
-        self.vm_objects.ps2ctrl.as_ref()
+    pub fn ps2ctrl(&self) -> &Arc<PS2Ctrl> {
+        &self.vm_objects.ps2ctrl
     }
 
     pub fn crucible_backends(
@@ -581,9 +592,8 @@ impl VmController {
     }
 
     pub fn inject_nmi(&self) {
-        if let Some(instance) = &self.vm_objects.instance {
-            let instance = instance.lock();
-            match instance.machine().inject_nmi() {
+        if let Some(machine) = &self.vm_objects.machine {
+            match machine.inject_nmi() {
                 Ok(_) => {
                     info!(self.log, "Sending NMI to instance");
                 }
@@ -826,20 +836,36 @@ impl VmController {
         }
     }
 
-    fn for_each_entity<F>(&self, mut func: F) -> anyhow::Result<()>
+    pub(crate) fn for_each_device(
+        &self,
+        mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
+    ) {
+        for (name, dev) in self.vm_objects.devices.iter() {
+            func(name, dev);
+        }
+    }
+
+    pub(crate) fn for_each_device_fallible<F, E>(
+        &self,
+        mut func: F,
+    ) -> std::result::Result<(), E>
     where
         F: FnMut(
-            &Arc<dyn propolis::inventory::Entity>,
-            &propolis::inventory::Record,
-        ) -> anyhow::Result<()>,
+            &str,
+            &Arc<dyn propolis::common::Lifecycle>,
+        ) -> std::result::Result<(), E>,
     {
-        self.instance().lock().inventory().for_each_node(
-            propolis::inventory::Order::Pre,
-            |_eid, record| -> Result<(), anyhow::Error> {
-                let ent = record.entity();
-                func(ent, record)
-            },
-        )
+        for (name, dev) in self.vm_objects.devices.iter() {
+            func(name, dev)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn device_by_name(
+        &self,
+        name: &String,
+    ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
+        self.vm_objects.devices.get(name).map(Arc::clone)
     }
 }
 
@@ -848,7 +874,7 @@ impl Drop for VmController {
         info!(self.log, "Dropping VM controller");
         let instance = self
             .vm_objects
-            .instance
+            .machine
             .take()
             .expect("VM controller should have an instance at drop");
         drop(instance);
@@ -908,22 +934,22 @@ trait StateDriverVmController {
     /// again.
     fn resume_vm(&self);
 
-    /// Sends a reset request to each entity in the instance, then sends a
+    /// Sends a reset request to each device in the instance, then sends a
     /// reset command to the instance's bhyve VM.
-    fn reset_entities_and_machine(&self);
+    fn reset_devices_and_machine(&self);
 
-    /// Sends each entity a start request.
-    fn start_entities(&self) -> anyhow::Result<()>;
+    /// Sends each device (and backend) a start request.
+    fn start_devices(&self) -> anyhow::Result<()>;
 
-    /// Sends each entity a pause request, then waits for all these requests to
+    /// Sends each device a pause request, then waits for all these requests to
     /// complete.
-    fn pause_entities(&self);
+    fn pause_devices(&self);
 
-    /// Sends each entity a resume request.
-    fn resume_entities(&self);
+    /// Sends each device a resume request.
+    fn resume_devices(&self);
 
-    /// Sends each entity a halt request.
-    fn halt_entities(&self);
+    /// Sends each device (and backend) a halt request.
+    fn halt_devices(&self);
 
     /// Resets the state of each vCPU in the instance to its on-reboot state.
     fn reset_vcpu_state(&self);
@@ -932,59 +958,54 @@ trait StateDriverVmController {
 impl StateDriverVmController for VmController {
     fn pause_vm(&self) {
         info!(self.log, "Pausing kernel VMM resources");
-        self.instance()
-            .lock()
-            .machine()
-            .hdl
-            .pause()
-            .expect("VM_PAUSE should succeed")
+        self.machine().hdl.pause().expect("VM_PAUSE should succeed")
     }
 
     fn resume_vm(&self) {
         info!(self.log, "Resuming kernel VMM resources");
-        self.instance()
-            .lock()
-            .machine()
-            .hdl
-            .resume()
-            .expect("VM_RESUME should succeed")
+        self.machine().hdl.resume().expect("VM_RESUME should succeed")
     }
 
-    fn reset_entities_and_machine(&self) {
+    fn reset_devices_and_machine(&self) {
         let _rtguard = self.runtime_hdl.enter();
-        self.for_each_entity(|ent, rec| {
-            info!(self.log, "Sending reset request to {}", rec.name());
-            ent.reset();
-            Ok(())
-        })
-        .unwrap();
+        self.for_each_device(|name, dev| {
+            info!(self.log, "Sending reset request to {}", name);
+            dev.reset();
+        });
 
-        self.instance().lock().machine().reinitialize().unwrap();
+        self.machine().reinitialize().unwrap();
     }
 
-    fn start_entities(&self) -> anyhow::Result<()> {
+    fn start_devices(&self) -> anyhow::Result<()> {
         let _rtguard = self.runtime_hdl.enter();
-        self.for_each_entity(|ent, rec| {
-            info!(self.log, "Sending startup complete to {}", rec.name());
-            let res = ent.start();
+        self.for_each_device_fallible(|name, dev| {
+            info!(self.log, "Sending startup complete to {}", name);
+            let res = dev.start();
             if let Err(e) = &res {
-                error!(self.log, "Startup failed for {}: {:?}", rec.name(), e);
+                error!(self.log, "Startup failed for {}: {:?}", name, e);
             }
             res
-        })
+        })?;
+        for (name, backend) in self.vm_objects.block_backends.iter() {
+            debug!(self.log, "Starting block backend {}", name);
+            let res = backend.start();
+            if let Err(e) = &res {
+                error!(self.log, "Startup failed for {}: {:?}", name, e);
+                return res;
+            }
+        }
+        Ok(())
     }
 
-    fn pause_entities(&self) {
+    fn pause_devices(&self) {
         let _rtguard = self.runtime_hdl.enter();
-        self.for_each_entity(|ent, rec| {
-            info!(self.log, "Sending pause request to {}", rec.name());
-            ent.pause();
-            Ok(())
-        })
-        .unwrap();
+        self.for_each_device(|name, dev| {
+            info!(self.log, "Sending pause request to {}", name);
+            dev.pause();
+        });
 
-        // Create a Future that returns the name of the entity that has finished
-        // pausing: this allows keeping track of which entities have and haven't
+        // Create a Future that returns the name of the device that has finished
+        // pausing: this allows keeping track of which devices have and haven't
         // completed pausing yet.
         struct NamedFuture {
             name: String,
@@ -1006,45 +1027,27 @@ impl StateDriverVmController for VmController {
             }
         }
 
-        info!(self.log, "Waiting for entities to pause");
+        info!(self.log, "Waiting for devices to pause");
         self.runtime_hdl.block_on(async {
-            let mut devices = vec![];
-            self.instance()
-                .lock()
-                .inventory()
-                .for_each_node(
-                    propolis::inventory::Order::Post,
-                    |_eid, record| {
-                        info!(
-                            self.log,
-                            "Got paused future from entity {}",
-                            record.name()
-                        );
-                        devices.push((
-                            record.name().to_string(),
-                            Arc::clone(record.entity()),
-                        ));
-                        Ok::<_, ()>(())
-                    },
-                )
-                .unwrap();
-
-            let pause_futures = devices.iter().map(|(name, ent)| NamedFuture {
-                name: name.to_string(),
-                future: ent.paused(),
-            });
-            let mut stream: FuturesUnordered<_> =
-                pause_futures.into_iter().collect();
+            let mut stream: FuturesUnordered<_> = self
+                .vm_objects
+                .devices
+                .iter()
+                .map(|(name, dev)| {
+                    info!(self.log, "Got paused future from dev {}", name);
+                    NamedFuture { name: name.to_string(), future: dev.paused() }
+                })
+                .collect();
 
             loop {
                 match stream.next().await {
                     Some(name) => {
-                        info!(self.log, "entity {} completed pause", name);
+                        info!(self.log, "dev {} completed pause", name);
                     }
 
                     None => {
                         // done
-                        info!(self.log, "all entities paused");
+                        info!(self.log, "all devices paused");
                         break;
                     }
                 }
@@ -1052,28 +1055,28 @@ impl StateDriverVmController for VmController {
         });
     }
 
-    fn resume_entities(&self) {
+    fn resume_devices(&self) {
         let _rtguard = self.runtime_hdl.enter();
-        self.for_each_entity(|ent, rec| {
-            info!(self.log, "Sending resume request to {}", rec.name());
-            ent.resume();
-            Ok(())
-        })
-        .unwrap();
+        self.for_each_device(|name, dev| {
+            info!(self.log, "Sending resume request to {}", name);
+            dev.resume();
+        });
     }
 
-    fn halt_entities(&self) {
+    fn halt_devices(&self) {
         let _rtguard = self.runtime_hdl.enter();
-        self.for_each_entity(|ent, rec| {
-            info!(self.log, "Sending halt request to {}", rec.name());
-            ent.halt();
-            Ok(())
-        })
-        .unwrap();
+        self.for_each_device(|name, dev| {
+            info!(self.log, "Sending halt request to {}", name);
+            dev.halt();
+        });
+        for (name, backend) in self.vm_objects.block_backends.iter() {
+            debug!(self.log, "Halting block backend {}", name);
+            backend.halt();
+        }
     }
 
     fn reset_vcpu_state(&self) {
-        for vcpu in self.instance().lock().machine().vcpus.iter() {
+        for vcpu in self.machine().vcpus.iter() {
             info!(self.log, "Resetting vCPU {}", vcpu.id);
             vcpu.activate().unwrap();
             vcpu.reboot_state().unwrap();

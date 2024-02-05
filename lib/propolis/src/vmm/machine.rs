@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::accessors::*;
-use crate::hw;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::vcpu::{Vcpu, MAXCPU};
@@ -24,34 +23,6 @@ use crate::vmm::{create_vm, CreateOpts, PhysMap, VmmHdl};
 /// eliminated completely.
 pub const MAX_PHYSMEM: usize = 0x100_0000_0000;
 
-/// Devices emulated (at least in part) by the kernel portion of the VMM, and
-/// not explicitly handled by other parts of the userspace emulation.
-pub struct KernelVmmDevs {
-    pub atpic: Arc<hw::bhyve::BhyveAtPic>,
-    pub atpit: Arc<hw::bhyve::BhyveAtPit>,
-    pub hpet: Arc<hw::bhyve::BhyveHpet>,
-    pub ioapic: Arc<hw::bhyve::BhyveIoApic>,
-    pub rtc: Arc<hw::bhyve::BhyveRtc>,
-}
-impl KernelVmmDevs {
-    fn new(hdl: Arc<VmmHdl>) -> Self {
-        Self {
-            atpic: hw::bhyve::BhyveAtPic::create(hdl.clone()),
-            atpit: hw::bhyve::BhyveAtPit::create(hdl.clone()),
-            hpet: hw::bhyve::BhyveHpet::create(hdl.clone()),
-            ioapic: hw::bhyve::BhyveIoApic::create(hdl.clone()),
-            rtc: hw::bhyve::BhyveRtc::create(hdl),
-        }
-    }
-    pub fn register(&self, inv: &crate::inventory::Inventory) {
-        inv.register(&self.atpic).unwrap();
-        inv.register(&self.atpit).unwrap();
-        inv.register(&self.hpet).unwrap();
-        inv.register(&self.ioapic).unwrap();
-        inv.register(&self.rtc).unwrap();
-    }
-}
-
 /// The aggregate representation of a virtual machine.
 pub struct Machine {
     pub hdl: Arc<VmmHdl>,
@@ -60,7 +31,6 @@ pub struct Machine {
     pub map_physmem: PhysMap,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
-    pub kernel_devs: KernelVmmDevs,
 
     pub acc_mem: MemAccessor,
     pub acc_msi: MsiAccessor,
@@ -161,7 +131,6 @@ impl Machine {
 
             bus_mmio,
             bus_pio,
-            kernel_devs: KernelVmmDevs::new(hdl),
 
             destroyed: AtomicBool::new(false),
         })
@@ -174,7 +143,6 @@ impl Machine {
 ///
 /// ```no_run
 /// use propolis::vmm::{Builder, CreateOpts};
-/// use propolis::instance::Instance;
 ///
 /// let opts = CreateOpts {
 ///     // Override any desired VM creation options
@@ -186,7 +154,7 @@ impl Machine {
 ///     .add_mem_region(0x1_0000_0000, 0xc000_0000, "highmem").unwrap()
 ///     .add_rom_region(0xffe0_0000, 0x20_0000, "bootrom").unwrap()
 ///     .add_mmio_region(0xc0000000, 0x20000000, "dev32").unwrap();
-/// let inst = Instance::create(builder.finalize().unwrap());
+/// let machine = builder.finalize().unwrap();
 /// ```
 pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
@@ -291,7 +259,6 @@ impl Builder {
 
             bus_mmio,
             bus_pio,
-            kernel_devs: KernelVmmDevs::new(hdl),
 
             destroyed: AtomicBool::new(false),
         };

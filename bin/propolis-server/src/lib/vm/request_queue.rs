@@ -54,7 +54,7 @@ pub enum ExternalRequest {
         command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
     },
 
-    /// Resets all the VM's entities and CPUs, then starts the VM.
+    /// Resets all the VM's devices and CPUs, then starts the VM.
     Start,
 
     /// Asks the state worker to start a migration-source task.

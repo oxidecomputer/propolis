@@ -4,10 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::inventory::Entity;
+use crate::common::Lifecycle;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
+/// Bhyve VMM-emulated HPET
 pub struct BhyveHpet {
     hdl: Arc<VmmHdl>,
 }
@@ -17,7 +18,7 @@ impl BhyveHpet {
     }
 }
 
-impl Entity for BhyveHpet {
+impl Lifecycle for BhyveHpet {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-hpet"
     }

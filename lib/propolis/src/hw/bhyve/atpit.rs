@@ -4,10 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::inventory::Entity;
+use crate::common::Lifecycle;
 use crate::migrate::*;
 use crate::vmm::VmmHdl;
 
+/// Bhyve VMM-emulated PIT (Intel 8254)
 pub struct BhyveAtPit {
     hdl: Arc<VmmHdl>,
 }
@@ -17,28 +18,29 @@ impl BhyveAtPit {
     }
 }
 
-impl Entity for BhyveAtPit {
+impl Lifecycle for BhyveAtPit {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-atpit"
     }
     fn migrate(&self) -> Migrator {
-        Migrator::Single(self)
+        Migrator::Multi(self)
     }
 }
-impl MigrateSingle for BhyveAtPit {
+impl MigrateMulti for BhyveAtPit {
     fn export(
         &self,
+        output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
-    ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::AtPitV1::read(&self.hdl)?.into())
+    ) -> Result<(), MigrateStateError> {
+        output.push(migrate::AtPitV1::read(&self.hdl)?.into())
     }
 
     fn import(
         &self,
-        mut offer: PayloadOffer,
+        offer: &mut PayloadOffers,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        offer.parse::<migrate::AtPitV1>()?.write(&self.hdl)?;
+        offer.take::<migrate::AtPitV1>()?.write(&self.hdl)?;
         Ok(())
     }
 }

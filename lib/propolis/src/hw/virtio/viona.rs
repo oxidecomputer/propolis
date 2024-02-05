@@ -423,7 +423,7 @@ impl VirtioDevice for PciVirtioViona {
         Ok(())
     }
 }
-impl Entity for PciVirtioViona {
+impl Lifecycle for PciVirtioViona {
     fn type_name(&self) -> &'static str {
         "pci-virtio-viona"
     }
@@ -431,7 +431,7 @@ impl Entity for PciVirtioViona {
         self.virtio_state.reset(self);
     }
     fn start(&self) -> anyhow::Result<()> {
-        // This entity initializes into a paused state. Starting it is
+        // This device initializes into a paused state. Starting it is
         // equivalent to resuming it.
         self.resume();
         Ok(())

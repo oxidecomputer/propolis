@@ -4,7 +4,6 @@
 
 use futures::{SinkExt, StreamExt};
 use propolis::common::{GuestAddr, PAGE_SIZE};
-use propolis::inventory::Order;
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
@@ -339,24 +338,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.update_state(MigrationState::Device).await;
         let mut device_states = vec![];
         {
-            let instance_guard = self.vm_controller.instance().lock();
-            let migrate_ctx = MigrateCtx {
-                mem: &instance_guard.machine().acc_mem.access().unwrap(),
-            };
+            let machine = self.vm_controller.machine();
+            let migrate_ctx =
+                MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
 
             // Collect together the serialized state for all the devices
-            instance_guard.inventory().for_each_node(Order::Pre, |_, rec| {
-                let entity = rec.entity();
+            self.vm_controller.for_each_device_fallible(|name, devop| {
                 let mut dev = Device {
-                    instance_name: rec.name().to_owned(),
+                    instance_name: name.to_string(),
                     payload: Vec::new(),
                 };
-                match entity.migrate() {
+                match devop.migrate() {
                     Migrator::NonMigratable => {
                         error!(self.log(),
                             "Can't migrate instance with non-migratable device ({})",
-                            rec.name());
-                        return Err(MigrateError::DeviceState(MigrateStateError::NonMigratable.to_string()));
+                            name);
+                        return Err(MigrateError::DeviceState(
+                                MigrateStateError::NonMigratable.to_string()));
                     },
                     // No device state needs to be trasmitted for 'Empty' devices
                     Migrator::Empty => {},
@@ -403,10 +401,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
     // Read and send over the time data
     async fn time_data(&mut self) -> Result<(), MigrateError> {
-        let vmm_hdl = {
-            let instance_guard = self.vm_controller.instance().lock();
-            &instance_guard.machine().hdl.clone()
-        };
+        let vmm_hdl = &self.vm_controller.machine().hdl.clone();
         let vm_time_data =
             vmm::time::export_time_data(vmm_hdl).map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -547,8 +542,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn vmm_ram_bounds(
         &mut self,
     ) -> Result<RangeInclusive<GuestAddr>, MigrateError> {
-        let instance_guard = self.vm_controller.instance().lock();
-        let memctx = instance_guard.machine().acc_mem.access().unwrap();
+        let machine = self.vm_controller.machine();
+        let memctx = machine.acc_mem.access().unwrap();
         memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
     }
 
@@ -557,8 +552,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         start_gpa: GuestAddr,
         bits: &mut [u8],
     ) -> Result<(), MigrateError> {
-        let instance_guard = self.vm_controller.instance().lock();
-        instance_guard
+        self.vm_controller
             .machine()
             .hdl
             .track_dirty_pages(start_gpa.0, bits)
@@ -570,8 +564,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         addr: GuestAddr,
         buf: &mut [u8],
     ) -> Result<(), MigrateError> {
-        let instance_guard = self.vm_controller.instance().lock();
-        let memctx = instance_guard.machine().acc_mem.access().unwrap();
+        let machine = self.vm_controller.machine();
+        let memctx = machine.acc_mem.access().unwrap();
         let len = buf.len();
         memctx.direct_read_into(addr, buf, len);
         Ok(())

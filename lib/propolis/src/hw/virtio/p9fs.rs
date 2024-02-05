@@ -126,7 +126,7 @@ impl VirtioDevice for PciVirtio9pfs {
     }
 }
 
-impl Entity for PciVirtio9pfs {
+impl Lifecycle for PciVirtio9pfs {
     fn type_name(&self) -> &'static str {
         "pci-virtio-9pfs"
     }

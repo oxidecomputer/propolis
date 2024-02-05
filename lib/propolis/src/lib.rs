@@ -22,9 +22,8 @@ pub mod common;
 pub mod cpuid;
 pub mod exits;
 pub mod hw;
-pub mod instance;
 pub mod intr_pins;
-pub mod inventory;
+pub mod lifecycle;
 pub mod migrate;
 pub mod mmio;
 pub mod pio;
@@ -34,4 +33,4 @@ pub mod vcpu;
 pub mod vmm;
 
 pub use exits::{VmEntry, VmExit};
-pub use instance::Instance;
+pub use vmm::Machine;

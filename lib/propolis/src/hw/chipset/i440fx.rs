@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::hw::bhyve::BhyvePmTimer;
+use crate::hw::bhyve::{
+    BhyveAtPic, BhyveAtPit, BhyveIoApic, BhyvePmTimer, BhyveRtc,
+};
 use crate::hw::chipset::Chipset;
 use crate::hw::ibmpc;
 use crate::hw::ids::pci::{
@@ -16,10 +18,9 @@ use crate::hw::ids::pci::{
 };
 use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
-    self, Bdf, BusLocation, INTxPinID, PcieCfgDecoder, PioCfgDecoder,
+    self, Bdf, INTxPinID, LintrCfg, PcieCfgDecoder, PioCfgDecoder,
 };
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
-use crate::inventory;
 use crate::migrate::*;
 use crate::mmio::MmioFn;
 use crate::pio::{PioBus, PioFn};
@@ -28,225 +29,12 @@ use crate::vmm::{Machine, VmmHdl};
 
 use lazy_static::lazy_static;
 
-const HB_DEV: u8 = 0;
-const HB_FUNC: u8 = 0;
-const LPC_DEV: u8 = 1;
-const LPC_FUNC: u8 = 0;
-const PM_DEV: u8 = 1;
-const PM_FUNC: u8 = 3;
-
 const ADDR_PCIE_ECAM_REGION: usize = 0xe000_0000;
 const LEN_PCI_ECAM_REGION: usize = 0x1000_0000;
 
-#[derive(Default)]
-pub struct Opts {
-    pub enable_pcie: bool,
-    pub power_pin: Option<Arc<dyn IntrPin>>,
-    pub reset_pin: Option<Arc<dyn IntrPin>>,
-}
-
-pub struct I440Fx {
-    pci_topology: Arc<pci::topology::Topology>,
-    pci_cfg: PioCfgDecoder,
-    pcie_cfg: PcieCfgDecoder,
-    irq_config: Arc<IrqConfig>,
-
-    pin_power: Arc<dyn IntrPin>,
-    pin_reset: Arc<dyn IntrPin>,
-
-    dev_hb: Arc<Piix4HostBridge>,
-    dev_lpc: Arc<Piix3Lpc>,
-    dev_pm: Arc<Piix3PM>,
-    // TODO: could attach the PCI topology as part of chipset
-    // acc_mem: MemAccessor,
-    // acc_msi: MsiAccessor,
-}
-impl I440Fx {
-    pub fn create(
-        machine: &Machine,
-        pci_topology: Arc<pci::topology::Topology>,
-        opts: Opts,
-        log: slog::Logger,
-    ) -> Arc<Self> {
-        let hdl = machine.hdl.clone();
-        let irq_config = IrqConfig::create(hdl.clone());
-
-        let power_pin = opts.power_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
-        let reset_pin = opts.reset_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
-
-        let this = Arc::new(Self {
-            pci_topology,
-            pci_cfg: PioCfgDecoder::new(),
-            pcie_cfg: PcieCfgDecoder::new(
-                pci::bits::PCIE_MAX_BUSES_PER_ECAM_REGION,
-            ),
-            irq_config: irq_config.clone(),
-
-            pin_power: power_pin.clone(),
-            pin_reset: reset_pin,
-
-            dev_hb: Piix4HostBridge::create(),
-            dev_lpc: Piix3Lpc::create(irq_config),
-            dev_pm: Piix3PM::create(hdl, power_pin, log),
-        });
-
-        this.pci_attach(
-            Bdf::new(0, HB_DEV, HB_FUNC).unwrap(),
-            this.dev_hb.clone(),
-        );
-        this.pci_attach(
-            Bdf::new(0, LPC_DEV, LPC_FUNC).unwrap(),
-            this.dev_lpc.clone(),
-        );
-        this.pci_attach(
-            Bdf::new(0, PM_DEV, PM_FUNC).unwrap(),
-            this.dev_pm.clone(),
-        );
-
-        // Attach chipset devices
-        let pio = &machine.bus_pio;
-        this.dev_lpc.attach(pio);
-        this.dev_pm.attach(pio);
-
-        let pio_dev = Arc::clone(&this);
-        let piofn =
-            Arc::new(move |port: u16, rwo: RWOp| pio_dev.pio_rw(port, rwo))
-                as Arc<PioFn>;
-        pio.register(
-            pci::bits::PORT_PCI_CONFIG_ADDR,
-            pci::bits::LEN_PCI_CONFIG_ADDR,
-            Arc::clone(&piofn),
-        )
-        .unwrap();
-        pio.register(
-            pci::bits::PORT_PCI_CONFIG_DATA,
-            pci::bits::LEN_PCI_CONFIG_DATA,
-            piofn,
-        )
-        .unwrap();
-
-        if opts.enable_pcie {
-            let mmio = &machine.bus_mmio;
-            let mmio_dev = Arc::clone(&this);
-            let mmio_ecam_fn = Arc::new(move |_addr: usize, rwo: RWOp| {
-                mmio_dev.pcie_ecam_rw(rwo);
-            }) as Arc<MmioFn>;
-            mmio.register(
-                ADDR_PCIE_ECAM_REGION,
-                LEN_PCI_ECAM_REGION,
-                mmio_ecam_fn,
-            )
-            .unwrap();
-        }
-
-        this
-    }
-
-    fn route_lintr(
-        &self,
-        location: &BusLocation,
-    ) -> (INTxPinID, Arc<dyn IntrPin>) {
-        let intx_pin = match (location.func.get() + 1) % 4 {
-            0 => INTxPinID::IntA,
-            1 => INTxPinID::IntB,
-            2 => INTxPinID::IntC,
-            3 => INTxPinID::IntD,
-            _ => unreachable!(),
-        };
-        // D->A->B->C starting at 0:0.0
-        let pin_route = (location.dev.get() + intx_pin as u8 + 2) % 4;
-        (intx_pin, self.irq_config.intr_pin(pin_route as usize))
-    }
-
-    fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp) -> Option<()> {
-        self.pci_topology.pci_cfg_rw(
-            RoutedBusId(bdf.bus.get()),
-            bdf.location,
-            rwo,
-        )
-    }
-
-    fn pio_rw(&self, port: u16, rwo: RWOp) {
-        match port {
-            pci::bits::PORT_PCI_CONFIG_ADDR => {
-                self.pci_cfg.service_addr(rwo);
-            }
-            pci::bits::PORT_PCI_CONFIG_DATA => self
-                .pci_cfg
-                .service_data(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo)),
-            _ => {
-                panic!();
-            }
-        }
-    }
-
-    fn pcie_ecam_rw(&self, rwo: RWOp) {
-        self.pcie_cfg.service(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo));
-    }
-}
-impl Chipset for I440Fx {
-    fn pci_attach(&self, bdf: Bdf, dev: Arc<dyn pci::Endpoint>) {
-        let lintr_cfg = match bdf.bus.get() {
-            0 => Some(self.route_lintr(&bdf.location)),
-            _ => None,
-        };
-        self.pci_topology
-            .pci_attach(
-                LogicalBusId(bdf.bus.get()),
-                bdf.location,
-                dev,
-                lintr_cfg,
-            )
-            .unwrap();
-    }
-    fn irq_pin(&self, irq: u8) -> Option<Box<dyn IntrPin>> {
-        self.irq_config
-            .pic
-            .pin_handle(irq)
-            .map(|pin| Box::new(pin) as Box<dyn IntrPin>)
-    }
-    fn power_pin(&self) -> Arc<dyn IntrPin> {
-        self.pin_power.clone()
-    }
-    fn reset_pin(&self) -> Arc<dyn IntrPin> {
-        self.pin_reset.clone()
-    }
-}
-impl MigrateSingle for I440Fx {
-    fn export(
-        &self,
-        _ctx: &MigrateCtx,
-    ) -> Result<PayloadOutput, MigrateStateError> {
-        Ok(migrate::I440FXChipsetV1 { pci_cfg_addr: self.pci_cfg.addr() }
-            .into())
-    }
-
-    fn import(
-        &self,
-        mut offer: PayloadOffer,
-        _ctx: &MigrateCtx,
-    ) -> Result<(), MigrateStateError> {
-        let data: migrate::I440FXChipsetV1 = offer.parse()?;
-        self.pci_cfg.set_addr(data.pci_cfg_addr);
-        Ok(())
-    }
-}
-
-impl Entity for I440Fx {
-    fn type_name(&self) -> &'static str {
-        "chipset-i440fx"
-    }
-    fn child_register(&self) -> Option<Vec<inventory::ChildRegister>> {
-        Some(vec![
-            inventory::ChildRegister::new(&self.dev_hb, None),
-            inventory::ChildRegister::new(&self.dev_lpc, None),
-            inventory::ChildRegister::new(&self.dev_pm, None),
-        ])
-    }
-    fn migrate(&self) -> Migrator {
-        Migrator::Single(self)
-    }
-}
+pub const DEFAULT_HB_BDF: Bdf = Bdf::new_unchecked(0, 0, 0);
+pub const DEFAULT_LPC_BDF: Bdf = Bdf::new_unchecked(0, 1, 0);
+pub const DEFAULT_PM_BDF: Bdf = Bdf::new_unchecked(0, 1, 3);
 
 struct LNKPin {
     inner: Mutex<LNKPinInner>,
@@ -351,11 +139,28 @@ fn valid_pir_irq(irq: u8) -> bool {
     matches!(irq, 3..=7 | 9..=12 | 14 | 15)
 }
 
-struct Piix4HostBridge {
-    pci_state: pci::DeviceState,
+#[derive(Default)]
+pub struct Opts {
+    pub enable_pcie: bool,
+    pub power_pin: Option<Arc<dyn IntrPin>>,
+    pub reset_pin: Option<Arc<dyn IntrPin>>,
 }
-impl Piix4HostBridge {
-    pub fn create() -> Arc<Self> {
+
+pub struct I440FxHostBridge {
+    pci_state: pci::DeviceState,
+
+    pci_topology: Arc<pci::topology::Topology>,
+    pci_cfg: PioCfgDecoder,
+    pcie_cfg: Option<PcieCfgDecoder>,
+
+    pin_power: Arc<dyn IntrPin>,
+    pin_reset: Arc<dyn IntrPin>,
+}
+impl I440FxHostBridge {
+    pub fn create(
+        pci_topology: Arc<pci::topology::Topology>,
+        opts: Opts,
+    ) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX4_HB_DEV_ID,
@@ -366,17 +171,100 @@ impl Piix4HostBridge {
             ..Default::default()
         })
         .finish();
-        Arc::new(Self { pci_state })
+
+        let pin_power = opts.power_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
+        let pin_reset = opts.reset_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
+
+        let pci_cfg = PioCfgDecoder::new();
+        let pcie_cfg = opts.enable_pcie.then(|| {
+            PcieCfgDecoder::new(pci::bits::PCIE_MAX_BUSES_PER_ECAM_REGION)
+        });
+
+        Arc::new(Self {
+            pci_state,
+
+            pci_topology,
+            pci_cfg,
+            pcie_cfg,
+
+            pin_power,
+            pin_reset,
+        })
+    }
+
+    pub fn attach(self: &Arc<Self>, machine: &Machine) {
+        let pio = &machine.bus_pio;
+        let pio_dev = Arc::clone(self);
+        let piofn =
+            Arc::new(move |port: u16, rwo: RWOp| pio_dev.pio_rw(port, rwo))
+                as Arc<PioFn>;
+        pio.register(
+            pci::bits::PORT_PCI_CONFIG_ADDR,
+            pci::bits::LEN_PCI_CONFIG_ADDR,
+            Arc::clone(&piofn),
+        )
+        .unwrap();
+        pio.register(
+            pci::bits::PORT_PCI_CONFIG_DATA,
+            pci::bits::LEN_PCI_CONFIG_DATA,
+            piofn,
+        )
+        .unwrap();
+
+        if self.pcie_cfg.is_some() {
+            let mmio = &machine.bus_mmio;
+            let mmio_dev = Arc::clone(self);
+            let mmio_ecam_fn = Arc::new(move |_addr: usize, rwo: RWOp| {
+                mmio_dev.pcie_ecam_rw(rwo);
+            }) as Arc<MmioFn>;
+            mmio.register(
+                ADDR_PCIE_ECAM_REGION,
+                LEN_PCI_ECAM_REGION,
+                mmio_ecam_fn,
+            )
+            .unwrap();
+        }
+    }
+
+    fn pci_cfg_rw(&self, bdf: &Bdf, rwo: RWOp) -> Option<()> {
+        self.pci_topology.pci_cfg_rw(
+            RoutedBusId(bdf.bus.get()),
+            bdf.location,
+            rwo,
+        )
+    }
+
+    fn pio_rw(&self, port: u16, rwo: RWOp) {
+        match port {
+            pci::bits::PORT_PCI_CONFIG_ADDR => {
+                self.pci_cfg.service_addr(rwo);
+            }
+            pci::bits::PORT_PCI_CONFIG_DATA => self
+                .pci_cfg
+                .service_data(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo)),
+            _ => {
+                panic!();
+            }
+        }
+    }
+
+    fn pcie_ecam_rw(&self, rwo: RWOp) {
+        let pcie_cfg = self
+            .pcie_cfg
+            .as_ref()
+            .expect("PCIe cfg decoder present when ECAM is enabled");
+
+        pcie_cfg.service(rwo, |bdf, rwo| self.pci_cfg_rw(bdf, rwo));
     }
 }
-impl pci::Device for Piix4HostBridge {
+impl pci::Device for I440FxHostBridge {
     fn device_state(&self) -> &pci::DeviceState {
         &self.pci_state
     }
 }
-impl Entity for Piix4HostBridge {
+impl Lifecycle for I440FxHostBridge {
     fn type_name(&self) -> &'static str {
-        "pci-piix4-hb"
+        "pci-i440fx-hb"
     }
     fn reset(&self) {
         self.pci_state.reset(self);
@@ -385,13 +273,40 @@ impl Entity for Piix4HostBridge {
         Migrator::Multi(self)
     }
 }
-impl MigrateMulti for Piix4HostBridge {
+impl Chipset for I440FxHostBridge {
+    fn pci_attach(
+        &self,
+        bdf: Bdf,
+        dev: Arc<dyn pci::Endpoint>,
+        lintr_cfg: Option<LintrCfg>,
+    ) {
+        self.pci_topology
+            .pci_attach(
+                LogicalBusId(bdf.bus.get()),
+                bdf.location,
+                dev,
+                lintr_cfg,
+            )
+            .unwrap();
+    }
+    fn power_pin(&self) -> Arc<dyn IntrPin> {
+        self.pin_power.clone()
+    }
+    fn reset_pin(&self) -> Arc<dyn IntrPin> {
+        self.pin_reset.clone()
+    }
+}
+impl MigrateMulti for I440FxHostBridge {
     fn export(
         &self,
         output: &mut PayloadOutputs,
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        MigrateMulti::export(&self.pci_state, output, ctx)
+        MigrateMulti::export(&self.pci_state, output, ctx)?;
+        output.push(
+            migrate::I440FxHostBridgeV1 { pci_cfg_addr: self.pci_cfg.addr() }
+                .into(),
+        )
     }
 
     fn import(
@@ -399,18 +314,27 @@ impl MigrateMulti for Piix4HostBridge {
         offer: &mut PayloadOffers,
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        MigrateMulti::import(&self.pci_state, offer, ctx)
+        MigrateMulti::import(&self.pci_state, offer, ctx)?;
+        let data: migrate::I440FxHostBridgeV1 = offer.take()?;
+        self.pci_cfg.set_addr(data.pci_cfg_addr);
+        Ok(())
     }
 }
 
 pub struct Piix3Lpc {
     pci_state: pci::DeviceState,
+
+    pub pic: Arc<BhyveAtPic>,
+    pub pit: Arc<BhyveAtPit>,
+    pub ioapic: Arc<BhyveIoApic>,
+    pub rtc: Arc<BhyveRtc>,
+
     reg_pir: Mutex<[u8; PIR_LEN]>,
-    post_code: AtomicU8,
     irq_config: Arc<IrqConfig>,
+    post_code: AtomicU8,
 }
 impl Piix3Lpc {
-    fn create(irq_config: Arc<IrqConfig>) -> Arc<Self> {
+    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX3_ISA_DEV_ID,
@@ -423,15 +347,23 @@ impl Piix3Lpc {
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
         .finish();
 
+        let irq_config = IrqConfig::create(hdl.clone());
+
         Arc::new(Self {
             pci_state,
+
+            pic: BhyveAtPic::create(hdl.clone()),
+            pit: BhyveAtPit::create(hdl.clone()),
+            ioapic: BhyveIoApic::create(hdl.clone()),
+            rtc: BhyveRtc::create(hdl.clone()),
+
             reg_pir: Mutex::new([0u8; PIR_LEN]),
             post_code: AtomicU8::new(0),
             irq_config,
         })
     }
 
-    fn attach(self: &Arc<Self>, pio: &PioBus) {
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
         let this = Arc::clone(self);
         let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
             as Arc<PioFn>;
@@ -488,6 +420,29 @@ impl Piix3Lpc {
             regs[idx] = val;
         }
     }
+
+    pub fn route_lintr(&self, bdf: Bdf) -> Option<LintrCfg> {
+        if bdf.bus.get() != 0 {
+            return None;
+        }
+        let intx_pin = match (bdf.location.func.get() + 1) % 4 {
+            0 => INTxPinID::IntA,
+            1 => INTxPinID::IntB,
+            2 => INTxPinID::IntC,
+            3 => INTxPinID::IntD,
+            _ => unreachable!(),
+        };
+        // D->A->B->C starting at 0:0.0
+        let pin_route = (bdf.location.dev.get() + intx_pin as u8 + 2) % 4;
+        Some((intx_pin, self.irq_config.intr_pin(pin_route as usize)))
+    }
+
+    pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn IntrPin>> {
+        self.irq_config
+            .pic
+            .pin_handle(irq)
+            .map(|pin| Box::new(pin) as Box<dyn IntrPin>)
+    }
 }
 impl pci::Device for Piix3Lpc {
     fn device_state(&self) -> &pci::DeviceState {
@@ -513,7 +468,7 @@ impl pci::Device for Piix3Lpc {
         }
     }
 }
-impl Entity for Piix3Lpc {
+impl Lifecycle for Piix3Lpc {
     fn type_name(&self) -> &'static str {
         "pci-piix3-lpc"
     }
@@ -540,7 +495,13 @@ impl MigrateMulti for Piix3Lpc {
         )?;
         drop(pir);
 
-        MigrateMulti::export(&self.pci_state, output, ctx)
+        MigrateMulti::export(&self.pci_state, output, ctx)?;
+
+        MigrateMulti::export(self.pic.as_ref(), output, ctx)?;
+        MigrateMulti::export(self.pit.as_ref(), output, ctx)?;
+        MigrateMulti::export(self.ioapic.as_ref(), output, ctx)?;
+        MigrateMulti::export(self.rtc.as_ref(), output, ctx)?;
+        Ok(())
     }
 
     fn import(
@@ -555,7 +516,14 @@ impl MigrateMulti for Piix3Lpc {
         self.post_code.store(input.post_code, Ordering::Relaxed);
         *self.reg_pir.lock().unwrap() = input.pir_regs;
 
-        MigrateMulti::import(&self.pci_state, offer, ctx)
+        MigrateMulti::import(&self.pci_state, offer, ctx)?;
+
+        MigrateMulti::import(self.pic.as_ref(), offer, ctx)?;
+        MigrateMulti::import(self.pit.as_ref(), offer, ctx)?;
+        MigrateMulti::import(self.ioapic.as_ref(), offer, ctx)?;
+        MigrateMulti::import(self.rtc.as_ref(), offer, ctx)?;
+
+        Ok(())
     }
 }
 
@@ -806,8 +774,11 @@ impl TryFrom<migrate::Piix3PmV1> for PMRegs {
 
 pub struct Piix3PM {
     pci_state: pci::DeviceState,
+
+    /// ACPI PM Timer
+    pub pmtimer: Arc<BhyvePmTimer>,
+
     regs: Mutex<PMRegs>,
-    timer: Arc<BhyvePmTimer>,
     power_pin: Arc<dyn IntrPin>,
     log: slog::Logger,
 }
@@ -835,18 +806,18 @@ impl Piix3PM {
         .finish();
 
         let regs = PMRegs::default();
-        let timer = BhyvePmTimer::create(hdl, regs.pmtimer_port());
-
         Arc::new(Self {
             pci_state,
+
+            pmtimer: BhyvePmTimer::create(hdl, regs.pmtimer_port()),
+
             regs: Mutex::new(regs),
-            timer,
             power_pin,
             log,
         })
     }
 
-    fn attach(self: &Arc<Self>, pio: &PioBus) {
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
         // XXX: static registration for now
         let this = Arc::clone(&self);
         let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
@@ -1010,20 +981,25 @@ impl pci::Device for Piix3PM {
         })
     }
 }
-impl Entity for Piix3PM {
+impl Lifecycle for Piix3PM {
     fn type_name(&self) -> &'static str {
         "pci-piix3-pm"
-    }
-    fn child_register(&self) -> Option<Vec<inventory::ChildRegister>> {
-        Some(vec![inventory::ChildRegister::new(&self.timer, None)])
     }
     fn reset(&self) {
         self.pci_state.reset(self);
 
         // Reset PM-specific registers.  If/when modifications to `pm_base` are
         // allowed, it will need to be more cognizant of the state inside the
-        // BhyvePmTimer entity.
+        // BhyvePmTimer device.
         self.regs.lock().unwrap().reset();
+
+        self.pmtimer.reset();
+    }
+    fn resume(&self) {
+        self.pmtimer.resume();
+    }
+    fn start(&self) -> anyhow::Result<()> {
+        self.pmtimer.start()
     }
     fn migrate(&self) -> Migrator {
         Migrator::Multi(self)
@@ -1040,6 +1016,8 @@ impl MigrateMulti for Piix3PM {
 
         MigrateMulti::export(&self.pci_state, output, ctx)?;
 
+        MigrateMulti::export(self.pmtimer.as_ref(), output, ctx)?;
+
         Ok(())
     }
 
@@ -1055,6 +1033,8 @@ impl MigrateMulti for Piix3PM {
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
 
+        MigrateMulti::import(self.pmtimer.as_ref(), offer, ctx)?;
+
         Ok(())
     }
 }
@@ -1064,12 +1044,12 @@ mod migrate {
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
-    pub struct I440FXChipsetV1 {
+    pub struct I440FxHostBridgeV1 {
         pub pci_cfg_addr: u32,
     }
-    impl Schema<'_> for I440FXChipsetV1 {
+    impl Schema<'_> for I440FxHostBridgeV1 {
         fn id() -> SchemaId {
-            ("i440fx-chipset", 1)
+            ("i440fx-hb", 1)
         }
     }
 
@@ -1103,18 +1083,39 @@ mod test {
     use super::*;
     use crate::hw::pci::device::test::*;
     use crate::hw::pci::test::Scaffold;
-    use crate::hw::pci::Endpoint;
+    use crate::hw::pci::{self, Endpoint};
     use crate::intr_pins::NoOpPin;
     use crate::vmm::VmmHdl;
 
     use slog::{Discard, Logger};
 
+    fn setup_attach(scaffold: &Scaffold, dev: Arc<dyn Endpoint>) -> pci::Bus {
+        let bus = scaffold.create_bus();
+        // just attach at slot 0 func 0
+        bus.attach(pci::BusLocation::new(0, 0).unwrap(), dev, None);
+        bus
+    }
+
+    fn topo_attach(topo: &pci::topology::Topology, dev: Arc<dyn Endpoint>) {
+        topo.pci_attach(
+            pci::topology::LogicalBusId(0),
+            pci::BusLocation::new(0, 0).unwrap(),
+            dev,
+            None,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn hb_pci_cfg_read() {
         let scaffold = Scaffold::new();
+        let topo = scaffold.basic_topo();
 
-        let hb = Piix4HostBridge::create();
-        let _bus = setup_cfg(&scaffold, hb.clone());
+        let hb = I440FxHostBridge::create(
+            topo.clone(),
+            Opts { enable_pcie: false, power_pin: None, reset_pin: None },
+        );
+        topo_attach(&topo, hb.clone());
 
         cfg_read(hb.as_ref() as &dyn Endpoint);
     }
@@ -1122,9 +1123,13 @@ mod test {
     #[test]
     fn hb_pci_cfg_write() {
         let scaffold = Scaffold::new();
+        let topo = scaffold.basic_topo();
 
-        let hb = Piix4HostBridge::create();
-        let _bus = setup_cfg(&scaffold, hb.clone());
+        let hb = I440FxHostBridge::create(
+            topo.clone(),
+            Opts { enable_pcie: false, power_pin: None, reset_pin: None },
+        );
+        topo_attach(&topo, hb.clone());
 
         cfg_write(hb.as_ref() as &dyn Endpoint);
     }
@@ -1134,8 +1139,8 @@ mod test {
         let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
         let scaffold = Scaffold::new();
 
-        let lpc = Piix3Lpc::create(IrqConfig::create(hdl));
-        let _bus = setup_cfg(&scaffold, lpc.clone());
+        let lpc = Piix3Lpc::create(hdl);
+        let _bus = setup_attach(&scaffold, lpc.clone());
 
         cfg_read(lpc.as_ref() as &dyn Endpoint);
     }
@@ -1145,8 +1150,8 @@ mod test {
         let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
         let scaffold = Scaffold::new();
 
-        let lpc = Piix3Lpc::create(IrqConfig::create(hdl));
-        let _bus = setup_cfg(&scaffold, lpc.clone());
+        let lpc = Piix3Lpc::create(hdl);
+        let _bus = setup_attach(&scaffold, lpc.clone());
 
         cfg_write(lpc.as_ref() as &dyn Endpoint);
     }
@@ -1159,7 +1164,7 @@ mod test {
         let power_pin = Arc::new(NoOpPin {});
 
         let pm = Piix3PM::create(hdl, power_pin, log);
-        let _bus = setup_cfg(&scaffold, pm.clone());
+        let _bus = setup_attach(&scaffold, pm.clone());
 
         cfg_read(pm.as_ref() as &dyn Endpoint);
     }
@@ -1172,7 +1177,7 @@ mod test {
         let power_pin = Arc::new(NoOpPin {});
 
         let pm = Piix3PM::create(hdl, power_pin, log);
-        let _bus = setup_cfg(&scaffold, pm.clone());
+        let _bus = setup_attach(&scaffold, pm.clone());
 
         cfg_write(pm.as_ref() as &dyn Endpoint);
     }

@@ -882,19 +882,19 @@ mod tests {
 
     use super::*;
 
-    use crate::{common::GuestAddr, instance::Instance};
+    use crate::{common::GuestAddr, vmm::Machine};
     use std::io::Error;
     use std::thread::{sleep, spawn};
     use std::time::Duration;
 
     #[test]
     fn create_cqs() -> Result<(), Error> {
-        let instance = Instance::new_test()?;
+        let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child(None);
+        let acc_mem = machine.acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Admin queues must be less than 4K
@@ -942,12 +942,12 @@ mod tests {
 
     #[test]
     fn create_sqs() -> Result<(), Error> {
-        let instance = Instance::new_test()?;
+        let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child(None);
+        let acc_mem = machine.acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create corresponding CQs
@@ -1019,12 +1019,12 @@ mod tests {
 
     #[test]
     fn push_failures() -> Result<(), Error> {
-        let instance = Instance::new_test()?;
+        let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child(None);
+        let acc_mem = machine.acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create our queues
@@ -1085,12 +1085,12 @@ mod tests {
 
     #[test]
     fn cq_kicks() -> Result<(), Error> {
-        let instance = Instance::new_test()?;
+        let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child(None);
+        let acc_mem = machine.acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create our queues
@@ -1139,12 +1139,12 @@ mod tests {
 
     #[test]
     fn push_pop() -> Result<(), Error> {
-        let instance = Instance::new_test()?;
+        let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
 
-        let acc_mem = instance.lock().machine().acc_mem.child(None);
+        let acc_mem = machine.acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Create a pair of Completion and Submission Queues

@@ -26,7 +26,6 @@ use bhyve_api::{
 use propolis::{
     chardev::UDSock,
     common::{GuestAddr, GuestRegion},
-    inventory::Order,
     migrate::{
         MigrateCtx, Migrator, PayloadOffer, PayloadOffers, PayloadOutputs,
     },
@@ -59,7 +58,7 @@ const GLOBAL_NAME: &str = "global.json";
 
 /// Save a snapshot of the current state of the given instance to disk.
 pub(crate) fn save(
-    inst: &propolis::Instance,
+    guard: &mut super::InstState,
     config: &Config,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
@@ -84,12 +83,10 @@ pub(crate) fn save(
 
     // Being called from the Quiesce state, all of the device pause work should
     // be done for us already.
-    let guard = inst.lock();
-    let machine = guard.machine();
+    let machine = guard.machine.as_ref().unwrap();
     let hdl = machine.hdl.clone();
     let memctx = machine.acc_mem.access().unwrap();
     let migratectx = MigrateCtx { mem: &memctx };
-    let inv = guard.inventory();
 
     info!(log, "Serializing global VM state");
     {
@@ -113,20 +110,19 @@ pub(crate) fn save(
     }
 
     info!(log, "Serializing VM device state");
-    inv.for_each_node(Order::Pre, |_, rec| {
-        let entity = rec.entity();
-        let device_data = match entity.migrate() {
+    for (name, dev) in guard.inventory.devs.iter() {
+        let device_data = match dev.migrate() {
             Migrator::NonMigratable => {
                 anyhow::bail!(
                     "Can't snapshot instance with non-migratable device ({})",
-                    rec.name()
+                    name
                 );
             }
-            Migrator::Empty => return Ok(()),
+            Migrator::Empty => continue,
             Migrator::Single(mech) => {
                 let output = mech.export(&migratectx)?;
                 SnapshotDevice {
-                    instance_name: rec.name().to_owned(),
+                    instance_name: name.to_owned(),
                     payload: vec![SnapshotDevicePayload {
                         kind: output.kind.to_owned(),
                         version: output.version,
@@ -147,20 +143,20 @@ pub(crate) fn save(
                     });
                 }
                 SnapshotDevice {
-                    instance_name: rec.name().to_owned(),
+                    instance_name: name.to_owned(),
                     payload: payloads,
                 }
             }
         };
+
         let device_bytes = serde_json::to_vec(&device_data)?;
         header.set_size(device_bytes.len() as u64);
         builder.append_data(
             &mut header,
-            format!("{}/{}.json", DEVICE_DIR, rec.name()),
+            format!("{}/{}.json", DEVICE_DIR, name),
             &device_bytes[..],
         )?;
-        Ok(())
-    })?;
+    }
 
     // TODO(luqmana) clean this up. make mem_bounds do the lo/hi calc? or just
     // use config values?
@@ -258,9 +254,8 @@ pub(crate) fn restore(
     let (inst, com1_sock) = super::setup_instance(config, true, log)
         .context("Failed to create Instance with config in snapshot")?;
 
-    let inst_inner = inst.lock().unwrap();
-    let guard = inst_inner.lock();
-    let machine = guard.machine();
+    let guard = inst.lock().unwrap();
+    let machine = guard.machine.as_ref().unwrap();
     let hdl = machine.hdl.clone();
     let memctx = machine.acc_mem.access().unwrap();
 
@@ -344,15 +339,14 @@ pub(crate) fn restore(
     }
 
     // Finally, let's restore the device state
-    let inv = guard.inventory();
     let migratectx = MigrateCtx { mem: &memctx };
     for snap_dev in device_data {
-        let name = snap_dev.instance_name.as_ref();
-        let dev_ent = inv.get_by_name(name).ok_or_else(|| {
+        let name = &snap_dev.instance_name;
+        let dev = guard.inventory.devs.get(name).ok_or_else(|| {
             anyhow::anyhow!("unknown device in snapshot {}", name)
         })?;
 
-        match dev_ent.migrate() {
+        match dev.migrate() {
             Migrator::NonMigratable => anyhow::bail!(
                 "can't restore snapshot with non-migratable device ({})",
                 name
@@ -430,7 +424,6 @@ pub(crate) fn restore(
 
     drop(memctx);
     drop(guard);
-    drop(inst_inner);
     Ok((inst, com1_sock))
 }
 
