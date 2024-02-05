@@ -9,16 +9,101 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use cpuid_profile_config::*;
 use propolis::block;
 use propolis::cpuid;
 use propolis::hw::pci::Bdf;
 use propolis::inventory::ChildRegister;
 
 use crate::cidata::build_cidata_be;
-pub use propolis_standalone_config::Config;
-use propolis_standalone_config::{CpuVendor, CpuidEntry, Device};
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Config {
+    pub main: Main,
+
+    #[serde(default, rename = "dev")]
+    pub devices: BTreeMap<String, Device>,
+
+    #[serde(default, rename = "block_dev")]
+    pub block_devs: BTreeMap<String, BlockDevice>,
+
+    #[serde(default, rename = "cpuid")]
+    pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
+
+    pub cloudinit: Option<CloudInit>,
+}
+impl Config {
+    pub fn cpuid_profile(&self) -> Option<&CpuidProfile> {
+        match self.main.cpuid_profile.as_ref() {
+            Some(name) => self.cpuid_profiles.get(name),
+            None => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Main {
+    pub name: String,
+    pub cpus: u8,
+    pub bootrom: String,
+    pub memory: usize,
+    pub use_reservoir: Option<bool>,
+    pub cpuid_profile: Option<String>,
+    /// Process exitcode to emit if/when instance halts
+    ///
+    /// Default: 0
+    #[serde(default)]
+    pub exit_on_halt: u8,
+    /// Process exitcode to emit if/when instance reboots
+    ///
+    /// Default: None, does not exit on reboot
+    #[serde(default)]
+    pub exit_on_reboot: Option<u8>,
+}
+
+/// A hard-coded device, either enabled by default or accessible locally
+/// on a machine.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Device {
+    pub driver: String,
+
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlockOpts {
+    pub block_size: Option<u32>,
+    pub read_only: Option<bool>,
+    pub skip_flush: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlockDevice {
+    #[serde(default, rename = "type")]
+    pub bdtype: String,
+
+    #[serde(flatten)]
+    pub block_opts: BlockOpts,
+
+    #[serde(flatten, default)]
+    pub options: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CloudInit {
+    pub user_data: Option<String>,
+    pub meta_data: Option<String>,
+    pub network_config: Option<String>,
+
+    // allow path-style contents as well
+    pub user_data_path: Option<String>,
+    pub meta_data_path: Option<String>,
+    pub network_config_path: Option<String>,
+}
 
 #[derive(Deserialize)]
 struct FileConfig {
@@ -165,7 +250,7 @@ pub fn parse_cpuid(config: &Config) -> anyhow::Result<Option<cpuid::Set>> {
 
 #[cfg(feature = "crucible")]
 fn create_crucible_backend(
-    be: &propolis_standalone_config::BlockDevice,
+    be: &BlockDevice,
     opts: block::BackendOpts,
     log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
@@ -259,7 +344,7 @@ fn create_crucible_backend(
 
 #[cfg(feature = "crucible")]
 fn create_crucible_mem_backend(
-    be: &propolis_standalone_config::BlockDevice,
+    be: &BlockDevice,
     opts: block::BackendOpts,
     log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
@@ -278,7 +363,7 @@ fn create_crucible_mem_backend(
 
 #[cfg(not(feature = "crucible"))]
 fn create_crucible_backend(
-    _be: &propolis_standalone_config::BlockDevice,
+    _be: &BlockDevice,
     _opts: block::BackendOpts,
     _log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {
@@ -290,7 +375,7 @@ fn create_crucible_backend(
 
 #[cfg(not(feature = "crucible"))]
 fn create_crucible_mem_backend(
-    _be: &propolis_standalone_config::BlockDevice,
+    _be: &BlockDevice,
     _opts: block::BackendOpts,
     _log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, ChildRegister) {

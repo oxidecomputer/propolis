@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
-
 use propolis::block;
-use propolis_standalone_config::Config;
+
+use crate::config::Config;
 
 const SECTOR_SZ: usize = 512;
 const VOLUME_LABEL: [u8; 11] = *b"cidata     ";

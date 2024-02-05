@@ -37,7 +37,6 @@ implementation details, consumed by Propolis components.
 - bhyve-api: API (ioctls & structs) for the illumos bhyve kernel VMM
 - dladm: Some thin wrappers around `dladm` queries
 - propolis-server-config: Type definitions for `propolis-server` config file
-- propolis-standalone-config: Type definitions for `propolis-standalone` config file
 - propolis-types: Publically exposed (via `propolis-server`) types, intergral
   to the `propolis` library
 - viona-api: API (ioctls & structs) for the illumos viona driver

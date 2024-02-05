@@ -3962,6 +3962,7 @@ dependencies = [
  "atty",
  "bhyve_api",
  "clap 4.4.0",
+ "cpuid_profile_config",
  "crucible-client-types",
  "ctrlc",
  "erased-serde",
@@ -3969,7 +3970,6 @@ dependencies = [
  "futures",
  "libc",
  "propolis",
- "propolis-standalone-config",
  "serde",
  "serde_json",
  "slog",
@@ -3985,16 +3985,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "propolis-standalone-config"
-version = "0.0.0"
-dependencies = [
- "cpuid_profile_config",
- "serde",
- "serde_derive",
- "toml 0.7.8",
-]
-
-[[package]]
 name = "propolis-utils"
 version = "0.0.0"
 dependencies = [
@@ -4003,7 +3993,6 @@ dependencies = [
  "clap 4.4.0",
  "libc",
  "propolis",
- "propolis-standalone-config",
  "serde",
  "serde_json",
 ]
