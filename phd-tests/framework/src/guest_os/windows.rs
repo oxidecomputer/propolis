@@ -11,12 +11,6 @@ use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 ///
 /// This login sequence assumes the following:
 ///
-/// - The image has been generalized (by running `sysprep /generalize`) and is
-///   configured so that on first boot it will skip the out-of-box experience
-///   (OOBE) and initialize the local administrator account with the appropriate
-///   password. See [MSDN's Windows Setup
-///   documentation](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/generalize?view=windows-11)
-///   for more details.
 /// - Cygwin is installed to C:\cygwin and can be launched by invoking
 ///   C:\cygwin\cygwin.bat.
 /// - The local administrator account is enabled with password `0xide#1Fan`.
@@ -27,11 +21,6 @@ pub(super) fn get_login_sequence_for(guest: GuestOsKind) -> CommandSequence {
     ));
 
     let mut commands = vec![
-        // Assume the image will need to reboot one last time after being
-        // specialized.
-        CommandSequenceEntry::WaitFor(
-            "Computer is booting, SAC started and initialized.",
-        ),
         CommandSequenceEntry::WaitFor(
             "Computer is booting, SAC started and initialized.",
         ),

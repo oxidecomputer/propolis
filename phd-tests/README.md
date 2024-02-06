@@ -217,6 +217,7 @@ encoded into the logon sequences for each adapter and reproduced below:
 | Alpine Linux        | `root`          |              |
 | Debian 11 (nocloud) | `root`          |              |
 | Ubuntu 20.04        | `ubuntu`        | `1!Passw0rd` |
+| Windows Server 2019 | `Administrator` | `0xide#1Fan` |
 | Windows Server 2022 | `Administrator` | `0xide#1Fan` |
 
 If you add a custom image to your artifact file, you must make sure either to
