@@ -109,31 +109,27 @@ mod running_process {
     use super::*;
 
     #[phd_testcase]
-    fn migrate_running_process(ctx: &Framework) {
+    async fn migrate_running_process(ctx: &Framework) {
         let mut source =
-            ctx.spawn_default_vm("migrate_running_process_source")?;
-        let mut target = ctx.spawn_successor_vm(
-            "migrate_running_process_target",
-            &source,
-            None,
-        )?;
+            ctx.spawn_default_vm("migrate_running_process_source").await?;
+        let mut target = ctx
+            .spawn_successor_vm("migrate_running_process_target", &source, None)
+            .await?;
 
-        source.launch()?;
-        source.wait_to_boot()?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
 
-        mk_dirt(&source)?;
+        mk_dirt(&source).await?;
 
-        target.migrate_from(
-            &source,
-            Uuid::new_v4(),
-            MigrationTimeout::default(),
-        )?;
+        target
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await?;
 
-        check_dirt(&target)?;
+        check_dirt(&target).await?;
     }
 
     #[phd_testcase]
-    fn import_failure(ctx: &Framework) {
+    async fn import_failure(ctx: &Framework) {
         let mut cfg = ctx.vm_config_builder(
             "migrate_running_process::import_failure_source",
         );
@@ -141,7 +137,7 @@ mod running_process {
         // the source as well as the target, so that the source will offer the
         // device.
         cfg.fail_migration_imports(0);
-        let mut source = ctx.spawn_vm(&cfg, None)?;
+        let mut source = ctx.spawn_vm(&cfg, None).await?;
 
         let mut target1 = {
             // Configure the target to fail when it imports the migration
@@ -153,75 +149,79 @@ mod running_process {
             // add the `fail_migration_imports` option to the new VM's
             // `VmConfig`. Instead, we use `spawn_vm`, and pass the source VM's
             // environment to ensure it's inherited.
-            ctx.spawn_vm(&cfg, Some(&source.environment_spec()))?
+            ctx.spawn_vm(&cfg, Some(&source.environment_spec())).await?
         };
 
-        let mut target2 = ctx.spawn_successor_vm(
-            "migrate_running_process::import_failure_target2",
-            &source,
-            None,
-        )?;
+        let mut target2 = ctx
+            .spawn_successor_vm(
+                "migrate_running_process::import_failure_target2",
+                &source,
+                None,
+            )
+            .await?;
 
-        source.launch()?;
-        source.wait_to_boot()?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
 
-        mk_dirt(&source)?;
+        mk_dirt(&source).await?;
 
         // first migration should fail.
         let error = target1
             .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
         // try again. this time, it should work!
-        target2.migrate_from(
-            &source,
-            Uuid::new_v4(),
-            MigrationTimeout::default(),
-        )?;
+        target2
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await?;
 
-        check_dirt(&target2)?;
+        check_dirt(&target2).await?;
     }
 
     #[phd_testcase]
-    fn export_failure(ctx: &Framework) {
+    async fn export_failure(ctx: &Framework) {
         let mut source = {
             let mut cfg = ctx.vm_config_builder(
                 "migrate_running_process::export_failure_source",
             );
             cfg.fail_migration_exports(1);
-            ctx.spawn_vm(&cfg, None)?
+            ctx.spawn_vm(&cfg, None).await?
         };
-        let mut target1 = ctx.spawn_successor_vm(
-            "migrate_running_process::export_failure_target1",
-            &source,
-            None,
-        )?;
-        let mut target2 = ctx.spawn_successor_vm(
-            "migrate_running_process::export_failure_target2",
-            &source,
-            None,
-        )?;
+        let mut target1 = ctx
+            .spawn_successor_vm(
+                "migrate_running_process::export_failure_target1",
+                &source,
+                None,
+            )
+            .await?;
+        let mut target2 = ctx
+            .spawn_successor_vm(
+                "migrate_running_process::export_failure_target2",
+                &source,
+                None,
+            )
+            .await?;
 
-        source.launch()?;
-        source.wait_to_boot()?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
 
-        mk_dirt(&source)?;
+        mk_dirt(&source).await?;
 
         // first migration should fail.
         let error = target1
             .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
         // try again. this time, it should work!
-        target2.migrate_from(
-            &source,
-            Uuid::new_v4(),
-            MigrationTimeout::default(),
-        )?;
+        target2
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await?;
 
-        check_dirt(&target2)?;
+        check_dirt(&target2).await?;
     }
 
     /// Starts a process on the guest VM which stores a bunch of strings in
@@ -231,14 +231,15 @@ mod running_process {
     ///
     /// Resuming this process after migration allows us to check that the
     /// guest's memory was migrated correctly.
-    fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+    async fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
         vm.run_shell_command(concat!(
             "cat >dirt.sh <<'EOF'\n",
             include_str!("../testdata/dirt.sh"),
             "\nEOF"
-        ))?;
-        vm.run_shell_command("chmod +x dirt.sh")?;
-        let run_dirt = vm.run_shell_command("./dirt.sh")?;
+        ))
+        .await?;
+        vm.run_shell_command("chmod +x dirt.sh").await?;
+        let run_dirt = vm.run_shell_command("./dirt.sh").await?;
         assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
         assert!(
             run_dirt.contains("Stopped"),
@@ -248,8 +249,8 @@ mod running_process {
         Ok(())
     }
 
-    fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
-        let output = vm.run_shell_command("fg")?;
+    async fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        let output = vm.run_shell_command("fg").await?;
         assert!(output.contains("all good"), "dirt.sh failed: {output:?}");
         Ok(())
     }
