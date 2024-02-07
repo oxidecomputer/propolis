@@ -2,14 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use async_trait::async_trait;
 use phd_framework::{
     artifacts, lifecycle::Action, test_vm::MigrationTimeout, TestVm,
 };
-use phd_testcase::{phd_framework::lifecycle::CheckVm, *};
-use propolis_client::types::{
-    InstanceSerialConsoleHistoryResponse, MigrationState,
-};
+use phd_testcase::*;
+use propolis_client::types::MigrationState;
 use tracing::info;
 use uuid::Uuid;
 
@@ -30,9 +27,6 @@ async fn serial_history(ctx: &Framework) {
 /// Tests for migrating from a "migration base" Propolis revision (e.g. the
 /// latest commit to the `master` git branch) to the revision under test.
 mod from_base {
-    use async_trait::async_trait;
-    use phd_testcase::phd_framework::lifecycle::CheckVm;
-
     use super::*;
 
     #[phd_testcase]
@@ -66,20 +60,6 @@ mod from_base {
         source.run_shell_command("touch ./foo.bar").await?;
         source.run_shell_command("sync ./foo.bar").await?;
 
-        struct CheckContext;
-
-        #[async_trait]
-        impl CheckVm for CheckContext {
-            async fn check(&self, target: &TestVm) {
-                // the file should still exist on the target VM after migration.
-                let lsout = target
-                    .run_shell_command("ls foo.bar")
-                    .await
-                    .expect("`ls foo.bar` should succeed");
-                assert_eq!(lsout, "foo.bar");
-            }
-        }
-
         ctx.lifecycle_test(
             source,
             &[
@@ -87,7 +67,16 @@ mod from_base {
                 Action::MigrateToPropolis(artifacts::BASE_PROPOLIS_ARTIFACT),
                 Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
             ],
-            CheckContext,
+            |target: &TestVm| {
+                Box::pin(async move {
+                    // the file should still exist on the target VM after migration.
+                    let lsout = target
+                        .run_shell_command("ls foo.bar")
+                        .await
+                        .expect("`ls foo.bar` should succeed");
+                    assert_eq!(lsout, "foo.bar");
+                })
+            },
         )
         .await?;
     }
@@ -328,23 +317,19 @@ async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
     source.run_shell_command("touch ./foo.bar").await?;
     source.run_shell_command("sync ./foo.bar").await?;
 
-    struct Check;
-    #[async_trait]
-    impl CheckVm for Check {
-        async fn check(&self, target: &TestVm) {
-            // the file should still exist on the target VM after migration.
-            let lsout = target
-                .run_shell_command("ls foo.bar")
-                .await
-                .expect("`ls foo.bar` should succeed after migration");
-            assert_eq!(lsout, "foo.bar");
-        }
-    }
-
     ctx.lifecycle_test(
         source,
         &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
-        Check,
+        |target: &TestVm| {
+            Box::pin(async move {
+                // the file should still exist on the target VM after migration.
+                let lsout = target
+                    .run_shell_command("ls foo.bar")
+                    .await
+                    .expect("`ls foo.bar` should succeed after migration");
+                assert_eq!(lsout, "foo.bar");
+            })
+        },
     )
     .await
 }
@@ -363,32 +348,26 @@ async fn run_serial_history_test(
     let serial_hist_pre = source.get_serial_console_history(0).await?;
     assert!(!serial_hist_pre.data.is_empty());
 
-    struct Check {
-        serial_hist_pre: InstanceSerialConsoleHistoryResponse,
-    }
-
-    #[async_trait]
-    impl CheckVm for Check {
-        async fn check(&self, target: &TestVm) {
-            let serial_hist_post = target
-                .get_serial_console_history(0)
-                .await
-                .expect("should get serial console history from the target");
-            assert_eq!(
-                self.serial_hist_pre.data,
-                serial_hist_post.data[..self.serial_hist_pre.data.len()]
-            );
-            assert!(
-                self.serial_hist_pre.last_byte_offset
-                    <= serial_hist_post.last_byte_offset
-            );
-        }
-    }
-
     ctx.lifecycle_test(
         source,
         &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
-        Check { serial_hist_pre },
+        move |target| {
+            let serial_hist_pre = serial_hist_pre.clone();
+            Box::pin(async move {
+                let serial_hist_post =
+                    target.get_serial_console_history(0).await.expect(
+                        "should get serial console history from the target",
+                    );
+                assert_eq!(
+                    serial_hist_pre.data,
+                    serial_hist_post.data[..serial_hist_pre.data.len()]
+                );
+                assert!(
+                    serial_hist_pre.last_byte_offset
+                        <= serial_hist_post.last_byte_offset
+                );
+            })
+        },
     )
     .await
 }

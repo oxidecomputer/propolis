@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use anyhow::Context;
+use futures::future::BoxFuture;
 use tracing::info;
 use uuid::Uuid;
 
@@ -32,14 +33,6 @@ pub enum Action<'a> {
     MigrateToPropolis(&'a str),
 }
 
-/// To run a lifecycle test, store any context needed to check the health of a
-/// VM in a struct, them `impl CheckVm` for the struct and pass an instance of
-/// it to [`lifecycle_test`].
-#[async_trait::async_trait]
-pub trait CheckVm {
-    async fn check(&self, vm: &TestVm);
-}
-
 impl Framework {
     /// Runs a lifecycle test on the supplied `vm` by iterating over the
     /// `actions`, performing the specified action, and then calling `check_fn`
@@ -48,7 +41,7 @@ impl Framework {
         &self,
         vm: TestVm,
         actions: &[Action<'_>],
-        check_fn: impl CheckVm,
+        check_fn: impl for<'v> Fn(&'v TestVm) -> BoxFuture<'v, ()>,
     ) -> anyhow::Result<()> {
         let mut vm = vm;
         let original_name = vm.name().to_owned();
@@ -119,7 +112,7 @@ impl Framework {
                 }
             }
 
-            check_fn.check(&vm).await;
+            check_fn(&vm).await;
         }
 
         Ok(())
