@@ -101,7 +101,7 @@ pub async fn run_tests_with_ctx(
         let test_ctx = ctx.clone();
         let tc = execution.tc;
         let mut sigint_rx_task = sigint_rx.clone();
-        let test_outcome = match tokio::spawn(async move {
+        let test_outcome = tokio::spawn(async move {
             tokio::select! {
                 // Ensure interrupt signals are always handled instead of
                 // continuing to run the test.
@@ -120,12 +120,11 @@ pub async fn run_tests_with_ctx(
             }
         })
         .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => TestOutcome::Failed(Some(
+        .unwrap_or_else(|_| {
+            TestOutcome::Failed(Some(
                 "test task panicked, see test logs".to_string(),
-            )),
-        };
+            ))
+        });
 
         info!(
             "test {} ... {}{}",
