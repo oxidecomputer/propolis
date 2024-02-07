@@ -51,7 +51,7 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
             let res: phd_testcase::Result<()> = async {
                 #(#fn_block)*
                 Ok(())
-            }.instrument(tracing::info_span!(#fn_name, module = module_path!())).await;
+            }.instrument(tracing::info_span!("test", path = %concat!(module_path!(), "::", #fn_name))).await;
             match res {
                 Ok(()) => phd_testcase::TestOutcome::Passed,
                 Err(e) => {
