@@ -68,7 +68,7 @@ mod from_base {
                 Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
             ],
             |target: &TestVm| {
-                Box::pin(async move {
+                Box::pin(async {
                     // the file should still exist on the target VM after migration.
                     let lsout = target
                         .run_shell_command("ls foo.bar")
@@ -321,7 +321,7 @@ async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
         source,
         &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
         |target: &TestVm| {
-            Box::pin(async move {
+            Box::pin(async {
                 // the file should still exist on the target VM after migration.
                 let lsout = target
                     .run_shell_command("ls foo.bar")
