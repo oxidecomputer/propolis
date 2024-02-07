@@ -10,7 +10,6 @@
 
 use std::{
     path::{Path, PathBuf},
-    rc::Rc,
     sync::Arc,
 };
 
@@ -62,7 +61,7 @@ impl BlockSize {
 }
 
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
-pub trait DiskConfig: std::fmt::Debug {
+pub trait DiskConfig: std::fmt::Debug + Send + Sync {
     /// Yields the backend spec for this disk's storage backend.
     fn backend_spec(&self) -> (String, StorageBackendV0);
 
@@ -113,11 +112,11 @@ pub(crate) struct DiskFactory {
 
     /// A reference to the artifact store to use to look up guest OS artifacts
     /// when those are used as a disk source.
-    artifact_store: Rc<ArtifactStore>,
+    artifact_store: Arc<ArtifactStore>,
 
     /// The port allocator to use to allocate ports to Crucible server
     /// processes.
-    port_allocator: Rc<PortAllocator>,
+    port_allocator: Arc<PortAllocator>,
 
     /// The logging discipline to use for Crucible server processes.
     log_mode: ServerLogMode,
@@ -129,8 +128,8 @@ impl DiskFactory {
     /// supplied `artifact_store`.
     pub fn new(
         storage_dir: &impl AsRef<Path>,
-        artifact_store: Rc<ArtifactStore>,
-        port_allocator: Rc<PortAllocator>,
+        artifact_store: Arc<ArtifactStore>,
+        port_allocator: Arc<PortAllocator>,
         log_mode: ServerLogMode,
     ) -> Self {
         Self {
@@ -143,12 +142,13 @@ impl DiskFactory {
 }
 
 impl DiskFactory {
-    fn get_guest_artifact_info(
+    async fn get_guest_artifact_info(
         &self,
         artifact_name: &str,
     ) -> Result<(PathBuf, GuestOsKind), DiskError> {
         self.artifact_store
             .get_guest_os_image(artifact_name)
+            .await
             .map(|(utf8, kind)| (utf8.into_std_path_buf(), kind))
             .with_context(|| {
                 format!("failed to get guest OS artifact '{}'", artifact_name)
@@ -158,14 +158,14 @@ impl DiskFactory {
 
     /// Creates a new disk backed by a file whose initial contents are specified
     /// by `source`.
-    pub(crate) fn create_file_backed_disk(
+    pub(crate) async fn create_file_backed_disk<'d>(
         &self,
         name: String,
-        source: DiskSource,
+        source: DiskSource<'d>,
     ) -> Result<Arc<FileBackedDisk>, DiskError> {
         let DiskSource::Artifact(artifact_name) = source;
         let (artifact_path, guest_os) =
-            self.get_guest_artifact_info(artifact_name)?;
+            self.get_guest_artifact_info(artifact_name).await?;
 
         FileBackedDisk::new_from_artifact(
             name,
@@ -190,18 +190,18 @@ impl DiskFactory {
     ///   `source` artifact is larger than the minimum size, the disk will be
     ///   the size of the source artifact, instead.
     /// - block_size: The disk's block size.
-    pub(crate) fn create_crucible_disk(
+    pub(crate) async fn create_crucible_disk<'d>(
         &self,
         name: String,
-        source: DiskSource,
+        source: DiskSource<'d>,
         min_disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
-        let binary_path = self.artifact_store.get_crucible_downstairs()?;
+        let binary_path = self.artifact_store.get_crucible_downstairs().await?;
 
         let DiskSource::Artifact(artifact_name) = source;
         let (artifact_path, guest_os) =
-            self.get_guest_artifact_info(artifact_name)?;
+            self.get_guest_artifact_info(artifact_name).await?;
 
         let mut ports = [0u16; 3];
         for port in &mut ports {

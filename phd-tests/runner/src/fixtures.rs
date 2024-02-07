@@ -2,20 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use tracing::instrument;
 
 use crate::Framework;
 
 /// A wrapper containing the objects needed to run the executor's test fixtures.
-pub struct TestFixtures<'a> {
-    test_context: &'a Framework,
+pub struct TestFixtures {
+    test_context: Arc<Framework>,
 }
 
-impl<'a> TestFixtures<'a> {
+impl TestFixtures {
     /// Creates a new set of test fixtures using the supplied command-line
     /// parameters and artifact store.
-    pub fn new(test_context: &'a Framework) -> Result<Self> {
+    pub fn new(test_context: Arc<Framework>) -> Result<Self> {
         Ok(Self { test_context })
     }
 
@@ -47,8 +49,8 @@ impl<'a> TestFixtures<'a> {
     /// during unwinding, this cleanup fixture will run whenever the
     /// corresponding setup fixture has run.
     #[instrument(skip_all)]
-    pub fn test_cleanup(&mut self) -> Result<()> {
-        self.test_context.reset();
+    pub async fn test_cleanup(&mut self) -> Result<()> {
+        self.test_context.reset().await;
         Ok(())
     }
 }

@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::cell::RefCell;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
@@ -46,18 +46,9 @@ struct Execution {
     status: Status,
 }
 
-// The executor will install a global panic hook that allows a thread that
-// panics to store a message for the executor to log after unwinding. A
-// `RefCell` is safe here because this message is stored once per thread, and a
-// thread running the panic hook is by definition not running the code that
-// handles a caught panic.
-thread_local! {
-    static PANIC_MSG: RefCell<Option<String>> = RefCell::new(None);
-}
-
 /// Executes a set of tests using the supplied test context.
-pub fn run_tests_with_ctx(
-    ctx: &Framework,
+pub async fn run_tests_with_ctx(
+    ctx: &Arc<Framework>,
     mut fixtures: TestFixtures,
     run_opts: &RunOptions,
 ) -> ExecutionStats {
@@ -86,15 +77,6 @@ pub fn run_tests_with_ctx(
 
     fixtures.execution_setup().unwrap();
 
-    std::panic::set_hook(Box::new(|info| {
-        PANIC_MSG.with(|val| {
-            let backtrace = backtrace::Backtrace::new();
-            let msg = format!("{}\n    backtrace:\n{:#?}", info, backtrace);
-            eprintln!("Caught a panic: {}", msg);
-            *val.borrow_mut() = Some(msg);
-        });
-    }));
-
     info!("Running {} test(s)", executions.len());
     let start_time = Instant::now();
     'exec_loop: for execution in &mut executions {
@@ -109,10 +91,17 @@ pub fn run_tests_with_ctx(
         }
 
         stats.tests_not_run -= 1;
-        let test_outcome = std::panic::catch_unwind(|| execution.tc.run(ctx))
-            .unwrap_or_else(|_| {
-                PANIC_MSG.with(|val| TestOutcome::Failed(val.take()))
-            });
+        let test_ctx = ctx.clone();
+        let tc = execution.tc;
+        let test_outcome =
+            match tokio::spawn(async move { tc.run(test_ctx.as_ref()).await })
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(_) => TestOutcome::Failed(Some(
+                    "test task panicked, see test logs".to_string(),
+                )),
+            };
 
         info!(
             "test {} ... {}{}",
@@ -141,7 +130,7 @@ pub fn run_tests_with_ctx(
         }
 
         execution.status = Status::Ran(test_outcome);
-        if let Err(e) = fixtures.test_cleanup() {
+        if let Err(e) = fixtures.test_cleanup().await {
             error!("Error running cleanup fixture: {}", e);
             break 'exec_loop;
         }

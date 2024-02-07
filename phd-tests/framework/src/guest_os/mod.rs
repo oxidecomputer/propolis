@@ -36,7 +36,7 @@ pub(super) enum CommandSequenceEntry {
 
 pub(super) struct CommandSequence(pub Vec<CommandSequenceEntry>);
 
-pub(super) trait GuestOs {
+pub(super) trait GuestOs: Send + Sync {
     /// Retrieves the command sequence used to wait for the OS to boot and log
     /// into it.
     fn get_login_sequence(&self) -> CommandSequence;

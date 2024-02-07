@@ -8,6 +8,7 @@ test = false
 doctest = false
 
 [dependencies]
+futures.workspace = true
 http.workspace = true
 propolis-client.workspace = true
 phd-testcase.workspace = true

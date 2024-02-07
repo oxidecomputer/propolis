@@ -37,11 +37,11 @@ impl EnvironmentSpec {
         self
     }
 
-    pub(crate) fn build<'a>(
+    pub(crate) async fn build<'a>(
         &self,
         framework: &'a Framework,
     ) -> anyhow::Result<Environment<'a>> {
-        Environment::from_builder(self, framework)
+        Environment::from_builder(self, framework).await
     }
 }
 
@@ -56,7 +56,7 @@ pub(crate) enum Environment<'a> {
 }
 
 impl<'a> Environment<'a> {
-    fn from_builder(
+    async fn from_builder(
         builder: &EnvironmentSpec,
         framework: &'a Framework,
     ) -> anyhow::Result<Self> {
@@ -65,6 +65,7 @@ impl<'a> Environment<'a> {
                 let propolis_server = framework
                     .artifact_store
                     .get_propolis_server(&builder.propolis_artifact)
+                    .await
                     .context("setting up VM execution environment")?;
                 let server_port = framework
                     .port_allocator

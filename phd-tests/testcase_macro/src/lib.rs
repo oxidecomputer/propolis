@@ -3,8 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use proc_macro::TokenStream;
+use proc_macro_error::{abort, proc_macro_error};
 use quote::quote;
-use syn::{parse_macro_input, ItemFn};
+use syn::{parse_macro_input, spanned::Spanned, ItemFn};
 
 /// The macro for labeling PHD testcases.
 ///
@@ -13,6 +14,7 @@ use syn::{parse_macro_input, ItemFn};
 /// wrapper function that returns a `phd_testcase::TestOutcome` and creates an
 /// entry in the test case inventory that allows the PHD runner to enumerate the
 /// test.
+#[proc_macro_error]
 #[proc_macro_attribute]
 pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
     let item_fn = parse_macro_input!(input as ItemFn);
@@ -27,23 +29,30 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
             phd_testcase::TestCase::new(
                 module_path!(),
                 #fn_name,
-                phd_testcase::TestFunction { f: #fn_ident }
+                phd_testcase::TestFunction { f: |ctx| Box::pin(#fn_ident(ctx)) }
             )
         }
     };
+
+    if item_fn.sig.asyncness.is_none() {
+        abort!(item_fn.sig.span(), "PHD test cases must be async");
+    }
 
     // Rebuild the test body into an immediately-executed function that returns
     // an `anyhow::Result`. This allows tests to use the `?` operator and to
     // `return Ok(())` to allow a test to pass early.
     let fn_vis = item_fn.vis.clone();
     let fn_sig = item_fn.sig.clone();
-    let fn_block = item_fn.block;
+    let fn_block = item_fn.block.stmts;
+
     let remade_fn = quote! {
         #fn_vis #fn_sig -> TestOutcome {
-            match || -> phd_testcase::Result<()> {
-                #fn_block
+            use tracing::Instrument;
+            let res: phd_testcase::Result<()> = async {
+                #(#fn_block)*
                 Ok(())
-            }(){
+            }.instrument(tracing::info_span!("test", path = %concat!(module_path!(), "::", #fn_name))).await;
+            match res {
                 Ok(()) => phd_testcase::TestOutcome::Passed,
                 Err(e) => {
                     // Treat the test as skipped if the error downcasts to the

@@ -27,18 +27,23 @@
 //! environment. The `spawn_successor_vm` function provides a shorthand way to
 //! do this.
 
-use std::{fmt, ops::Range, rc::Rc};
+use std::{fmt, ops::Range, sync::Arc};
 
 use anyhow::Context;
 use artifacts::DEFAULT_PROPOLIS_ARTIFACT;
 use camino::Utf8PathBuf;
 
 use disk::DiskFactory;
+use futures::{stream::FuturesUnordered, StreamExt};
 use port_allocator::PortAllocator;
 use server_log_mode::ServerLogMode;
 pub use test_vm::TestVm;
 use test_vm::{
     environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
+};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
 };
 
 pub mod artifacts;
@@ -53,7 +58,6 @@ pub mod test_vm;
 
 /// An instance of the PHD test framework.
 pub struct Framework {
-    pub(crate) tokio_rt: tokio::runtime::Runtime,
     pub(crate) tmp_directory: Utf8PathBuf,
     pub(crate) server_log_mode: ServerLogMode,
 
@@ -68,12 +72,21 @@ pub struct Framework {
     // self-referencing. Since the runner is single-threaded, avoid arguing with
     // anyone about lifetimes by wrapping the relevant shared components in an
     // `Rc`.
-    pub(crate) artifact_store: Rc<artifacts::ArtifactStore>,
+    pub(crate) artifact_store: Arc<artifacts::ArtifactStore>,
     pub(crate) disk_factory: DiskFactory,
-    pub(crate) port_allocator: Rc<PortAllocator>,
+    pub(crate) port_allocator: Arc<PortAllocator>,
 
     pub(crate) crucible_enabled: bool,
     pub(crate) migration_base_enabled: bool,
+
+    /// Buffers cleanup tasks that need to be run after a test case completes.
+    /// [`Self::cleanup_task_channel`] returns a clone of this sender that
+    /// framework users can use to register these tasks (without having to hold
+    /// a reference to the `Framework`).
+    cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
+
+    /// The receiver side of [`cleanup_task_tx`].
+    cleanup_task_rx: tokio::sync::Mutex<UnboundedReceiver<JoinHandle<()>>>,
 }
 
 pub struct FrameworkParameters<'a> {
@@ -115,7 +128,7 @@ pub enum BasePropolisSource<'a> {
 impl Framework {
     /// Builds a brand new framework. Called from the test runner, which creates
     /// one framework and then distributes it to tests.
-    pub fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
+    pub async fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
         let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
             params.artifact_directory.clone(),
             &params.artifact_toml,
@@ -134,13 +147,14 @@ impl Framework {
 
         let crucible_enabled = match params.crucible_downstairs {
             Some(source) => {
-                artifact_store.add_crucible_downstairs(&source).with_context(
-                    || {
+                artifact_store
+                    .add_crucible_downstairs(&source)
+                    .await
+                    .with_context(|| {
                         format!(
                             "adding Crucible downstairs {source} from options",
                         )
-                    },
-                )?;
+                    })?;
                 true
             }
             None => {
@@ -155,6 +169,7 @@ impl Framework {
             Some(source) => {
                 artifact_store
                     .add_current_propolis(source)
+                    .await
                     .with_context(|| format!("adding 'migration base' Propolis server {source} from options"))?;
                 true
             }
@@ -164,8 +179,8 @@ impl Framework {
             }
         };
 
-        let artifact_store = Rc::new(artifact_store);
-        let port_allocator = Rc::new(PortAllocator::new(params.port_range));
+        let artifact_store = Arc::new(artifact_store);
+        let port_allocator = Arc::new(PortAllocator::new(params.port_range));
         let disk_factory = DiskFactory::new(
             &params.tmp_directory,
             artifact_store.clone(),
@@ -173,10 +188,9 @@ impl Framework {
             params.server_log_mode,
         );
 
+        let (cleanup_task_tx, cleanup_task_rx) =
+            tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
-            tokio_rt: tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?,
             tmp_directory: params.tmp_directory,
             server_log_mode: params.server_log_mode,
             default_guest_cpus: params.default_guest_cpus,
@@ -188,13 +202,16 @@ impl Framework {
             port_allocator,
             crucible_enabled,
             migration_base_enabled,
+            cleanup_task_tx,
+            cleanup_task_rx: tokio::sync::Mutex::new(cleanup_task_rx),
         })
     }
 
     /// Resets the state of any stateful objects in the framework to prepare it
     /// to run a new test case.
-    pub fn reset(&self) {
+    pub async fn reset(&self) {
         self.port_allocator.reset();
+        self.wait_for_cleanup_tasks().await;
     }
 
     /// Creates a new VM configuration builder using the default configuration
@@ -218,23 +235,30 @@ impl Framework {
     /// Spawns a test VM using the default configuration returned from
     /// `vm_builder` and the default environment returned from
     /// `environment_builder`.
-    pub fn spawn_default_vm(&self, vm_name: &str) -> anyhow::Result<TestVm> {
-        self.spawn_vm(&self.vm_config_builder(vm_name), None)
+    pub async fn spawn_default_vm(
+        &self,
+        vm_name: &str,
+    ) -> anyhow::Result<TestVm> {
+        self.spawn_vm(&self.vm_config_builder(vm_name), None).await
     }
 
     /// Spawns a new test VM using the supplied `config`. If `environment` is
     /// `Some`, the VM is spawned using the supplied environment; otherwise it
     /// is spawned using the default `environment_builder`.
-    pub fn spawn_vm(
+    pub async fn spawn_vm(
         &self,
         config: &VmConfig,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
         TestVm::new(
             self,
-            config.vm_spec(self).context("building VM config for test VM")?,
+            config
+                .vm_spec(self)
+                .await
+                .context("building VM config for test VM")?,
             environment.unwrap_or(&self.environment_builder()),
         )
+        .await
         .context("constructing test VM")
     }
 
@@ -243,7 +267,7 @@ impl Framework {
     /// predecessor's backing objects (e.g. disk handles). If `environment` is
     /// `None`, the successor is launched using the predecessor's environment
     /// spec.
-    pub fn spawn_successor_vm(
+    pub async fn spawn_successor_vm(
         &self,
         vm_name: &str,
         vm: &TestVm,
@@ -263,6 +287,7 @@ impl Framework {
             vm_spec,
             environment.unwrap_or(&vm.environment_spec()),
         )
+        .await
     }
 
     /// Yields this framework instance's default guest OS artifact name. This
@@ -283,6 +308,39 @@ impl Framework {
     /// available for migration-from-base tests.
     pub fn migration_base_enabled(&self) -> bool {
         self.migration_base_enabled
+    }
+
+    /// Yields a sender to which the caller can submit tasks that will be
+    /// `await`ed after the calling test case completes.
+    pub(crate) fn cleanup_task_channel(
+        &self,
+    ) -> UnboundedSender<JoinHandle<()>> {
+        self.cleanup_task_tx.clone()
+    }
+
+    /// Runs any currently-queued cleanup tasks in this `Framework` to
+    /// completion.
+    ///
+    /// This routine synchronizes access to the cleanup task queue such that
+    /// when it returns, any cleanup tasks that were previously queued by the
+    /// calling thread are guaranteed to have been completed (though not
+    /// necessarily by the calling thread itself, i.e., another, earlier caller
+    /// may have awaited the task).
+    async fn wait_for_cleanup_tasks(&self) {
+        let futs = FuturesUnordered::new();
+
+        let mut guard = self.cleanup_task_rx.lock().await;
+        while let Ok(task) = guard.try_recv() {
+            futs.push(task);
+        }
+
+        // Hold the lock while awaiting the tasks to block subsequent callers.
+        // This is needed to guarantee that all tasks submitted by a thread are
+        // retired when that thread returns from this call: without the lock, T1
+        // can submit a task, T2 can remove it from the queue but not fully
+        // retire it, and a subsequent call from T1 will see an empty queue and
+        // return immediately even though its task is still active.
+        let _results: Vec<_> = futs.collect().await;
     }
 }
 

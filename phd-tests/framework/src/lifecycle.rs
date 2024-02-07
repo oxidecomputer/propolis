@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use anyhow::Context;
+use futures::future::BoxFuture;
 use tracing::info;
 use uuid::Uuid;
 
@@ -36,11 +37,11 @@ impl Framework {
     /// Runs a lifecycle test on the supplied `vm` by iterating over the
     /// `actions`, performing the specified action, and then calling `check_fn`
     /// on the resulting VM to verify invariants.
-    pub fn lifecycle_test(
+    pub async fn lifecycle_test<'a>(
         &self,
         vm: TestVm,
-        actions: &[Action],
-        check_fn: impl Fn(&TestVm),
+        actions: &[Action<'_>],
+        check_fn: impl for<'v> Fn(&'v TestVm) -> BoxFuture<'v, ()>,
     ) -> anyhow::Result<()> {
         let mut vm = vm;
         let original_name = vm.name().to_owned();
@@ -51,7 +52,7 @@ impl Framework {
                         vm_name = original_name,
                         "rebooting VM for lifecycle test"
                     );
-                    vm.reset()?;
+                    vm.reset().await?;
                 }
                 Action::StopAndStart => {
                     info!(
@@ -60,11 +61,12 @@ impl Framework {
                     );
                     let new_vm_name =
                         format!("{}_lifecycle_{}", original_name, idx);
-                    vm.stop()?;
-                    let mut new_vm =
-                        self.spawn_successor_vm(&new_vm_name, &vm, None)?;
-                    new_vm.launch()?;
-                    new_vm.wait_to_boot()?;
+                    vm.stop().await?;
+                    let mut new_vm = self
+                        .spawn_successor_vm(&new_vm_name, &vm, None)
+                        .await?;
+                    new_vm.launch().await?;
+                    new_vm.wait_to_boot().await?;
                     vm = new_vm;
                 }
                 Action::MigrateToPropolis(propolis) => {
@@ -80,24 +82,29 @@ impl Framework {
 
                     let mut env = self.environment_builder();
                     env.propolis(propolis);
-                    let mut new_vm =
-                        self.spawn_successor_vm(&new_vm_name, &vm, Some(&env))?;
+                    let mut new_vm = self
+                        .spawn_successor_vm(&new_vm_name, &vm, Some(&env))
+                        .await?;
                     let migration_id = Uuid::new_v4();
-                    new_vm.migrate_from(
-                        &vm,
-                        migration_id,
-                        MigrationTimeout::default(),
-                    )?;
+                    new_vm
+                        .migrate_from(
+                            &vm,
+                            migration_id,
+                            MigrationTimeout::default(),
+                        )
+                        .await?;
 
                     // Explicitly check migration status on both the source and
                     // target to make sure it is available even after migration
                     // has finished.
                     let src_migration_state = vm
                         .get_migration_state(migration_id)
+                        .await
                         .context("Failed to get source VM migration state")?;
                     assert_eq!(src_migration_state, MigrationState::Finish);
                     let target_migration_state = new_vm
                         .get_migration_state(migration_id)
+                        .await
                         .context("Failed to get target VM migration state")?;
                     assert_eq!(target_migration_state, MigrationState::Finish);
 
@@ -105,7 +112,7 @@ impl Framework {
                 }
             }
 
-            check_fn(&vm);
+            check_fn(&vm).await;
         }
 
         Ok(())

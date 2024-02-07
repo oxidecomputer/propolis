@@ -146,7 +146,7 @@ impl VmConfig {
         self
     }
 
-    pub(crate) fn vm_spec(
+    pub(crate) async fn vm_spec(
         &self,
         framework: &Framework,
     ) -> anyhow::Result<VmSpec> {
@@ -155,6 +155,7 @@ impl VmConfig {
         let bootrom = framework
             .artifact_store
             .get_bootrom(&self.bootrom_artifact)
+            .await
             .context("looking up bootrom artifact")?;
 
         let config_toml_contents =
@@ -168,51 +169,19 @@ impl VmConfig {
         let (_, guest_os_kind) = framework
             .artifact_store
             .get_guest_os_image(&self.boot_disk.source_artifact)
+            .await
             .context("getting guest OS kind for boot disk")?;
-
-        // This closure helps to construct disk handles from disk requests.
-        let make_disk = |name: String,
-                         req: &DiskRequest|
-         -> anyhow::Result<Arc<dyn DiskConfig>> {
-            let source = DiskSource::Artifact(&req.source_artifact);
-            Ok(match req.backend {
-                DiskBackend::File => framework
-                    .disk_factory
-                    .create_file_backed_disk(name, source)
-                    .with_context(|| {
-                        format!(
-                            "creating new file-backed disk from '{}'",
-                            &req.source_artifact
-                        )
-                    })?,
-                DiskBackend::Crucible { min_disk_size_gib, block_size } => {
-                    framework
-                        .disk_factory
-                        .create_crucible_disk(
-                            name,
-                            source,
-                            min_disk_size_gib,
-                            block_size,
-                        )
-                        .with_context(|| {
-                            format!(
-                                "creating new Crucible-backed disk from \
-                                    '{}'",
-                                &req.source_artifact
-                            )
-                        })?
-                }
-            })
-        };
 
         let mut disk_handles = Vec::new();
         disk_handles.push(
-            make_disk("boot-disk".to_owned(), &self.boot_disk)
+            make_disk("boot-disk".to_owned(), framework, &self.boot_disk)
+                .await
                 .context("creating boot disk")?,
         );
         for (idx, data_disk) in self.data_disks.iter().enumerate() {
             disk_handles.push(
-                make_disk(format!("data-disk-{}", idx), data_disk)
+                make_disk(format!("data-disk-{}", idx), framework, data_disk)
+                    .await
                     .context("creating data disk")?,
             );
         }
@@ -269,6 +238,37 @@ impl VmConfig {
             config_toml_contents,
         })
     }
+}
+
+async fn make_disk(
+    name: String,
+    framework: &Framework,
+    req: &DiskRequest,
+) -> anyhow::Result<Arc<dyn DiskConfig>> {
+    let source = DiskSource::Artifact(&req.source_artifact);
+    Ok(match req.backend {
+        DiskBackend::File => framework
+            .disk_factory
+            .create_file_backed_disk(name, source)
+            .await
+            .with_context(|| {
+                format!(
+                    "creating new file-backed disk from '{}'",
+                    &req.source_artifact
+                )
+            })? as Arc<dyn DiskConfig>,
+        DiskBackend::Crucible { min_disk_size_gib, block_size } => framework
+            .disk_factory
+            .create_crucible_disk(name, source, min_disk_size_gib, block_size)
+            .await
+            .with_context(|| {
+                format!(
+                    "creating new Crucible-backed disk from '{}'",
+                    &req.source_artifact
+                )
+            })?
+            as Arc<dyn DiskConfig>,
+    })
 }
 
 fn default_migration_failure_device() -> propolis_server_config::Device {

@@ -11,16 +11,17 @@ use tracing::info;
 use uuid::Uuid;
 
 #[phd_testcase]
-fn smoke_test(ctx: &Framework) {
-    run_smoke_test(ctx, ctx.spawn_default_vm("migration_smoke")?)?;
+async fn smoke_test(ctx: &Framework) {
+    run_smoke_test(ctx, ctx.spawn_default_vm("migration_smoke").await?).await?;
 }
 
 #[phd_testcase]
-fn serial_history(ctx: &Framework) {
+async fn serial_history(ctx: &Framework) {
     run_serial_history_test(
         ctx,
-        ctx.spawn_default_vm("migration_serial_history")?,
-    )?;
+        ctx.spawn_default_vm("migration_serial_history").await?,
+    )
+    .await?;
 }
 
 /// Tests for migrating from a "migration base" Propolis revision (e.g. the
@@ -29,32 +30,35 @@ mod from_base {
     use super::*;
 
     #[phd_testcase]
-    fn can_migrate_from_base(ctx: &Framework) {
-        run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base")?)?;
+    async fn can_migrate_from_base(ctx: &Framework) {
+        run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base").await?)
+            .await?;
     }
 
     #[phd_testcase]
-    fn serial_history(ctx: &Framework) {
+    async fn serial_history(ctx: &Framework) {
         run_serial_history_test(
             ctx,
-            spawn_base_vm(ctx, "migration_serial_history_base")?,
-        )?;
+            spawn_base_vm(ctx, "migration_serial_history_base").await?,
+        )
+        .await?;
     }
 
     // Tests migrating from the "migration base" propolis artifact to the Propolis
     // version under test, back to "base", and back to the version under
     // test.
     #[phd_testcase]
-    fn migration_from_base_and_back(ctx: &Framework) {
-        let mut source = spawn_base_vm(ctx, "migration_from_base_and_back")?;
-        source.launch()?;
-        source.wait_to_boot()?;
-        let lsout = source.run_shell_command("ls foo.bar 2> /dev/null")?;
+    async fn migration_from_base_and_back(ctx: &Framework) {
+        let mut source =
+            spawn_base_vm(ctx, "migration_from_base_and_back").await?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
+        let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
         assert_eq!(lsout, "");
 
         // create an empty file on the source VM.
-        source.run_shell_command("touch ./foo.bar")?;
-        source.run_shell_command("sync ./foo.bar")?;
+        source.run_shell_command("touch ./foo.bar").await?;
+        source.run_shell_command("sync ./foo.bar").await?;
 
         ctx.lifecycle_test(
             source,
@@ -64,16 +68,20 @@ mod from_base {
                 Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
             ],
             |target: &TestVm| {
-                // the file should still exist on the target VM after migration.
-                let lsout = target
-                    .run_shell_command("ls foo.bar")
-                    .expect("`ls foo.bar` should succeed");
-                assert_eq!(lsout, "foo.bar");
+                Box::pin(async {
+                    // the file should still exist on the target VM after migration.
+                    let lsout = target
+                        .run_shell_command("ls foo.bar")
+                        .await
+                        .expect("`ls foo.bar` should succeed");
+                    assert_eq!(lsout, "foo.bar");
+                })
             },
-        )?;
+        )
+        .await?;
     }
 
-    fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
+    async fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
         if !ctx.migration_base_enabled() {
             phd_skip!("No 'migration base' Propolis revision available");
         }
@@ -81,7 +89,7 @@ mod from_base {
         let mut env = ctx.environment_builder();
         env.propolis(artifacts::BASE_PROPOLIS_ARTIFACT);
         let cfg = ctx.vm_config_builder(name);
-        ctx.spawn_vm(&cfg, Some(&env))
+        ctx.spawn_vm(&cfg, Some(&env)).await
     }
 }
 
@@ -90,31 +98,27 @@ mod running_process {
     use super::*;
 
     #[phd_testcase]
-    fn migrate_running_process(ctx: &Framework) {
+    async fn migrate_running_process(ctx: &Framework) {
         let mut source =
-            ctx.spawn_default_vm("migrate_running_process_source")?;
-        let mut target = ctx.spawn_successor_vm(
-            "migrate_running_process_target",
-            &source,
-            None,
-        )?;
+            ctx.spawn_default_vm("migrate_running_process_source").await?;
+        let mut target = ctx
+            .spawn_successor_vm("migrate_running_process_target", &source, None)
+            .await?;
 
-        source.launch()?;
-        source.wait_to_boot()?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
 
-        mk_dirt(&source)?;
+        mk_dirt(&source).await?;
 
-        target.migrate_from(
-            &source,
-            Uuid::new_v4(),
-            MigrationTimeout::default(),
-        )?;
+        target
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await?;
 
-        check_dirt(&target)?;
+        check_dirt(&target).await?;
     }
 
     #[phd_testcase]
-    fn import_failure(ctx: &Framework) {
+    async fn import_failure(ctx: &Framework) {
         let mut cfg = ctx.vm_config_builder(
             "migrate_running_process::import_failure_source",
         );
@@ -122,7 +126,7 @@ mod running_process {
         // the source as well as the target, so that the source will offer the
         // device.
         cfg.fail_migration_imports(0);
-        let mut source = ctx.spawn_vm(&cfg, None)?;
+        let mut source = ctx.spawn_vm(&cfg, None).await?;
 
         let mut target1 = {
             // Configure the target to fail when it imports the migration
@@ -134,75 +138,79 @@ mod running_process {
             // add the `fail_migration_imports` option to the new VM's
             // `VmConfig`. Instead, we use `spawn_vm`, and pass the source VM's
             // environment to ensure it's inherited.
-            ctx.spawn_vm(&cfg, Some(&source.environment_spec()))?
+            ctx.spawn_vm(&cfg, Some(&source.environment_spec())).await?
         };
 
-        let mut target2 = ctx.spawn_successor_vm(
-            "migrate_running_process::import_failure_target2",
-            &source,
-            None,
-        )?;
+        let mut target2 = ctx
+            .spawn_successor_vm(
+                "migrate_running_process::import_failure_target2",
+                &source,
+                None,
+            )
+            .await?;
 
-        source.launch()?;
-        source.wait_to_boot()?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
 
-        mk_dirt(&source)?;
+        mk_dirt(&source).await?;
 
         // first migration should fail.
         let error = target1
             .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
         // try again. this time, it should work!
-        target2.migrate_from(
-            &source,
-            Uuid::new_v4(),
-            MigrationTimeout::default(),
-        )?;
+        target2
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await?;
 
-        check_dirt(&target2)?;
+        check_dirt(&target2).await?;
     }
 
     #[phd_testcase]
-    fn export_failure(ctx: &Framework) {
+    async fn export_failure(ctx: &Framework) {
         let mut source = {
             let mut cfg = ctx.vm_config_builder(
                 "migrate_running_process::export_failure_source",
             );
             cfg.fail_migration_exports(1);
-            ctx.spawn_vm(&cfg, None)?
+            ctx.spawn_vm(&cfg, None).await?
         };
-        let mut target1 = ctx.spawn_successor_vm(
-            "migrate_running_process::export_failure_target1",
-            &source,
-            None,
-        )?;
-        let mut target2 = ctx.spawn_successor_vm(
-            "migrate_running_process::export_failure_target2",
-            &source,
-            None,
-        )?;
+        let mut target1 = ctx
+            .spawn_successor_vm(
+                "migrate_running_process::export_failure_target1",
+                &source,
+                None,
+            )
+            .await?;
+        let mut target2 = ctx
+            .spawn_successor_vm(
+                "migrate_running_process::export_failure_target2",
+                &source,
+                None,
+            )
+            .await?;
 
-        source.launch()?;
-        source.wait_to_boot()?;
+        source.launch().await?;
+        source.wait_to_boot().await?;
 
-        mk_dirt(&source)?;
+        mk_dirt(&source).await?;
 
         // first migration should fail.
         let error = target1
             .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
         // try again. this time, it should work!
-        target2.migrate_from(
-            &source,
-            Uuid::new_v4(),
-            MigrationTimeout::default(),
-        )?;
+        target2
+            .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+            .await?;
 
-        check_dirt(&target2)?;
+        check_dirt(&target2).await?;
     }
 
     /// Starts a process on the guest VM which stores a bunch of strings in
@@ -212,14 +220,15 @@ mod running_process {
     ///
     /// Resuming this process after migration allows us to check that the
     /// guest's memory was migrated correctly.
-    fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+    async fn mk_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
         vm.run_shell_command(concat!(
             "cat >dirt.sh <<'EOF'\n",
             include_str!("../testdata/dirt.sh"),
             "\nEOF"
-        ))?;
-        vm.run_shell_command("chmod +x dirt.sh")?;
-        let run_dirt = vm.run_shell_command("./dirt.sh")?;
+        ))
+        .await?;
+        vm.run_shell_command("chmod +x dirt.sh").await?;
+        let run_dirt = vm.run_shell_command("./dirt.sh").await?;
         assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
         assert!(
             run_dirt.contains("Stopped"),
@@ -229,15 +238,15 @@ mod running_process {
         Ok(())
     }
 
-    fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
-        let output = vm.run_shell_command("fg")?;
+    async fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
+        let output = vm.run_shell_command("fg").await?;
         assert!(output.contains("all good"), "dirt.sh failed: {output:?}");
         Ok(())
     }
 }
 
 #[phd_testcase]
-fn incompatible_vms(ctx: &Framework) {
+async fn incompatible_vms(ctx: &Framework) {
     let mut builders = vec![
         ctx.vm_config_builder("migration_incompatible_target_1"),
         ctx.vm_config_builder("migration_incompatible_target_2"),
@@ -247,101 +256,118 @@ fn incompatible_vms(ctx: &Framework) {
     builders[1].memory_mib(1024);
 
     for (i, cfg) in builders.into_iter().enumerate() {
-        let mut source = ctx.spawn_vm(
-            ctx.vm_config_builder(&format!(
-                "migration_incompatible_source_{}",
-                i
-            ))
-            .cpus(4)
-            .memory_mib(512),
-            None,
-        )?;
+        let mut source = ctx
+            .spawn_vm(
+                ctx.vm_config_builder(&format!(
+                    "migration_incompatible_source_{}",
+                    i
+                ))
+                .cpus(4)
+                .memory_mib(512),
+                None,
+            )
+            .await?;
 
-        source.launch()?;
-        let mut target = ctx.spawn_vm(&cfg, None)?;
+        source.launch().await?;
+        let mut target = ctx.spawn_vm(&cfg, None).await?;
 
         let migration_id = Uuid::new_v4();
         assert!(target
             .migrate_from(&source, migration_id, MigrationTimeout::default())
+            .await
             .is_err());
 
         // Explicitly check migration status on both the source and target to
         // make sure it is available even after migration has finished.
-        let src_migration_state = source.get_migration_state(migration_id)?;
+        let src_migration_state =
+            source.get_migration_state(migration_id).await?;
         assert_eq!(src_migration_state, MigrationState::Error);
         let target_migration_state =
-            target.get_migration_state(migration_id)?;
+            target.get_migration_state(migration_id).await?;
         assert_eq!(target_migration_state, MigrationState::Error);
     }
 }
 
 #[phd_testcase]
-fn multiple_migrations(ctx: &Framework) {
-    let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0")?;
+async fn multiple_migrations(ctx: &Framework) {
+    let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0").await?;
     let mut vm1 =
-        ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None)?;
+        ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None).await?;
     let mut vm2 =
-        ctx.spawn_successor_vm("multiple_migrations_2", &vm1, None)?;
+        ctx.spawn_successor_vm("multiple_migrations_2", &vm1, None).await?;
 
-    vm0.launch()?;
-    vm0.wait_to_boot()?;
-    vm1.migrate_from(&vm0, Uuid::new_v4(), MigrationTimeout::default())?;
-    assert_eq!(vm1.run_shell_command("echo Hello world")?, "Hello world");
-    vm2.migrate_from(&vm1, Uuid::new_v4(), MigrationTimeout::default())?;
+    vm0.launch().await?;
+    vm0.wait_to_boot().await?;
+    vm1.migrate_from(&vm0, Uuid::new_v4(), MigrationTimeout::default()).await?;
+    assert_eq!(vm1.run_shell_command("echo Hello world").await?, "Hello world");
+    vm2.migrate_from(&vm1, Uuid::new_v4(), MigrationTimeout::default()).await?;
     assert_eq!(
-        vm2.run_shell_command("echo I have migrated!")?,
+        vm2.run_shell_command("echo I have migrated!").await?,
         "I have migrated!"
     );
 }
 
-fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
-    source.launch()?;
-    source.wait_to_boot()?;
-    let lsout = source.run_shell_command("ls foo.bar 2> /dev/null")?;
+async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
+    source.launch().await?;
+    source.wait_to_boot().await?;
+    let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
     assert_eq!(lsout, "");
 
     // create an empty file on the source VM.
-    source.run_shell_command("touch ./foo.bar")?;
-    source.run_shell_command("sync ./foo.bar")?;
+    source.run_shell_command("touch ./foo.bar").await?;
+    source.run_shell_command("sync ./foo.bar").await?;
 
     ctx.lifecycle_test(
         source,
         &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
         |target: &TestVm| {
-            // the file should still exist on the target VM after migration.
-            let lsout = target
-                .run_shell_command("ls foo.bar")
-                .expect("`ls foo.bar` should succeed after migration");
-            assert_eq!(lsout, "foo.bar");
+            Box::pin(async {
+                // the file should still exist on the target VM after migration.
+                let lsout = target
+                    .run_shell_command("ls foo.bar")
+                    .await
+                    .expect("`ls foo.bar` should succeed after migration");
+                assert_eq!(lsout, "foo.bar");
+            })
         },
     )
+    .await
 }
 
-fn run_serial_history_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
-    source.launch()?;
-    source.wait_to_boot()?;
+async fn run_serial_history_test(
+    ctx: &Framework,
+    mut source: TestVm,
+) -> Result<()> {
+    source.launch().await?;
+    source.wait_to_boot().await?;
 
-    let out = source.run_shell_command("echo hello from the source VM!")?;
+    let out =
+        source.run_shell_command("echo hello from the source VM!").await?;
     assert_eq!(out, "hello from the source VM!");
 
-    let serial_hist_pre = source.get_serial_console_history(0)?;
+    let serial_hist_pre = source.get_serial_console_history(0).await?;
     assert!(!serial_hist_pre.data.is_empty());
 
     ctx.lifecycle_test(
         source,
         &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
-        |target| {
-            let serial_hist_post = target.get_serial_console_history(0).expect(
-                "getting serial console history from the second VM should work",
-            );
-            assert_eq!(
-                serial_hist_pre.data,
-                serial_hist_post.data[..serial_hist_pre.data.len()]
-            );
-            assert!(
-                serial_hist_pre.last_byte_offset
-                    <= serial_hist_post.last_byte_offset
-            );
+        move |target| {
+            let serial_hist_pre = serial_hist_pre.clone();
+            Box::pin(async move {
+                let serial_hist_post =
+                    target.get_serial_console_history(0).await.expect(
+                        "should get serial console history from the target",
+                    );
+                assert_eq!(
+                    serial_hist_pre.data,
+                    serial_hist_post.data[..serial_hist_pre.data.len()]
+                );
+                assert!(
+                    serial_hist_pre.last_byte_offset
+                        <= serial_hist_post.last_byte_offset
+                );
+            })
         },
     )
+    .await
 }

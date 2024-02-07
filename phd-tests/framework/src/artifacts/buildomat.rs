@@ -35,7 +35,7 @@ impl Repo {
         Self(Cow::Borrowed(s))
     }
 
-    pub(super) fn artifact_for_commit(
+    pub(super) async fn artifact_for_commit(
         self,
         series: Series,
         commit: Commit,
@@ -43,40 +43,42 @@ impl Repo {
         downloader: &DownloadConfig,
     ) -> anyhow::Result<BuildomatArtifact> {
         let filename = filename.as_ref();
-        let sha256 = self.get_sha256(&series, &commit, filename, downloader)?;
+        let sha256 =
+            self.get_sha256(&series, &commit, filename, downloader).await?;
 
         Ok(BuildomatArtifact { repo: self, series, commit, sha256 })
     }
 
-    pub(super) fn get_branch_head(
+    pub(super) async fn get_branch_head(
         &self,
         branch: &str,
     ) -> anyhow::Result<Commit> {
-        (|| {
+        async {
             let uri = format!("{BASE_URI}/branch/{self}/{branch}");
-            let client = reqwest::blocking::ClientBuilder::new()
+            let client = reqwest::ClientBuilder::new()
                 .timeout(Duration::from_secs(5))
                 .build()?;
             let req = client.get(uri).build()?;
-            let rsp = client.execute(req)?;
+            let rsp = client.execute(req).await?;
             let status = rsp.status();
             anyhow::ensure!(status.is_success(), "HTTP status: {status}");
-            let bytes = rsp.bytes()?;
+            let bytes = rsp.bytes().await?;
             str_from_bytes(&bytes)?.parse::<Commit>()
-        })()
+        }
+        .await
         .with_context(|| {
             format!("Failed to determine HEAD commit for {self}@{branch}")
         })
     }
 
-    fn get_sha256(
+    async fn get_sha256(
         &self,
         series: &Series,
         commit: &Commit,
         filename: &Utf8Path,
         downloader: &DownloadConfig,
     ) -> anyhow::Result<String> {
-        (|| {
+        async {
             let filename = filename
                 .file_name()
                 .ok_or_else(|| {
@@ -105,9 +107,9 @@ impl Repo {
                     )
                 })?;
             let uri = format!("{BASE_URI}/file/{self}/{series}/{commit}/{filename}.sha256.txt");
-            let bytes = downloader.download_buildomat_uri(&uri)?;
+            let bytes = downloader.download_buildomat_uri(&uri).await?;
             str_from_bytes(&bytes).map(String::from)
-        })().with_context(|| {
+        }.await.with_context(|| {
             format!("Failed to get SHA256 for {self}@{commit}, series: {series}, file: {filename})")
         })
     }
@@ -206,7 +208,7 @@ impl super::DownloadConfig {
     /// retry duration. This retry logic serves as a mechanism for PHD to wait
     /// for an artifact we expect to exist to be published, when the build that
     /// publishes that artifact is still in progress.
-    pub(super) fn download_buildomat_uri(
+    pub(super) async fn download_buildomat_uri(
         &self,
         uri: &str,
     ) -> anyhow::Result<bytes::Bytes> {
@@ -215,10 +217,9 @@ impl super::DownloadConfig {
             %uri,
             "Downloading file from Buildomat...",
         );
-        let client = reqwest::blocking::ClientBuilder::new()
-            .timeout(self.timeout)
-            .build()?;
-        let try_download = || {
+        let client =
+            reqwest::ClientBuilder::new().timeout(self.timeout).build()?;
+        let try_download = || async {
             let request = client
                 .get(uri)
                 .build()
@@ -229,7 +230,9 @@ impl super::DownloadConfig {
 
             let response = client
                 .execute(request)
+                .await
                 .map_err(|e| backoff::Error::transient(e.into()))?;
+
             if !response.status().is_success() {
                 // when downloading a file from buildomat, we currently retry
                 // all errors, since buildomat returns 500s when an artifact
@@ -252,17 +255,15 @@ impl super::DownloadConfig {
             );
         };
 
-        let bytes = backoff::retry_notify(
+        let bytes = backoff::future::retry_notify(
             self.buildomat_backoff.clone(),
             try_download,
             log_retry,
         )
-        .map_err(|e| match e {
-            backoff::Error::Permanent(e) => e,
-            backoff::Error::Transient { err, .. } => err,
-        })
+        .await
         .with_context(|| format!("Failed to download '{uri}' from Buildomat"))?
-        .bytes()?;
+        .bytes()
+        .await?;
 
         Ok(bytes)
     }

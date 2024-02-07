@@ -9,6 +9,7 @@ mod fixtures;
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_tests::phd_testcase::{Framework, FrameworkParameters};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
@@ -18,7 +19,8 @@ use tracing_subscriber::{EnvFilter, Registry};
 use crate::execute::ExecutionStats;
 use crate::fixtures::TestFixtures;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let runner_args = ProcessArgs::parse();
     set_tracing_subscriber(&runner_args);
 
@@ -34,7 +36,7 @@ fn main() -> anyhow::Result<()> {
 
     match &runner_args.command {
         config::Command::Run(opts) => {
-            let exit_code = run_tests(opts)?.tests_failed;
+            let exit_code = run_tests(opts).await?.tests_failed;
             debug!(exit_code);
             std::process::exit(exit_code.try_into().unwrap());
         }
@@ -44,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
+async fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
     let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
         crucible_downstairs: run_opts.crucible_downstairs()?,
@@ -63,13 +65,17 @@ fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
         ),
     };
 
-    let ctx = Framework::new(ctx_params)
-        .expect("should be able to set up a test context");
+    let ctx = Arc::new(
+        Framework::new(ctx_params)
+            .await
+            .expect("should be able to set up a test context"),
+    );
 
-    let fixtures = TestFixtures::new(&ctx).unwrap();
+    let fixtures = TestFixtures::new(ctx.clone()).unwrap();
 
     // Run the tests and print results.
-    let execution_stats = execute::run_tests_with_ctx(&ctx, fixtures, run_opts);
+    let execution_stats =
+        execute::run_tests_with_ctx(&ctx, fixtures, run_opts).await;
     if !execution_stats.failed_test_cases.is_empty() {
         println!("\nfailures:");
         for tc in &execution_stats.failed_test_cases {

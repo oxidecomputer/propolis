@@ -19,8 +19,8 @@ use ring::digest::{Digest, SHA256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 #[derive(Debug)]
@@ -34,7 +34,7 @@ impl StoredArtifact {
         Self { description, cached_path: None }
     }
 
-    fn ensure(
+    async fn ensure(
         &mut self,
         local_dir: &Utf8Path,
         downloader: &DownloadConfig,
@@ -106,17 +106,23 @@ impl StoredArtifact {
         // The artifact is not in the expected place or has the wrong digest, so
         // reacquire it.
         let bytes = match &self.description.source {
-            ArtifactSource::Buildomat(source) => downloader
-                .download_buildomat_artifact(
-                    source,
-                    &self.description.filename,
-                    expected_digest,
-                )?,
-            ArtifactSource::RemoteServer { .. } => downloader
-                .download_remote_artifact(
-                    &self.description.filename,
-                    expected_digest,
-                )?,
+            ArtifactSource::Buildomat(source) => {
+                downloader
+                    .download_buildomat_artifact(
+                        source,
+                        &self.description.filename,
+                        expected_digest,
+                    )
+                    .await?
+            }
+            ArtifactSource::RemoteServer { .. } => {
+                downloader
+                    .download_remote_artifact(
+                        &self.description.filename,
+                        expected_digest,
+                    )
+                    .await?
+            }
             ArtifactSource::LocalPath { .. } => {
                 unreachable!("local path case handled above")
             }
@@ -228,7 +234,7 @@ impl Store {
         )
     }
 
-    pub fn add_current_propolis(
+    pub async fn add_current_propolis(
         &mut self,
         source: crate::BasePropolisSource<'_>,
     ) -> anyhow::Result<()> {
@@ -242,7 +248,7 @@ impl Store {
         let commit = match source {
             BasePropolisSource::BuildomatBranch(branch) => {
                 info!("Adding 'current' Propolis server from Buildomat Git branch '{branch}'");
-                REPO.get_branch_head(branch)?
+                REPO.get_branch_head(branch).await?
             }
             BasePropolisSource::BuildomatGitRev(commit) => {
                 info!("Adding 'current' Propolis server from Buildomat Git commit '{commit}'");
@@ -265,12 +271,9 @@ impl Store {
         //   work nicely in the test environment
         let series = buildomat::Series::from_static("phd_build");
         let filename = Utf8PathBuf::from("propolis-server.tar.gz");
-        let source = REPO.artifact_for_commit(
-            series,
-            commit,
-            &filename,
-            &self.downloader,
-        )?;
+        let source = REPO
+            .artifact_for_commit(series, commit, &filename, &self.downloader)
+            .await?;
         let artifact = super::Artifact {
             filename,
             kind: ArtifactKind::PropolisServer,
@@ -286,7 +289,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_crucible_downstairs(
+    pub async fn add_crucible_downstairs(
         &mut self,
         source: &crate::CrucibleDownstairsSource,
     ) -> anyhow::Result<()> {
@@ -312,12 +315,14 @@ impl Store {
                     buildomat::Repo::from_static("oxidecomputer/crucible");
                 let series = buildomat::Series::from_static("nightly-image");
                 let filename = Utf8PathBuf::from("crucible-nightly.tar.gz");
-                let artifact = repo.artifact_for_commit(
-                    series,
-                    commit.clone(),
-                    &filename,
-                    &self.downloader,
-                )?;
+                let artifact = repo
+                    .artifact_for_commit(
+                        series,
+                        commit.clone(),
+                        &filename,
+                        &self.downloader,
+                    )
+                    .await?;
 
                 let artifact = super::Artifact {
                     filename,
@@ -340,15 +345,16 @@ impl Store {
         }
     }
 
-    pub fn get_guest_os_image(
+    pub async fn get_guest_os_image(
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<(Utf8PathBuf, GuestOsKind)> {
         let entry = self.get_artifact(artifact_name)?;
-        let mut guard = entry.lock().unwrap();
+        let mut guard = entry.lock().await;
         match guard.description.kind {
             super::ArtifactKind::GuestOs(kind) => {
-                let path = guard.ensure(&self.local_dir, &self.downloader)?;
+                let path =
+                    guard.ensure(&self.local_dir, &self.downloader).await?;
                 Ok((path, kind))
             }
             _ => Err(anyhow::anyhow!(
@@ -358,15 +364,15 @@ impl Store {
         }
     }
 
-    pub fn get_bootrom(
+    pub async fn get_bootrom(
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
         let entry = self.get_artifact(artifact_name)?;
-        let mut guard = entry.lock().unwrap();
+        let mut guard = entry.lock().await;
         match guard.description.kind {
             super::ArtifactKind::Bootrom => {
-                guard.ensure(&self.local_dir, &self.downloader)
+                guard.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {} is not a bootrom",
@@ -375,15 +381,15 @@ impl Store {
         }
     }
 
-    pub fn get_propolis_server(
+    pub async fn get_propolis_server(
         &self,
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
         let entry = self.get_artifact(artifact_name)?;
-        let mut guard = entry.lock().unwrap();
+        let mut guard = entry.lock().await;
         match guard.description.kind {
             super::ArtifactKind::PropolisServer => {
-                guard.ensure(&self.local_dir, &self.downloader)
+                guard.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {} is not a Propolis server",
@@ -392,12 +398,12 @@ impl Store {
         }
     }
 
-    pub fn get_crucible_downstairs(&self) -> anyhow::Result<Utf8PathBuf> {
+    pub async fn get_crucible_downstairs(&self) -> anyhow::Result<Utf8PathBuf> {
         let entry = self.get_artifact(CRUCIBLE_DOWNSTAIRS_ARTIFACT)?;
-        let mut guard = entry.lock().unwrap();
+        let mut guard = entry.lock().await;
         match guard.description.kind {
             super::ArtifactKind::CrucibleDownstairs => {
-                guard.ensure(&self.local_dir, &self.downloader)
+                guard.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {CRUCIBLE_DOWNSTAIRS_ARTIFACT} is not a Crucible downstairs binary",
@@ -574,13 +580,13 @@ impl DownloadConfig {
     /// retry duration. This retry logic serves as a mechanism for PHD to wait
     /// for an artifact we expect to exist to be published, when the build that
     /// publishes that artifact is still in progress.
-    fn download_buildomat_artifact(
+    async fn download_buildomat_artifact(
         &self,
         source: &buildomat::BuildomatArtifact,
         filename: &Utf8Path,
         expected_digest: &str,
     ) -> anyhow::Result<bytes::Bytes> {
-        let bytes = self.download_buildomat_uri(&source.uri(filename))?;
+        let bytes = self.download_buildomat_uri(&source.uri(filename)).await?;
         hash_equals(Cursor::new(bytes.as_ref()), expected_digest)?;
         Ok(bytes)
     }
@@ -593,7 +599,7 @@ impl DownloadConfig {
     /// mismatch), this method will try the next remote URI in the list until
     /// the file has been downloaded successfully or all remote server URIs have
     /// been tried.
-    fn download_remote_artifact(
+    async fn download_remote_artifact(
         &self,
         filename: &Utf8Path,
         expected_digest: &str,
@@ -604,16 +610,15 @@ impl DownloadConfig {
             remote URIs"
         );
 
-        let client = reqwest::blocking::ClientBuilder::new()
-            .timeout(self.timeout)
-            .build()?;
+        let client =
+            reqwest::ClientBuilder::new().timeout(self.timeout).build()?;
 
         for remote in &self.remote_server_uris {
             let uri = format!("{remote}/{filename}");
             debug!(timeout = ?self.timeout, "Downloading {filename} from {uri}");
 
             let request = client.get(&uri).build()?;
-            let response = match client.execute(request) {
+            let response = match client.execute(request).await {
                 Ok(resp) => resp,
                 Err(e) => {
                     warn!(?e, uri, "Error obtaining artifact from source");
@@ -622,11 +627,13 @@ impl DownloadConfig {
             };
 
             if !response.status().is_success() {
-                warn!(status = %response.status(), ?response, "HTTP error downloading {filename} from {uri}");
+                warn!(status = %response.status(),
+                      ?response,
+                      "HTTP error downloading {filename} from {uri}");
                 continue;
             }
 
-            let bytes = response.bytes()?;
+            let bytes = response.bytes().await?;
             if let Err(error) =
                 hash_equals(Cursor::new(bytes.as_ref()), expected_digest)
             {
