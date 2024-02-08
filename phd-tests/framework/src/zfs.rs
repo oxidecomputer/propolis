@@ -112,8 +112,12 @@ impl ClonedFile {
             .context("getting relative path to file to clone")?;
 
         let snapshot = Snapshot::create_from_dataset(&containing_dataset.name)?;
-        Self::create_from_paths_and_snapshot(relative_file_path, snapshot)
-            .context("creating zfs clone")
+        Self::create_from_paths_and_snapshot(
+            containing_dataset,
+            relative_file_path,
+            snapshot,
+        )
+        .context("creating zfs clone")
     }
 
     /// Yields the absolute path to this cloned file in the global directory
@@ -129,14 +133,12 @@ impl ClonedFile {
     /// returns a handle to the clone. The [`path`] method can be used to find
     /// the absolute path to the file within the clone.
     fn create_from_paths_and_snapshot(
+        dataset: Dataset,
         relative_file_path: &Utf8Path,
         snapshot: Snapshot,
     ) -> anyhow::Result<Self> {
-        // Naively assume the existence of a root pool named `rpool` in lieu of
-        // trying to parse the output of `zpool list`.
-        const ZFS_ROOT_POOL: &str = "rpool";
         let clone_name =
-            format!("{ZFS_ROOT_POOL}/phd-clone-{}", Uuid::new_v4());
+            format!("{}/phd-clone-{}", dataset.name.0, Uuid::new_v4());
 
         zfs_command("clone", &[&snapshot.name.0, &clone_name])?;
 
