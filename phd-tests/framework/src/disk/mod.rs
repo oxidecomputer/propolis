@@ -8,13 +8,10 @@
 //! They can then pass these disks to the VM factory to connect them to a
 //! specific guest VM.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use anyhow::Context;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use propolis_client::types::StorageBackendV0;
 use thiserror::Error;
 
@@ -109,7 +106,7 @@ pub enum DiskSource<'a> {
 ///      Propolis backend implementations interact with the disk.
 pub(crate) struct DiskFactory {
     /// The directory in which disk files should be stored.
-    storage_dir: PathBuf,
+    storage_dir: Utf8PathBuf,
 
     /// A reference to the artifact store to use to look up guest OS artifacts
     /// when those are used as a disk source.
@@ -128,7 +125,7 @@ impl DiskFactory {
     /// their data in `storage_dir` and will look up guest OS images in the
     /// supplied `artifact_store`.
     pub fn new(
-        storage_dir: &impl AsRef<Path>,
+        storage_dir: &impl AsRef<Utf8Path>,
         artifact_store: Arc<ArtifactStore>,
         port_allocator: Arc<PortAllocator>,
         log_mode: ServerLogMode,
@@ -167,8 +164,13 @@ impl DiskFactory {
         let (artifact_path, guest_os) =
             self.get_guest_artifact_info(artifact_name).await?;
 
-        FileBackedDisk::new_from_artifact(name, &artifact_path, Some(guest_os))
-            .map(Arc::new)
+        FileBackedDisk::new_from_artifact(
+            name,
+            &artifact_path,
+            &self.storage_dir,
+            Some(guest_os),
+        )
+        .map(Arc::new)
     }
 
     /// Creates a new Crucible-backed disk by creating three region files to

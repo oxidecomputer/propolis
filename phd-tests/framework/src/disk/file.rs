@@ -4,10 +4,75 @@
 
 //! Abstractions for disks with a raw file backend.
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use propolis_client::types::{FileStorageBackend, StorageBackendV0};
+use tracing::{debug, error, warn};
+use uuid::Uuid;
 
 use crate::{guest_os::GuestOsKind, zfs::ClonedFile as ZfsClonedFile};
+
+/// Describes the method used to create the backing file for a file-backed disk.
+#[derive(Debug)]
+enum BackingFile {
+    /// The disk is a ZFS clone of the original artifact.
+    Zfs(ZfsClonedFile),
+
+    /// The disk is a hard copy of the original artifact.
+    HardCopy(Utf8PathBuf),
+}
+
+impl BackingFile {
+    /// Creates a new backing file from the artifact with the supplied
+    /// `artifact_path`. If possible, this routine will create a ZFS clone of
+    /// the dataset containing the file; otherwise it will fall back to creating
+    /// a hard copy of the original artifact.
+    fn create_from_source(
+        artifact_path: &Utf8Path,
+        data_dir: &Utf8Path,
+    ) -> anyhow::Result<Self> {
+        if let Ok(file) = ZfsClonedFile::create_from_path(artifact_path) {
+            return Ok(Self::Zfs(file));
+        }
+
+        warn!(%artifact_path,
+              "failed to make ZFS clone of backing artifact, will copy it");
+
+        let mut disk_path = data_dir.to_path_buf();
+        disk_path.push(format!("{}.phd_disk", Uuid::new_v4()));
+        debug!(
+            source = %artifact_path,
+            disk_path = %disk_path,
+            "Copying source image to create temporary disk",
+        );
+
+        std::fs::copy(artifact_path, &disk_path)?;
+        Ok(Self::HardCopy(disk_path))
+    }
+
+    /// Yields the path to this disk's backing file.
+    fn path(&self) -> Utf8PathBuf {
+        match self {
+            BackingFile::Zfs(zfs) => zfs.path(),
+            BackingFile::HardCopy(path) => path.clone(),
+        }
+    }
+}
+
+impl Drop for BackingFile {
+    fn drop(&mut self) {
+        // ZFS clones are cleaned up by their own drop impls.
+        if let BackingFile::HardCopy(path) = self {
+            debug!(%path, "deleting hard copy of guest disk image");
+            if let Err(e) = std::fs::remove_file(&path) {
+                error!(
+                    ?e,
+                    %path,
+                    "failed to delete hard copy of guest disk image"
+                );
+            }
+        }
+    }
+}
 
 /// An RAII wrapper for a disk wrapped by a file.
 #[derive(Debug)]
@@ -16,7 +81,7 @@ pub struct FileBackedDisk {
     backend_name: String,
 
     /// The backing file for this disk.
-    file: ZfsClonedFile,
+    file: BackingFile,
 
     /// The kind of guest OS image this guest contains, or `None` if the disk
     /// was not initialized from a guest OS artifact.
@@ -29,9 +94,13 @@ impl FileBackedDisk {
     pub(crate) fn new_from_artifact(
         backend_name: String,
         artifact_path: &impl AsRef<Utf8Path>,
+        data_dir: &impl AsRef<Utf8Path>,
         guest_os: Option<GuestOsKind>,
     ) -> Result<Self, super::DiskError> {
-        let artifact = ZfsClonedFile::create_from_path(artifact_path.as_ref())?;
+        let artifact = BackingFile::create_from_source(
+            artifact_path.as_ref(),
+            data_dir.as_ref(),
+        )?;
         let disk_path = artifact.path().into_std_path_buf();
 
         // Make sure the disk is writable (the artifact may have been
