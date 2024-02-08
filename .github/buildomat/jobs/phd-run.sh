@@ -21,11 +21,18 @@ indir="/input"
 indir_suffix="phd-build/out/*.tar.gz"
 phddir="$PWD/phd-test"
 
+# Download artifacts to /work so that the runner can create ZFS clones of them
+# to reduce the number of files it needs to copy repeatedly.
+artifactdir="/work/phd-artifacts"
+
 banner 'Inputs'
 find $indir -ls
 
 rm -rf "$phddir"
 mkdir "$phddir"
+
+rm -rf "$artifactdir"
+mkdir "$artifactdir"
 
 for p in $indir/$indir_suffix; do
 	tar xzvf $p -C $phddir
@@ -63,7 +70,7 @@ set +e
 	--crucible-downstairs-commit auto \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir \
-	--artifact-directory $tmpdir | \
+	--artifact-directory $artifactdir | \
 	tee /tmp/phd-runner.log)
 failcount=$?
 set -e
