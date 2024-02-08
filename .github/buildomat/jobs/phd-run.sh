@@ -21,9 +21,10 @@ indir="/input"
 indir_suffix="phd-build/out/*.tar.gz"
 phddir="$PWD/phd-test"
 
-# Download artifacts to /work so that the runner can create ZFS clones of them
-# to reduce the number of files it needs to copy repeatedly.
-artifactdir="/work/phd-artifacts"
+# Put artifacts on the runner's SSDs (the /work ramdisk is small by design, too
+# small for images of any appreciable size).
+pfexec zpool create -f phd-artifacts c1t1d0 c2t1d0
+artifactdir="/phd-artifacts"
 
 banner 'Inputs'
 find $indir -ls
