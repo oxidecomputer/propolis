@@ -32,9 +32,6 @@ find $indir -ls
 rm -rf "$phddir"
 mkdir "$phddir"
 
-rm -rf "$artifactdir"
-mkdir "$artifactdir"
-
 for p in $indir/$indir_suffix; do
 	tar xzvf $p -C $phddir
 	for f in $(tar tf "$p"); do
