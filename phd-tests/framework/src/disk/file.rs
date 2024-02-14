@@ -103,11 +103,10 @@ impl FileBackedDisk {
             artifact_path.as_ref(),
             data_dir.as_ref(),
         )?;
-        let disk_path = artifact.path().into_std_path_buf();
 
         // Make sure the disk is writable (the artifact may have been
         // read-only).
-        let disk_file = std::fs::File::open(disk_path)?;
+        let disk_file = std::fs::File::open(artifact.path())?;
         let mut permissions = disk_file.metadata()?.permissions();
 
         // TODO: Clippy is upset that `set_readonly(false)` results in
