@@ -8,12 +8,10 @@
 //! They can then pass these disks to the VM factory to connect them to a
 //! specific guest VM.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use anyhow::Context;
+use camino::{Utf8Path, Utf8PathBuf};
 use propolis_client::types::StorageBackendV0;
 use thiserror::Error;
 
@@ -108,7 +106,7 @@ pub enum DiskSource<'a> {
 ///      Propolis backend implementations interact with the disk.
 pub(crate) struct DiskFactory {
     /// The directory in which disk files should be stored.
-    storage_dir: PathBuf,
+    storage_dir: Utf8PathBuf,
 
     /// A reference to the artifact store to use to look up guest OS artifacts
     /// when those are used as a disk source.
@@ -127,7 +125,7 @@ impl DiskFactory {
     /// their data in `storage_dir` and will look up guest OS images in the
     /// supplied `artifact_store`.
     pub fn new(
-        storage_dir: &impl AsRef<Path>,
+        storage_dir: &impl AsRef<Utf8Path>,
         artifact_store: Arc<ArtifactStore>,
         port_allocator: Arc<PortAllocator>,
         log_mode: ServerLogMode,
@@ -145,11 +143,10 @@ impl DiskFactory {
     async fn get_guest_artifact_info(
         &self,
         artifact_name: &str,
-    ) -> Result<(PathBuf, GuestOsKind), DiskError> {
+    ) -> Result<(Utf8PathBuf, GuestOsKind), DiskError> {
         self.artifact_store
             .get_guest_os_image(artifact_name)
             .await
-            .map(|(utf8, kind)| (utf8.into_std_path_buf(), kind))
             .with_context(|| {
                 format!("failed to get guest OS artifact '{}'", artifact_name)
             })

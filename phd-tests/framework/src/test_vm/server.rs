@@ -34,7 +34,7 @@ pub struct ServerProcessParameters<'a> {
 }
 
 pub struct PropolisServer {
-    server: std::process::Child,
+    server: Option<std::process::Child>,
     address: SocketAddrV4,
 }
 
@@ -100,39 +100,47 @@ impl PropolisServer {
         }
 
         let server = PropolisServer {
-            server: server_cmd.spawn()?,
+            server: Some(server_cmd.spawn()?),
             address: server_addr,
         };
 
-        info!("Launched server with pid {}", server.server.id());
+        info!(
+            "Launched server with pid {}",
+            server.server.as_ref().unwrap().id()
+        );
         Ok(server)
     }
 
     pub(crate) fn server_addr(&self) -> SocketAddrV4 {
         self.address
     }
+
+    /// Kills this server process if it hasn't been killed already.
+    pub(super) fn kill(&mut self) {
+        let Some(mut server) = self.server.take() else {
+            return;
+        };
+
+        let pid = server.id();
+        debug!(
+            pid,
+            %self.address,
+            "Killing Propolis server process"
+        );
+
+        std::process::Command::new("pfexec")
+            .args(["kill", &pid.to_string()])
+            .spawn()
+            .expect("should be able to kill a phd-spawned propolis");
+
+        server
+            .wait()
+            .expect("should be able to wait on a phd-spawned propolis");
+    }
 }
 
 impl Drop for PropolisServer {
     fn drop(&mut self) {
-        let pid = self.server.id().to_string();
-        debug!(
-            pid,
-            %self.address,
-            "Killing Propolis server that was dropped"
-        );
-
-        std::process::Command::new("pfexec")
-            .args(["kill", &pid])
-            .spawn()
-            .expect("should be able to kill a phd-spawned propolis");
-
-        self.server
-            .wait()
-            .expect("should be able to wait on a phd-spawned propolis");
-
-        debug!(pid,
-              %self.address,
-              "Successfully waited for demise of Propolis server that was dropped");
+        self.kill();
     }
 }

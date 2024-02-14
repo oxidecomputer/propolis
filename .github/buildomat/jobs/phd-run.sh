@@ -21,6 +21,11 @@ indir="/input"
 indir_suffix="phd-build/out/*.tar.gz"
 phddir="$PWD/phd-test"
 
+# Put artifacts on the runner's SSDs (the /work ramdisk is small by design, too
+# small for images of any appreciable size).
+pfexec zpool create -f phd-artifacts c1t1d0 c2t1d0
+artifactdir="/phd-artifacts"
+
 banner 'Inputs'
 find $indir -ls
 
@@ -63,7 +68,7 @@ set +e
 	--crucible-downstairs-commit auto \
 	--artifact-toml-path $artifacts \
 	--tmp-directory $tmpdir \
-	--artifact-directory $tmpdir | \
+	--artifact-directory $artifactdir | \
 	tee /tmp/phd-runner.log)
 failcount=$?
 set -e

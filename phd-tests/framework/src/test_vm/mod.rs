@@ -824,78 +824,39 @@ impl Drop for TestVm {
         // `block_on` here to guarantee that VMMs are synchronously cleaned up
         // when a `TestVm` is dropped.
         //
-        // As an alternative, destructure the client and server and hand them
-        // off to their own separate task. (The server needs to be moved into
-        // the task explicitly so that its `Drop` impl, which terminates the
-        // server process, won't run until this work is complete.)
-        //
-        // Send the task back to the framework so that the test runner can wait
-        // for all under-destruction VMs to be reaped before exiting.
+        // To drop the VMM safely, destructure this VM into its client, server,
+        // and attached disk objects, and hand them all off to a separate
+        // destructor task. Once the task is spawned, send it back to the
+        // framework so that the test runner can wait for all the VMs destroyed
+        // by a test case to be reaped before starting another test.
         let client = self.client.clone();
-        let server = self.server.take();
+        let mut server = self.server.take().expect(
+            "TestVm should always have a valid server until it's dropped",
+        );
+
+        let disks: Vec<_> = self.vm_spec().disk_handles.drain(..).collect();
+
+        // The order in which the task destroys objects is important: the server
+        // can't be killed until the client has gotten a chance to shut down
+        // the VM, and the disks can't be destroyed until the server process has
+        // been killed.
         let task = tokio::spawn(
             async move {
-                let _server = server;
-                match client
-                    .instance_get()
-                    .send()
-                    .await
-                    .map(|r| r.instance.state)
-                {
-                    Ok(InstanceState::Destroyed) => return,
-                    Err(e) => warn!(
-                        ?e,
-                        "error getting instance state from dropped VM"
-                    ),
-                    Ok(_) => {}
-                }
+                // The task doesn't use the disks directly, but they need to be
+                // kept alive until the server process is gone.
+                let _disks = disks;
 
-                debug!("stopping test VM on drop");
-                if let Err(e) = client
-                    .instance_state_put()
-                    .body(InstanceStateRequested::Stop)
-                    .send()
-                    .await
-                {
-                    error!(?e, "error stopping dropping VM");
-                    return;
-                }
+                // Try to make sure the server's kernel VMM is cleaned up before
+                // killing the server process. This is best-effort; if it fails,
+                // the kernel VMM is leaked. This generally indicates a bug in
+                // Propolis (e.g. a VMM reference leak or an instance taking an
+                // unexpectedly long time to stop).
+                try_ensure_vm_destroyed(&client).await;
 
-                let check_destroyed = || async {
-                    match client
-                        .instance_get()
-                        .send()
-                        .await
-                        .map(|r| r.instance.state)
-                    {
-                        Ok(InstanceState::Destroyed) => Ok(()),
-                        Ok(state) => {
-                            Err(backoff::Error::transient(anyhow::anyhow!(
-                                "instance not destroyed yet (state: {:?})",
-                                state
-                            )))
-                        }
-                        Err(e) => {
-                            error!(%e, "failed to get state of dropping VM");
-                            Err(backoff::Error::permanent(e.into()))
-                        }
-                    }
-                };
-
-                let destroyed = backoff::future::retry(
-                    backoff::ExponentialBackoff {
-                        max_elapsed_time: Some(std::time::Duration::from_secs(
-                            5,
-                        )),
-                        ..Default::default()
-                    },
-                    check_destroyed,
-                )
-                .await;
-
-                if let Err(e) = destroyed {
-                    error!(%e, "dropped VM not destroyed after 5 seconds");
-                }
+                // Make sure the server process is dead before trying to clean
+                // up any disks. Otherwise, ZFS may refuse to delete a cloned
+                // disk because the server process still has it open.
+                server.kill();
             }
             .instrument(
                 info_span!("VM cleanup", vm = self.spec.vm_name, vm_id = %self.id),
@@ -903,5 +864,65 @@ impl Drop for TestVm {
         );
 
         let _ = self.cleanup_task_tx.send(task);
+    }
+}
+
+/// Attempts to ensure that the Propolis server referred to by `client` is in
+/// the `Destroyed` state by stopping any VM that happens to be running in that
+/// server.
+///
+/// This function is best-effort.
+async fn try_ensure_vm_destroyed(client: &Client) {
+    match client.instance_get().send().await.map(|r| r.instance.state) {
+        Ok(InstanceState::Destroyed) => return,
+        Err(error) => warn!(
+            %error,
+            "error getting instance state from dropped VM"
+        ),
+        Ok(_) => {}
+    }
+
+    debug!("trying to ensure Propolis server VM is destroyed");
+    if let Err(error) = client
+        .instance_state_put()
+        .body(InstanceStateRequested::Stop)
+        .send()
+        .await
+    {
+        error!(
+            %error,
+            "error stopping VM to move it to Destroyed"
+        );
+        return;
+    }
+
+    let check_destroyed = || async {
+        match client.instance_get().send().await.map(|r| r.instance.state) {
+            Ok(InstanceState::Destroyed) => Ok(()),
+            Ok(state) => Err(backoff::Error::transient(anyhow::anyhow!(
+                "instance not destroyed yet (state: {:?})",
+                state
+            ))),
+            Err(error) => {
+                error!(
+                    %error,
+                    "failed to get state of VM being destroyed"
+                );
+                Err(backoff::Error::permanent(error.into()))
+            }
+        }
+    };
+
+    let destroyed = backoff::future::retry(
+        backoff::ExponentialBackoff {
+            max_elapsed_time: Some(std::time::Duration::from_secs(5)),
+            ..Default::default()
+        },
+        check_destroyed,
+    )
+    .await;
+
+    if let Err(error) = destroyed {
+        error!(%error, "VM not destroyed after 5 seconds");
     }
 }
