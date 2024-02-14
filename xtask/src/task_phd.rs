@@ -79,7 +79,7 @@ pub(crate) struct RunArgs {
 
     /// If set, skip migration-from-base tests.
     ///
-    /// If this flag is present, `cargo xtask phd` will not not pass
+    /// If this flag is present, `cargo xtask phd` will not pass
     /// `--base-propolis-branch master` to the `phd-runner` command.
     #[clap(long)]
     no_base_propolis: bool,
