@@ -117,7 +117,12 @@ impl ClonedFile {
             relative_file_path,
             snapshot,
         )
-        .context("creating zfs clone")
+        .with_context(|| {
+            format!(
+                "creating zfs clone of {canonical_path} with original path \
+                {path}"
+            )
+        })
     }
 
     /// Yields the absolute path to this cloned file in the global directory
