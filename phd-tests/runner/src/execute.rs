@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
-use tracing::{error, info};
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::watch;
+use tracing::{error, info, warn};
 
 use crate::config::RunOptions;
 use crate::fixtures::TestFixtures;
@@ -76,10 +78,15 @@ pub async fn run_tests_with_ctx(
     }
 
     fixtures.execution_setup().unwrap();
-
+    let sigint_rx = set_sigint_handler();
     info!("Running {} test(s)", executions.len());
     let start_time = Instant::now();
-    'exec_loop: for execution in &mut executions {
+    for execution in &mut executions {
+        if *sigint_rx.borrow() {
+            info!("Test run interrupted by SIGINT");
+            break;
+        }
+
         info!("Starting test {}", execution.tc.fully_qualified_name());
 
         // Failure to run a setup fixture is fatal to the rest of the run, but
@@ -87,21 +94,37 @@ pub async fn run_tests_with_ctx(
         // of panicking.
         if let Err(e) = fixtures.test_setup() {
             error!("Error running test setup fixture: {}", e);
-            break 'exec_loop;
+            break;
         }
 
         stats.tests_not_run -= 1;
         let test_ctx = ctx.clone();
         let tc = execution.tc;
-        let test_outcome =
-            match tokio::spawn(async move { tc.run(test_ctx.as_ref()).await })
-                .await
-            {
-                Ok(outcome) => outcome,
-                Err(_) => TestOutcome::Failed(Some(
-                    "test task panicked, see test logs".to_string(),
-                )),
-            };
+        let mut sigint_rx_task = sigint_rx.clone();
+        let test_outcome = tokio::spawn(async move {
+            tokio::select! {
+                // Ensure interrupt signals are always handled instead of
+                // continuing to run the test.
+                biased;
+                result = sigint_rx_task.changed() => {
+                    assert!(
+                        result.is_ok(),
+                        "SIGINT channel shouldn't drop while tests are running"
+                    );
+
+                    TestOutcome::Failed(
+                        Some("test interrupted by SIGINT".to_string())
+                    )
+                }
+                outcome = tc.run(test_ctx.as_ref()) => outcome
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            TestOutcome::Failed(Some(
+                "test task panicked, see test logs".to_string(),
+            ))
+        });
 
         info!(
             "test {} ... {}{}",
@@ -132,7 +155,7 @@ pub async fn run_tests_with_ctx(
         execution.status = Status::Ran(test_outcome);
         if let Err(e) = fixtures.test_cleanup().await {
             error!("Error running cleanup fixture: {}", e);
-            break 'exec_loop;
+            break;
         }
     }
     stats.duration = start_time.elapsed();
@@ -140,4 +163,36 @@ pub async fn run_tests_with_ctx(
     fixtures.execution_cleanup().unwrap();
 
     stats
+}
+
+/// Sets a global handler for SIGINT and hands the resulting signal channel over
+/// to a task that handles this signal. Returns a receiver to which the signal
+/// handler task publishes `true` to the channel when SIGINT is received.
+fn set_sigint_handler() -> watch::Receiver<bool> {
+    let mut sigint =
+        signal(SignalKind::interrupt()).expect("failed to set SIGINT handler");
+
+    let (sigint_tx, sigint_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        loop {
+            sigint.recv().await;
+
+            // If a signal was previously dispatched to the channel, exit
+            // immediately with the customary SIGINT exit code (130 is 128 +
+            // SIGINT). This allows users to interrupt tests even if they aren't
+            // at an await point (at the cost of not having destructors run).
+            if *sigint_tx.borrow() {
+                error!(
+                    "SIGINT received while shutting down, rudely terminating"
+                );
+                error!("some processes and resources may have been leaked!");
+                std::process::exit(130);
+            }
+
+            warn!("SIGINT received, sending shutdown signal to tests");
+            let _ = sigint_tx.send(true);
+        }
+    });
+
+    sigint_rx
 }

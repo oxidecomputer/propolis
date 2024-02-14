@@ -4,7 +4,7 @@
 
 //! Routines and data structures for working with Propolis server processes.
 
-use std::{fmt::Debug, net::SocketAddrV4};
+use std::{fmt::Debug, net::SocketAddrV4, os::unix::process::CommandExt};
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -62,18 +62,45 @@ impl PropolisServer {
         let (server_stdout, server_stderr) =
             log_mode.get_handles(&data_dir, vm_name)?;
 
+        let mut server_cmd = std::process::Command::new("pfexec");
+        server_cmd
+            .args([
+                server_path.as_str(),
+                "run",
+                config_toml_path.as_str(),
+                server_addr.to_string().as_str(),
+                vnc_addr.to_string().as_str(),
+            ])
+            .stdout(server_stdout)
+            .stderr(server_stderr);
+
+        // Gracefully shutting down a Propolis server requires PHD to send an
+        // instance stop request to the server before it is actually terminated.
+        // This ensures that the server has a chance to clean up kernel VMM
+        // resources. It's desirable for the server to do this and not PHD
+        // because a failure to clean up VMMs on stop is a Propolis bug.
+        //
+        // The PHD runner sets up a SIGINT handler that tries to give the
+        // framework an opportunity to issue these requests before the runner
+        // exits. However, pressing Ctrl-C in a shell will typically broadcast
+        // SIGINT to all of the processes in the foreground process's group, not
+        // just to the foreground process itself. This means that a Ctrl-C press
+        // will usually kill all of PHD's Propolis servers before the cleanup
+        // logic can run.
+        //
+        // To avoid this problem, add a pre-`exec` hook that directs Propolis
+        // servers to ignore SIGINT. On Ctrl-C, the runner will drop all active
+        // `TestVm`s, and this drop path (if allowed to complete) will kill all
+        // these processes.
+        unsafe {
+            server_cmd.pre_exec(move || {
+                libc::signal(libc::SIGINT, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+
         let server = PropolisServer {
-            server: std::process::Command::new("pfexec")
-                .args([
-                    server_path.as_str(),
-                    "run",
-                    config_toml_path.as_str(),
-                    server_addr.to_string().as_str(),
-                    vnc_addr.to_string().as_str(),
-                ])
-                .stdout(server_stdout)
-                .stderr(server_stderr)
-                .spawn()?,
+            server: server_cmd.spawn()?,
             address: server_addr,
         };
 
