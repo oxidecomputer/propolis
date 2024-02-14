@@ -54,14 +54,14 @@ pub(crate) enum Cmd {
     /// List PHD tests
     List {
         /// Arguments to pass to `phd-runner list`.
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
         phd_args: Vec<String>,
     },
 
     /// Display `phd-runner`'s help output.
     RunnerHelp {
         /// Arguments to pass to `phd-runner help`.
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
         phd_args: Vec<String>,
     },
 }
@@ -93,7 +93,7 @@ pub(crate) struct RunArgs {
     ///
     /// Use `cargo xtask phd runner-help` for details on the arguments passed to
     /// `phd-runner`.
-    #[clap(trailing_var_arg = true)]
+    #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
     phd_args: Vec<String>,
 }
 
