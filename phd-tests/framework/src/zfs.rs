@@ -74,7 +74,7 @@ struct Clone {
     /// The snapshot this clone derives from. Snapshots can't be deleted until
     /// all their clones are gone; this reference helps to ensure that clones
     /// and snapshots are deleted in the correct order irrespective of when the
-    /// clones and the [`CloneManager`] are dropped.
+    /// clones are dropped.
     _snapshot: Snapshot,
 }
 
