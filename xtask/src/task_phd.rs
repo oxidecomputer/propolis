@@ -77,6 +77,13 @@ pub(crate) struct RunArgs {
     #[clap(long)]
     no_tidy: bool,
 
+    /// If set, skip migration-from-base tests.
+    ///
+    /// If this flag is present, `cargo xtask phd` will not not pass
+    /// `--base-propolis-branch master` to the `phd-runner` command.
+    #[clap(long)]
+    no_base_propolis: bool,
+
     /// Arguments to pass to `phd-runner run`.
     ///
     /// If the `--propolis-server-cmd`, `--crucible-downstairs-commit`,
@@ -101,7 +108,12 @@ impl Cmd {
         let mut tmp_dir = phd_dir.join("tmp");
         let now = time::SystemTime::now();
 
-        let RunArgs { propolis_release_mode, no_tidy, phd_args } = match self {
+        let RunArgs {
+            propolis_release_mode,
+            no_tidy,
+            phd_args,
+            no_base_propolis,
+        } = match self {
             Self::Run { args } => args,
             Self::Tidy => {
                 cargo_log!("Tidying up", "old temporary directories...");
@@ -135,7 +147,7 @@ impl Cmd {
         let mut propolis_base_branch = None;
         // If set, the `base-propolis-cmd` or `base-propolis-commit` CLI args
         // were passed, so we should skip adding `--base-propolis-branch`.
-        let mut overridden_base_propolis = false;
+        let mut overridden_base_propolis = no_base_propolis;
         let mut propolis_local_path = None;
         let mut crucible_commit = None;
         let mut artifacts_toml = None;
