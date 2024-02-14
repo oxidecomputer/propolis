@@ -133,6 +133,8 @@ impl Cmd {
         let mut arg_iter = phd_args.iter().map(String::as_str);
         let mut bonus_args = Vec::new();
         let mut propolis_base_branch = None;
+        // If set, the `base-propolis-cmd` or `base-propolis-commit` CLI args
+        // were passed, so we should skip adding `--base-propolis-branch`.
         let mut overridden_base_propolis = false;
         let mut propolis_local_path = None;
         let mut crucible_commit = None;
@@ -157,6 +159,12 @@ impl Cmd {
                 args::PROPOLIS_BASE_COMMIT | args::PROPOLIS_BASE_CMD => {
                     overridden_base_propolis = true;
                     bonus_args.push(arg);
+
+                    let val = arg_iter.next().ok_or_else(|| {
+                        anyhow::anyhow!("Missing value for argument `{arg}`")
+                    })?;
+                    bonus_args.push(val);
+                    cargo_log!("Overridden", "{} {val:?}", arg);
                 }
 
                 _ => bonus_args.push(arg),
