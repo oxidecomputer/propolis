@@ -147,6 +147,11 @@ impl ClonedFile {
 
         zfs_command("clone", &[&snapshot.name.0, &clone_name])?;
 
+        // If any errors occur between this point and the construction of a
+        // `Clone` wrapper, this function needs to destroy the new clone
+        // manually. The only thing needed to construct a `Clone` is its mount
+        // point, so put that logic in a function and clean up manually if it
+        // fails.
         fn get_clone_mount_point(
             clone_name: &str,
         ) -> anyhow::Result<Utf8PathBuf> {
