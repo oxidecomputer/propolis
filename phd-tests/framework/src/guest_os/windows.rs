@@ -17,7 +17,9 @@ use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 pub(super) fn get_login_sequence_for(guest: GuestOsKind) -> CommandSequence {
     assert!(matches!(
         guest,
-        GuestOsKind::WindowsServer2019 | GuestOsKind::WindowsServer2022
+        GuestOsKind::WindowsServer2016
+            | GuestOsKind::WindowsServer2019
+            | GuestOsKind::WindowsServer2022
     ));
 
     let mut commands = vec![
@@ -49,7 +51,10 @@ pub(super) fn get_login_sequence_for(guest: GuestOsKind) -> CommandSequence {
     // characters and letting the recipient display them in whatever style it
     // likes. This only happens once the command prompt has been activated, so
     // only switch buffering modes after entering credentials.
-    if let GuestOsKind::WindowsServer2019 = guest {
+    if matches!(
+        guest,
+        GuestOsKind::WindowsServer2016 | GuestOsKind::WindowsServer2019
+    ) {
         commands.extend([
             CommandSequenceEntry::ChangeSerialConsoleBuffer(
                 crate::serial::BufferKind::Vt80x24,
