@@ -875,18 +875,24 @@ impl Drop for TestVm {
 async fn try_ensure_vm_destroyed(client: &Client) {
     match client.instance_get().send().await.map(|r| r.instance.state) {
         Ok(InstanceState::Destroyed) => return,
-        Err(e) => warn!(?e, "error getting instance state from dropped VM"),
+        Err(error) => warn!(
+            %error,
+            "error getting instance state from dropped VM"
+        ),
         Ok(_) => {}
     }
 
     debug!("trying to ensure Propolis server VM is destroyed");
-    if let Err(e) = client
+    if let Err(error) = client
         .instance_state_put()
         .body(InstanceStateRequested::Stop)
         .send()
         .await
     {
-        error!(%e, "error stopping VM to move it to Destroyed");
+        error!(
+            %error,
+            "error stopping VM to move it to Destroyed"
+        );
         return;
     }
 
@@ -897,9 +903,12 @@ async fn try_ensure_vm_destroyed(client: &Client) {
                 "instance not destroyed yet (state: {:?})",
                 state
             ))),
-            Err(e) => {
-                error!(%e, "failed to get state of VM being destroyed");
-                Err(backoff::Error::permanent(e.into()))
+            Err(error) => {
+                error!(
+                    %error,
+                    "failed to get state of VM being destroyed"
+                );
+                Err(backoff::Error::permanent(error.into()))
             }
         }
     };
@@ -913,7 +922,7 @@ async fn try_ensure_vm_destroyed(client: &Client) {
     )
     .await;
 
-    if let Err(e) = destroyed {
-        error!(%e, "VM not destroyed after 5 seconds");
+    if let Err(error) = destroyed {
+        error!(%error, "VM not destroyed after 5 seconds");
     }
 }
