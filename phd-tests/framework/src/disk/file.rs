@@ -30,12 +30,14 @@ impl BackingFile {
         artifact_path: &Utf8Path,
         data_dir: &Utf8Path,
     ) -> anyhow::Result<Self> {
-        if let Ok(file) = ZfsClonedFile::create_from_path(artifact_path) {
-            return Ok(Self::Zfs(file));
+        match ZfsClonedFile::create_from_path(artifact_path) {
+            Ok(file) => return Ok(Self::Zfs(file)),
+            Err(error) => warn!(
+                %artifact_path,
+                %error,
+                "failed to make ZFS clone of backing artifact, will copy it"
+            ),
         }
-
-        warn!(%artifact_path,
-              "failed to make ZFS clone of backing artifact, will copy it");
 
         let mut disk_path = data_dir.to_path_buf();
         disk_path.push(format!("{}.phd_disk", Uuid::new_v4()));
