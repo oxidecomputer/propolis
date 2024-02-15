@@ -350,7 +350,18 @@ impl Cmd {
         }
 
         let phd_runner = build_bin("phd-runner", false)?;
-        let mut cmd = phd_runner.command();
+        let mut cmd = if cfg!(target_os = "illumos") {
+            let mut cmd = Command::new("pfexec");
+            cmd.arg(phd_runner.path());
+            cmd
+        } else {
+            // If we're not on Illumos, running the tests probably won't
+            // actually work, because there's almost certainly no Bhyve. But,
+            // we'll build and run the command anyway, because being able to run
+            // on other systems may still be useful for PHD development (e.g.
+            // testing changes to artifact management, etc).
+            Command::new(phd_runner.path())
+        };
         cmd.arg("run")
             .arg("--propolis-server-cmd")
             .arg(&propolis_local_path)
