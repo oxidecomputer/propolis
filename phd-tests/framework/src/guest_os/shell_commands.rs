@@ -16,14 +16,14 @@ use super::{CommandSequence, CommandSequenceEntry};
 /// This routine assumes that multi-line commands will be echoed with `> ` at
 /// the start of each line in the command. This is technically shell-dependent
 /// but is true for all the shell types in PHD's currently-supported guests.
-pub(super) fn shell_command_sequence<'a>(
-    cmd: Cow<'a, str>,
+pub(super) fn shell_command_sequence(
+    cmd: Cow<'_, str>,
     buffer_kind: crate::serial::BufferKind,
 ) -> CommandSequence {
     let echo = cmd.trim_end().replace('\n', "\n> ");
     match buffer_kind {
         crate::serial::BufferKind::Raw => CommandSequence(vec![
-            CommandSequenceEntry::WriteStr(cmd.into()),
+            CommandSequenceEntry::WriteStr(cmd),
             CommandSequenceEntry::WaitFor(echo.into()),
             CommandSequenceEntry::WriteStr("\n".into()),
         ]),
