@@ -88,6 +88,13 @@ impl IntrPin for LNKPin {
         let inner = self.inner.lock().unwrap();
         inner.asserted
     }
+    fn import_state(&self, is_asserted: bool) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.asserted = is_asserted;
+        if let Some(pin) = inner.pin.as_ref() {
+            pin.import_state(is_asserted);
+        }
+    }
 }
 
 struct IrqConfig {

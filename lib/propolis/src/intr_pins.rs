@@ -27,6 +27,8 @@ pub trait IntrPin: Send + Sync + 'static {
             self.deassert();
         }
     }
+
+    fn import_state(&self, is_asserted: bool);
 }
 
 /// Describes the operation to take with an interrupt pin.
@@ -92,6 +94,17 @@ impl LegacyPIC {
         Some(LegacyPin::new(irq, Arc::downgrade(self)))
     }
 
+    fn import_irq(&self, op: PinOp, irq: u8) {
+        assert!(irq < PIN_COUNT);
+
+        let mut inner = self.inner.lock().unwrap();
+
+        // Update our tracked pin level count, but *don't* actually perform the
+        // ioctl to assert the bhyve interrupt, since the kernelspace pin states
+        // are imported separately.
+        inner.pins[irq as usize].process_op(&op);
+    }
+
     fn do_irq(&self, op: PinOp, irq: u8) {
         assert!(irq < PIN_COUNT);
 
@@ -153,6 +166,17 @@ impl IntrPin for LegacyPin {
         let asserted = self.asserted.lock().unwrap();
         *asserted
     }
+    fn import_state(&self, is_asserted: bool) {
+        let mut asserted = self.asserted.lock().unwrap();
+        if *asserted != is_asserted {
+            *asserted = is_asserted;
+            if let Some(pic) = Weak::upgrade(&self.pic) {
+                let op =
+                    if is_asserted { PinOp::Assert } else { PinOp::Deassert };
+                pic.import_irq(op, self.irq);
+            }
+        }
+    }
 }
 
 /// Interrupt pin which calls a provided function on rising and falling edges.
@@ -188,6 +212,13 @@ impl IntrPin for FuncPin {
         let inner = self.0.lock().unwrap();
         inner.level
     }
+    fn import_state(&self, is_asserted: bool) {
+        let mut inner = self.0.lock().unwrap();
+        if inner.level != is_asserted {
+            inner.level = is_asserted;
+            (inner.func)(inner.level);
+        }
+    }
 }
 struct FPInner {
     level: bool,
@@ -203,4 +234,5 @@ impl IntrPin for NoOpPin {
     fn is_asserted(&self) -> bool {
         false
     }
+    fn import_state(&self, _: bool) {}
 }
