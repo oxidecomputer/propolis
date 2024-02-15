@@ -27,6 +27,9 @@ pub(super) enum CommandSequenceEntry<'a> {
     /// Write the specified string as a command to the guest serial console.
     WriteStr(Cow<'a, str>),
 
+    /// Tell the serial console task to clear its buffer.
+    ClearBuffer,
+
     /// Change the serial console buffering discipline to the supplied
     /// discipline.
     ChangeSerialConsoleBuffer(crate::serial::BufferKind),

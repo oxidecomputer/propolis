@@ -25,6 +25,7 @@ pub(super) fn shell_command_sequence(
         crate::serial::BufferKind::Raw => CommandSequence(vec![
             CommandSequenceEntry::WriteStr(cmd),
             CommandSequenceEntry::WaitFor(echo.into()),
+            CommandSequenceEntry::ClearBuffer,
             CommandSequenceEntry::WriteStr("\n".into()),
         ]),
 
@@ -37,11 +38,21 @@ pub(super) fn shell_command_sequence(
             let cmd_lines = cmd.trim_end().lines();
             let echo_lines = echo.lines();
             let mut seq = vec![];
-            for (cmd, echo) in cmd_lines.zip(echo_lines) {
+
+            let mut iter = cmd_lines.zip(echo_lines).peekable();
+            while let Some((cmd, echo)) = iter.next() {
                 seq.push(CommandSequenceEntry::WriteStr(cmd.to_owned().into()));
                 seq.push(CommandSequenceEntry::WaitFor(echo.to_owned().into()));
-                seq.push(CommandSequenceEntry::WriteStr("\n".into()));
+
+                if iter.peek().is_some() {
+                    seq.push(CommandSequenceEntry::WriteStr("\n".into()));
+                }
             }
+
+            // Before issuing the command, clear any stale echoed characters
+            // from the serial console buffer. This ensures that the
+            seq.push(CommandSequenceEntry::ClearBuffer);
+            seq.push(CommandSequenceEntry::WriteStr("\n".into()));
 
             CommandSequence(seq)
         }

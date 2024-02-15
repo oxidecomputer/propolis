@@ -35,6 +35,9 @@ trait Buffer: Send {
     /// Processes the supplied `bytes` as input to the buffer.
     fn process_bytes(&mut self, bytes: &[u8]);
 
+    /// Clears the unprocessed contents of the buffer.
+    fn clear(&mut self);
+
     /// Registers a new request to wait for a string to appear in the buffer.
     fn register_wait_for_output(&mut self, waiter: OutputWaiter);
 
@@ -60,6 +63,10 @@ pub enum BufferKind {
 enum TaskCommand {
     /// Send the supplied bytes to the VM.
     SendBytes { bytes: Vec<u8>, done: oneshot::Sender<()> },
+
+    /// Clears the contents of the task's console buffer. This does not cancel
+    /// the active wait, if there is one.
+    Clear,
 
     /// Register to be notified if and when a supplied string appears in the
     /// serial console's buffer.
@@ -117,12 +124,21 @@ impl SerialConsole {
         Ok(())
     }
 
+    /// Directs the console worker thread to clear the serial console buffer.
+    pub fn clear(&self) -> anyhow::Result<()> {
+        self.cmd_tx.send(TaskCommand::Clear)?;
+        Ok(())
+    }
+
     /// Registers with the current buffer a request to wait for `wanted` to
     /// appear in the console buffer. When a match is found, the buffer sends
-    /// all buffered characters preceding the match to `preceding_tx`, consuming
-    /// those characters and the matched string. If the buffer already contains
-    /// one or more matches at the time the waiter is registered, the last match
-    /// is used to satisfy the wait immediately.
+    /// all buffered characters preceding the match to `preceding_tx`. If the
+    /// buffer already contains one or more matches at the time the waiter is
+    /// registered, the last match is used to satisfy the wait immediately.
+    ///
+    /// Note that this function *does not* clear any characters from the buffer.
+    /// Callers who want to retire previously-echoed characters in the buffer
+    /// must explicitly call `clear`.
     pub fn register_wait_for_string(
         &self,
         wanted: String,
@@ -225,6 +241,7 @@ async fn serial_task(
 
                         let _ = done.send(());
                     }
+                    TaskCommand::Clear => buffer.clear(),
                     TaskCommand::RegisterWait(waiter) => {
                         buffer.register_wait_for_output(waiter);
                     }

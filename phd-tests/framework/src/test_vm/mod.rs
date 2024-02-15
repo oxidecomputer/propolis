@@ -659,6 +659,9 @@ impl TestVm {
                         self.send_serial_str(s.as_ref()).await?;
                         self.send_serial_str("\n").await?;
                     }
+                    CommandSequenceEntry::ClearBuffer => {
+                        self.clear_serial_buffer()?
+                    }
                     CommandSequenceEntry::ChangeSerialConsoleBuffer(kind) => {
                         self.change_serial_buffer_kind(kind)?;
                     }
@@ -686,8 +689,8 @@ impl TestVm {
     }
 
     /// Waits for up to `timeout_duration` for `line` to appear on the guest
-    /// serial console, then returns the unconsumed portion of the serial
-    /// console buffer that preceded the requested string.
+    /// serial console, then returns the contents of the console buffer that
+    /// preceded the requested string.
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     pub async fn wait_for_serial_output(
         &self,
@@ -746,6 +749,9 @@ impl TestVm {
                 CommandSequenceEntry::WriteStr(s) => {
                     self.send_serial_str(s.as_ref()).await?;
                 }
+                CommandSequenceEntry::ClearBuffer => {
+                    self.clear_serial_buffer()?
+                }
                 _ => {
                     anyhow::bail!(
                         "Unexpected command sequence entry {step:?} while \
@@ -788,6 +794,13 @@ impl TestVm {
                 done_rx.await?;
                 Ok(())
             }
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
+        }
+    }
+
+    fn clear_serial_buffer(&self) -> Result<()> {
+        match &self.state {
+            VmState::Ensured { serial } => serial.clear(),
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
