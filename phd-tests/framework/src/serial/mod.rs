@@ -202,15 +202,20 @@ async fn serial_task(
                                 );
                             }
                         } else {
-                            for b in bytes {
-                                if let Err(e) = stream.send(Message::Binary(vec![b])).await {
+                            let mut bytes = bytes.iter().peekable();
+                            while let Some(b) = bytes.next() {
+                                if let Err(e) = stream.send(Message::Binary(vec![*b])).await {
                                     error!(
                                         ?e,
                                         "failed to send input to serial console websocket"
                                     );
                                 }
 
-                                tokio::time::sleep(debounce).await;
+                                if let Some(next) = bytes.peek() {
+                                    if *next == b {
+                                        tokio::time::sleep(debounce).await;
+                                    }
+                                }
                             }
                         }
                     }

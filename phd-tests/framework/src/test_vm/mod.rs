@@ -662,7 +662,9 @@ impl TestVm {
                     CommandSequenceEntry::ChangeSerialConsoleBuffer(kind) => {
                         self.change_serial_buffer_kind(kind)?;
                     }
-                    CommandSequenceEntry::SetSerialByteWriteDelay(duration) => {
+                    CommandSequenceEntry::SetRepeatedCharacterDebounce(
+                        duration,
+                    ) => {
                         self.set_serial_byte_write_delay(duration)?;
                     }
                 }

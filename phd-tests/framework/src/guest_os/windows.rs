@@ -48,11 +48,11 @@ pub(super) fn get_login_sequence_for<'a>(
         CommandSequenceEntry::WriteStr("0xide#1Fan".into()),
     ];
 
-    // Windows Server 2019's serial console-based command prompts default to
-    // trying to drive a VT100 terminal themselves instead of emitting
-    // characters and letting the recipient display them in whatever style it
-    // likes. This only happens once the command prompt has been activated, so
-    // only switch buffering modes after entering credentials.
+    // Earlier Windows Server versions' serial console-based command prompts
+    // default to trying to drive a VT100 terminal themselves instead of
+    // emitting characters and letting the recipient display them in whatever
+    // style it likes. This only happens once the command prompt has been
+    // activated, so only switch buffering modes after entering credentials.
     if matches!(
         guest,
         GuestOsKind::WindowsServer2016 | GuestOsKind::WindowsServer2019
@@ -61,12 +61,13 @@ pub(super) fn get_login_sequence_for<'a>(
             CommandSequenceEntry::ChangeSerialConsoleBuffer(
                 crate::serial::BufferKind::Vt80x24,
             ),
-            // Server 2019 also likes to debounce keystrokes, so set a small
-            // delay between characters to try to avoid this. (This value was
-            // chosen by experimentation; there doesn't seem to be a guest
-            // setting that controls this interval.)
-            CommandSequenceEntry::SetSerialByteWriteDelay(
-                std::time::Duration::from_millis(125),
+            // These versions also like to debounce keystrokes, so set a delay
+            // between repeated characters to try to avoid this. This is a very
+            // conservative delay to try to avoid test flakiness; fortunately,
+            // it only applies when typing the same character multiple times in
+            // a row.
+            CommandSequenceEntry::SetRepeatedCharacterDebounce(
+                std::time::Duration::from_secs(1),
             ),
         ]);
     }

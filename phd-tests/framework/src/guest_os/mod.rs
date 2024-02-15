@@ -33,7 +33,7 @@ pub(super) enum CommandSequenceEntry<'a> {
 
     /// Set a delay between writing individual bytes to the guest serial console
     /// to avoid keyboard debouncing logic in guests.
-    SetSerialByteWriteDelay(std::time::Duration),
+    SetRepeatedCharacterDebounce(std::time::Duration),
 }
 
 pub(super) struct CommandSequence<'a>(pub Vec<CommandSequenceEntry<'a>>);
