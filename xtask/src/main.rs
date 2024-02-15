@@ -20,6 +20,7 @@ struct Args {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Cmds {
     /// Run suite of clippy checks
     Clippy {
