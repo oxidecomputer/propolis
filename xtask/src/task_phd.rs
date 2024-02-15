@@ -41,6 +41,7 @@ macro_rules! cargo_warn {
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Cmd {
     /// Run the PHD test suite.
     Run {
@@ -68,21 +69,10 @@ pub(crate) enum Cmd {
 
 #[derive(clap::Parser, Debug, Clone)]
 pub(crate) struct RunArgs {
-    /// Build `propolis-server` in release mode.
-    #[clap(long = "release", short = 'r')]
-    propolis_release_mode: bool,
-
     /// If set, temporary directories older than one day will not be
     /// deleted.
     #[clap(long)]
     no_tidy: bool,
-
-    /// If set, skip migration-from-base tests.
-    ///
-    /// If this flag is present, `cargo xtask phd` will not pass
-    /// `--base-propolis-branch master` to the `phd-runner` command.
-    #[clap(long)]
-    no_base_propolis: bool,
 
     /// Arguments to pass to `phd-runner run`.
     ///
@@ -95,6 +85,163 @@ pub(crate) struct RunArgs {
     /// `phd-runner`.
     #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
     phd_args: Vec<String>,
+
+    #[clap(flatten)]
+    propolis_args: PropolisArgs,
+
+    #[clap(flatten)]
+    artifact_args: ArtifactStoreArgs,
+
+    #[clap(flatten)]
+    base_propolis_args: BasePropolisArgs,
+
+    #[clap(flatten)]
+    crucible_args: CrucibleArgs,
+}
+
+#[derive(Debug, Clone, clap::Parser)]
+#[group(id = "propolis", required = false, multiple = false)]
+#[command(next_help_heading = "Propolis Selection")]
+struct PropolisArgs {
+    /// The command to use to launch the Propolis server.
+    ///
+    /// If this is not present, a Propolis server binary will be built automatically.
+    #[clap(long = "propolis-server-cmd", value_parser, value_hint = clap::ValueHint::FilePath)]
+    server_cmd: Option<Utf8PathBuf>,
+
+    /// If set, build `propolis-server` in release mode.
+    #[clap(long, short = 'r')]
+    release: bool,
+}
+
+#[derive(Debug, Clone, clap::Parser)]
+#[group(id = "base-propolis", required = false, multiple = false)]
+#[command(next_help_heading = "Migration Base Propolis Selection")]
+struct BasePropolisArgs {
+    /// Git branch name to use for the "migration base" Propolis server artifact
+    /// for migration-from-base tests.
+    ///
+    /// If this argument is provided, PHD will download the latest Propolis
+    /// server artifact from Buildomat for the provided branch name, and use it
+    /// to test migration from that Propolis version to the Propolis revision
+    /// under test.
+    ///
+    /// This argument conflicts with the `--base-propolis-commit`,
+    /// `--base-propolis-cmd`, and `--no-base-propolis` arguments. If none of
+    /// these arguments are provided, `cargo xtask phd` will automatically pass
+    /// `--base-propolis-branch master` to `phd-runner`.
+    #[clap(long, value_parser)]
+    base_propolis_branch: Option<String>,
+
+    /// Git commit hash to use for the "migration base" Propolis server artifact for
+    /// migration from base tests.
+    ///
+    /// If this argument is provided, PHD will download the Propolis server
+    /// artifact from Buildomat for the provided commit hash, and use it
+    /// to test migration from that Propolis version to the Propolis revision
+    /// under test.
+    ///
+    /// This argument conflicts with the `--base-propolis-branch`,
+    /// `--base-propolis-cmd`, and `--no-base-propolis` arguments. If none of
+    /// these arguments are provided, `cargo xtask phd` will automatically pass
+    /// `--base-propolis-branch master` to `phd-runner`.
+    #[clap(long, value_parser)]
+    base_propolis_commit: Option<String>,
+
+    /// The path of a local command to use as the "migration base" Propolis
+    /// server for migration-from-base tests.
+    ///
+    /// If this argument is provided, PHD will use the provided command to run
+    /// to test migration from that Propolis binary to the Propolis revision
+    /// under test.
+    ///
+    /// This argument conflicts with the `--base-propolis-branch`,
+    /// `--base-propolis-commit`, and `--no-base-propolis` arguments. If none of
+    /// these arguments are provided, `cargo xtask phd` will automatically pass
+    /// `--base-propolis-branch master` to `phd-runner`.
+    #[clap(
+        long,
+        value_hint = clap::ValueHint::FilePath,
+        value_parser
+    )]
+    base_propolis_cmd: Option<Utf8PathBuf>,
+
+    /// If set, skip migration-from-base tests.
+    ///
+    /// If this flag is present, `cargo xtask phd` will not pass
+    /// `--base-propolis-branch master` to the `phd-runner` command.
+    ///
+    /// This flag conflicts with the `--base-propolis-branch`,
+    /// `--base-propolis-commit`, and `--base-propolis-cmd` arguments. If none
+    /// of these arguments are provided, `cargo xtask phd` will automatically
+    /// pass `--base-propolis-branch master` to `phd-runner`.
+    #[clap(long)]
+    no_base_propolis: bool,
+}
+
+#[derive(Debug, Clone, clap::Parser)]
+#[group(id = "crucible", required = false, multiple = false)]
+#[command(next_help_heading = "Crucible Downstairs Selection")]
+struct CrucibleArgs {
+    /// The path of a local command to use to launch Crucible downstairs
+    /// servers.
+    ///
+    /// This argument conflicts with the `--crucible-downstairs-commit` and
+    /// `--no-crucible` arguments. If none of the `--crucible-downstairs-cmd`,
+    /// `--crucible-downstairs-commit`, and `--no-crucible` arguments are
+    /// provided, then `cargo xtask phd` will pass `--crucible-downstairs-commit
+    /// auto` to `phd-runner`.
+    #[clap(long, value_parser, value_hint = clap::ValueHint::FilePath)]
+    crucible_downstairs_cmd: Option<Utf8PathBuf>,
+
+    /// Git revision to use to download Crucible downstairs artifacts from
+    /// Buildomat.
+    ///
+    /// This may either be the string 'auto' or a 40-character Git commit
+    /// hash. If this is 'auto', then the Git revision of Crucible is determined
+    /// automatically based on the Propolis workspace's Cargo git dependency on
+    /// the `crucible` crate (determined when `phd-runner` is built). If an
+    /// explicit commit hash is provided, that commit is downloaded from
+    /// Buildomat, regardless of which version of the `crucible` crate Propolis
+    /// depends on.
+    ///
+    /// This argument conflicts with the `--crucible-downstairs-cmd` and
+    /// `--no-crucible` arguments. If none of the `--crucible-downstairs-cmd`,
+    /// `--crucible-downstairs-commit`, and `--no-crucible` arguments are
+    /// provided, then `cargo xtask phd` will pass `--crucible-downstairs-commit
+    /// auto` to `phd-runner`.
+    #[clap(long, value_parser)]
+    crucible_downstairs_commit: Option<String>,
+
+    /// If set, skip Crucible tests.
+    ///
+    /// If this flag is present, `cargo xtask phd` will not pass
+    /// `--crucible-downstairs-commit auto` to the `phd-runner` command.
+    ///
+    /// This flag conflicts with the `--crucible-downstairs-cmd` and
+    /// `--crucible-downstairs-commit` arguments. If none of the
+    /// `--crucible-downstairs-cmd`, `--crucible-downstairs-commit`, and
+    /// `--no-crucible` arguments are provided, then `cargo xtask phd` will pass
+    /// `--crucible-downstairs-commit auto` to `phd-runner`.
+    #[clap(long)]
+    no_crucible: bool,
+}
+
+#[derive(Debug, Clone, clap::Parser)]
+#[command(next_help_heading = "Artifact Store Options")]
+struct ArtifactStoreArgs {
+    /// The path to a TOML file describing the artifact store to use for this
+    /// run.
+    #[clap(long, value_parser, value_hint = clap::ValueHint::FilePath)]
+    artifact_toml_path: Option<Utf8PathBuf>,
+
+    /// The directory in which artifacts (guest OS images, bootroms, etc.)
+    /// are to be stored.
+    ///
+    /// If this argument is not provided, the default artifact store directory
+    /// will be created in `target/phd/artifacts`.
+    #[clap(long, value_parser)]
+    artifact_directory: Option<Utf8PathBuf>,
 }
 
 impl Cmd {
@@ -109,10 +256,12 @@ impl Cmd {
         let now = time::SystemTime::now();
 
         let RunArgs {
-            propolis_release_mode,
             no_tidy,
+            propolis_args,
             phd_args,
-            no_base_propolis,
+            artifact_args,
+            base_propolis_args,
+            crucible_args,
         } = match self {
             Self::Run { args } => args,
             Self::Tidy => {
@@ -137,66 +286,13 @@ impl Cmd {
             }
         };
 
-        // Bash-script-style arg parsing, rather than using `clap`, because we
-        // want to filter out the args we default regardless of their position in
-        // the input. A `clap` parser can only accept unrecognized args if they're
-        // trailing after all recognized args, which isn't the behavior we want, as
-        // we don't know what order the `phd-runner` command line will come in.
-        let mut arg_iter = phd_args.iter().map(String::as_str);
-        let mut bonus_args = Vec::new();
-        let mut propolis_base_branch = None;
-        // If set, the `base-propolis-cmd` or `base-propolis-commit` CLI args
-        // were passed, so we should skip adding `--base-propolis-branch`.
-        let mut overridden_base_propolis = no_base_propolis;
-        let mut propolis_local_path = None;
-        let mut crucible_commit = None;
-        let mut artifacts_toml = None;
-        let mut artifact_dir = None;
-        while let Some(arg) = arg_iter.next() {
-            macro_rules! take_next_arg {
-                ($var:ident) => {{
-                    let val = arg_iter.next().ok_or_else(|| {
-                        anyhow::anyhow!("Missing value for argument `{}`", arg)
-                    })?;
-                    cargo_log!("Overridden", "{} {val:?}", arg);
-                    $var = Some(val);
-                }};
-            }
-            match arg {
-                args::PROPOLIS_BASE => take_next_arg!(propolis_base_branch),
-                args::PROPOLIS_CMD => take_next_arg!(propolis_local_path),
-                args::CRUCIBLE_COMMIT => take_next_arg!(crucible_commit),
-                args::ARTIFACTS_TOML => take_next_arg!(artifacts_toml),
-                args::ARTIFACTS_DIR => take_next_arg!(artifact_dir),
-                args::PROPOLIS_BASE_COMMIT | args::PROPOLIS_BASE_CMD => {
-                    overridden_base_propolis = true;
-                    bonus_args.push(arg);
-
-                    let val = arg_iter.next().ok_or_else(|| {
-                        anyhow::anyhow!("Missing value for argument `{arg}`")
-                    })?;
-                    bonus_args.push(val);
-                    cargo_log!("Overridden", "{} {val:?}", arg);
-                }
-
-                _ => bonus_args.push(arg),
-            }
-        }
-
-        let propolis_local_path = match propolis_local_path {
-            Some(path) => {
-                if propolis_release_mode {
-                    cargo_warn!(
-                        "setting `--release` to build propolis-server in release mode \
-                        does nothing if an existing propolis binary path is \
-                        provided using `{}`",
-                        args::PROPOLIS_CMD,
-                    );
-                }
-                path.into()
+        let propolis_local_path = match propolis_args.server_cmd {
+            Some(cmd) => {
+                cargo_log!("Using", "local Propolis server command {cmd}");
+                cmd
             }
             None => {
-                let bin = build_bin("propolis-server", propolis_release_mode)?;
+                let bin = build_bin("propolis-server", propolis_args.release)?;
                 let path = bin
                     .path()
                     .try_into()
@@ -205,8 +301,10 @@ impl Cmd {
             }
         };
 
-        let artifact_dir =
-            artifact_dir.map(Utf8PathBuf::from).unwrap_or_else(|| {
+        let artifact_dir = artifact_args
+            .artifact_directory
+            .map(Utf8PathBuf::from)
+            .unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifact_dir` path, use
                 // `target/phd/artifacts`.
                 phd_dir.join("artifacts")
@@ -234,8 +332,10 @@ impl Cmd {
 
         mkdir(&tmp_dir, "temp directory")?;
 
-        let artifacts_toml =
-            artifacts_toml.map(Utf8PathBuf::from).unwrap_or_else(|| {
+        let artifacts_toml = artifact_args
+            .artifact_toml_path
+            .map(Utf8PathBuf::from)
+            .unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifacts.toml` path,
                 // determine the default one from the workspace path.
                 relativize(&meta.workspace_root)
@@ -252,36 +352,63 @@ impl Cmd {
         let phd_runner = build_bin("phd-runner", false)?;
         let mut cmd = phd_runner.command();
         cmd.arg("run")
-            .arg(args::PROPOLIS_CMD)
+            .arg("--propolis-server-cmd")
             .arg(&propolis_local_path)
-            .arg(args::CRUCIBLE_COMMIT)
-            .arg(crucible_commit.unwrap_or("auto"))
-            .arg(args::ARTIFACTS_TOML)
+            .arg("--artifact-toml-path")
             .arg(&artifacts_toml)
-            .arg(args::ARTIFACTS_DIR)
+            .arg("--artifact-directory")
             .arg(&artifact_dir)
             .arg("--tmp-directory")
-            .arg(&tmp_dir)
-            .args(bonus_args);
+            .arg(&tmp_dir);
+        crucible_args.configure_command(&mut cmd);
+        base_propolis_args.configure_command(&mut cmd);
+        cmd.args(phd_args);
 
-        if !overridden_base_propolis {
-            cmd.arg(args::PROPOLIS_BASE)
-                .arg(propolis_base_branch.unwrap_or("master"));
-        }
         let status = run_exit_code(&mut cmd)?;
 
         std::process::exit(status);
     }
 }
 
-mod args {
-    pub(super) const PROPOLIS_CMD: &str = "--propolis-server-cmd";
-    pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
-    pub(super) const PROPOLIS_BASE_COMMIT: &str = "--base-propolis-commit";
-    pub(super) const PROPOLIS_BASE_CMD: &str = "--base-propolis-cmd";
-    pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
-    pub(super) const ARTIFACTS_TOML: &str = "--artifact-toml-path";
-    pub(super) const ARTIFACTS_DIR: &str = "--artifact-directory";
+impl CrucibleArgs {
+    fn configure_command(&self, cmd: &mut Command) {
+        if let Some(ref path) = self.crucible_downstairs_cmd {
+            cargo_log!("Using", "local Crucible downstairs: {path}");
+            cmd.arg("--crucible-downstairs-cmd").arg(path);
+        } else if let Some(ref commit) = self.crucible_downstairs_commit {
+            cargo_log!("Using", "Crucible downstairs from commit: {commit}");
+            cmd.arg("--crucible-downstairs-commit").arg(commit);
+        } else if self.no_crucible {
+            cargo_log!("Skipping", "Crucible tests");
+        } else {
+            cmd.arg("--crucible-downstairs-commit").arg("auto");
+        }
+    }
+}
+
+impl BasePropolisArgs {
+    fn configure_command(&self, cmd: &mut Command) {
+        if let Some(ref path) = self.base_propolis_cmd {
+            cargo_log!("Using", "local migration-base Propolis: {path}");
+            cmd.arg("--base-propolis-cmd").arg(path);
+        } else if let Some(ref commit) = self.base_propolis_commit {
+            cargo_log!(
+                "Using",
+                "migration-base Propolis from commit: {commit}"
+            );
+            cmd.arg("--base-propolis-commit").arg(commit);
+        } else if let Some(ref branch) = self.base_propolis_branch {
+            cargo_log!(
+                "Using",
+                "migration-base Propolis from branch: {branch}"
+            );
+            cmd.arg("--base-propolis-branch").arg(branch);
+        } else if self.no_base_propolis {
+            cargo_log!("Skipping", "migration-from-base tests");
+        } else {
+            cmd.arg("--base-propolis-branch").arg("master");
+        }
+    }
 }
 
 fn build_bin(
