@@ -54,14 +54,14 @@ pub(crate) enum Cmd {
     /// List PHD tests
     List {
         /// Arguments to pass to `phd-runner list`.
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
         phd_args: Vec<String>,
     },
 
     /// Display `phd-runner`'s help output.
     RunnerHelp {
         /// Arguments to pass to `phd-runner help`.
-        #[clap(trailing_var_arg = true)]
+        #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
         phd_args: Vec<String>,
     },
 }
@@ -77,6 +77,13 @@ pub(crate) struct RunArgs {
     #[clap(long)]
     no_tidy: bool,
 
+    /// If set, skip migration-from-base tests.
+    ///
+    /// If this flag is present, `cargo xtask phd` will not pass
+    /// `--base-propolis-branch master` to the `phd-runner` command.
+    #[clap(long)]
+    no_base_propolis: bool,
+
     /// Arguments to pass to `phd-runner run`.
     ///
     /// If the `--propolis-server-cmd`, `--crucible-downstairs-commit`,
@@ -86,7 +93,7 @@ pub(crate) struct RunArgs {
     ///
     /// Use `cargo xtask phd runner-help` for details on the arguments passed to
     /// `phd-runner`.
-    #[clap(trailing_var_arg = true)]
+    #[clap(trailing_var_arg = true, allow_hyphen_values = true)]
     phd_args: Vec<String>,
 }
 
@@ -101,7 +108,12 @@ impl Cmd {
         let mut tmp_dir = phd_dir.join("tmp");
         let now = time::SystemTime::now();
 
-        let RunArgs { propolis_release_mode, no_tidy, phd_args } = match self {
+        let RunArgs {
+            propolis_release_mode,
+            no_tidy,
+            phd_args,
+            no_base_propolis,
+        } = match self {
             Self::Run { args } => args,
             Self::Tidy => {
                 cargo_log!("Tidying up", "old temporary directories...");
@@ -110,8 +122,9 @@ impl Cmd {
             }
             Self::List { phd_args } => {
                 let phd_runner = build_bin("phd-runner", false)?;
-                let status =
-                    run_exit_code(phd_runner.command().args(phd_args))?;
+                let status = run_exit_code(
+                    phd_runner.command().arg("list").args(phd_args),
+                )?;
                 std::process::exit(status);
             }
 
@@ -132,6 +145,9 @@ impl Cmd {
         let mut arg_iter = phd_args.iter().map(String::as_str);
         let mut bonus_args = Vec::new();
         let mut propolis_base_branch = None;
+        // If set, the `base-propolis-cmd` or `base-propolis-commit` CLI args
+        // were passed, so we should skip adding `--base-propolis-branch`.
+        let mut overridden_base_propolis = no_base_propolis;
         let mut propolis_local_path = None;
         let mut crucible_commit = None;
         let mut artifacts_toml = None;
@@ -152,6 +168,16 @@ impl Cmd {
                 args::CRUCIBLE_COMMIT => take_next_arg!(crucible_commit),
                 args::ARTIFACTS_TOML => take_next_arg!(artifacts_toml),
                 args::ARTIFACTS_DIR => take_next_arg!(artifact_dir),
+                args::PROPOLIS_BASE_COMMIT | args::PROPOLIS_BASE_CMD => {
+                    overridden_base_propolis = true;
+                    bonus_args.push(arg);
+
+                    let val = arg_iter.next().ok_or_else(|| {
+                        anyhow::anyhow!("Missing value for argument `{arg}`")
+                    })?;
+                    bonus_args.push(val);
+                    cargo_log!("Overridden", "{} {val:?}", arg);
+                }
 
                 _ => bonus_args.push(arg),
             }
@@ -224,24 +250,25 @@ impl Cmd {
         }
 
         let phd_runner = build_bin("phd-runner", false)?;
-        let status = run_exit_code(
-            phd_runner
-                .command()
-                .arg("run")
-                .arg(args::PROPOLIS_CMD)
-                .arg(&propolis_local_path)
-                .arg(args::CRUCIBLE_COMMIT)
-                .arg(crucible_commit.unwrap_or("auto"))
-                .arg(args::PROPOLIS_BASE)
-                .arg(propolis_base_branch.unwrap_or("master"))
-                .arg(args::ARTIFACTS_TOML)
-                .arg(&artifacts_toml)
-                .arg(args::ARTIFACTS_DIR)
-                .arg(&artifact_dir)
-                .arg("--tmp-directory")
-                .arg(&tmp_dir)
-                .args(bonus_args),
-        )?;
+        let mut cmd = phd_runner.command();
+        cmd.arg("run")
+            .arg(args::PROPOLIS_CMD)
+            .arg(&propolis_local_path)
+            .arg(args::CRUCIBLE_COMMIT)
+            .arg(crucible_commit.unwrap_or("auto"))
+            .arg(args::ARTIFACTS_TOML)
+            .arg(&artifacts_toml)
+            .arg(args::ARTIFACTS_DIR)
+            .arg(&artifact_dir)
+            .arg("--tmp-directory")
+            .arg(&tmp_dir)
+            .args(bonus_args);
+
+        if !overridden_base_propolis {
+            cmd.arg(args::PROPOLIS_BASE)
+                .arg(propolis_base_branch.unwrap_or("master"));
+        }
+        let status = run_exit_code(&mut cmd)?;
 
         std::process::exit(status);
     }
@@ -250,6 +277,8 @@ impl Cmd {
 mod args {
     pub(super) const PROPOLIS_CMD: &str = "--propolis-server-cmd";
     pub(super) const PROPOLIS_BASE: &str = "--base-propolis-branch";
+    pub(super) const PROPOLIS_BASE_COMMIT: &str = "--base-propolis-commit";
+    pub(super) const PROPOLIS_BASE_CMD: &str = "--base-propolis-cmd";
     pub(super) const CRUCIBLE_COMMIT: &str = "--crucible-downstairs-commit";
     pub(super) const ARTIFACTS_TOML: &str = "--artifact-toml-path";
     pub(super) const ARTIFACTS_DIR: &str = "--artifact-directory";
