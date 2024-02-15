@@ -650,13 +650,13 @@ impl TestVm {
                 match step {
                     CommandSequenceEntry::WaitFor(s) => {
                         self.wait_for_serial_output(
-                            s,
+                            s.as_ref(),
                             SerialOutputTimeout::CallerTimeout,
                         )
                         .await?;
                     }
                     CommandSequenceEntry::WriteStr(s) => {
-                        self.send_serial_str(s).await?;
+                        self.send_serial_str(s.as_ref()).await?;
                         self.send_serial_str("\n").await?;
                     }
                     CommandSequenceEntry::ChangeSerialConsoleBuffer(kind) => {
@@ -731,21 +731,27 @@ impl TestVm {
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
     pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
-        // Send the command out the serial port, including any amendments
-        // required by the guest. Do not send the final '\n' keystroke that
-        // actually issues the command.
-        let to_send = self.guest_os.amend_shell_command(cmd);
-        self.send_serial_str(&to_send).await?;
-
-        // Wait for the command to be echoed back. This ensures that the echoed
-        // command is consumed from the buffer such that it won't be returned
-        // as output when waiting for the post-command shell prompt to appear.
-        //
-        // Tests may send multi-line commands. Assume these won't be echoed
-        // literally and that each line will instead be preceded by `> `.
-        let echo = to_send.trim_end().replace('\n', "\n> ");
-        self.wait_for_serial_output(&echo, Duration::from_secs(15)).await?;
-        self.send_serial_str("\n").await?;
+        let command_sequence = self.guest_os.shell_command_sequence(cmd);
+        for step in command_sequence.0 {
+            match step {
+                CommandSequenceEntry::WaitFor(s) => {
+                    self.wait_for_serial_output(
+                        s.as_ref(),
+                        std::time::Duration::from_secs(15),
+                    )
+                    .await?;
+                }
+                CommandSequenceEntry::WriteStr(s) => {
+                    self.send_serial_str(s.as_ref()).await?;
+                }
+                _ => {
+                    anyhow::bail!(
+                        "Unexpected command sequence entry {step:?} while \
+                        running shell command"
+                    );
+                }
+            }
+        }
 
         // Once the command has run, the guest should display another prompt.
         // Treat the unconsumed buffered text before this point as the command
@@ -764,7 +770,7 @@ impl TestVm {
         Ok(out.trim().to_string())
     }
 
-    async fn send_serial_str(&self, string: &str) -> Result<()> {
+    pub(crate) async fn send_serial_str(&self, string: &str) -> Result<()> {
         if !string.is_empty() {
             self.send_serial_bytes_async(Vec::from(string.as_bytes())).await
         } else {

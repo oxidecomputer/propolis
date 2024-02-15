@@ -31,15 +31,11 @@ impl GuestOs for WindowsServer2016 {
         false
     }
 
-    fn amend_shell_command<'a>(&self, cmd: &'a str) -> Cow<'a, str> {
-        // Ensure that after executing a shell command, the 80x24 serial console
-        // buffer contains only the output of the command.
-        //
-        // `reset` is used to try to force the guest to clear and redraw the
-        // entire terminal so that there is no "left over" command prompt in the
-        // guest's terminal buffer. This ensures that the guest will print the
-        // new prompt instead of eliding it because it believes it's already on
-        // the screen.
-        Cow::from(format!("reset; {}", cmd))
+    fn shell_command_sequence<'a>(&self, cmd: &'a str) -> CommandSequence<'a> {
+        let cmd = format!("reset && {cmd}");
+        super::shell_commands::shell_command_sequence(
+            Cow::Owned(cmd),
+            crate::serial::BufferKind::Vt80x24,
+        )
     }
 }

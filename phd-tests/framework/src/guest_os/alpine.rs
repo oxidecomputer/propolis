@@ -11,9 +11,9 @@ pub(super) struct Alpine;
 impl GuestOs for Alpine {
     fn get_login_sequence(&self) -> CommandSequence {
         CommandSequence(vec![
-            CommandSequenceEntry::WaitFor("localhost login: "),
-            CommandSequenceEntry::WriteStr("root"),
-            CommandSequenceEntry::WaitFor(self.get_shell_prompt()),
+            CommandSequenceEntry::WaitFor("localhost login: ".into()),
+            CommandSequenceEntry::WriteStr("root".into()),
+            CommandSequenceEntry::WaitFor(self.get_shell_prompt().into()),
         ])
     }
 
@@ -23,5 +23,12 @@ impl GuestOs for Alpine {
 
     fn read_only_fs(&self) -> bool {
         true
+    }
+
+    fn shell_command_sequence<'a>(&self, cmd: &'a str) -> CommandSequence<'a> {
+        super::shell_commands::shell_command_sequence(
+            std::borrow::Cow::Borrowed(cmd),
+            crate::serial::BufferKind::Raw,
+        )
     }
 }

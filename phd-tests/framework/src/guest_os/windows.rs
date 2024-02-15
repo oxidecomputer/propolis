@@ -14,7 +14,9 @@ use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 /// - Cygwin is installed to C:\cygwin and can be launched by invoking
 ///   C:\cygwin\cygwin.bat.
 /// - The local administrator account is enabled with password `0xide#1Fan`.
-pub(super) fn get_login_sequence_for(guest: GuestOsKind) -> CommandSequence {
+pub(super) fn get_login_sequence_for<'a>(
+    guest: GuestOsKind,
+) -> CommandSequence<'a> {
     assert!(matches!(
         guest,
         GuestOsKind::WindowsServer2016
@@ -24,26 +26,26 @@ pub(super) fn get_login_sequence_for(guest: GuestOsKind) -> CommandSequence {
 
     let mut commands = vec![
         CommandSequenceEntry::WaitFor(
-            "Computer is booting, SAC started and initialized.",
+            "Computer is booting, SAC started and initialized.".into(),
         ),
         CommandSequenceEntry::WaitFor(
-            "EVENT: The CMD command is now available.",
+            "EVENT: The CMD command is now available.".into(),
         ),
-        CommandSequenceEntry::WaitFor("SAC>"),
-        CommandSequenceEntry::WriteStr("cmd"),
-        CommandSequenceEntry::WaitFor("Channel: Cmd0001"),
-        CommandSequenceEntry::WaitFor("SAC>"),
-        CommandSequenceEntry::WriteStr("ch -sn Cmd0001"),
+        CommandSequenceEntry::WaitFor("SAC>".into()),
+        CommandSequenceEntry::WriteStr("cmd".into()),
+        CommandSequenceEntry::WaitFor("Channel: Cmd0001".into()),
+        CommandSequenceEntry::WaitFor("SAC>".into()),
+        CommandSequenceEntry::WriteStr("ch -sn Cmd0001".into()),
         CommandSequenceEntry::WaitFor(
-            "Use any other key to view this channel.",
+            "Use any other key to view this channel.".into(),
         ),
-        CommandSequenceEntry::WriteStr(""),
-        CommandSequenceEntry::WaitFor("Username:"),
-        CommandSequenceEntry::WriteStr("Administrator"),
-        CommandSequenceEntry::WaitFor("Domain  :"),
-        CommandSequenceEntry::WriteStr(""),
-        CommandSequenceEntry::WaitFor("Password:"),
-        CommandSequenceEntry::WriteStr("0xide#1Fan"),
+        CommandSequenceEntry::WriteStr("".into()),
+        CommandSequenceEntry::WaitFor("Username:".into()),
+        CommandSequenceEntry::WriteStr("Administrator".into()),
+        CommandSequenceEntry::WaitFor("Domain  :".into()),
+        CommandSequenceEntry::WriteStr("".into()),
+        CommandSequenceEntry::WaitFor("Password:".into()),
+        CommandSequenceEntry::WriteStr("0xide#1Fan".into()),
     ];
 
     // Windows Server 2019's serial console-based command prompts default to
@@ -75,14 +77,14 @@ pub(super) fn get_login_sequence_for(guest: GuestOsKind) -> CommandSequence {
         // eat the command and just process the newline). It also appears to
         // prefer carriage returns to linefeeds. Accommodate this behavior
         // until Cygwin is launched.
-        CommandSequenceEntry::WaitFor("C:\\Windows\\system32>"),
-        CommandSequenceEntry::WriteStr("cls\r"),
-        CommandSequenceEntry::WaitFor("C:\\Windows\\system32>"),
-        CommandSequenceEntry::WriteStr("C:\\cygwin\\cygwin.bat\r"),
-        CommandSequenceEntry::WaitFor("$ "),
+        CommandSequenceEntry::WaitFor("C:\\Windows\\system32>".into()),
+        CommandSequenceEntry::WriteStr("cls\r".into()),
+        CommandSequenceEntry::WaitFor("C:\\Windows\\system32>".into()),
+        CommandSequenceEntry::WriteStr("C:\\cygwin\\cygwin.bat\r".into()),
+        CommandSequenceEntry::WaitFor("$ ".into()),
         // Tweak the command prompt so that it appears on a single line with
         // no leading newlines.
-        CommandSequenceEntry::WriteStr("PS1='\\u@\\h:$ '"),
+        CommandSequenceEntry::WriteStr("PS1='\\u@\\h:$ '".into()),
     ]);
 
     CommandSequence(commands)

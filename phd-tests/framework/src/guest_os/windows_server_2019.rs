@@ -27,19 +27,11 @@ impl GuestOs for WindowsServer2019 {
         false
     }
 
-    fn amend_shell_command<'a>(&self, cmd: &'a str) -> Cow<'a, str> {
-        // The simplest way to ensure that the 80x24 terminal buffer contains
-        // just the output of the most recent command and the subsequent prompt
-        // is to ask Windows to clear the screen and run the command in a single
-        // statement.
-        //
-        // Use Cygwin bash's `reset` instead of `clear` or `cls` to try to force
-        // Windows to clear and redraw the entire terminal before displaying any
-        // command output. Without this, Windows sometimes reprints a new
-        // command prompt to its internal screen buffer before re-rendering
-        // anything to the terminal; when this happens, it doesn't re-send the
-        // new command prompt, since it's "already there" on the output terminal
-        // (even though it may have been cleared from the match buffer).
-        Cow::from(format!("reset; {}", cmd))
+    fn shell_command_sequence<'a>(&self, cmd: &'a str) -> CommandSequence<'a> {
+        let cmd = format!("reset && {cmd}");
+        super::shell_commands::shell_command_sequence(
+            Cow::Owned(cmd),
+            crate::serial::BufferKind::Vt80x24,
+        )
     }
 }

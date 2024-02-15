@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 mod alpine;
 mod debian11_nocloud;
+mod shell_commands;
 mod ubuntu22_04;
 mod windows;
 mod windows_server_2016;
@@ -19,12 +20,12 @@ mod windows_server_2022;
 
 /// An entry in a sequence of interactions with the guest's command prompt.
 #[derive(Debug)]
-pub(super) enum CommandSequenceEntry {
+pub(super) enum CommandSequenceEntry<'a> {
     /// Wait for the supplied string to appear on the guest serial console.
-    WaitFor(&'static str),
+    WaitFor(Cow<'a, str>),
 
     /// Write the specified string as a command to the guest serial console.
-    WriteStr(&'static str),
+    WriteStr(Cow<'a, str>),
 
     /// Change the serial console buffering discipline to the supplied
     /// discipline.
@@ -35,7 +36,7 @@ pub(super) enum CommandSequenceEntry {
     SetSerialByteWriteDelay(std::time::Duration),
 }
 
-pub(super) struct CommandSequence(pub Vec<CommandSequenceEntry>);
+pub(super) struct CommandSequence<'a>(pub Vec<CommandSequenceEntry<'a>>);
 
 pub(super) trait GuestOs: Send + Sync {
     /// Retrieves the command sequence used to wait for the OS to boot and log
@@ -48,13 +49,13 @@ pub(super) trait GuestOs: Send + Sync {
     /// Indicates whether the guest has a read-only filesystem.
     fn read_only_fs(&self) -> bool;
 
-    /// Some guests need to amend incoming shell commands from tests in order to
-    /// get output to display on the serial console in a way those guests can
-    /// accept (e.g. by clearing the screen immediately before running each
-    /// command). This function amends an incoming command according to the
-    /// guest adapter's instructions.
-    fn amend_shell_command<'a>(&self, cmd: &'a str) -> Cow<'a, str> {
-        Cow::Borrowed(cmd)
+    /// Returns the sequence of serial console operations a test VM should issue
+    /// in order to execute `cmd` in the guest's shell.
+    fn shell_command_sequence<'a>(&self, cmd: &'a str) -> CommandSequence<'a> {
+        shell_commands::shell_command_sequence(
+            Cow::Borrowed(cmd),
+            crate::serial::BufferKind::Raw,
+        )
     }
 }
 

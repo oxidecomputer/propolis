@@ -12,11 +12,11 @@ pub(super) struct Ubuntu2204;
 impl GuestOs for Ubuntu2204 {
     fn get_login_sequence(&self) -> CommandSequence {
         CommandSequence(vec![
-            CommandSequenceEntry::WaitFor("ubuntu login: "),
-            CommandSequenceEntry::WriteStr("ubuntu"),
-            CommandSequenceEntry::WaitFor("Password: "),
-            CommandSequenceEntry::WriteStr("1!Passw0rd"),
-            CommandSequenceEntry::WaitFor(self.get_shell_prompt()),
+            CommandSequenceEntry::WaitFor("ubuntu login: ".into()),
+            CommandSequenceEntry::WriteStr("ubuntu".into()),
+            CommandSequenceEntry::WaitFor("Password: ".into()),
+            CommandSequenceEntry::WriteStr("1!Passw0rd".into()),
+            CommandSequenceEntry::WaitFor(self.get_shell_prompt().into()),
         ])
     }
 
