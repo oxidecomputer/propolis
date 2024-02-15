@@ -59,7 +59,7 @@ pub enum BufferKind {
 /// The set of commands that the serial console can send to its processing task.
 enum TaskCommand {
     /// Send the supplied bytes to the VM.
-    SendBytes(Vec<u8>),
+    SendBytes { bytes: Vec<u8>, done: oneshot::Sender<()> },
 
     /// Register to be notified if and when a supplied string appears in the
     /// serial console's buffer.
@@ -107,9 +107,13 @@ impl SerialConsole {
     }
 
     /// Directs the console worker thread to send the supplied `bytes` to the
-    /// guest.
-    pub fn send_bytes(&self, bytes: Vec<u8>) -> anyhow::Result<()> {
-        self.cmd_tx.send(TaskCommand::SendBytes(bytes))?;
+    /// guest, after which it should send to `done`.
+    pub fn send_bytes(
+        &self,
+        bytes: Vec<u8>,
+        done: oneshot::Sender<()>,
+    ) -> anyhow::Result<()> {
+        self.cmd_tx.send(TaskCommand::SendBytes { bytes, done })?;
         Ok(())
     }
 
@@ -193,7 +197,7 @@ async fn serial_task(
                     break;
                 };
                 match cmd {
-                    TaskCommand::SendBytes(bytes) => {
+                    TaskCommand::SendBytes { bytes, done } => {
                         if debounce.is_zero() {
                             if let Err(e) = stream.send(Message::Binary(bytes)).await {
                                 error!(
@@ -218,6 +222,8 @@ async fn serial_task(
                                 }
                             }
                         }
+
+                        let _ = done.send(());
                     }
                     TaskCommand::RegisterWait(waiter) => {
                         buffer.register_wait_for_output(waiter);

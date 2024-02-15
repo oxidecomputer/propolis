@@ -782,7 +782,12 @@ impl TestVm {
 
     async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
         match &self.state {
-            VmState::Ensured { serial } => serial.send_bytes(bytes),
+            VmState::Ensured { serial } => {
+                let (done_tx, done_rx) = oneshot::channel();
+                serial.send_bytes(bytes, done_tx)?;
+                done_rx.await?;
+                Ok(())
+            }
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
