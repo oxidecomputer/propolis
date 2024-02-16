@@ -668,7 +668,7 @@ impl TestVm {
                     CommandSequenceEntry::SetRepeatedCharacterDebounce(
                         duration,
                     ) => {
-                        self.set_serial_byte_write_delay(duration)?;
+                        self.set_serial_repeated_character_debounce(duration)?;
                     }
                 }
             }
@@ -736,6 +736,10 @@ impl TestVm {
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
     pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
+        // Allow the guest OS to transform the input command into a
+        // guest-specific command sequence. This accounts for the guest's shell
+        // type (which affects e.g. affects how it displays multi-line commands)
+        // and serial console buffering discipline.
         let command_sequence = self.guest_os.shell_command_sequence(cmd);
         for step in command_sequence.0 {
             match step {
@@ -761,10 +765,11 @@ impl TestVm {
             }
         }
 
-        // Once the command has run, the guest should display another prompt.
-        // Treat the unconsumed buffered text before this point as the command
-        // output. (Note again that the command itself was already consumed by
-        // the wait above.)
+        // `shell_command_sequence` promises that the generated command sequence
+        // clears buffer of everything up to and including the input command
+        // before actually issuing the final '\n' that issues the command.
+        // This ensures that the buffer contents returned by this call contain
+        // only the command's output.
         let out = self
             .wait_for_serial_output(
                 self.guest_os.get_shell_prompt(),
@@ -772,54 +777,48 @@ impl TestVm {
             )
             .await?;
 
-        // Trim both ends of the output to get rid of any echoed newlines and/or
-        // whitespace that were inserted when sending '\n' to start processing
-        // the command.
+        // Trim any leading newlines inserted when the command was issued and
+        // any trailing whitespace that isn't actually part of the command
+        // output. Any other embedded whitespace is the caller's problem.
         Ok(out.trim().to_string())
     }
 
+    /// Sends `string` to the guest's serial console worker, then waits for the
+    /// entire string to be sent to the guest before returning.
     pub(crate) async fn send_serial_str(&self, string: &str) -> Result<()> {
         if !string.is_empty() {
-            self.send_serial_bytes_async(Vec::from(string.as_bytes())).await
-        } else {
-            Ok(())
+            self.send_serial_bytes(Vec::from(string.as_bytes()))?.await?;
+        }
+        Ok(())
+    }
+
+    fn serial_console(&self) -> Result<&SerialConsole> {
+        match &self.state {
+            VmState::Ensured { serial } => Ok(serial),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 
-    async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => {
-                let (done_tx, done_rx) = oneshot::channel();
-                serial.send_bytes(bytes, done_tx)?;
-                done_rx.await?;
-                Ok(())
-            }
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+    fn send_serial_bytes(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<oneshot::Receiver<()>> {
+        self.serial_console()?.send_bytes(bytes)
     }
 
     fn clear_serial_buffer(&self) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => serial.clear(),
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+        self.serial_console()?.clear()
     }
 
     fn change_serial_buffer_kind(&self, kind: BufferKind) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => serial.change_buffer_kind(kind),
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+        self.serial_console()?.change_buffer_kind(kind)
     }
 
-    fn set_serial_byte_write_delay(
+    fn set_serial_repeated_character_debounce(
         &self,
         delay: std::time::Duration,
     ) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => serial.set_guest_write_delay(delay),
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+        self.serial_console()?.set_repeated_character_debounce(delay)
     }
 
     /// Indicates whether this VM's guest OS has a read-only filesystem.

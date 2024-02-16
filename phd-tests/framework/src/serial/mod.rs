@@ -114,14 +114,15 @@ impl SerialConsole {
     }
 
     /// Directs the console worker thread to send the supplied `bytes` to the
-    /// guest, after which it should send to `done`.
+    /// guest. Returns a `oneshot::Receiver` that the console worker thread
+    /// signals once all the bytes have been set.
     pub fn send_bytes(
         &self,
         bytes: Vec<u8>,
-        done: oneshot::Sender<()>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<oneshot::Receiver<()>> {
+        let (done, done_rx) = oneshot::channel();
         self.cmd_tx.send(TaskCommand::SendBytes { bytes, done })?;
-        Ok(())
+        Ok(done_rx)
     }
 
     /// Directs the console worker thread to clear the serial console buffer.
@@ -164,7 +165,7 @@ impl SerialConsole {
     }
 
     /// Sets the delay to insert between sending individual bytes to the guest.
-    pub fn set_guest_write_delay(
+    pub fn set_repeated_character_debounce(
         &self,
         delay: std::time::Duration,
     ) -> Result<()> {
