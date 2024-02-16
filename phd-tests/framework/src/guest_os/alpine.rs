@@ -11,9 +11,9 @@ pub(super) struct Alpine;
 impl GuestOs for Alpine {
     fn get_login_sequence(&self) -> CommandSequence {
         CommandSequence(vec![
-            CommandSequenceEntry::WaitFor("localhost login: ".into()),
-            CommandSequenceEntry::WriteStr("root".into()),
-            CommandSequenceEntry::WaitFor(self.get_shell_prompt().into()),
+            CommandSequenceEntry::wait_for("localhost login: "),
+            CommandSequenceEntry::write_str("root"),
+            CommandSequenceEntry::wait_for(self.get_shell_prompt()),
         ])
     }
 

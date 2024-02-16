@@ -25,27 +25,27 @@ pub(super) fn get_login_sequence_for<'a>(
     ));
 
     let mut commands = vec![
-        CommandSequenceEntry::WaitFor(
-            "Computer is booting, SAC started and initialized.".into(),
+        CommandSequenceEntry::wait_for(
+            "Computer is booting, SAC started and initialized.",
         ),
-        CommandSequenceEntry::WaitFor(
-            "EVENT: The CMD command is now available.".into(),
+        CommandSequenceEntry::wait_for(
+            "EVENT: The CMD command is now available.",
         ),
-        CommandSequenceEntry::WaitFor("SAC>".into()),
-        CommandSequenceEntry::WriteStr("cmd".into()),
-        CommandSequenceEntry::WaitFor("Channel: Cmd0001".into()),
-        CommandSequenceEntry::WaitFor("SAC>".into()),
-        CommandSequenceEntry::WriteStr("ch -sn Cmd0001".into()),
-        CommandSequenceEntry::WaitFor(
-            "Use any other key to view this channel.".into(),
+        CommandSequenceEntry::wait_for("SAC>"),
+        CommandSequenceEntry::write_str("cmd"),
+        CommandSequenceEntry::wait_for("Channel: Cmd0001"),
+        CommandSequenceEntry::wait_for("SAC>"),
+        CommandSequenceEntry::write_str("ch -sn Cmd0001"),
+        CommandSequenceEntry::wait_for(
+            "Use any other key to view this channel.",
         ),
-        CommandSequenceEntry::WriteStr("".into()),
-        CommandSequenceEntry::WaitFor("Username:".into()),
-        CommandSequenceEntry::WriteStr("Administrator".into()),
-        CommandSequenceEntry::WaitFor("Domain  :".into()),
-        CommandSequenceEntry::WriteStr("".into()),
-        CommandSequenceEntry::WaitFor("Password:".into()),
-        CommandSequenceEntry::WriteStr("0xide#1Fan".into()),
+        CommandSequenceEntry::write_str(""),
+        CommandSequenceEntry::wait_for("Username:"),
+        CommandSequenceEntry::write_str("Administrator"),
+        CommandSequenceEntry::wait_for("Domain  :"),
+        CommandSequenceEntry::write_str(""),
+        CommandSequenceEntry::wait_for("Password:"),
+        CommandSequenceEntry::write_str("0xide#1Fan"),
     ];
 
     // Earlier Windows Server versions' serial console-based command prompts
@@ -78,14 +78,14 @@ pub(super) fn get_login_sequence_for<'a>(
         // eat the command and just process the newline). It also appears to
         // prefer carriage returns to linefeeds. Accommodate this behavior
         // until Cygwin is launched.
-        CommandSequenceEntry::WaitFor("C:\\Windows\\system32>".into()),
-        CommandSequenceEntry::WriteStr("cls\r".into()),
-        CommandSequenceEntry::WaitFor("C:\\Windows\\system32>".into()),
-        CommandSequenceEntry::WriteStr("C:\\cygwin\\cygwin.bat\r".into()),
-        CommandSequenceEntry::WaitFor("$ ".into()),
+        CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
+        CommandSequenceEntry::write_str("cls\r"),
+        CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
+        CommandSequenceEntry::write_str("C:\\cygwin\\cygwin.bat\r"),
+        CommandSequenceEntry::wait_for("$ "),
         // Tweak the command prompt so that it appears on a single line with
         // no leading newlines.
-        CommandSequenceEntry::WriteStr("PS1='\\u@\\h:$ '".into()),
+        CommandSequenceEntry::write_str("PS1='\\u@\\h:$ '"),
     ]);
 
     CommandSequence(commands)

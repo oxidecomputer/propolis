@@ -34,9 +34,19 @@ pub(super) enum CommandSequenceEntry<'a> {
     /// discipline.
     ChangeSerialConsoleBuffer(crate::serial::BufferKind),
 
-    /// Set a delay between writing individual bytes to the guest serial console
+    /// Set a delay between writing identical bytes to the guest serial console
     /// to avoid keyboard debouncing logic in guests.
     SetRepeatedCharacterDebounce(std::time::Duration),
+}
+
+impl<'a> CommandSequenceEntry<'a> {
+    fn write_str(s: impl Into<Cow<'a, str>>) -> Self {
+        Self::WriteStr(s.into())
+    }
+
+    fn wait_for(s: impl Into<Cow<'a, str>>) -> Self {
+        Self::WaitFor(s.into())
+    }
 }
 
 pub(super) struct CommandSequence<'a>(pub Vec<CommandSequenceEntry<'a>>);

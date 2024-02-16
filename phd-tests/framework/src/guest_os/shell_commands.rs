@@ -23,10 +23,10 @@ pub(super) fn shell_command_sequence(
     let echo = cmd.trim_end().replace('\n', "\n> ");
     match buffer_kind {
         crate::serial::BufferKind::Raw => CommandSequence(vec![
-            CommandSequenceEntry::WriteStr(cmd),
-            CommandSequenceEntry::WaitFor(echo.into()),
+            CommandSequenceEntry::write_str(cmd),
+            CommandSequenceEntry::wait_for(echo),
             CommandSequenceEntry::ClearBuffer,
-            CommandSequenceEntry::WriteStr("\n".into()),
+            CommandSequenceEntry::write_str("\n"),
         ]),
 
         crate::serial::BufferKind::Vt80x24 => {
@@ -41,19 +41,20 @@ pub(super) fn shell_command_sequence(
 
             let mut iter = cmd_lines.zip(echo_lines).peekable();
             while let Some((cmd, echo)) = iter.next() {
-                seq.push(CommandSequenceEntry::WriteStr(cmd.to_owned().into()));
-                seq.push(CommandSequenceEntry::WaitFor(echo.to_owned().into()));
+                seq.push(CommandSequenceEntry::write_str(cmd.to_owned()));
+                seq.push(CommandSequenceEntry::wait_for(echo.to_owned()));
 
                 if iter.peek().is_some() {
-                    seq.push(CommandSequenceEntry::WriteStr("\n".into()));
+                    seq.push(CommandSequenceEntry::write_str("\n"));
                 }
             }
 
             // Before issuing the command, clear any stale echoed characters
-            // from the serial console buffer. This ensures that the
+            // from the serial console buffer. This ensures that the next prompt
+            // is preceded in the buffer only by the output of the issued
+            // command.
             seq.push(CommandSequenceEntry::ClearBuffer);
-            seq.push(CommandSequenceEntry::WriteStr("\n".into()));
-
+            seq.push(CommandSequenceEntry::write_str("\n"));
             CommandSequence(seq)
         }
     }
