@@ -11,9 +11,9 @@ pub(super) struct Debian11NoCloud;
 impl GuestOs for Debian11NoCloud {
     fn get_login_sequence(&self) -> CommandSequence {
         CommandSequence(vec![
-            CommandSequenceEntry::WaitFor("debian login: "),
-            CommandSequenceEntry::WriteStr("root"),
-            CommandSequenceEntry::WaitFor(self.get_shell_prompt()),
+            CommandSequenceEntry::wait_for("debian login: "),
+            CommandSequenceEntry::write_str("root"),
+            CommandSequenceEntry::wait_for(self.get_shell_prompt()),
         ])
     }
 

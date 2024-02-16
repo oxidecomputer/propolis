@@ -87,19 +87,14 @@ impl RawBuffer {
     fn satisfy_or_set_wait(&mut self, waiter: OutputWaiter) {
         assert!(self.waiter.is_none());
         if let Some(idx) = self.wait_buffer.rfind(&waiter.wanted) {
-            // Send all of the data in the buffer prior to the target string
-            // out the waiter's channel.
-            //
+            let out = self.wait_buffer[..idx].to_owned();
+
             // Because incoming bytes from Propolis may be processed on a
             // separate task than the task that registered the wait, this
             // can race such that the wait is satisfied just as the waiter
             // times out and closes its half of the channel. There's nothing
             // to be done about this, so just ignore any errors here.
-            let out = self.wait_buffer.drain(..idx).collect();
             let _ = waiter.preceding_tx.send(out);
-
-            // Clear the matched string out of the wait buffer.
-            self.wait_buffer = self.wait_buffer.split_off(waiter.wanted.len());
         } else {
             self.waiter = Some(waiter);
         }
@@ -124,6 +119,10 @@ impl Buffer for RawBuffer {
                 }
             }
         }
+    }
+
+    fn clear(&mut self) {
+        self.wait_buffer.clear();
     }
 
     fn register_wait_for_output(&mut self, waiter: OutputWaiter) {

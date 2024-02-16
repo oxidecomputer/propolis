@@ -110,47 +110,6 @@ impl Vt80x24 {
         let mut contents = self.surface.screen_chars_to_string();
         trace!(?contents, "termwiz contents");
         if let Some(idx) = contents.rfind(&waiter.wanted) {
-            // Callers who set waits assume that matched strings are consumed
-            // from the buffer and won't match again unless the string is
-            // rendered to the buffer again. In the raw buffering case, this is
-            // straightforward: the buffer is already a String, so it suffices
-            // just to split the string just after the match. In this case,
-            // however, life is harder, because the buffer is not a string but a
-            // collection of cells containing `char`s.
-            //
-            // To "consume" the buffer, overwrite everything up through the
-            // match string with spaces. Start by truncating the current buffer
-            // contents down to the substring that ends in the match.
-            let last_byte = idx + waiter.wanted.len();
-            contents.truncate(last_byte);
-
-            // Then move the cursor to the top left and "type" as many blank
-            // spaces as there were characters in the buffer. Note that termwiz
-            // inserts extra '\n' characters at the end of every line that need
-            // to be ignored here. (It's assumed that none of the actual
-            // terminal cells contain a '\n' control character--if one of those
-            // is printed the cursor moves instead.)
-            let char_count = contents.chars().filter(|c| *c != '\n').count();
-
-            // Before typing anything, remember the old cursor position so that
-            // it can be restored after typing the spaces.
-            //
-            // It's insufficient to assume that the last character of the match
-            // was actually "typed" such that the cursor advanced past it. For
-            // example, if a match string ends with "$ ", and the guest moves to
-            // the start of an empty line and types a single "$", the cursor is
-            // in column 1 (just past the "$"), but the match is satisfied by
-            // the "pre-existing" space in that column.
-            let (old_col, old_row) = self.surface.cursor_position();
-            self.surface.add_change(make_absolute_cursor_position(0, 0));
-            self.surface.add_change(Change::Text(" ".repeat(char_count)));
-            let seq = self
-                .surface
-                .add_change(make_absolute_cursor_position(old_col, old_row));
-            self.surface.flush_changes_older_than(seq);
-
-            // Remove the match string from the match contents and push
-            // everything else back to the listener.
             contents.truncate(idx);
             let _ = waiter.preceding_tx.send(contents);
         } else {
@@ -163,6 +122,13 @@ impl Buffer for Vt80x24 {
     fn process_bytes(&mut self, bytes: &[u8]) {
         let actions = self.parser.parse_as_vec(bytes);
         self.apply_actions(&actions);
+    }
+
+    fn clear(&mut self) {
+        let seq = self
+            .surface
+            .add_change(Change::ClearScreen(ColorAttribute::Default));
+        self.surface.flush_changes_older_than(seq);
     }
 
     fn register_wait_for_output(&mut self, waiter: OutputWaiter) {

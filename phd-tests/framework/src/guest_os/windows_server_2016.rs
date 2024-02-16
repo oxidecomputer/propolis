@@ -2,21 +2,25 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Guest OS adaptations for Windows Server 2019 images. See [the general
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! Guest OS adaptations for Windows Server 2016 images. See [the general
 //! Windows module](mod@super::windows) documentation for more information.
 
 use std::borrow::Cow;
 
 use super::{CommandSequence, GuestOs, GuestOsKind};
 
-/// The guest adapter for Windows Server 2019 images. See [the general
+/// The guest adapter for Windows Server 2016 images. See [the general
 /// Windows module](mod@super::windows) documentation for more information about
 /// the configuration this adapter requires.
-pub(super) struct WindowsServer2019;
+pub(super) struct WindowsServer2016;
 
-impl GuestOs for WindowsServer2019 {
+impl GuestOs for WindowsServer2016 {
     fn get_login_sequence(&self) -> CommandSequence {
-        super::windows::get_login_sequence_for(GuestOsKind::WindowsServer2019)
+        super::windows::get_login_sequence_for(GuestOsKind::WindowsServer2016)
     }
 
     fn get_shell_prompt(&self) -> &'static str {

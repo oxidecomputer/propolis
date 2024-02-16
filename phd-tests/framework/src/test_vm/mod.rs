@@ -650,20 +650,25 @@ impl TestVm {
                 match step {
                     CommandSequenceEntry::WaitFor(s) => {
                         self.wait_for_serial_output(
-                            s,
+                            s.as_ref(),
                             SerialOutputTimeout::CallerTimeout,
                         )
                         .await?;
                     }
                     CommandSequenceEntry::WriteStr(s) => {
-                        self.send_serial_str(s).await?;
+                        self.send_serial_str(s.as_ref()).await?;
                         self.send_serial_str("\n").await?;
+                    }
+                    CommandSequenceEntry::ClearBuffer => {
+                        self.clear_serial_buffer()?
                     }
                     CommandSequenceEntry::ChangeSerialConsoleBuffer(kind) => {
                         self.change_serial_buffer_kind(kind)?;
                     }
-                    CommandSequenceEntry::SetSerialByteWriteDelay(duration) => {
-                        self.set_serial_byte_write_delay(duration)?;
+                    CommandSequenceEntry::SetRepeatedCharacterDebounce(
+                        duration,
+                    ) => {
+                        self.set_serial_repeated_character_debounce(duration)?;
                     }
                 }
             }
@@ -684,8 +689,8 @@ impl TestVm {
     }
 
     /// Waits for up to `timeout_duration` for `line` to appear on the guest
-    /// serial console, then returns the unconsumed portion of the serial
-    /// console buffer that preceded the requested string.
+    /// serial console, then returns the contents of the console buffer that
+    /// preceded the requested string.
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     pub async fn wait_for_serial_output(
         &self,
@@ -731,26 +736,40 @@ impl TestVm {
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
     pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
-        // Send the command out the serial port, including any amendments
-        // required by the guest. Do not send the final '\n' keystroke that
-        // actually issues the command.
-        let to_send = self.guest_os.amend_shell_command(cmd);
-        self.send_serial_str(&to_send).await?;
+        // Allow the guest OS to transform the input command into a
+        // guest-specific command sequence. This accounts for the guest's shell
+        // type (which affects e.g. affects how it displays multi-line commands)
+        // and serial console buffering discipline.
+        let command_sequence = self.guest_os.shell_command_sequence(cmd);
+        for step in command_sequence.0 {
+            match step {
+                CommandSequenceEntry::WaitFor(s) => {
+                    self.wait_for_serial_output(
+                        s.as_ref(),
+                        std::time::Duration::from_secs(15),
+                    )
+                    .await?;
+                }
+                CommandSequenceEntry::WriteStr(s) => {
+                    self.send_serial_str(s.as_ref()).await?;
+                }
+                CommandSequenceEntry::ClearBuffer => {
+                    self.clear_serial_buffer()?
+                }
+                _ => {
+                    anyhow::bail!(
+                        "Unexpected command sequence entry {step:?} while \
+                        running shell command"
+                    );
+                }
+            }
+        }
 
-        // Wait for the command to be echoed back. This ensures that the echoed
-        // command is consumed from the buffer such that it won't be returned
-        // as output when waiting for the post-command shell prompt to appear.
-        //
-        // Tests may send multi-line commands. Assume these won't be echoed
-        // literally and that each line will instead be preceded by `> `.
-        let echo = to_send.trim_end().replace('\n', "\n> ");
-        self.wait_for_serial_output(&echo, Duration::from_secs(15)).await?;
-        self.send_serial_str("\n").await?;
-
-        // Once the command has run, the guest should display another prompt.
-        // Treat the unconsumed buffered text before this point as the command
-        // output. (Note again that the command itself was already consumed by
-        // the wait above.)
+        // `shell_command_sequence` promises that the generated command sequence
+        // clears buffer of everything up to and including the input command
+        // before actually issuing the final '\n' that issues the command.
+        // This ensures that the buffer contents returned by this call contain
+        // only the command's output.
         let out = self
             .wait_for_serial_output(
                 self.guest_os.get_shell_prompt(),
@@ -758,42 +777,48 @@ impl TestVm {
             )
             .await?;
 
-        // Trim both ends of the output to get rid of any echoed newlines and/or
-        // whitespace that were inserted when sending '\n' to start processing
-        // the command.
+        // Trim any leading newlines inserted when the command was issued and
+        // any trailing whitespace that isn't actually part of the command
+        // output. Any other embedded whitespace is the caller's problem.
         Ok(out.trim().to_string())
     }
 
-    async fn send_serial_str(&self, string: &str) -> Result<()> {
+    /// Sends `string` to the guest's serial console worker, then waits for the
+    /// entire string to be sent to the guest before returning.
+    pub(crate) async fn send_serial_str(&self, string: &str) -> Result<()> {
         if !string.is_empty() {
-            self.send_serial_bytes_async(Vec::from(string.as_bytes())).await
-        } else {
-            Ok(())
+            self.send_serial_bytes(Vec::from(string.as_bytes()))?.await?;
+        }
+        Ok(())
+    }
+
+    fn serial_console(&self) -> Result<&SerialConsole> {
+        match &self.state {
+            VmState::Ensured { serial } => Ok(serial),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
 
-    async fn send_serial_bytes_async(&self, bytes: Vec<u8>) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => serial.send_bytes(bytes),
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+    fn send_serial_bytes(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<oneshot::Receiver<()>> {
+        self.serial_console()?.send_bytes(bytes)
+    }
+
+    fn clear_serial_buffer(&self) -> Result<()> {
+        self.serial_console()?.clear()
     }
 
     fn change_serial_buffer_kind(&self, kind: BufferKind) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => serial.change_buffer_kind(kind),
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+        self.serial_console()?.change_buffer_kind(kind)
     }
 
-    fn set_serial_byte_write_delay(
+    fn set_serial_repeated_character_debounce(
         &self,
         delay: std::time::Duration,
     ) -> Result<()> {
-        match &self.state {
-            VmState::Ensured { serial } => serial.set_guest_write_delay(delay),
-            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
-        }
+        self.serial_console()?.set_repeated_character_debounce(delay)
     }
 
     /// Indicates whether this VM's guest OS has a read-only filesystem.
