@@ -4,6 +4,8 @@
 
 //! Helper functions for generating Windows guest OS adaptations.
 
+use std::time::Duration;
+
 use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 
 /// Emits the login seqeunce for the given `guest`, which must be one of the
@@ -73,19 +75,37 @@ pub(super) fn get_login_sequence_for<'a>(
     }
 
     commands.extend([
-        // For reasons unknown, the first command prompt the serial console
-        // produces is flaky when being sent actual commands (it appears to
-        // eat the command and just process the newline). It also appears to
-        // prefer carriage returns to linefeeds. Accommodate this behavior
-        // until Cygwin is launched.
+        // There appears (from observing Windows test reliability) to be some
+        // kind of race at command prompt startup that can cause characters to
+        // be eaten if they're typed too quickly after the command prompt
+        // session launches. Sleep for a bit after the initial prompt is
+        // displayed to work around this.
         CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
-        CommandSequenceEntry::write_str("cls\r"),
+        CommandSequenceEntry::Sleep(Duration::from_secs(5)),
+        // It also seems to help to enter a CRLF sequence once before doing any
+        // actual work.
+        CommandSequenceEntry::write_str("\r"),
         CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
-        CommandSequenceEntry::write_str("C:\\cygwin\\cygwin.bat\r"),
+    ]);
+
+    // Keep Cygwin from wrapping lines unexpectedly on Windows Server 2022 by
+    // maximizing the effective console size before launching Cygwin. This just
+    // confuses matters on Server 2016 and 2019, so on those guests just launch
+    // Cygwin directly.
+    if let GuestOsKind::WindowsServer2022 = guest {
+        commands.push(CommandSequenceEntry::write_str(
+            "mode con cols=9999 lines=9999 && C:\\cygwin\\cygwin.bat\r",
+        ));
+    } else {
+        commands
+            .push(CommandSequenceEntry::write_str("C:\\cygwin\\cygwin.bat\r"));
+    }
+
+    commands.extend([
         CommandSequenceEntry::wait_for("$ "),
         // Tweak the command prompt so that it appears on a single line with
         // no leading newlines.
-        CommandSequenceEntry::write_str("PS1='\\u@\\h:$ '"),
+        CommandSequenceEntry::write_str("PS1='$ '"),
     ]);
 
     CommandSequence(commands)

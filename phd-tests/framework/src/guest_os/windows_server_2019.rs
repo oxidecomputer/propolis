@@ -20,7 +20,7 @@ impl GuestOs for WindowsServer2019 {
     }
 
     fn get_shell_prompt(&self) -> &'static str {
-        "Administrator@PHD-WINDOWS:$ "
+        "$ "
     }
 
     fn read_only_fs(&self) -> bool {

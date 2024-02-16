@@ -30,6 +30,10 @@ pub(super) enum CommandSequenceEntry<'a> {
     /// Tell the serial console task to clear its buffer.
     ClearBuffer,
 
+    /// The command executor (not the serial console task!) should sleep for
+    /// this duration.
+    Sleep(std::time::Duration),
+
     /// Change the serial console buffering discipline to the supplied
     /// discipline.
     ChangeSerialConsoleBuffer(crate::serial::BufferKind),

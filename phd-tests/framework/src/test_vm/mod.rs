@@ -659,6 +659,9 @@ impl TestVm {
                         self.send_serial_str(s.as_ref()).await?;
                         self.send_serial_str("\n").await?;
                     }
+                    CommandSequenceEntry::Sleep(duration) => {
+                        tokio::time::sleep(duration).await;
+                    }
                     CommandSequenceEntry::ClearBuffer => {
                         self.clear_serial_buffer()?
                     }

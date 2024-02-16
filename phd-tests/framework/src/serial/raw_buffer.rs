@@ -9,7 +9,10 @@ use std::io::{BufWriter, Write};
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
-use termwiz::escape::parser::Parser;
+use termwiz::escape::{
+    csi::{Cursor::Right, CSI},
+    parser::Parser,
+};
 use tracing::{error, trace};
 
 use super::{Buffer, OutputWaiter};
@@ -86,6 +89,11 @@ impl RawBuffer {
     /// actually needs to be stored).
     fn satisfy_or_set_wait(&mut self, waiter: OutputWaiter) {
         assert!(self.waiter.is_none());
+        trace!(
+            contents = self.wait_buffer,
+            target = waiter.wanted,
+            "checking wait on raw serial buffer"
+        );
         if let Some(idx) = self.wait_buffer.rfind(&waiter.wanted) {
             let out = self.wait_buffer[..idx].to_owned();
 
@@ -112,7 +120,14 @@ impl Buffer for RawBuffer {
                     self.push_str(&s);
                 }
                 Action::Control(ControlCode::LineFeed) => {
-                    self.push_character('\n')
+                    self.push_character('\n');
+                }
+                Action::CSI(CSI::Cursor(Right(n))) => {
+                    self.push_str(
+                        &std::iter::repeat(" ")
+                            .take(n as usize)
+                            .collect::<String>(),
+                    );
                 }
                 _ => {
                     trace!(?action, "raw buffer ignored action");
