@@ -90,6 +90,11 @@ impl Vt80x24 {
         let seq = self.surface.add_changes(changes);
         self.surface.flush_changes_older_than(seq);
 
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let contents = self.surface.screen_chars_to_string();
+            trace_buffer_contents(&contents);
+        }
+
         if let Some(waiter) = self.waiter.take() {
             self.satisfy_or_set_wait(waiter);
         }
@@ -108,7 +113,6 @@ impl Vt80x24 {
         );
 
         let mut contents = self.surface.screen_chars_to_string();
-        trace!(?contents, "termwiz contents");
         if let Some(idx) = contents.rfind(&waiter.wanted) {
             contents.truncate(idx);
             let _ = waiter.preceding_tx.send(contents);
@@ -146,5 +150,25 @@ fn make_absolute_cursor_position(col: usize, row: usize) -> Change {
     Change::CursorPosition {
         x: Position::Absolute(col),
         y: Position::Absolute(row),
+    }
+}
+
+fn trace_buffer_contents(contents: &str) {
+    let mut last_non_empty = None;
+    for (idx, line) in contents.lines().enumerate() {
+        if line.chars().any(|c| c != ' ') {
+            last_non_empty = Some(idx);
+        }
+    }
+
+    if let Some(last_non_empty) = last_non_empty {
+        for (idx, line) in contents.lines().enumerate() {
+            if idx > last_non_empty {
+                break;
+            }
+            trace!(idx, line, "termwiz buffer contents");
+        }
+    } else {
+        trace!("termwiz buffer is empty");
     }
 }

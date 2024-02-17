@@ -69,7 +69,7 @@ pub(super) fn get_login_sequence_for<'a>(
             // it only applies when typing the same character multiple times in
             // a row.
             CommandSequenceEntry::SetRepeatedCharacterDebounce(
-                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(1500),
             ),
         ]);
     }
