@@ -296,7 +296,7 @@ impl DropshotEndpointContext {
             self.services.vm.lock().await,
             VmControllerState::as_controller,
         )
-        .map_err(|_| no_instance_error())
+        .map_err(|_| not_created_error())
     }
 }
 
@@ -780,7 +780,7 @@ async fn instance_get_common(
 ) -> Result<(api::Instance, VersionedInstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(no_instance_error()),
+        VmControllerState::NotCreated => Err(not_created_error()),
         VmControllerState::Created(vm) => {
             Ok((
                 api::Instance {
@@ -854,7 +854,7 @@ async fn instance_state_monitor(
         let vm_state = ctx.services.vm.lock().await;
         match &*vm_state {
             VmControllerState::NotCreated => {
-                return Err(no_instance_error());
+                return Err(not_created_error());
             }
             VmControllerState::Created(vm) => vm.state_watcher().clone(),
             VmControllerState::Destroyed { state_watcher, .. } => {
@@ -1036,10 +1036,7 @@ async fn instance_migrate_status(
     let migration_id = path_params.into_inner().migration_id;
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(HttpError::for_not_found(
-            None,
-            "Server not initialized (no instance)".to_string(),
-        )),
+        VmControllerState::NotCreated => Err(not_created_error()),
         VmControllerState::Created(vm) => {
             vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
                 HttpResponseOk(api::InstanceMigrateStatusResponse {
@@ -1198,7 +1195,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
 
 const NO_INSTANCE: &str = "NO_INSTANCE";
 
-fn no_instance_error() -> HttpError {
+fn not_created_error() -> HttpError {
     HttpError::for_client_error(
         Some(NO_INSTANCE.to_string()),
         http::StatusCode::FAILED_DEPENDENCY,
