@@ -123,11 +123,7 @@ impl Buffer for RawBuffer {
                     self.push_character('\n');
                 }
                 Action::CSI(CSI::Cursor(Right(n))) => {
-                    self.push_str(
-                        &std::iter::repeat(" ")
-                            .take(n as usize)
-                            .collect::<String>(),
-                    );
+                    self.push_str(&" ".repeat(n as usize));
                 }
                 _ => {
                     trace!(?action, "raw buffer ignored action");
