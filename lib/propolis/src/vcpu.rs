@@ -1260,16 +1260,18 @@ pub mod migrate {
                 .for_vcpu(vcpu.id)
                 .read::<bhyve_api::vdi_lapic_v1>()?;
 
-            if vcpu.hdl.api_version()? <= ApiVersion::V16 {
-                // Fix up invalid LAPIC timer data from illumos#16183
-                if vdi.vl_timer_target != 0 && vdi.vl_lapic.vlp_icr_timer == 0 {
+            // A timer target without a value in ICR is nonsensical
+            if vdi.vl_timer_target != 0 && vdi.vl_lapic.vlp_icr_timer == 0 {
+                if vcpu.hdl.api_version()? <= ApiVersion::V16 {
+                    // Fix up invalid LAPIC timer data on kernels predating the
+                    // fix from illumos#16183
                     vdi.vl_timer_target = 0;
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "post-illumos#16183 kernel emitting bad ICR timer data",
+                    ));
                 }
-            } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "post-illumos#16183 kernel emitting bad ICR timer data",
-                ));
             }
 
             Ok(vdi.into())
