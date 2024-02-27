@@ -872,12 +872,15 @@ impl VmController {
 impl Drop for VmController {
     fn drop(&mut self) {
         info!(self.log, "Dropping VM controller");
-        let instance = self
+        let machine = self
             .vm_objects
             .machine
             .take()
             .expect("VM controller should have an instance at drop");
-        drop(instance);
+
+        // Destroy the underlying kernel VMM resource
+        let hdl = machine.destroy();
+        let _ = hdl.destroy();
 
         // A fully-initialized controller is kept alive in part by its worker
         // thread, which owns the sender side of the controller's state-change

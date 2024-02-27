@@ -96,7 +96,12 @@ impl Machine {
 }
 impl Drop for Machine {
     fn drop(&mut self) {
-        let _ = self.do_destroy();
+        // If consumer has not opted to own the fate of the contained VmmHdl
+        // through an explicit call to Machine::destroy(), then clean up the
+        // kernel VMM resource backing it automatically.
+        if let Some(hdl) = self.do_destroy() {
+            let _ = hdl.destroy();
+        }
     }
 }
 
