@@ -28,13 +28,8 @@ impl GuestOs for WindowsServer2019 {
     }
 
     fn shell_command_sequence<'a>(&self, cmd: &'a str) -> CommandSequence<'a> {
-        // `reset` the command prompt before issuing the command to try to force
-        // Windows to redraw the subsequent command prompt. Without this,
-        // Windows may not draw the prompt if the post-command state happens to
-        // place a prompt at a location that already had one pre-command.
-        let cmd = format!("reset && {cmd}");
         super::shell_commands::shell_command_sequence(
-            Cow::Owned(cmd),
+            Cow::Owned(prepend_reset_to_shell_command(cmd)),
             crate::serial::BufferKind::Vt80x24,
         )
     }

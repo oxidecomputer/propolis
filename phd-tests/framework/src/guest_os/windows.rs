@@ -6,6 +6,18 @@
 
 use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 
+const CYGWIN_CMD: &str = "C:\\cygwin\\cygwin.bat\r";
+
+/// Prepends a `reset` command to the shell command supplied in `cmd`. Windows
+/// versions that drive a VT100 terminal can use this to try to force Windows to
+/// clear and redraw the entire screen before displaying the command's output.
+/// Without this, Windows may not render the post-output command prompt if the
+/// post-command terminal state happens to place a prompt at a location that
+/// already had onen pre-command.
+pub(super) fn prepend_reset_to_shell_command(cmd: &str) -> String {
+    format!("reset && {cmd}")
+}
+
 /// Emits the login seqeunce for the given `guest`, which must be one of the
 /// Windows guest OS flavors.
 ///
@@ -95,12 +107,11 @@ pub(super) fn get_login_sequence_for<'a>(
     // confuses matters on Server 2016 and 2019, so on those guests just launch
     // Cygwin directly.
     if let GuestOsKind::WindowsServer2022 = guest {
-        commands.push(CommandSequenceEntry::write_str(
-            "mode con cols=9999 lines=9999 && C:\\cygwin\\cygwin.bat\r",
-        ));
+        commands.push(CommandSequenceEntry::write_str(format!(
+            "mode con cols=9999 lines=9999 && {CYGWIN_CMD}",
+        )));
     } else {
-        commands
-            .push(CommandSequenceEntry::write_str("C:\\cygwin\\cygwin.bat\r"));
+        commands.push(CommandSequenceEntry::write_str(CYGWIN_CMD));
     }
 
     commands.extend([
