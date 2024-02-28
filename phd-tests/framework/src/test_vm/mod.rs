@@ -773,7 +773,7 @@ impl TestVm {
             self.wait_for_serial_output(expect, expect_timeout)
                 .await
                 .map(|_| ())
-                .map_err(|e| backoff::Error::transient(e))
+                .map_err(backoff::Error::transient)
         };
 
         backoff::future::retry(

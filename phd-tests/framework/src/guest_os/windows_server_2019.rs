@@ -7,7 +7,10 @@
 
 use std::borrow::Cow;
 
-use super::{CommandSequence, GuestOs, GuestOsKind};
+use super::{
+    windows::prepend_reset_to_shell_command, CommandSequence, GuestOs,
+    GuestOsKind,
+};
 
 /// The guest adapter for Windows Server 2019 images. See [the general
 /// Windows module](mod@super::windows) documentation for more information about
