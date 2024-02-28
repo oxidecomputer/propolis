@@ -4,8 +4,6 @@
 
 //! Helper functions for generating Windows guest OS adaptations.
 
-use std::time::Duration;
-
 use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 
 /// Emits the login seqeunce for the given `guest`, which must be one of the
@@ -78,13 +76,17 @@ pub(super) fn get_login_sequence_for<'a>(
         // There appears (from observing Windows test reliability) to be some
         // kind of race at command prompt startup that can cause characters to
         // be eaten if they're typed too quickly after the command prompt
-        // session launches. Sleep for a bit after the initial prompt is
-        // displayed to work around this.
+        // session launches. To get around this, try to send "serial console ok"
+        // strings until one of them gets echoed back correctly or the entire
+        // boot times out.
         CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
-        CommandSequenceEntry::Sleep(Duration::from_secs(5)),
-        // It also seems to help to enter a CRLF sequence once before doing any
-        // actual work.
-        CommandSequenceEntry::write_str("\r"),
+        CommandSequenceEntry::EstablishConsistentEcho {
+            send: "echo serial console ok\\n\r\n".into(),
+            expect: "serial console ok".into(),
+            timeout: std::time::Duration::from_millis(250),
+        },
+        // Make sure there's a clean command prompt after establishing the echo.
+        CommandSequenceEntry::write_str("cls\r"),
         CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
     ]);
 

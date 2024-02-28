@@ -27,12 +27,17 @@ pub(super) enum CommandSequenceEntry<'a> {
     /// Write the specified string as a command to the guest serial console.
     WriteStr(Cow<'a, str>),
 
+    /// Attempt to establish consistent echoing of characters to the guest
+    /// serial console by typing `send` and then waiting for `expect` to appear
+    /// within the supplied `timeout`.
+    EstablishConsistentEcho {
+        send: Cow<'a, str>,
+        expect: Cow<'a, str>,
+        timeout: std::time::Duration,
+    },
+
     /// Tell the serial console task to clear its buffer.
     ClearBuffer,
-
-    /// The command executor (not the serial console task!) should sleep for
-    /// this duration.
-    Sleep(std::time::Duration),
 
     /// Change the serial console buffering discipline to the supplied
     /// discipline.
