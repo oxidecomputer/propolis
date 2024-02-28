@@ -13,6 +13,8 @@ use termwiz::{
 };
 use tracing::trace;
 
+const SURFACE_ROWS: usize = 24;
+
 use super::{Buffer, OutputWaiter};
 
 /// Simulates a VT100-compatible 80-by-24 terminal to buffer console output from
@@ -129,9 +131,11 @@ impl Buffer for Vt80x24 {
     }
 
     fn clear(&mut self) {
-        let seq = self
-            .surface
-            .add_change(Change::ClearScreen(ColorAttribute::Default));
+        let cursor_pos = self.surface.cursor_position();
+        let seq = self.surface.add_changes(vec![
+            Change::ClearScreen(ColorAttribute::Default),
+            make_absolute_cursor_position(cursor_pos.0, cursor_pos.1),
+        ]);
         self.surface.flush_changes_older_than(seq);
     }
 
@@ -154,12 +158,12 @@ fn make_absolute_cursor_position(col: usize, row: usize) -> Change {
 }
 
 fn trace_buffer_contents(contents: &str) {
-    let mut last_non_empty = None;
-    for (idx, line) in contents.lines().enumerate() {
-        if line.chars().any(|c| c != ' ') {
-            last_non_empty = Some(idx);
-        }
-    }
+    // Find the index of the last line in the buffer that isn't blank.
+    let last_non_empty = contents
+        .lines()
+        .rev()
+        .position(|l| l.chars().any(|c| c != ' '))
+        .map(|pos| SURFACE_ROWS - pos - 1);
 
     if let Some(last_non_empty) = last_non_empty {
         for (idx, line) in contents.lines().enumerate() {
