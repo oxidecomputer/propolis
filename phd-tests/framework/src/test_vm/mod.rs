@@ -659,6 +659,19 @@ impl TestVm {
                         self.send_serial_str(s.as_ref()).await?;
                         self.send_serial_str("\n").await?;
                     }
+                    CommandSequenceEntry::EstablishConsistentEcho {
+                        send,
+                        expect,
+                        timeout,
+                    } => {
+                        self.establish_serial_console_echo(
+                            send.as_ref(),
+                            expect.as_ref(),
+                            timeout,
+                            SerialOutputTimeout::CallerTimeout,
+                        )
+                        .await?;
+                    }
                     CommandSequenceEntry::ClearBuffer => {
                         self.clear_serial_buffer()?
                     }
@@ -729,6 +742,53 @@ impl TestVm {
         received?.ok_or_else(|| {
             anyhow!("wait_for_serial_output recv channel unexpectedly closed")
         })
+    }
+
+    /// Attempts to establish that the guest serial console consistently echoes
+    /// characters by writing `send` and waiting for `expect` to appear within
+    /// the supplied `timeout`.
+    ///
+    /// This function will back off between attempts to send and await
+    /// characters (but will *not* change the delay used to wait for characters
+    /// to be echoed) and will retry for up to the duration specified by
+    /// `overall_timeout`.
+    async fn establish_serial_console_echo(
+        &self,
+        send: &str,
+        expect: &str,
+        expect_timeout: std::time::Duration,
+        overall_timeout: impl Into<SerialOutputTimeout>,
+    ) -> Result<()> {
+        let overall_timeout: SerialOutputTimeout = overall_timeout.into();
+        info!(
+            send,
+            expect,
+            ?expect_timeout,
+            ?overall_timeout,
+            "establishing serial console echo"
+        );
+
+        let send_and_expect = || async {
+            self.send_serial_str(send).await?;
+            self.wait_for_serial_output(expect, expect_timeout)
+                .await
+                .map(|_| ())
+                .map_err(backoff::Error::transient)
+        };
+
+        backoff::future::retry(
+            backoff::ExponentialBackoff {
+                max_elapsed_time: match overall_timeout {
+                    SerialOutputTimeout::Explicit(d) => Some(d),
+                    SerialOutputTimeout::CallerTimeout => None,
+                },
+                ..Default::default()
+            },
+            send_and_expect,
+        )
+        .await?;
+
+        Ok(())
     }
 
     /// Runs the shell command `cmd` by sending it to the serial console, then

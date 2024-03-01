@@ -6,6 +6,18 @@
 
 use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
 
+const CYGWIN_CMD: &str = "C:\\cygwin\\cygwin.bat\r";
+
+/// Prepends a `reset` command to the shell command supplied in `cmd`. Windows
+/// versions that drive a VT100 terminal can use this to try to force Windows to
+/// clear and redraw the entire screen before displaying the command's output.
+/// Without this, Windows may not render the post-output command prompt if the
+/// post-command terminal state happens to place a prompt at a location that
+/// already had onen pre-command.
+pub(super) fn prepend_reset_to_shell_command(cmd: &str) -> String {
+    format!("reset && {cmd}")
+}
+
 /// Emits the login seqeunce for the given `guest`, which must be one of the
 /// Windows guest OS flavors.
 ///
@@ -67,25 +79,46 @@ pub(super) fn get_login_sequence_for<'a>(
             // it only applies when typing the same character multiple times in
             // a row.
             CommandSequenceEntry::SetRepeatedCharacterDebounce(
-                std::time::Duration::from_secs(1),
+                std::time::Duration::from_millis(1500),
             ),
         ]);
     }
 
     commands.extend([
-        // For reasons unknown, the first command prompt the serial console
-        // produces is flaky when being sent actual commands (it appears to
-        // eat the command and just process the newline). It also appears to
-        // prefer carriage returns to linefeeds. Accommodate this behavior
-        // until Cygwin is launched.
+        // There appears (from observing Windows test reliability) to be some
+        // kind of race at command prompt startup that can cause characters to
+        // be eaten if they're typed too quickly after the command prompt
+        // session launches. To get around this, try to send "serial console ok"
+        // strings until one of them gets echoed back correctly or the entire
+        // boot times out.
         CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
+        CommandSequenceEntry::EstablishConsistentEcho {
+            send: "echo serial console ok\\n\r\n".into(),
+            expect: "serial console ok".into(),
+            timeout: std::time::Duration::from_millis(250),
+        },
+        // Make sure there's a clean command prompt after establishing the echo.
         CommandSequenceEntry::write_str("cls\r"),
         CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
-        CommandSequenceEntry::write_str("C:\\cygwin\\cygwin.bat\r"),
+    ]);
+
+    // Keep Cygwin from wrapping lines unexpectedly on Windows Server 2022 by
+    // maximizing the effective console size before launching Cygwin. This just
+    // confuses matters on Server 2016 and 2019, so on those guests just launch
+    // Cygwin directly.
+    if let GuestOsKind::WindowsServer2022 = guest {
+        commands.push(CommandSequenceEntry::write_str(format!(
+            "mode con cols=9999 lines=9999 && {CYGWIN_CMD}",
+        )));
+    } else {
+        commands.push(CommandSequenceEntry::write_str(CYGWIN_CMD));
+    }
+
+    commands.extend([
         CommandSequenceEntry::wait_for("$ "),
         // Tweak the command prompt so that it appears on a single line with
         // no leading newlines.
-        CommandSequenceEntry::write_str("PS1='\\u@\\h:$ '"),
+        CommandSequenceEntry::write_str("PS1='$ '"),
     ]);
 
     CommandSequence(commands)
