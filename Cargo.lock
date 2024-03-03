@@ -741,7 +741,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=796dce526dd7ed7b52a0429a486ccba4a9da1ce5#796dce526dd7ed7b52a0429a486ccba4a9da1ce5"
+source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -788,7 +788,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=796dce526dd7ed7b52a0429a486ccba4a9da1ce5#796dce526dd7ed7b52a0429a486ccba4a9da1ce5"
+source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
 dependencies = [
  "base64 0.21.7",
  "crucible-workspace-hack",
@@ -801,7 +801,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=796dce526dd7ed7b52a0429a486ccba4a9da1ce5#796dce526dd7ed7b52a0429a486ccba4a9da1ce5"
+source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
 dependencies = [
  "anyhow",
  "atty",
@@ -830,7 +830,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=796dce526dd7ed7b52a0429a486ccba4a9da1ce5#796dce526dd7ed7b52a0429a486ccba4a9da1ce5"
+source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1771,9 +1771,9 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.8.3"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "312f66718a2d7789ffef4f4b7b213138ed9f1eb3aa1d0d82fc99f88fb3ffd26f"
+checksum = "692eaaf7f7607518dd3cef090f1474b61edc5301d8012f09579920df68b725ee"
 dependencies = [
  "hashbrown 0.14.3",
 ]
@@ -2285,9 +2285,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.27.0"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf4e226dcd58b4be396f7bd3c20da8fdee2911400705297ba7d2d7cc2c30f716"
+checksum = "0c10584274047cb335c23d3e61bcef8e323adae7c5c8c760540f73610177fc3f"
 dependencies = [
  "pkg-config",
  "vcpkg",
@@ -4246,9 +4246,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.30.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a78046161564f5e7cd9008aff3b2990b3850dc8e0349119b98e8f251e099f24d"
+checksum = "b838eba278d213a8beaf485bd313fd580ca4505a00d5871caeb1457c55322cae"
 dependencies = [
  "bitflags 2.4.0",
  "fallible-iterator 0.3.0",
