@@ -182,6 +182,7 @@ impl Attachment {
     pub fn notify(&self) {
         // TODO: avoid thundering herd?
         self.0.req_notifier.notify_waiters();
+        let _guard = self.0.state.lock().unwrap();
         self.0.cv.notify_all();
     }
 }
