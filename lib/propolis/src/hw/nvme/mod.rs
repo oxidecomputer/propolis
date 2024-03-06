@@ -840,20 +840,23 @@ impl PciNvme {
                     // Completion Queue y Head Doorbell
                     let cq = state.get_cq(qid)?;
                     cq.notify_head(val)?;
-
-                    // We may have skipped pulling entries off some SQ due to this
-                    // CQ having no available entry slots. Since we've just freed
-                    // up some slots, notify any attached block backend that
-                    // there may be new requests available.
-                    self.block_attach.notify();
                 } else {
                     // Submission Queue y Tail Doorbell
                     let sq = state.get_sq(qid)?;
                     sq.notify_tail(val)?;
-
-                    // Poke block backend to service new requests
-                    self.block_attach.notify();
                 }
+
+                // Poke block backend to service new requests
+                //
+                // This is done for CQs in addition to SQs, since we may have
+                // skipped pulling entries off some SQ due to CQs having no
+                // available entry slots.
+                //
+                // The state lock must be released before issuing the
+                // notification to avoid deadlocking with the block backend
+                // attempting to fetch new requests.
+                drop(state);
+                self.block_attach.notify();
             }
         }
 
