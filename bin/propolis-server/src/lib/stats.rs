@@ -12,11 +12,8 @@ use oximeter::{
     types::{Cumulative, Sample},
     Metric, MetricsError, Producer,
 };
-use oximeter_instruments::kstat::KstatSampler;
 use oximeter_producer::Error;
 use oximeter_producer::{Config, Server};
-#[cfg(not(test))]
-use slog::error;
 use slog::{info, Logger};
 
 use std::net::SocketAddr;
@@ -25,6 +22,12 @@ use uuid::Uuid;
 
 use crate::server::MetricsEndpointConfig;
 use crate::stats::virtual_machine::VirtualMachine;
+
+// Propolis is built and some tests are run on non-illumos systems. The real
+// `kstat` infrastructure cannot be built there, so some conditional compilation
+// tricks are needed
+#[cfg(all(not(test), target_os = "illumos"))]
+use oximeter_instruments::kstat::KstatSampler;
 
 mod pvpanic;
 pub(crate) mod virtual_machine;
@@ -35,7 +38,7 @@ const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
     tokio::time::Duration::from_secs(30);
 
 // Interval on which we produce vCPU metrics.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "illumos"))]
 const VCPU_KSTAT_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
 
@@ -46,7 +49,7 @@ const VCPU_KSTAT_INTERVAL: std::time::Duration =
 //
 // This limit provides extra space for up to 64 samples per vCPU per microstate,
 // to ensure we don't throw away too much data if oximeter cannot reach us.
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "illumos"))]
 const KSTAT_LIMIT_PER_VCPU: u32 =
     crate::stats::virtual_machine::N_VCPU_MICROSTATES * 64;
 
@@ -82,6 +85,7 @@ impl ServerStats {
 #[derive(Clone, Debug)]
 pub struct ServerStatsOuter {
     server_stats_wrapped: Arc<Mutex<ServerStats>>,
+    #[cfg(all(not(test), target_os = "illumos"))]
     kstat_sampler: Option<KstatSampler>,
 }
 
@@ -105,12 +109,12 @@ impl Producer for ServerStatsOuter {
                 &inner.run_count,
             )?)
         };
+        #[cfg(all(not(test), target_os = "illumos"))]
         if let Some(sampler) = self.kstat_sampler.as_mut() {
             let samples = sampler.produce()?;
-            Ok(Box::new(run_count.chain(samples)))
-        } else {
-            Ok(Box::new(run_count))
+            return Ok(Box::new(run_count.chain(samples)));
         }
+        Ok(Box::new(run_count))
     }
 }
 
@@ -183,15 +187,16 @@ pub async fn start_oximeter_server(
 pub async fn register_server_metrics(
     registry: &ProducerRegistry,
     virtual_machine: VirtualMachine,
-    log: &Logger,
+    #[cfg(all(not(test), target_os = "illumos"))] log: &Logger,
+    #[cfg(not(all(not(test), target_os = "illumos")))] _log: &Logger,
 ) -> anyhow::Result<ServerStatsOuter> {
     let stats = ServerStats::new(virtual_machine.clone());
 
-    // Setup the collection of kstats for this instance.
-    let kstat_sampler = setup_kstat_tracking(log, virtual_machine).await;
     let stats_outer = ServerStatsOuter {
         server_stats_wrapped: Arc::new(Mutex::new(stats)),
-        kstat_sampler,
+        // Setup the collection of kstats for this instance.
+        #[cfg(all(not(test), target_os = "illumos"))]
+        kstat_sampler: setup_kstat_tracking(log, virtual_machine).await,
     };
 
     registry.register_producer(stats_outer.clone())?;
@@ -199,16 +204,7 @@ pub async fn register_server_metrics(
     Ok(stats_outer)
 }
 
-#[cfg(test)]
-async fn setup_kstat_tracking(
-    log: &Logger,
-    _: VirtualMachine,
-) -> Option<KstatSampler> {
-    slog::debug!(log, "kstat sampling disabled during tests");
-    None
-}
-
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "illumos"))]
 async fn setup_kstat_tracking(
     log: &Logger,
     virtual_machine: VirtualMachine,
@@ -222,7 +218,7 @@ async fn setup_kstat_tracking(
                 VCPU_KSTAT_INTERVAL,
             );
             if let Err(e) = sampler.add_target(virtual_machine, details).await {
-                error!(
+                slog::error!(
                     log,
                     "failed to add VirtualMachine target, \
                     vCPU stats will be unavailable";
@@ -232,7 +228,7 @@ async fn setup_kstat_tracking(
             Some(sampler)
         }
         Err(e) => {
-            error!(
+            slog::error!(
                 log,
                 "failed to create KstatSampler, \
                 vCPU stats will be unavailable";

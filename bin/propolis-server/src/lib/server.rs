@@ -107,7 +107,7 @@ pub enum VmControllerState {
     Destroyed {
         /// A copy of the instance properties recorded at the time the instance
         /// was destroyed, used to serve subsequent `instance_get` requests.
-        last_instance: api::Instance,
+        last_instance: Box<api::Instance>,
 
         /// A copy of the destroyed instance's spec, used to serve subsequent
         /// `instance_spec_get` requests.
@@ -160,7 +160,7 @@ impl VmControllerState {
             if let VmControllerState::Created(vm) = std::mem::replace(
                 self,
                 VmControllerState::Destroyed {
-                    last_instance,
+                    last_instance: Box::new(last_instance),
                     last_instance_spec: Box::new(last_instance_spec),
                     state_watcher,
                 },
@@ -364,17 +364,18 @@ async fn register_oximeter_in_background(
                 ),
             })
         };
+        let warn_on_failure = |error, delay| {
+            warn!(
+                log,
+                "failed to register as a metric producer with Nexus";
+                "error" => ?error,
+                "retry_after" => ?delay,
+            );
+        };
         let server = match omicron_common::backoff::retry_notify(
             omicron_common::backoff::retry_policy_internal_service(),
             register_with_nexus,
-            |error, delay| {
-                warn!(
-                    log,
-                    "failed to register as a metric producer with Nexus";
-                    "error" => ?error,
-                    "retry_after" => ?delay,
-                );
-            },
+            warn_on_failure,
         )
         .await
         {
@@ -761,7 +762,7 @@ async fn instance_get_common(
             let watcher = state_watcher.borrow();
             let mut last_instance = last_instance.clone();
             last_instance.state = watcher.state;
-            Ok((last_instance, *last_instance_spec.clone()))
+            Ok((*last_instance, *last_instance_spec.clone()))
         }
     }
 }

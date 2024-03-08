@@ -6,6 +6,13 @@
 
 //! Types for tracking statistics about virtual machine instances.
 
+// Propolis is built in a variety of configurations, including checks and tests
+// run on non-illumos machines where kstats are meaningless. This is a big
+// hammer, but a large number of the values in this module are not referenced in
+// those configurations, and so this is more straightfoward than littering the
+// code with cfg directives.
+#![cfg_attr(any(test, not(target_os = "illumos")), allow(dead_code))]
+
 use chrono::DateTime;
 use chrono::Utc;
 use oximeter::types::Cumulative;
@@ -14,24 +21,27 @@ use oximeter::FieldValue;
 use oximeter::Metric;
 use oximeter::Sample;
 use oximeter::Target;
-use oximeter_instruments::kstat::hrtime_to_utc;
-use oximeter_instruments::kstat::ConvertNamedData;
-use oximeter_instruments::kstat::Error;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "illumos"))]
 mod kstat_types {
     pub use kstat_rs::Data;
     pub use kstat_rs::Kstat;
     pub use kstat_rs::NamedData;
+    pub use oximeter_instruments::kstat::hrtime_to_utc;
+    pub use oximeter_instruments::kstat::ConvertNamedData;
+    pub use oximeter_instruments::kstat::Error;
     pub use oximeter_instruments::kstat::KstatList;
     pub use oximeter_instruments::kstat::KstatTarget;
 }
 
 // Mock the relevant subset of `kstat-rs` types needed for tests.
-#[cfg(test)]
+#[cfg(not(all(not(test), target_os = "illumos")))]
 mod kstat_types {
+    use chrono::DateTime;
+    use chrono::Utc;
+
     #[derive(Debug)]
     pub enum Data<'a> {
         Named(Vec<Named<'a>>),
@@ -60,12 +70,19 @@ mod kstat_types {
         pub value: NamedData<'a>,
     }
 
-    impl<'a> super::ConvertNamedData for NamedData<'a> {
-        fn as_i32(&self) -> Result<i32, super::Error> {
+    pub trait ConvertNamedData {
+        fn as_i32(&self) -> Result<i32, Error>;
+        fn as_u32(&self) -> Result<u32, Error>;
+        fn as_i64(&self) -> Result<i64, Error>;
+        fn as_u64(&self) -> Result<u64, Error>;
+    }
+
+    impl<'a> ConvertNamedData for NamedData<'a> {
+        fn as_i32(&self) -> Result<i32, Error> {
             unimplemented!()
         }
 
-        fn as_u32(&self) -> Result<u32, super::Error> {
+        fn as_u32(&self) -> Result<u32, Error> {
             if let NamedData::UInt32(x) = self {
                 Ok(*x)
             } else {
@@ -73,11 +90,11 @@ mod kstat_types {
             }
         }
 
-        fn as_i64(&self) -> Result<i64, super::Error> {
+        fn as_i64(&self) -> Result<i64, Error> {
             unimplemented!()
         }
 
-        fn as_u64(&self) -> Result<u64, super::Error> {
+        fn as_u64(&self) -> Result<u64, Error> {
             if let NamedData::UInt64(x) = self {
                 Ok(*x)
             } else {
@@ -85,9 +102,23 @@ mod kstat_types {
             }
         }
     }
+
+    #[derive(thiserror::Error, Clone, Debug)]
+    pub enum Error {
+        #[error("No such kstat")]
+        NoSuchKstat,
+        #[error("Expected a named kstat")]
+        ExpectedNamedKstat,
+        #[error("Metrics error")]
+        Metrics(#[from] oximeter::MetricsError),
+    }
+
+    pub fn hrtime_to_utc(_: i64) -> Result<DateTime<Utc>, Error> {
+        Ok(Utc::now())
+    }
 }
 
-use kstat_types::*;
+pub use kstat_types::*;
 
 /// A single virtual machine instance.
 #[derive(Clone, Debug)]
@@ -109,7 +140,6 @@ pub struct VirtualMachine {
 
     // Same for this field, not published as part of the target, but used to
     // find the right kstats.
-    #[cfg_attr(test, allow(dead_code))]
     vm_name: String,
 }
 
@@ -204,7 +234,7 @@ const VCPU_KSTAT_PREFIX: &str = "vcpu";
 /// quickly enough by `oximeter`.
 pub(crate) const N_VCPU_MICROSTATES: u32 = 6;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "illumos"))]
 impl KstatTarget for VirtualMachine {
     // The VMM kstats are organized like so:
     //
@@ -324,7 +354,7 @@ fn produce_vcpu_usage<'a>(
                     None
                 }
             })
-            .ok_or_else(|| Error::NoSuchKstat)?;
+            .ok_or(Error::NoSuchKstat)?;
 
         // We track each vCPU microstate starting with `time_`, and map them
         // into our own definitions of the vCPU states. We need to aggregate all
