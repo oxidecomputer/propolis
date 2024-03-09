@@ -7,13 +7,11 @@
 use dropshot::{ConfigDropshot, HandlerTaskMode};
 use omicron_common::api::internal::nexus::ProducerEndpoint;
 use omicron_common::api::internal::nexus::ProducerKind;
-use oximeter::types::ProducerRegistry;
 use oximeter::{
-    types::{Cumulative, Sample},
+    types::{Cumulative, ProducerRegistry, Sample},
     Metric, MetricsError, Producer,
 };
-use oximeter_producer::Error;
-use oximeter_producer::{Config, Server};
+use oximeter_producer::{Config, Error, Server};
 use slog::{info, Logger};
 
 use std::net::SocketAddr;
@@ -184,11 +182,14 @@ pub async fn start_oximeter_server(
 ///
 /// This attempts to initialize kstat-based metrics for vCPU usage data. This
 /// may fail, in which case those metrics will be unavailable.
+//
+// NOTE: The logger is unused if we don't pass it to `setup_kstat_tracking`
+// internally, so ignore that clippy lint.
+#[cfg_attr(not(all(not(test), target_os = "illumos")), allow(unused_variables))]
 pub async fn register_server_metrics(
     registry: &ProducerRegistry,
     virtual_machine: VirtualMachine,
-    #[cfg(all(not(test), target_os = "illumos"))] log: &Logger,
-    #[cfg(not(all(not(test), target_os = "illumos")))] _log: &Logger,
+    log: &Logger,
 ) -> anyhow::Result<ServerStatsOuter> {
     let stats = ServerStats::new(virtual_machine.clone());
 

@@ -608,8 +608,7 @@ impl ServerSpecBuilder {
 #[cfg(test)]
 mod test {
     use crucible_client_types::VolumeConstructionRequest;
-    use propolis_api_types::InstanceMetadata;
-    use propolis_api_types::Slot;
+    use propolis_api_types::{InstanceMetadata, Slot};
     use uuid::Uuid;
 
     use crate::config::Config;

@@ -195,7 +195,7 @@ pub struct InstanceProperties {
 }
 
 impl InstanceProperties {
-    /// Return the name of the VM as managed by the VMM.
+    /// Return the name of the VMM resource backing this VM.
     pub fn vm_name(&self) -> String {
         self.id.to_string()
     }

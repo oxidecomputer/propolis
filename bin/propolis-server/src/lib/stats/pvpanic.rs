@@ -34,6 +34,8 @@ pub struct PvpanicProducer {
 //
 // The advantage of that is easier aggregation, since the counts are part of the
 // same timeseries schema, only with different fields.
+//
+// Tracked by: https://github.com/oxidecomputer/propolis/issues/660.
 #[derive(Debug, Default, Copy, Clone, Metric)]
 struct PvPanicGuestHandled {
     /// The number of times this instance's guest handled a kernel panic.

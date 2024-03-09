@@ -13,14 +13,10 @@
 // code with cfg directives.
 #![cfg_attr(any(test, not(target_os = "illumos")), allow(dead_code))]
 
-use chrono::DateTime;
-use chrono::Utc;
-use oximeter::types::Cumulative;
-use oximeter::FieldType;
-use oximeter::FieldValue;
-use oximeter::Metric;
-use oximeter::Sample;
-use oximeter::Target;
+use chrono::{DateTime, Utc};
+use oximeter::{
+    types::Cumulative, FieldType, FieldValue, Metric, Sample, Target,
+};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
