@@ -38,7 +38,7 @@ use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
 use slog::{error, info, o, warn, Logger};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
+use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard, Notify};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
@@ -178,15 +178,15 @@ impl VmControllerState {
 pub struct OximeterState {
     /// A task spawned at initial startup to register with Nexus for metric
     /// production.
-    registration_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    registration_task: Option<(Arc<Notify>, tokio::task::JoinHandle<()>)>,
 
     /// The host task for this Propolis server's Oximeter server.
-    server_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    server_task: Option<tokio::task::JoinHandle<()>>,
 
     /// The metrics wrapper for "server-level" metrics, i.e., metrics that are
     /// tracked by the server itself (as opposed to being tracked by a component
     /// within an instance).
-    stats: Mutex<Option<crate::stats::ServerStatsOuter>>,
+    stats: Option<crate::stats::ServerStatsOuter>,
 }
 
 /// Objects that this server creates, owns, and manipulates in response to API
@@ -201,7 +201,7 @@ pub struct ServiceProviders {
 
     /// State related to the Propolis Oximeter server, registration task, and
     /// actual statistics.
-    oximeter_state: OximeterState,
+    oximeter_state: Mutex<OximeterState>,
 
     /// The VNC server hosted within this process. Note that this server always
     /// exists irrespective of whether there is an instance. Creating an
@@ -232,17 +232,16 @@ impl ServiceProviders {
         }
 
         // Clean up oximeter tasks and statistic state.
-        if let Some(task) =
-            self.oximeter_state.registration_task.lock().await.take()
+        let mut oximeter_state = self.oximeter_state.lock().await;
+        if let Some((shutdown, task)) = oximeter_state.registration_task.take()
         {
+            shutdown.notify_one();
             task.abort();
         };
-        if let Some(server) =
-            self.oximeter_state.server_task.lock().await.take()
-        {
+        if let Some(server) = oximeter_state.server_task.take() {
             server.abort();
         }
-        let _ = self.oximeter_state.stats.lock().await.take();
+        let _ = oximeter_state.stats.take();
     }
 }
 
@@ -271,11 +270,11 @@ impl DropshotEndpointContext {
             services: Arc::new(ServiceProviders {
                 vm: Mutex::new(VmControllerState::NotCreated),
                 serial_task: Mutex::new(None),
-                oximeter_state: OximeterState {
-                    registration_task: Mutex::new(None),
-                    server_task: Mutex::new(None),
-                    stats: Mutex::new(None),
-                },
+                oximeter_state: Mutex::new(OximeterState {
+                    registration_task: None,
+                    server_task: None,
+                    stats: None,
+                }),
                 vnc_server,
             }),
             log,
@@ -355,19 +354,24 @@ async fn register_oximeter_in_background(
     virtual_machine: VirtualMachine,
     log: Logger,
 ) {
-    assert!(services.oximeter_state.stats.lock().await.is_none());
-    assert!(services.oximeter_state.server_task.lock().await.is_none());
-    assert!(services.oximeter_state.registration_task.lock().await.is_none());
+    let mut oximeter_state = services.oximeter_state.lock().await;
+    assert!(oximeter_state.stats.is_none());
+    assert!(oximeter_state.server_task.is_none());
+    assert!(oximeter_state.registration_task.is_none());
 
-    // Spin indefinitely awaiting to register with Nexus as a metric producer.
+    // Start a task which attempts to register with Nexus as a metric producer.
     //
-    // This either returns a server, or None, indicating we hit a non-retryable
-    // error. We'll bail early in that case, since registering our own metrics
-    // is pointless.
+    // This task will loop until either (1) registration succeeds, (2) a
+    // permanent error occurs during registration, or (3) it is notified by the
+    // shutdown procedure in `ServiceProviders::stop()`. In the former case,
+    // we'll return the `oximeter` server and continue registration. In the
+    // latter cases, we'll return early, since no metrics can be produced.
     let services_ = services.clone();
+    let shutdown = Arc::new(Notify::new());
+    let shutdown_ = Arc::clone(&shutdown);
     let registration_task = tokio::task::spawn(async move {
-        // Register with Nexus, backing off reasonably quickly if we hit a
-        // retryable error.
+        // Create the closure used to register with Nexus inside the backoff
+        // loop.
         let register_with_nexus = || async {
             crate::stats::start_oximeter_server(
                 virtual_machine.instance_id,
@@ -396,24 +400,38 @@ async fn register_oximeter_in_background(
                 "retry_after" => ?delay,
             );
         };
-        let server = match omicron_common::backoff::retry_notify(
+        let retry_fut = omicron_common::backoff::retry_notify(
             omicron_common::backoff::retry_policy_internal_service(),
             register_with_nexus,
             warn_on_failure,
-        )
-        .await
-        {
-            Ok(server) => {
-                info!(log, "registered as a metric producer with Nexus");
-                server
+        );
+
+        // Select over the retry loop itself, or the notification from the
+        // `ServiceProviders` shutdown method that we need to bail.
+        let server = tokio::select! {
+            res = retry_fut => {
+                match res {
+                    Ok(server) => {
+                        info!(log, "registered as a metric producer with Nexus");
+                        server
+                    }
+                    Err(e) => {
+                        error!(
+                            log,
+                            "encountered non-retryable error when starting \
+                            oximeter metric production server, no metrics will \
+                            be produced for this instance";
+                            "error" => ?e,
+                        );
+                        return;
+                    }
+                }
             }
-            Err(e) => {
-                error!(
+            _ = shutdown_.notified() => {
+                slog::debug!(
                     log,
-                    "encountered non-retryable error when starting \
-                    oximeter metric production server, no metrics will \
-                    be produced for this instance";
-                    "error" => ?e,
+                    "Nexus metric registration retry loop \
+                    received shutdown notification, exiting"
                 );
                 return;
             }
@@ -423,12 +441,8 @@ async fn register_oximeter_in_background(
         let server_task = tokio::spawn(async move {
             server.serve_forever().await.unwrap();
         });
-        let old = services_
-            .oximeter_state
-            .server_task
-            .lock()
-            .await
-            .replace(server_task);
+        let mut state = services_.oximeter_state.lock().await;
+        let old = state.server_task.replace(server_task);
         assert!(old.is_none());
 
         // Assign our own metrics production for this VM instance to the
@@ -453,15 +467,11 @@ async fn register_oximeter_in_background(
                 return;
             }
         };
-        let old = services_.oximeter_state.stats.lock().await.replace(stats);
+        let old = state.stats.replace(stats);
         assert!(old.is_none());
     });
-    let old = services
-        .oximeter_state
-        .registration_task
-        .lock()
-        .await
-        .replace(registration_task);
+    let old =
+        oximeter_state.registration_task.replace((shutdown, registration_task));
     assert!(old.is_none());
 }
 
@@ -899,7 +909,10 @@ async fn instance_state_put(
     drop(vm);
     if result.is_ok() {
         if let api::InstanceStateRequested::Reboot = requested_state {
-            let stats = ctx.services.oximeter_state.stats.lock().await;
+            let stats = MutexGuard::map(
+                ctx.services.oximeter_state.lock().await,
+                |state| &mut state.stats,
+            );
             if let Some(stats) = stats.as_ref() {
                 stats.count_reset();
             }
