@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::migrate::MigrateError;
+use crate::migrate::{MigrateError, MigrateRole};
 use crate::vcpu_tasks::VcpuTaskController;
 
 use super::{
@@ -14,7 +14,8 @@ use super::{
 };
 
 use propolis_api_types::{
-    InstanceMigrateStatusResponse as ApiMigrationStatus,
+    InstanceMigrateStatusResponse as ApiMigrateStatusResponse,
+    InstanceMigrationStatus as ApiMigrationStatus,
     InstanceState as ApiInstanceState,
     InstanceStateMonitorResponse as ApiMonitoredState,
     MigrationState as ApiMigrationState,
@@ -36,10 +37,40 @@ enum HandleEventOutcome {
     Exit,
 }
 
+/// A reason for starting a VM.
 #[derive(Debug, PartialEq, Eq)]
 enum VmStartReason {
     MigratedIn,
     ExplicitRequest,
+}
+
+/// A wrapper around all the data needed to describe the status of a live
+/// migration.
+struct PublishedMigrationState {
+    state: ApiMigrationState,
+    id: Uuid,
+    role: MigrateRole,
+}
+
+impl PublishedMigrationState {
+    /// Updates an `old` migration status response to contain information about
+    /// the migration described by `self`.
+    fn apply_to(
+        self,
+        old: ApiMigrateStatusResponse,
+    ) -> ApiMigrateStatusResponse {
+        let new = ApiMigrationStatus { id: self.id, state: self.state };
+        match self.role {
+            MigrateRole::Destination => ApiMigrateStatusResponse {
+                migration_in: Some(new),
+                migration_out: old.migration_out,
+            },
+            MigrateRole::Source => ApiMigrateStatusResponse {
+                migration_in: old.migration_in,
+                migration_out: Some(new),
+            },
+        }
+    }
 }
 
 pub(super) struct StateDriver<
@@ -108,43 +139,98 @@ where
         self.api_state_tx.borrow().state
     }
 
-    /// Publishes the supplied externally-visible instance state to the external
-    /// instance state channel.
-    fn set_instance_state(&mut self, state: ApiInstanceState) {
-        let old = self.api_state_tx.borrow().clone();
-
-        self.state_gen += 1;
-        let _ = self.api_state_tx.send(ApiMonitoredState {
-            gen: self.state_gen,
-            state,
-            ..old
-        });
-    }
-
     /// Retrieves the most recently published migration state from the external
     /// migration state channel.
     ///
     /// This function does not return the borrowed monitor, so the state may
     /// change again as soon as this function returns.
-    fn get_migration_status(&self) -> Option<ApiMigrationStatus> {
+    fn get_migration_status(&self) -> ApiMigrateStatusResponse {
         self.api_state_tx.borrow().migration.clone()
+    }
+
+    /// Sets the published instance and/or migration state and increases the
+    /// state generation number.
+    ///
+    /// # Panics
+    ///
+    /// Panics if both `instance_state` and `migration_state` are `None`.
+    fn set_published_state(
+        &mut self,
+        instance_state: Option<ApiInstanceState>,
+        migration_state: Option<PublishedMigrationState>,
+    ) {
+        assert!(instance_state.is_some() || migration_state.is_some());
+
+        let ApiMonitoredState {
+            state: old_state,
+            migration: old_migration,
+            ..
+        } = self.api_state_tx.borrow().clone();
+
+        let state = instance_state.unwrap_or(old_state);
+        let migration = if let Some(migration_state) = migration_state {
+            migration_state.apply_to(old_migration)
+        } else {
+            old_migration
+        };
+
+        info!(self.log, "publishing new instance state";
+              "gen" => self.state_gen,
+              "state" => ?state,
+              "migration" => ?migration);
+
+        self.state_gen += 1;
+        let _ = self.api_state_tx.send(ApiMonitoredState {
+            gen: self.state_gen,
+            state,
+            migration,
+        });
+    }
+
+    /// Publishes the supplied externally-visible instance state to the external
+    /// instance state channel.
+    fn set_instance_state(&mut self, state: ApiInstanceState) {
+        self.set_published_state(Some(state), None)
     }
 
     /// Publishes the supplied externally-visible migration status to the
     /// instance state channel.
     fn set_migration_state(
         &mut self,
+        role: MigrateRole,
         migration_id: Uuid,
         state: ApiMigrationState,
     ) {
-        let old = self.api_state_tx.borrow().clone();
+        self.set_published_state(
+            None,
+            Some(PublishedMigrationState { state, id: migration_id, role }),
+        );
+    }
 
-        self.state_gen += 1;
-        let _ = self.api_state_tx.send(ApiMonitoredState {
-            gen: self.state_gen,
-            migration: Some(ApiMigrationStatus { migration_id, state }),
-            ..old
-        });
+    /// Publishes that an instance is migrating and sets its migration state in
+    /// a single transaction, then consumes the pending migration information
+    /// from the shared VM state block.
+    fn publish_migration_start(
+        &mut self,
+        migration_id: Uuid,
+        role: MigrateRole,
+    ) {
+        // Order matters here. The 'pending migration' field exists so that
+        // migration status is available through the external API as soon as an
+        // external request to migrate returns, even if the migration hasn't yet
+        // been picked up off the queue. To ensure the migration is continuously
+        // visible, publish the "actual" migration before consuming the pending
+        // one.
+        self.set_published_state(
+            Some(ApiInstanceState::Migrating),
+            Some(PublishedMigrationState {
+                state: ApiMigrationState::Sync,
+                id: migration_id,
+                role,
+            }),
+        );
+
+        self.shared_state.clear_pending_migration();
     }
 
     /// Manages an instance's lifecycle once it has moved to the Running state.
@@ -350,7 +436,7 @@ where
         start_tx: tokio::sync::oneshot::Sender<()>,
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
     ) {
-        self.set_instance_state(ApiInstanceState::Migrating);
+        self.publish_migration_start(migration_id, MigrateRole::Destination);
 
         // Ensure the VM's vCPUs are activated properly so that they can enter
         // the guest after migration. Do this before allowing the migration task
@@ -381,14 +467,20 @@ where
                         // they are guaranteed to be able to do anything else
                         // that requires a running instance.
                         assert!(matches!(
-                            self.get_migration_status().unwrap().state,
+                            self.get_migration_status()
+                                .migration_in
+                                .unwrap()
+                                .state,
                             ApiMigrationState::Finish
                         ));
 
                         self.start_vm(VmStartReason::MigratedIn);
                     } else {
                         assert!(matches!(
-                            self.get_migration_status().unwrap().state,
+                            self.get_migration_status()
+                                .migration_in
+                                .unwrap()
+                                .state,
                             ApiMigrationState::Error
                         ));
 
@@ -404,7 +496,11 @@ where
                 MigrateTaskEvent::Command(
                     MigrateTargetCommand::UpdateState(state),
                 ) => {
-                    self.set_migration_state(migration_id, state);
+                    self.set_migration_state(
+                        MigrateRole::Destination,
+                        migration_id,
+                        state,
+                    );
                 }
             }
         }
@@ -418,7 +514,7 @@ where
         mut command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
         response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
     ) {
-        self.set_instance_state(ApiInstanceState::Migrating);
+        self.publish_migration_start(migration_id, MigrateRole::Source);
         start_tx.send(()).unwrap();
 
         // Wait either for the migration task to exit or for it to ask the
@@ -442,7 +538,10 @@ where
                 MigrateTaskEvent::TaskExited(res) => {
                     if res.is_ok() {
                         assert!(matches!(
-                            self.get_migration_status().unwrap().state,
+                            self.get_migration_status()
+                                .migration_out
+                                .unwrap()
+                                .state,
                             ApiMigrationState::Finish
                         ));
 
@@ -451,7 +550,10 @@ where
                             .expect("can always queue a request to stop");
                     } else {
                         assert!(matches!(
-                            self.get_migration_status().unwrap().state,
+                            self.get_migration_status()
+                                .migration_out
+                                .unwrap()
+                                .state,
                             ApiMigrationState::Error
                         ));
 
@@ -467,7 +569,11 @@ where
                 }
                 MigrateTaskEvent::Command(cmd) => match cmd {
                     MigrateSourceCommand::UpdateState(state) => {
-                        self.set_migration_state(migration_id, state);
+                        self.set_migration_state(
+                            MigrateRole::Source,
+                            migration_id,
+                            state,
+                        );
                     }
                     MigrateSourceCommand::Pause => {
                         self.pause();
@@ -599,7 +705,10 @@ mod test {
             tokio::sync::watch::channel(ApiMonitoredState {
                 gen: 0,
                 state: ApiInstanceState::Creating,
-                migration: None,
+                migration: ApiMigrateStatusResponse {
+                    migration_in: None,
+                    migration_out: None,
+                },
             });
 
         TestStateDriver {
@@ -904,9 +1013,9 @@ mod test {
         // is not directly processing the queue here, the test has to issue this
         // call itself.
         assert_eq!(
-            driver.driver.get_migration_status().unwrap(),
+            driver.driver.get_migration_status().migration_out.unwrap(),
             ApiMigrationStatus {
-                migration_id,
+                id: migration_id,
                 state: ApiMigrationState::Finish
             }
         );
@@ -996,9 +1105,9 @@ mod test {
         assert!(matches!(driver.api_state(), ApiInstanceState::Running));
         assert_eq!(outcome, HandleEventOutcome::Continue);
         assert_eq!(
-            driver.driver.get_migration_status().unwrap(),
+            driver.driver.get_migration_status().migration_out.unwrap(),
             ApiMigrationStatus {
-                migration_id,
+                id: migration_id,
                 state: ApiMigrationState::Error
             }
         );
@@ -1070,9 +1179,9 @@ mod test {
             .unwrap();
 
         assert_eq!(
-            driver.driver.get_migration_status().unwrap(),
+            driver.driver.get_migration_status().migration_in.unwrap(),
             ApiMigrationStatus {
-                migration_id,
+                id: migration_id,
                 state: ApiMigrationState::Finish
             }
         );
@@ -1136,9 +1245,9 @@ mod test {
         assert_eq!(outcome, HandleEventOutcome::Continue);
         assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
         assert_eq!(
-            driver.driver.get_migration_status().unwrap(),
+            driver.driver.get_migration_status().migration_in.unwrap(),
             ApiMigrationStatus {
-                migration_id,
+                id: migration_id,
                 state: ApiMigrationState::Error
             }
         );
@@ -1219,9 +1328,9 @@ mod test {
 
         // The migration has still succeeded in this case.
         assert_eq!(
-            driver.driver.get_migration_status().unwrap(),
+            driver.driver.get_migration_status().migration_in.unwrap(),
             ApiMigrationStatus {
-                migration_id,
+                id: migration_id,
                 state: ApiMigrationState::Finish
             }
         );

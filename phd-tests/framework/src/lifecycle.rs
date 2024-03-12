@@ -98,14 +98,21 @@ impl Framework {
                     // target to make sure it is available even after migration
                     // has finished.
                     let src_migration_state = vm
-                        .get_migration_state(migration_id)
+                        .get_migration_state()
                         .await
-                        .context("Failed to get source VM migration state")?;
+                        .context("Failed to get source VM migration state")?
+                        .migration_out
+                        .expect("source VM should have migrated out")
+                        .state;
                     assert_eq!(src_migration_state, MigrationState::Finish);
+
                     let target_migration_state = new_vm
-                        .get_migration_state(migration_id)
+                        .get_migration_state()
                         .await
-                        .context("Failed to get target VM migration state")?;
+                        .context("Failed to get target VM migration state")?
+                        .migration_in
+                        .expect("target VM should have migrated in")
+                        .state;
                     assert_eq!(target_migration_state, MigrationState::Finish);
 
                     vm = new_vm;

@@ -48,7 +48,9 @@ use propolis::{
     vmm::Machine,
 };
 use propolis_api_types::{
-    instance_spec::VersionedInstanceSpec, InstanceProperties,
+    instance_spec::VersionedInstanceSpec,
+    InstanceMigrateStatusResponse as ApiMigrateStatusResponse,
+    InstanceMigrationStatus as ApiMigrationStatus, InstanceProperties,
     InstanceState as ApiInstanceState,
     InstanceStateMonitorResponse as ApiMonitoredState,
     InstanceStateRequested as ApiInstanceStateRequested,
@@ -65,7 +67,7 @@ use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
-    migrate::{self, MigrateError},
+    migrate::{MigrateError, MigrateRole},
     serial::Serial,
     server::{BlockBackendMap, CrucibleBackendMap, DeviceMap, StaticConfig},
     vm::request_queue::ExternalRequest,
@@ -254,7 +256,7 @@ struct SharedVmStateInner {
     /// who query migration state will observe that a live migration is in
     /// progress even if the state driver has yet to pick up the live migration
     /// tasks from its queue.
-    pending_migration_id: Option<Uuid>,
+    pending_migration_id: Option<(Uuid, MigrateRole)>,
 }
 
 impl SharedVmStateInner {
@@ -385,6 +387,11 @@ impl SharedVmState {
     pub fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
         panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
     }
+
+    pub fn clear_pending_migration(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.pending_migration_id = None;
+    }
 }
 
 /// Functions called by a Propolis chipset to notify another component that an
@@ -442,7 +449,10 @@ impl VmController {
             tokio::sync::watch::channel(ApiMonitoredState {
                 gen: 0,
                 state: ApiInstanceState::Creating,
-                migration: None,
+                migration: ApiMigrateStatusResponse {
+                    migration_in: None,
+                    migration_out: None,
+                },
             });
 
         let worker_state = Arc::new(SharedVmState::new(&log));
@@ -821,34 +831,36 @@ impl VmController {
             .map_err(Into::into)
     }
 
-    pub fn migrate_status(
-        &self,
-        migration_id: Uuid,
-    ) -> Result<ApiMigrationState, MigrateError> {
-        // If the state worker has published migration state with a matching ID,
-        // report the status from the worker. Note that this call to `borrow`
-        // takes a lock on the channel.
-        let published = self.vm_objects.monitor_rx.borrow();
-        if let Some(status) = &published.migration {
-            if status.migration_id == migration_id {
-                return Ok(status.state);
-            }
-        }
-        drop(published);
+    pub fn migrate_status(&self) -> ApiMigrateStatusResponse {
+        let mut published =
+            self.vm_objects.monitor_rx.borrow().migration.clone();
 
-        // Either the worker hasn't published any status or the IDs didn't
-        // match. See if there's a pending migration task that the worker hasn't
-        // picked up yet that has the correct ID and report its status if so.
+        // There's a window between the point where a request to migrate returns
+        // and the point where the state worker actually picks up the migration
+        // and publishes its state. To ensure that migrations are visible as
+        // soon as they're queued, pick up the queued migration (if there is
+        // one) and insert it into the output in the appropriate position. The
+        // state driver will consume the pending migration before actually
+        // executing it.
         let inner = self.worker_state.inner.lock().unwrap();
-        if let Some(id) = inner.pending_migration_id {
-            if migration_id != id {
-                Err(MigrateError::UuidMismatch)
-            } else {
-                Ok(ApiMigrationState::Sync)
+        if let Some((id, role)) = inner.pending_migration_id {
+            match role {
+                MigrateRole::Destination => {
+                    published.migration_in = Some(ApiMigrationStatus {
+                        id,
+                        state: ApiMigrationState::Sync,
+                    });
+                }
+                MigrateRole::Source => {
+                    published.migration_out = Some(ApiMigrationStatus {
+                        id,
+                        state: ApiMigrationState::Sync,
+                    });
+                }
             }
-        } else {
-            Err(MigrateError::NoMigrationInProgress)
         }
+
+        published
     }
 
     pub(crate) fn for_each_device(

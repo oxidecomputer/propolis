@@ -192,20 +192,9 @@
         }
       }
     },
-    "/instance/migrate/{migration_id}/status": {
+    "/instance/migration-status": {
       "get": {
         "operationId": "instance_migrate_status",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "migration_id",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "successful operation",
@@ -967,7 +956,28 @@
       "InstanceMigrateStatusResponse": {
         "type": "object",
         "properties": {
-          "migration_id": {
+          "migration_in": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrationStatus"
+              }
+            ]
+          },
+          "migration_out": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrationStatus"
+              }
+            ]
+          }
+        }
+      },
+      "InstanceMigrationStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
             "type": "string",
             "format": "uuid"
           },
@@ -976,7 +986,7 @@
           }
         },
         "required": [
-          "migration_id",
+          "id",
           "state"
         ]
       },
@@ -1159,12 +1169,7 @@
             "minimum": 0
           },
           "migration": {
-            "nullable": true,
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
-              }
-            ]
+            "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
           },
           "state": {
             "$ref": "#/components/schemas/InstanceState"
@@ -1172,6 +1177,7 @@
         },
         "required": [
           "gen",
+          "migration",
           "state"
         ]
       },
