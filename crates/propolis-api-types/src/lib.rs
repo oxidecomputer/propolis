@@ -83,15 +83,31 @@ pub struct InstanceMigrateStartRequest {
     pub migration_id: Uuid,
 }
 
+/// The status of an individual live migration.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceMigrationStatus {
+    /// The ID of this migration, supplied either by the external migration
+    /// requester (for targets) or the other side of the migration (for
+    /// sources).
     pub id: Uuid,
+    /// The current phase the migration is in.
     pub state: MigrationState,
 }
 
+/// The statuses of the most recent live migrations a Propolis VM has
+/// participated in. Note that Propolis will continue reporting the status of a
+/// completed migration unless it is supplanted by a new migration in the same
+/// direction. This means it's possible for both the inbound and outbound
+/// migration statuses to be set, e.g. if a Propolis was initialized via
+/// migration in and is now the source of a migration out.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceMigrateStatusResponse {
+    /// The status of the most recent attempt to initialize the current instance
+    /// via migration in, or None if the instance has never been a migration
+    /// target.
     pub migration_in: Option<InstanceMigrationStatus>,
+    /// The status of the most recent attempt to migrate out of the current
+    /// instance, or None if no such migration has ever been requested.
     pub migration_out: Option<InstanceMigrationStatus>,
 }
 
