@@ -741,7 +741,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/mkeeter/crucible?branch=packed-data#22d96989d9728e32b02566c06fcc9ab4c5ab95ce"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -788,7 +788,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/mkeeter/crucible?branch=packed-data#22d96989d9728e32b02566c06fcc9ab4c5ab95ce"
 dependencies = [
  "base64 0.21.7",
  "crucible-workspace-hack",
@@ -801,7 +801,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/mkeeter/crucible?branch=packed-data#22d96989d9728e32b02566c06fcc9ab4c5ab95ce"
 dependencies = [
  "anyhow",
  "atty",
@@ -830,7 +830,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/mkeeter/crucible?branch=packed-data#22d96989d9728e32b02566c06fcc9ab4c5ab95ce"
 dependencies = [
  "anyhow",
  "bincode",
@@ -841,6 +841,7 @@ dependencies = [
  "schemars",
  "serde",
  "strum_macros 0.25.3",
+ "tokio",
  "tokio-util",
  "uuid",
 ]
