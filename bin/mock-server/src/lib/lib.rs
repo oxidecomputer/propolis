@@ -52,7 +52,10 @@ impl InstanceContext {
             watch::channel(api::InstanceStateMonitorResponse {
                 gen: 0,
                 state: api::InstanceState::Creating,
-                migration: None,
+                migration: api::InstanceMigrateStatusResponse {
+                    migration_in: None,
+                    migration_out: None,
+                },
             });
         let serial = serial::Serial::new(&properties.name);
 
@@ -99,7 +102,10 @@ impl InstanceContext {
                         .send(api::InstanceStateMonitorResponse {
                             gen: self.generation,
                             state: self.state,
-                            migration: None,
+                            migration: api::InstanceMigrateStatusResponse {
+                                migration_in: None,
+                                migration_out: None,
+                            },
                         })
                         .map_err(|_| Error::TransitionSendFail)
                 }
@@ -258,7 +264,10 @@ async fn instance_state_monitor(
             let response = api::InstanceStateMonitorResponse {
                 gen: last.gen,
                 state: last.state,
-                migration: None,
+                migration: api::InstanceMigrateStatusResponse {
+                    migration_in: None,
+                    migration_out: None,
+                },
             };
             return Ok(HttpResponseOk(response));
         }

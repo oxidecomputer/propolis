@@ -277,13 +277,20 @@ async fn incompatible_vms(ctx: &Framework) {
             .await
             .is_err());
 
-        // Explicitly check migration status on both the source and target to
-        // make sure it is available even after migration has finished.
-        let src_migration_state =
-            source.get_migration_state(migration_id).await?;
+        let src_migration_state = source
+            .get_migration_state()
+            .await?
+            .migration_out
+            .expect("source should have a migration-out status")
+            .state;
         assert_eq!(src_migration_state, MigrationState::Error);
-        let target_migration_state =
-            target.get_migration_state(migration_id).await?;
+
+        let target_migration_state = target
+            .get_migration_state()
+            .await?
+            .migration_in
+            .expect("target should have a migration-in status")
+            .state;
         assert_eq!(target_migration_state, MigrationState::Error);
     }
 }
