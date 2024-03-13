@@ -228,7 +228,7 @@ const VCPU_KSTAT_PREFIX: &str = "vcpu";
 /// This is used to preallocate data structures for holding samples, and to
 /// limit the number of samples in the `KstatSampler`, if it is not pulled
 /// quickly enough by `oximeter`.
-pub(crate) const N_VCPU_MICROSTATES: u32 = 6;
+pub(crate) const N_VCPU_MICROSTATES: u32 = 4;
 
 #[cfg(all(not(test), target_os = "illumos"))]
 impl KstatTarget for VirtualMachine {
