@@ -3744,6 +3744,7 @@ dependencies = [
  "clap 4.4.0",
  "futures",
  "libc",
+ "newtype-uuid",
  "propolis-client",
  "reqwest",
  "serde",

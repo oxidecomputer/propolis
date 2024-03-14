@@ -9,6 +9,7 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
 libc.workspace = true
+newtype-uuid.workspace = true
 propolis-client.workspace = true
 slog.workspace = true
 slog-async.workspace = true

@@ -14,6 +14,7 @@ use std::{
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use futures::{future, SinkExt};
+use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::types::InstanceMetadata;
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -83,11 +84,11 @@ enum Command {
 
         /// A UUID to use for the instance's silo, attached to instance metrics.
         #[clap(long)]
-        silo_id: Option<Uuid>,
+        silo_id: Option<TypedUuid<SiloKind>>,
 
         /// A UUID to use for the instance's project, attached to instance metrics.
         #[clap(long)]
-        project_id: Option<Uuid>,
+        project_id: Option<TypedUuid<ProjectKind>>,
     },
 
     /// Get the properties of a propolis instance
@@ -187,6 +188,26 @@ fn create_logger(opt: &Opt) -> Logger {
     Logger::root(drain, o!())
 }
 
+// Implement typed UUID wrappers for the project / silo IDs, to avoid conflating
+// them.
+enum ProjectKind {}
+
+impl TypedUuidKind for ProjectKind {
+    fn tag() -> TypedUuidTag {
+        const TAG: TypedUuidTag = TypedUuidTag::new("project");
+        TAG
+    }
+}
+
+enum SiloKind {}
+
+impl TypedUuidKind for SiloKind {
+    fn tag() -> TypedUuidTag {
+        const TAG: TypedUuidTag = TypedUuidTag::new("silo");
+        TAG
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn new_instance(
     client: &Client,
@@ -196,14 +217,17 @@ async fn new_instance(
     memory: u64,
     disks: Vec<DiskRequest>,
     cloud_init_bytes: Option<String>,
-    silo_id: Uuid,
-    project_id: Uuid,
+    silo_id: TypedUuid<SiloKind>,
+    project_id: TypedUuid<ProjectKind>,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
         name,
         description: "propolis-cli generated instance".to_string(),
-        metadata: InstanceMetadata { silo_id, project_id },
+        metadata: InstanceMetadata {
+            silo_id: silo_id.into_untyped_uuid(),
+            project_id: project_id.into_untyped_uuid(),
+        },
         // TODO: Use real UUID
         image_id: Uuid::default(),
         // TODO: Use real UUID
@@ -656,8 +680,8 @@ async fn main() -> anyhow::Result<()> {
                 memory,
                 disks,
                 cloud_init_bytes,
-                silo_id.unwrap_or_else(Uuid::new_v4),
-                project_id.unwrap_or_else(Uuid::new_v4),
+                silo_id.unwrap_or_else(TypedUuid::new_v4),
+                project_id.unwrap_or_else(TypedUuid::new_v4),
             )
             .await?
         }
