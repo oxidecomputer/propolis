@@ -608,12 +608,19 @@ impl ServerSpecBuilder {
 #[cfg(test)]
 mod test {
     use crucible_client_types::VolumeConstructionRequest;
-    use propolis_api_types::Slot;
+    use propolis_api_types::{InstanceMetadata, Slot};
     use uuid::Uuid;
 
     use crate::config::Config;
 
     use super::*;
+
+    fn test_metadata() -> InstanceMetadata {
+        InstanceMetadata {
+            silo_id: uuid::uuid!("556a67f8-8b14-4659-bd9f-d8f85ecd36bf"),
+            project_id: uuid::uuid!("75f60038-daeb-4a1d-916a-5fa5b7237299"),
+        }
+    }
 
     fn default_spec_builder(
     ) -> Result<ServerSpecBuilder, ServerSpecBuilderError> {
@@ -622,6 +629,7 @@ mod test {
                 id: Default::default(),
                 name: Default::default(),
                 description: Default::default(),
+                metadata: test_metadata(),
                 image_id: Default::default(),
                 bootrom_id: Default::default(),
                 memory: 512,

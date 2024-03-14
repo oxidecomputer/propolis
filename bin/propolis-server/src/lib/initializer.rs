@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
 use crate::server::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
+use crate::stats::virtual_machine::VirtualMachine;
 use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
@@ -334,7 +335,7 @@ impl<'a> MachineInitializer<'a> {
 
     pub fn initialize_qemu_pvpanic(
         &mut self,
-        uuid: uuid::Uuid,
+        virtual_machine: VirtualMachine,
     ) -> Result<(), anyhow::Error> {
         if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
             if spec.enable_isa {
@@ -346,8 +347,10 @@ impl<'a> MachineInitializer<'a> {
                     .insert(pvpanic.type_name().into(), pvpanic.clone());
 
                 if let Some(ref registry) = self.producer_registry {
-                    let producer =
-                        crate::stats::PvpanicProducer::new(uuid, pvpanic);
+                    let producer = crate::stats::PvpanicProducer::new(
+                        virtual_machine,
+                        pvpanic,
+                    );
                     registry.register_producer(producer).context(
                         "failed to register PVPANIC Oximeter producer",
                     )?;

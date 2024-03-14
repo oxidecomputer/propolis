@@ -424,7 +424,7 @@ impl VmController {
         // add components.
         let VersionedInstanceSpec::V0(v0_spec) = &instance_spec;
         let machine = build_instance(
-            &properties.id.to_string(),
+            &properties.vm_name(),
             v0_spec,
             use_reservoir,
             vmm_log,
@@ -463,7 +463,7 @@ impl VmController {
         let com1 = Arc::new(init.initialize_uart(&chipset)?);
         let ps2ctrl = init.initialize_ps2(&chipset)?;
         init.initialize_qemu_debug_port()?;
-        init.initialize_qemu_pvpanic(properties.id)?;
+        init.initialize_qemu_pvpanic((&properties).into())?;
         init.initialize_network_devices(&chipset)?;
 
         #[cfg(not(feature = "omicron-build"))]
