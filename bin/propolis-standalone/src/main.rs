@@ -990,7 +990,9 @@ fn setup_instance(
                         .to_string();
                     let log =
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
-                    let nvme = hw::nvme::PciNvme::create(dev_serial, log);
+                    // Limit data transfers to 1MiB (2^8 * 4k) in size
+                    let mdts = Some(8);
+                    let nvme = hw::nvme::PciNvme::create(dev_serial, mdts, log);
 
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);

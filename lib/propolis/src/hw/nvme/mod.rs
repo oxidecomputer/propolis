@@ -411,6 +411,20 @@ impl NvmeCtrl {
         b << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads
     }
 
+    /// Check a given request transfer size against any MDTS configured on the
+    /// controller.
+    ///
+    /// Returns `true` if the size is acceptable for the MDTS.
+    fn valid_for_mdts(&self, sz: u64) -> bool {
+        match self.ctrl_ident.mdts {
+            0 => true,
+            mdts => {
+                let limit = (self.ctrl.cap.mpsmin_sz() as u64) << mdts;
+                sz <= limit
+            }
+        }
+    }
+
     fn update_block_info(&mut self, info: block::DeviceInfo) {
         let nsze = info.total_size;
         self.ns_ident = bits::IdentifyNamespace {
@@ -496,7 +510,11 @@ pub struct PciNvme {
 
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
-    pub fn create(serial_number: String, log: slog::Logger) -> Arc<Self> {
+    pub fn create(
+        serial_number: String,
+        mdts: Option<u8>,
+        log: slog::Logger,
+    ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_OXIDE,
             device_id: PROPOLIS_NVME_DEV_ID,
@@ -526,6 +544,7 @@ impl PciNvme {
             ssvid: VENDOR_OXIDE,
             sn,
             ieee: OXIDE_OUI,
+            mdts: mdts.unwrap_or(0),
             // We use standard Completion/Submission Queue Entry structures with no extra
             // data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
