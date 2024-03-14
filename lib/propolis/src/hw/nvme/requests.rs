@@ -6,6 +6,7 @@ use crate::{
     accessors::MemAccessor,
     block::{self, Operation, Request, Result as BlockResult},
     hw::nvme::{bits, cmds::Completion},
+    vmm::mem::MemCtx,
 };
 
 use super::{cmds::NvmCmd, queue::Permit, PciNvme};
@@ -80,10 +81,23 @@ impl PciNvme {
                 let cid = sub.cid();
                 let cmd = NvmCmd::parse(sub);
 
+                fn fail_mdts(permit: Permit, mem: &MemCtx) {
+                    permit.complete(
+                        Completion::generic_err(bits::STS_INVAL_FIELD).dnr(),
+                        Some(&mem),
+                    );
+                }
+
                 match cmd {
                     Ok(NvmCmd::Write(cmd)) => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
                         let size = state.nlb_to_size(cmd.nlb as usize) as u64;
+
+                        if !state.valid_for_mdts(size) {
+                            fail_mdts(permit, &mem);
+                            continue;
+                        }
+
                         probes::nvme_write_enqueue!(|| (
                             qid, idx, cid, off, size
                         ));
@@ -99,6 +113,11 @@ impl PciNvme {
                     Ok(NvmCmd::Read(cmd)) => {
                         let off = state.nlb_to_size(cmd.slba as usize) as u64;
                         let size = state.nlb_to_size(cmd.nlb as usize) as u64;
+
+                        if !state.valid_for_mdts(size) {
+                            fail_mdts(permit, &mem);
+                            continue;
+                        }
 
                         probes::nvme_read_enqueue!(|| (
                             qid, idx, cid, off, size

@@ -252,6 +252,12 @@ bitstruct! {
         reserved4: u8 = 56..64;
     }
 }
+impl Capabilities {
+    /// Size in bytes represented by the MPSMIN value
+    pub fn mpsmin_sz(&self) -> usize {
+        1 << (12 + self.mpsmin())
+    }
+}
 
 bitstruct! {
     /// Representation of the Controller Configuration (CC) register.

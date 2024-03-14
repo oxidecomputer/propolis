@@ -540,8 +540,11 @@ impl<'a> MachineInitializer<'a> {
                     chipset.pci_attach(bdf, vioblk);
                 }
                 DeviceInterface::Nvme => {
+                    // Limit data transfers to 1MiB (2^8 * 4k) in size
+                    let mdts = Some(8);
                     let nvme = nvme::PciNvme::create(
                         name.to_string(),
+                        mdts,
                         self.log.new(
                             slog::o!("component" => format!("nvme-{}", name)),
                         ),
