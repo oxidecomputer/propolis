@@ -38,7 +38,7 @@ use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
 use slog::{error, info, o, warn, Logger};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard, Notify};
+use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
@@ -178,7 +178,12 @@ impl VmControllerState {
 pub struct OximeterState {
     /// A task spawned at initial startup to register with Nexus for metric
     /// production.
-    registration_task: Option<(Arc<Notify>, tokio::task::JoinHandle<()>)>,
+    ///
+    /// The oneshot sender will be used in the `ServiceProviders::stop()`
+    /// method, to signal that the registration task itself should bail out, if
+    /// it's still running.
+    registration_task:
+        Option<(oneshot::Sender<()>, tokio::task::JoinHandle<()>)>,
 
     /// The host task for this Propolis server's Oximeter server.
     server_task: Option<tokio::task::JoinHandle<()>>,
@@ -233,9 +238,10 @@ impl ServiceProviders {
 
         // Clean up oximeter tasks and statistic state.
         let mut oximeter_state = self.oximeter_state.lock().await;
-        if let Some((shutdown, task)) = oximeter_state.registration_task.take()
+        if let Some((shutdown_tx, task)) =
+            oximeter_state.registration_task.take()
         {
-            shutdown.notify_one();
+            let _ = shutdown_tx.send(());
             task.abort();
         };
         if let Some(server) = oximeter_state.server_task.take() {
@@ -367,8 +373,7 @@ async fn register_oximeter_in_background(
     // we'll return the `oximeter` server and continue registration. In the
     // latter cases, we'll return early, since no metrics can be produced.
     let services_ = services.clone();
-    let shutdown = Arc::new(Notify::new());
-    let shutdown_ = Arc::clone(&shutdown);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let registration_task = tokio::task::spawn(async move {
         // Create the closure used to register with Nexus inside the backoff
         // loop.
@@ -427,7 +432,7 @@ async fn register_oximeter_in_background(
                     }
                 }
             }
-            _ = shutdown_.notified() => {
+            _ = shutdown_rx => {
                 slog::debug!(
                     log,
                     "Nexus metric registration retry loop \
@@ -470,8 +475,9 @@ async fn register_oximeter_in_background(
         let old = state.stats.replace(stats);
         assert!(old.is_none());
     });
-    let old =
-        oximeter_state.registration_task.replace((shutdown, registration_task));
+    let old = oximeter_state
+        .registration_task
+        .replace((shutdown_tx, registration_task));
     assert!(old.is_none());
 }
 

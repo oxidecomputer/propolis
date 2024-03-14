@@ -202,13 +202,32 @@ pub struct VcpuUsage {
 // for a definition of these states.
 fn kstat_microstate_to_state_name(ustate: &str) -> Option<&'static str> {
     match ustate {
-        "time_emu_kern" | "time_emu_user" => Some("emulation"),
-        "time_run" => Some("run"),
-        "time_init" | "time_idle" => Some("idle"),
-        "time_sched" => Some("waiting"),
+        "time_emu_kern" | "time_emu_user" => Some(OXIMETER_EMULATION_STATE),
+        "time_run" => Some(OXIMETER_RUN_STATE),
+        "time_init" | "time_idle" => Some(OXIMETER_IDLE_STATE),
+        "time_sched" => Some(OXIMETER_WAITING_STATE),
         _ => None,
     }
 }
+
+// The definitions of each oximeter-level microstate we track.
+const OXIMETER_EMULATION_STATE: &str = "emulation";
+const OXIMETER_RUN_STATE: &str = "run";
+const OXIMETER_IDLE_STATE: &str = "idle";
+const OXIMETER_WAITING_STATE: &str = "waiting";
+const OXIMETER_STATES: [&str; 4] = [
+    OXIMETER_EMULATION_STATE,
+    OXIMETER_RUN_STATE,
+    OXIMETER_IDLE_STATE,
+    OXIMETER_WAITING_STATE,
+];
+
+/// The number of expected vCPU microstates we track.
+///
+/// This is used to preallocate data structures for holding samples, and to
+/// limit the number of samples in the `KstatSampler`, if it is not pulled
+/// quickly enough by `oximeter`.
+pub(crate) const N_VCPU_MICROSTATES: u32 = OXIMETER_STATES.len() as _;
 
 // The name of the kstat module containing virtual machine kstats.
 const VMM_KSTAT_MODULE_NAME: &str = "vmm";
@@ -222,13 +241,6 @@ const VM_NAME_KSTAT: &str = "vm_name";
 
 // The name of kstat containing vCPU usage data.
 const VCPU_KSTAT_PREFIX: &str = "vcpu";
-
-/// The number of expected vCPU microstates we track.
-///
-/// This is used to preallocate data structures for holding samples, and to
-/// limit the number of samples in the `KstatSampler`, if it is not pulled
-/// quickly enough by `oximeter`.
-pub(crate) const N_VCPU_MICROSTATES: u32 = 4;
 
 #[cfg(all(not(test), target_os = "illumos"))]
 impl KstatTarget for VirtualMachine {
@@ -385,6 +397,7 @@ fn produce_vcpu_usage<'a>(
 #[cfg(test)]
 mod tests {
     use super::kstat_instance_from_instance_id;
+    use super::kstat_microstate_to_state_name;
     use super::produce_vcpu_usage;
     use super::Data;
     use super::Kstat;
@@ -397,10 +410,16 @@ mod tests {
     use super::VMM_KSTAT_MODULE_NAME;
     use super::VM_KSTAT_NAME;
     use super::VM_NAME_KSTAT;
+    use crate::stats::virtual_machine::N_VCPU_MICROSTATES;
+    use crate::stats::virtual_machine::OXIMETER_EMULATION_STATE;
+    use crate::stats::virtual_machine::OXIMETER_IDLE_STATE;
+    use crate::stats::virtual_machine::OXIMETER_RUN_STATE;
+    use crate::stats::virtual_machine::OXIMETER_WAITING_STATE;
     use oximeter::schema::SchemaSet;
     use oximeter::types::Cumulative;
     use oximeter::Datum;
     use oximeter::FieldValue;
+    use std::collections::BTreeMap;
     use uuid::Uuid;
 
     fn test_virtual_machine() -> VirtualMachine {
@@ -499,8 +518,10 @@ mod tests {
             2,
             "Should have samples for 'run' and 'idle' states"
         );
-        for ((sample, state), x) in
-            samples.iter().zip(["idle", "run"]).zip([2, 2])
+        for ((sample, state), x) in samples
+            .iter()
+            .zip([OXIMETER_IDLE_STATE, OXIMETER_RUN_STATE])
+            .zip([2, 2])
         {
             let st = sample
                 .fields()
@@ -521,6 +542,82 @@ mod tests {
                 panic!("Expected a cumulativeu64 datum");
             };
             assert_eq!(inner.value(), x);
+        }
+    }
+
+    // Sanity check that the mapping from lower-level `kstat` vCPU microstates
+    // to the higher-level states we report to `oximeter` do not change.
+    #[test]
+    fn test_consistent_kstat_to_oximeter_microstate_mapping() {
+        // Build our expected mapping from kstat-to-oximeter states.
+        //
+        // For each oximeter state, we pretend to have observed the kstat-level
+        // microstates that go into it some number of times. We then check that
+        // the number of actual observed mapped states (for each kstat-level
+        // one) is matches our expectation.
+        //
+        // For example, the `time_emu_{kern,user}` states map to the
+        // `"emulation"` state. If we observe 1 and 2 of those, respectively, we
+        // should have a total of 3 observations of the `"emulation"` state.
+        let mut expected_states = BTreeMap::new();
+        expected_states.insert(
+            OXIMETER_EMULATION_STATE,
+            vec![("time_emu_kern", 1usize), ("time_emu_user", 2)],
+        );
+        expected_states.insert(
+            OXIMETER_RUN_STATE,
+            vec![("time_run", 4)], // Not equal to sum above
+        );
+        expected_states.insert(
+            OXIMETER_IDLE_STATE,
+            vec![("time_init", 5), ("time_idle", 6)],
+        );
+        expected_states.insert(OXIMETER_WAITING_STATE, vec![("time_sched", 7)]);
+        assert_eq!(
+            expected_states.len() as u32,
+            N_VCPU_MICROSTATES,
+            "Expected set of oximeter states does not match const",
+        );
+
+        // "Observe" each kstat-level microstate a certain number of times, and
+        // bump our counter of the oximeter state it maps to.
+        let mut observed_states: BTreeMap<_, usize> = BTreeMap::new();
+        for kstat_states in expected_states.values() {
+            for (kstat_state, count) in kstat_states.iter() {
+                let oximeter_state = kstat_microstate_to_state_name(
+                    kstat_state,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "kstat state '{}' did not map to an oximeter state, \
+                        which it should have done. Did that state get \
+                        mapped to a new oximeter-level state?",
+                        kstat_state
+                    )
+                });
+                *observed_states.entry(oximeter_state).or_default() += count;
+            }
+        }
+
+        // Check that we've observed all the states correctly.
+        assert_eq!(
+            observed_states.len(),
+            expected_states.len(),
+            "Some oximeter-level states were not accounted for. \
+            Did the set of oximeter states reported change?",
+        );
+        for (oximeter_state, count) in observed_states.iter() {
+            let kstat_states = expected_states.get(oximeter_state).expect(
+                "An unexpected oximeter state was produced. \
+                    Did the set of kstat or oximeter microstates \
+                    change?",
+            );
+            let expected_total: usize =
+                kstat_states.iter().map(|(_, ct)| ct).sum();
+            assert_eq!(
+                *count, expected_total,
+                "Some oximeter states were not accounted for",
+            );
         }
     }
 }
