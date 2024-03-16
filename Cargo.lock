@@ -679,7 +679,6 @@ dependencies = [
 name = "cpuid_profile_config"
 version = "0.0.0"
 dependencies = [
- "propolis",
  "serde",
  "serde_derive",
  "thiserror",
