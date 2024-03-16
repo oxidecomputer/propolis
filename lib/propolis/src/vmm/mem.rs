@@ -6,7 +6,7 @@
 
 use std::io::{Error, ErrorKind, Result};
 use std::marker::PhantomData;
-use std::mem::{size_of, size_of_val};
+use std::mem::{size_of, size_of_val, MaybeUninit};
 use std::ops::RangeInclusive;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr::{copy_nonoverlapping, NonNull};
@@ -527,6 +527,21 @@ impl<'a> SubMapping<'a> {
     ///
     /// Returns the number of bytes read.
     pub fn read_bytes(&self, buf: &mut [u8]) -> Result<usize> {
+        let read_len = usize::min(buf.len(), self.len);
+        self.read_many(&mut buf[..read_len])?;
+        Ok(read_len)
+    }
+
+    /// Reads a buffer of bytes from the mapping into an uninitialized region
+    ///
+    /// If `buf` is larger than the SubMapping, the read will be truncated to
+    /// length of the SubMapping.
+    ///
+    /// Returns the number of bytes read.
+    pub fn read_bytes_uninit(
+        &self,
+        buf: &mut [MaybeUninit<u8>],
+    ) -> Result<usize> {
         let read_len = usize::min(buf.len(), self.len);
         self.read_many(&mut buf[..read_len])?;
         Ok(read_len)

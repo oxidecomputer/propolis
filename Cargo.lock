@@ -741,7 +741,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/oxidecomputer/crucible?rev=952c7d60d22be5198b892bec8d92f4291b9160c2#952c7d60d22be5198b892bec8d92f4291b9160c2"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -788,7 +788,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/oxidecomputer/crucible?rev=952c7d60d22be5198b892bec8d92f4291b9160c2#952c7d60d22be5198b892bec8d92f4291b9160c2"
 dependencies = [
  "base64 0.21.7",
  "crucible-workspace-hack",
@@ -801,7 +801,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/oxidecomputer/crucible?rev=952c7d60d22be5198b892bec8d92f4291b9160c2#952c7d60d22be5198b892bec8d92f4291b9160c2"
 dependencies = [
  "anyhow",
  "atty",
@@ -820,6 +820,7 @@ dependencies = [
  "slog-term",
  "tempfile",
  "thiserror",
+ "tokio",
  "tokio-rustls 0.24.1",
  "toml 0.8.10",
  "twox-hash",
@@ -830,7 +831,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=1c1574fb721f98f2df1b23e3fd27d83be018882e#1c1574fb721f98f2df1b23e3fd27d83be018882e"
+source = "git+https://github.com/oxidecomputer/crucible?rev=952c7d60d22be5198b892bec8d92f4291b9160c2#952c7d60d22be5198b892bec8d92f4291b9160c2"
 dependencies = [
  "anyhow",
  "bincode",
@@ -841,6 +842,7 @@ dependencies = [
  "schemars",
  "serde",
  "strum_macros 0.25.3",
+ "tokio",
  "tokio-util",
  "uuid",
 ]

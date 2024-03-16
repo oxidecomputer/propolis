@@ -391,17 +391,24 @@ async fn process_request(
             // to crucible
             let maps =
                 req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
-            let mut vec: Vec<u8> = vec![0; len];
+            let mut data = crucible::BytesMut::with_capacity(len);
             let mut nread = 0;
             for mapping in maps {
-                nread += mapping
-                    .read_bytes(&mut vec[nread..(nread + mapping.len())])?;
+                let n = mapping.read_bytes_uninit(
+                    &mut data.spare_capacity_mut()[..mapping.len()],
+                )?;
+                // `read_bytes` returns the number of bytes written, so we can
+                // expand our initialized area by this amount.
+                unsafe {
+                    data.set_len(data.len() + n);
+                }
+                nread += n;
             }
             if nread != len {
                 return Err(Error::CopyError(nread, len));
             }
 
-            let _ = block.write(off_blocks, crucible::Bytes::from(vec)).await?;
+            let _ = block.write(off_blocks, data).await?;
         }
         block::Operation::Flush => {
             if !skip_flush {
