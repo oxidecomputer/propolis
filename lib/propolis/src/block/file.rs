@@ -5,30 +5,67 @@
 use std::fs::{metadata, File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
+use std::os::raw::c_int;
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
+use crate::util::ioctl;
 use crate::vmm::{MappingExt, MemCtx};
 
 // XXX: completely arb for now
 const MAX_WORKERS: usize = 32;
 
+const DKIOC: i32 = 0x04 << 8;
+const DKIOCGETWCE: i32 = DKIOC | 36;
+const DKIOCSETWCE: i32 = DKIOC | 37;
+
 pub struct FileBackend {
     state: Arc<WorkerState>,
 
     worker_count: NonZeroUsize,
+    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 struct WorkerState {
     attachment: block::backend::Attachment,
     fp: File,
 
+    /// Write-Cache-Enable state (if supported) of the underlying device
+    wce_state: Mutex<Option<WceState>>,
+
     info: block::DeviceInfo,
     skip_flush: bool,
 }
+struct WceState {
+    initial: bool,
+    current: bool,
+}
 impl WorkerState {
+    fn new(fp: File, info: block::DeviceInfo, skip_flush: bool) -> Arc<Self> {
+        let wce_state = match info.read_only {
+            true => None,
+            false => get_wce(&fp)
+                .map(|initial| WceState { initial, current: initial }),
+        };
+
+        let state = WorkerState {
+            attachment: block::backend::Attachment::new(),
+            fp,
+            wce_state: Mutex::new(wce_state),
+            skip_flush,
+            info,
+        };
+
+        // Attempt to enable write caching if underlying resource supports it
+        state.set_wce(true);
+
+        Arc::new(state)
+    }
+
     fn processing_loop(&self, acc_mem: MemAccessor) {
         while let Some(req) = self.attachment.block_for_req() {
             if self.info.read_only && req.oper().is_write() {
@@ -85,6 +122,27 @@ impl WorkerState {
         }
         Ok(())
     }
+
+    fn set_wce(&self, enabled: bool) {
+        if let Some(state) = self.wce_state.lock().unwrap().as_mut() {
+            if state.current != enabled {
+                if let Some(new_wce) = set_wce(&self.fp, enabled).ok() {
+                    state.current = new_wce;
+                }
+            }
+        }
+    }
+}
+impl Drop for WorkerState {
+    fn drop(&mut self) {
+        // Attempt to return WCE state on the device to how it was when we
+        // initially opened it.
+        if let Some(state) = self.wce_state.get_mut().unwrap().as_mut() {
+            if state.current != state.initial {
+                let _ = set_wce(&self.fp, state.initial);
+            }
+        }
+    }
 }
 
 impl FileBackend {
@@ -117,36 +175,39 @@ impl FileBackend {
         // TODO: attempt to query blocksize from underlying file/zvol
         let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
+        let info = block::DeviceInfo {
+            block_size,
+            total_size: len / block_size as u64,
+            read_only,
+        };
+        let skip_flush = opts.skip_flush.unwrap_or(false);
         Ok(Arc::new(Self {
-            state: Arc::new(WorkerState {
-                attachment: block::backend::Attachment::new(),
-
-                fp,
-
-                skip_flush: opts.skip_flush.unwrap_or(false),
-                info: block::DeviceInfo {
-                    block_size,
-                    total_size: len / block_size as u64,
-                    read_only,
-                },
-            }),
+            state: WorkerState::new(fp, info, skip_flush),
             worker_count,
+            workers: Mutex::new(Vec::new()),
         }))
     }
     fn spawn_workers(&self) -> std::io::Result<()> {
-        for n in 0..self.worker_count.get() {
-            let worker_state = self.state.clone();
-            let worker_acc = self.state.attachment.accessor_mem(|mem| {
-                mem.expect("backend is attached")
-                    .child(Some(format!("worker {n}")))
-            });
+        let mut guard = self.workers.lock().unwrap();
+        assert!(guard.is_empty(), "existing workers should not be present");
 
-            let _join = std::thread::Builder::new()
-                .name(format!("file worker {n}"))
-                .spawn(move || {
-                    worker_state.processing_loop(worker_acc);
-                })?;
-        }
+        let join_handles = (0..self.worker_count.get())
+            .map(|n| {
+                let worker_state = self.state.clone();
+                let worker_acc = self.state.attachment.accessor_mem(|mem| {
+                    mem.expect("backend is attached")
+                        .child(Some(format!("worker {n}")))
+                });
+
+                std::thread::Builder::new()
+                    .name(format!("file worker {n}"))
+                    .spawn(move || {
+                        worker_state.processing_loop(worker_acc);
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        *guard = join_handles;
         Ok(())
     }
 }
@@ -163,5 +224,42 @@ impl block::Backend for FileBackend {
         self.spawn_workers()?;
         self.state.attachment.start();
         Ok(())
+    }
+    fn halt(&self) {
+        self.state.attachment.halt();
+
+        // Wait for the workers to finish up
+        let mut guard = self.workers.lock().unwrap();
+        for worker in guard.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// Attempt to query the Write-Cache-Enable state for a given open device
+///
+/// Block devices (including "real" disks and zvols) will regard all writes as
+/// synchronous when performed via the /dev/rdsk endpoint when WCE is not
+/// enabled.  With WCE enabled, writes can be cached on the device, to be
+/// flushed later via fsync().
+fn get_wce(fp: &File) -> Option<bool> {
+    let ft = fp.metadata().ok()?.file_type();
+    if !ft.is_char_device() {
+        return None;
+    }
+
+    let mut res: c_int = 0;
+    let _ = unsafe {
+        ioctl(fp.as_raw_fd(), DKIOCGETWCE, &mut res as *mut c_int as _).ok()?
+    };
+    Some(res != 0)
+}
+
+/// Attempt to set the Write-Cache-Enable state for a given open device
+fn set_wce(fp: &File, enabled: bool) -> Result<bool> {
+    let mut flag: c_int = enabled.into();
+    unsafe {
+        ioctl(fp.as_raw_fd(), DKIOCSETWCE, &mut flag as *mut c_int as _)
+            .map(|_| enabled)
     }
 }

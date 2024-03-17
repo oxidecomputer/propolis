@@ -882,6 +882,12 @@ impl Drop for VmController {
         let hdl = machine.destroy();
         let _ = hdl.destroy();
 
+        // Detach block backends so they can do any final clean-up
+        debug!(self.log, "Detaching block backends");
+        for backend in self.vm_objects.block_backends.values() {
+            let _ = backend.attachment().detach();
+        }
+
         // A fully-initialized controller is kept alive in part by its worker
         // thread, which owns the sender side of the controller's state-change
         // notification channel. Since the controller is being dropped, the

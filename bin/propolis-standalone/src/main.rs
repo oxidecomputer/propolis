@@ -224,6 +224,16 @@ impl Inventory {
     ) {
         self.block.insert(name, be.clone());
     }
+    fn destroy(&mut self) {
+        // Detach all block backends from their devices
+        for backend in self.block.values() {
+            let _ = backend.attachment().detach();
+        }
+
+        // Drop all refs in the hopes that things can clean up after themselves
+        self.devs.clear();
+        self.block.clear();
+    }
 }
 
 struct InstState {
@@ -479,6 +489,9 @@ impl Instance {
                 State::Destroy => {
                     // Drop the machine
                     let _ = guard.machine.take().unwrap();
+
+                    // Clean up the inventory as well
+                    guard.inventory.destroy();
 
                     // Communicate that destruction is complete
                     slog::info!(&log, "Instance destroyed");
