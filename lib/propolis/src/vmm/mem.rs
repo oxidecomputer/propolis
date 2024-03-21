@@ -344,6 +344,9 @@ unsafe impl Send for Mapping {}
 unsafe impl Sync for Mapping {}
 
 #[derive(Debug)]
+// Backing resources (Mapping or SubMapping) must remain held, even though we do
+// not reference them directly as a field.
+#[allow(dead_code)]
 enum Backing<'a> {
     Base(Arc<Mapping>),
     Sub(&'a SubMapping<'a>),

@@ -285,10 +285,7 @@ impl NvmeCtrl {
         if (cqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidCompQueue(cqid));
         }
-        self.cqs[cqid as usize]
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or(NvmeError::InvalidCompQueue(cqid))
+        self.cqs[cqid as usize].clone().ok_or(NvmeError::InvalidCompQueue(cqid))
     }
 
     /// Returns a reference to the [`SubQueue`] which corresponds to the given submission queue id (`cqid`).
@@ -296,10 +293,7 @@ impl NvmeCtrl {
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
         }
-        self.sqs[sqid as usize]
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or(NvmeError::InvalidSubQueue(sqid))
+        self.sqs[sqid as usize].clone().ok_or(NvmeError::InvalidSubQueue(sqid))
     }
 
     /// Returns a reference to the Admin [`CompQueue`].

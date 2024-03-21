@@ -162,8 +162,7 @@ impl Inner {
     fn device_at(&self, location: BusLocation) -> Option<Arc<dyn Endpoint>> {
         let res = self.slots[location.dev.get() as usize].funcs
             [location.func.get() as usize]
-            .as_ref()
-            .map(Arc::clone);
+            .clone();
         res
     }
     fn attach(

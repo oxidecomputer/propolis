@@ -78,6 +78,9 @@ impl From<propolis::exits::Suspend> for InstEvent {
 }
 
 #[derive(Clone, Debug)]
+// Silence the lint about detail fields being unused, since rustc ignores the
+// derived Debug impl which does read those bits.
+#[allow(dead_code)]
 enum EventCtx {
     Vcpu(i32),
     Pin(String),

@@ -865,7 +865,7 @@ impl VmController {
         &self,
         name: &String,
     ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.vm_objects.devices.get(name).map(Arc::clone)
+        self.vm_objects.devices.get(name).cloned()
     }
 }
 
