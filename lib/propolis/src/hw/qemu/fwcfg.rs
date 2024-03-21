@@ -2,22 +2,27 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map, BTreeMap};
+use std::io::Write;
+use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::accessors::MemAccessor;
 use crate::common::*;
+use crate::hw::qemu::ramfb::RamFb;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 use crate::vmm::MemCtx;
 use bits::*;
 
-use byteorder::{ByteOrder, BE, LE};
+use zerocopy::AsBytes;
 
-pub type Result = std::result::Result<(), &'static str>;
+const SIGNATURE_VALUE: &[u8; 4] = b"QEMU";
 
 #[allow(unused)]
 #[derive(Copy, Clone)]
+#[repr(u16)]
 pub enum LegacyId {
     Signature = 0x0000,
     Id = 0x0001,
@@ -47,7 +52,7 @@ pub enum LegacyId {
     FileDir = 0x0019,
 }
 impl LegacyId {
-    fn name(&self) -> &'static str {
+    const fn name(&self) -> &'static str {
         match self {
             LegacyId::Signature => "signature",
             LegacyId::Id => "id",
@@ -86,305 +91,214 @@ pub enum LegacyX86Id {
     HpetData = 0x8004,
 }
 
-pub trait Item: Send + Sync + 'static {
-    fn fwcfg_rw(&self, rwo: RWOp) -> Result;
-    fn size(&self) -> u32;
+pub enum Entry {
+    FileDir,
+    RamFb,
+    Bytes(Vec<u8>),
 }
-
-pub struct FixedItem {
-    data: Vec<u8>,
-}
-impl FixedItem {
-    pub fn new_raw(data: Vec<u8>) -> Arc<dyn Item> {
-        assert!(data.len() <= u32::MAX as usize);
-        Arc::new(Self { data })
-    }
-    pub fn new_u32(val: u32) -> Arc<dyn Item> {
-        let mut buf = [0u8; 4];
-        LE::write_u32(&mut buf, val);
-        Self::new_raw(buf.to_vec())
-    }
-}
-impl Item for FixedItem {
-    fn size(&self) -> u32 {
-        self.data.len() as u32
-    }
-
-    fn fwcfg_rw(&self, rwo: RWOp) -> Result {
-        match rwo {
-            RWOp::Read(ro) => {
-                let off = ro.offset();
-                if off + ro.len() > self.data.len() {
-                    Err("read beyond bounds")
-                } else {
-                    let copy_len = usize::min(self.data.len() - off, ro.len());
-                    ro.write_bytes(&self.data[off..(off + copy_len)]);
-                    Ok(())
-                }
-            }
-            RWOp::Write(_) => Err("writes to fixed items not allowed"),
-        }
+impl Entry {
+    pub fn fixed_u32(value: u32) -> Self {
+        Self::Bytes(value.to_le_bytes().to_vec())
     }
 }
 
-struct PlaceholderItem {}
-impl Item for PlaceholderItem {
-    fn fwcfg_rw(&self, _rwo: RWOp) -> Result {
-        panic!("should never be accessed");
-    }
-    fn size(&self) -> u32 {
-        panic!("should never be accessed");
-    }
+#[derive(Debug)]
+pub enum InsertError {
+    InvalidSelector,
+    SelectorExists,
+    NameExists,
+    NoCapacity,
 }
 
-#[allow(unused)]
-#[repr(packed)]
-struct FwCfgFileEntry {
-    size: u32,
-    selector: u16,
-    reserved: u16,
-    name: [u8; FWCFG_FILENAME_LEN],
+struct Directory {
+    entries: BTreeMap<u16, (Entry, String)>,
+    names: BTreeMap<String, u16>,
+    next_named: u16,
 }
-impl FwCfgFileEntry {
-    fn new(selector: u16, name: &str, size: u32) -> Self {
-        assert!(name.len() < FWCFG_FILENAME_LEN);
-
-        let mut this = Self {
-            size: size.to_be(),
-            selector: selector.to_be(),
-            reserved: 0,
-            name: [0; FWCFG_FILENAME_LEN],
-        };
-        this.name[..name.len()].copy_from_slice(name.as_ref());
-        this
-    }
-    fn bytes(&self) -> &[u8] {
-        // Safety:  This struct is packed, so it does not have any padding with
-        // undefined contents, making the conversion to a byte-slice safe.
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-    const fn sizeof() -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-#[derive(Default)]
-#[repr(C)]
-struct FwCfgDmaReq {
-    ctrl: u32,
-    len: u32,
-    addr: u64,
-}
-impl FwCfgDmaReq {
-    fn from_bytes(data: &[u8]) -> Self {
-        assert_eq!(data.len(), Self::sizeof());
+impl Directory {
+    fn new() -> Self {
         Self {
-            ctrl: BE::read_u32(&data[0..4]),
-            len: BE::read_u32(&data[4..8]),
-            addr: BE::read_u64(&data[8..16]),
-        }
-    }
-    const fn sizeof() -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn file_struct_sizing() {
-        assert_eq!(std::mem::size_of::<FwCfgFileEntry>(), 64);
-        assert_eq!(std::mem::size_of::<FwCfgDmaReq>(), 16);
-    }
-}
-
-struct Entry {
-    content: Arc<dyn Item>,
-}
-
-struct ItemDir {
-    entries: BTreeMap<u16, Entry>,
-    sorted_names: Vec<(String, u16)>,
-}
-impl ItemDir {
-    fn file_entry(&self, idx: usize) -> FwCfgFileEntry {
-        let (name, selector) = &self.sorted_names[idx];
-
-        let size = if *selector == LegacyId::FileDir as u16 {
-            self.sorted_names.len() as u32 * FwCfgFileEntry::sizeof() as u32
-        } else {
-            self.entries.get(&selector).unwrap().content.size()
-        };
-        FwCfgFileEntry::new(*selector, &name, size)
-    }
-    fn read_header(&self, mut ro: ReadOp) -> usize {
-        let num = u32::to_be_bytes(self.sorted_names.len() as u32);
-        let to_write = &num[ro.offset()..];
-        ro.write_bytes(to_write);
-        to_write.len()
-    }
-    fn read_entries(&self, mut ro: ReadOp) -> Result {
-        let ent_size = FwCfgFileEntry::sizeof();
-        let dir_limit = self.sorted_names.len() * ent_size;
-        let offset = ro.offset();
-        let buf_limit =
-            offset.checked_add(ro.len()).ok_or("offset overflow")?;
-        if offset >= dir_limit || buf_limit > dir_limit {
-            return Err("read beyond end");
-        }
-        while ro.avail() > 0 {
-            let idx = offset / ent_size;
-            let entry_off = offset % ent_size;
-            let entry = self.file_entry(idx);
-            let entry_buf = entry.bytes();
-            let copy_len = usize::min(entry_buf.len() - entry_off, ro.avail());
-            ro.write_bytes(&entry_buf[entry_off..(entry_off + copy_len)]);
-        }
-        Ok(())
-    }
-    fn read(&self, ro: &mut ReadOp) -> Result {
-        let off = ro.offset();
-        let header_xfer = if off < 4 {
-            self.read_header(ReadOp::new_child(off, ro, off..4))
-        } else {
-            0
-        };
-        if off + ro.len() > 4 {
-            return self.read_entries(ReadOp::new_child(
-                ro.offset() + header_xfer - 4,
-                ro,
-                header_xfer..,
-            ));
-        }
-
-        Ok(())
-    }
-    fn size(&self) -> u32 {
-        // header (32-bit count) + N 64-byte entries
-        4 + (self.sorted_names.len() * FwCfgFileEntry::sizeof()) as u32
-    }
-    fn is_present(&self, selector: u16) -> bool {
-        if selector == LegacyId::FileDir as u16 {
-            true
-        } else {
-            self.entries.contains_key(&selector)
-        }
-    }
-}
-
-pub struct FwCfgBuilder {
-    entries: BTreeMap<u16, Entry>,
-    name_to_sel: BTreeMap<String, u16>,
-    next_sel: u16,
-}
-
-impl FwCfgBuilder {
-    pub fn new() -> Self {
-        let mut this = Self {
             entries: BTreeMap::new(),
-            name_to_sel: BTreeMap::new(),
-            next_sel: ITEMS_FILE_START,
-        };
-        this.add_legacy(
-            LegacyId::Signature,
-            FixedItem::new_raw(b"QEMU".to_vec()),
-        )
-        .unwrap();
-        this.add_legacy(
-            LegacyId::Id,
-            FixedItem::new_u32(FW_CFG_VER_BASE | FW_CFG_VER_DMA),
-        )
-        .unwrap();
-
-        // Occupy the filedir slot with a placeholder so it cannot be overriden
-        // by an outside consumer.  Since it requires special care, requests to
-        // that endpoint will be dispatched "manually".
-        this.add_impl(
-            LegacyId::FileDir as u16,
-            LegacyId::FileDir.name().to_string(),
-            Arc::new(PlaceholderItem {}),
-        )
-        .unwrap();
-
-        this
-    }
-
-    pub fn add_legacy(
-        &mut self,
-        sel: LegacyId,
-        content: Arc<dyn Item>,
-    ) -> Result {
-        self.add_impl(sel as u16, sel.name().to_string(), content)
-    }
-    pub fn add_named(&mut self, name: &str, content: Arc<dyn Item>) -> Result {
-        let sel = self.next_sel;
-        let next_sel = self.next_sel.checked_add(1).ok_or("item overflow")?;
-        self.add_impl(sel, name.to_string(), content)?;
-        self.next_sel = next_sel;
-        Ok(())
-    }
-
-    fn add_impl(
-        &mut self,
-        sel: u16,
-        name: String,
-        content: Arc<dyn Item>,
-    ) -> Result {
-        if !self.entries.contains_key(&sel)
-            && !self.name_to_sel.contains_key(&name)
-        {
-            let item = Entry { content };
-            self.entries.insert(sel, item);
-            self.name_to_sel.insert(name, sel);
-            Ok(())
-        } else {
-            Err("entry already exists")
+            names: BTreeMap::new(),
+            next_named: ITEMS_FILE_START,
         }
     }
+    fn insert(
+        &mut self,
+        selector: u16,
+        name: String,
+        entry: Entry,
+    ) -> Result<(), InsertError> {
+        #[allow(clippy::map_entry)]
+        if selector == ITEM_INVALID {
+            Err(InsertError::InvalidSelector)
+        } else if self.names.contains_key(&name) {
+            Err(InsertError::NameExists)
+        } else if self.entries.contains_key(&selector) {
+            Err(InsertError::SelectorExists)
+        } else {
+            self.names.insert(name.clone(), selector);
+            self.entries.insert(selector, (entry, name));
+            if selector == self.next_named {
+                self.next_named += 1;
+            }
+            Ok(())
+        }
+    }
+    fn insert_legacy(
+        &mut self,
+        id: LegacyId,
+        entry: Entry,
+    ) -> Result<(), InsertError> {
+        let name = id.name().to_owned();
+        self.insert(id as u16, name, entry)
+    }
+    fn remove(&mut self, selector: u16) -> Option<Entry> {
+        let (entry, name) = self.entries.remove(&selector)?;
+        let name_to_selector = self.names.remove(&name);
+        assert_eq!(Some(selector), name_to_selector);
+        if (ITEMS_FILE_START..ITEMS_FILE_END).contains(&selector) {
+            self.next_named = u16::min(self.next_named, selector);
+        }
+        Some(entry)
+    }
+    /// Find the next available selector "slot" for a named entry
+    fn next_named_selector(&self) -> Option<u16> {
+        // Assume that consumers will be relatively well-behaved, and not be
+        // adding/removing entries with reckless abandon.  This naive search can
+        // be improved later if it becomes a problem.
+        (self.next_named..ITEMS_FILE_END)
+            .find(|selector| !self.entries.contains_key(&selector))
+    }
+    fn entry(&mut self, selector: u16) -> Option<&mut Entry> {
+        self.entries.get_mut(&selector).map(|(ent, _name)| ent)
+    }
+    /// Look up (by `name`) the selector for an entry, if present
+    fn named_selector(&mut self, name: &str) -> Option<u16> {
+        self.names.get(name).copied()
+    }
+    fn entries(&self) -> Entries<'_> {
+        Entries { iter: self.names.iter(), entries: &self.entries }
+    }
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.names.clear();
+        self.next_named = ITEMS_FILE_START;
+    }
+    /// Render the directory into the format expected by a guest reading it via
+    /// the `fw_cfg` interface.
+    fn render(&self) -> Vec<u8> {
+        let rendered_size =
+            size_of::<u32>() + self.entries.len() * size_of::<FwCfgFile>();
+        let mut buf: Vec<u8> = Vec::with_capacity(rendered_size);
+        buf.write_all(&(self.entries.len() as u32).to_be_bytes()).unwrap();
 
-    pub fn finalize(self) -> Arc<FwCfg> {
-        let mut sorted_names: Vec<(String, u16)> =
-            self.name_to_sel.into_iter().collect();
-        // Should be sorted coming out of the btree, but be extra sure.
-        sorted_names.sort();
-        let dir = ItemDir { entries: self.entries, sorted_names };
-
-        Arc::new(FwCfg::new(dir))
+        for (selector, name, entry) in self.entries() {
+            let size = match entry {
+                Entry::FileDir => rendered_size,
+                Entry::RamFb => RamFb::FWCFG_ENTRY_SIZE,
+                Entry::Bytes(buf) => buf.len(),
+            };
+            let entry = FwCfgFile::new(size as u32, selector, name);
+            buf.write_all(entry.as_bytes()).unwrap();
+        }
+        assert_eq!(buf.len(), rendered_size);
+        buf
     }
 }
 
-#[derive(Default)]
-struct AccessState {
-    addr_high: u32,
-    addr_low: u32,
+#[derive(thiserror::Error, Debug)]
+enum FwCfgErr {
+    #[error("No entry selected")]
+    NoneSelected,
+    #[error("Entry is read-only")]
+    ReadOnly,
+    #[error("Bad DMA address")]
+    BadAddr,
+    #[error("DMA command not recognized")]
+    UnrecognizedDmaCmd,
+    #[error("Operation was not successful")]
+    OpUnsuccessful,
+}
+
+struct Entries<'a> {
+    iter: btree_map::Iter<'a, String, u16>,
+    entries: &'a BTreeMap<u16, (Entry, String)>,
+}
+impl<'a> Iterator for Entries<'a> {
+    type Item = (u16, &'a str, &'a Entry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (name, selector) = self.iter.next()?;
+        let (entry, _name) = self.entries.get(selector).unwrap();
+        debug_assert_eq!(name, _name);
+        Some((*selector, name, entry))
+    }
+}
+
+struct State {
+    directory: Directory,
+
+    selected: Option<SelectedEntry>,
+
+    dma_addr_high: u32,
+    dma_addr_low: u32,
+
+    /// RamFB device associated with any [Entry::RamFb] type entry(s)
+    ramfb: Option<Arc<RamFb>>,
+}
+impl State {
+    fn dma_addr(&self) -> u64 {
+        u64::from(self.dma_addr_high) << 32 | u64::from(self.dma_addr_low)
+    }
+    fn reset(&mut self) {
+        self.selected = None;
+        self.dma_addr_high = 0;
+        self.dma_addr_low = 0;
+    }
+}
+struct SelectedEntry {
     selector: u16,
     offset: u32,
-}
-impl AccessState {
-    fn dma_addr(&self) -> u64 {
-        u64::from(self.addr_high) << 32 | u64::from(self.addr_low)
-    }
+    cached_value: Option<Vec<u8>>,
 }
 
 pub struct FwCfg {
-    dir: ItemDir,
-    state: Mutex<AccessState>,
+    state: Mutex<State>,
     acc_mem: MemAccessor,
 }
 impl FwCfg {
-    fn new(dir: ItemDir) -> Self {
-        Self {
-            dir,
-            state: Mutex::new(Default::default()),
+    /// Create a new `fw_cfg` device and populate it with the basic minimum
+    /// entries ([LegacyId::Signature], [LegacyId::Id], [LegacyId::FileDir]).
+    pub fn new() -> Arc<Self> {
+        let mut directory = Directory::new();
+
+        directory
+            .insert_legacy(
+                LegacyId::Signature,
+                Entry::Bytes(SIGNATURE_VALUE.to_vec()),
+            )
+            .unwrap();
+        directory
+            .insert_legacy(
+                LegacyId::Id,
+                Entry::fixed_u32(FW_CFG_VER_BASE | FW_CFG_VER_DMA),
+            )
+            .unwrap();
+        directory.insert_legacy(LegacyId::FileDir, Entry::FileDir).unwrap();
+
+        Arc::new(Self {
+            state: Mutex::new(State {
+                directory,
+                selected: None,
+
+                dma_addr_high: 0,
+                dma_addr_low: 0,
+
+                ramfb: None,
+            }),
             acc_mem: MemAccessor::new_orphan(),
-        }
+        })
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus, acc_mem: &MemAccessor) {
@@ -396,259 +310,369 @@ impl FwCfg {
             (FW_CFG_IOP_DMA_LO, 4),
         ];
         let this = self.clone();
-        let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
-            as Arc<PioFn>;
+        let piofn = Arc::new(move |port: u16, rwo: RWOp| match rwo {
+            RWOp::Read(ro) => this.pio_read(port, ro),
+            RWOp::Write(wo) => this.pio_write(port, wo),
+        }) as Arc<PioFn>;
         for (port, len) in ports.iter() {
             pio.register(*port, *len, piofn.clone()).unwrap()
         }
     }
 
-    fn pio_rw(&self, port: u16, rwo: RWOp) {
+    /// Change the [RamFb] attachment for any [Entry::RamFb] entry(s)
+    pub fn attach_ramfb(
+        &self,
+        ramfb: Option<Arc<RamFb>>,
+    ) -> Option<Arc<RamFb>> {
+        let mut state = self.state.lock().unwrap();
+        std::mem::replace(&mut state.ramfb, ramfb)
+    }
+
+    /// Insert entry using [LegacyId] identifier (and its appropriately derived
+    /// name)
+    pub fn insert_legacy(
+        &self,
+        id: LegacyId,
+        entry: Entry,
+    ) -> Result<(), InsertError> {
+        let mut state = self.state.lock().unwrap();
+        state.directory.insert_legacy(id, entry)
+    }
+    /// Insert entry with specified `name`
+    ///
+    /// Note: Per the qemu docs for `fw_cfg`, the chosen `name` should be ASCII
+    pub fn insert_named(
+        &self,
+        name: &str,
+        entry: Entry,
+    ) -> Result<u16, InsertError> {
+        let mut state = self.state.lock().unwrap();
+        let selector = state
+            .directory
+            .next_named_selector()
+            .ok_or(InsertError::NoCapacity)?;
+        state.directory.insert(selector, name.to_owned(), entry)?;
+        Ok(selector)
+    }
+
+    pub fn remove(&self, selector: u16) -> Option<Entry> {
+        let mut state = self.state.lock().unwrap();
+        let entry = state.directory.remove(selector)?;
+        Self::ensure_valid_selected(&mut state);
+        Some(entry)
+    }
+    pub fn remove_named(&self, name: &str) -> Option<Entry> {
+        let mut state = self.state.lock().unwrap();
+        let selector = state.directory.named_selector(name)?;
+        let entry = state
+            .directory
+            .remove(selector)
+            .expect("entry is present for translated selector");
+        Self::ensure_valid_selected(&mut state);
+        Some(entry)
+    }
+
+    /// Ensure that the selected entry (if any) is still valid after a change to
+    /// the directory, clearing the selection if there was trouble.
+    ///
+    /// This should not happen unless the VMM chooses to remove an item which
+    /// the running guest had selected.  Doing so is rather unsporting.
+    fn ensure_valid_selected(state: &mut MutexGuard<State>) {
+        let selector = match state.selected.as_ref() {
+            None => {
+                return;
+            }
+            Some(s) => s.selector,
+        };
+        if state.directory.entry(selector).is_none() {
+            state.selected = None;
+        }
+    }
+
+    fn pio_read(&self, port: u16, ro: &mut ReadOp) {
         let mut state = self.state.lock().unwrap();
         match port {
-            FW_CFG_IOP_SELECTOR => match rwo {
-                RWOp::Read(ro) => match ro.len() {
-                    2 => ro.write_u16(state.selector),
-                    1 => ro.write_u8(state.selector as u8),
-                    _ => {}
-                },
-                RWOp::Write(wo) => {
-                    match wo.len() {
-                        2 => state.selector = wo.read_u16(),
-                        1 => state.selector = u16::from(wo.read_u8()),
-                        _ => {}
-                    }
-                    state.offset = 0;
+            FW_CFG_IOP_SELECTOR => {
+                if ro.len() == 2 {
+                    let selector = state
+                        .selected
+                        .as_ref()
+                        .map(|s| s.selector)
+                        .unwrap_or(ITEM_INVALID);
+                    ro.write_u16(selector);
+                } else {
+                    ro.fill(0);
                 }
-            },
+            }
             FW_CFG_IOP_DATA => {
-                match rwo {
-                    RWOp::Read(mut ro) => {
-                        if ro.len() != 1 {
-                            ro.fill(0);
-                            return;
-                        }
+                if ro.len() != 1 {
+                    ro.fill(0);
+                    return;
+                }
 
-                        let res = self.xfer(
-                            state.selector,
-                            RWOp::Read(&mut ReadOp::new_child(
-                                state.offset as usize,
-                                &mut ro,
-                                0..1,
-                            )),
-                        );
-                        if res.is_err() {
-                            ro.write_u8(0);
-                        }
-                        state.offset = state.offset.saturating_add(1);
-                    }
-                    RWOp::Write(_wo) => {
-                        // XXX: ignore writes to data area
+                match self.read(&mut state, &mut ReadOp::new_child(0, ro, 0..1))
+                {
+                    Ok(1) => {}
+                    Ok(_) | Err(_) => {
+                        ro.write_u8(0);
                     }
                 }
             }
-            FW_CFG_IOP_DMA_HI => match rwo {
-                RWOp::Read(ro) => {
-                    if ro.len() != 4 {
-                        ro.fill(0);
-                    } else {
-                        ro.write_u32(state.addr_high.to_be());
-                    }
+            FW_CFG_IOP_DMA_HI => {
+                if ro.len() == 4 {
+                    ro.write_u32(state.dma_addr_high.to_be());
+                } else {
+                    ro.fill(0);
                 }
-                RWOp::Write(wo) => {
-                    if wo.len() == 4 {
-                        state.addr_high = u32::from_be(wo.read_u32());
-                    }
+            }
+            FW_CFG_IOP_DMA_LO => {
+                if ro.len() == 4 {
+                    ro.write_u32(state.dma_addr_low.to_be());
+                } else {
+                    ro.fill(0);
                 }
-            },
-            FW_CFG_IOP_DMA_LO => match rwo {
-                RWOp::Read(ro) => {
-                    if ro.len() != 4 {
-                        ro.fill(0);
-                    } else {
-                        ro.write_u32(state.addr_low.to_be());
-                    }
-                }
-                RWOp::Write(wo) => {
-                    if wo.len() == 4 {
-                        state.addr_low = u32::from_be(wo.read_u32());
-                        let _ = self.dma_initiate(state);
-                    }
-                }
-            },
+            }
             _ => {
                 panic!("unexpected port {:x}", port);
             }
         }
     }
 
-    fn xfer(&self, selector: u16, rwo: RWOp) -> Result {
-        if selector == LegacyId::FileDir as u16 {
-            if let RWOp::Read(ro) = rwo {
-                self.dir.read(ro)
-            } else {
-                Err("filedir not writable")
+    fn pio_write(&self, port: u16, wo: &mut WriteOp) {
+        let mut state = self.state.lock().unwrap();
+        match port {
+            FW_CFG_IOP_SELECTOR => {
+                if wo.len() == 2 {
+                    self.select(&mut state, wo.read_u16())
+                }
             }
-        } else if let Some(item) = self.dir.entries.get(&selector) {
-            item.content.fwcfg_rw(rwo)
-        } else {
-            Err("entry not found")
+            FW_CFG_IOP_DATA => {
+                // Writes through the legacy (non-DMA) interface are not
+                // supported, and thus ignored.
+            }
+            FW_CFG_IOP_DMA_HI => {
+                if wo.len() == 4 {
+                    state.dma_addr_high = u32::from_be(wo.read_u32());
+                }
+            }
+            FW_CFG_IOP_DMA_LO => {
+                if wo.len() == 4 {
+                    state.dma_addr_low = u32::from_be(wo.read_u32());
+                    let _ = self.dma_initiate(&mut state);
+                }
+            }
+            _ => {
+                panic!("unexpected port {:x}", port);
+            }
         }
     }
 
-    fn size(&self, selector: u16) -> u32 {
-        if selector == LegacyId::FileDir as u16 {
-            self.dir.size()
-        } else if let Some(item) = self.dir.entries.get(&selector) {
-            item.content.size()
-        } else {
-            0
+    fn select(&self, state: &mut MutexGuard<State>, selector: u16) {
+        let _ = state.selected.take();
+        if let Some(entry) = state.directory.entry(selector) {
+            let value_buffer = match entry {
+                // Cache the rendered file directory, if selected
+                Entry::FileDir => Some(state.directory.render()),
+                Entry::RamFb | Entry::Bytes(_) => None,
+            };
+            state.selected = Some(SelectedEntry {
+                selector,
+                offset: 0,
+                cached_value: value_buffer,
+            });
         }
     }
 
-    fn dma_initiate(&self, mut state: MutexGuard<AccessState>) -> Result {
-        let req_addr = state.dma_addr();
+    fn read(
+        &self,
+        state: &mut MutexGuard<State>,
+        ro: &mut ReadOp,
+    ) -> Result<usize, FwCfgErr> {
+        let state = state.deref_mut();
+
+        // Reads to a non-existent entry result in no emitted bytes (and the
+        // caller filling the remaining buffer with zeros).  This is in contrast
+        // to attempted writes to missing entries resulting in a hard error.
+        if state.selected.is_none() {
+            return Ok(0);
+        }
+        let selected = state.selected.as_mut().unwrap();
+
+        let entry = state
+            .directory
+            .entry(selected.selector)
+            .expect("selected entry is present");
+        // Encode the current offset into the ReadOp (as a child)
+        let mut ro = ReadOp::new_child(selected.offset as usize, ro, ..);
+
+        fn write_buf(buf: &[u8], ro: &mut ReadOp) -> usize {
+            let off = ro.offset();
+            if off >= buf.len() {
+                0
+            } else {
+                let remain = &buf[off..];
+                let copy_len = usize::min(remain.len(), ro.avail());
+
+                ro.write_bytes(&remain[..copy_len]);
+                copy_len
+            }
+        }
+
+        let len = if let Some(buf) = selected.cached_value.as_ref() {
+            write_buf(buf, &mut ro)
+        } else {
+            match entry {
+                Entry::RamFb => {
+                    if let Some(ramfb) = state.ramfb.as_ref() {
+                        ramfb
+                            .fwcfg_rw(RWOp::Read(&mut ro))
+                            .map_err(|_| FwCfgErr::OpUnsuccessful)?;
+                        ro.bytes_written()
+                    } else {
+                        0
+                    }
+                }
+                Entry::Bytes(buf) => write_buf(&buf, &mut ro),
+                Entry::FileDir => {
+                    panic!("expected intact cached buffer for static entry");
+                }
+            }
+        };
+        selected.offset = selected
+            .offset
+            .checked_add(len as u32)
+            .expect("offset does not overflow");
+        Ok(len)
+    }
+
+    fn write(
+        &self,
+        state: &mut MutexGuard<State>,
+        wo: &mut WriteOp,
+    ) -> Result<usize, FwCfgErr> {
+        let state = state.deref_mut();
+        let selected = state.selected.as_mut().ok_or(FwCfgErr::NoneSelected)?;
+        let entry = state
+            .directory
+            .entry(selected.selector)
+            .expect("selected entry is present");
+        // Encode the current offset into the WriteOp (as a child)
+        let mut wo = WriteOp::new_child(selected.offset as usize, wo, ..);
+
+        let len = match entry {
+            Entry::FileDir | Entry::Bytes(_) => Err(FwCfgErr::ReadOnly),
+            Entry::RamFb => {
+                if let Some(ramfb) = state.ramfb.as_ref() {
+                    ramfb
+                        .fwcfg_rw(RWOp::Write(&mut wo))
+                        .map_err(|_| FwCfgErr::OpUnsuccessful)?;
+                    Ok(wo.bytes_read())
+                } else {
+                    Ok(0)
+                }
+            }
+        }?;
+        selected.offset = selected
+            .offset
+            .checked_add(len as u32)
+            .expect("offset does not overflow");
+        Ok(len)
+    }
+
+    fn dma_initiate(
+        &self,
+        state: &mut MutexGuard<State>,
+    ) -> Result<(), FwCfgErr> {
         // initiating a DMA transfer clears the addr contents
-        state.addr_high = 0;
-        state.addr_low = 0;
+        let addr = state.dma_addr();
+        state.dma_addr_high = 0;
+        state.dma_addr_low = 0;
 
-        let mut desc_buf = [0u8; FwCfgDmaReq::sizeof()];
-        let mem = self.acc_mem.access().expect("usable mem accessor");
-        mem.read_into(
-            GuestAddr(req_addr),
-            &mut desc_buf,
-            FwCfgDmaReq::sizeof(),
-        )
-        .ok_or("bad GPA")?;
+        let mem_guard = self.acc_mem.access().expect("usable mem accessor");
+        let mem = mem_guard.deref();
+        let req: FwCfgDmaAccess =
+            mem.read(GuestAddr(addr)).ok_or(FwCfgErr::BadAddr)?;
 
-        let dma_req = FwCfgDmaReq::from_bytes(&desc_buf);
-
-        let res = self.dma_operation(state, &dma_req, &mem);
-
-        if !mem.write(
-            GuestAddr(req_addr),
-            &match res {
-                Ok(_) => 0,
-                Err(_) => u32::to_be(FwCfgDmaCtrl::ERROR.bits()),
-            },
+        fn dma_write_result(
+            is_success: bool,
+            req_addr: GuestAddr,
+            mem: &MemCtx,
         ) {
-            return Err("bad GPA");
+            let result_val = match is_success {
+                true => 0,
+                false => u32::to_be(FwCfgDmaCtrl::ERROR.bits()),
+            };
+            mem.write(req_addr, &result_val);
         }
-        res
+
+        // Do we recognize all of the control bits?
+        //
+        // The upper 16 bits are masked out, as they will contain the entry
+        // selector when the SELECT function is specified.
+        if FwCfgDmaCtrl::from_bits(req.ctrl.get() & 0xffff).is_none() {
+            dma_write_result(false, GuestAddr(addr), mem);
+            return Err(FwCfgErr::UnrecognizedDmaCmd);
+        }
+
+        let res = self.dma_operation(state, req, mem);
+
+        dma_write_result(res.is_ok(), GuestAddr(addr), mem);
+        Ok(())
     }
+
     fn dma_operation(
         &self,
-        mut state: MutexGuard<AccessState>,
-        dma_req: &FwCfgDmaReq,
+        state: &mut MutexGuard<State>,
+        req: FwCfgDmaAccess,
         mem: &MemCtx,
-    ) -> Result {
-        let mut ctrl = FwCfgDmaCtrl::from_bits_truncate(dma_req.ctrl);
-        if ctrl.contains(FwCfgDmaCtrl::ERROR) {
-            return Err("request already in error");
+    ) -> Result<(), FwCfgErr> {
+        let opts = FwCfgDmaCtrl::from_bits_truncate(req.ctrl.get());
+        if opts.contains(FwCfgDmaCtrl::SELECT) {
+            let selector = (req.ctrl.get() >> 16) as u16;
+            self.select(state, selector);
         }
 
-        if ctrl.contains(FwCfgDmaCtrl::SELECT) {
-            let selector = (dma_req.ctrl >> 16) as u16;
-            state.selector = selector;
-            state.offset = 0;
-            if !self.dir.is_present(selector) {
-                return Err("selector not found");
-            }
-            ctrl.remove(FwCfgDmaCtrl::SELECT);
-        }
-
-        let end_offset = if ctrl.intersects(
-            FwCfgDmaCtrl::READ | FwCfgDmaCtrl::WRITE | FwCfgDmaCtrl::SKIP,
-        ) {
-            state.offset.checked_add(dma_req.len).ok_or("offset overflow")?
-        } else {
-            state.offset
-        };
-
-        // match the same command precedence as qemu (read, write, skip)
-        if ctrl.contains(FwCfgDmaCtrl::READ) {
-            let res = self.dma_read(
-                state.selector,
-                dma_req.addr,
-                state.offset,
-                dma_req.len,
-                mem,
-            );
-            if res.is_err() {
-                return res;
-            }
-        } else if ctrl.contains(FwCfgDmaCtrl::WRITE) {
-            let res = self.dma_write(
-                state.selector,
-                dma_req.addr,
-                state.offset,
-                dma_req.len,
-                mem,
-            );
-            if res.is_err() {
-                return res;
-            }
-        }
-        state.offset = end_offset;
-        Ok(())
-    }
-    fn dma_read(
-        &self,
-        selector: u16,
-        addr: u64,
-        offset: u32,
-        len: u32,
-        mem: &MemCtx,
-    ) -> Result {
-        let valid_remain = self.size(selector).saturating_sub(offset);
-
-        let written = if valid_remain > 0 {
-            let to_write = len.min(valid_remain);
-            let mapping = mem
+        // The expressed precedence of the available operations here is entirely
+        // intentional.  Per the (paraphrased) fw_cfg documentation in qemu:
+        //
+        // - If the READ bit is set, a read operation will be performed
+        // - If the WRITE bit is set (and not READ), a write operation will
+        //   be performed
+        // - If the SKIP bit is set (and neither READ nor WRITE), a skip
+        //   operation will be performed
+        if opts.contains(FwCfgDmaCtrl::READ) {
+            let buf_len = req.len.get() as usize;
+            let map = mem
                 .writable_region(&GuestRegion(
-                    GuestAddr(addr),
-                    to_write as usize,
+                    GuestAddr(req.addr.get()),
+                    buf_len,
                 ))
-                .ok_or("bad GPA")?;
+                .ok_or(FwCfgErr::BadAddr)?;
+            let mut ro = ReadOp::from_mapping(0, map);
 
-            let mut ro = ReadOp::from_mapping(offset as usize, mapping);
-            self.xfer(selector, RWOp::Read(&mut ro))?;
-            to_write
-        } else {
-            0
-        };
-
-        // write zeroes for everything past the end of the data
-        if written < len {
-            mem.write_byte(
-                GuestAddr(addr + u64::from(written)),
-                0,
-                (len - written) as usize,
-            );
-        }
-        Ok(())
-    }
-    fn dma_write(
-        &self,
-        selector: u16,
-        addr: u64,
-        offset: u32,
-        len: u32,
-        mem: &MemCtx,
-    ) -> Result {
-        let valid_remain = self.size(selector).saturating_sub(offset);
-
-        if valid_remain > 0 {
-            let to_read = len.min(valid_remain);
-            let mapping = mem
+            let nread = self.read(state, &mut ro)?;
+            if nread < buf_len {
+                // If the item being read did not cover the entire DMA region in
+                // the request, zero out the rest
+                assert!(ro.avail() > 0);
+                ro.fill(0);
+            }
+        } else if opts.contains(FwCfgDmaCtrl::WRITE) {
+            let buf_len = req.len.get() as usize;
+            let map = mem
                 .readable_region(&GuestRegion(
-                    GuestAddr(addr),
-                    to_read as usize,
+                    GuestAddr(req.addr.get()),
+                    buf_len,
                 ))
-                .ok_or("bad GPA")?;
-            let mut wo = WriteOp::from_mapping(offset as usize, mapping);
-            self.xfer(selector, RWOp::Write(&mut wo))?;
+                .ok_or(FwCfgErr::BadAddr)?;
+            let mut wo = WriteOp::from_mapping(0, map);
+            self.write(state, &mut wo)?;
+        } else if opts.contains(FwCfgDmaCtrl::SKIP) {
+            if let Some(selected) = state.selected.as_mut() {
+                selected.offset = selected.offset.saturating_add(req.len.get());
+            }
         }
+
         Ok(())
     }
 }
@@ -660,34 +684,63 @@ impl Lifecycle for FwCfg {
     fn migrate(&self) -> Migrator {
         Migrator::Single(self)
     }
+    fn reset(&self) {
+        self.state.lock().unwrap().reset();
+    }
 }
 impl MigrateSingle for FwCfg {
     fn export(
         &self,
         _ctx: &MigrateCtx,
-    ) -> std::result::Result<PayloadOutput, MigrateStateError> {
+    ) -> Result<PayloadOutput, MigrateStateError> {
         let state = self.state.lock().unwrap();
-        Ok(migrate::FwCfgV1 {
-            dma_addr: state.dma_addr(),
-            selector: state.selector,
-            offset: state.offset,
-        }
-        .into())
+        let selected =
+            state.selected.as_ref().map(|sel| migrate::FwCfgSelectedV2 {
+                selector: sel.selector,
+                offset: sel.offset,
+                cached_value: sel.cached_value.clone(),
+            });
+        let entries = state
+            .directory
+            .entries()
+            .map(|(selector, name, entry)| migrate::FwCfgEntryV2 {
+                selector,
+                name: name.to_owned(),
+                value: entry.into(),
+            })
+            .collect::<Vec<_>>();
+
+        Ok(migrate::FwCfgV2 { dma_addr: state.dma_addr(), selected, entries }
+            .into())
     }
 
     fn import(
         &self,
         mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
-    ) -> std::result::Result<(), MigrateStateError> {
-        let data: migrate::FwCfgV1 = offer.parse()?;
+    ) -> Result<(), MigrateStateError> {
+        let mut data: migrate::FwCfgV2 = offer.parse()?;
 
-        let mut inner = self.state.lock().unwrap();
-        inner.addr_low = data.dma_addr as u32;
-        inner.addr_high = (data.dma_addr >> 32) as u32;
-        inner.selector = data.selector;
-        inner.offset = data.offset;
+        let mut state = self.state.lock().unwrap();
+        state.dma_addr_low = data.dma_addr as u32;
+        state.dma_addr_high = (data.dma_addr >> 32) as u32;
+        state.selected = data.selected.take().map(|s| SelectedEntry {
+            selector: s.selector,
+            offset: s.offset,
+            cached_value: s.cached_value,
+        });
 
+        state.directory.clear();
+        for migrate::FwCfgEntryV2 { selector, name, value } in data.entries {
+            state.directory.insert(selector, name, value.into()).map_err(
+                |e| {
+                    MigrateStateError::ImportFailed(format!(
+                        "error importing fwcfg entry: {e:?}"
+                    ))
+                },
+            )?;
+        }
+        Self::ensure_valid_selected(&mut state);
         Ok(())
     }
 }
@@ -698,20 +751,62 @@ pub mod migrate {
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, Serialize)]
-    pub struct FwCfgV1 {
+    pub struct FwCfgV2 {
         pub dma_addr: u64,
+        pub selected: Option<FwCfgSelectedV2>,
+        pub entries: Vec<FwCfgEntryV2>,
+    }
+    #[derive(Deserialize, Serialize)]
+    pub struct FwCfgSelectedV2 {
         pub selector: u16,
         pub offset: u32,
+        pub cached_value: Option<Vec<u8>>,
     }
-    impl Schema<'_> for FwCfgV1 {
+    #[derive(Deserialize, Serialize)]
+    pub struct FwCfgEntryV2 {
+        pub selector: u16,
+        pub name: String,
+        pub value: FwCfgEntryValueV2,
+    }
+    #[derive(Deserialize, Serialize, Clone)]
+    pub enum FwCfgEntryValueV2 {
+        FileDir,
+        RamFb,
+        Bytes(Vec<u8>),
+    }
+    impl From<&super::Entry> for FwCfgEntryValueV2 {
+        fn from(value: &super::Entry) -> Self {
+            match value {
+                super::Entry::FileDir => Self::FileDir,
+                super::Entry::RamFb => Self::RamFb,
+                super::Entry::Bytes(buf) => Self::Bytes(buf.clone()),
+            }
+        }
+    }
+    impl From<FwCfgEntryValueV2> for super::Entry {
+        fn from(value: FwCfgEntryValueV2) -> Self {
+            match value {
+                FwCfgEntryValueV2::FileDir => Self::FileDir,
+                FwCfgEntryValueV2::RamFb => Self::RamFb,
+                FwCfgEntryValueV2::Bytes(buf) => Self::Bytes(buf),
+            }
+        }
+    }
+
+    impl Schema<'_> for FwCfgV2 {
         fn id() -> SchemaId {
-            ("qemu-fwcfg", 1)
+            ("qemu-fwcfg", 2)
         }
     }
 }
 
 mod bits {
     #![allow(unused)]
+
+    use zerocopy::byteorder::big_endian::{
+        U16 as BE16, U32 as BE32, U64 as BE64,
+    };
+    use zerocopy::AsBytes;
 
     pub const FW_CFG_IOP_SELECTOR: u16 = 0x0510;
     pub const FW_CFG_IOP_DATA: u16 = 0x0511;
@@ -738,4 +833,214 @@ mod bits {
     }
 
     pub const FWCFG_FILENAME_LEN: usize = 56;
+
+    #[derive(AsBytes)]
+    #[repr(C)]
+    pub struct FwCfgFile {
+        size: BE32,
+        select: BE16,
+        reserved: u16,
+        name: [u8; FWCFG_FILENAME_LEN],
+    }
+    impl FwCfgFile {
+        pub fn new(size: u32, select: u16, name: &str) -> Self {
+            let name_len = name.as_bytes().len();
+            assert!(name_len < FWCFG_FILENAME_LEN);
+
+            let mut this = Self {
+                size: BE32::new(size),
+                select: BE16::new(select),
+                reserved: 0,
+                name: [0; FWCFG_FILENAME_LEN],
+            };
+            this.name[..name_len].copy_from_slice(name.as_bytes());
+            this
+        }
+    }
+
+    #[derive(AsBytes, Default, Copy, Clone, Debug)]
+    #[repr(C)]
+    pub struct FwCfgDmaAccess {
+        pub ctrl: BE32,
+        pub len: BE32,
+        pub addr: BE64,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use crate::accessors::Accessor;
+    use crate::common::GuestAddr;
+    use crate::vmm::Machine;
+
+    use zerocopy::{AsBytes, FromBytes};
+
+    fn pio_write<T: AsBytes>(dev: &FwCfg, port: u16, data: T) {
+        let buf = data.as_bytes();
+        let mut wo = WriteOp::from_buf(0, buf);
+        dev.pio_write(port, &mut wo);
+    }
+    fn pio_read<T: AsBytes + FromBytes + Copy + Default>(
+        dev: &FwCfg,
+        port: u16,
+    ) -> T {
+        let mut val = T::default();
+        let mut ro = ReadOp::from_buf(0, val.as_bytes_mut());
+        dev.pio_read(port, &mut ro);
+        drop(ro);
+        val
+    }
+    fn pio_read_data<T: AsBytes + FromBytes + Copy + Default>(
+        dev: &FwCfg,
+    ) -> T {
+        let mut val = T::default();
+        for c in val.as_bytes_mut().iter_mut() {
+            *c = pio_read(dev, FW_CFG_IOP_DATA);
+        }
+        val
+    }
+
+    #[test]
+    fn struct_sizing() {
+        assert_eq!(std::mem::size_of::<FwCfgFile>(), 64);
+        assert_eq!(std::mem::size_of::<FwCfgDmaAccess>(), 16);
+    }
+
+    #[test]
+    fn pio_read_basic() {
+        let dev = FwCfg::new();
+
+        pio_write(&dev, FW_CFG_IOP_SELECTOR, LegacyId::Signature as u16);
+        let rbuf = pio_read_data::<[u8; 4]>(&dev);
+
+        assert_eq!(&rbuf, "QEMU".as_bytes());
+
+        pio_write(&dev, FW_CFG_IOP_SELECTOR, LegacyId::Id as u16);
+        let _rbuf = pio_read_data::<[u8; 4]>(&dev);
+    }
+    #[test]
+    fn pio_read_missing() {
+        let dev = FwCfg::new();
+
+        pio_write(&dev, FW_CFG_IOP_SELECTOR, 0xfffe);
+        let rbuf = pio_read_data::<[u8; 4]>(&dev);
+        // missing entry should just be all zeroes
+        assert_eq!(rbuf, [0u8; 4]);
+    }
+
+    #[test]
+    fn read_version() {
+        let dev = FwCfg::new();
+
+        pio_write(&dev, FW_CFG_IOP_SELECTOR, LegacyId::Id as u16);
+
+        let rbuf = pio_read_data::<[u8; 4]>(&dev);
+        let version = u32::from_ne_bytes(rbuf);
+        assert_eq!(version, FW_CFG_VER_BASE | FW_CFG_VER_DMA);
+    }
+
+    fn machine_setup() -> (Machine, Arc<FwCfg>, Accessor<MemCtx>) {
+        let machine = Machine::new_test().unwrap();
+
+        let dev = FwCfg::new();
+        dev.attach(&machine.bus_pio, &machine.acc_mem);
+
+        let acc_mem = machine.acc_mem.child(None);
+
+        (machine, dev, acc_mem)
+    }
+
+    struct DmaReq {
+        ctrl: u32,
+        len: u32,
+        addr: u64,
+    }
+    fn write_dma_req(mem: &MemCtx, req_addr: u64, req: DmaReq) {
+        mem.write(GuestAddr(req_addr), &u32::to_be(req.ctrl));
+        mem.write(GuestAddr(req_addr + 4), &u32::to_be(req.len));
+        mem.write(GuestAddr(req_addr + 8), &u64::to_be(req.addr));
+    }
+    fn submit_dma_req(dev: &FwCfg, req_addr: u64) {
+        pio_write(dev, FW_CFG_IOP_DMA_HI, u32::to_be((req_addr >> 32) as u32));
+        pio_write(dev, FW_CFG_IOP_DMA_LO, u32::to_be(req_addr as u32));
+    }
+
+    #[test]
+    fn dma_read_basic() {
+        let (_machine, dev, acc_mem) = machine_setup();
+        let mem = acc_mem.access().unwrap();
+
+        // Select signature entry and read 4 bytes
+        let (req_addr, dma_addr) = (0x10_1000, 0x10_2000);
+        write_dma_req(
+            &mem,
+            req_addr,
+            DmaReq {
+                ctrl: u32::from(LegacyId::Signature as u16) << 16 | 0x000a,
+                len: 4,
+                addr: dma_addr,
+            },
+        );
+        submit_dma_req(&dev, req_addr);
+
+        // DMA should have successfully completed now
+        assert_eq!(mem.read::<u32>(GuestAddr(req_addr)).unwrap(), 0);
+        let data = mem.read::<[u8; 4]>(GuestAddr(dma_addr)).unwrap();
+        assert_eq!(&data, "QEMU".as_bytes());
+    }
+
+    #[test]
+    fn dma_read_missing() {
+        let (_machine, dev, acc_mem) = machine_setup();
+        let mem = acc_mem.access().unwrap();
+
+        // Select missing entry and attempt to read 4 bytes
+        let (req_addr, dma_addr) = (0x10_1000, 0x10_2000);
+        write_dma_req(
+            &mem,
+            req_addr,
+            DmaReq { ctrl: 0xfffe << 16 | 0x000a, len: 4, addr: dma_addr },
+        );
+
+        // Put garbage at dma destination to confirm it gets overwritten
+        mem.write(GuestAddr(dma_addr), &[0xffu8; 4]);
+
+        submit_dma_req(&dev, req_addr);
+
+        // DMA should have successfully completed now
+        assert_eq!(mem.read::<u32>(GuestAddr(req_addr)).unwrap(), 0);
+        let data = mem.read::<[u8; 4]>(GuestAddr(dma_addr)).unwrap();
+        assert_eq!(data, [0u8; 4]);
+    }
+
+    #[test]
+    fn state_cleared_on_reset() {
+        let (_machine, dev, _acc_mem) = machine_setup();
+
+        // select an item
+        pio_write(&dev, FW_CFG_IOP_SELECTOR, LegacyId::Id as u16);
+
+        // ... and write the high DMA field
+        // (Since the low field would initiate the op)
+        let dma_val = 0x1234_5678;
+        pio_write(&dev, FW_CFG_IOP_DMA_HI, dma_val);
+
+        // Confirm those were set
+        assert_eq!(
+            LegacyId::Id as u16,
+            pio_read::<u16>(&dev, FW_CFG_IOP_SELECTOR)
+        );
+        assert_eq!(dma_val, pio_read::<u32>(&dev, FW_CFG_IOP_DMA_HI));
+
+        dev.reset();
+
+        //... and are cleared after the reset
+        assert_eq!(
+            bits::ITEM_INVALID,
+            pio_read::<u16>(&dev, FW_CFG_IOP_SELECTOR)
+        );
+        assert_eq!(0, pio_read::<u32>(&dev, FW_CFG_IOP_DMA_HI));
+    }
 }

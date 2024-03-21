@@ -3457,6 +3457,7 @@ dependencies = [
  "usdt 0.5.0",
  "uuid",
  "viona_api",
+ "zerocopy 0.7.34",
 ]
 
 [[package]]

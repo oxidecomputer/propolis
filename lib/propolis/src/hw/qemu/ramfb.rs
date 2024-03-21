@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::accessors::MemAccessor;
 use crate::common::*;
-use crate::hw::qemu::fwcfg::{self, FwCfgBuilder, Item};
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
 use crate::vmm::MemCtx;
@@ -22,7 +21,6 @@ enum Reg {
     Height,
     Stride,
 }
-const CFG_REGS_LEN: usize = 28;
 
 lazy_static! {
     static ref CFG_REGS: RegMap<Reg> = {
@@ -34,7 +32,7 @@ lazy_static! {
             (Reg::Height, 4),
             (Reg::Stride, 4),
         ];
-        RegMap::create_packed(CFG_REGS_LEN, &layout, None)
+        RegMap::create_packed(RamFb::FWCFG_ENTRY_SIZE, &layout, None)
     };
 }
 
@@ -47,6 +45,7 @@ fn fourcc_bytepp(fourcc: u32) -> Option<u32> {
 }
 
 #[derive(Default, Debug)]
+#[repr(C, packed)]
 pub struct Config {
     addr: u64,
     fourcc: u32,
@@ -102,6 +101,11 @@ pub struct RamFb {
     log: slog::Logger,
 }
 impl RamFb {
+    /// Size of the entry exposed via `fw_cfg` interface
+    pub const FWCFG_ENTRY_SIZE: usize = 28;
+
+    pub const FWCFG_ENTRY_NAME: &'static str = "etc/ramfb";
+
     pub fn create(log: slog::Logger) -> Arc<Self> {
         Arc::new(Self {
             config: Mutex::new(Config::default()),
@@ -110,15 +114,8 @@ impl RamFb {
             log,
         })
     }
-    pub fn attach(
-        self: &Arc<Self>,
-        builder: &mut FwCfgBuilder,
-        acc_mem: &MemAccessor,
-    ) {
+    pub fn attach(&self, acc_mem: &MemAccessor) {
         acc_mem.adopt(&self.acc_mem, Some("ramfb".to_string()));
-        builder
-            .add_named("etc/ramfb", Arc::clone(self) as Arc<dyn Item>)
-            .unwrap();
     }
     pub fn get_framebuffer_spec(&self) -> FramebufferSpec {
         self.config.lock().unwrap().get_framebuffer_spec()
@@ -127,16 +124,21 @@ impl RamFb {
         let mut locked = self.notify.lock().unwrap();
         *locked = Some(n);
     }
-}
-impl Item for RamFb {
-    fn size(&self) -> u32 {
-        CFG_REGS_LEN as u32
-    }
-    fn fwcfg_rw(&self, mut rwo: RWOp) -> fwcfg::Result {
+
+    pub(crate) fn fwcfg_rw(&self, mut rwo: RWOp) -> Result<(), ()> {
         let mem = self.acc_mem.access().expect("usable mem accessor");
         let mut config = self.config.lock().unwrap();
         let valid_before =
             if rwo.is_write() { config.verify(&mem).is_some() } else { false };
+
+        // Writes outside the bounds of the config register are not allowed
+        if let RWOp::Write(wo) = &rwo {
+            let start = wo.offset();
+            let end = start.saturating_add(wo.len());
+            if start >= Self::FWCFG_ENTRY_SIZE || end > Self::FWCFG_ENTRY_SIZE {
+                return Err(());
+            }
+        }
 
         CFG_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
@@ -242,5 +244,15 @@ pub mod migrate {
         fn id() -> SchemaId {
             ("qemu-ramfb", 1)
         }
+    }
+}
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::mem::size_of;
+
+    #[test]
+    fn config_reg_size() {
+        assert_eq!(size_of::<Config>(), RamFb::FWCFG_ENTRY_SIZE);
     }
 }
