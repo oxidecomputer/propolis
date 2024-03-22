@@ -28,13 +28,20 @@ pub trait IntrPin: Send + Sync + 'static {
         }
     }
 
-    /// Set the state of this interrupt pin *without* treating the state change
-    /// as an edge in the interrupt line.
+    /// Set the state of this interrupt pin when importing a guest.
+    /// This method differs from [`IntrPin::set_state`], as it updates the
+    /// internal accounting of the pin's state *without* notifying consumers of
+    /// the interrupt pin of a rising/falling edge. This is because it's called
+    /// during an import of a guest from a different VMM, which has *already*
+    /// observed the edge event; this VMM is just updating its internal state to
+    /// match the imported state.
     ///
-    /// Implementations of this method should update any userspace accounting of
-    /// the interrupt pin state, but should *not* actually simulate a
-    /// rising/falling edge in the guest. This method is intended for use when
-    /// importing a guest.
+    /// For example, when importing a guest which currently has a [`LegacyPIC`]
+    /// pin asserted, `import_state` will not call the `ioctl` that asserts that
+    /// pin in the kernel VMM, while [`IntrPin::set_state`] would. This is
+    /// important, as the kernel-emulated interrupt state is imported separately
+    /// from the userspace state, so calling [`IntrPin::set_state`] would result
+    /// in inconsistent state between the kernel and userspace.
     fn import_state(&self, is_asserted: bool);
 }
 
