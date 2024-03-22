@@ -28,6 +28,13 @@ pub trait IntrPin: Send + Sync + 'static {
         }
     }
 
+    /// Set the state of this interrupt pin *without* treating the state change
+    /// as an edge in the interrupt line.
+    ///
+    /// Implementations of this method should update any userspace accounting of
+    /// the interrupt pin state, but should *not* actually simulate a
+    /// rising/falling edge in the guest. This method is intended for use when
+    /// importing a guest.
     fn import_state(&self, is_asserted: bool);
 }
 
@@ -214,10 +221,10 @@ impl IntrPin for FuncPin {
     }
     fn import_state(&self, is_asserted: bool) {
         let mut inner = self.0.lock().unwrap();
-        if inner.level != is_asserted {
-            inner.level = is_asserted;
-            (inner.func)(inner.level);
-        }
+        // Set the state to the imported state without calling the function ---
+        // presumably, whatever the function does already happened prior to the
+        // import.
+        inner.level = is_asserted;
     }
 }
 struct FPInner {
