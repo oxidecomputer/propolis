@@ -32,7 +32,7 @@ pub trait IntrPin: Send + Sync + 'static {
     /// as an edge in the interrupt line. Used when importing a guest.
     ///
     /// This method differs from [`IntrPin::set_state`], as it updates the
-    /// internal accounting of the pin's state *without* notifying consumers of
+    /// internal accounting of the pin's state without notifying consumers of
     /// the interrupt pin of a rising/falling edge. This is because it's called
     /// during an import of a guest from a different VMM, which has *already*
     /// observed the edge event; this VMM is just updating its internal state to
