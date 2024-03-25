@@ -189,6 +189,8 @@ impl MigrateSingle for LpcUart {
     ) -> Result<(), MigrateStateError> {
         let data = offer.parse::<migrate::Uart16550V1>()?;
         let mut state = self.state.lock().unwrap();
-        state.uart.import(&data)
+        state.uart.import(&data)?;
+        state.irq_pin.import_state(state.uart.intr_state());
+        Ok(())
     }
 }
