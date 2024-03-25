@@ -28,7 +28,9 @@ pub trait IntrPin: Send + Sync + 'static {
         }
     }
 
-    /// Set the state of this interrupt pin when importing a guest.
+    /// Set the state of this interrupt pin *without* treating the state change
+    /// as an edge in the interrupt line. Used when importing a guest.
+    ///
     /// This method differs from [`IntrPin::set_state`], as it updates the
     /// internal accounting of the pin's state *without* notifying consumers of
     /// the interrupt pin of a rising/falling edge. This is because it's called
