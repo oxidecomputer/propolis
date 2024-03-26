@@ -296,12 +296,7 @@ impl DropshotEndpointContext {
             self.services.vm.lock().await,
             VmControllerState::as_controller,
         )
-        .map_err(|_| {
-            HttpError::for_not_found(
-                None,
-                "Server not initialized (no instance)".to_string(),
-            )
-        })
+        .map_err(|_| not_created_error())
     }
 }
 
@@ -785,10 +780,7 @@ async fn instance_get_common(
 ) -> Result<(api::Instance, VersionedInstanceSpec), HttpError> {
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(HttpError::for_not_found(
-            None,
-            "Server not initialized (no instance)".to_string(),
-        )),
+        VmControllerState::NotCreated => Err(not_created_error()),
         VmControllerState::Created(vm) => {
             Ok((
                 api::Instance {
@@ -862,10 +854,7 @@ async fn instance_state_monitor(
         let vm_state = ctx.services.vm.lock().await;
         match &*vm_state {
             VmControllerState::NotCreated => {
-                return Err(HttpError::for_not_found(
-                    None,
-                    "Server not initialized (no instance)".to_string(),
-                ));
+                return Err(not_created_error());
             }
             VmControllerState::Created(vm) => vm.state_watcher().clone(),
             VmControllerState::Destroyed { state_watcher, .. } => {
@@ -885,12 +874,13 @@ async fn instance_state_monitor(
         // means it will never reach the number the client wants it to reach.
         // Inform the client of this condition so it doesn't wait forever.
         state_watcher.changed().await.map_err(|_| {
-            HttpError::for_status(
-                Some(format!(
+            HttpError::for_client_error(
+                Some(NO_INSTANCE.to_string()),
+                http::status::StatusCode::GONE,
+                format!(
                     "No instance present; will never reach generation {}",
                     gen
-                )),
-                http::status::StatusCode::GONE,
+                ),
             )
         })?;
     }
@@ -1046,10 +1036,7 @@ async fn instance_migrate_status(
     let migration_id = path_params.into_inner().migration_id;
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(HttpError::for_not_found(
-            None,
-            "Server not initialized (no instance)".to_string(),
-        )),
+        VmControllerState::NotCreated => Err(not_created_error()),
         VmControllerState::Created(vm) => {
             vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
                 HttpResponseOk(api::InstanceMigrateStatusResponse {
@@ -1204,6 +1191,16 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     api.register(instance_issue_nmi).unwrap();
 
     api
+}
+
+const NO_INSTANCE: &str = "NO_INSTANCE";
+
+fn not_created_error() -> HttpError {
+    HttpError::for_client_error(
+        Some(NO_INSTANCE.to_string()),
+        http::StatusCode::FAILED_DEPENDENCY,
+        "Server not initialized (no instance)".to_string(),
+    )
 }
 
 #[cfg(test)]
