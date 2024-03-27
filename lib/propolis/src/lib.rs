@@ -16,6 +16,7 @@ extern crate bitflags;
 
 pub mod accessors;
 pub mod api_version;
+pub mod attachment;
 pub mod block;
 pub mod chardev;
 pub mod common;

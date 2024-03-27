@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Mechanisms required to implement a block device (frontend)
+//! Mechanisms required to implement a block device
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -12,127 +12,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
-use crate::block::{
-    self, backend, probes, Backend, CacheMode, Device, DeviceInfo, Operation,
-    ReqId, Request,
-};
-
-pub(super) struct AttachInner {
-    sibling: Weak<backend::AttachInner>,
-    backend: Arc<dyn Backend>,
-    paused: bool,
-}
-impl AttachInner {
-    pub(super) fn detach(dev: &Arc<Mutex<Option<Self>>>) -> Option<()> {
-        let mut dev_lock = dev.lock().unwrap();
-        let dev_inner = dev_lock.as_ref()?;
-
-        let be_inner = dev_inner.sibling.upgrade()?;
-        let mut be_lock = be_inner.state.lock().unwrap();
-        let be_state = be_lock.as_ref()?;
-
-        assert!(be_state.same_as_sibling(dev));
-        *dev_lock = None;
-        *be_lock = None;
-
-        Some(())
-    }
-    fn lock_sibling(&self, f: impl FnOnce(&mut backend::AttachState)) {
-        let sibling = self
-            .sibling
-            .upgrade()
-            .expect("Device sibling should be present when attached");
-
-        let mut guard = sibling.state.lock().unwrap();
-        let sibling_state = guard.as_mut().expect(
-            "Backend sibling should be present while device is attached",
-        );
-        f(sibling_state)
-    }
-    pub(super) fn new(
-        be_attach: &backend::Attachment,
-        backend: &Arc<dyn Backend>,
-    ) -> Self {
-        Self {
-            sibling: Arc::downgrade(&be_attach.0),
-            backend: backend.clone(),
-            paused: false,
-        }
-    }
-}
-
-/// State held by the device about the attached (if any) backend
-pub struct Attachment(pub(super) Arc<Mutex<Option<AttachInner>>>);
-impl Attachment {
-    pub fn new() -> Self {
-        Attachment(Arc::new(Mutex::new(None)))
-    }
-
-    /// Query [`DeviceInfo`] from associated backend (if attached)
-    pub fn info(&self) -> Option<DeviceInfo> {
-        self.0.lock().unwrap().as_ref().map(|inner| inner.backend.info())
-    }
-
-    /// Set cache mode on associated backend
-    ///
-    /// # Warning
-    ///
-    /// This is currently unimplemented!
-    pub fn set_cache_mode(&self, _mode: CacheMode) {
-        todo!("wire up cache mode toggling")
-    }
-
-    /// Notify attached backend of (new) pending requests
-    pub fn notify(&self) {
-        let guard = self.0.lock().unwrap();
-        if let Some(inner) = guard.as_ref() {
-            if !inner.paused {
-                let be = inner.backend.clone();
-                drop(guard);
-                be.attachment().notify();
-            }
-        }
-    }
-
-    /// Pause request processing for this device.
-    ///
-    /// Backend (if attached) will not be able to retrieving any requests from
-    /// this device while paused.  The completions for any requests in flight,
-    /// however, will be able to flow through.
-    pub fn pause(&self) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(inner) = guard.as_mut() {
-            inner.paused = true;
-            inner.lock_sibling(|sib| {
-                sib.set_paused(true);
-            });
-        }
-    }
-
-    /// Clear the paused state on this device, allowing the backend (if
-    /// attached) to retrieve requests once again.
-    pub fn resume(&self) {
-        let mut guard = self.0.lock().unwrap();
-        if let Some(inner) = guard.as_mut() {
-            if !inner.paused {
-                return;
-            }
-
-            inner.paused = false;
-            inner.lock_sibling(|sib| {
-                sib.set_paused(false);
-            });
-            let be = inner.backend.clone();
-            drop(guard);
-            be.attachment().notify();
-        }
-    }
-
-    /// Detach from the associated (if any) backend.
-    pub fn detach(&self) -> Option<()> {
-        AttachInner::detach(&self.0)
-    }
-}
+use crate::block::{self, probes, Device, Operation, ReqId, Request};
 
 static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -163,6 +43,7 @@ struct TrackingEntry<T> {
     time_submitted: Instant,
 }
 
+/// Track device-specific data for outstanding block [Request]s.
 impl<T> Tracking<T> {
     pub fn new(dev: Weak<dyn Device>) -> Self {
         let device_id = NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed);
@@ -178,9 +59,9 @@ impl<T> Tracking<T> {
     }
 
     /// Record tracking in an [`Request`] prior to passing it to the associated
-    /// [`Backend`].  The request will be assigned a unique [`ReqId`] which can
-    /// be used to a later call to [`Tracking::complete()`] to retrieve the
-    /// `payload` data required to communicate its completion.
+    /// [`block::Backend`].  The request will be assigned a unique [`ReqId`]
+    /// which can be used to a later call to [`Tracking::complete()`] to
+    /// retrieve the `payload` data required to communicate its completion.
     ///
     pub fn track(&self, mut req: Request, payload: T) -> Request {
         let now = Instant::now();

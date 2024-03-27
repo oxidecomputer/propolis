@@ -536,7 +536,7 @@ impl<'a> MachineInitializer<'a> {
 
                     self.devices
                         .insert(format!("pci-virtio-{}", bdf), vioblk.clone());
-                    block::attach(backend, vioblk.clone());
+                    block::attach(vioblk.clone(), backend).unwrap();
                     chipset.pci_attach(bdf, vioblk);
                 }
                 DeviceInterface::Nvme => {
@@ -551,7 +551,7 @@ impl<'a> MachineInitializer<'a> {
                     );
                     self.devices
                         .insert(format!("pci-nvme-{bdf}"), nvme.clone());
-                    block::attach(backend, nvme.clone());
+                    block::attach(nvme.clone(), backend).unwrap();
                     chipset.pci_attach(bdf, nvme);
                 }
             };
