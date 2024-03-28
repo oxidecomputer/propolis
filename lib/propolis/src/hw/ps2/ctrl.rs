@@ -16,6 +16,7 @@ use crate::pio::{PioBus, PioFn};
 use rfb::rfb::KeyEvent;
 
 use super::keyboard::KeyEventRep;
+use super::mouse::MouseEventRep;
 
 /// PS/2 Controller (Intel 8042) Emulation
 ///
@@ -393,6 +394,11 @@ impl PS2Ctrl {
 
         state.pri_port.recv_scancode(scan_code);
         self.update_intr(&mut state);
+    }
+
+    pub fn mouse_event(&self, me: MouseEventRep) {
+        let mut state = self.state.lock().unwrap();
+        state.aux_port.reports.push_back(me);
     }
 
     fn pio_rw(&self, port: u16, rwo: RWOp) {
@@ -943,6 +949,7 @@ struct PS2Mouse {
     status: PS2MStatus,
     resolution: u8,
     sample_rate: u8,
+    reports: VecDeque<MouseEventRep>,
 }
 impl PS2Mouse {
     fn new() -> Self {
@@ -952,6 +959,7 @@ impl PS2Mouse {
             status: PS2MStatus::empty(),
             resolution: 0,
             sample_rate: 10,
+            reports: VecDeque::new(),
         }
     }
     fn cmd_input(&mut self, v: u8) {
@@ -1076,12 +1084,40 @@ impl PS2Mouse {
         self.resp(v);
     }
     fn movement(&mut self) {
-        // no buttons, just the always-one bit
-        self.resp(0b00001000);
-        // no X movement
-        self.resp(0x00);
-        // no Y movement
-        self.resp(0x00);
+        if let Some(me) = self.reports.pop_front() {
+            let mut byte = 0b0000_1000; // pre-set the always-one bit
+            if me.y_overflow {
+                byte |= 0b1000_0000;
+            }
+            if me.x_overflow {
+                byte |= 0b0100_0000;
+            }
+            if me.y_movement.is_negative() {
+                byte |= 0b0010_0000;
+            }
+            if me.x_movement.is_negative() {
+                byte |= 0b0001_0000;
+            }
+            if me.middle_button {
+                byte |= 0b0000_0100;
+            }
+            if me.right_button {
+                byte |= 0b0000_0010;
+            }
+            if me.left_button {
+                byte |= 0b0000_0001;
+            }
+            self.resp(byte);
+            self.resp((me.x_movement & 0xFF) as u8);
+            self.resp((me.y_movement & 0xFF) as u8);
+        } else {
+            // no buttons, just the always-one bit
+            self.resp(0b00001000);
+            // no X movement
+            self.resp(0x00);
+            // no Y movement
+            self.resp(0x00);
+        }
     }
 }
 impl Default for PS2Mouse {
