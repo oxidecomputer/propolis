@@ -5,12 +5,13 @@
 use async_trait::async_trait;
 use propolis::common::GuestAddr;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
+use propolis::hw::ps2::mouse::MouseEventRep;
 use propolis::hw::qemu::ramfb::{Config, FramebufferSpec};
 use rfb::encodings::RawEncoding;
 use rfb::pixel_formats::fourcc;
 use rfb::rfb::{
-    FramebufferUpdate, KeyEvent, ProtoVersion, Rectangle, SecurityType,
-    SecurityTypes,
+    FramebufferUpdate, KeyEvent, MouseButtons, PointerEvent, ProtoVersion,
+    Rectangle, SecurityType, SecurityTypes,
 };
 use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
 use slog::{debug, error, info, o, trace, Logger};
@@ -55,6 +56,7 @@ enum Framebuffer {
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
     last_screen_sent: Vec<u8>,
+    relative_mouse_hack: (i32, i32),
     ps2ctrl: Option<Arc<PS2Ctrl>>,
     vm: Option<Arc<VmController>>,
 }
@@ -76,6 +78,7 @@ impl PropolisVncServer {
                 last_screen_sent: vec![],
                 ps2ctrl: None,
                 vm: None,
+                relative_mouse_hack: (0, 0),
             })),
             log,
         }
@@ -273,6 +276,33 @@ impl Server for PropolisVncServer {
             ps2.key_event(ke);
         } else {
             trace!(self.log, "guest not initialized; dropping keyevent");
+        }
+    }
+
+    async fn pointer_event(&self, pe: PointerEvent) {
+        let mut inner = self.inner.lock().await;
+        let ps2 = inner.ps2ctrl.as_ref();
+
+        if let Some(ps2) = ps2 {
+            trace!(self.log, "pointerevent: {:?}", pe);
+            let (old_x, old_y) = inner.relative_mouse_hack;
+            let x = pe.position.x as i32;
+            let y = pe.position.y as i32;
+            let x_movement = (x - old_x).clamp(-256, 255) as i16;
+            let y_movement = (y - old_y).clamp(-256, 255) as i16;
+            ps2.mouse_event(MouseEventRep {
+                y_overflow: false,
+                x_overflow: false,
+                middle_button: pe.pressed.intersects(MouseButtons::MIDDLE),
+                right_button: pe.pressed.intersects(MouseButtons::RIGHT),
+                left_button: pe.pressed.intersects(MouseButtons::LEFT),
+                x_movement,
+                y_movement,
+            });
+            inner.relative_mouse_hack =
+                (x + x_movement as i32, y + y_movement as i32);
+        } else {
+            trace!(self.log, "guest not initialized; dropping pointerevent");
         }
     }
 
