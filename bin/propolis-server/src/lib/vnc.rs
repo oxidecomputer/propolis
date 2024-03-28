@@ -246,9 +246,8 @@ impl Server for PropolisVncServer {
                         for y in first_y..=last_y {
                             let start =
                                 base + (y * stride) + (first_x * BYTES_PER_PX);
-                            let end_incl =
-                                base + (y * stride) + (last_x * BYTES_PER_PX);
-                            data.extend_from_slice(&pixels[start..=end_incl]);
+                            let end = start + (rect_width * BYTES_PER_PX);
+                            data.extend_from_slice(&pixels[start..end]);
                         }
                         dirty_rects.push(Rectangle::new(
                             rect_x as u16,
