@@ -4172,7 +4172,7 @@ dependencies = [
 [[package]]
 name = "rfb"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/rfb?rev=0cac8d9c25eb27acfa35df80f3b9d371de98ab3b#0cac8d9c25eb27acfa35df80f3b9d371de98ab3b"
+source = "git+https://github.com/oxidecomputer/rfb?branch=pixfmts#7ebf78a59aefd0dce390d1757022032e32f06d93"
 dependencies = [
  "ascii",
  "async-trait",
