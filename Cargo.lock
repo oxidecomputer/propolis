@@ -752,7 +752,7 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=09bcfa6b9201f75891a5413928bb088cc150d319#09bcfa6b9201f75891a5413928bb088cc150d319"
+source = "git+https://github.com/oxidecomputer/crucible?rev=4661c23b248da18862012cf55af21b17b79a468e#4661c23b248da18862012cf55af21b17b79a468e"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -799,7 +799,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=09bcfa6b9201f75891a5413928bb088cc150d319#09bcfa6b9201f75891a5413928bb088cc150d319"
+source = "git+https://github.com/oxidecomputer/crucible?rev=4661c23b248da18862012cf55af21b17b79a468e#4661c23b248da18862012cf55af21b17b79a468e"
 dependencies = [
  "base64 0.22.0",
  "crucible-workspace-hack",
@@ -812,7 +812,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=09bcfa6b9201f75891a5413928bb088cc150d319#09bcfa6b9201f75891a5413928bb088cc150d319"
+source = "git+https://github.com/oxidecomputer/crucible?rev=4661c23b248da18862012cf55af21b17b79a468e#4661c23b248da18862012cf55af21b17b79a468e"
 dependencies = [
  "anyhow",
  "atty",
@@ -842,7 +842,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=09bcfa6b9201f75891a5413928bb088cc150d319#09bcfa6b9201f75891a5413928bb088cc150d319"
+source = "git+https://github.com/oxidecomputer/crucible?rev=4661c23b248da18862012cf55af21b17b79a468e#4661c23b248da18862012cf55af21b17b79a468e"
 dependencies = [
  "anyhow",
  "bincode",
