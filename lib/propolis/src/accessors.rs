@@ -12,54 +12,98 @@
 //! contained emulation should fail any DMA accesses.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::c_void;
 use std::marker::PhantomData;
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use crate::vmm::{MemCtx, VmmHdl};
 
-type AccId = usize;
-
-const ID_NULL: AccId = 0;
-const ID_ROOT: AccId = 1;
+/// Key type for identifying nodes referenced by `Tree`.
+#[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Copy, Clone)]
+pub struct NodeKey(NonNull<Node<c_void>>);
+impl<T> From<&Arc<Node<T>>> for NodeKey {
+    fn from(value: &Arc<Node<T>>) -> Self {
+        let raw = Arc::as_ptr(value) as *const Node<c_void>;
+        let inner = unsafe { NonNull::new_unchecked(raw as *mut Node<c_void>) };
+        NodeKey(inner)
+    }
+}
+impl std::fmt::Display for NodeKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:p}", self.0.as_ptr())
+    }
+}
+// Safety: While the key uses a pointer (!Send) type internally, it is for
+// unique identification purposes only, and is never meant to be dereferenced,
+// copied from, or transformed into a reference of any kind.
+unsafe impl Send for NodeKey {}
 
 struct TreeNode<T> {
-    parent_id: AccId,
+    /// [NodeKey] of the parent to this node
+    ///
+    /// Holds [None] if the node is the root of the [Tree]
+    parent_key: Option<NodeKey>,
+    /// [Weak] reference back to the node.  This access is needed if the node
+    /// undergoes adoption (being moved to a different [Tree])
     node_ref: Weak<Node<T>>,
-    children: BTreeSet<AccId>,
+    /// List of keys to child nodes (if any)
+    children: BTreeSet<NodeKey>,
+    /// Display name for [Tree::print()]-ing
     name: Option<String>,
 }
 impl<T> TreeNode<T> {
     fn new(
-        parent_id: AccId,
+        parent_key: NodeKey,
         node_ref: Weak<Node<T>>,
         name: Option<String>,
     ) -> Self {
-        Self { parent_id, node_ref, children: BTreeSet::new(), name }
+        Self {
+            parent_key: Some(parent_key),
+            node_ref,
+            children: BTreeSet::new(),
+            name,
+        }
+    }
+    fn new_root(node_ref: Weak<Node<T>>) -> Self {
+        Self {
+            parent_key: None,
+            node_ref,
+            children: BTreeSet::new(),
+            name: None,
+        }
     }
 }
+
 struct Tree<T> {
+    /// Underlying resource (if any) that this hierarchy is granting access to
     resource_root: Option<Arc<T>>,
-    nodes: BTreeMap<AccId, TreeNode<T>>,
-    next_id: AccId,
+    /// Key of the root node of this hierarchy
+    ///
+    /// Only when the tree is being initialized, should `root_key` be [None]
+    root_key: Option<NodeKey>,
+    /// Nodes within this hierarchy
+    nodes: BTreeMap<NodeKey, TreeNode<T>>,
+    /// Weak self-reference, used when building [TreeNode] entries as nodes are
+    /// added to the tree.  Held as a convenience, instead of requiring it to be
+    /// passed in by the caller.
+    self_weak: Weak<Mutex<Tree<T>>>,
 }
 impl<T> Tree<T> {
-    /// Get the next [AccId] for a node to be added into this tree.
-    fn next_id(&mut self) -> AccId {
-        let res = self.next_id;
-        self.next_id += 1;
-        res
-    }
-
-    /// Record a node in the tree, given its ID and the ID of its parent.
+    /// Record a node in the tree
     fn add_child(
         &mut self,
-        parent: AccId,
-        child: AccId,
-        child_node: &Arc<Node<T>>,
+        parent: NodeKey,
         name: Option<String>,
-    ) {
+    ) -> Arc<Node<T>> {
+        let child_node = Arc::new(Node(Mutex::new(NodeEntry {
+            tree: Weak::upgrade(&self.self_weak).expect("tree ref still live"),
+            resource: self.resource_root.clone(),
+        })));
+
+        let child_key = NodeKey::from(&child_node);
         let conflict = self.nodes.insert(
-            child,
+            child_key,
             TreeNode::new(parent, Arc::downgrade(&child_node), name),
         );
         assert!(
@@ -71,29 +115,29 @@ impl<T> Tree<T> {
             .get_mut(&parent)
             .expect("parent node must exist")
             .children
-            .insert(child);
+            .insert(child_key);
+
+        child_node
     }
 
-    fn adopt(
-        &mut self,
-        leaf_ent: &NodeEntry<T>,
-        adopt_tree: &mut Tree<T>,
-        mut adopt_root: MutexGuard<NodeEntry<T>>,
-    ) {
+    /// Adopt the root node and all its descendants into our tree, under the
+    /// node specified by `parent_key`
+    fn adopt(&mut self, parent_key: NodeKey, adopt_tree: &mut Tree<T>) {
         debug_assert!(
             self.nodes
-                .get(&leaf_ent.id)
-                .and_then(|n| Weak::upgrade(&n.node_ref))
+                .get(&parent_key)
+                .and_then(|node| Weak::upgrade(&node.node_ref))
                 .is_some(),
             "leaf target for re-parenting missing"
         );
-        assert_eq!(adopt_root.id, ID_ROOT);
-        let tree_ref = &leaf_ent.tree;
+
+        let child_key = adopt_tree.root_key();
+        let tree_ref = self.self_weak.upgrade().unwrap();
 
         let mut queue = VecDeque::new();
-        queue.push_back((ID_ROOT, leaf_ent.id));
-        while let Some((child_id, local_parent_id)) = queue.pop_front() {
-            if let Some(mut tnode) = adopt_tree.nodes.remove(&child_id) {
+        queue.push_back(child_key);
+        while let Some(adopt_key) = queue.pop_front() {
+            if let Some(mut tnode) = adopt_tree.nodes.remove(&adopt_key) {
                 let node = match Weak::upgrade(&tnode.node_ref) {
                     Some(nr) => nr,
                     None => {
@@ -101,62 +145,56 @@ impl<T> Tree<T> {
                     }
                 };
 
-                let new_child_id = self.next_id();
-
-                if child_id != ID_ROOT {
+                // Associate the node with this tree and resource
+                {
                     let mut ent = node.0.lock().unwrap();
-                    // Place the node in our tree
-                    debug_assert_eq!(ent.id, child_id);
-                    ent.id = new_child_id;
-                    ent.tree = Arc::clone(tree_ref);
+                    ent.tree = Arc::clone(&tree_ref);
                     ent.resource = self.resource_root.clone();
-                    drop(ent);
-                } else {
-                    // Processing for the child root node is special, as we
-                    // already hold the lock on it.
-                    debug_assert_eq!(adopt_root.id, child_id);
-                    adopt_root.id = new_child_id;
-                    adopt_root.tree = Arc::clone(tree_ref);
-                    adopt_root.resource = self.resource_root.clone();
                 }
 
-                self.add_child(
-                    local_parent_id,
-                    new_child_id,
-                    &node,
-                    tnode.name.take(),
-                );
-
-                // Note its children so they can be processed in turn
-                let cq = std::mem::take(&mut tnode.children);
-                if !cq.is_empty() {
-                    queue.extend(cq.into_iter().map(|cid| (cid, new_child_id)));
+                if adopt_key == child_key {
+                    // The root of the adopted tree needs its parent set (and to
+                    // be added to the children list of said parent.
+                    //
+                    // All of the descendant nodes will have those relationships
+                    // properly established when they are copied over.
+                    tnode.parent_key = Some(parent_key);
+                    let parent_node = self
+                        .nodes
+                        .get_mut(&parent_key)
+                        .expect("parent node is present");
+                    parent_node.children.insert(adopt_key);
                 }
+
+                queue.extend(tnode.children.iter());
+
+                let _conflict = self.nodes.insert(adopt_key, tnode);
+                assert!(_conflict.is_none());
             }
         }
         debug_assert!(adopt_tree.nodes.is_empty());
     }
 
     /// Remove traces of a node from the tree as it is dropped
-    fn remove_dead_node(&mut self, id: AccId) {
+    fn remove_dead_node(&mut self, key: NodeKey) {
         let mut tnode =
-            self.nodes.remove(&id).expect("tree node should be present");
+            self.nodes.remove(&key).expect("tree node should be present");
 
-        if tnode.parent_id != ID_NULL {
-            let removed = self
+        if let Some(pkey) = tnode.parent_key.as_ref() {
+            let was_removed = self
                 .nodes
-                .get_mut(&tnode.parent_id)
+                .get_mut(pkey)
                 .expect("parent for node exists")
                 .children
-                .remove(&id);
-            assert!(removed, "parent should list node as child");
+                .remove(&key);
+            assert!(was_removed, "parent should list node as child");
         } else {
-            assert_eq!(id, ID_ROOT);
+            assert_eq!(
+                Some(key),
+                self.root_key,
+                "node without parent must be tree root"
+            );
         }
-
-        // The node is (dropping) dead, so it should no longer be reachable via
-        // the Arc<> reference.
-        debug_assert_eq!(tnode.node_ref.strong_count(), 0);
 
         // orphan any children of the node
         for child in std::mem::take(&mut tnode.children) {
@@ -166,84 +204,75 @@ impl<T> Tree<T> {
 
     /// Remove a node from this Tree into a new empty tree, with all of its
     /// descendants in tow.
-    fn orphan_node(&mut self, id: AccId) {
+    fn orphan_node(&mut self, key: NodeKey) {
         let mut tnode =
-            self.nodes.remove(&id).expect("node-to-orphan is present in tree");
-        let node =
-            tnode.node_ref.upgrade().expect("node-to-orphan is still live");
+            self.nodes.remove(&key).expect("node-to-orphan is present in tree");
 
-        let tree = Self::new_empty(None);
-        let mut guard = node.0.lock().unwrap();
+        let orphan_tree = Self::new_empty(None);
+
         // This node now becomes the root of the orphaned tree
-        guard.id = ID_ROOT;
-        guard.tree = tree.clone();
-        guard.resource.take();
-        drop(guard);
-        let mut tguard = tree.lock().unwrap();
-        tguard.nodes.insert(
-            ID_ROOT,
-            TreeNode::new(ID_NULL, Arc::downgrade(&node), None),
-        );
-
-        let children = std::mem::take(&mut tnode.children);
-        if children.is_empty() {
-            return;
+        {
+            let node =
+                tnode.node_ref.upgrade().expect("node-to-orphan is still live");
+            let mut guard = node.0.lock().unwrap();
+            guard.tree = orphan_tree.clone();
+            guard.resource.take();
         }
-        drop(node);
-        drop(tnode);
+        tnode.parent_key = None;
 
-        let mut needs_fixup = VecDeque::new();
-        needs_fixup.extend(children);
+        let mut needs_moved = VecDeque::new();
+        needs_moved.extend(tnode.children.iter());
 
-        while let Some(child) = needs_fixup.pop_front() {
-            let mut tnode =
-                self.nodes.remove(&child).expect("child tree node is present");
+        let mut tguard = orphan_tree.lock().unwrap();
+        tguard.root_key = Some(key);
+        tguard.nodes.insert(key, tnode);
+
+        while let Some(move_key) = needs_moved.pop_front() {
+            let tnode = self
+                .nodes
+                .remove(&move_key)
+                .expect("child tree node is present");
 
             // Progeny of the orphaned node which are still "live" need to be
             // associated with the new tree.  Anything which happens to be
             // "dead" will clean itself from the existing tree and orphan its
             // subsequent progeny when given access to the tree lock.
             if let Some(node) = tnode.node_ref.upgrade() {
-                let new_parent_id = if tnode.parent_id == id {
-                    // Direct children of the now-root orphan node need their
-                    // parent_id updated.  Others can be left alone in that
-                    // sense, since only the root requires an updated ID.
-                    ID_ROOT
-                } else {
-                    tnode.parent_id
-                };
-
-                tguard.add_child(
-                    new_parent_id,
-                    child,
-                    &node,
-                    tnode.name.take(),
-                );
                 let mut ent = node.0.lock().unwrap();
-                ent.tree = tree.clone();
+                ent.tree = orphan_tree.clone();
                 ent.resource = None;
-                drop(ent);
 
-                needs_fixup.extend(std::mem::take(&mut tnode.children))
+                needs_moved.extend(tnode.children.iter());
+
+                tguard.nodes.insert(move_key, tnode);
             }
         }
     }
 
-    fn rename_node(&mut self, id: AccId, name: Option<String>) {
-        if let Some(tnode) = self.nodes.get_mut(&id) {
+    /// Set the string name of node specified by `key`
+    fn rename_node(&mut self, key: NodeKey, name: Option<String>) {
+        if let Some(tnode) = self.nodes.get_mut(&key) {
             tnode.name = name;
         }
     }
 
-    fn for_each(&self, start: AccId, mut f: impl FnMut(AccId, &TreeNode<T>)) {
-        let mut to_process = VecDeque::new();
-        to_process.push_back(start);
-        while let Some(id) = to_process.pop_front() {
-            if let Some(tnode) = self.nodes.get(&id) {
-                f(id, tnode);
-                to_process.extend(tnode.children.iter());
+    /// Returns `true` if a given `node` is the root of this tree
+    fn node_is_root(&self, node: &Arc<Node<T>>) -> bool {
+        self.root_key() == node.into()
+    }
+
+    fn poison(&mut self) -> Option<Arc<T>> {
+        // Remove the resource from the tree...
+        let resource = self.resource_root.take();
+
+        // ... and poison all nodes too
+        for tnode in self.nodes.values() {
+            if let Some(node) = tnode.node_ref.upgrade() {
+                let _ = node.0.lock().unwrap().resource.take();
             }
         }
+
+        resource
     }
 
     /// Traverse tree in order conducive to printing, applying a provided
@@ -251,11 +280,12 @@ impl<T> Tree<T> {
     fn print(&self, print_fn: impl Fn(PrintNode)) {
         // Seed the root of the tree to be processed at depth 0
         let mut initial = BTreeSet::new();
-        initial.insert(ID_ROOT);
+        let root_key = self.root_key();
+        initial.insert(root_key);
         let mut to_process = vec![(0, initial)];
 
         while let Some((depth, mut children)) = to_process.pop() {
-            let id = match children.pop_first() {
+            let key = match children.pop_first() {
                 Some(i) => {
                     to_process.push((depth, children));
                     i
@@ -263,9 +293,13 @@ impl<T> Tree<T> {
                 None => continue,
             };
 
-            if let Some(tnode) = self.nodes.get(&id) {
-                let pnode =
-                    PrintNode { depth, id, name: tnode.name.as_deref() };
+            if let Some(tnode) = self.nodes.get(&key) {
+                let pnode = PrintNode {
+                    depth,
+                    key,
+                    is_root: key == root_key,
+                    name: tnode.name.as_deref(),
+                };
                 print_fn(pnode);
                 if !tnode.children.is_empty() {
                     to_process.push((depth + 1, tnode.children.clone()))
@@ -274,55 +308,67 @@ impl<T> Tree<T> {
         }
     }
 
-    fn new_empty(resource: Option<Arc<T>>) -> Arc<Mutex<Tree<T>>> {
-        Arc::new(Mutex::new(Tree {
-            resource_root: resource,
-            nodes: BTreeMap::new(),
-            next_id: ID_ROOT + 1,
-        }))
+    /// Get the [NodeKey] of the tree root
+    ///
+    /// Panics if called before the tree is initialized.
+    fn root_key(&self) -> NodeKey {
+        self.root_key.expect("root_key is non-None once tree is initialized")
     }
+
+    /// Create a [Tree] with no nodes (not even a root)
+    fn new_empty(resource: Option<Arc<T>>) -> Arc<Mutex<Tree<T>>> {
+        Arc::new_cyclic(|self_weak| {
+            Mutex::new(Tree {
+                resource_root: resource,
+                nodes: BTreeMap::new(),
+                root_key: None,
+                self_weak: self_weak.clone(),
+            })
+        })
+    }
+
+    /// Create a [Tree] returning the root node
     fn new(resource: Option<Arc<T>>) -> Arc<Node<T>> {
         let tree = Self::new_empty(resource.clone());
         let node = Node::new_root(tree.clone());
         node.0.lock().unwrap().resource = resource;
 
-        let mut tguard = tree.lock().unwrap();
-        tguard.nodes.insert(
-            ID_ROOT,
-            TreeNode::new(ID_NULL, Arc::downgrade(&node), None),
-        );
+        let mut guard = tree.lock().unwrap();
+        let root_key = NodeKey::from(&node);
+        guard.root_key = Some(root_key);
+        guard.nodes.insert(root_key, TreeNode::new_root(Arc::downgrade(&node)));
 
         node
     }
 }
 
-/// Data provided to `print_fn` callback as part of [`Tree::print()`]
+/// Data provided to `print_fn` callback as part of `Tree::print()`
 pub struct PrintNode<'a> {
     pub depth: usize,
-    pub id: AccId,
+    pub key: NodeKey,
+    pub is_root: bool,
     pub name: Option<&'a str>,
 }
 
 /// Build printing function for [`Tree::print()`] which outputs a list format.
-pub fn print_basic(match_node: Option<AccId>) -> impl Fn(PrintNode) {
+fn print_basic(match_node: Option<NodeKey>) -> impl Fn(PrintNode) {
     move |node| {
-        let id = node.id;
+        let key = node.key;
         let pad = "  ".repeat(node.depth);
-        let highlight = if Some(id) == match_node { " ***" } else { "" };
+        let highlight = if Some(key) == match_node { " ***" } else { "" };
         let namestr = match node.name {
-            None if id == ID_ROOT => "'ROOT'".to_string(),
+            None if node.is_root => "'ROOT'".to_string(),
             None => "<unnamed>".to_string(),
             Some(s) => format!("'{s}'"),
         };
 
-        println!("{pad}- {{ id: {id}, name: {namestr} }}{highlight}");
+        println!("{pad}- {{ id: {key:#}, name: {namestr} }}{highlight}");
     }
 }
 
 type TreeBackref<T> = Arc<Mutex<Tree<T>>>;
 
 struct NodeEntry<T> {
-    id: AccId,
     tree: TreeBackref<T>,
     resource: Option<Arc<T>>,
     // TODO: store enable/disable state here for evaluation and propagation
@@ -341,82 +387,35 @@ impl<T> Node<T> {
     fn try_lock_tree<'a>(
         &'a self,
         tree_ref: &'a TreeBackref<T>,
-    ) -> Result<
-        (MutexGuard<'a, Tree<T>>, MutexGuard<'a, NodeEntry<T>>),
-        TreeBackref<T>,
-    > {
-        let tguard = tree_ref.lock().unwrap();
-        let guard = self.0.lock().unwrap();
-        if Arc::ptr_eq(tree_ref, &guard.tree) {
-            Ok((tguard, guard))
+    ) -> Result<MutexGuard<'a, Tree<T>>, TreeBackref<T>> {
+        let guard = tree_ref.lock().unwrap();
+        let node_guard = self.0.lock().unwrap();
+        if Arc::ptr_eq(tree_ref, &node_guard.tree) {
+            Ok(guard)
         } else {
-            Err(guard.tree.clone())
+            Err(node_guard.tree.clone())
         }
     }
 
     /// Safely acquire the lock to this entry, as well as the containing tree,
     /// respecting the ordering requirements.
-    fn lock_tree<R>(
-        &self,
-        f: impl FnOnce(MutexGuard<'_, Tree<T>>, MutexGuard<'_, NodeEntry<T>>) -> R,
-    ) -> R {
+    fn lock_tree<R>(&self, f: impl FnOnce(MutexGuard<'_, Tree<T>>) -> R) -> R {
         let mut tree = self.0.lock().unwrap().tree.clone();
-        let (tguard, ent) = loop {
+        let guard = loop {
             let new_tree = match self.try_lock_tree(&tree) {
-                Ok((tg, g)) => break (tg, g),
+                Ok(tg) => break (tg),
                 Err(nt) => nt,
             };
             let _ = std::mem::replace(&mut tree, new_tree);
         };
-        f(tguard, ent)
-    }
-
-    fn adopt(&self, child: &Node<T>, name: Option<String>) {
-        assert_ne!(
-            self as *const Node<_>, child as *const Node<_>,
-            "cannot adopt self"
-        );
-
-        self.lock_tree(|mut parent_tguard, parent_ent| {
-            child.lock_tree(|mut child_tguard, child_ent| {
-                if child_ent.id != ID_ROOT {
-                    // Drop all mutex guards prior to panic in order to allow
-                    // unwinder to do its job, rather than getting tripped up by
-                    // poisoned mutexes.  This allows the unit tests to exercise
-                    // this panic condition.
-                    drop(child_tguard);
-                    drop(child_ent);
-                    drop(parent_tguard);
-                    drop(parent_ent);
-                    panic!("adopting of non-roots not allowed");
-                }
-                // Apply the chosen name to the root prior to its adoption
-                child_tguard.rename_node(ID_ROOT, name);
-                parent_tguard.adopt(&parent_ent, &mut child_tguard, child_ent);
-            });
-        });
+        f(guard)
     }
 
     fn new_root(tree: Arc<Mutex<Tree<T>>>) -> Arc<Node<T>> {
-        Arc::new(Node(Mutex::new(NodeEntry {
-            id: ID_ROOT,
-            tree,
-            resource: None,
-        })))
+        Arc::new(Node(Mutex::new(NodeEntry { tree, resource: None })))
     }
-    fn new_child(&self, name: Option<String>) -> Arc<Node<T>> {
-        self.lock_tree(|mut tguard, parent| {
-            let child_id = tguard.next_id();
-            let child = Arc::new(Node(Mutex::new(NodeEntry {
-                id: child_id,
-                tree: parent.tree.clone(),
-                resource: tguard.resource_root.clone(),
-            })));
-
-            tguard.add_child(parent.id, child_id, &child, name);
-
-            child
-        })
+    fn new_child(self: &Arc<Node<T>>, name: Option<String>) -> Arc<Node<T>> {
+        self.lock_tree(|mut guard| guard.add_child(self.into(), name))
     }
 
     fn guard(&self) -> Option<Guard<'_, T>> {
@@ -427,37 +426,33 @@ impl<T> Node<T> {
             .map(|res| Guard { inner: res.clone(), _pd: PhantomData })
     }
 
-    fn poison(&self) -> Option<Arc<T>> {
-        self.lock_tree(|mut tguard, ent| {
-            let id = ent.id;
-            drop(ent);
-            if id != ID_ROOT {
-                drop(tguard);
+    fn poison(self: &Arc<Node<T>>) -> Option<Arc<T>> {
+        self.lock_tree(|mut guard| {
+            if !guard.node_is_root(self) {
+                drop(guard);
                 panic!("tree poisoning only allowed at root");
             }
 
-            // Remove the resource from the tree...
-            let top_res = tguard.resource_root.take();
-            // ... and poison all nodes too
-            if top_res.is_some() {
-                tguard.for_each(ID_ROOT, |_id, tnode| {
-                    if let Some(node) = tnode.node_ref.upgrade() {
-                        node.0.lock().unwrap().resource.take();
-                    }
-                });
-            }
-
-            top_res
+            guard.poison()
         })
     }
-}
-impl<T> Drop for Node<T> {
-    fn drop(&mut self) {
-        let ent = self.0.get_mut().unwrap();
-        // drop any lingering access to the resource immediately
-        let _ = ent.resource.take();
-        // and remove us from the tree
-        ent.tree.lock().unwrap().remove_dead_node(ent.id);
+
+    fn drop_from_tree(self: &mut Arc<Node<T>>) {
+        let key = NodeKey::from(&*self);
+        self.lock_tree(|mut guard| {
+            // drop any lingering access to the resource immediately
+            let _ = self.0.lock().unwrap().resource.take();
+
+            // Since we hold the Tree lock (thus eliminating the chance of any
+            // racing adopt/orphan activity to be manipulating the refcount on
+            // the `Arc<Node<T>>`, we expect that its strong count is exactly 1.
+            //
+            // We, the holder (as part of Accessor::drop()) are the only one
+            // with a strong reference, which should be released momentarily.
+            debug_assert_eq!(Arc::strong_count(self), 1);
+
+            guard.remove_dead_node(key);
+        });
     }
 }
 
@@ -502,11 +497,32 @@ impl<T> Accessor<T> {
     ///
     /// If the node to be adopted is not the root of an orphan tree.
     pub fn adopt(&self, child: &Self, name: Option<String>) {
-        self.0.adopt(&child.0, name);
+        let parent_key = NodeKey::from(&self.0);
+        let child_key = NodeKey::from(&child.0);
+
+        assert_ne!(parent_key, child_key, "cannot adopt self");
+
+        self.0.lock_tree(|mut parent_guard| {
+            child.0.lock_tree(|mut child_guard| {
+                if !child_guard.node_is_root(&child.0) {
+                    // Drop all mutex guards prior to panic in order to allow
+                    // unwinder to do its job, rather than getting tripped up by
+                    // poisoned mutexes.  This allows the unit tests to exercise
+                    // this panic condition.
+                    drop(child_guard);
+                    drop(parent_guard);
+                    panic!("adopting of non-roots not allowed");
+                }
+                // Apply the chosen name to the root prior to its adoption
+                child_guard.rename_node(child_key, name);
+                parent_guard.adopt(parent_key, &mut child_guard);
+            });
+        });
     }
 
     /// Poison (remove the underlying resource) from the root node of a
-    /// hierarchy.
+    /// hierarchy.  This is meant to provide the root holder of the resource the
+    /// means to promptly remove access to it during events such as tear-down.
     ///
     /// # Panics
     ///
@@ -525,9 +541,31 @@ impl<T> Accessor<T> {
 
     /// Print the hierarchy that this node is a member of
     pub fn print(&self, highlight_self: bool) {
-        self.0.lock_tree(|tree, ent| {
-            tree.print(print_basic(highlight_self.then_some(ent.id)));
+        self.0.lock_tree(|tree| {
+            tree.print(print_basic(
+                highlight_self.then_some(NodeKey::from(&self.0)),
+            ));
         });
+    }
+}
+impl<T> Drop for Accessor<T> {
+    /// Perform necessary `Node` clean-up in the containing tree during drop of
+    /// the Accessor.
+    ///
+    /// On first glance it would seem like this logic belongs in the [Drop] impl
+    /// for `Node`, rather than the [Accessor].  Doing it that way mostly works,
+    /// but poses a challenge: When the `Tree` is performing node adoption or
+    /// orphaning, it must reach back out into the Nodes it owns via
+    /// `TreeNode::node_ref`.  This poses a race for when the last
+    /// `Arc<Node<T>>` is dropped, either by the `Accessor`, or the logic in the
+    /// `Tree`.  When the latter wins, it still holds the tree lock, posing a
+    /// deadlock situation which is otherwise impossible to prevent.
+    ///
+    /// As such it is expected that the Accessor will perform the tree
+    /// de-registration of the node when it is being dropped.  No other
+    /// structures should hold the `Arc<Node<T>>`.
+    fn drop(&mut self) {
+        self.0.drop_from_tree();
     }
 }
 
