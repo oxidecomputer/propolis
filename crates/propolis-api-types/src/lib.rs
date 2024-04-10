@@ -4,7 +4,7 @@
 
 //! Definitions for types exposed by the propolis-server API
 
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -394,4 +394,48 @@ pub struct SnapshotRequestPathParams {
 #[derive(Deserialize, JsonSchema)]
 pub struct VCRRequestPathParams {
     pub id: Uuid,
+}
+
+/// Error codes used to populate the `error_code` field of Dropshot API responses.
+#[derive(
+    Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema,
+)]
+pub enum ErrorCode {
+    /// This `propolis-server` process has not received an `InstanceEnsure`
+    /// request yet.
+    NoInstance,
+    /// This `propolis-server` process has already received an `InstanceEnsure`
+    /// request with a different ID.
+    AlreadyInitialized,
+    /// Cannot update a running server.
+    AlreadyRunning,
+    /// Instance creation failed
+    CreateFailed,
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::str::FromStr for ErrorCode {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            s if s.eq_ignore_ascii_case("NoInstance") => Ok(Self::NoInstance),
+            s if s.eq_ignore_ascii_case("AlreadyInitialized") => {
+                Ok(ErrorCode::AlreadyInitialized)
+            }
+            s if s.eq_ignore_ascii_case("AlreadyRunning") => {
+                Ok(ErrorCode::AlreadyRunning)
+            }
+            s if s.eq_ignore_ascii_case("CreateFailed") => {
+                Ok(ErrorCode::CreateFailed)
+            }
+            _ => Err("unknown error code, expected one of: \
+                'NoInstance', 'AlreadyInitialized', 'AlreadyRunning', \
+                'CreateFailed'"),
+        }
+    }
 }

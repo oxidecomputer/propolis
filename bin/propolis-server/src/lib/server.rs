@@ -571,19 +571,21 @@ async fn instance_ensure_common(
     {
         let existing_properties = existing.properties();
         if existing_properties.id != properties.id {
-            return Err(HttpError::for_status(
-                Some(format!(
+            return Err(HttpError::for_client_error(
+                Some(api::ErrorCode::AlreadyInitialized.to_string()),
+                http::status::StatusCode::CONFLICT,
+                format!(
                     "Server already initialized with ID {}",
                     existing_properties.id
-                )),
-                http::status::StatusCode::CONFLICT,
+                ),
             ));
         }
 
         if *existing_properties != properties {
-            return Err(HttpError::for_status(
-                Some("Cannot update running server".to_string()),
+            return Err(HttpError::for_client_error(
+                Some(api::ErrorCode::AlreadyRunning.to_string()),
                 http::status::StatusCode::CONFLICT,
+                "Cannot update running server".to_string(),
             ));
         }
 
@@ -653,10 +655,11 @@ async fn instance_ensure_common(
         vm_hdl.await.unwrap()
     }
     .map_err(|e| {
-        HttpError::for_internal_error(format!(
-            "failed to create instance: {}",
-            e
-        ))
+        HttpError::for_client_error(
+            Some(api::ErrorCode::CreateFailed.to_string()),
+            http::status::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create instance: {e}"),
+        )
     })?;
 
     if let Some(ramfb) = vm.framebuffer() {
@@ -875,7 +878,7 @@ async fn instance_state_monitor(
         // Inform the client of this condition so it doesn't wait forever.
         state_watcher.changed().await.map_err(|_| {
             HttpError::for_client_error(
-                Some(NO_INSTANCE.to_string()),
+                Some(api::ErrorCode::NoInstance.to_string()),
                 http::status::StatusCode::GONE,
                 format!(
                     "No instance present; will never reach generation {}",
@@ -1193,11 +1196,9 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     api
 }
 
-const NO_INSTANCE: &str = "NO_INSTANCE";
-
 fn not_created_error() -> HttpError {
     HttpError::for_client_error(
-        Some(NO_INSTANCE.to_string()),
+        Some(api::ErrorCode::NoInstance.to_string()),
         http::StatusCode::FAILED_DEPENDENCY,
         "Server not initialized (no instance)".to_string(),
     )
