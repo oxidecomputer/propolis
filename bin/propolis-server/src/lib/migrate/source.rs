@@ -555,7 +555,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.vm_controller
             .machine()
             .hdl
-            .track_dirty_pages(start_gpa.0, bits, true)
+            .take_dirty_pages(start_gpa.0, bits)
             .map_err(|_| MigrateError::InvalidInstanceState)
     }
 
