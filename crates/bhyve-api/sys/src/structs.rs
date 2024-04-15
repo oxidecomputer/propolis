@@ -581,3 +581,33 @@ pub struct vmm_resv_target {
     /// except when interrupted.
     pub vrt_result_sz: size_t,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vm_npt_operation {
+    pub vno_gpa: u64,
+    pub vno_len: u64,
+    pub vno_bitmap: *mut u8,
+    pub vno_operation: u32,
+}
+impl Default for vm_npt_operation {
+    fn default() -> Self {
+        Self {
+            vno_gpa: 0,
+            vno_len: 0,
+            vno_bitmap: std::ptr::null_mut(),
+            vno_operation: 0,
+        }
+    }
+}
+
+// Operation & flag definitions for vm_npt_operation`vno_operation
+
+pub const VNO_OP_RESET_DIRTY: u32 = 0x1;
+pub const VNO_OP_SET_DIRTY: u32 = 0x2;
+pub const VNO_OP_GET_DIRTY: u32 = 0x3;
+pub const VNO_OP_GET_TRACK_DIRTY: u32 = 0x20;
+pub const VNO_OP_EN_TRACK_DIRTY: u32 = 0x21;
+pub const VNO_OP_DIS_TRACK_DIRTY: u32 = 0x22;
+pub const VNO_FLAG_BITMAP_IN: u32 = 1 << 30;
+pub const VNO_FLAG_BITMAP_OUT: u32 = 1 << 31;

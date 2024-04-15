@@ -542,6 +542,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Add support for NPT bitmap operations
+    V17 = 17,
+
     /// VM Suspend behavior reworked, `VM_VCPU_BARRIER` ioctl added
     V16 = 16,
 
@@ -585,7 +588,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V16
+        Self::V17
     }
 }
 
