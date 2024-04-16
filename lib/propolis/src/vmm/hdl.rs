@@ -259,6 +259,20 @@ impl VmmHdl {
         unsafe { self.ioctl(bhyve_api::VM_NPT_OPERATION, &mut npt_op) }
     }
 
+    /// Returns whether the VMM can track dirty pages in place using the
+    /// [`VmmHdl::track_dirty_pages`] method.
+    ///
+    /// If this method returns `true`, that operation is supported. If this
+    /// method returns `false`, calls to [`VmmHdl::track_dirty_pages`] will
+    /// never succeed.
+    pub fn can_track_dirty_pages_in_place(&self) -> bool {
+        self.api_version()
+            .map(|v| v >= bhyve_api::ApiVersion::V17)
+            // If we couldn't read the Bhyve API version, assume the operation
+            // is unsupported.
+            .unwrap_or(false)
+    }
+
     /// Tracks dirty pages in the guest's physical address space, resetting any
     /// dirty bits in the guest's page table entries.
     ///

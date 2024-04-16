@@ -29,7 +29,7 @@ use crate::migrate::{
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
 /// Specifies which pages should be offered during a RAM transfer phase.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum RamOfferDiscipline {
     /// Offer all pages irrespective of whether they are dirty.
     OfferAll,
@@ -252,7 +252,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         req_ram_range: Range<u64>,
         offer_discipline: RamOfferDiscipline,
     ) -> Result<(), MigrateError> {
-        info!(self.log(), "offering ram"; "discipline" => ?offer_discipline);
+        let can_track_dirty_pages_in_place =
+            self.vm_controller.machine().hdl.can_track_dirty_pages_in_place();
+        info!(
+            self.log(),
+            "offering ram";
+            "discipline" => ?offer_discipline,
+            "can_track_dirty_pages_in_place" => ?can_track_dirty_pages_in_place,
+        );
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
         let mut bits = [0u8; 4096];
@@ -275,21 +282,30 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (start_gpa..end_gpa).step_by(step) {
-            // Always capture the dirty page mask even if the offer discipline
-            // says to offer all pages. This ensures that pages that are
-            // transferred now and not touched again will not be offered again.
-            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
-            match offer_discipline {
-                RamOfferDiscipline::OfferAll => {
-                    for byte in bits.iter_mut() {
-                        *byte = 0xff;
-                    }
+            if can_track_dirty_pages_in_place {
+                self.vm_controller
+                    .machine()
+                    .hdl
+                    .track_dirty_pages(gpa, &mut bits)
+            } else {
+                // Always capture the dirty page mask even if the offer discipline
+                // says to offer all pages. This ensures that pages that are
+                // transferred now and not touched again will not be offered again.
+                self.vm_controller
+                    .machine()
+                    .hdl
+                    .take_dirty_pages(gpa, &mut bits)
+                    .map_err(|_| MigrateError::InvalidInstanceState)?;
+            }
+
+            if offer_discipline == RamOfferDiscipline::OfferAll
+                && !can_track_dirty_pages_in_place
+            {
+                for byte in bits.iter_mut() {
+                    *byte = 0xff;
                 }
-                RamOfferDiscipline::OfferDirty => {
-                    if bits.iter().all(|&b| b == 0) {
-                        continue;
-                    }
-                }
+            } else if bits.iter().all(|&b| b == 0) {
+                continue;
             }
 
             let end = end_gpa.min(gpa + step as u64);
@@ -462,21 +478,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         // succeeded.
         self.update_state(MigrationState::Finish).await;
 
-        // This VMM is going away, so if any guest memory is still dirty, it
-        // won't be transferred. Assert that there is no such memory.
-        //
-        // The unwraps in the block below amount to assertions that the VMM
-        // exists at this point (it should). Note that returning an error here
-        // is not permitted because that will cause migration to unwind and the
-        // VM to resume, which is forbidden at this point (see above).
-        let vmm_range = self.vmm_ram_bounds().await.unwrap();
-        let mut bits = [0u8; 4096];
-        let step = bits.len() * 8 * PAGE_SIZE;
-        for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
-            self.track_dirty(GuestAddr(gpa), &mut bits).await.unwrap();
-            assert!(bits.iter().all(|&b| b == 0));
-        }
-
         Ok(())
     }
 
@@ -545,18 +546,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let machine = self.vm_controller.machine();
         let memctx = machine.acc_mem.access().unwrap();
         memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
-    }
-
-    async fn track_dirty(
-        &mut self,
-        start_gpa: GuestAddr,
-        bits: &mut [u8],
-    ) -> Result<(), MigrateError> {
-        self.vm_controller
-            .machine()
-            .hdl
-            .take_dirty_pages(start_gpa.0, bits)
-            .map_err(|_| MigrateError::InvalidInstanceState)
     }
 
     async fn read_guest_mem(
