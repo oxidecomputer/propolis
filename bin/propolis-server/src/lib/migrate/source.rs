@@ -29,7 +29,7 @@ use crate::migrate::{
 use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
 
 /// Specifies which pages should be offered during a RAM transfer phase.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum RamOfferDiscipline {
     /// Offer all pages irrespective of whether they are dirty.
     OfferAll,
@@ -185,24 +185,36 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             vmm_ram_range
         );
 
-        // TODO(#387): Ideally, both the pre-pause and post-pause phases would
-        // offer just dirty pages. To do this safely, the source must remember
-        // all the pages it has ever offered to any target so that they can be
-        // re-offered if migration fails and is later retried.
-        //
-        // Offering all pages before pausing guarantees that all modified pages
-        // will be transferred without having to do any extra tracking (but uses
-        // host CPU time and network bandwidth inefficiently).
+        // Depending on which bhyve version is present, we may be able to only
+        // offer dirty pages at all migration phases. This depends on whether
+        // the track dirty pages operation will reset the dirty bits on tracked
+        // pages. If it does, we must always offer all RAM in the pre-pause
+        // phase, because we may have previously attempted a migration that
+        // failed, which --- if tracking dirty pages clears dirty bits --- may
+        // have cleared those bits on some pages that the guest has touched.
+        // However, if the variant of this operation that preserves dirty bits
+        // is available, we never need to clear the dirty bits and can thus only
+        // ever offer only the pages which the guest has touched, which is more
+        // efficient.
+        let reset_dirty =
+            self.vm_controller.machine().hdl.must_reset_dirty_pages();
+        let offer_discipline = match (phase, reset_dirty) {
+            // If tracking dirty pages will reset dirty bits, then we must offer
+            // all RAM in the pre-push phase, since we may have previously
+            // attempted a failed migration.
+            (MigratePhase::RamPushPrePause, true) => {
+                RamOfferDiscipline::OfferAll
+            }
+            // Otherwise, if we are in the post-pause phase or if we can track
+            // dirty pages without clearing the dirty bit, we can just offer
+            // dirty pages.
+            _ => RamOfferDiscipline::OfferDirty,
+        };
         self.offer_ram(
             vmm_ram_range,
             req_ram_range,
-            match phase {
-                MigratePhase::RamPushPrePause => RamOfferDiscipline::OfferAll,
-                MigratePhase::RamPushPostPause => {
-                    RamOfferDiscipline::OfferDirty
-                }
-                _ => unreachable!(),
-            },
+            offer_discipline,
+            reset_dirty,
         )
         .await?;
 
@@ -251,14 +263,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
         offer_discipline: RamOfferDiscipline,
+        reset_dirty: bool,
     ) -> Result<(), MigrateError> {
-        let can_track_dirty_pages_in_place =
-            self.vm_controller.machine().hdl.can_track_dirty_pages_in_place();
         info!(
             self.log(),
             "offering ram";
             "discipline" => ?offer_discipline,
-            "can_track_dirty_pages_in_place" => ?can_track_dirty_pages_in_place,
+            "reset_dirty" => ?reset_dirty,
         );
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
@@ -282,30 +293,26 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (start_gpa..end_gpa).step_by(step) {
-            if can_track_dirty_pages_in_place {
-                self.vm_controller
-                    .machine()
-                    .hdl
-                    .track_dirty_pages(gpa, &mut bits)
-            } else {
-                // Always capture the dirty page mask even if the offer discipline
-                // says to offer all pages. This ensures that pages that are
-                // transferred now and not touched again will not be offered again.
-                self.vm_controller
-                    .machine()
-                    .hdl
-                    .take_dirty_pages(gpa, &mut bits)
-                    .map_err(|_| MigrateError::InvalidInstanceState)?;
-            }
+            // Always capture the dirty page mask even if the offer discipline
+            // says to offer all pages. This ensures that pages that are
+            // transferred now and not touched again will not be offered again.
+            self.vm_controller
+                .machine()
+                .hdl
+                .track_dirty_pages(gpa, &mut bits, reset_dirty)
+                .map_err(|_| MigrateError::InvalidInstanceState)?;
 
-            if offer_discipline == RamOfferDiscipline::OfferAll
-                && !can_track_dirty_pages_in_place
-            {
-                for byte in bits.iter_mut() {
-                    *byte = 0xff;
+            match offer_discipline {
+                RamOfferDiscipline::OfferAll => {
+                    for byte in bits.iter_mut() {
+                        *byte = 0xff;
+                    }
                 }
-            } else if bits.iter().all(|&b| b == 0) {
-                continue;
+                RamOfferDiscipline::OfferDirty => {
+                    if bits.iter().all(|&b| b == 0) {
+                        continue;
+                    }
+                }
             }
 
             let end = end_gpa.min(gpa + step as u64);

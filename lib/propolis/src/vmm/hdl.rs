@@ -227,74 +227,74 @@ impl VmmHdl {
         Ok(devoff.offset as usize)
     }
 
-    /// Tracks dirty pages in the guest's physical address space, without
-    /// resetting the dirty bit in the guest's page table entries.
+    /// Tracks dirty pages in the guest's physical address space.
     ///
-    /// This method is only supported with bhyve [`ApiVersion::V17`] or later.
+    /// # Resetting Dirty Bits
+    ///
+    /// On versions of Bhyve prior to [`bhyve_api::ApiVersion::V17`], the
     ///
     /// # Arguments:
     /// - `start_gpa`: The start of the guest physical address range to track.
     /// Must be page aligned.
     /// - `bitmap`: A mutable bitmap of dirty pages, one bit per guest PFN
     /// relative to `start_gpa`.
+    /// - `reset`: If `true`, the dirty bits in each guest page table entry in
+    ///   the tracked range will be cleared as part of this operation. If
+    ///   `false`, and the bhyve API version is at least
+    ///   [`bhyve_api::ApiVersion::V17`], the tracked pages will remain marked
+    ///   as dirty. If the bhyve API version is less than [`ApiVersion::V17`],
+    ///   only `true` is supported.
     pub fn track_dirty_pages(
         &self,
         start_gpa: u64,
         bitmap: &mut [u8],
+        reset: bool,
     ) -> Result<()> {
-        if self.api_version()? < bhyve_api::ApiVersion::V17 {
+        if self.api_version()? >= bhyve_api::ApiVersion::V17 {
+            // If the bhyve version is v17 or greater, always use the
+            // `VM_NPT_OPERATION` ioctl rather than `VM_TRACK_DIRTY_PAGES`.
+            let mut vno_operation =
+                bhyve_api::VNO_OP_GET_DIRTY | bhyve_api::VNO_FLAG_BITMAP_OUT;
+            if reset {
+                vno_operation |= bhyve_api::VNO_OP_RESET_DIRTY;
+            }
+            let mut npt_op = bhyve_api::vm_npt_operation {
+                vno_gpa: start_gpa,
+                vno_len: (bitmap.len() * 8 * PAGE_SIZE) as u64,
+                vno_bitmap: bitmap.as_mut_ptr(),
+                vno_operation,
+            };
+            return unsafe {
+                self.ioctl(bhyve_api::VM_NPT_OPERATION, &mut npt_op)
+            };
+        } else if !reset {
+            // We were asked not to reset dirty bits, but this is only possible
+            // on bhyve versions that support `VM_NPT_OPERATION``.
             return Err(Error::new(
                 ErrorKind::Unsupported,
-                "VmmHdl::track_dirty_pages requires bhyve v17 or later",
+                "VmmHdl::track_dirty_pages(..., reset: false) is only supported on bhyve v17 or later",
             ));
         }
 
-        let mut npt_op = bhyve_api::vm_npt_operation {
-            vno_gpa: start_gpa,
-            vno_len: page_bitmap_len(bitmap) as u64,
-            vno_bitmap: bitmap.as_mut_ptr(),
-            vno_operation: bhyve_api::VNO_OP_GET_DIRTY
-                | bhyve_api::VNO_FLAG_BITMAP_OUT,
+        let mut tracker = bhyve_api::vmm_dirty_tracker {
+            vdt_start_gpa: start_gpa,
+            vdt_len: bitmap.len() * 8 * PAGE_SIZE,
+            vdt_pfns: bitmap.as_mut_ptr() as *mut c_void,
         };
-        unsafe { self.ioctl(bhyve_api::VM_NPT_OPERATION, &mut npt_op) }
+        unsafe { self.ioctl(bhyve_api::VM_TRACK_DIRTY_PAGES, &mut tracker) }
     }
 
-    /// Returns whether the VMM can track dirty pages in place using the
-    /// [`VmmHdl::track_dirty_pages`] method.
+    /// Returns whether or not the [`VmmHdl::track_dirty_pages`] must reset the
+    /// dirty bit in the guest's page table entries.
     ///
-    /// If this method returns `true`, that operation is supported. If this
-    /// method returns `false`, calls to [`VmmHdl::track_dirty_pages`] will
-    /// never succeed.
-    pub fn can_track_dirty_pages_in_place(&self) -> bool {
+    /// If this method returns `true`, then calls to
+    /// [`VmmHdl::track_dirty_pages`] must set the `reset` argument to `true`.
+    pub fn must_reset_dirty_pages(&self) -> bool {
         self.api_version()
             .map(|v| v >= bhyve_api::ApiVersion::V17)
             // If we couldn't read the Bhyve API version, assume the operation
             // is unsupported.
             .unwrap_or(false)
-    }
-
-    /// Tracks dirty pages in the guest's physical address space, resetting any
-    /// dirty bits in the guest's page table entries.
-    ///
-    /// For a version of this method that does not clear the dirty bit, see
-    /// [`VmmHdl::track_dirty_pages`].
-    ///
-    /// # Arguments:
-    /// - `start_gpa`: The start of the guest physical address range to track.
-    /// Must be page aligned.
-    /// - `bitmap`: A mutable bitmap of dirty pages, one bit per guest PFN
-    /// relative to `start_gpa`.
-    pub fn take_dirty_pages(
-        &self,
-        start_gpa: u64,
-        bitmap: &mut [u8],
-    ) -> Result<()> {
-        let mut tracker = bhyve_api::vmm_dirty_tracker {
-            vdt_start_gpa: start_gpa,
-            vdt_len: page_bitmap_len(bitmap),
-            vdt_pfns: bitmap.as_mut_ptr() as *mut c_void,
-        };
-        unsafe { self.ioctl(bhyve_api::VM_TRACK_DIRTY_PAGES, &mut tracker) }
     }
 
     /// Issues a request to update the virtual RTC time.
@@ -493,8 +493,4 @@ pub fn query_reservoir() -> Result<bhyve_api::vmm_resv_query> {
     let mut data = bhyve_api::vmm_resv_query::default();
     let _ = unsafe { ctl.ioctl(bhyve_api::VMM_RESV_QUERY, &mut data) }?;
     Ok(data)
-}
-
-fn page_bitmap_len(bitmap: &[u8]) -> usize {
-    bitmap.len() * 8 * PAGE_SIZE
 }
