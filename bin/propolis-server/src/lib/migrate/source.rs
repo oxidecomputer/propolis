@@ -13,6 +13,7 @@ use slog::{error, info, trace};
 use std::convert::TryInto;
 use std::io;
 use std::ops::{Range, RangeInclusive};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
@@ -69,7 +70,7 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
         // entries, re-dirty them, so that a later migration attempt can also
         // only offer dirty pages. If we can't use VM_NPT_OPERATION, a
         // subsequent migration attempt will offer all pages.
-        if proto.can_npt_operate {
+        if proto.can_redirty_pages {
             for (&GuestAddr(gpa), dirtiness) in proto.dirt.iter() {
                 let mut pages = 0;
                 // TODO(eliza): we could probably use a smaller array here, it
@@ -84,23 +85,30 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
                     continue;
                 }
 
-                info!(proto.log(), "re-dirtied {pages} pages at {gpa:#x}",);
-
                 if let Err(e) = proto
                     .vm_controller
                     .machine()
                     .hdl
                     .set_dirty_pages(gpa, &bits)
                 {
-                    // TODO(eliza): we probably need to handle a failure to put
-                    // dirty bits back a bit more gracefully --- now, the VM may
-                    // be in a state where we will always have to use
-                    // `RamOfferDiscipline::OfferAll` in the future.
+                    // Bad news! Our attempt to re-set the dirty bit on these
+                    // pages has failed! Thus, subsequent migration attempts
+                    // /!\ CAN NO LONGER RELY ON DIRTY PAGE TRACKING /!\
+                    // and must always offer all pages in the initial RAM push
+                    // phase.
+                    //
+                    // Record that now so we never try to do this again.
+                    HAS_REDIRTYING_EVER_FAILED.store(true, Ordering::Relaxed);
                     error!(
                         proto.log(),
                         "failed to restore dirty bits: {e}";
                         "gpa" => gpa,
                     );
+                    // No sense continuing to try putting back any remaining
+                    // dirty bits, as we won't be using them any longer.
+                    break;
+                } else {
+                    info!(proto.log(), "re-dirtied {pages} pages at {gpa:#x}",);
                 }
             }
         }
@@ -147,11 +155,29 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     /// save some memory versus storing a bunch of page-sized byte arrays.
     dirt: std::collections::HashMap<GuestAddr, Vec<(usize, u8)>>,
 
-    /// `true` if the Bhyve VMM supports the `VM_NPT_OPERATION`
-    can_npt_operate: bool,
+    /// `true` if we should attempt to re-set dirty bits on guest pages in the
+    /// event of a migration failure.
+    ///
+    /// This is true if and only if:
+    ///
+    /// - The current bhyve version supports the `VM_NPT_OPERATION` ioctl (i.e.
+    ///   it is at least bhyve v17 or later),
+    /// - A previous attempt to re-dirty pages has not failed, in which case, we
+    ///   can no longer trust that all previously dirtied pages were re-dirtied
+    ///   correctly.
+    ///
+    /// Otherwise, we must fall back to always offering all pages in the initial
+    /// pre-pause RAM push phase.
+    can_redirty_pages: bool,
 }
 
 const PAGE_BITMAP_SIZE: usize = 4096;
+
+/// Set if we were unable to re-set dirty bits on guest pages after a failed
+/// migration attempt. If this occurs, we can no longer offer only dirty pages
+/// in a subsequent migration attempt, as some pages which should be marked as
+/// dirty may not be.
+static HAS_REDIRTYING_EVER_FAILED: AtomicBool = AtomicBool::new(false);
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     fn new(
@@ -160,14 +186,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
         conn: WebSocketStream<T>,
     ) -> Self {
-        let can_npt_operate = vm_controller.machine().hdl.can_npt_operate();
+        let can_redirty_pages = vm_controller.machine().hdl.can_npt_operate()
+            && HAS_REDIRTYING_EVER_FAILED.load(Ordering::Relaxed);
         Self {
             vm_controller,
             command_tx,
             response_rx,
             conn,
             dirt: Default::default(),
-            can_npt_operate,
+            can_redirty_pages,
         }
     }
 
@@ -340,7 +367,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             // If we are in the pre-pause RAM push phase, and we don't have
             // VM_NPT_OPERATION to put back any dirty bits if the migration
             // fails, we have to offer all pages here.
-            MigratePhase::RamPushPrePause if !self.can_npt_operate => {
+            MigratePhase::RamPushPrePause if !self.can_redirty_pages => {
                 RamOfferDiscipline::OfferAll
             }
             // Otherwise, if we are in the post-pause phase, or if we *can* just
@@ -399,7 +426,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             self.log(),
             "offering ram";
             "discipline" => ?offer_discipline,
-            "can_npt_operate" => ?self.can_npt_operate,
+            "can_redirty_pages" => ?self.can_redirty_pages,
         );
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
@@ -451,7 +478,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                         // If bhyve doesn't support VM_NPT_OPERATION, no sense
                         // hanging onto this. We'll just have to offer all pages
                         // in the initial RAM Offer phase, instead.
-                        if self.can_npt_operate {
+                        if self.can_redirty_pages {
                             self.dirt
                                 .entry(GuestAddr(gpa))
                                 .or_default()
