@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use bitvec::prelude::{BitSlice, Lsb0};
 use futures::{SinkExt, StreamExt};
 use propolis::common::{GuestAddr, PAGE_SIZE};
 use propolis::migrate::{
@@ -63,6 +64,47 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
         // want an error encountered during this send to shadow the run error
         // from the caller.
         let _ = proto.send_msg(codec::Message::Error(err.clone())).await;
+
+        // If we are capable of setting the dirty bit on guest page table
+        // entries, re-dirty them, so that a later migration attempt can also
+        // only offer dirty pages. If we can't use VM_NPT_OPERATION, a
+        // subsequent migration attempt will offer all pages.
+        if proto.can_npt_operate {
+            for (&GuestAddr(gpa), dirtiness) in proto.dirt.iter() {
+                let mut pages = 0;
+                // TODO(eliza): we could probably use a smaller array here, it
+                // only need be as long as the highest byte with ones in it.
+                // But, this is simpler...
+                let mut bits = [0u8; PAGE_BITMAP_SIZE];
+                for &(idx, byte) in dirtiness {
+                    bits[idx] |= byte;
+                    pages += byte.count_ones();
+                }
+                if pages == 0 {
+                    continue;
+                }
+
+                info!(proto.log(), "re-dirtied {pages} pages at {gpa:#x}",);
+
+                if let Err(e) = proto
+                    .vm_controller
+                    .machine()
+                    .hdl
+                    .set_dirty_pages(gpa, &bits)
+                {
+                    // TODO(eliza): we probably need to handle a failure to put
+                    // dirty bits back a bit more gracefully --- now, the VM may
+                    // be in a state where we will always have to use
+                    // `RamOfferDiscipline::OfferAll` in the future.
+                    error!(
+                        proto.log(),
+                        "failed to restore dirty bits: {e}";
+                        "gpa" => gpa,
+                    );
+                }
+            }
+        }
+
         return Err(err);
     }
 
@@ -83,7 +125,33 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
 
     /// Transport to the destination Instance.
     conn: WebSocketStream<T>,
+
+    /// Guest page table dirty bits to restore in the event of a migration
+    /// failure, so that a subsequent migration can attempt to offer only dirty
+    /// pages.
+    ///
+    /// Yes, this representation may seem somewhat weird. Bear with me: when we
+    /// call the `VM_NPT_OPERATION` ioctl, the pages whose dirty bits we would
+    /// like to set are represented by a bitmap. Therefore, we need to be able
+    /// to produce bitmaps for each chunk of guest physical address space for
+    /// which we've previously observed dirty pages. We could, of course, just
+    /// store a map of base guest addresses to 4096-byte arrays, keeping the
+    /// whole bitmap in memory until the migration finishes, but this seems kind
+    /// of sad, given that the bitmap may be fairly sparse.
+    ///
+    /// Instead, we store a map of base guest addresses to a list of indices
+    /// into the bitmap array and the byte that needs to go there. Then, if we
+    /// actually call `VM_NPT_OPERATION` to re-dirty those pages, we can go back
+    /// and bit-or the bytes at each index that we care about with the dirty
+    /// flags that we had previously cleared. This sparser representation should
+    /// save some memory versus storing a bunch of page-sized byte arrays.
+    dirt: std::collections::HashMap<GuestAddr, Vec<(usize, u8)>>,
+
+    /// `true` if the Bhyve VMM supports the `VM_NPT_OPERATION`
+    can_npt_operate: bool,
 }
+
+const PAGE_BITMAP_SIZE: usize = 4096;
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     fn new(
@@ -92,7 +160,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
         conn: WebSocketStream<T>,
     ) -> Self {
-        Self { vm_controller, command_tx, response_rx, conn }
+        let can_npt_operate = vm_controller.machine().hdl.can_npt_operate();
+        Self {
+            vm_controller,
+            command_tx,
+            response_rx,
+            conn,
+            dirt: Default::default(),
+            can_npt_operate,
+        }
     }
 
     fn log(&self) -> &slog::Logger {
@@ -179,44 +255,100 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let req_ram_range = self.read_mem_query().await?;
         info!(
             self.log(),
-            "ram_push ({:?}): got query for range {:?}, vm range {:?}",
+            "ram_push ({:?}): got query for range {:#x?}, vm range {:#x?}",
             phase,
             req_ram_range,
             vmm_ram_range
         );
 
-        // Depending on which bhyve version is present, we may be able to only
-        // offer dirty pages at all migration phases. This depends on whether
-        // the track dirty pages operation will reset the dirty bits on tracked
-        // pages. If it does, we must always offer all RAM in the pre-pause
-        // phase, because we may have previously attempted a migration that
-        // failed, which --- if tracking dirty pages clears dirty bits --- may
-        // have cleared those bits on some pages that the guest has touched.
-        // However, if the variant of this operation that preserves dirty bits
-        // is available, we never need to clear the dirty bits and can thus only
-        // ever offer only the pages which the guest has touched, which is more
-        // efficient.
-        let reset_dirty =
-            self.vm_controller.machine().hdl.must_reset_dirty_pages();
-        let offer_discipline = match (phase, reset_dirty) {
-            // If tracking dirty pages will reset dirty bits, then we must offer
-            // all RAM in the pre-push phase, since we may have previously
-            // attempted a failed migration.
-            (MigratePhase::RamPushPrePause, true) => {
+        //
+        // On Dirty Pages and the Discipline Thereof
+        // -----------------------------------------
+        //
+        // In an ideal world, a migration would only ever transfer pages of the
+        // guest's address space which have actually been touched by the guest;
+        // we don't want to waste time sending a bunch of zero pages on the
+        // wire. RAM is offered to the migration destination in two phases:
+        // first, we transfer the majority of the guest's RAM prior to pausing
+        // the guest, and second, after pausing the guest, we transfer any pages
+        // which have been touched since when we performed the first transfer.
+        // This way, we perform most of the RAM transfer while the guest is
+        // still running, and only re-transfer pages which have been dirtied
+        // again while paused.
+        //
+        // Transferring only dirty pages is made possible by bhyve's
+        // VM_TRACK_DIRTY_PAGES and VM_NPT_OPERATION ioctls. The
+        // VM_TRACK_DIRTY_PAGES ioctl allows us to generate a bitmap of which
+        // pages have their dirty flags set, allowing us to offer only those
+        // pages when performing a RAM transfer. Because VM_TRACK_DIRTY_PAGES
+        // also clears the dirty bits, if we call the ioctl when offering the
+        // initial pre-pause RAM transfer, and then again when performing the
+        // post-pause RAM transfer, the second ioctl call will see only the
+        // dirty bits that were set *since* when the initial transfer was
+        // performed, allowing us to offer only the pages which have been
+        // touched since we transferred most of the memory.
+        //
+        // Sounds simple enough, right? Well, here's where things get
+        // interesting. Should a migration *fail* after transferring RAM, all
+        // the dirty bits on the guest's pages will have been cleared by the
+        // VM_TRACK_DIRTY_PAGES ioctl. This means that, for a naive
+        // implementation which just always transfers only the pages marked as
+        // dirty by the ioctl, a second or third migration attempt will not
+        // transfer any pages whose dirty bits were cleared by the first
+        // migration attempt and haven't been touched again since then. This is
+        // bad news! The guest has written to those pages, and, just because it
+        // hasn't touched them since the last migration attempt, it may still
+        // care about that memory, and attempt to read what it put there again
+        // in the future --- with unpleasant results, if we haven't transferred
+        // that memory.
+        //
+        // There are two potential ways we can solve this, and --- as you're
+        // about to discover --- we implement both of them:
+        //
+        // 1. The obvious solution: we can just offer all RAM in the pre-pause
+        //    RAM push phase, clearing any dirty bits, and then offer only dirty
+        //    pages in the post-pause RAM push phase. This has the nice
+        //    property that it's trivially correct no matter how many migration
+        //    attempts it takes before we actually migrate a guest successfully.
+        //    It also has the less nice property that we're offering a bunch
+        //    of pages that the guest has never actually touched and doesn't
+        //    care about.
+        // 2. The clever solution: what if we had a way to put the dirty bit
+        //    *back* after we've cleared it? If such a thing existed, we could
+        //    record which pages were dirty when we performed the RAM transfers,
+        //    and then, should the migration fail, go back and put those dirty
+        //    bits *back*, so that a potential future migration attempt will
+        //    still see that those pages are dirty and offer them again.
+        //
+        // The good news is that there is, in fact, a way to do that, using the
+        // VM_NPT_OPERATION ioctl's VNO_OP_SET_DIRTY operation. However, the
+        // less good news is that this ioctl isn't available in all the bhyve
+        // versions that Propolis supports, as it was added in bhyve v17.
+        // Therefore, we implement both solutions, depending on which bhyve
+        // version is present. If we have VM_NPT_OPERATION, both the pre-pause
+        // and post-pause RAM push phases will use
+        // `RamOfferDiscipline::OfferDirty`, and only offer dirty pages,
+        // recording any dirty bits that were cleared by the
+        // VM_TRACK_DIRTY_PAGES ioctl. If we don't have VM_NPT_OPERATION, we use
+        // `RamOfferDiscipline::OfferAll` in the pre-pause phase, and
+        // `RamOfferDiscipline::OfferDirty` only in the post-pause phase.
+        // Because we can't put the dirty bits back, we have to offer all the
+        // memory in the first phase, but we can still use dirty page tracking
+        // to avoid re-offering pages that were transferred in the first phase
+        // when we do the second RAM offer after pausing the guest.
+        let offer_discipline = match phase {
+            // If we are in the pre-pause RAM push phase, and we don't have
+            // VM_NPT_OPERATION to put back any dirty bits if the migration
+            // fails, we have to offer all pages here.
+            MigratePhase::RamPushPrePause if !self.can_npt_operate => {
                 RamOfferDiscipline::OfferAll
             }
-            // Otherwise, if we are in the post-pause phase or if we can track
-            // dirty pages without clearing the dirty bit, we can just offer
-            // dirty pages.
+            // Otherwise, if we are in the post-pause phase, or if we *can* just
+            // put back the dirty bits in the event of a migration failure, we
+            // need only offer pages that have their dirty bit set.
             _ => RamOfferDiscipline::OfferDirty,
         };
-        self.offer_ram(
-            vmm_ram_range,
-            req_ram_range,
-            offer_discipline,
-            reset_dirty,
-        )
-        .await?;
+        self.offer_ram(vmm_ram_range, req_ram_range, offer_discipline).await?;
 
         loop {
             let m = self.read_msg().await?;
@@ -236,7 +368,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                     // should probably disallow it at the protocol level.
                     self.xfer_ram(start, end, &bits).await?;
                     probes::migrate_xfer_ram_region!(|| {
-                        use bitvec::prelude::{BitSlice, Lsb0};
                         let bits = BitSlice::<_, Lsb0>::from_slice(&bits);
                         let pages = bits.count_ones() as u64;
                         (
@@ -263,17 +394,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         vmm_ram_range: RangeInclusive<GuestAddr>,
         req_ram_range: Range<u64>,
         offer_discipline: RamOfferDiscipline,
-        reset_dirty: bool,
     ) -> Result<(), MigrateError> {
         info!(
             self.log(),
             "offering ram";
             "discipline" => ?offer_discipline,
-            "reset_dirty" => ?reset_dirty,
+            "can_npt_operate" => ?self.can_npt_operate,
         );
         let vmm_ram_start = *vmm_ram_range.start();
         let vmm_ram_end = *vmm_ram_range.end();
-        let mut bits = [0u8; 4096];
+        let mut bits = [0u8; PAGE_BITMAP_SIZE];
         let req_start_gpa = req_ram_range.start;
         let req_end_gpa = req_ram_range.end;
         let start_gpa = req_start_gpa.max(vmm_ram_start.0);
@@ -293,30 +423,53 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
         let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (start_gpa..end_gpa).step_by(step) {
+            let mut pages_offered = 0;
             // Always capture the dirty page mask even if the offer discipline
             // says to offer all pages. This ensures that pages that are
-            // transferred now and not touched again will not be offered again.
-            self.vm_controller
-                .machine()
-                .hdl
-                .track_dirty_pages(gpa, &mut bits, reset_dirty)
-                .map_err(|_| MigrateError::InvalidInstanceState)?;
+            // transferred now and not touched again will not be offered again
+            // by a subsequent phase.
+            self.track_dirty(GuestAddr(start_gpa), &mut bits)?;
 
             match offer_discipline {
                 RamOfferDiscipline::OfferAll => {
                     for byte in bits.iter_mut() {
                         *byte = 0xff;
                     }
+                    pages_offered = PAGE_BITMAP_SIZE * 8;
                 }
                 RamOfferDiscipline::OfferDirty => {
-                    if bits.iter().all(|&b| b == 0) {
-                        continue;
+                    for (idx, &byte) in
+                        bits.iter().enumerate().filter(|(_, &b)| b != 0)
+                    {
+                        // If we're on a bhyve version that supports
+                        // VM_NPT_OPERATION, we'll be able to put the dirty bits
+                        // back in the event of a migration failure. Therefore,
+                        // we need to hang onto any bytes and their indices so
+                        // that we can rebuild the dirty page mask later, if
+                        // necessary.
+                        //
+                        // If bhyve doesn't support VM_NPT_OPERATION, no sense
+                        // hanging onto this. We'll just have to offer all pages
+                        // in the initial RAM Offer phase, instead.
+                        if self.can_npt_operate {
+                            self.dirt
+                                .entry(GuestAddr(gpa))
+                                .or_default()
+                                .push((idx, byte));
+                        }
+                        pages_offered += byte.count_ones() as usize;
                     }
                 }
             }
 
             let end = end_gpa.min(gpa + step as u64);
-            self.send_msg(memx::make_mem_offer(gpa, end, &bits)).await?;
+            info!(
+                self.log(),
+                "ram_push: offering {pages_offered} pages between {gpa:#x} and {end:#x}"
+            );
+            if pages_offered > 0 {
+                self.send_msg(memx::make_mem_offer(gpa, end, &bits)).await?;
+            }
         }
         self.send_msg(codec::Message::MemEnd(req_start_gpa, req_end_gpa)).await
     }
@@ -327,7 +480,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         end: u64,
         bits: &[u8],
     ) -> Result<(), MigrateError> {
-        info!(self.log(), "ram_push: xfer RAM between {} and {}", start, end);
+        info!(self.log(), "ram_push: xfer RAM between {start:#x} and {end:#x}",);
         self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
         for addr in PageIter::new(start, end, bits) {
             let mut bytes = [0u8; PAGE_SIZE];
@@ -485,6 +638,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         // succeeded.
         self.update_state(MigrationState::Finish).await;
 
+        // This VMM is going away, so if any guest memory is still dirty, it
+        // won't be transferred. Assert that there is no such memory.
+        //
+        // The unwraps in the block below amount to assertions that the VMM
+        // exists at this point (it should). Note that returning an error here
+        // is not permitted because that will cause migration to unwind and the
+        // VM to resume, which is forbidden at this point (see above).
+        let vmm_range = self.vmm_ram_bounds().await.unwrap();
+        let mut bits = [0u8; PAGE_BITMAP_SIZE];
+        let step = bits.len() * 8 * PAGE_SIZE;
+        for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
+            self.track_dirty(GuestAddr(gpa), &mut bits).unwrap();
+            assert!(bits.iter().all(|&b| b == 0));
+        }
+
         Ok(())
     }
 
@@ -553,6 +721,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let machine = self.vm_controller.machine();
         let memctx = machine.acc_mem.access().unwrap();
         memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
+    }
+
+    fn track_dirty(
+        &mut self,
+        start_gpa: GuestAddr,
+        bits: &mut [u8],
+    ) -> Result<(), MigrateError> {
+        self.vm_controller
+            .machine()
+            .hdl
+            .track_dirty_pages(start_gpa.0, bits)
+            .map_err(|_| MigrateError::InvalidInstanceState)
     }
 
     async fn read_guest_mem(
