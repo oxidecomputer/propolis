@@ -457,7 +457,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             // says to offer all pages. This ensures that pages that are
             // transferred now and not touched again will not be offered again
             // by a subsequent phase.
-            self.track_dirty(GuestAddr(start_gpa), &mut bits)?;
+            self.track_dirty(GuestAddr(gpa), &mut bits)?;
 
             match offer_discipline {
                 RamOfferDiscipline::OfferAll => {
