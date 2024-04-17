@@ -13,7 +13,6 @@ use slog::{error, info, trace};
 use std::convert::TryInto;
 use std::io;
 use std::ops::{Range, RangeInclusive};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::WebSocketStream;
@@ -156,7 +155,10 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
                 // phase.
                 //
                 // Record that now so we never try to do this again.
-                HAS_REDIRTYING_EVER_FAILED.store(true, Ordering::Relaxed);
+                proto
+                    .vm_controller
+                    .migration_src_state()
+                    .has_redirtying_ever_failed = true;
                 error!(
                     proto.log(),
                     "failed to restore dirty bits: {e}";
@@ -176,6 +178,20 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     Ok(())
 }
 
+/// State which must be stored across multiple migration attempts.
+///
+/// This struct is stored on the [`VmController`] so that may be accessed by
+/// subsequent [`migrate`] invocations.
+
+#[derive(Default)]
+pub(crate) struct PersistentState {
+    /// Set if we were unable to re-set dirty bits on guest pages after a failed
+    /// migration attempt. If this occurs, we can no longer offer only dirty pages
+    /// in a subsequent migration attempt, as some pages which should be marked as
+    /// dirty may not be.
+    has_redirtying_ever_failed: bool,
+}
+
 struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     /// The VM controller for the instance of interest.
     vm_controller: Arc<VmController>,
@@ -193,23 +209,9 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
 
     /// Guest page table dirty bits to restore in the event of a migration
     /// failure, so that a subsequent migration can attempt to offer only dirty
-    /// pages.
-    ///
-    /// Yes, this representation may seem somewhat weird. Bear with me: when we
-    /// call the `VM_NPT_OPERATION` ioctl, the pages whose dirty bits we would
-    /// like to set are represented by a bitmap. Therefore, we need to be able
-    /// to produce bitmaps for each chunk of guest physical address space for
-    /// which we've previously observed dirty pages. We could, of course, just
-    /// store a map of base guest addresses to 4096-byte arrays, keeping the
-    /// whole bitmap in memory until the migration finishes, but this seems kind
-    /// of sad, given that the bitmap may be fairly sparse.
-    ///
-    /// Instead, we store a map of base guest addresses to a list of indices
-    /// into the bitmap array and the byte that needs to go there. Then, if we
-    /// actually call `VM_NPT_OPERATION` to re-dirty those pages, we can go back
-    /// and bit-or the bytes at each index that we care about with the dirty
-    /// flags that we had previously cleared. This sparser representation should
-    /// save some memory versus storing a bunch of page-sized byte arrays.
+    /// pages. These dirty bits are accumulated across all RAM push phases, so
+    /// that any pages which become dirty after the pre-pause RAM push are also
+    /// added to these bitmaps.
     ///
     /// This is `Some` if we should attempt to re-set dirty bits on guest pages
     /// in the event of a migration failure, and `None` if we cannot do so. It
@@ -218,8 +220,9 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     /// - The current bhyve version supports the `VM_NPT_OPERATION` ioctl (i.e.
     ///   it is at least bhyve v17 or later),
     /// - A previous attempt to re-dirty pages has failed (viz.
-    ///   [`HAS_REDIRTYING_EVER_FAILED`]), in which case, we can no longer trust
-    ///   that all previously dirtied pages were re-dirtied correctly.
+    ///   [`PersistentState::has_retrying_ever_failed`]), in which case, we can
+    ///   no longer trust  that all previously dirtied pages were re-dirtied
+    ///   correctly.
     ///
     /// Otherwise, we must fall back to always offering all pages in the initial
     /// pre-pause RAM push phase.
@@ -228,12 +231,6 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
 
 type PageBitmap = [u8; PAGE_BITMAP_SIZE];
 const PAGE_BITMAP_SIZE: usize = 4096;
-
-/// Set if we were unable to re-set dirty bits on guest pages after a failed
-/// migration attempt. If this occurs, we can no longer offer only dirty pages
-/// in a subsequent migration attempt, as some pages which should be marked as
-/// dirty may not be.
-static HAS_REDIRTYING_EVER_FAILED: AtomicBool = AtomicBool::new(false);
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     fn new(
@@ -245,7 +242,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let dirt = {
             let can_npt_operate = vm_controller.machine().hdl.can_npt_operate();
             let has_redirtying_ever_failed =
-                HAS_REDIRTYING_EVER_FAILED.load(Ordering::Relaxed);
+                vm_controller.migration_src_state().has_redirtying_ever_failed;
             if can_npt_operate && !has_redirtying_ever_failed {
                 Some(Default::default())
             } else {
