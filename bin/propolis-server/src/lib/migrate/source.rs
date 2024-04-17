@@ -678,10 +678,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
             self.track_dirty(GuestAddr(gpa), &mut bits).unwrap();
-            assert!(
-                bits.iter().all(|&b| b == 0),
-                "dirty memory left behind in the range starting at {:#x}",
-                gpa
+            let pages_left_behind =
+                BitSlice::<_, Lsb0>::from_slice(&bits).count_ones() as u64;
+            assert_eq!(
+                0,
+                pages_left_behind,
+                "{pages_left_behind} dirty pages left behind between {:#x}..{:#x}",
+                gpa,
+                gpa + step as u64,
             );
         }
 
