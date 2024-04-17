@@ -143,21 +143,11 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
         // See the lengthy comment on `RamOfferDiscipline` above for more
         // details about what's going on here.
         for (&GuestAddr(gpa), dirtiness) in proto.dirt.iter().flatten() {
-            let mut pages = 0;
-            // TODO(eliza): we could probably use a smaller array here, it
-            // only need be as long as the highest byte with ones in it.
-            // But, this is simpler...
-            let mut bits = [0u8; PAGE_BITMAP_SIZE];
-            for &(idx, byte) in dirtiness {
-                bits[idx] |= byte;
-                pages += byte.count_ones();
-            }
-            if pages == 0 {
-                continue;
-            }
-
-            if let Err(e) =
-                proto.vm_controller.machine().hdl.set_dirty_pages(gpa, &bits)
+            if let Err(e) = proto
+                .vm_controller
+                .machine()
+                .hdl
+                .set_dirty_pages(gpa, dirtiness)
             {
                 // Bad news! Our attempt to re-set the dirty bit on these
                 // pages has failed! Thus, subsequent migration attempts
@@ -176,7 +166,7 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
                 // dirty bits, as we won't be using them any longer.
                 break;
             } else {
-                info!(proto.log(), "re-dirtied {pages} pages at {gpa:#x}",);
+                info!(proto.log(), "re-dirtied pages at {gpa:#x}",);
             }
         }
 
@@ -233,9 +223,10 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     ///
     /// Otherwise, we must fall back to always offering all pages in the initial
     /// pre-pause RAM push phase.
-    dirt: Option<std::collections::HashMap<GuestAddr, Vec<(usize, u8)>>>,
+    dirt: Option<std::collections::HashMap<GuestAddr, PageBitmap>>,
 }
 
+type PageBitmap = [u8; PAGE_BITMAP_SIZE];
 const PAGE_BITMAP_SIZE: usize = 4096;
 
 /// Set if we were unable to re-set dirty bits on guest pages after a failed
@@ -467,25 +458,30 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                     pages_offered = PAGE_BITMAP_SIZE * 8;
                 }
                 RamOfferDiscipline::OfferDirty => {
-                    for (idx, &byte) in
-                        bits.iter().enumerate().filter(|(_, &b)| b != 0)
-                    {
-                        // If we're on a bhyve version that supports
-                        // VM_NPT_OPERATION, we'll be able to put the dirty bits
-                        // back in the event of a migration failure. Therefore,
-                        // we need to hang onto any bytes and their indices so
-                        // that we can rebuild the dirty page mask later, if
-                        // necessary.
-                        //
-                        // If bhyve doesn't support VM_NPT_OPERATION, no sense
-                        // hanging onto this. We'll just have to offer all pages
-                        // in the initial RAM Offer phase, instead.
-                        if let Some(ref mut dirt) = self.dirt {
-                            dirt.entry(GuestAddr(gpa))
-                                .or_default()
-                                .push((idx, byte));
-                        }
-                        pages_offered += byte.count_ones() as usize;
+                    let bits = BitSlice::<_, Lsb0>::from_slice(&bits);
+                    let dirty_pages = bits.count_ones();
+                    if dirty_pages == 0 {
+                        continue;
+                    }
+
+                    pages_offered += dirty_pages;
+
+                    // If we're on a bhyve version that supports
+                    // VM_NPT_OPERATION, we'll be able to put the dirty bits
+                    // back in the event of a migration failure. Therefore,
+                    // we need to hang onto any bytes and their indices so
+                    // that we can rebuild the dirty page mask later, if
+                    // necessary.
+                    //
+                    // If bhyve doesn't support VM_NPT_OPERATION, no sense
+                    // hanging onto this. We'll just have to offer all pages
+                    // in the initial RAM Offer phase, instead.
+                    if let Some(ref mut dirt) = self.dirt {
+                        let saved = dirt
+                            .entry(GuestAddr(gpa))
+                            .or_insert_with(|| [0u8; PAGE_BITMAP_SIZE]);
+                        let saved = BitSlice::<_, Lsb0>::from_slice_mut(saved);
+                        *saved |= bits;
                     }
                 }
             }
