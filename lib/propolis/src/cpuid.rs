@@ -423,6 +423,28 @@ impl TryFrom<Entry> for VendorKind {
     }
 }
 
+/// Parse the Processor Brand String (aka ProcName) from extended leafs
+/// 0x8000_0002 - 0x8000_0004.
+pub fn parse_brand_string(
+    leafs: [Entry; 3],
+) -> Result<String, std::str::Utf8Error> {
+    let mut buf = Vec::with_capacity(16 * 3);
+    for ent in leafs {
+        buf.extend_from_slice(&ent.eax.to_le_bytes());
+        buf.extend_from_slice(&ent.ebx.to_le_bytes());
+        buf.extend_from_slice(&ent.ecx.to_le_bytes());
+        buf.extend_from_slice(&ent.edx.to_le_bytes());
+    }
+    // remove NUL and trailing chars
+    if let Some(nul_pos) = buf.iter().position(|c| *c == 0) {
+        buf.truncate(nul_pos);
+    }
+    let untrimmed = std::str::from_utf8(&buf)?;
+
+    // trim any bounding whitespace which remains
+    Ok(untrimmed.trim().to_string())
+}
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn host_query(ident: Ident) -> Entry {
     let mut res = Entry::zero();

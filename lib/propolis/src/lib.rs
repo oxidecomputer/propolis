@@ -21,6 +21,7 @@ pub mod chardev;
 pub mod common;
 pub mod cpuid;
 pub mod exits;
+pub mod firmware;
 pub mod hw;
 pub mod intr_pins;
 pub mod lifecycle;
