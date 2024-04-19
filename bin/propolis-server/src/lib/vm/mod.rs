@@ -36,7 +36,7 @@ use std::{
     fmt::Debug,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
     task::{Context, Poll},
     thread::JoinHandle,
     time::Duration,
@@ -63,7 +63,7 @@ use uuid::Uuid;
 
 use crate::{
     initializer::{build_instance, MachineInitializer},
-    migrate::MigrateError,
+    migrate::{self, MigrateError},
     serial::Serial,
     server::{BlockBackendMap, CrucibleBackendMap, DeviceMap, StaticConfig},
     vm::request_queue::ExternalRequest,
@@ -300,6 +300,9 @@ pub struct VmController {
     /// (e.g. migration tasks).
     runtime_hdl: tokio::runtime::Handle,
 
+    /// Migration source state persisted across multiple migration attempts.
+    migration_src_state: Mutex<migrate::source::PersistentState>,
+
     /// A weak reference to this controller, suitable for upgrading and passing
     /// to tasks the controller spawns.
     this: Weak<Self>,
@@ -511,6 +514,7 @@ impl VmController {
             },
             worker_state,
             worker_thread: Mutex::new(None),
+            migration_src_state: Default::default(),
             log: log.new(slog::o!("component" => "vm_controller")),
             runtime_hdl: runtime_hdl.clone(),
             this: this.clone(),
@@ -557,6 +561,12 @@ impl VmController {
             .machine
             .as_ref()
             .expect("VM controller always has a valid machine")
+    }
+
+    pub(crate) fn migration_src_state(
+        &self,
+    ) -> MutexGuard<'_, migrate::source::PersistentState> {
+        self.migration_src_state.lock().unwrap()
     }
 
     pub async fn instance_spec(
