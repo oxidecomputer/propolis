@@ -62,7 +62,9 @@ use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 
 use crate::{
-    initializer::{build_instance, MachineInitializer},
+    initializer::{
+        build_instance, MachineInitializer, MachineInitializerState,
+    },
     migrate::{self, MigrateError},
     serial::Serial,
     server::{BlockBackendMap, CrucibleBackendMap, DeviceMap, StaticConfig},
@@ -453,7 +455,9 @@ impl VmController {
             block_backends: BlockBackendMap::new(),
             crucible_backends: CrucibleBackendMap::new(),
             spec: v0_spec,
+            properties: &properties,
             producer_registry,
+            state: MachineInitializerState::default(),
         };
 
         init.initialize_rom(bootrom.as_path())?;

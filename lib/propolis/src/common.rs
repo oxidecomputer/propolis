@@ -378,6 +378,15 @@ pub fn round_up_p2(val: usize, to: usize) -> usize {
     val.checked_add(to - 1).unwrap() & !(to - 1)
 }
 
+/// Bytes per KiB
+pub const KB: usize = 1024;
+/// Bytes per MiB
+pub const MB: usize = 1024 * 1024;
+/// Bytes per GiB
+pub const GB: usize = 1024 * 1024 * 1024;
+/// Bytes per TiB
+pub const TB: usize = 1024 * 1024 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;

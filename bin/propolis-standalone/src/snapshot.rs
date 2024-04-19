@@ -25,7 +25,7 @@ use bhyve_api::{
 };
 use propolis::{
     chardev::UDSock,
-    common::{GuestAddr, GuestRegion},
+    common::{GuestAddr, GuestRegion, GB},
     migrate::{
         MigrateCtx, Migrator, PayloadOffer, PayloadOffers, PayloadOutputs,
     },
@@ -160,7 +160,6 @@ pub(crate) fn save(
 
     // TODO(luqmana) clean this up. make mem_bounds do the lo/hi calc? or just
     // use config values?
-    const GB: usize = 1024 * 1024 * 1024;
     let mem_bounds = memctx
         .mem_bounds()
         .ok_or_else(|| anyhow::anyhow!("Failed to get VM RAM bounds"))?;
