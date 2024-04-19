@@ -36,7 +36,7 @@ use std::{
     fmt::Debug,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
     task::{Context, Poll},
     thread::JoinHandle,
     time::Duration,
@@ -565,7 +565,7 @@ impl VmController {
 
     pub(crate) fn migration_src_state(
         &self,
-    ) -> std::sync::MutexGuard<'_, migrate::source::PersistentState> {
+    ) -> MutexGuard<'_, migrate::source::PersistentState> {
         self.migration_src_state.lock().unwrap()
     }
 

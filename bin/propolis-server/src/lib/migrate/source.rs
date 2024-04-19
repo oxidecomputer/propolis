@@ -9,7 +9,8 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
 use propolis::vmm;
-use slog::{error, info, trace};
+use slog::{debug, error, info, trace};
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io;
 use std::ops::{Range, RangeInclusive};
@@ -168,7 +169,7 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
                 // dirty bits, as we won't be using them any longer.
                 break;
             } else {
-                info!(proto.log(), "re-dirtied pages at {gpa:#x}",);
+                debug!(proto.log(), "re-dirtied pages at {gpa:#x}",);
             }
         }
 
@@ -226,11 +227,11 @@ struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     ///
     /// Otherwise, we must fall back to always offering all pages in the initial
     /// pre-pause RAM push phase.
-    dirt: Option<std::collections::HashMap<GuestAddr, PageBitmap>>,
+    dirt: Option<HashMap<GuestAddr, PageBitmap>>,
 }
 
-type PageBitmap = [u8; PAGE_BITMAP_SIZE];
 const PAGE_BITMAP_SIZE: usize = 4096;
+type PageBitmap = [u8; PAGE_BITMAP_SIZE];
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     fn new(
