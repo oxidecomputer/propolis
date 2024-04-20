@@ -850,7 +850,7 @@ impl<'a> MachineInitializer<'a> {
         fwcfg
             .add_legacy(
                 fwcfg::LegacyId::SmpCpuCount,
-                fwcfg::FixedItem::new_u32(cpus as u32),
+                fwcfg::FixedItem::new_u32(u32::from(cpus)),
             )
             .unwrap();
 

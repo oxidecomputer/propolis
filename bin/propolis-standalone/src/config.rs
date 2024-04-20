@@ -258,7 +258,8 @@ fn create_crucible_backend(
     // what block size the downstairs is using. A lot of things
     // default to 512, but it's best not to assume it'll always be
     // that way.
-    let block_size = opts.block_size.expect("block_size is provided") as u64;
+    let block_size =
+        u64::from(opts.block_size.expect("block_size is provided"));
     let read_only = opts.read_only.unwrap_or(false);
 
     #[derive(Deserialize)]

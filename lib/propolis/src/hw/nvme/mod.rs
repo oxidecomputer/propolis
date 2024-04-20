@@ -179,7 +179,7 @@ impl NvmeCtrl {
             0,
             GuestAddr(self.ctrl.admin_cq_base),
             // Convert from 0's based
-            self.ctrl.aqa.acqs() as u32 + 1,
+            u32::from(self.ctrl.aqa.acqs()) + 1,
             mem,
         )?;
         self.create_sq(
@@ -187,7 +187,7 @@ impl NvmeCtrl {
             queue::ADMIN_QUEUE_ID,
             GuestAddr(self.ctrl.admin_sq_base),
             // Convert from 0's based
-            self.ctrl.aqa.asqs() as u32 + 1,
+            u32::from(self.ctrl.aqa.asqs()) + 1,
             mem,
         )?;
         Ok(())
@@ -848,7 +848,12 @@ impl PciNvme {
 
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
-                probes::nvme_doorbell!(|| (off as u64, qid, is_cq as u8, val));
+                probes::nvme_doorbell!(|| (
+                    off as u64,
+                    qid,
+                    u8::from(is_cq),
+                    val
+                ));
                 if is_cq {
                     // Completion Queue y Head Doorbell
                     let cq = state.get_cq(qid)?;

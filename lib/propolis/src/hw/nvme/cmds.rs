@@ -271,7 +271,7 @@ impl GetLogPageCmd {
     /// The expected size of the memory covered by the PRPs is defined by
     /// `NUMD`, stored as bytes (rather than number Dwords) in [`Self::len`]
     pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
-        PrpIter::new(self.len as u64, self.prp1, self.prp2, mem)
+        PrpIter::new(u64::from(self.len), self.prp1, self.prp2, mem)
     }
 }
 
@@ -569,7 +569,7 @@ impl From<u32> for FeatVolatileWriteCache {
 }
 impl From<FeatVolatileWriteCache> for u32 {
     fn from(value: FeatVolatileWriteCache) -> Self {
-        value.wce as u32
+        u32::from(value.wce)
     }
 }
 
@@ -608,8 +608,8 @@ impl TryFrom<u32> for FeatNumberQueues {
 impl From<FeatNumberQueues> for u32 {
     fn from(value: FeatNumberQueues) -> Self {
         // Convert to 0's based DW0
-        (value.ncq.saturating_sub(1) as u32) << 16
-            | value.nsq.saturating_sub(1) as u32
+        u32::from(value.ncq.saturating_sub(1)) << 16
+            | u32::from(value.nsq.saturating_sub(1))
     }
 }
 
@@ -626,7 +626,7 @@ impl From<u32> for FeatInterruptVectorConfig {
 }
 impl From<FeatInterruptVectorConfig> for u32 {
     fn from(value: FeatInterruptVectorConfig) -> Self {
-        value.iv as u32 | (value.cd as u32) << 16
+        u32::from(value.iv) | u32::from(value.cd) << 16
     }
 }
 
@@ -655,14 +655,14 @@ impl NvmCmd {
         let cmd = match raw.opcode() {
             bits::NVM_OPC_FLUSH => NvmCmd::Flush,
             bits::NVM_OPC_WRITE => NvmCmd::Write(WriteCmd {
-                slba: (raw.cdw11 as u64) << 32 | raw.cdw10 as u64,
+                slba: u64::from(raw.cdw11) << 32 | u64::from(raw.cdw10),
                 // Convert from 0's based value
                 nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
             bits::NVM_OPC_READ => NvmCmd::Read(ReadCmd {
-                slba: (raw.cdw11 as u64) << 32 | raw.cdw10 as u64,
+                slba: u64::from(raw.cdw11) << 32 | u64::from(raw.cdw10),
                 // Convert from 0's based value
                 nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
@@ -876,7 +876,7 @@ impl PrpIter<'_> {
             }
             PrpNext::List(base, idx) => {
                 assert!(idx <= PRP_LIST_MAX);
-                let entry_addr = base + (idx as u64) * 8;
+                let entry_addr = base + u64::from(idx) * 8;
                 let entry: u64 = self
                     .mem
                     .read(GuestAddr(entry_addr))

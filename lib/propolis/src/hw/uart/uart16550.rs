@@ -119,12 +119,12 @@ impl Uart {
                 );
             }
             None => {
-                probes::uart_ign_read!(|| (offset, is_dlab as u8));
+                probes::uart_ign_read!(|| (offset, u8::from(is_dlab)));
                 0
             }
         };
 
-        probes::uart_reg_read!(|| (offset, is_dlab as u8, val));
+        probes::uart_reg_read!(|| (offset, u8::from(is_dlab), val));
 
         val
     }
@@ -133,7 +133,7 @@ impl Uart {
     pub fn reg_write(&mut self, offset: u8, data: u8) {
         let is_dlab = self.is_dlab();
 
-        probes::uart_reg_write!(|| (offset, is_dlab as u8, data));
+        probes::uart_reg_write!(|| (offset, u8::from(is_dlab), data));
         match UartReg::for_write(offset, is_dlab) {
             Some(UartReg::DivisorLow) => {
                 self.reg_div_low = data;
@@ -196,7 +196,7 @@ impl Uart {
                 );
             }
             None => {
-                probes::uart_ign_read!(|| (offset, is_dlab as u8, data));
+                probes::uart_ign_read!(|| (offset, u8::from(is_dlab), data));
             }
         }
     }

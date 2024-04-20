@@ -52,7 +52,7 @@ impl PioBus {
             let mut wo = WriteOp::from_buf(o as usize, data);
             func(a, RWOp::Write(&mut wo))
         });
-        probes::pio_out!(|| (port, bytes, val, handled.is_ok() as u8));
+        probes::pio_out!(|| (port, bytes, val, u8::from(handled.is_ok())));
         handled
     }
 
@@ -70,7 +70,7 @@ impl PioBus {
         });
 
         let val = LE::read_u32(&buf);
-        probes::pio_in!(|| (port, bytes, val, handled.is_ok() as u8));
+        probes::pio_in!(|| (port, bytes, val, u8::from(handled.is_ok())));
         handled.map(|_| val)
     }
 

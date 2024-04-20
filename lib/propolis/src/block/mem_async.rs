@@ -104,7 +104,7 @@ impl MemAsyncBackend {
 
         if size == 0 {
             return Err(Error::new(ErrorKind::Other, "size cannot be 0"));
-        } else if (size % block_size as u64) != 0 {
+        } else if (size % u64::from(block_size)) != 0 {
             return Err(Error::new(
                 ErrorKind::Other,
                 format!(
@@ -121,7 +121,7 @@ impl MemAsyncBackend {
                 attachment: block::backend::Attachment::new(),
                 info: block::DeviceInfo {
                     block_size,
-                    total_size: size / block_size as u64,
+                    total_size: size / u64::from(block_size),
                     read_only: opts.read_only.unwrap_or(false),
                 },
                 seg,

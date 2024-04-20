@@ -172,11 +172,11 @@ impl CrucibleBackend {
     ) -> io::Result<Arc<Self>> {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
-            let block_size = opts.block_size.ok_or_else(|| {
+            let block_size = u64::from(opts.block_size.ok_or_else(|| {
                 CrucibleError::GenericError(
                     "block_size is required parameter".into(),
                 )
-            })? as u64;
+            })?);
             // Allocate and construct the volume.
             let mem_disk = Arc::new(crucible::InMemoryBlockIO::new(
                 Uuid::new_v4(),

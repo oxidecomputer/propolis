@@ -57,7 +57,7 @@ impl MmioBus {
             addr as u64,
             bytes,
             val,
-            handled.is_ok() as u8
+            u8::from(handled.is_ok())
         ));
         handled
     }
@@ -76,7 +76,12 @@ impl MmioBus {
         });
 
         let val = LE::read_u64(&buf);
-        probes::mmio_read!(|| (addr as u64, bytes, val, handled.is_ok() as u8));
+        probes::mmio_read!(|| (
+            addr as u64,
+            bytes,
+            val,
+            u8::from(handled.is_ok())
+        ));
         handled.map(|_| val)
     }
 

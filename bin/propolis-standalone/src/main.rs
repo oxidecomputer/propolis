@@ -1050,7 +1050,7 @@ fn setup_instance(
     fwcfg
         .add_legacy(
             hw::qemu::fwcfg::LegacyId::SmpCpuCount,
-            hw::qemu::fwcfg::FixedItem::new_u32(cpus as u32),
+            hw::qemu::fwcfg::FixedItem::new_u32(u32::from(cpus)),
         )
         .map_err(|err| Error::new(ErrorKind::Other, err))?;
 

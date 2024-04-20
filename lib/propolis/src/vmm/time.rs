@@ -269,7 +269,7 @@ pub fn adjust_time_data(
             guest_tsc: new_guest_tsc,
             hrtime: dst_hrt,
             hres_sec: dst_wc.as_secs(),
-            hres_ns: dst_wc.subsec_nanos() as u64,
+            hres_ns: u64::from(dst_wc.subsec_nanos()),
             boot_hrtime: new_boot_hrtime,
         },
         VmTimeDataAdjustments {
@@ -378,7 +378,7 @@ fn calc_tsc_delta(
     let mut tsc_adjust: u128 = 0;
 
     let upper: u128 =
-        delta_ns.checked_mul(guest_hz as u128).ok_or_else(|| {
+        delta_ns.checked_mul(u128::from(guest_hz)).ok_or_else(|| {
             TimeAdjustError::TscAdjustOverflow {
                 desc: "migrate_delta * guest_hz",
                 migrate_delta,
@@ -387,15 +387,16 @@ fn calc_tsc_delta(
             }
         })?;
 
-    tsc_adjust = upper.checked_div(NS_PER_SEC as u128).ok_or_else(|| {
-        TimeAdjustError::TscAdjustOverflow {
-            desc: "upper / NS_PER_SEC",
-            migrate_delta,
-            guest_hz,
-            tsc_adjust,
-        }
-    })?;
-    if tsc_adjust > u64::MAX as u128 {
+    tsc_adjust =
+        upper.checked_div(u128::from(NS_PER_SEC)).ok_or_else(|| {
+            TimeAdjustError::TscAdjustOverflow {
+                desc: "upper / NS_PER_SEC",
+                migrate_delta,
+                guest_hz,
+                tsc_adjust,
+            }
+        })?;
+    if tsc_adjust > u128::from(u64::MAX) {
         return Err(TimeAdjustError::TscAdjustOverflow {
             desc: "tsc_adjust > 64-bits",
             migrate_delta,

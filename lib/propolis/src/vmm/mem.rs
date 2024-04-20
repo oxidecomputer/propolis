@@ -1053,9 +1053,9 @@ pub mod tests {
 
     #[test]
     fn memory_protections_match_libc() {
-        assert_eq!(Prot::READ.bits() as i32, libc::PROT_READ);
-        assert_eq!(Prot::WRITE.bits() as i32, libc::PROT_WRITE);
-        assert_eq!(Prot::EXEC.bits() as i32, libc::PROT_EXEC);
+        assert_eq!(i32::from(Prot::READ.bits()), libc::PROT_READ);
+        assert_eq!(i32::from(Prot::WRITE.bits()), libc::PROT_WRITE);
+        assert_eq!(i32::from(Prot::EXEC.bits()), libc::PROT_EXEC);
     }
 
     #[test]

@@ -21,6 +21,10 @@ pub(crate) fn cmd_clippy(strict: bool, quiet: bool) -> Result<()> {
 
         // no-deps and subsequent options must follow `--`
         cmd.args(["--", "--no-deps"]);
+
+        // be more strict about lossless casts
+        cmd.args(["--warn", "clippy::cast_lossless"]);
+
         if strict {
             cmd.arg("-Dwarnings");
         }

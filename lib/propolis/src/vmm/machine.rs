@@ -246,7 +246,7 @@ impl Builder {
             .map(|id| {
                 Vcpu::new(
                     hdl.clone(),
-                    id as i32,
+                    i32::from(id),
                     bus_mmio.clone(),
                     bus_pio.clone(),
                 )

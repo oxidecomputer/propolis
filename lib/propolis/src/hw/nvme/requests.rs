@@ -72,10 +72,10 @@ impl PciNvme {
                 probes::nvme_raw_cmd!(|| {
                     (
                         qid,
-                        sub.cdw0 as u64 | ((sub.nsid as u64) << 32),
+                        u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
                         sub.prp1,
                         sub.prp2,
-                        (sub.cdw10 as u64 | ((sub.cdw11 as u64) << 32)),
+                        (u64::from(sub.cdw10) | (u64::from(sub.cdw11) << 32)),
                     )
                 });
                 let cid = sub.cid();

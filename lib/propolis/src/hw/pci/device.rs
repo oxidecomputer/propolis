@@ -727,7 +727,7 @@ impl MsixEntry {
     }
     fn send(&self) {
         if let Some(acc) = self.acc_msi.as_ref() {
-            let _ = acc.send(self.addr, self.data as u64);
+            let _ = acc.send(self.addr, u64::from(self.data));
         }
     }
     fn reset(&mut self) {
@@ -917,10 +917,12 @@ impl MsixCfg {
                         }
                         MsixCapReg::TableOff => {
                             // table always at offset 0 for now
-                            ro.write_u32(self.bar as u8 as u32);
+                            ro.write_u32(u32::from(self.bar as u8));
                         }
                         MsixCapReg::PbaOff => {
-                            ro.write_u32(self.pba_off | self.bar as u8 as u32);
+                            ro.write_u32(
+                                self.pba_off | u32::from(self.bar as u8),
+                            );
                         }
                     }
                 }

@@ -924,17 +924,17 @@ pub mod migrate {
             vcpu.set_run_state(self.run_state, Some(self.sipi_vector))?;
             vcpu.set_reg(
                 vm_reg_name::VM_REG_GUEST_INTR_SHADOW,
-                self.intr_shadow as u64,
+                u64::from(self.intr_shadow),
             )?;
 
             let ents = [
                 vdi_field_entry_v1::new(
                     bhyve_api::VAI_PEND_NMI,
-                    self.pending_nmi as u64,
+                    u64::from(self.pending_nmi),
                 ),
                 vdi_field_entry_v1::new(
                     bhyve_api::VAI_PEND_EXTINT,
-                    self.pending_extint as u64,
+                    u64::from(self.pending_extint),
                 ),
                 vdi_field_entry_v1::new(
                     bhyve_api::VAI_PEND_EXCP,

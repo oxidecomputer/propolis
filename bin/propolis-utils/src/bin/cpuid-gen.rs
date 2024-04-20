@@ -172,10 +172,10 @@ fn collect_cpuid(
             }
             0xd if xsave_supported => {
                 // XSAVE
-                let xcr0_bits = data.eax as u64 | data.edx as u64;
+                let xcr0_bits = u64::from(data.eax) | u64::from(data.edx);
                 results.insert(CpuidKey::SubLeaf(eax, 0), data);
                 let data = query_cpuid(eax, 1)?;
-                let xss_bits = data.ecx as u64 | data.edx as u64;
+                let xss_bits = u64::from(data.ecx) | u64::from(data.edx);
                 results.insert(CpuidKey::SubLeaf(eax, 1), data);
 
                 // Fetch all the 2:63 sub-leaf entries which are valid

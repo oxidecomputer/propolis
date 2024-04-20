@@ -70,7 +70,7 @@ impl PciVirtioBlock {
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
         let info = self.block_attach.info().unwrap_or_else(Default::default);
 
-        let total_bytes = info.total_size * info.block_size as u64;
+        let total_bytes = info.total_size * u64::from(info.block_size);
         match id {
             BlockReg::Capacity => {
                 ro.write_u64(total_bytes / SECTOR_SZ as u64);

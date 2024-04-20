@@ -177,7 +177,7 @@ impl FileBackend {
 
         let info = block::DeviceInfo {
             block_size,
-            total_size: len / block_size as u64,
+            total_size: len / u64::from(block_size),
             read_only,
         };
         let skip_flush = opts.skip_flush.unwrap_or(false);

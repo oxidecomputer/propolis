@@ -603,7 +603,7 @@ impl VionaHdl {
             rm_index: idx,
             _pad: [0; 3],
             rm_addr: addr,
-            rm_msg: msg as u64,
+            rm_msg: u64::from(msg),
         };
         unsafe {
             self.0.ioctl(viona_api::VNA_IOC_RING_SET_MSI, &mut vna_ring_msi)?;

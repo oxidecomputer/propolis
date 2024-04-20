@@ -108,7 +108,7 @@ impl InMemoryBackend {
                 bytes: Mutex::new(bytes),
                 info: block::DeviceInfo {
                     block_size,
-                    total_size: len as u64 / block_size as u64,
+                    total_size: len as u64 / u64::from(block_size),
                     read_only: opts.read_only.unwrap_or(false),
                 },
             }),

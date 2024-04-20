@@ -30,8 +30,8 @@ impl BarDefine {
     /// Get the size of the BAR definition, regardless of type
     pub fn size(&self) -> u64 {
         match self {
-            BarDefine::Pio(sz) => *sz as u64,
-            BarDefine::Mmio(sz) => *sz as u64,
+            BarDefine::Pio(sz) => u64::from(*sz),
+            BarDefine::Mmio(sz) => u64::from(*sz),
             BarDefine::Mmio64(sz) => *sz,
         }
     }
@@ -103,7 +103,9 @@ impl Bars {
         let ent = self.entries[idx];
         match ent.kind {
             EntryKind::Empty => 0,
-            EntryKind::Pio(_) => (ent.value as u16) as u32 | bits::BAR_TYPE_IO,
+            EntryKind::Pio(_) => {
+                u32::from(ent.value as u16) | bits::BAR_TYPE_IO
+            }
             EntryKind::Mmio(_) => ent.value as u32 | bits::BAR_TYPE_MEM,
             EntryKind::Mmio64(_) => ent.value as u32 | bits::BAR_TYPE_MEM64,
             EntryKind::Mmio64High => {
@@ -125,22 +127,22 @@ impl Bars {
         let (def, old, new) = match ent.kind {
             EntryKind::Empty => return None,
             EntryKind::Pio(size) => {
-                let mask = !(size - 1) as u32;
+                let mask = u32::from(!(size - 1));
                 let old = ent.value;
-                ent.value = (val & mask) as u64;
+                ent.value = u64::from(val & mask);
                 (BarDefine::Pio(size), old, ent.value)
             }
             EntryKind::Mmio(size) => {
                 let mask = !(size - 1);
                 let old = ent.value;
-                ent.value = (val & mask) as u64;
+                ent.value = u64::from(val & mask);
                 (BarDefine::Mmio(size), old, ent.value)
             }
             EntryKind::Mmio64(size) => {
                 let old = ent.value;
                 let mask = !(size - 1) as u32;
                 let low = val & mask;
-                ent.value = (old & (0xffffffff << 32)) | low as u64;
+                ent.value = (old & (0xffffffff << 32)) | u64::from(low);
                 (BarDefine::Mmio64(size), old, ent.value)
             }
             EntryKind::Mmio64High => {
@@ -152,7 +154,7 @@ impl Bars {
                 };
                 let mask = !(size - 1);
                 let old = ent.value;
-                let high = (((val as u64) << 32) & mask) & 0xffffffff00000000;
+                let high = ((u64::from(val) << 32) & mask) & 0xffffffff00000000;
                 ent.value = high | (old & 0xffffffff);
                 (BarDefine::Mmio64(size), old, ent.value)
             }
@@ -183,11 +185,11 @@ impl Bars {
                 panic!("high BAR bits not to be set directly")
             }
             EntryKind::Pio(_) => {
-                assert!(value <= u16::MAX as u64);
+                assert!(value <= u64::from(u16::MAX));
                 ent.value = value;
             }
             EntryKind::Mmio(_) => {
-                assert!(value <= u32::MAX as u64);
+                assert!(value <= u64::from(u32::MAX));
             }
             EntryKind::Mmio64(_) => {}
         }
@@ -198,12 +200,12 @@ impl Bars {
         let entries = self.entries.map(|entry| match entry.kind {
             EntryKind::Pio(sz) => migrate::BarEntryV1 {
                 kind: migrate::BarKindV1::Pio,
-                size: sz as u64,
+                size: u64::from(sz),
                 value: entry.value,
             },
             EntryKind::Mmio(sz) => migrate::BarEntryV1 {
                 kind: migrate::BarKindV1::Mmio,
-                size: sz as u64,
+                size: u64::from(sz),
                 value: entry.value,
             },
             EntryKind::Mmio64(sz) => migrate::BarEntryV1 {

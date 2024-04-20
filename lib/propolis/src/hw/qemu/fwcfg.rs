@@ -369,7 +369,7 @@ struct AccessState {
 }
 impl AccessState {
     fn dma_addr(&self) -> u64 {
-        (self.addr_high as u64) << 32 | self.addr_low as u64
+        u64::from(self.addr_high) << 32 | u64::from(self.addr_low)
     }
 }
 
@@ -415,7 +415,7 @@ impl FwCfg {
                 RWOp::Write(wo) => {
                     match wo.len() {
                         2 => state.selector = wo.read_u16(),
-                        1 => state.selector = wo.read_u8() as u16,
+                        1 => state.selector = u16::from(wo.read_u8()),
                         _ => {}
                     }
                     state.offset = 0;
@@ -621,7 +621,7 @@ impl FwCfg {
         // write zeroes for everything past the end of the data
         if written < len {
             mem.write_byte(
-                GuestAddr(addr + written as u64),
+                GuestAddr(addr + u64::from(written)),
                 0,
                 (len - written) as usize,
             );

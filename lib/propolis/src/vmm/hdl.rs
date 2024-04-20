@@ -208,7 +208,7 @@ impl VmmHdl {
             segid,
             segoff: segoff as i64,
             len,
-            prot: prot.bits() as i32,
+            prot: i32::from(prot.bits()),
             flags: 0,
         };
         unsafe { self.ioctl(bhyve_api::VM_MMAP_MEMSEG, &mut map) }
@@ -300,13 +300,14 @@ impl VmmHdl {
     }
     /// Writes to the registers within the RTC device.
     pub fn rtc_write(&self, offset: u8, value: u8) -> Result<()> {
-        let mut data = bhyve_api::vm_rtc_data { offset: offset as i32, value };
+        let mut data =
+            bhyve_api::vm_rtc_data { offset: i32::from(offset), value };
         unsafe { self.ioctl(bhyve_api::VM_RTC_WRITE, &mut data) }
     }
     /// Reads from the registers within the RTC device.
     pub fn rtc_read(&self, offset: u8) -> Result<u8> {
         let mut data =
-            bhyve_api::vm_rtc_data { offset: offset as i32, value: 0 };
+            bhyve_api::vm_rtc_data { offset: i32::from(offset), value: 0 };
         unsafe {
             self.ioctl(bhyve_api::VM_RTC_READ, &mut data)?;
         }
@@ -323,8 +324,8 @@ impl VmmHdl {
         ioapic_irq: Option<u8>,
     ) -> Result<()> {
         let mut data = bhyve_api::vm_isa_irq {
-            atpic_irq: pic_irq as i32,
-            ioapic_irq: ioapic_irq.map(|x| x as i32).unwrap_or(-1),
+            atpic_irq: i32::from(pic_irq),
+            ioapic_irq: ioapic_irq.map(i32::from).unwrap_or(-1),
         };
         unsafe { self.ioctl(bhyve_api::VM_ISA_ASSERT_IRQ, &mut data) }
     }
@@ -335,8 +336,8 @@ impl VmmHdl {
         ioapic_irq: Option<u8>,
     ) -> Result<()> {
         let mut data = bhyve_api::vm_isa_irq {
-            atpic_irq: pic_irq as i32,
-            ioapic_irq: ioapic_irq.map(|x| x as i32).unwrap_or(-1),
+            atpic_irq: i32::from(pic_irq),
+            ioapic_irq: ioapic_irq.map(i32::from).unwrap_or(-1),
         };
         unsafe { self.ioctl(bhyve_api::VM_ISA_DEASSERT_IRQ, &mut data) }
     }
@@ -347,8 +348,8 @@ impl VmmHdl {
         ioapic_irq: Option<u8>,
     ) -> Result<()> {
         let mut data = bhyve_api::vm_isa_irq {
-            atpic_irq: pic_irq as i32,
-            ioapic_irq: ioapic_irq.map(|x| x as i32).unwrap_or(-1),
+            atpic_irq: i32::from(pic_irq),
+            ioapic_irq: ioapic_irq.map(i32::from).unwrap_or(-1),
         };
         unsafe { self.ioctl(bhyve_api::VM_ISA_PULSE_IRQ, &mut data) }
     }
@@ -359,7 +360,7 @@ impl VmmHdl {
         level_mode: bool,
     ) -> Result<()> {
         let mut data = bhyve_api::vm_isa_irq_trigger {
-            atpic_irq: vec as i32,
+            atpic_irq: i32::from(vec),
             trigger: if level_mode { 1 } else { 0 },
         };
         unsafe { self.ioctl(bhyve_api::VM_ISA_SET_IRQ_TRIGGER, &mut data) }
@@ -367,17 +368,17 @@ impl VmmHdl {
 
     #[allow(unused)]
     pub fn ioapic_assert_irq(&self, irq: u8) -> Result<()> {
-        let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
+        let mut data = bhyve_api::vm_ioapic_irq { irq: i32::from(irq) };
         unsafe { self.ioctl(bhyve_api::VM_IOAPIC_ASSERT_IRQ, &mut data) }
     }
     #[allow(unused)]
     pub fn ioapic_deassert_irq(&self, irq: u8) -> Result<()> {
-        let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
+        let mut data = bhyve_api::vm_ioapic_irq { irq: i32::from(irq) };
         unsafe { self.ioctl(bhyve_api::VM_IOAPIC_DEASSERT_IRQ, &mut data) }
     }
     #[allow(unused)]
     pub fn ioapic_pulse_irq(&self, irq: u8) -> Result<()> {
-        let mut data = bhyve_api::vm_ioapic_irq { irq: irq as i32 };
+        let mut data = bhyve_api::vm_ioapic_irq { irq: i32::from(irq) };
         unsafe { self.ioctl(bhyve_api::VM_IOAPIC_PULSE_IRQ, &mut data) }
     }
     #[allow(unused)]
@@ -458,7 +459,7 @@ impl VmmHdl {
     pub fn set_autodestruct(&self, enable_autodestruct: bool) -> Result<()> {
         self.ioctl_usize(
             bhyve_api::VM_SET_AUTODESTRUCT,
-            enable_autodestruct as usize,
+            usize::from(enable_autodestruct),
         )
     }
 

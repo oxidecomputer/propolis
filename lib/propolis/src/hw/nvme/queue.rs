@@ -108,10 +108,10 @@ impl<QS: Debug> QueueState<QS> {
 }
 
 fn wrap_add(size: u32, idx: u16, off: u16) -> u16 {
-    debug_assert!((idx as u32) < size);
-    debug_assert!((off as u32) < size);
+    debug_assert!(u32::from(idx) < size);
+    debug_assert!(u32::from(off) < size);
 
-    let res = idx as u32 + off as u32;
+    let res = u32::from(idx) + u32::from(off);
     if res >= size {
         (res - size) as u16
     } else {
@@ -119,11 +119,11 @@ fn wrap_add(size: u32, idx: u16, off: u16) -> u16 {
     }
 }
 fn wrap_sub(size: u32, idx: u16, off: u16) -> u16 {
-    debug_assert!((idx as u32) < size);
-    debug_assert!((off as u32) < size);
+    debug_assert!(u32::from(idx) < size);
+    debug_assert!(u32::from(off) < size);
 
     if off > idx {
-        ((idx as u32 + size) - off as u32) as u16
+        ((u32::from(idx) + size) - u32::from(off)) as u16
     } else {
         idx - off
     }
@@ -232,7 +232,7 @@ impl<'a> QueueGuard<'a, CompQueueState> {
     /// Conceptually this method indicates some entries have been consumed
     /// from the queue.
     fn pop_head_to(&mut self, idx: u16) -> Result<(), QueueUpdateError> {
-        if idx as u32 >= *self.size {
+        if u32::from(idx) >= *self.size {
             return Err(QueueUpdateError::InvalidEntry);
         }
         let pop_count = self.idx_sub(idx, self.state.head);
@@ -260,7 +260,7 @@ impl<'a> QueueGuard<'a, CompQueueState> {
     fn release_avail(&mut self) {
         if let Some(avail) = self.state.inner.avail.checked_add(1) {
             assert!(
-                (avail as u32) < *self.size,
+                u32::from(avail) < *self.size,
                 "attempted to overflow CQ available size"
             );
             self.state.inner.avail = avail;
@@ -326,7 +326,7 @@ impl<'a> QueueGuard<'a, SubQueueState> {
     /// Conceptually this method indicates new entries have been added to the
     /// queue.
     fn push_tail_to(&mut self, idx: u16) -> Result<(), QueueUpdateError> {
-        if idx as u32 >= *self.size {
+        if u32::from(idx) >= *self.size {
             return Err(QueueUpdateError::InvalidEntry);
         }
         let push_count = self.idx_sub(idx, self.state.tail);
@@ -620,7 +620,7 @@ impl CompQueue {
             .push_tail()
             .expect("CQ should have available space for assigned permit");
 
-        probes::nvme_cqe!(|| (self.id, idx, phase as u8));
+        probes::nvme_cqe!(|| (self.id, idx, u8::from(phase)));
 
         // The only definite indicator that a CQE has become valid is the phase
         // bit being toggled.  Since the interface for writing to guest memory

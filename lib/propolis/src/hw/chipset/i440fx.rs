@@ -849,11 +849,11 @@ impl Piix3PM {
                 let regs = self.regs.lock().unwrap();
 
                 // LSB hardwired to 1 to indicate PMBase in IO space
-                ro.write_u32(regs.pm_base as u32 | 0x1);
+                ro.write_u32(u32::from(regs.pm_base) | 0x1);
             }
             PmCfg::SmbusBase => {
                 // LSB hardwired to 1 to indicate PMBase in IO space
-                ro.write_u32(SMBBASE_DEFAULT as u32 | 0x1);
+                ro.write_u32(u32::from(SMBBASE_DEFAULT) | 0x1);
             }
             PmCfg::DevResA => {
                 ro.write_u32(DevResA::KBC_EN_DEV11.bits());

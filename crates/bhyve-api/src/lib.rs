@@ -219,7 +219,7 @@ impl VmmFd {
         if self.api_version()? >= ApiVersion::V12 as u32 {
             let mut ts = libc::timespec {
                 tv_sec: time.as_secs() as i64,
-                tv_nsec: time.subsec_nanos() as i64,
+                tv_nsec: i64::from(time.subsec_nanos()),
             };
             unsafe { self.ioctl(ioctls::VM_RTC_SETTIME, &mut ts) }?;
             Ok(())
@@ -496,8 +496,8 @@ pub fn api_version() -> Result<u32> {
 fn cache_api_version(do_query: impl FnOnce() -> Result<u32>) -> Result<u32> {
     if VERSION_CACHE.load(Ordering::Acquire) == 0 {
         let newval = match do_query() {
-            Ok(x) => x as i64,
-            Err(e) => -(e.raw_os_error().unwrap_or(libc::ENOENT) as i64),
+            Ok(x) => i64::from(x),
+            Err(e) => -i64::from(e.raw_os_error().unwrap_or(libc::ENOENT)),
         };
         let _ = VERSION_CACHE.compare_exchange(
             0,
@@ -513,7 +513,7 @@ fn cache_api_version(do_query: impl FnOnce() -> Result<u32>) -> Result<u32> {
         }
         x if x < 0 => Err(Error::from_raw_os_error(-x as i32)),
         y => {
-            assert!(y < u32::MAX as i64);
+            assert!(y < i64::from(u32::MAX));
 
             Ok(y as u32)
         }

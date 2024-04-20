@@ -329,7 +329,7 @@ impl PciVirtioState {
                 let pfn = wo.read_u32();
                 if let Some(queue) = self.queues.get(state.queue_sel) {
                     let qs_old = queue.get_state();
-                    let new_addr = (pfn as u64) << PAGE_SHIFT;
+                    let new_addr = u64::from(pfn) << PAGE_SHIFT;
                     queue.map_legacy(new_addr);
 
                     if qs_old.mapping.desc_addr != new_addr {

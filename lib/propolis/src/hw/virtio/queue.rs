@@ -118,7 +118,7 @@ impl VqUsed {
         self.used_idx += Wrapping(1);
         let desc_addr = self.gpa_ring.offset::<VqdUsed>(idx as usize);
 
-        let used = VqdUsed { id: id as u32, len };
+        let used = VqdUsed { id: u32::from(id), len };
         mem.write(desc_addr, &used);
 
         fence(Ordering::Release);
@@ -658,7 +658,7 @@ impl Chain {
                 continue;
             }
             assert!(stat.pos_off < len);
-            let off_addr = GuestAddr(addr.0 + stat.pos_off as u64);
+            let off_addr = GuestAddr(addr.0 + u64::from(stat.pos_off));
             let off_len = (len - stat.pos_off) as usize;
             let (consumed, do_more) = f(off_addr, off_len);
             assert!(consumed <= off_len);

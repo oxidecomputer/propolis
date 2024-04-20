@@ -263,7 +263,7 @@ impl Specializer {
                     ent.edx |= (0x1 << 28);
                     // bits 23:16 contain max IDs for logical CPUs in package
                     ent.ebx &= !0xff0000;
-                    ent.ebx |= (num_vcpu.get() as u32) << 16;
+                    ent.ebx |= u32::from(num_vcpu.get()) << 16;
                 }
             }
         }
@@ -291,7 +291,7 @@ impl Specializer {
                         0b011 => {
                             // L3 shared by all vCPUs
                             // TODO: segregate by sockets, if configured
-                            num as u32
+                            u32::from(num)
                         }
                         _ => {
                             // unceremonious handling of unexpected cache levels
@@ -320,7 +320,7 @@ impl Specializer {
             let num_vcpu = self
                 .num_vcpu
                 .ok_or(SpecializeError::MissingVcpuCount)
-                .map(|n| n.get() as u32)?;
+                .map(|n| u32::from(n.get()))?;
 
             match topo {
                 TopoKind::StdB => {
