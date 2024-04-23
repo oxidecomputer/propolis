@@ -11,7 +11,9 @@ use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
 use crate::vmm::MemCtx;
 
-use crucible::{BlockIO, Buffer, CrucibleError, SnapshotDetails, Volume};
+use crucible::{
+    BlockIO, Buffer, CrucibleError, ReplaceResult, SnapshotDetails, Volume,
+};
 use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
 use slog::{error, info};
@@ -252,7 +254,7 @@ impl CrucibleBackend {
         &self,
         old_vcr_json: &str,
         new_vcr_json: &str,
-    ) -> io::Result<()> {
+    ) -> io::Result<ReplaceResult> {
         let old_vcr = serde_json::from_str(old_vcr_json)?;
         let new_vcr = serde_json::from_str(new_vcr_json)?;
         self.state
@@ -277,6 +279,10 @@ impl CrucibleBackend {
                 async move { worker_state.process_loop(worker_acc).await },
             );
         }
+    }
+
+    pub async fn volume_is_active(&self) -> io::Result<bool> {
+        self.state.volume.query_is_active().await.map_err(CrucibleError::into)
     }
 }
 

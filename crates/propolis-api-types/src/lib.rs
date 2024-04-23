@@ -396,6 +396,16 @@ pub struct VCRRequestPathParams {
     pub id: Uuid,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct VolumeStatusPathParams {
+    pub id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct VolumeStatus {
+    pub active: bool,
+}
+
 /// Error codes used to populate the `error_code` field of Dropshot API responses.
 #[derive(
     Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema,
