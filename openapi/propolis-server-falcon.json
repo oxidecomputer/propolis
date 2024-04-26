@@ -112,6 +112,41 @@
         }
       }
     },
+    "/instance/disk/{id}/status": {
+      "get": {
+        "summary": "Gets the status of a Crucible volume backing a disk",
+        "operationId": "disk_volume_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeStatus"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/instance/disk/{id}/vcr": {
       "put": {
         "summary": "Issues a volume_construction_request replace to a crucible backend.",
@@ -143,11 +178,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Null",
-                  "type": "string",
-                  "enum": [
-                    null
-                  ]
+                  "$ref": "#/components/schemas/ReplaceResult"
                 }
               }
             }
@@ -1452,6 +1483,16 @@
         ],
         "additionalProperties": false
       },
+      "ReplaceResult": {
+        "type": "string",
+        "enum": [
+          "started",
+          "started_already",
+          "completed_already",
+          "missing",
+          "vcr_matches"
+        ]
+      },
       "SerialPort": {
         "description": "A serial port device.",
         "type": "object",
@@ -1867,6 +1908,17 @@
               "type"
             ]
           }
+        ]
+      },
+      "VolumeStatus": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active"
         ]
       }
     },

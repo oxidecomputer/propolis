@@ -1087,6 +1087,32 @@ async fn instance_issue_crucible_snapshot_request(
     Ok(HttpResponseOk(()))
 }
 
+/// Gets the status of a Crucible volume backing a disk
+#[endpoint {
+    method = GET,
+    path = "/instance/disk/{id}/status",
+}]
+async fn disk_volume_status(
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    path_params: Path<api::VolumeStatusPathParams>,
+) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
+    let path_params = path_params.into_inner();
+
+    let vm_controller = rqctx.context().vm().await?;
+
+    let crucible_backends = vm_controller.crucible_backends();
+    let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
+        let s = format!("No crucible backend for id {}", path_params.id);
+        HttpError::for_not_found(Some(s.clone()), s)
+    })?;
+
+    Ok(HttpResponseOk(api::VolumeStatus {
+        active: backend.volume_is_active().await.map_err(|e| {
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+        })?,
+    }))
+}
+
 /// Issues a volume_construction_request replace to a crucible backend.
 #[endpoint {
     method = PUT,
@@ -1096,7 +1122,7 @@ async fn instance_issue_crucible_vcr_request(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     path_params: Path<api::VCRRequestPathParams>,
     request: TypedBody<api::InstanceVCRReplace>,
-) -> Result<HttpResponseOk<()>, HttpError> {
+) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError> {
     let path_params = path_params.into_inner();
     let request = request.into_inner();
     let new_vcr_json = request.vcr_json;
@@ -1144,9 +1170,10 @@ async fn instance_issue_crucible_vcr_request(
     // Crucible does the heavy lifting here to verify that the old/new
     // VCRs are different in just the correct way and will return error
     // if there is any mismatch.
-    backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(|e| {
-        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-    })?;
+    let replace_result =
+        backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(
+            |e| HttpError::for_bad_request(Some(e.to_string()), e.to_string()),
+        )?;
 
     // Our replacement request was accepted.  We now need to update the
     // spec stored in propolis so it matches what the downstairs now has.
@@ -1159,7 +1186,7 @@ async fn instance_issue_crucible_vcr_request(
 
     slog::info!(log, "Replaced the VCR in backend of {:?}", path_params.id);
 
-    Ok(HttpResponseOk(()))
+    Ok(HttpResponseOk(replace_result))
 }
 
 /// Issues an NMI to the instance.
@@ -1190,6 +1217,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     api.register(instance_migrate_start).unwrap();
     api.register(instance_migrate_status).unwrap();
     api.register(instance_issue_crucible_snapshot_request).unwrap();
+    api.register(disk_volume_status).unwrap();
     api.register(instance_issue_crucible_vcr_request).unwrap();
     api.register(instance_issue_nmi).unwrap();
 

@@ -54,4 +54,7 @@ rand.workspace = true
 default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
 falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu-lib", "num_enum"]
-omicron-build = []
+
+# TODO until crucible#1280 is addressed, enabling Nexus notifications is done
+# through a feature flag.
+omicron-build = ["crucible/notify-nexus"]
