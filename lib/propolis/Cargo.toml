@@ -54,4 +54,4 @@ rand.workspace = true
 default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
 falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu-lib", "num_enum"]
-omicron-build = []
+omicron-build = ["crucible/notify-nexus"]
