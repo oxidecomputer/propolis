@@ -78,8 +78,8 @@ oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch =
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "5a78ef8e6f942da768e87ce70993caef4ce44f57" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "5a78ef8e6f942da768e87ce70993caef4ce44f57" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "11c2cadc62bea4211b0d08e018da58d9358640bb" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "11c2cadc62bea4211b0d08e018da58d9358640bb" }
 
 # External dependencies
 anyhow = "1.0"
