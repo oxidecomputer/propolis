@@ -281,8 +281,8 @@ impl CrucibleBackend {
         }
     }
 
-    pub async fn volume_is_active(&self) -> io::Result<bool> {
-        self.state.volume.query_is_active().await.map_err(CrucibleError::into)
+    pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
+        self.state.volume.query_is_active().await
     }
 }
 
