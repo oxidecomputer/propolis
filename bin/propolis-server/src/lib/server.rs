@@ -1171,16 +1171,9 @@ async fn instance_issue_crucible_vcr_request(
     // VCRs are different in just the correct way and will return error
     // if there is any mismatch.
     let replace_result =
-        match backend.vcr_replace(old_vcr_json, &new_vcr_json).await {
-            Ok(replace_result) => replace_result,
-
-            Err(e) => {
-                return Err(HttpError::for_bad_request(
-                    Some(e.to_string()),
-                    e.to_string(),
-                ));
-            }
-        };
+        backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(
+            |e| HttpError::for_bad_request(Some(e.to_string()), e.to_string()),
+        )?;
 
     // Our replacement request was accepted.  We now need to update the
     // spec stored in propolis so it matches what the downstairs now has.
