@@ -230,7 +230,7 @@ impl ServiceProviders {
         let mut oximeter_state = self.oximeter_state.lock().await;
         if let Some(server) = oximeter_state.server.take() {
             if let Err(e) = server.close().await {
-                slog::error!(
+                error!(
                     log,
                     "failed to close oximeter producer server";
                     "error" => ?e,

@@ -156,6 +156,7 @@ pub fn start_oximeter_server(
         kind: ProducerKind::Instance,
         address: producer_address,
         // NOTE: This field is unused, and will be removed in the future.
+        // See https://github.com/oxidecomputer/omicron/issues/5658.
         base_route: String::new(),
         interval: OXIMETER_STAT_INTERVAL,
     };
@@ -165,10 +166,17 @@ pub fn start_oximeter_server(
     let producer_log = oximeter_producer::LogConfig::Logger(
         log.new(slog::o!("component" => "oximeter-producer")),
     );
+
+    // The maximum size of a single Dropshot request.
+    //
+    // This is a pretty arbitrary limit, but one that should be big enough for
+    // the statistics we serve today (vCPU usage and panic counts), with
+    // headroom for adding quite a few more.
+    const MAX_REQUEST_SIZE: usize = 1024 * 1024;
     let config = Config {
         server_info,
         registration_address: Some(registration_address),
-        request_body_max_bytes: 2048,
+        request_body_max_bytes: MAX_REQUEST_SIZE,
         log: producer_log,
     };
 
