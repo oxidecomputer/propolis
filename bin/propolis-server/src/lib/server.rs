@@ -176,17 +176,8 @@ impl VmControllerState {
 
 /// Objects related to Propolis's Oximeter metric production.
 pub struct OximeterState {
-    /// A task spawned at initial startup to register with Nexus for metric
-    /// production.
-    ///
-    /// The oneshot sender will be used in the `ServiceProviders::stop()`
-    /// method, to signal that the registration task itself should bail out, if
-    /// it's still running.
-    registration_task:
-        Option<(oneshot::Sender<()>, tokio::task::JoinHandle<()>)>,
-
-    /// The host task for this Propolis server's Oximeter server.
-    server_task: Option<tokio::task::JoinHandle<()>>,
+    /// The metric producer server.
+    server: Option<oximeter_producer::Server>,
 
     /// The metrics wrapper for "server-level" metrics, i.e., metrics that are
     /// tracked by the server itself (as opposed to being tracked by a component
@@ -204,8 +195,7 @@ pub struct ServiceProviders {
     /// The currently active serial console handling task, if present.
     serial_task: Mutex<Option<super::serial::SerialTask>>,
 
-    /// State related to the Propolis Oximeter server, registration task, and
-    /// actual statistics.
+    /// State related to the Propolis Oximeter server and actual statistics.
     oximeter_state: Mutex<OximeterState>,
 
     /// The VNC server hosted within this process. Note that this server always
@@ -238,14 +228,14 @@ impl ServiceProviders {
 
         // Clean up oximeter tasks and statistic state.
         let mut oximeter_state = self.oximeter_state.lock().await;
-        if let Some((shutdown_tx, task)) =
-            oximeter_state.registration_task.take()
-        {
-            let _ = shutdown_tx.send(());
-            task.abort();
-        };
-        if let Some(server) = oximeter_state.server_task.take() {
-            server.abort();
+        if let Some(server) = oximeter_state.server.take() {
+            if let Err(e) = server.close().await {
+                error!(
+                    log,
+                    "failed to close oximeter producer server";
+                    "error" => ?e,
+                );
+            };
         }
         let _ = oximeter_state.stats.take();
     }
@@ -277,8 +267,7 @@ impl DropshotEndpointContext {
                 vm: Mutex::new(VmControllerState::NotCreated),
                 serial_task: Mutex::new(None),
                 oximeter_state: Mutex::new(OximeterState {
-                    registration_task: None,
-                    server_task: None,
+                    server: None,
                     stats: None,
                 }),
                 vnc_server,
@@ -343,136 +332,65 @@ fn instance_spec_from_request(
 }
 
 /// Register an Oximeter server reporting metrics from a new instance.
-///
-/// This spawns a tokio task which will indefinitely attempt to register with
-/// Nexus as an Oximeter metric producer. Once the registration succeeds, it
-/// will also arrange for the statistics produced for the managed instance to be
-/// collected.
-async fn register_oximeter_in_background(
+async fn register_oximeter_producer(
     services: Arc<ServiceProviders>,
     cfg: MetricsEndpointConfig,
-    registry: ProducerRegistry,
+    registry: &ProducerRegistry,
     virtual_machine: VirtualMachine,
     log: Logger,
 ) {
     let mut oximeter_state = services.oximeter_state.lock().await;
     assert!(oximeter_state.stats.is_none());
-    assert!(oximeter_state.server_task.is_none());
-    assert!(oximeter_state.registration_task.is_none());
+    assert!(oximeter_state.server.is_none());
 
-    // Start a task which attempts to register with Nexus as a metric producer.
+    // Create the server itself.
     //
-    // This task will loop until either (1) registration succeeds, (2) a
-    // permanent error occurs during registration, or (3) it is notified by the
-    // shutdown procedure in `ServiceProviders::stop()`. In the former case,
-    // we'll return the `oximeter` server and continue registration. In the
-    // latter cases, we'll return early, since no metrics can be produced.
-    let services_ = services.clone();
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let registration_task = tokio::task::spawn(async move {
-        // Create the closure used to register with Nexus inside the backoff
-        // loop.
-        let register_with_nexus = || async {
-            crate::stats::start_oximeter_server(
-                virtual_machine.instance_id,
-                &cfg,
-                &log,
-                &registry,
-            )
-            .await
-            .map_err(|e| match e {
-                oximeter_producer::Error::RegistrationError {
-                    retryable,
-                    msg,
-                } if retryable => {
-                    omicron_common::backoff::BackoffError::transient(msg)
-                }
-                _ => omicron_common::backoff::BackoffError::permanent(
-                    e.to_string(),
-                ),
-            })
-        };
-        let warn_on_failure = |error, delay| {
-            warn!(
+    // The server manages all details of the registration with Nexus, so we
+    // don't need our own task for that or way to shut it down.
+    match crate::stats::start_oximeter_server(
+        virtual_machine.instance_id,
+        &cfg,
+        &log,
+        registry,
+    ) {
+        Ok(server) => {
+            info!(log, "created metric producer server");
+            let old = oximeter_state.server.replace(server);
+            assert!(old.is_none());
+        }
+        Err(err) => {
+            error!(
                 log,
-                "failed to register as a metric producer with Nexus";
-                "error" => ?error,
-                "retry_after" => ?delay,
+                "failed to construct metric producer server, \
+                no metrics will be available for this instance.";
+                "error" => ?err,
             );
-        };
-        let retry_fut = omicron_common::backoff::retry_notify(
-            omicron_common::backoff::retry_policy_internal_service(),
-            register_with_nexus,
-            warn_on_failure,
-        );
+        }
+    }
 
-        // Select over the retry loop itself, or the notification from the
-        // `ServiceProviders` shutdown method that we need to bail.
-        let server = tokio::select! {
-            res = retry_fut => {
-                match res {
-                    Ok(server) => {
-                        info!(log, "registered as a metric producer with Nexus");
-                        server
-                    }
-                    Err(e) => {
-                        error!(
-                            log,
-                            "encountered non-retryable error when starting \
-                            oximeter metric production server, no metrics will \
-                            be produced for this instance";
-                            "error" => ?e,
-                        );
-                        return;
-                    }
-                }
-            }
-            _ = shutdown_rx => {
-                slog::debug!(
-                    log,
-                    "Nexus metric registration retry loop \
-                    received shutdown notification, exiting"
-                );
-                return;
-            }
-        };
-
-        // Actually spawn the server task and store its handle.
-        let server_task = tokio::spawn(async move {
-            server.serve_forever().await.unwrap();
-        });
-        let mut state = services_.oximeter_state.lock().await;
-        let old = state.server_task.replace(server_task);
-        assert!(old.is_none());
-
-        // Assign our own metrics production for this VM instance to the
-        // registry, letting the server actually return them to oximeter when
-        // polled.
-        let stats = match crate::stats::register_server_metrics(
-            &registry,
-            virtual_machine,
-            &log,
-        )
-        .await
-        {
-            Ok(stats) => stats,
-            Err(e) => {
-                error!(
-                    log,
-                    "failed to register our server metrics with \
-                    the ProducerRegistry, no server stats will \
-                    be produced";
-                    "error" => ?e,
-                );
-                return;
-            }
-        };
-        let old = state.stats.replace(stats);
-        assert!(old.is_none());
-    });
-    let old = oximeter_state
-        .registration_task
-        .replace((shutdown_tx, registration_task));
+    // Assign our own metrics production for this VM instance to the
+    // registry, letting the server actually return them to oximeter when
+    // polled.
+    let stats = match crate::stats::register_server_metrics(
+        registry,
+        virtual_machine,
+        &log,
+    )
+    .await
+    {
+        Ok(stats) => stats,
+        Err(e) => {
+            error!(
+                log,
+                "failed to register our server metrics with \
+                the ProducerRegistry, no server stats will \
+                be produced";
+                "error" => ?e,
+            );
+            return;
+        }
+    };
+    let old = oximeter_state.stats.replace(stats);
     assert!(old.is_none());
 }
 
@@ -605,10 +523,10 @@ async fn instance_ensure_common(
             // the VM instance without blocking for that to succeed.
             let registry = ProducerRegistry::with_id(properties.id);
             let virtual_machine = VirtualMachine::from(&properties);
-            register_oximeter_in_background(
+            register_oximeter_producer(
                 server_context.services.clone(),
                 cfg.clone(),
-                registry.clone(),
+                &registry,
                 virtual_machine,
                 rqctx.log.clone(),
             )

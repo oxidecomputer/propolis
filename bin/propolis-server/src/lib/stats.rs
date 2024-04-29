@@ -4,7 +4,6 @@
 
 //! Methods for starting an Oximeter endpoint and gathering server-level stats.
 
-use dropshot::{ConfigDropshot, HandlerTaskMode};
 use omicron_common::api::internal::nexus::ProducerEndpoint;
 use omicron_common::api::internal::nexus::ProducerKind;
 use oximeter::{
@@ -132,33 +131,33 @@ impl Producer for ServerStatsOuter {
 /// This method attempts to register a _single time_ with Nexus. Callers should
 /// arrange for this to be called continuously if desired, such as with a
 /// backoff policy.
-pub async fn start_oximeter_server(
+///
+/// The returned server will attempt to register with Nexus in a background
+/// task, and will periodically renew that registration. The returned server is
+/// running, and need not be poked or renewed to successfully serve metric data.
+pub fn start_oximeter_server(
     id: Uuid,
     config: &MetricsEndpointConfig,
     log: &Logger,
     registry: &ProducerRegistry,
 ) -> Result<Server, Error> {
     // Request an ephemeral port on which to serve metrics.
-    let my_address = SocketAddr::new(config.propolis_addr.ip(), 0);
+    let producer_address = SocketAddr::new(config.propolis_addr.ip(), 0);
     let registration_address = config.metric_addr;
     info!(
         log,
         "Attempting to register with Nexus as a metric producer";
-        "my_address" => %my_address,
+        "producer_address" => %producer_address,
         "nexus_address" => %registration_address,
     );
-
-    let dropshot_config = ConfigDropshot {
-        bind_address: my_address,
-        request_body_max_bytes: 2048,
-        default_handler_task_mode: HandlerTaskMode::Detached,
-    };
 
     let server_info = ProducerEndpoint {
         id,
         kind: ProducerKind::Instance,
-        address: my_address,
-        base_route: "/collect".to_string(),
+        address: producer_address,
+        // NOTE: This field is unused, and will be removed in the future.
+        // See https://github.com/oxidecomputer/omicron/issues/5658.
+        base_route: String::new(),
         interval: OXIMETER_STAT_INTERVAL,
     };
 
@@ -167,15 +166,22 @@ pub async fn start_oximeter_server(
     let producer_log = oximeter_producer::LogConfig::Logger(
         log.new(slog::o!("component" => "oximeter-producer")),
     );
+
+    // The maximum size of a single Dropshot request.
+    //
+    // This is a pretty arbitrary limit, but one that should be big enough for
+    // the statistics we serve today (vCPU usage and panic counts), with
+    // headroom for adding quite a few more.
+    const MAX_REQUEST_SIZE: usize = 1024 * 1024;
     let config = Config {
         server_info,
-        registration_address,
-        dropshot: dropshot_config,
+        registration_address: Some(registration_address),
+        request_body_max_bytes: MAX_REQUEST_SIZE,
         log: producer_log,
     };
 
     // Create the server which will attempt to register with Nexus.
-    Server::with_registry(registry.clone(), &config).await
+    Server::with_registry(registry.clone(), &config)
 }
 
 /// Creates and registers a set of server-level metrics for an instance.
