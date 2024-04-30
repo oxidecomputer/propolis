@@ -859,7 +859,9 @@ impl<'a> MachineInitializer<'a> {
         let smb_type0 = smbios::table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
             bios_version: "v0.8".try_into().unwrap(),
-            bios_release_date: "35 Discord, 3185 YOLD".try_into().unwrap(),
+            bios_release_date: "The Aftermath 30, 3185 YOLD"
+                .try_into()
+                .unwrap(),
             bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
             // Characteristics-not-supported
             bios_characteristics: 0x8,
@@ -957,10 +959,10 @@ impl<'a> MachineInitializer<'a> {
             ..Default::default()
         };
         smb_type16.set_max_capacity(memsize_bytes);
+        let phys_mem_array_handle = 0x1600.into();
 
         let mut smb_type17 = smbios::table::Type17 {
-            // handle for type16 assigned below
-            phys_mem_array_handle: 0x1600.into(),
+            phys_mem_array_handle,
             // Unknown
             form_factor: 0x2,
             // Unknown
@@ -971,11 +973,16 @@ impl<'a> MachineInitializer<'a> {
 
         let smb_type32 = smbios::table::Type32::default();
 
+        // With "only" types 0, 1, 4, 16, 17, and 32, we are technically missing
+        // some (types 3, 7, 9, 19) of the data required by the 2.7 spec.  The
+        // data provided here were what we determined was a reasonable
+        // collection to start with.  Should further requirements arise, we may
+        // expand on it.
         let mut smb_tables = smbios::Tables::new(0x7f00.into());
         smb_tables.add(0x0000.into(), &smb_type0).unwrap();
         smb_tables.add(0x0100.into(), &smb_type1).unwrap();
         smb_tables.add(0x0300.into(), &smb_type4).unwrap();
-        smb_tables.add(0x1600.into(), &smb_type16).unwrap();
+        smb_tables.add(phys_mem_array_handle, &smb_type16).unwrap();
         smb_tables.add(0x1700.into(), &smb_type17).unwrap();
         smb_tables.add(0x3200.into(), &smb_type32).unwrap();
 

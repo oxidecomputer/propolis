@@ -815,7 +815,7 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     let smb_type0 = smbios::table::Type0 {
         vendor: "Oxide".try_into().unwrap(),
         bios_version: "v0.0.1 alpha1".try_into().unwrap(),
-        bios_release_date: "40 Discord, 3190 YOLD".try_into().unwrap(),
+        bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
         // Characteristics-not-supported
         bios_characteristics: 0x8,
@@ -905,10 +905,10 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         ..Default::default()
     };
     smb_type16.set_max_capacity(params.memory_size);
+    let phys_mem_array_handle = 0x1600.into();
 
     let mut smb_type17 = smbios::table::Type17 {
-        // handle for type16 assigned below
-        phys_mem_array_handle: 0x1600.into(),
+        phys_mem_array_handle,
         // Unknown
         form_factor: 0x2,
         // Unknown
@@ -923,11 +923,10 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     smb_tables.add(0x0000.into(), &smb_type0).unwrap();
     smb_tables.add(0x0100.into(), &smb_type1).unwrap();
     smb_tables.add(0x0300.into(), &smb_type4).unwrap();
-    smb_tables.add(0x1600.into(), &smb_type16).unwrap();
+    smb_tables.add(phys_mem_array_handle, &smb_type16).unwrap();
     smb_tables.add(0x1700.into(), &smb_type17).unwrap();
     smb_tables.add(0x3200.into(), &smb_type32).unwrap();
 
-    //let (smb_ep_bytes, smb_table_bytes) = smb_tables.commit();
     Ok(smb_tables.commit())
 }
 

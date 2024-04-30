@@ -121,7 +121,7 @@ impl Handle {
 }
 impl fmt::Display for Handle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+        fmt::LowerHex::fmt(&self.0, f)
     }
 }
 /// Default to the Unknown handle
