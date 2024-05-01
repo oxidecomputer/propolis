@@ -812,7 +812,7 @@ struct SmbiosParams {
     cpuid_procname: Option<[cpuid::Entry; 3]>,
 }
 fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
-    use smbios::table::{type0, type1, type4};
+    use smbios::table::{type0, type1, type16, type4};
 
     let smb_type0 = smbios::table::Type0 {
         vendor: "Oxide".try_into().unwrap(),
@@ -900,11 +900,11 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
 
     let mut smb_type16 = smbios::table::Type16 {
         // system board
-        location: 0x3,
+        location: type16::Location::SystemBoard,
         // system memory
-        array_use: 0x3,
+        array_use: type16::ArrayUse::System,
         // unknown
-        error_correction: 0x2,
+        error_correction: type16::ErrorCorrection::Unknown,
         num_mem_devices: 1,
         ..Default::default()
     };

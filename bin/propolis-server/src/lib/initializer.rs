@@ -853,7 +853,7 @@ impl<'a> MachineInitializer<'a> {
 
     fn generate_smbios(&self) -> smbios::TableBytes {
         use propolis::cpuid;
-        use smbios::table::{type0, type1, type4};
+        use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
@@ -953,11 +953,9 @@ impl<'a> MachineInitializer<'a> {
         let memsize_bytes = (self.properties.memory as usize) * MB;
         let mut smb_type16 = smbios::table::Type16 {
             // system board
-            location: 0x3,
+            location: type16::Location::SystemBoard,
             // system memory
-            array_use: 0x3,
-            // unknown
-            error_correction: 0x2,
+            array_use: type16::ArrayUse::System,
             num_mem_devices: 1,
             ..Default::default()
         };

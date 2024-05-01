@@ -436,9 +436,9 @@ pub mod type4 {
 
 #[derive(Default)]
 pub struct Type16 {
-    pub location: u8,
-    pub array_use: u8,
-    pub error_correction: u8,
+    pub location: type16::Location,
+    pub array_use: type16::ArrayUse,
+    pub error_correction: type16::ErrorCorrection,
     pub max_capacity: u32,
     pub error_info_handle: Handle,
     pub num_mem_devices: u16,
@@ -459,9 +459,9 @@ impl Type16 {
 impl Table for Type16 {
     fn render(&self, handle: Handle) -> Vec<u8> {
         let data = bits::Type16 {
-            location: self.location,
-            array_use: self.array_use,
-            error_correction: self.error_correction,
+            location: self.location as u8,
+            array_use: self.array_use as u8,
+            error_correction: self.error_correction as u8,
             max_capacity: self.max_capacity,
             error_info_handle: self.error_info_handle.into(),
             num_mem_devices: self.num_mem_devices,
@@ -469,6 +469,105 @@ impl Table for Type16 {
             ..bits::Type16::new(handle.into())
         };
         render_table(data, None, None)
+    }
+}
+
+pub mod type16 {
+    /// Memory array location.
+    ///
+    /// See Table 72 in section 7.17.1 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum Location {
+        /// Other
+        Other = 0x01,
+        /// Unknown
+        #[default]
+        Unknown = 0x02,
+        /// System board or motherboard
+        SystemBoard = 0x03,
+        /// ISA add-on card
+        IsaCard = 0x04,
+        /// EISA add-on card
+        EisaCard = 0x05,
+        /// PCI add-on card
+        PciCard = 0x06,
+        /// MCA add-on card
+        McaCard = 0x07,
+        /// PCMCIA add-on card
+        PcmciaCard = 0x08,
+        /// Proprietary add-on card
+        ProprietaryCard = 0x09,
+        /// NuBus
+        NuBus = 0x0A,
+        /// PC-98/C20 add-on card
+        Pc98C20Card = 0xA0,
+        /// PC-98/C24 add-on card
+        Pc98C24Card = 0xA1,
+        /// PC-98/E  add-on card
+        Pc98ECard = 0xA2,
+        /// PC-98/Local bus add-on card
+        Pc98LocalCard = 0xA3,
+        // CXL add-on card
+        CxlCard = 0xA4,
+    }
+
+    /// Memory array use field.
+    ///
+    /// See Table 73 in section 7.17.2 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum ArrayUse {
+        /// Other
+        Other = 0x1,
+        /// Unknown
+        #[default]
+        Unknown = 0x2,
+        /// System memory
+        System = 0x3,
+        /// Video memory
+        Video = 0x4,
+        /// Flash memory
+        Flash = 0x5,
+        /// Non-volatile RAM
+        NonVolatile = 0x6,
+        /// Cache memory
+        Cache = 0x7,
+    }
+
+    /// Memory array error correction field.
+    ///
+    /// See Table 74 in section 7.17.3 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum ErrorCorrection {
+        /// Other
+        Other = 0x1,
+        /// Unknown
+        #[default]
+        Unknown = 0x2,
+        /// No error correction.
+        None = 0x3,
+        /// Parity
+        Parity = 0x4,
+        /// Single-bit ECC
+        SingleBitEcc = 0x5,
+        /// Multi-bit ECC
+        MultiBitEcc = 0x6,
+        /// CRC
+        Crc = 0x7,
     }
 }
 
