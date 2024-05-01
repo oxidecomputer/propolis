@@ -573,11 +573,7 @@ async fn instance_ensure_common(
         vm_hdl.await.unwrap()
     }
     .map_err(|e| {
-        HttpError::for_client_error(
-            Some(api::ErrorCode::CreateFailed.to_string()),
-            http::status::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to create instance: {e}"),
-        )
+        HttpError::for_internal_error(format!("failed to create instance: {e}"))
     })?;
 
     if let Some(ramfb) = vm.framebuffer() {
