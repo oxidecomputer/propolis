@@ -18,6 +18,9 @@ use propolis_server::{
     vnc::setup_vnc,
 };
 
+/// Threads to spawn for tokio runtime handling the API (dropshot, etc)
+const API_RT_THREADS: usize = 4;
+
 #[derive(Debug, Parser)]
 #[clap(about, version)]
 /// An HTTP server providing access to Propolis
@@ -57,7 +60,7 @@ pub fn run_openapi() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-async fn run_server(
+fn run_server(
     config_app: config::Config,
     config_dropshot: dropshot::ConfigDropshot,
     metrics_addr: Option<SocketAddr>,
@@ -96,6 +99,16 @@ async fn run_server(
         config_metrics,
     );
 
+    // Spawn the runtime for handling API processing
+    // If/when a VM instance is created, a separate runtime for handling device
+    // emulation and other VM-related work will be spawned.
+    let api_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(API_RT_THREADS)
+        .enable_all()
+        .thread_name("tokio-rt-api")
+        .build()?;
+    let _guard = api_runtime.enter();
+
     info!(log, "Starting server...");
 
     let server = HttpServerStarter::new(
@@ -107,7 +120,8 @@ async fn run_server(
     .map_err(|error| anyhow!("Failed to start server: {}", error))?
     .start();
 
-    let server_res = join!(server, vnc_server_hdl.start()).0;
+    let server_res =
+        api_runtime.block_on(async { join!(server, vnc_server_hdl.start()).0 });
 
     server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
 }
@@ -147,8 +161,7 @@ fn build_logger() -> slog::Logger {
     log
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
     register_probes().unwrap();
 
@@ -159,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
         Args::OpenApi => run_openapi()
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
         Args::Run { cfg, propolis_addr, metric_addr, vnc_addr } => {
-            let config = config::parse(&cfg)?;
+            let config = config::parse(cfg)?;
 
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
@@ -171,7 +184,6 @@ async fn main() -> anyhow::Result<()> {
             let log = build_logger();
 
             run_server(config, config_dropshot, metric_addr, vnc_addr, log)
-                .await
         }
     }
 }

@@ -44,6 +44,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context as AnyhowContext;
 use oximeter::types::ProducerRegistry;
 use propolis::{
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
@@ -80,6 +81,10 @@ pub use nexus_client::Client as NexusClient;
 
 mod request_queue;
 mod state_driver;
+
+/// Minimum thread count for the Tokio runtime driving the VMM tasks
+const VMM_MIN_RT_THREADS: usize = 8;
+const VMM_BASE_RT_THREADS: usize = 4;
 
 #[derive(Debug, Error)]
 pub enum VmControllerError {
@@ -302,9 +307,12 @@ pub struct VmController {
     /// This controller's logger.
     log: Logger,
 
-    /// A handle to a tokio runtime onto which this controller can spawn tasks
-    /// (e.g. migration tasks).
-    runtime_hdl: tokio::runtime::Handle,
+    /// The Tokio runtime in which VMM-related processing is to be handled.
+    ///
+    /// This includes things such as device emulation, (block) backend
+    /// processing, and migration workloads.  It is held in an [Option] only to
+    /// facilitate runtime shutdown when the [VmController] is dropped.
+    vmm_runtime: Option<tokio::runtime::Runtime>,
 
     /// Migration source state persisted across multiple migration attempts.
     migration_src_state: Mutex<migrate::source::PersistentState>,
@@ -422,9 +430,13 @@ impl VmController {
         producer_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: Logger,
-        runtime_hdl: tokio::runtime::Handle,
         stop_ch: oneshot::Sender<()>,
     ) -> anyhow::Result<Arc<Self>> {
+        let vmm_rt = Self::spawn_runtime(&properties)?;
+
+        // All subsequent work should be run under our VMM runtime
+        let _rt_guard = vmm_rt.enter();
+
         let bootrom = &toml_config.bootrom;
         info!(log, "initializing new VM";
               "spec" => #?instance_spec,
@@ -516,6 +528,7 @@ impl VmController {
 
         // The instance is fully set up; pass it to the new controller.
         let shared_state_for_worker = worker_state.clone();
+        let rt_hdl = vmm_rt.handle().clone();
         let controller = Arc::new_cyclic(|this| Self {
             vm_objects: VmObjects {
                 machine: Some(machine),
@@ -533,7 +546,7 @@ impl VmController {
             worker_thread: Mutex::new(None),
             migration_src_state: Default::default(),
             log: log.new(slog::o!("component" => "vm_controller")),
-            runtime_hdl: runtime_hdl.clone(),
+            vmm_runtime: Some(vmm_rt),
             this: this.clone(),
         });
 
@@ -547,7 +560,7 @@ impl VmController {
             .name("vm_state_worker".to_string())
             .spawn(move || {
                 let driver = state_driver::StateDriver::new(
-                    runtime_hdl,
+                    rt_hdl,
                     ctrl_for_worker,
                     shared_state_for_worker,
                     vcpu_tasks,
@@ -612,6 +625,12 @@ impl VmController {
 
     pub fn log(&self) -> &Logger {
         &self.log
+    }
+    pub fn rt_hdl(&self) -> &tokio::runtime::Handle {
+        self.vmm_runtime
+            .as_ref()
+            .expect("vmm_runtime is populated until VmController is dropped")
+            .handle()
     }
 
     pub fn external_instance_state(&self) -> ApiInstanceState {
@@ -695,7 +714,7 @@ impl VmController {
         // The migration process uses async operations when communicating with
         // the migration target. Run that work on the async runtime.
         info!(self.log, "Launching migration source task");
-        let task = self.runtime_hdl.spawn(async move {
+        let task = self.rt_hdl().spawn(async move {
             info!(log_for_task, "Waiting to be told to start");
             start_rx.await.unwrap();
 
@@ -788,7 +807,7 @@ impl VmController {
         // The migration process uses async operations when communicating with
         // the migration target. Run that work on the async runtime.
         info!(self.log, "Launching migration target task");
-        let task = self.runtime_hdl.spawn(async move {
+        let task = self.rt_hdl().spawn(async move {
             info!(log_for_task, "Waiting to be told to start");
             start_rx.await.unwrap();
 
@@ -896,6 +915,25 @@ impl VmController {
     ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
         self.vm_objects.devices.get(name).cloned()
     }
+
+    /// Spawn a Tokio runtime in which to run the VMM-related (device emulation,
+    /// block backends, etc) tasks for an instance.
+    pub(crate) fn spawn_runtime(
+        properties: &InstanceProperties,
+    ) -> anyhow::Result<tokio::runtime::Runtime> {
+        // For now, just base the runtime size on vCPU count
+        let thread_count = usize::max(
+            VMM_MIN_RT_THREADS,
+            VMM_BASE_RT_THREADS + properties.vcpus as usize,
+        );
+
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_name("tokio-rt-vmm")
+            .worker_threads(thread_count)
+            .enable_all()
+            .build()
+            .context("spawning tokio runtime for VMM")
+    }
 }
 
 impl Drop for VmController {
@@ -939,6 +977,12 @@ impl Drop for VmController {
                 ..old_state
             });
         }
+
+        // Tokio will be upset if the VMM runtime is implicitly shutdown (via
+        // drop) in blocking context.  We avoid such troubles by doing an
+        // explicit background shutdown.
+        let rt = self.vmm_runtime.take().expect("vmm_runtime is populated");
+        rt.shutdown_background();
     }
 }
 
@@ -1005,7 +1049,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn reset_devices_and_machine(&self) {
-        let _rtguard = self.runtime_hdl.enter();
+        let _rtguard = self.rt_hdl().enter();
         self.for_each_device(|name, dev| {
             info!(self.log, "Sending reset request to {}", name);
             dev.reset();
@@ -1015,7 +1059,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn start_devices(&self) -> anyhow::Result<()> {
-        let _rtguard = self.runtime_hdl.enter();
+        let _rtguard = self.rt_hdl().enter();
         self.for_each_device_fallible(|name, dev| {
             info!(self.log, "Sending startup complete to {}", name);
             let res = dev.start();
@@ -1036,7 +1080,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn pause_devices(&self) {
-        let _rtguard = self.runtime_hdl.enter();
+        let _rtguard = self.rt_hdl().enter();
         self.for_each_device(|name, dev| {
             info!(self.log, "Sending pause request to {}", name);
             dev.pause();
@@ -1066,7 +1110,7 @@ impl StateDriverVmController for VmController {
         }
 
         info!(self.log, "Waiting for devices to pause");
-        self.runtime_hdl.block_on(async {
+        self.rt_hdl().block_on(async {
             let mut stream: FuturesUnordered<_> = self
                 .vm_objects
                 .devices
@@ -1094,7 +1138,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn resume_devices(&self) {
-        let _rtguard = self.runtime_hdl.enter();
+        let _rtguard = self.rt_hdl().enter();
         self.for_each_device(|name, dev| {
             info!(self.log, "Sending resume request to {}", name);
             dev.resume();
@@ -1102,7 +1146,7 @@ impl StateDriverVmController for VmController {
     }
 
     fn halt_devices(&self) {
-        let _rtguard = self.runtime_hdl.enter();
+        let _rtguard = self.rt_hdl().enter();
         self.for_each_device(|name, dev| {
             info!(self.log, "Sending halt request to {}", name);
             dev.halt();
