@@ -23,6 +23,9 @@ use tokio::runtime;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{GB, MB};
 use propolis::firmware::smbios;
+use propolis::firmware::smbios::table::{
+    BiosCharacteristics, BiosExtCharacteristics,
+};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
@@ -818,9 +821,10 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
         // Characteristics-not-supported
-        bios_characteristics: 0x8,
-        // ACPI + UEFI + IsVM
-        bios_ext_characteristics: 0x1801,
+        bios_characteristics: BiosCharacteristics::UNKNOWN,
+        bios_ext_characteristics: BiosExtCharacteristics::ACPI
+            | BiosExtCharacteristics::UEFI
+            | BiosExtCharacteristics::IS_VM,
         ..Default::default()
     };
 

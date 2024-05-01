@@ -22,6 +22,9 @@ use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::firmware::smbios;
+use propolis::firmware::smbios::table::{
+    BiosCharacteristics, BiosExtCharacteristics,
+};
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -864,9 +867,10 @@ impl<'a> MachineInitializer<'a> {
                 .unwrap(),
             bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
             // Characteristics-not-supported
-            bios_characteristics: 0x8,
-            // ACPI + UEFI + IsVM
-            bios_ext_characteristics: 0x1801,
+            bios_characteristics: BiosCharacteristics::UNKNOWN,
+            bios_ext_characteristics: BiosExtCharacteristics::ACPI
+                | BiosExtCharacteristics::UEFI
+                | BiosExtCharacteristics::IS_VM,
             ..Default::default()
         };
 

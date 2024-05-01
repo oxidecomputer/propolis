@@ -5,6 +5,7 @@
 use crate::common::*;
 use crate::firmware::smbios::bits::{self, RawTable};
 use crate::firmware::smbios::{Handle, SmbString};
+use bitflags::bitflags;
 
 pub trait Table {
     fn render(&self, handle: Handle) -> Vec<u8>;
@@ -17,15 +18,26 @@ pub struct Type0 {
     pub bios_starting_seg_addr: u16,
     pub bios_release_date: SmbString,
     pub bios_rom_size: u8,
-    pub bios_characteristics: u64,
-    pub bios_ext_characteristics: u16,
+    /// The low 32 bits of the BIOS characteristics field is a set of bitflags
+    /// that describes the BIOS.
+    pub bios_characteristics: BiosCharacteristics,
+    /// The high 32 bits of the 64-bit BIOS characteristics field is reserved
+    /// for the BIOS vendor.
+    pub bios_characteristics_reserved: u32,
+    pub bios_ext_characteristics: BiosExtCharacteristics,
     pub bios_major_release: u8,
     pub bios_minor_release: u8,
     pub ec_firmware_major_rel: u8,
     pub ec_firmware_minor_rel: u8,
 }
+
 impl Table for Type0 {
     fn render(&self, handle: Handle) -> Vec<u8> {
+        let bios_characteristics = {
+            let low = self.bios_characteristics.bits() as u64;
+            let high = (self.bios_characteristics_reserved as u64) << 32;
+            low | high
+        };
         let mut stab = StringTable::new();
         let data = bits::Type0 {
             vendor: stab.add(&self.vendor),
@@ -33,8 +45,8 @@ impl Table for Type0 {
             bios_starting_seg_addr: self.bios_starting_seg_addr,
             bios_release_date: stab.add(&self.bios_release_date),
             bios_rom_size: self.bios_rom_size,
-            bios_characteristics: self.bios_characteristics,
-            bios_ext_characteristics: self.bios_ext_characteristics,
+            bios_characteristics,
+            bios_ext_characteristics: self.bios_ext_characteristics.bits(),
             bios_major_release: self.bios_major_release,
             bios_minor_release: self.bios_minor_release,
             ec_firmware_major_rel: self.ec_firmware_major_rel,
@@ -43,6 +55,149 @@ impl Table for Type0 {
         };
 
         render_table(data, None, Some(stab))
+    }
+}
+
+bitflags! {
+    /// BIOS Characteristics flags.
+    ///
+    /// See Table 7 in section 7.1.1 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]: https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct BiosCharacteristics: u32 {
+        // Bits 0-1 are reserved.
+
+        /// BIOS characteristics are unknown.
+        const UNKNOWN = 1 << 2;
+        /// BIOS characteristics are not supported.
+        const UNSUPPORTED = 1 << 3;
+        /// ISA is supported
+        const ISA = 1 << 4;
+        /// MCA is supported.
+        const MCA = 1 << 5;
+        /// EISA is supported.
+        const EISA = 1 << 6;
+        /// PCI is supported.
+        const PCI = 1 << 7;
+        /// PC card (PCMCIA) is supported.
+        const PCMCIA = 1 << 8;
+        /// Plug and Play is supported.
+        const PLUG_AND_PLAY = 1 << 9;
+        /// APM is supported.
+        const APM = 1 << 10;
+        /// BIOS is upgradeable (flash).
+        const UPGRADEABLE = 1 << 11;
+        /// BIOS shadowing is allowed.
+        const SHADOWING = 1 << 12;
+        /// VL-VESA is supported.
+        const VL_VESA = 1 << 13;
+        /// ESCD support is available.
+        const ESCD = 1 << 14;
+        /// Boot from CD is supported.
+        const BOOT_FROM_CD = 1 << 15;
+        /// Selectable boot is supported.
+        const BOOT_SELECTABLE = 1 << 16;
+        /// BIOS ROM is socketed (e.g. PLCC or SOP socket).
+        const ROM_SOCKETED = 1 << 17;
+        /// Boot from PC card (PCMCIA) is supported.
+        const BOOT_FROM_PCMCIA = 1 << 18;
+        /// EDD specification is supported.
+        const EDD = 1 << 19;
+        /// INT 0x13 --- Japanese floppy for NEC 9800 1.2 MB (3.5”, 1K
+        /// bytes/sector, 360 RPM) is supported.
+        const FLOPPY_NEC_9800 = 1 << 20;
+        /// INT 0x13 --- Japanese floppy for Toshiba 1.2 MB (3.5”, 360
+        const FLOPPY_TOSHIBA= 1 << 21;
+        /// INT 0x13 --- 5.25”/360 KB floppy services are supported.
+        const FLOPPY_5_25_IN_360KB = 1 << 22;
+        /// INT 0x13 --- 5.25”/1.2 MB floppy services are supported.
+        const FLOPPY_5_25_IN_1_2MB = 1 << 23;
+        /// INT 0x13 --- 3.5”/720 KB floppy services are supported.
+        const FLOPPY_3_5_IN_720KB = 1 << 24;
+        /// INT 0x13 --- 3.5”/2.88 MB floppy services are supported.
+        const FLOPPY_3_5_IN_2_88MB = 1 << 25;
+        /// INT 0x5, print screen service is supported.
+        const PRINT_SCREEN = 1 << 26;
+        /// INT 0x9, 8042 keyboard services are supported.
+        const KEYBOARD_8042 = 1 << 27;
+        /// INT 0x14, serial services are supported.
+        const SERIAL = 1 << 28;
+        /// INT 0x17, printer services are supported.
+        const PRINTER = 1 << 29;
+        /// INT 0x10, CGA/mono video services are supported.
+        const VIDEO_CGA_MONO = 1 << 30;
+        /// NEC PC-98
+        const NEC_PC_98 = 1 << 31;
+    }
+}
+
+impl Default for BiosCharacteristics {
+    fn default() -> Self {
+        BiosCharacteristics::empty() | BiosCharacteristics::UNKNOWN
+    }
+}
+
+bitflags! {
+    /// BIOS Characteristics Extension flags.
+    ///
+    /// See Tables 8 and 9 in section 7.1.1 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]: https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[repr(transparent)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct BiosExtCharacteristics: u16 {
+        /// ACPI is supported
+        const ACPI = 1 << 0;
+        /// USB Legacy is supported.
+        const USB_LEGACY = 1 << 1;
+        /// AGP is supported.
+        const AGP = 1 << 2;
+        /// I2O boot is supported.
+        const BOOT_I2O = 1 << 3;
+        /// LS-120 SuperDisk boot is supported.
+        const BOOT_LS_120_SUPERDISK = 1 << 4;
+        /// ATAPI ZIP drive boot is supported.
+        const BOOT_ATAPI_ZIP = 1 << 5;
+        /// 1394 boot is supported.
+        const BOOT_1394 = 1 << 6;
+        /// Smart battery is supported.
+        const SMART_BATTERY = 1 << 7;
+        /// BIOS boot specification is supported.
+        const BIOS_BOOT_SPEC = 1 << 8;
+        /// Function key-initiated network service boot is supported.
+        ///
+        /// When function key-uninitiated network service boot is not supported,
+        /// a network adapter option ROM may choose to offer this functionality
+        /// on its own, thus offering this capability to legacy systems. When
+        /// the function is supported, the network adapter option ROM shall not
+        /// offer this capability.
+        const NETBOOT_FN_KEY = 1 << 9;
+        /// Enable targeted content distribution.
+        ///
+        /// The manufacturer has ensured that the SMBIOS data is useful in
+        /// identifying the computer for targeted delivery of model-specific
+        /// software and firmware content through third-party content
+        /// distribution services.
+        const TARGETED_CONTENT_DIST = 1 << 10;
+        /// UEFI specification is supported.
+        const UEFI = 1 << 11;
+        /// SMBIOS table describes a virtual machine.
+        ///
+        /// If this bit is not set, no inference can be made about the
+        /// virtuality of the system.
+        const IS_VM = 1 << 12;
+        /// Manufacturing mode is *supported*.
+        ///
+        /// Manufacturing mode is a special boot mode, not normally available to
+        /// end users, that modifies BIOS features and settings for use while
+        /// the computer is being manufactured and tested.
+        const HAS_MFG_MODE = 1 << 13;
+        /// Manufacturing mode is *enabled*.
+        const IN_MFG_MODE = 1 << 14;
     }
 }
 
