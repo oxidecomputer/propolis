@@ -208,7 +208,7 @@ pub struct Type1 {
     pub version: SmbString,
     pub serial_number: SmbString,
     pub uuid: [u8; 16],
-    pub wake_up_type: u8,
+    pub wake_up_type: type1::WakeUpType,
     pub sku_number: SmbString,
     pub family: SmbString,
 }
@@ -221,13 +221,44 @@ impl Table for Type1 {
             version: stab.add(&self.version),
             serial_number: stab.add(&self.serial_number),
             uuid: self.uuid,
-            wake_up_type: self.wake_up_type,
+            wake_up_type: self.wake_up_type as u8,
             sku_number: stab.add(&self.sku_number),
             family: stab.add(&self.family),
             ..bits::Type1::new(handle.into())
         };
 
         render_table(data, None, Some(stab))
+    }
+}
+
+pub mod type1 {
+    /// Wake-up type.
+    ///
+    /// See Table 12 in section 7.2.2 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum WakeUpType {
+        /// Other
+        Other = 0x01,
+        /// Unknown
+        #[default]
+        Unknown = 0x02,
+        /// APM Timer
+        ApmTimer = 0x03,
+        /// Modem Ring
+        ModemRing = 0x04,
+        /// LAN Remote
+        LanRemote = 0x05,
+        /// Power Switch
+        PowerSwitch = 0x06,
+        /// PCI PME#
+        PciPme = 0x07,
+        /// AC Power Restored
+        AcPowerRestored = 0x08,
     }
 }
 

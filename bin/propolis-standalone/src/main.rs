@@ -812,7 +812,7 @@ struct SmbiosParams {
     cpuid_procname: Option<[cpuid::Entry; 3]>,
 }
 fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
-    use smbios::table::{type0, type4};
+    use smbios::table::{type0, type1, type4};
 
     let smb_type0 = smbios::table::Type0 {
         vendor: "Oxide".try_into().unwrap(),
@@ -831,7 +831,7 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         manufacturer: "Oxide".try_into().unwrap(),
         product_name: "OxVM".try_into().unwrap(),
         // power switch
-        wake_up_type: 0x06,
+        wake_up_type: type1::WakeUpType::PowerSwitch,
         ..Default::default()
     };
 

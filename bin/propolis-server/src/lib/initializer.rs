@@ -853,7 +853,7 @@ impl<'a> MachineInitializer<'a> {
 
     fn generate_smbios(&self) -> smbios::TableBytes {
         use propolis::cpuid;
-        use smbios::table::{type0, type4};
+        use smbios::table::{type0, type1, type4};
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
@@ -885,7 +885,7 @@ impl<'a> MachineInitializer<'a> {
             uuid: self.properties.id.to_bytes_le(),
 
             // power switch
-            wake_up_type: 0x06,
+            wake_up_type: type1::WakeUpType::PowerSwitch,
             ..Default::default()
         };
 
