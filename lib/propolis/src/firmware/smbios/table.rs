@@ -136,7 +136,7 @@ pub mod type0 {
 
     impl Default for BiosCharacteristics {
         fn default() -> Self {
-            BiosCharacteristics::empty() | BiosCharacteristics::UNKNOWN
+            BiosCharacteristics::UNKNOWN
         }
     }
 

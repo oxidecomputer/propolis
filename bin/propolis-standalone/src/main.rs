@@ -820,7 +820,7 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
         // Characteristics-not-supported
-        bios_characteristics: type0::BiosCharacteristics::UNKNOWN,
+        bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
         bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
             | type0::BiosExtCharacteristics::UEFI
             | type0::BiosExtCharacteristics::IS_VM,

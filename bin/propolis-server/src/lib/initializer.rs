@@ -865,7 +865,7 @@ impl<'a> MachineInitializer<'a> {
                 .unwrap(),
             bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
             // Characteristics-not-supported
-            bios_characteristics: type0::BiosCharacteristics::UNKNOWN,
+            bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
             bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
                 | type0::BiosExtCharacteristics::UEFI
                 | type0::BiosExtCharacteristics::IS_VM,
