@@ -513,7 +513,7 @@ pub mod type4 {
             #[default]
             Unknown = 0x02,
             /// Central Processor
-            Cpu = 0x03,
+            Central = 0x03,
             /// Math Processor
             Math = 0x04,
             /// DSP Processor

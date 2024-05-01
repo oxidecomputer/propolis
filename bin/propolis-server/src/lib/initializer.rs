@@ -864,7 +864,6 @@ impl<'a> MachineInitializer<'a> {
                 .try_into()
                 .unwrap(),
             bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
-            // Characteristics-not-supported
             bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
             bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
                 | type0::BiosExtCharacteristics::UEFI
@@ -930,13 +929,11 @@ impl<'a> MachineInitializer<'a> {
             cpuid::parse_brand_string(cpuid_procname).unwrap_or("".to_string());
 
         let smb_type4 = smbios::table::Type4 {
-            // central processor
-            proc_type: type4::ProcType::Cpu,
+            proc_type: type4::ProcType::Central,
             proc_family,
             proc_manufacturer,
             proc_id,
             proc_version: proc_version.try_into().unwrap_or_default(),
-            // cpu enabled, socket populated
             status: type4::ProcStatus::Enabled,
             // unknown
             proc_upgrade: 0x2,
@@ -944,7 +941,6 @@ impl<'a> MachineInitializer<'a> {
             core_count: self.properties.vcpus,
             core_enabled: self.properties.vcpus,
             thread_count: self.properties.vcpus,
-            // 64-bit capable, multicore
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
@@ -952,10 +948,9 @@ impl<'a> MachineInitializer<'a> {
 
         let memsize_bytes = (self.properties.memory as usize) * MB;
         let mut smb_type16 = smbios::table::Type16 {
-            // system board
             location: type16::Location::SystemBoard,
-            // system memory
             array_use: type16::ArrayUse::System,
+            error_correction: type16::ErrorCorrection::Unknown,
             num_mem_devices: 1,
             ..Default::default()
         };

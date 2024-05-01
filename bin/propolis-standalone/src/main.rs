@@ -878,13 +878,11 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         .unwrap_or("".to_string());
 
     let smb_type4 = smbios::table::Type4 {
-        // central processor
-        proc_type: type4::ProcType::Cpu,
+        proc_type: type4::ProcType::Central,
         proc_family,
         proc_manufacturer,
         proc_id,
         proc_version: proc_version.as_str().try_into().unwrap_or_default(),
-        // cpu enabled, socket populated
         status: type4::ProcStatus::Enabled,
         // unknown
         proc_upgrade: 0x2,
@@ -892,18 +890,14 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         core_count: params.num_cpus,
         core_enabled: params.num_cpus,
         thread_count: params.num_cpus,
-        // 64-bit capable, multicore
         proc_characteristics: type4::Characteristics::IS_64_BIT
             | type4::Characteristics::MULTI_CORE,
         ..Default::default()
     };
 
     let mut smb_type16 = smbios::table::Type16 {
-        // system board
         location: type16::Location::SystemBoard,
-        // system memory
         array_use: type16::ArrayUse::System,
-        // unknown
         error_correction: type16::ErrorCorrection::Unknown,
         num_mem_devices: 1,
         ..Default::default()
