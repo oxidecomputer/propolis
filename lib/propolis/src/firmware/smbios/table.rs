@@ -57,6 +57,127 @@ impl Table for Type0 {
     }
 }
 
+macro_rules! enum_try_from {
+    ($(#[$attr:meta])* $v:vis enum $Enum:ident: $repr:ty {
+        $(#[$variant1_attr:meta])*
+        $Variant1:ident = $val1:expr,
+        $(
+            $(#[$variant_attr:meta])*
+            $Variant:ident = $val:expr
+        ),*
+        $(,)?
+    }) => {
+        $(#[$attr])*
+        #[repr($repr)]
+        $v enum $Enum {
+            $(#[$variant1_attr])*
+            $Variant1 = $val1,
+            $(
+                $(#[$variant_attr])*
+                $Variant = $val
+            ),*
+        }
+
+        #[automatically_derived]
+        impl std::convert::TryFrom<$repr> for $Enum {
+            type Error = &'static str;
+            fn try_from(value: $repr) -> Result<Self, Self::Error> {
+                match value {
+                    $val1 => Ok($Enum::$Variant1),
+                    $(
+                        $val => Ok($Enum::$Variant),
+                    )+
+                    _ => Err(concat!(
+                        "invalid ", stringify!($enum), " value, expected one of: ",
+                        stringify!($Variant1)," (", stringify!($val1), ")",
+                        $(", ", stringify!($Variant), " (", stringify!($val), ")" ),*
+                    )),
+                }
+            }
+        }
+
+        #[automatically_derived]
+        impl From<$Enum> for $repr {
+            fn from(e: $Enum) -> $repr {
+                e as $repr
+            }
+        }
+
+        #[automatically_derived]
+        impl<'de> serde::de::Deserialize<'de> for $Enum {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::de::Deserializer<'de>,
+                $repr: serde::de::Deserialize<'de>,
+            {
+                use serde::de::{Deserialize, Error, Unexpected};
+
+                let value = <$repr as Deserialize>::deserialize(deserializer)?;
+                $Enum::try_from(value)
+                    .map_err(|e| Error::invalid_value(
+                        Unexpected::Unsigned(value as u64),
+                        &e,
+                    ))
+            }
+        }
+
+        #[automatically_derived]
+        impl serde::ser::Serialize for $Enum {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::ser::Serializer,
+                $repr: serde::ser::Serialize,
+            {
+                (*self as $repr).serialize(serializer)
+            }
+        }
+
+        impl $Enum {
+            // Every enum should have this IMO...
+            pub const VARIANTS: &'static [Self] = &[
+                $Enum::$Variant1,
+                $($Enum::$Variant),*
+            ];
+        }
+    };
+}
+
+macro_rules! serialize_bitflags {
+    ($($Flags:ty => $repr:ty),+ $(,)?) => {
+        $(
+
+            #[automatically_derived]
+            impl<'de> serde::de::Deserialize<'de> for $Flags {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: serde::de::Deserializer<'de>,
+                    $repr: serde::de::Deserialize<'de>,
+                {
+                    let v = <$repr as serde::de::Deserialize>::deserialize(deserializer)?;
+                    <$Flags>::from_bits(v).ok_or_else(||
+                        serde::de::Error::custom(format!(
+                            "invalid {} value {v}: only bits {:?} may be set",
+                            stringify!($Flags),
+                            <$Flags>::all(),
+                        ))
+                    )
+                }
+            }
+
+            #[automatically_derived]
+            impl serde::ser::Serialize for $Flags {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: serde::ser::Serializer,
+                    $repr: serde::ser::Serialize,
+                {
+                    self.bits().serialize(serializer)
+                }
+            }
+        )+
+    };
+}
+
 pub mod type0 {
     bitflags! {
         /// BIOS Characteristics flags.
@@ -200,6 +321,11 @@ pub mod type0 {
             const IN_MFG_MODE = 1 << 14;
         }
     }
+
+    serialize_bitflags! {
+        BiosCharacteristics => u32,
+        BiosExtCharacteristics => u16,
+    }
 }
 #[derive(Default)]
 pub struct Type1 {
@@ -232,33 +358,71 @@ impl Table for Type1 {
 }
 
 pub mod type1 {
-    /// Wake-up type.
-    ///
-    /// See Table 12 in section 7.2.2 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum WakeUpType {
-        /// Other
-        Other = 0x01,
-        /// Unknown
-        #[default]
-        Unknown = 0x02,
-        /// APM Timer
-        ApmTimer = 0x03,
-        /// Modem Ring
-        ModemRing = 0x04,
-        /// LAN Remote
-        LanRemote = 0x05,
-        /// Power Switch
-        PowerSwitch = 0x06,
-        /// PCI PME#
-        PciPme = 0x07,
-        /// AC Power Restored
-        AcPowerRestored = 0x08,
+    enum_try_from! {
+        /// Wake-up type.
+        ///
+        /// See Table 12 in section 7.2.2 of [the SMBIOS Reference
+        /// Specification][DSP0136] for details.
+        ///
+        /// [DSP0136]:
+        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+        pub enum WakeUpType: u8 {
+            /// Other
+            Other = 0x1,
+            /// Unknown
+            #[default]
+            Unknown = 0x2,
+            /// APM Timer
+            ApmTimer = 0x3,
+            /// Modem Ring
+            ModemRing = 0x4,
+            /// LAN Remote
+            LanRemote = 0x5,
+            /// Power Switch
+            PowerSwitch = 0x6,
+            /// PCI PME#
+            PciPme = 0x7,
+            /// AC Power Restored
+            AcPowerRestored = 0x8,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn wake_up_type_serde() {
+            for variant in WakeUpType::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, WakeUpType>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+        }
+
+        #[test]
+        fn wake_up_type_deserialize() {
+            for variant in WakeUpType::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
+                        .unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, WakeUpType>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+
+            for invalid in [0x9, 0xff, 0x7890] {
+                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                dbg!(serde_json::from_str::<'_, WakeUpType>(&serialized))
+                    .unwrap_err();
+            }
+        }
     }
 }
 
@@ -333,62 +497,64 @@ impl Table for Type4 {
 }
 
 pub mod type4 {
-    /// Processor type.
-    ///
-    /// See Table 21 in section 7.5 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum ProcType {
-        /// Other
-        Other = 0x01,
-        /// Unknown
-        #[default]
-        Unknown = 0x02,
-        /// Central Processor
-        Cpu = 0x03,
-        /// Math Processor
-        Math = 0x04,
-        /// DSP Processor
-        Dsp = 0x05,
-        /// Video processor
-        Video = 0x06,
+    enum_try_from! {
+        /// Processor type.
+        ///
+        /// See Table 21 in section 7.5 of [the SMBIOS Reference
+        /// Specification][DSP0136] for details.
+        ///
+        /// [DSP0136]:
+        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+        pub enum ProcType: u8 {
+            /// Other
+            Other = 0x01,
+            /// Unknown
+            #[default]
+            Unknown = 0x02,
+            /// Central Processor
+            Cpu = 0x03,
+            /// Math Processor
+            Math = 0x04,
+            /// DSP Processor
+            Dsp = 0x05,
+            /// Video processor
+            Video = 0x06,
+        }
     }
 
-    /// Processor status.
-    ///
-    /// See Table 21 in section 7.5 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum ProcStatus {
-        /// Status unknown, socket unpopulated.
-        UnknownUnpopulated = 0x00,
-        /// Status unknown, socket populated.
-        #[default]
-        UnknownPopulated = Self::POPULATED,
-
-        /// CPU Enabled
+    enum_try_from! {
+        /// Processor status.
         ///
-        /// It...probably doesn't make sense to have a CPU enabled that's
-        /// unpopulated?
-        Enabled = 0x01 | Self::POPULATED,
-        /// CPU Disabled by User through BIOS Setup.
-        UserDisabled = 0x02 | Self::POPULATED,
-        /// CPU Disabled by BIOS (POST Error).
-        BiosDisabled = 0x03 | Self::POPULATED,
-        /// CPU is Idle, waiting to be enabled.
-        Idle = 0x04 | Self::POPULATED,
+        /// See Table 21 in section 7.5 of [the SMBIOS Reference
+        /// Specification][DSP0136] for details.
+        ///
+        /// [DSP0136]:
+        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+        pub enum ProcStatus: u8 {
+            /// Status unknown, socket unpopulated.
+            UnknownUnpopulated = 0b0000_0000,
+            /// Status unknown, socket populated.
+            #[default]
+            UnknownPopulated = 0b0100_0000,
 
-        /// Other
-        OtherPopulated = 0x07 | Self::POPULATED,
-        OtherUnpopulated = 0x07,
+            /// CPU Enabled
+            ///
+            /// It...probably doesn't make sense to have a CPU enabled that's
+            /// unpopulated?
+            Enabled = 0b0100_0001,
+            /// CPU Disabled by User through BIOS Setup.
+            UserDisabled = 0b0100_0010,
+            /// CPU Disabled by BIOS (POST Error).
+            BiosDisabled = 0b0100_0011,
+            /// CPU is Idle, waiting to be enabled.
+            Idle = 0b0100_0100,
+
+            /// Other
+            OtherPopulated = 0b0100_0111,
+            OtherUnpopulated = 0b0000_0111,
+        }
     }
 
     impl ProcStatus {
@@ -432,6 +598,79 @@ pub mod type4 {
             const ARM64_SOC_ID = 1 << 9;
         }
     }
+
+    serialize_bitflags! {
+        Characteristics => u16,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn proc_status_serde_roundtrip() {
+            for variant in ProcStatus::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, ProcStatus>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+        }
+
+        #[test]
+        fn proc_status_deserialize() {
+            for variant in ProcStatus::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
+                        .unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, ProcStatus>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+
+            for invalid in [0x9, 0xff, 0x7890] {
+                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                dbg!(serde_json::from_str::<'_, ProcStatus>(&serialized))
+                    .unwrap_err();
+            }
+        }
+
+        #[test]
+        fn proc_type_serde_roundtrip() {
+            for variant in ProcType::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, ProcType>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+        }
+
+        #[test]
+        fn proc_type_deserialize() {
+            for variant in ProcType::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
+                        .unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, ProcType>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+
+            for invalid in [0x9, 0xff, 0x7890] {
+                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                dbg!(serde_json::from_str::<'_, ProcType>(&serialized))
+                    .unwrap_err();
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -473,101 +712,209 @@ impl Table for Type16 {
 }
 
 pub mod type16 {
-    /// Memory array location.
-    ///
-    /// See Table 72 in section 7.17.1 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum Location {
-        /// Other
-        Other = 0x01,
-        /// Unknown
-        #[default]
-        Unknown = 0x02,
-        /// System board or motherboard
-        SystemBoard = 0x03,
-        /// ISA add-on card
-        IsaCard = 0x04,
-        /// EISA add-on card
-        EisaCard = 0x05,
-        /// PCI add-on card
-        PciCard = 0x06,
-        /// MCA add-on card
-        McaCard = 0x07,
-        /// PCMCIA add-on card
-        PcmciaCard = 0x08,
-        /// Proprietary add-on card
-        ProprietaryCard = 0x09,
-        /// NuBus
-        NuBus = 0x0A,
-        /// PC-98/C20 add-on card
-        Pc98C20Card = 0xA0,
-        /// PC-98/C24 add-on card
-        Pc98C24Card = 0xA1,
-        /// PC-98/E  add-on card
-        Pc98ECard = 0xA2,
-        /// PC-98/Local bus add-on card
-        Pc98LocalCard = 0xA3,
-        // CXL add-on card
-        CxlCard = 0xA4,
+    enum_try_from! {
+        /// Memory array location.
+        ///
+        /// See Table 72 in section 7.17.1 of [the SMBIOS Reference
+        /// Specification][DSP0136] for details.
+        ///
+        /// [DSP0136]:
+        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+        pub enum Location: u8 {
+            /// Other
+            Other = 0x01,
+            /// Unknown
+            #[default]
+            Unknown = 0x02,
+            /// System board or motherboard
+            SystemBoard = 0x03,
+            /// ISA add-on card
+            IsaCard = 0x04,
+            /// EISA add-on card
+            EisaCard = 0x05,
+            /// PCI add-on card
+            PciCard = 0x06,
+            /// MCA add-on card
+            McaCard = 0x07,
+            /// PCMCIA add-on card
+            PcmciaCard = 0x08,
+            /// Proprietary add-on card
+            ProprietaryCard = 0x09,
+            /// NuBus
+            NuBus = 0x0A,
+            /// PC-98/C20 add-on card
+            Pc98C20Card = 0xA0,
+            /// PC-98/C24 add-on card
+            Pc98C24Card = 0xA1,
+            /// PC-98/E  add-on card
+            Pc98ECard = 0xA2,
+            /// PC-98/Local bus add-on card
+            Pc98LocalCard = 0xA3,
+            // CXL add-on card
+            CxlCard = 0xA4,
+        }
     }
 
-    /// Memory array use field.
-    ///
-    /// See Table 73 in section 7.17.2 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum ArrayUse {
-        /// Other
-        Other = 0x1,
-        /// Unknown
-        #[default]
-        Unknown = 0x2,
-        /// System memory
-        System = 0x3,
-        /// Video memory
-        Video = 0x4,
-        /// Flash memory
-        Flash = 0x5,
-        /// Non-volatile RAM
-        NonVolatile = 0x6,
-        /// Cache memory
-        Cache = 0x7,
+    enum_try_from! {
+        /// Memory array use field.
+        ///
+        /// See Table 73 in section 7.17.2 of [the SMBIOS Reference
+        /// Specification][DSP0136] for details.
+        ///
+        /// [DSP0136]:
+        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+        pub enum ArrayUse: u8 {
+            /// Other
+            Other = 0x1,
+            /// Unknown
+            #[default]
+            Unknown = 0x2,
+            /// System memory
+            System = 0x3,
+            /// Video memory
+            Video = 0x4,
+            /// Flash memory
+            Flash = 0x5,
+            /// Non-volatile RAM
+            NonVolatile = 0x6,
+            /// Cache memory
+            Cache = 0x7,
+        }
     }
 
-    /// Memory array error correction field.
-    ///
-    /// See Table 74 in section 7.17.3 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-    #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum ErrorCorrection {
-        /// Other
-        Other = 0x1,
-        /// Unknown
-        #[default]
-        Unknown = 0x2,
-        /// No error correction.
-        None = 0x3,
-        /// Parity
-        Parity = 0x4,
-        /// Single-bit ECC
-        SingleBitEcc = 0x5,
-        /// Multi-bit ECC
-        MultiBitEcc = 0x6,
-        /// CRC
-        Crc = 0x7,
+    enum_try_from! {
+        /// Memory array error correction field.
+        ///
+        /// See Table 74 in section 7.17.3 of [the SMBIOS Reference
+        /// Specification][DSP0136] for details.
+        ///
+        /// [DSP0136]:
+        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+        pub enum ErrorCorrection: u8 {
+            /// Other
+            Other = 0x1,
+            /// Unknown
+            #[default]
+            Unknown = 0x2,
+            /// No error correction.
+            None = 0x3,
+            /// Parity
+            Parity = 0x4,
+            /// Single-bit ECC
+            SingleBitEcc = 0x5,
+            /// Multi-bit ECC
+            MultiBitEcc = 0x6,
+            /// CRC
+            Crc = 0x7,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn location_serde_roundtrip() {
+            for variant in Location::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, Location>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+        }
+
+        #[test]
+        fn location_deserialize() {
+            for variant in Location::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
+                        .unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, Location>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+
+            for invalid in [0x11, 0xff, 0x7890] {
+                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                dbg!(serde_json::from_str::<'_, Location>(&serialized))
+                    .unwrap_err();
+            }
+        }
+
+        #[test]
+        fn array_use_serde_roundtrip() {
+            for variant in ArrayUse::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, ArrayUse>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+        }
+
+        #[test]
+        fn array_use_deserialize() {
+            for variant in ArrayUse::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
+                        .unwrap();
+                let deserialized =
+                    dbg!(serde_json::from_str::<'_, ArrayUse>(&serialized))
+                        .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+
+            for invalid in [0x11, 0xff, 0x7890] {
+                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                dbg!(serde_json::from_str::<'_, ArrayUse>(&serialized))
+                    .unwrap_err();
+            }
+        }
+
+        #[test]
+        fn error_correction_serde_roundtrip() {
+            for variant in ErrorCorrection::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                let deserialized = dbg!(serde_json::from_str::<
+                    '_,
+                    ErrorCorrection,
+                >(&serialized))
+                .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+        }
+
+        #[test]
+        fn error_correction_deserialize() {
+            for variant in ErrorCorrection::VARIANTS {
+                let serialized =
+                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
+                        .unwrap();
+                let deserialized = dbg!(serde_json::from_str::<
+                    '_,
+                    ErrorCorrection,
+                >(&serialized))
+                .unwrap();
+                assert_eq!(*variant, deserialized);
+            }
+
+            for invalid in [0x11, 0xff, 0x7890] {
+                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                dbg!(serde_json::from_str::<'_, ErrorCorrection>(&serialized))
+                    .unwrap_err();
+            }
+        }
     }
 }
 
