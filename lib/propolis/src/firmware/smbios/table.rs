@@ -33,8 +33,8 @@ pub struct Type0 {
 impl Table for Type0 {
     fn render(&self, handle: Handle) -> Vec<u8> {
         let bios_characteristics = {
-            let low = self.bios_characteristics.bits() as u64;
-            let high = (self.bios_characteristics_reserved as u64) << 32;
+            let low = u64::from(self.bios_characteristics.bits());
+            let high = u64::from(self.bios_characteristics_reserved) << 32;
             low | high
         };
         let mut stab = StringTable::new();
