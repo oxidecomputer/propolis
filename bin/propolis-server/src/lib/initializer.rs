@@ -22,9 +22,6 @@ use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::firmware::smbios;
-use propolis::firmware::smbios::table::{
-    BiosCharacteristics, BiosExtCharacteristics,
-};
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -856,6 +853,7 @@ impl<'a> MachineInitializer<'a> {
 
     fn generate_smbios(&self) -> smbios::TableBytes {
         use propolis::cpuid;
+        use smbios::table::{type0, type4};
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
@@ -867,10 +865,10 @@ impl<'a> MachineInitializer<'a> {
                 .unwrap(),
             bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
             // Characteristics-not-supported
-            bios_characteristics: BiosCharacteristics::UNKNOWN,
-            bios_ext_characteristics: BiosExtCharacteristics::ACPI
-                | BiosExtCharacteristics::UEFI
-                | BiosExtCharacteristics::IS_VM,
+            bios_characteristics: type0::BiosCharacteristics::UNKNOWN,
+            bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
+                | type0::BiosExtCharacteristics::UEFI
+                | type0::BiosExtCharacteristics::IS_VM,
             ..Default::default()
         };
 
@@ -933,13 +931,13 @@ impl<'a> MachineInitializer<'a> {
 
         let smb_type4 = smbios::table::Type4 {
             // central processor
-            proc_type: 0x03,
+            proc_type: type4::ProcType::Cpu,
             proc_family,
             proc_manufacturer,
             proc_id,
             proc_version: proc_version.try_into().unwrap_or_default(),
             // cpu enabled, socket populated
-            status: 0x41,
+            status: type4::ProcStatus::Enabled,
             // unknown
             proc_upgrade: 0x2,
             // make core and thread counts equal for now
@@ -947,7 +945,8 @@ impl<'a> MachineInitializer<'a> {
             core_enabled: self.properties.vcpus,
             thread_count: self.properties.vcpus,
             // 64-bit capable, multicore
-            proc_characteristics: 0xc,
+            proc_characteristics: type4::Characteristics::IS_64_BIT
+                | type4::Characteristics::MULTI_CORE,
             ..Default::default()
         };
 

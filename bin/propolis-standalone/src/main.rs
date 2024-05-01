@@ -23,9 +23,6 @@ use tokio::runtime;
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{GB, MB};
 use propolis::firmware::smbios;
-use propolis::firmware::smbios::table::{
-    BiosCharacteristics, BiosExtCharacteristics,
-};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::uart::LpcUart;
@@ -815,16 +812,18 @@ struct SmbiosParams {
     cpuid_procname: Option<[cpuid::Entry; 3]>,
 }
 fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
+    use smbios::table::{type0, type4};
+
     let smb_type0 = smbios::table::Type0 {
         vendor: "Oxide".try_into().unwrap(),
         bios_version: "v0.0.1 alpha1".try_into().unwrap(),
         bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
         // Characteristics-not-supported
-        bios_characteristics: BiosCharacteristics::UNKNOWN,
-        bios_ext_characteristics: BiosExtCharacteristics::ACPI
-            | BiosExtCharacteristics::UEFI
-            | BiosExtCharacteristics::IS_VM,
+        bios_characteristics: type0::BiosCharacteristics::UNKNOWN,
+        bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
+            | type0::BiosExtCharacteristics::UEFI
+            | type0::BiosExtCharacteristics::IS_VM,
         ..Default::default()
     };
 
@@ -880,13 +879,13 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
 
     let smb_type4 = smbios::table::Type4 {
         // central processor
-        proc_type: 0x03,
+        proc_type: type4::ProcType::Cpu,
         proc_family,
         proc_manufacturer,
         proc_id,
         proc_version: proc_version.as_str().try_into().unwrap_or_default(),
         // cpu enabled, socket populated
-        status: 0x41,
+        status: type4::ProcStatus::Enabled,
         // unknown
         proc_upgrade: 0x2,
         // make core and thread counts equal for now
@@ -894,7 +893,8 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         core_enabled: params.num_cpus,
         thread_count: params.num_cpus,
         // 64-bit capable, multicore
-        proc_characteristics: 0xc,
+        proc_characteristics: type4::Characteristics::IS_64_BIT
+            | type4::Characteristics::MULTI_CORE,
         ..Default::default()
     };
 
