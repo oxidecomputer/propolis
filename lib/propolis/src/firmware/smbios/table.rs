@@ -154,6 +154,52 @@ macro_rules! serialize_bitflags {
     };
 }
 
+#[cfg(test)]
+macro_rules! enum_deserialize_tests {
+    ($(fn $name:ident($Enum:ty, $repr:ty) { $invalid:expr })+) => {
+        $(
+            #[test]
+            fn $name() {
+                for variant in <$Enum>::VARIANTS {
+                    let serialized =
+                        dbg!(serde_json::to_string(&(*dbg!(variant) as $repr)))
+                            .unwrap();
+                    let deserialized =
+                        dbg!(serde_json::from_str::<'_, $Enum>(&serialized))
+                            .unwrap();
+                    assert_eq!(*variant, deserialized);
+                }
+
+                for invalid in $invalid {
+                    let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
+
+                    dbg!(serde_json::from_str::<'_, $Enum>(&serialized))
+                        .unwrap_err();
+                }
+            }
+        )+
+    }
+}
+
+#[cfg(test)]
+macro_rules! enum_serde_roundtrip_tests {
+    ($(fn $name:ident($Enum:ty) {})+) => {
+        $(
+            #[test]
+            fn $name() {
+                for variant in <$Enum>::VARIANTS {
+                    let serialized =
+                        dbg!(serde_json::to_string(dbg!(variant))).unwrap();
+                    let deserialized =
+                        dbg!(serde_json::from_str::<'_, $Enum>(&serialized))
+                            .unwrap();
+                    assert_eq!(*variant, deserialized);
+                }
+            }
+        )+
+    }
+}
+
 pub mod type0 {
     bitflags! {
         /// BIOS Characteristics flags.
@@ -375,36 +421,11 @@ pub mod type1 {
     mod tests {
         use super::*;
 
-        #[test]
-        fn wake_up_type_serde() {
-            for variant in WakeUpType::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, WakeUpType>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
+        enum_serde_roundtrip_tests! {
+            fn wake_up_type_serde_roundtrip(WakeUpType) {}
         }
-
-        #[test]
-        fn wake_up_type_deserialize() {
-            for variant in WakeUpType::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
-                        .unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, WakeUpType>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-
-            for invalid in [0x9, 0xff, 0x7890] {
-                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
-
-                dbg!(serde_json::from_str::<'_, WakeUpType>(&serialized))
-                    .unwrap_err();
-            }
+        enum_deserialize_tests! {
+            fn wake_up_type_deserialize(WakeUpType, u8) { [0x9, 0xff, 0x7890] }
         }
     }
 }
@@ -599,68 +620,14 @@ pub mod type4 {
     mod tests {
         use super::*;
 
-        #[test]
-        fn proc_status_serde_roundtrip() {
-            for variant in ProcStatus::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, ProcStatus>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
+        enum_serde_roundtrip_tests! {
+            fn proc_status_serde_roundtrip(ProcStatus) {}
+            fn proc_type_serde_roundtrip(ProcType) {}
         }
 
-        #[test]
-        fn proc_status_deserialize() {
-            for variant in ProcStatus::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
-                        .unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, ProcStatus>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-
-            for invalid in [0x9, 0xff, 0x7890] {
-                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
-
-                dbg!(serde_json::from_str::<'_, ProcStatus>(&serialized))
-                    .unwrap_err();
-            }
-        }
-
-        #[test]
-        fn proc_type_serde_roundtrip() {
-            for variant in ProcType::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, ProcType>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-        }
-
-        #[test]
-        fn proc_type_deserialize() {
-            for variant in ProcType::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
-                        .unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, ProcType>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-
-            for invalid in [0x9, 0xff, 0x7890] {
-                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
-
-                dbg!(serde_json::from_str::<'_, ProcType>(&serialized))
-                    .unwrap_err();
-            }
+        enum_deserialize_tests! {
+            fn proc_status_deserialize(ProcStatus, u8) { [0x9, 0xff, 0x7890] }
+            fn proc_type_deserialize(ProcType, u8) { [0x9, 0xff, 0x7890] }
         }
     }
 }
@@ -817,104 +784,16 @@ pub mod type16 {
     mod tests {
         use super::*;
 
-        #[test]
-        fn location_serde_roundtrip() {
-            for variant in Location::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, Location>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
+        enum_serde_roundtrip_tests! {
+            fn location_serde_roundtrip(Location) {}
+            fn array_use_serde_roundtrip(ArrayUse) {}
+            fn error_correction_serde_roundtrip(ErrorCorrection) {}
         }
 
-        #[test]
-        fn location_deserialize() {
-            for variant in Location::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
-                        .unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, Location>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-
-            for invalid in [0x11, 0xff, 0x7890] {
-                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
-
-                dbg!(serde_json::from_str::<'_, Location>(&serialized))
-                    .unwrap_err();
-            }
-        }
-
-        #[test]
-        fn array_use_serde_roundtrip() {
-            for variant in ArrayUse::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, ArrayUse>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-        }
-
-        #[test]
-        fn array_use_deserialize() {
-            for variant in ArrayUse::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
-                        .unwrap();
-                let deserialized =
-                    dbg!(serde_json::from_str::<'_, ArrayUse>(&serialized))
-                        .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-
-            for invalid in [0x11, 0xff, 0x7890] {
-                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
-
-                dbg!(serde_json::from_str::<'_, ArrayUse>(&serialized))
-                    .unwrap_err();
-            }
-        }
-
-        #[test]
-        fn error_correction_serde_roundtrip() {
-            for variant in ErrorCorrection::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(dbg!(variant))).unwrap();
-                let deserialized = dbg!(serde_json::from_str::<
-                    '_,
-                    ErrorCorrection,
-                >(&serialized))
-                .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-        }
-
-        #[test]
-        fn error_correction_deserialize() {
-            for variant in ErrorCorrection::VARIANTS {
-                let serialized =
-                    dbg!(serde_json::to_string(&(*dbg!(variant) as u8)))
-                        .unwrap();
-                let deserialized = dbg!(serde_json::from_str::<
-                    '_,
-                    ErrorCorrection,
-                >(&serialized))
-                .unwrap();
-                assert_eq!(*variant, deserialized);
-            }
-
-            for invalid in [0x11, 0xff, 0x7890] {
-                let serialized = dbg!(serde_json::to_string(&invalid)).unwrap();
-
-                dbg!(serde_json::from_str::<'_, ErrorCorrection>(&serialized))
-                    .unwrap_err();
-            }
+        enum_deserialize_tests! {
+            fn location_deserialize(Location, u8) { [0x11, 0xff, 0x7890] }
+            fn array_use_deserialize(ArrayUse, u8) { [0x11, 0xff, 0x7890] }
+            fn error_correction_deserialize(ErrorCorrection, u8) { [0x11, 0xff, 0x7890] }
         }
     }
 }
