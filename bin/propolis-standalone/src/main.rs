@@ -812,23 +812,24 @@ struct SmbiosParams {
     cpuid_procname: Option<[cpuid::Entry; 3]>,
 }
 fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
+    use smbios::table::{type0, type1, type16, type4};
+
     let smb_type0 = smbios::table::Type0 {
         vendor: "Oxide".try_into().unwrap(),
         bios_version: "v0.0.1 alpha1".try_into().unwrap(),
         bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
-        // Characteristics-not-supported
-        bios_characteristics: 0x8,
-        // ACPI + UEFI + IsVM
-        bios_ext_characteristics: 0x1801,
+        bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
+        bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
+            | type0::BiosExtCharacteristics::UEFI
+            | type0::BiosExtCharacteristics::IS_VM,
         ..Default::default()
     };
 
     let smb_type1 = smbios::table::Type1 {
         manufacturer: "Oxide".try_into().unwrap(),
         product_name: "OxVM".try_into().unwrap(),
-        // power switch
-        wake_up_type: 0x06,
+        wake_up_type: type1::WakeUpType::PowerSwitch,
         ..Default::default()
     };
 
@@ -875,32 +876,27 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         .unwrap_or("".to_string());
 
     let smb_type4 = smbios::table::Type4 {
-        // central processor
-        proc_type: 0x03,
+        proc_type: type4::ProcType::Central,
         proc_family,
         proc_manufacturer,
         proc_id,
         proc_version: proc_version.as_str().try_into().unwrap_or_default(),
-        // cpu enabled, socket populated
-        status: 0x41,
+        status: type4::ProcStatus::Enabled,
         // unknown
         proc_upgrade: 0x2,
         // make core and thread counts equal for now
         core_count: params.num_cpus,
         core_enabled: params.num_cpus,
         thread_count: params.num_cpus,
-        // 64-bit capable, multicore
-        proc_characteristics: 0xc,
+        proc_characteristics: type4::Characteristics::IS_64_BIT
+            | type4::Characteristics::MULTI_CORE,
         ..Default::default()
     };
 
     let mut smb_type16 = smbios::table::Type16 {
-        // system board
-        location: 0x3,
-        // system memory
-        array_use: 0x3,
-        // unknown
-        error_correction: 0x2,
+        location: type16::Location::SystemBoard,
+        array_use: type16::ArrayUse::System,
+        error_correction: type16::ErrorCorrection::Unknown,
         num_mem_devices: 1,
         ..Default::default()
     };
