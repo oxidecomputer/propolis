@@ -274,7 +274,7 @@ impl ItemDir {
         if selector == LegacyId::FileDir as u16 {
             true
         } else {
-            self.entries.get(&selector).is_some()
+            self.entries.contains_key(&selector)
         }
     }
 }
@@ -337,8 +337,8 @@ impl FwCfgBuilder {
         name: String,
         content: Arc<dyn Item>,
     ) -> Result {
-        if self.entries.get(&sel).is_none()
-            && self.name_to_sel.get(&name).is_none()
+        if !self.entries.contains_key(&sel)
+            && !self.name_to_sel.contains_key(&name)
         {
             let item = Entry { content };
             self.entries.insert(sel, item);

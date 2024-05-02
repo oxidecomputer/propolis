@@ -149,7 +149,7 @@ impl<T> Tree<T> {
                 {
                     let mut ent = node.0.lock().unwrap();
                     ent.tree = Arc::clone(&tree_ref);
-                    ent.resource = self.resource_root.clone();
+                    ent.resource.clone_from(&self.resource_root);
                 }
 
                 if adopt_key == child_key {

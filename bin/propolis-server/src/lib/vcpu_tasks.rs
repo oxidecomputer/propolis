@@ -29,14 +29,6 @@ pub struct VcpuTasks {
     generation: Arc<AtomicUsize>,
 }
 
-pub trait VcpuEventHandler: Send + Sync {
-    fn suspend_halt_event(&self, vcpu_id: i32);
-    fn suspend_reset_event(&self, vcpu_id: i32);
-    fn suspend_triple_fault_event(&self, vcpu_id: i32);
-    fn unhandled_vm_exit(&self, vcpu_id: i32, exit: VmExitKind);
-    fn io_error_event(&self, vcpu_id: i32, error: std::io::Error);
-}
-
 #[cfg_attr(test, mockall::automock)]
 pub(crate) trait VcpuTaskController {
     fn new_generation(&self);
