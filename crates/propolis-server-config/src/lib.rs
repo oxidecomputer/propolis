@@ -186,8 +186,8 @@ path = "/etc/passwd"
         assert_eq!(cfg.bootrom, PathBuf::from("/path/to/bootrom"));
         assert_eq!(cfg.chipset.get_string("chipset-opt"), Some("copt"));
 
-        assert!(cfg.devices.get("drv0").is_some());
-        assert!(cfg.devices.get("drv1").is_some());
+        assert!(cfg.devices.contains_key("drv0"));
+        assert!(cfg.devices.contains_key("drv1"));
         let dev0 = cfg.devices.get("drv0").unwrap();
         let dev1 = cfg.devices.get("drv1").unwrap();
 
@@ -196,8 +196,8 @@ path = "/etc/passwd"
         assert_eq!(dev1.driver, "widget");
         assert_eq!(dev1.get_string("foo"), Some("bar"));
 
-        assert!(cfg.block_devs.get("block0").is_some());
-        assert!(cfg.block_devs.get("block1").is_some());
+        assert!(cfg.block_devs.contains_key("block0"));
+        assert!(cfg.block_devs.contains_key("block1"));
         let bdev0 = cfg.block_devs.get("block0").unwrap();
         let bdev1 = cfg.block_devs.get("block1").unwrap();
 

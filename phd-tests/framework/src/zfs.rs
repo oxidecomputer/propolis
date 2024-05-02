@@ -155,7 +155,7 @@ impl ClonedFile {
         fn get_clone_mount_point(
             clone_name: &str,
         ) -> anyhow::Result<Utf8PathBuf> {
-            let output = zfs_command("list", &[&clone_name])?;
+            let output = zfs_command("list", &[clone_name])?;
             let (object_name, mount_point) = parse_zfs_list_output(output)?;
 
             anyhow::ensure!(

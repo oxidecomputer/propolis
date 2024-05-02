@@ -33,7 +33,7 @@ impl EnvironmentSpec {
     }
 
     pub fn propolis(&mut self, artifact_name: &str) -> &mut Self {
-        self.propolis_artifact = artifact_name.to_owned();
+        artifact_name.clone_into(&mut self.propolis_artifact);
         self
     }
 

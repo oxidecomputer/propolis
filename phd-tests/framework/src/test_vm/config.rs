@@ -87,7 +87,7 @@ impl VmConfig {
     }
 
     pub fn bootrom(&mut self, artifact: &str) -> &mut Self {
-        self.bootrom_artifact = artifact.to_owned();
+        artifact.clone_into(&mut self.bootrom_artifact);
         self
     }
 
