@@ -80,27 +80,21 @@ macro_rules! serialize_enums {
                 {
                     lazy_static::lazy_static! {
                         static ref ERR_MSG: String = {
-                            use std::fmt::Write;
-                            let mut err = "expected one of: ".to_string();
-                            let mut variants = <$Enum>::VARIANTS.iter().copied().peekable();
-                            let mut first = true;
-                            while let Some(variant) = variants.next() {
-                                let has_remaining = variants.peek().is_some();
-                                let or = if !has_remaining && !first {
-                                    " or "
-                                } else {
-                                    ""
-                                };
-
-                                let comma = if has_remaining {
-                                    ", "
-                                } else {
-                                    ""
-                                };
-                                write!(err, "{or}{variant:?} ({:#04x}){comma}", variant as $repr).unwrap();
-                                first = false;
+                            match <$Enum>::VARIANTS {
+                                [] => panic!("probably don't use the `serialize_enums!` macro with an empty enum..."),
+                                &[first] => format!("expected `{:#04x}` ({first:?})", first as $repr),
+                                &[first, second] => format!(
+                                    "expected `{:#04x}` ({first:?}) or `{:#04x}` ({second:?})))",
+                                    first as $repr, second as $repr,
+                                ),
+                                variants => {
+                                    let variants = variants.iter()
+                                        .map(|&v| format!("`{:#04x}` ({v:?})", v as $repr))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    format!("expected one of: {variants}")
+                                }
                             }
-                            err
                         };
                     }
 
