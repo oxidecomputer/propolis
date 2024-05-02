@@ -5,6 +5,9 @@
 use crate::common::*;
 use crate::firmware::smbios::bits::{self, RawTable};
 use crate::firmware::smbios::{Handle, SmbString};
+use serde::de::{self, Deserialize};
+use serde::ser::{self, Serialize};
+use strum::{FromRepr, VariantArray};
 
 pub trait Table {
     fn render(&self, handle: Handle) -> Vec<u8>;
@@ -57,89 +60,62 @@ impl Table for Type0 {
     }
 }
 
-macro_rules! enum_try_from {
-    ($(#[$attr:meta])* $v:vis enum $Enum:ident: $repr:ty {
-        $(#[$variant1_attr:meta])*
-        $Variant1:ident = $val1:expr,
+macro_rules! serialize_enums {
+    ($($Enum:ty => $repr:ty),+ $(,)?) => {
         $(
-            $(#[$variant_attr:meta])*
-            $Variant:ident = $val:expr
-        ),*
-        $(,)?
-    }) => {
-        $(#[$attr])*
-        #[repr($repr)]
-        $v enum $Enum {
-            $(#[$variant1_attr])*
-            $Variant1 = $val1,
-            $(
-                $(#[$variant_attr])*
-                $Variant = $val
-            ),*
-        }
+            #[automatically_derived]
+            impl<'de> Deserialize<'de> for $Enum {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: de::Deserializer<'de>,
+                    $repr: Deserialize<'de>,
+                {
+                    lazy_static::lazy_static! {
+                        static ref ERR_MSG: String = {
+                            use std::fmt::Write;
+                            let mut err = "expected one of: ".to_string();
+                            let mut variants = <$Enum>::VARIANTS.iter().copied().peekable();
+                            let mut first = true;
+                            while let Some(variant) = variants.next() {
+                                let has_remaining = variants.peek().is_some();
+                                let or = if !has_remaining && !first {
+                                    " or "
+                                } else {
+                                    ""
+                                };
 
-        #[automatically_derived]
-        impl std::convert::TryFrom<$repr> for $Enum {
-            type Error = &'static str;
-            fn try_from(value: $repr) -> Result<Self, Self::Error> {
-                match value {
-                    $val1 => Ok($Enum::$Variant1),
-                    $(
-                        $val => Ok($Enum::$Variant),
-                    )+
-                    _ => Err(concat!(
-                        "invalid ", stringify!($enum), " value, expected one of: ",
-                        stringify!($Variant1)," (", stringify!($val1), ")",
-                        $(", ", stringify!($Variant), " (", stringify!($val), ")" ),*
-                    )),
+                                let comma = if has_remaining {
+                                    ", "
+                                } else {
+                                    ""
+                                };
+                                write!(err, "{or}{variant:?} ({:#04x}){comma}", variant as $repr).unwrap();
+                                first = false;
+                            }
+                            err
+                        };
+                    }
+
+                    let v = <$repr>::deserialize(deserializer)?;
+                    <$Enum>::from_repr(v).ok_or_else(||
+                       de::Error::invalid_value(de::Unexpected::Unsigned(v as u64), &ERR_MSG.as_str())
+                    )
                 }
             }
-        }
 
-        #[automatically_derived]
-        impl From<$Enum> for $repr {
-            fn from(e: $Enum) -> $repr {
-                e as $repr
+            #[automatically_derived]
+            impl Serialize for $Enum {
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: ser::Serializer,
+                    u8: Serialize,
+                {
+                    (*self as u8).serialize(serializer)
+                }
             }
-        }
-
-        #[automatically_derived]
-        impl<'de> serde::de::Deserialize<'de> for $Enum {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::de::Deserializer<'de>,
-                $repr: serde::de::Deserialize<'de>,
-            {
-                use serde::de::{Deserialize, Error, Unexpected};
-
-                let value = <$repr as Deserialize>::deserialize(deserializer)?;
-                $Enum::try_from(value)
-                    .map_err(|e| Error::invalid_value(
-                        Unexpected::Unsigned(value as u64),
-                        &e,
-                    ))
-            }
-        }
-
-        #[automatically_derived]
-        impl serde::ser::Serialize for $Enum {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::ser::Serializer,
-                $repr: serde::ser::Serialize,
-            {
-                (*self as $repr).serialize(serializer)
-            }
-        }
-
-        impl $Enum {
-            // Every enum should have this IMO...
-            pub const VARIANTS: &'static [Self] = &[
-                $Enum::$Variant1,
-                $($Enum::$Variant),*
-            ];
-        }
+        )+
     };
+
 }
 
 macro_rules! serialize_bitflags {
@@ -358,34 +334,41 @@ impl Table for Type1 {
 }
 
 pub mod type1 {
-    enum_try_from! {
-        /// Wake-up type.
-        ///
-        /// See Table 12 in section 7.2.2 of [the SMBIOS Reference
-        /// Specification][DSP0136] for details.
-        ///
-        /// [DSP0136]:
-        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-        pub enum WakeUpType: u8 {
-            /// Other
-            Other = 0x1,
-            /// Unknown
-            #[default]
-            Unknown = 0x2,
-            /// APM Timer
-            ApmTimer = 0x3,
-            /// Modem Ring
-            ModemRing = 0x4,
-            /// LAN Remote
-            LanRemote = 0x5,
-            /// Power Switch
-            PowerSwitch = 0x6,
-            /// PCI PME#
-            PciPme = 0x7,
-            /// AC Power Restored
-            AcPowerRestored = 0x8,
-        }
+    use super::*;
+
+    /// Wake-up type.
+    ///
+    /// See Table 12 in section 7.2.2 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(
+        Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
+    )]
+    #[repr(u8)]
+    pub enum WakeUpType {
+        /// Other
+        Other = 0x1,
+        /// Unknown
+        #[default]
+        Unknown = 0x2,
+        /// APM Timer
+        ApmTimer = 0x3,
+        /// Modem Ring
+        ModemRing = 0x4,
+        /// LAN Remote
+        LanRemote = 0x5,
+        /// Power Switch
+        PowerSwitch = 0x6,
+        /// PCI PME#
+        PciPme = 0x7,
+        /// AC Power Restored
+        AcPowerRestored = 0x8,
+    }
+
+    serialize_enums! {
+        WakeUpType => u8,
     }
 
     #[cfg(test)]
@@ -497,72 +480,81 @@ impl Table for Type4 {
 }
 
 pub mod type4 {
-    enum_try_from! {
-        /// Processor type.
-        ///
-        /// See Table 21 in section 7.5 of [the SMBIOS Reference
-        /// Specification][DSP0136] for details.
-        ///
-        /// [DSP0136]:
-        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-        pub enum ProcType: u8 {
-            /// Other
-            Other = 0x01,
-            /// Unknown
-            #[default]
-            Unknown = 0x02,
-            /// Central Processor
-            Central = 0x03,
-            /// Math Processor
-            Math = 0x04,
-            /// DSP Processor
-            Dsp = 0x05,
-            /// Video processor
-            Video = 0x06,
-        }
+    use super::*;
+
+    /// Processor type.
+    ///
+    /// See Table 21 in section 7.5 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(
+        Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
+    )]
+    #[repr(u8)]
+    pub enum ProcType {
+        /// Other
+        Other = 0x01,
+        /// Unknown
+        #[default]
+        Unknown = 0x02,
+        /// Central Processor
+        Central = 0x03,
+        /// Math Processor
+        Math = 0x04,
+        /// DSP Processor
+        Dsp = 0x05,
+        /// Video processor
+        Video = 0x06,
     }
 
-    enum_try_from! {
-        /// Processor status.
-        ///
-        /// See Table 21 in section 7.5 of [the SMBIOS Reference
-        /// Specification][DSP0136] for details.
-        ///
-        /// [DSP0136]:
-        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-        pub enum ProcStatus: u8 {
-            /// Status unknown, socket unpopulated.
-            UnknownUnpopulated = 0b0000_0000,
-            /// Status unknown, socket populated.
-            #[default]
-            UnknownPopulated = 0b0100_0000,
+    /// Processor status.
+    ///
+    /// See Table 21 in section 7.5 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(
+        Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
+    )]
+    #[repr(u8)]
+    pub enum ProcStatus {
+        /// Status unknown, socket unpopulated.
+        UnknownUnpopulated = 0x0,
+        /// Status unknown, socket populated.
+        #[default]
+        UnknownPopulated = STATUS_POPULATED,
 
-            /// CPU Enabled
-            ///
-            /// It...probably doesn't make sense to have a CPU enabled that's
-            /// unpopulated?
-            Enabled = 0b0100_0001,
-            /// CPU Disabled by User through BIOS Setup.
-            UserDisabled = 0b0100_0010,
-            /// CPU Disabled by BIOS (POST Error).
-            BiosDisabled = 0b0100_0011,
-            /// CPU is Idle, waiting to be enabled.
-            Idle = 0b0100_0100,
+        /// CPU Enabled
+        ///
+        /// It...probably doesn't make sense to have a CPU enabled that's
+        /// unpopulated?
+        Enabled = 0x1 | STATUS_POPULATED,
+        /// CPU Disabled by User through BIOS Setup.
+        UserDisabled = 0x2 | STATUS_POPULATED,
+        /// CPU Disabled by BIOS (POST Error).
+        BiosDisabled = 0x3 | STATUS_POPULATED,
+        /// CPU is Idle, waiting to be enabled.
+        Idle = 0x4 | STATUS_POPULATED,
 
-            /// Other
-            OtherPopulated = 0b0100_0111,
-            OtherUnpopulated = 0b0000_0111,
-        }
+        /// Other
+        OtherPopulated = 0x7 | STATUS_POPULATED,
+        OtherUnpopulated = 0x7,
     }
+
+    const STATUS_POPULATED: u8 = 1 << 6;
 
     impl ProcStatus {
-        const POPULATED: u8 = 1 << 6;
-
         pub fn is_populated(&self) -> bool {
-            (*self as u8) & Self::POPULATED != 0
+            (*self as u8) & STATUS_POPULATED != 0
         }
+    }
+
+    serialize_enums! {
+        ProcStatus => u8,
+        ProcType => u8,
     }
 
     bitflags! {
@@ -712,104 +704,113 @@ impl Table for Type16 {
 }
 
 pub mod type16 {
-    enum_try_from! {
-        /// Memory array location.
-        ///
-        /// See Table 72 in section 7.17.1 of [the SMBIOS Reference
-        /// Specification][DSP0136] for details.
-        ///
-        /// [DSP0136]:
-        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-        pub enum Location: u8 {
-            /// Other
-            Other = 0x01,
-            /// Unknown
-            #[default]
-            Unknown = 0x02,
-            /// System board or motherboard
-            SystemBoard = 0x03,
-            /// ISA add-on card
-            IsaCard = 0x04,
-            /// EISA add-on card
-            EisaCard = 0x05,
-            /// PCI add-on card
-            PciCard = 0x06,
-            /// MCA add-on card
-            McaCard = 0x07,
-            /// PCMCIA add-on card
-            PcmciaCard = 0x08,
-            /// Proprietary add-on card
-            ProprietaryCard = 0x09,
-            /// NuBus
-            NuBus = 0x0A,
-            /// PC-98/C20 add-on card
-            Pc98C20Card = 0xA0,
-            /// PC-98/C24 add-on card
-            Pc98C24Card = 0xA1,
-            /// PC-98/E  add-on card
-            Pc98ECard = 0xA2,
-            /// PC-98/Local bus add-on card
-            Pc98LocalCard = 0xA3,
-            // CXL add-on card
-            CxlCard = 0xA4,
-        }
+    use super::*;
+    /// Memory array location.
+    ///
+    /// See Table 72 in section 7.17.1 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(
+        Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
+    )]
+    #[repr(u8)]
+    pub enum Location {
+        /// Other
+        Other = 0x01,
+        /// Unknown
+        #[default]
+        Unknown = 0x02,
+        /// System board or motherboard
+        SystemBoard = 0x03,
+        /// ISA add-on card
+        IsaCard = 0x04,
+        /// EISA add-on card
+        EisaCard = 0x05,
+        /// PCI add-on card
+        PciCard = 0x06,
+        /// MCA add-on card
+        McaCard = 0x07,
+        /// PCMCIA add-on card
+        PcmciaCard = 0x08,
+        /// Proprietary add-on card
+        ProprietaryCard = 0x09,
+        /// NuBus
+        NuBus = 0x0A,
+        /// PC-98/C20 add-on card
+        Pc98C20Card = 0xA0,
+        /// PC-98/C24 add-on card
+        Pc98C24Card = 0xA1,
+        /// PC-98/E  add-on card
+        Pc98ECard = 0xA2,
+        /// PC-98/Local bus add-on card
+        Pc98LocalCard = 0xA3,
+        // CXL add-on card
+        CxlCard = 0xA4,
+    }
+    /// Memory array use field.
+    ///
+    /// See Table 73 in section 7.17.2 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(
+        Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
+    )]
+    #[repr(u8)]
+    pub enum ArrayUse {
+        /// Other
+        Other = 0x1,
+        /// Unknown
+        #[default]
+        Unknown = 0x2,
+        /// System memory
+        System = 0x3,
+        /// Video memory
+        Video = 0x4,
+        /// Flash memory
+        Flash = 0x5,
+        /// Non-volatile RAM
+        NonVolatile = 0x6,
+        /// Cache memory
+        Cache = 0x7,
     }
 
-    enum_try_from! {
-        /// Memory array use field.
-        ///
-        /// See Table 73 in section 7.17.2 of [the SMBIOS Reference
-        /// Specification][DSP0136] for details.
-        ///
-        /// [DSP0136]:
-        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-        pub enum ArrayUse: u8 {
-            /// Other
-            Other = 0x1,
-            /// Unknown
-            #[default]
-            Unknown = 0x2,
-            /// System memory
-            System = 0x3,
-            /// Video memory
-            Video = 0x4,
-            /// Flash memory
-            Flash = 0x5,
-            /// Non-volatile RAM
-            NonVolatile = 0x6,
-            /// Cache memory
-            Cache = 0x7,
-        }
+    /// Memory array error correction field.
+    ///
+    /// See Table 74 in section 7.17.3 of [the SMBIOS Reference
+    /// Specification][DSP0136] for details.
+    ///
+    /// [DSP0136]:
+    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    #[derive(
+        Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
+    )]
+    #[repr(u8)]
+    pub enum ErrorCorrection {
+        /// Other
+        Other = 0x1,
+        /// Unknown
+        #[default]
+        Unknown = 0x2,
+        /// No error correction.
+        None = 0x3,
+        /// Parity
+        Parity = 0x4,
+        /// Single-bit ECC
+        SingleBitEcc = 0x5,
+        /// Multi-bit ECC
+        MultiBitEcc = 0x6,
+        /// CRC
+        Crc = 0x7,
     }
 
-    enum_try_from! {
-        /// Memory array error correction field.
-        ///
-        /// See Table 74 in section 7.17.3 of [the SMBIOS Reference
-        /// Specification][DSP0136] for details.
-        ///
-        /// [DSP0136]:
-        ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
-        #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-        pub enum ErrorCorrection: u8 {
-            /// Other
-            Other = 0x1,
-            /// Unknown
-            #[default]
-            Unknown = 0x2,
-            /// No error correction.
-            None = 0x3,
-            /// Parity
-            Parity = 0x4,
-            /// Single-bit ECC
-            SingleBitEcc = 0x5,
-            /// Multi-bit ECC
-            MultiBitEcc = 0x6,
-            /// CRC
-            Crc = 0x7,
-        }
+    serialize_enums! {
+        Location => u8,
+        ArrayUse => u8,
+        ErrorCorrection => u8,
     }
 
     #[cfg(test)]
