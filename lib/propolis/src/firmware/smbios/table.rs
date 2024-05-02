@@ -2,6 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! SMBIOS tables.
+//!
+//! The values of the types in this module are defined by [DSP0136], the _SMBIOS Reference
+//! Specification_. Refer to that document for details.
+//!
+//! [DSP0136]:
+//!     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+
 use crate::common::*;
 use crate::firmware::smbios::bits::{self, RawTable};
 use crate::firmware::smbios::{Handle, SmbString};
@@ -384,11 +392,7 @@ pub mod type1 {
 
     /// Wake-up type.
     ///
-    /// See Table 12 in section 7.2.2 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    /// See Table 12 in section 7.2.2 of DSP0136 for details.
     #[derive(
         Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
     )]
@@ -505,11 +509,7 @@ pub mod type4 {
 
     /// Processor type.
     ///
-    /// See Table 21 in section 7.5 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    /// See Table 21 in section 7.5 of DSP0136 for details.
     #[derive(
         Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
     )]
@@ -532,11 +532,7 @@ pub mod type4 {
 
     /// Processor status.
     ///
-    /// See Table 21 in section 7.5 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    /// See Table 21 in section 7.5 of DSP0136 for details.
     #[derive(
         Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
     )]
@@ -674,11 +670,7 @@ pub mod type16 {
     use super::*;
     /// Memory array location.
     ///
-    /// See Table 72 in section 7.17.1 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    /// See Table 72 in section 7.17.1 of DSP0136 for details.
     #[derive(
         Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
     )]
@@ -718,11 +710,7 @@ pub mod type16 {
     }
     /// Memory array use field.
     ///
-    /// See Table 73 in section 7.17.2 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    /// See Table 73 in section 7.17.2 of DSP0136 for details.
     #[derive(
         Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
     )]
@@ -747,11 +735,7 @@ pub mod type16 {
 
     /// Memory array error correction field.
     ///
-    /// See Table 74 in section 7.17.3 of [the SMBIOS Reference
-    /// Specification][DSP0136] for details.
-    ///
-    /// [DSP0136]:
-    ///     https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.7.0.pdf
+    /// See Table 74 in section 7.17.3 of DSP0136 for details.
     #[derive(
         Debug, Default, Copy, Clone, PartialEq, Eq, FromRepr, VariantArray,
     )]

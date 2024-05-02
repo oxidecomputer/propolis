@@ -883,7 +883,6 @@ impl<'a> MachineInitializer<'a> {
                 .unwrap_or_default(),
             uuid: self.properties.id.to_bytes_le(),
 
-            // power switch
             wake_up_type: type1::WakeUpType::PowerSwitch,
             ..Default::default()
         };

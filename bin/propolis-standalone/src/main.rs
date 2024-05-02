@@ -819,7 +819,6 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         bios_version: "v0.0.1 alpha1".try_into().unwrap(),
         bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
-        // Characteristics-not-supported
         bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
         bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
             | type0::BiosExtCharacteristics::UEFI
@@ -830,7 +829,6 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     let smb_type1 = smbios::table::Type1 {
         manufacturer: "Oxide".try_into().unwrap(),
         product_name: "OxVM".try_into().unwrap(),
-        // power switch
         wake_up_type: type1::WakeUpType::PowerSwitch,
         ..Default::default()
     };
