@@ -416,7 +416,7 @@ pub mod type1 {
     }
 
     #[cfg(test)]
-    mod tests {
+    mod test {
         use super::*;
 
         enum_serde_roundtrip_tests! {
@@ -607,7 +607,7 @@ pub mod type4 {
     }
 
     #[cfg(test)]
-    mod tests {
+    mod test {
         use super::*;
 
         enum_serde_roundtrip_tests! {
@@ -759,7 +759,7 @@ pub mod type16 {
     }
 
     #[cfg(test)]
-    mod tests {
+    mod test {
         use super::*;
 
         enum_serde_roundtrip_tests! {

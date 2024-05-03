@@ -360,57 +360,6 @@ async fn stdin_to_websockets_task(
     }
 }
 
-#[tokio::test]
-async fn test_stdin_to_websockets_task() {
-    use tokio::sync::mpsc::error::TryRecvError;
-
-    let (stdintx, stdinrx) = tokio::sync::mpsc::channel(16);
-    let (wstx, mut wsrx) = tokio::sync::mpsc::channel(16);
-
-    tokio::spawn(async move { stdin_to_websockets_task(stdinrx, wstx).await });
-
-    // send characters, receive characters
-    stdintx
-        .send("test post please ignore".chars().map(|c| c as u8).collect())
-        .await
-        .unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "test post please ignore");
-
-    // don't send ctrl-a
-    stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
-    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
-
-    // the "t" here is sent "raw" because of last ctrl-a but that doesn't change anything
-    stdintx.send("test".chars().map(|c| c as u8).collect()).await.unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "test");
-
-    // ctrl-a ctrl-c = only ctrl-c sent
-    stdintx.send("\x01\x03".chars().map(|c| c as u8).collect()).await.unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
-
-    // same as above, across two messages
-    stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
-    stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
-    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
-
-    // ctrl-a ctrl-a = only ctrl-a sent
-    stdintx.send("\x01\x01".chars().map(|c| c as u8).collect()).await.unwrap();
-    let actual = wsrx.recv().await.unwrap();
-    assert_eq!(String::from_utf8(actual).unwrap(), "\x01");
-
-    // ctrl-c on its own means exit
-    stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
-    assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
-
-    // channel is closed
-    assert!(wsrx.recv().await.is_none());
-}
-
 async fn serial(
     addr: SocketAddr,
     byte_offset: Option<i64>,
@@ -745,5 +694,72 @@ impl Drop for RawTermiosGuard {
         if r == -1 {
             panic!("{:?}", std::io::Error::last_os_error());
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::stdin_to_websockets_task;
+
+    #[tokio::test]
+    async fn test_stdin_to_websockets_task() {
+        use tokio::sync::mpsc::error::TryRecvError;
+
+        let (stdintx, stdinrx) = tokio::sync::mpsc::channel(16);
+        let (wstx, mut wsrx) = tokio::sync::mpsc::channel(16);
+
+        tokio::spawn(
+            async move { stdin_to_websockets_task(stdinrx, wstx).await },
+        );
+
+        // send characters, receive characters
+        stdintx
+            .send("test post please ignore".chars().map(|c| c as u8).collect())
+            .await
+            .unwrap();
+        let actual = wsrx.recv().await.unwrap();
+        assert_eq!(
+            String::from_utf8(actual).unwrap(),
+            "test post please ignore"
+        );
+
+        // don't send ctrl-a
+        stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
+        assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
+
+        // the "t" here is sent "raw" because of last ctrl-a but that doesn't change anything
+        stdintx.send("test".chars().map(|c| c as u8).collect()).await.unwrap();
+        let actual = wsrx.recv().await.unwrap();
+        assert_eq!(String::from_utf8(actual).unwrap(), "test");
+
+        // ctrl-a ctrl-c = only ctrl-c sent
+        stdintx
+            .send("\x01\x03".chars().map(|c| c as u8).collect())
+            .await
+            .unwrap();
+        let actual = wsrx.recv().await.unwrap();
+        assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
+
+        // same as above, across two messages
+        stdintx.send("\x01".chars().map(|c| c as u8).collect()).await.unwrap();
+        stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
+        assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
+        let actual = wsrx.recv().await.unwrap();
+        assert_eq!(String::from_utf8(actual).unwrap(), "\x03");
+
+        // ctrl-a ctrl-a = only ctrl-a sent
+        stdintx
+            .send("\x01\x01".chars().map(|c| c as u8).collect())
+            .await
+            .unwrap();
+        let actual = wsrx.recv().await.unwrap();
+        assert_eq!(String::from_utf8(actual).unwrap(), "\x01");
+
+        // ctrl-c on its own means exit
+        stdintx.send("\x03".chars().map(|c| c as u8).collect()).await.unwrap();
+        assert_eq!(wsrx.try_recv(), Err(TryRecvError::Empty));
+
+        // channel is closed
+        assert!(wsrx.recv().await.is_none());
     }
 }

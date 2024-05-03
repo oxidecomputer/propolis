@@ -4,7 +4,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::{task_clippy, task_fmt, task_license};
+use crate::{task_clippy, task_fmt, task_license, task_style};
 
 pub(crate) fn cmd_prepush() -> Result<()> {
     let mut errs = Vec::new();
@@ -16,6 +16,9 @@ pub(crate) fn cmd_prepush() -> Result<()> {
     }
     if task_license::cmd_license().is_err() {
         errs.push("license");
+    }
+    if task_style::cmd_style().is_err() {
+        errs.push("style");
     }
 
     if !errs.is_empty() {

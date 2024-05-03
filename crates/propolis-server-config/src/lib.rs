@@ -143,7 +143,7 @@ pub fn parse<P: AsRef<Path>>(path: P) -> Result<Config, ParseError> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     #[test]

@@ -280,7 +280,7 @@ impl<'a, T> Iterator for Range<'a, T> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     #[test]

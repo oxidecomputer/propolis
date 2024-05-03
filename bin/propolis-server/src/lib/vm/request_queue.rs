@@ -444,7 +444,7 @@ impl ExternalRequestQueue {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     use uuid::Uuid;

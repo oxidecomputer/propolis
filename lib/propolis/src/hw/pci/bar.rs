@@ -314,7 +314,7 @@ pub mod migrate {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     fn setup() -> Bars {

@@ -877,7 +877,7 @@ pub(super) mod migrate {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use rand::Rng;
 
     use super::*;

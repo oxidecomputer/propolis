@@ -1039,7 +1039,7 @@ impl<'a, T: Copy> Iterator for MemMany<'a, T> {
 }
 
 #[cfg(test)]
-pub mod tests {
+pub mod test {
     use super::*;
 
     const TEST_LEN: usize = 16 * 1024;

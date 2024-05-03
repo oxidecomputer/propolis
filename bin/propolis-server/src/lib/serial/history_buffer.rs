@@ -218,7 +218,7 @@ impl HistoryBuffer {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
     use SerialHistoryOffset::*;
 
