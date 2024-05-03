@@ -256,7 +256,7 @@ pub(super) fn select_protocol_from_offer(
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     // N.B. The test protocol lists are sorted by version to meet the

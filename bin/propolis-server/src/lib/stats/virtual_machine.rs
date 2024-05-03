@@ -395,7 +395,7 @@ fn produce_vcpu_usage<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::kstat_instance_from_instance_id;
     use super::kstat_microstate_to_state_name;
     use super::produce_vcpu_usage;

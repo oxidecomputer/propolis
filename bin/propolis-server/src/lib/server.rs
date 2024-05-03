@@ -1147,7 +1147,7 @@ fn not_created_error() -> HttpError {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     #[test]
     fn test_propolis_server_openapi() {
         let mut buf: Vec<u8> = vec![];

@@ -10,6 +10,7 @@ mod task_fmt;
 mod task_license;
 mod task_phd;
 mod task_prepush;
+mod task_style;
 mod util;
 
 #[derive(Parser)]
@@ -43,6 +44,8 @@ enum Cmds {
         #[clap(subcommand)]
         cmd: task_phd::Cmd,
     },
+    /// Perform misc style checks
+    Style,
 }
 
 fn main() -> Result<()> {
@@ -62,6 +65,12 @@ fn main() -> Result<()> {
             task_prepush::cmd_prepush()?;
 
             println!("Pre-push checks pass");
+            Ok(())
+        }
+        Cmds::Style => {
+            task_style::cmd_style()?;
+
+            println!("Style checks pass");
             Ok(())
         }
     }

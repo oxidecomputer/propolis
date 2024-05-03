@@ -635,7 +635,7 @@ impl UartReg {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
 
     mod bits {
         #![allow(unused)]

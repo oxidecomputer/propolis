@@ -449,7 +449,7 @@ fn _assert_impls() {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::InstanceSerialConsoleControlMessage;
     use super::InstanceSerialConsoleHelper;
     use super::Role;

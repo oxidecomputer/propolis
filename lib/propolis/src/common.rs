@@ -388,7 +388,7 @@ pub const GB: usize = 1024 * 1024 * 1024;
 pub const TB: usize = 1024 * 1024 * 1024 * 1024;
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     #[test]

@@ -21,6 +21,8 @@ jobs:
       run: cargo fmt -- --version
     - name: Check style
       run: cargo fmt -- --check
+    - name: Check misc. style
+      run: cargo xtask style
   check-clippy:
     runs-on: ubuntu-latest
     steps:

@@ -567,7 +567,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use anyhow::bail;
     use mockall::Sequence;
 
