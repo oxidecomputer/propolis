@@ -4,3 +4,4 @@
 
 pub mod ctrl;
 mod keyboard;
+pub mod mouse;

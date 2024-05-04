@@ -5,12 +5,13 @@
 use async_trait::async_trait;
 use propolis::common::GuestAddr;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
+use propolis::hw::ps2::mouse::MouseEventRep;
 use propolis::hw::qemu::ramfb::{Config, FramebufferSpec};
 use rfb::encodings::RawEncoding;
 use rfb::pixel_formats::fourcc;
 use rfb::rfb::{
-    FramebufferUpdate, KeyEvent, ProtoVersion, Rectangle, SecurityType,
-    SecurityTypes,
+    FramebufferUpdate, KeyEvent, MouseButtons, PointerEvent, ProtoVersion,
+    Rectangle, SecurityType, SecurityTypes,
 };
 use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
 use slog::{debug, error, info, o, trace, Logger};
@@ -54,6 +55,8 @@ enum Framebuffer {
 
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
+    last_screen_sent: Vec<u8>,
+    relative_mouse_hack: (i32, i32),
     ps2ctrl: Option<Arc<PS2Ctrl>>,
     vm: Option<Arc<VmController>>,
 }
@@ -72,8 +75,10 @@ impl PropolisVncServer {
                     width: initial_width,
                     height: initial_height,
                 }),
+                last_screen_sent: vec![],
                 ps2ctrl: None,
                 vm: None,
+                relative_mouse_hack: (0, 0),
             })),
             log,
         }
@@ -130,24 +135,16 @@ impl PropolisVncServer {
 #[async_trait]
 impl Server for PropolisVncServer {
     async fn get_framebuffer_update(&self) -> FramebufferUpdate {
-        let inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().await;
 
-        match &inner.framebuffer {
+        let (width, height, pixels) = match &inner.framebuffer {
             Framebuffer::Uninitialized(fb) => {
                 debug!(self.log, "framebuffer: uninitialized");
 
                 // Display a white screen if the guest isn't ready yet.
                 let len: usize = fb.width as usize * fb.height as usize * 4;
                 let pixels = vec![0xffu8; len];
-
-                let r = Rectangle::new(
-                    0,
-                    0,
-                    fb.width,
-                    fb.height,
-                    Box::new(RawEncoding::new(pixels)),
-                );
-                FramebufferUpdate::new(vec![r])
+                (fb.width, fb.height, pixels)
             }
             Framebuffer::Initialized(fb) => {
                 debug!(self.log, "framebuffer initialized: fb={:?}", fb);
@@ -163,16 +160,110 @@ impl Server for PropolisVncServer {
 
                 assert!(read.is_some());
                 debug!(self.log, "read {} bytes from guest", read.unwrap());
-
-                let r = Rectangle::new(
-                    0,
-                    0,
-                    fb.width as u16,
-                    fb.height as u16,
-                    Box::new(RawEncoding::new(buf)),
-                );
-                FramebufferUpdate::new(vec![r])
+                (fb.width as u16, fb.height as u16, buf)
             }
+        };
+
+        if inner.last_screen_sent.len() != pixels.len() {
+            inner.last_screen_sent = pixels.clone();
+            let r = Rectangle::new(
+                0,
+                0,
+                width,
+                height,
+                Box::new(RawEncoding::new(pixels)),
+            );
+            FramebufferUpdate::new(vec![r])
+        } else {
+            let last = &inner.last_screen_sent;
+            const BYTES_PER_PX: usize = 4;
+            let width = width as usize;
+            let height = height as usize;
+            // simple optimization: divide screen into grid, then find
+            // which of those have had changes, and shrink their bounding
+            // rectangles to whatever those changes were.
+            const SUBDIV_X: usize = 8;
+            const SUBDIV_Y: usize = 8;
+            let subwidth = width / SUBDIV_X;
+            let subheight = height / SUBDIV_Y;
+            let stride = width * BYTES_PER_PX;
+            let mut dirty_rects = vec![];
+            for sub_y in (0..height).step_by(subheight) {
+                for sub_x in (0..width).step_by(subwidth) {
+                    let base = ((sub_y * width) + sub_x) * BYTES_PER_PX;
+                    let mut dirty = false;
+                    // would make these non-mut bindings, but break-with-value
+                    // only supports `loop {}` and not `for {}`...
+                    let mut first_y = 0;
+                    for y in 0..subheight {
+                        let start = base + (y * stride);
+                        let end = start + (subwidth * BYTES_PER_PX);
+                        if last[start..end] != pixels[start..end] {
+                            dirty = true;
+                            first_y = y;
+                            break;
+                        }
+                    }
+                    if dirty {
+                        let mut first_x = 0;
+                        let mut last_x = 0;
+                        let mut last_y = 0;
+                        // find other bounds
+                        for y in (0..subheight).rev() {
+                            let start = base + (y * stride);
+                            let end = start + (subwidth * BYTES_PER_PX);
+                            if last[start..end] != pixels[start..end] {
+                                last_y = y;
+                                break;
+                            }
+                        }
+                        'fx: for x in 0..subwidth {
+                            for y in 0..subheight {
+                                let start =
+                                    base + (y * stride) + (x * BYTES_PER_PX);
+                                let end = start + BYTES_PER_PX;
+                                if last[start..end] != pixels[start..end] {
+                                    first_x = x;
+                                    break 'fx;
+                                }
+                            }
+                        }
+                        'lx: for x in (0..subwidth).rev() {
+                            for y in 0..subheight {
+                                let start =
+                                    base + (y * stride) + (x * BYTES_PER_PX);
+                                let end = start + BYTES_PER_PX;
+                                if last[start..end] != pixels[start..end] {
+                                    last_x = x;
+                                    break 'lx;
+                                }
+                            }
+                        }
+                        let rect_x = first_x + sub_x;
+                        let rect_y = first_y + sub_y;
+                        let rect_width = last_x - first_x + 1;
+                        let rect_height = last_y - first_y + 1;
+                        let mut data = Vec::with_capacity(
+                            rect_width * rect_height * BYTES_PER_PX,
+                        );
+                        for y in first_y..=last_y {
+                            let start =
+                                base + (y * stride) + (first_x * BYTES_PER_PX);
+                            let end = start + (rect_width * BYTES_PER_PX);
+                            data.extend_from_slice(&pixels[start..end]);
+                        }
+                        dirty_rects.push(Rectangle::new(
+                            rect_x as u16,
+                            rect_y as u16,
+                            rect_width as u16,
+                            rect_height as u16,
+                            Box::new(RawEncoding::new(data)),
+                        ));
+                    }
+                }
+            }
+            inner.last_screen_sent = pixels;
+            FramebufferUpdate::new(dirty_rects)
         }
     }
 
@@ -185,6 +276,33 @@ impl Server for PropolisVncServer {
             ps2.key_event(ke);
         } else {
             trace!(self.log, "guest not initialized; dropping keyevent");
+        }
+    }
+
+    async fn pointer_event(&self, pe: PointerEvent) {
+        let mut inner = self.inner.lock().await;
+        let ps2 = inner.ps2ctrl.as_ref();
+
+        if let Some(ps2) = ps2 {
+            trace!(self.log, "pointerevent: {:?}", pe);
+            let (old_x, old_y) = inner.relative_mouse_hack;
+            let x = pe.position.x as i32;
+            let y = pe.position.y as i32;
+            let x_movement = (x - old_x).clamp(-256, 255) as i16;
+            let y_movement = (y - old_y).clamp(-256, 255) as i16;
+            ps2.mouse_event(MouseEventRep {
+                y_overflow: false,
+                x_overflow: false,
+                middle_button: pe.pressed.intersects(MouseButtons::MIDDLE),
+                right_button: pe.pressed.intersects(MouseButtons::RIGHT),
+                left_button: pe.pressed.intersects(MouseButtons::LEFT),
+                x_movement,
+                y_movement,
+            });
+            inner.relative_mouse_hack =
+                (x + x_movement as i32, y + y_movement as i32);
+        } else {
+            trace!(self.log, "guest not initialized; dropping pointerevent");
         }
     }
 
