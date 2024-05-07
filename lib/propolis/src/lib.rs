@@ -45,7 +45,7 @@ pub fn version() -> &'static str {
                 .and_then(|branch| Some((branch, option_env!("VERGEN_GIT_SHA")?)))
                 .and_then(|(branch, sha)| Some((branch, sha, option_env!("VERGEN_GIT_COMMIT_COUNT")?)));
 
-            let mut version = format!("Propolis v{}", env!("CARGO_PKG_VERSION"));
+            let mut version = format!("v{}", env!("CARGO_PKG_VERSION"));
             if let Some((branch, sha, commit)) = git {
                 write!(version, "-{commit} ({sha}) {branch}, ")
                     .expect("writing to a string never fails");
@@ -74,7 +74,8 @@ mod tests {
     #[test]
     fn print_version() {
         let v = version();
-        eprintln!("version: {v}");
-        assert!(v.starts_with("Propolis v"));
+        eprintln!("propolis {v}");
+        assert!(version.contains(env!("CARGO_PKG_VERSION")));
+        assert!(version.contains("Bhyve API"));
     }
 }
