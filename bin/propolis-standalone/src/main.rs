@@ -1281,6 +1281,7 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
 }
 
 #[derive(clap::Parser)]
+#[clap(version = propolis::version())]
 /// Propolis command-line frontend for running a VM.
 struct Args {
     /// Either the VM config file or a previously captured snapshot image.

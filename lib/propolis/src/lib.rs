@@ -35,3 +35,46 @@ pub mod vmm;
 
 pub use exits::{VmEntry, VmExit};
 pub use vmm::Machine;
+
+pub fn version() -> &'static str {
+    lazy_static::lazy_static! {
+        static ref VERSION: String = {
+            use std::fmt::Write;
+
+            let git = option_env!("VERGEN_GIT_BRANCH")
+                .and_then(|branch| Some((branch, option_env!("VERGEN_GIT_SHA")?)))
+                .and_then(|(branch, sha)| Some((branch, sha, option_env!("VERGEN_GIT_COMMIT_COUNT")?)));
+
+            let mut version = format!("Propolis v{}", env!("CARGO_PKG_VERSION"));
+            if let Some((branch, sha, commit)) = git {
+                write!(version, "-{commit} ({sha}) {branch}, ")
+                    .expect("writing to a string never fails");
+            } else {
+                version.push_str(" <unknown git commit>, ");
+            }
+            match bhyve_api::api_version() {
+                Ok(v) => {
+                    write!(version, "Bhyve API v{v}")
+                        .expect("writing to a string never fails");
+                }
+                Err(_) => {
+                    version.push_str("<unknown Bhyve API version>");
+                }
+            }
+            version
+        };
+    };
+    &VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_version() {
+        let v = version();
+        eprintln!("version: {v}");
+        assert!(v.starts_with("Propolis v"));
+    }
+}

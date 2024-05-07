@@ -351,7 +351,7 @@ pub mod type0 {
         BiosExtCharacteristics => u16,
     }
 }
-#[derive(Default)]
+
 pub struct Type1 {
     pub manufacturer: SmbString,
     pub product_name: SmbString,
@@ -378,6 +378,22 @@ impl Table for Type1 {
         };
 
         render_table(data, None, Some(stab))
+    }
+}
+
+impl Default for Type1 {
+    fn default() -> Self {
+        Type1 {
+            manufacturer: SmbString::default(),
+            product_name: SmbString::default(),
+            version: SmbString::try_from(crate::version())
+                .expect("version string should not contain NULs"),
+            serial_number: SmbString::default(),
+            uuid: [0; 16],
+            wake_up_type: type1::WakeUpType::default(),
+            sku_number: SmbString::default(),
+            family: SmbString::default(),
+        }
     }
 }
 

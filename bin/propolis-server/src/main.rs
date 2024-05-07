@@ -19,7 +19,7 @@ use propolis_server::{
 };
 
 #[derive(Debug, Parser)]
-#[clap(about, version)]
+#[clap(about, version = propolis::version())]
 /// An HTTP server providing access to Propolis
 enum Args {
     /// Generates the OpenAPI specification.
