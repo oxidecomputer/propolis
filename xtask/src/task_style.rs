@@ -13,9 +13,17 @@ use crate::util::*;
 fn check_test_names() -> Result<()> {
     let wroot = workspace_root()?;
 
+    // Get listing of all tests (excluding doctests)
     let mut cmd = Command::new("cargo");
     let child = cmd
-        .args(["test", "--workspace", "--", "--list", "--format=terse"])
+        .args([
+            "test",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "--list",
+            "--format=terse",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -32,15 +40,11 @@ fn check_test_names() -> Result<()> {
                 _ => return None,
             };
 
-            // skip doctests which follow "<path> - <testname> (line <num>)"
-            if test_name.contains(" - ") {
-                return None;
-            }
-
             // Check for `mod tests` instead of `mod test` as the last component of
-            // the test name;
-            match test_name.split("::").collect::<Vec<_>>().iter().nth_back(1) {
-                Some(&"tests") => {
+            // the test name (prior to the test function name itself);
+            let mut name_parts = test_name.rsplit("::");
+            match (name_parts.next(), name_parts.next()) {
+                (_fn_name, Some("tests")) => {
                     Some(test_name.rsplit_once("::").unwrap().0.to_owned())
                 }
                 _ => None,
