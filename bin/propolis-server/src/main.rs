@@ -73,7 +73,7 @@ fn parse_log_level(s: &str) -> anyhow::Result<slog::Level> {
 }
 
 #[derive(Debug, Parser)]
-#[clap(about, version)]
+#[clap(about, version = propolis::version())]
 /// An HTTP server providing access to Propolis
 enum Args {
     /// Runs the Propolis server.
