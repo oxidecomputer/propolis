@@ -456,6 +456,7 @@ impl VmController {
             crucible_backends: CrucibleBackendMap::new(),
             spec: v0_spec,
             properties: &properties,
+            toml_config,
             producer_registry,
             state: MachineInitializerState::default(),
         };
