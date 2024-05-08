@@ -115,6 +115,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a InstanceSpecV0,
     pub(crate) properties: &'a InstanceProperties,
+    pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) state: MachineInitializerState,
 }
@@ -857,9 +858,16 @@ impl<'a> MachineInitializer<'a> {
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
+        let bios_version = self
+            .toml_config
+            .bootrom_version
+            .as_deref()
+            .unwrap_or("v0.8")
+            .try_into()
+            .expect("bootrom version string doesn't contain NUL bytes");
         let smb_type0 = smbios::table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
-            bios_version: "v0.8".try_into().unwrap(),
+            bios_version,
             bios_release_date: "The Aftermath 30, 3185 YOLD"
                 .try_into()
                 .unwrap(),

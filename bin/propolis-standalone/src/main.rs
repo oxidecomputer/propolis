@@ -807,16 +807,20 @@ fn populate_rom(
 struct SmbiosParams {
     memory_size: usize,
     rom_size: usize,
+    rom_version: String,
     num_cpus: u8,
     cpuid_ident: Option<cpuid::Entry>,
     cpuid_procname: Option<[cpuid::Entry; 3]>,
 }
 fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     use smbios::table::{type0, type1, type16, type4};
-
+    let bios_version = params
+        .rom_version
+        .try_into()
+        .expect("bootrom version string doesn't contain NUL bytes");
     let smb_type0 = smbios::table::Type0 {
         vendor: "Oxide".try_into().unwrap(),
-        bios_version: "v0.0.1 alpha1".try_into().unwrap(),
+        bios_version,
         bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
         bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
         bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
@@ -1202,6 +1206,10 @@ fn setup_instance(
         generate_smbios(SmbiosParams {
             memory_size: memsize,
             rom_size: rom_len,
+            rom_version: config
+                .main
+                .bootrom_version
+                .unwrap_or_else(|| "v0.0.1-alpha 1".to_string()),
             num_cpus: cpus,
             cpuid_ident,
             cpuid_procname,

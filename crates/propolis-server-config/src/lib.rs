@@ -18,6 +18,8 @@ pub use cpuid_profile_config::CpuidProfile;
 pub struct Config {
     pub bootrom: PathBuf,
 
+    pub bootrom_version: Option<String>,
+
     #[serde(default, rename = "pci_bridge")]
     pub pci_bridges: Vec<PciBridge>,
 
@@ -37,6 +39,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             bootrom: PathBuf::new(),
+            bootrom_version: None,
             pci_bridges: Vec::new(),
             chipset: Chipset { options: BTreeMap::new() },
             devices: BTreeMap::new(),

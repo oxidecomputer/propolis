@@ -34,7 +34,7 @@ use propolis_api_types::instance_spec::{
     VersionedInstanceSpec,
 };
 
-use propolis_server_config::Config as VmTomlConfig;
+pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
 use slog::{error, info, o, warn, Logger};
 use thiserror::Error;
