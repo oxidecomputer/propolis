@@ -155,9 +155,6 @@ pub fn start_oximeter_server(
         id,
         kind: ProducerKind::Instance,
         address: producer_address,
-        // NOTE: This field is unused, and will be removed in the future.
-        // See https://github.com/oxidecomputer/omicron/issues/5658.
-        base_route: String::new(),
         interval: OXIMETER_STAT_INTERVAL,
     };
 
