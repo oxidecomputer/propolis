@@ -201,9 +201,9 @@ dependencies = [
 
 [[package]]
 name = "async-recursion"
-version = "1.1.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30c5ef0ede93efbf733c1a727f3b6b5a1060bbedd5600183e66f6e4be4af0ec5"
+checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -758,11 +758,11 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=62cc2cfe64ca09c6876be7633355026fa65c8545#62cc2cfe64ca09c6876be7633355026fa65c8545"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a3b920bde8a26cbdd7b14d21e452be6351cf009c#a3b920bde8a26cbdd7b14d21e452be6351cf009c"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
- "async-recursion 1.1.0",
+ "async-recursion 1.1.1",
  "async-trait",
  "base64 0.22.1",
  "bincode",
@@ -811,7 +811,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=62cc2cfe64ca09c6876be7633355026fa65c8545#62cc2cfe64ca09c6876be7633355026fa65c8545"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a3b920bde8a26cbdd7b14d21e452be6351cf009c#a3b920bde8a26cbdd7b14d21e452be6351cf009c"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -824,7 +824,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=62cc2cfe64ca09c6876be7633355026fa65c8545#62cc2cfe64ca09c6876be7633355026fa65c8545"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a3b920bde8a26cbdd7b14d21e452be6351cf009c#a3b920bde8a26cbdd7b14d21e452be6351cf009c"
 dependencies = [
  "anyhow",
  "atty",
@@ -854,7 +854,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=62cc2cfe64ca09c6876be7633355026fa65c8545#62cc2cfe64ca09c6876be7633355026fa65c8545"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a3b920bde8a26cbdd7b14d21e452be6351cf009c#a3b920bde8a26cbdd7b14d21e452be6351cf009c"
 dependencies = [
  "anyhow",
  "bincode",
