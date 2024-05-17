@@ -130,7 +130,7 @@ progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "ma
 quote = "1.0"
 rand = "0.8"
 reqwest = { version = "0.11.18", default-features = false }
-rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0cac8d9c25eb27acfa35df80f3b9d371de98ab3b" }
+rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0a7d56202df99b9df1bb7e42a9716efcf5e8fef2" }
 ring = "0.16"
 ron = "0.7"
 schemars = "0.8.10"

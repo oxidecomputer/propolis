@@ -112,9 +112,9 @@ dependencies = [
 
 [[package]]
 name = "anstyle"
-version = "1.0.2"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15c4c2c83f81532e5845a733998b6971faca23490340a418e9b72a3ec9de12ea"
+checksum = "038dfcf04a5feb68e9c60b21c9625a54c2c0616e79b72b0fd87075a056ae1d1b"
 
 [[package]]
 name = "anstyle-parse"
@@ -1319,16 +1319,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "env_logger"
-version = "0.9.3"
+name = "env_filter"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a12e6657c4c97ebab115a42dcee77225f7f482cdd841cf7088c657a42e9e00e7"
+checksum = "a009aa4810eb158359dda09d0c87378e4bbb89b5a801f016885a4707ba24f7ea"
 dependencies = [
- "atty",
- "humantime",
  "log",
  "regex",
- "termcolor",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b35839ba51819680ba087cd351788c9a3c476841207e0b8cee0b04722343b9"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "humantime",
+ "log",
 ]
 
 [[package]]
@@ -4253,11 +4263,11 @@ dependencies = [
 [[package]]
 name = "rfb"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/rfb?rev=0cac8d9c25eb27acfa35df80f3b9d371de98ab3b#0cac8d9c25eb27acfa35df80f3b9d371de98ab3b"
+source = "git+https://github.com/oxidecomputer/rfb?rev=0a7d56202df99b9df1bb7e42a9716efcf5e8fef2#0a7d56202df99b9df1bb7e42a9716efcf5e8fef2"
 dependencies = [
  "ascii",
  "async-trait",
- "bitflags 1.3.2",
+ "bitflags 2.4.0",
  "env_logger",
  "futures",
  "log",
