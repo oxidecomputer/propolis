@@ -11,7 +11,6 @@ bitflags.workspace = true
 bitstruct.workspace = true
 byteorder.workspace = true
 lazy_static.workspace = true
-num_enum = { workspace = true, optional = true }
 thiserror.workspace = true
 bhyve_api.workspace = true
 dladm.workspace = true
@@ -40,7 +39,7 @@ libloading = { workspace = true, optional = true }
 p9ds = { workspace = true, optional = true }
 ispf = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
-softnpu-lib = { workspace = true, optional = true }
+softnpu = { workspace = true, optional = true }
 dlpi = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -53,7 +52,7 @@ rand.workspace = true
 [features]
 default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
-falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu-lib", "num_enum"]
+falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu"]
 
 # TODO until crucible#1280 is addressed, enabling Nexus notifications is done
 # through a feature flag.

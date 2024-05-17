@@ -28,7 +28,6 @@ use lazy_static::lazy_static;
 use libc::{
     DT_DIR, DT_REG, EILSEQ, EINVAL, ENOENT, ENOLCK, ENOTSUP, EOVERFLOW, ERANGE,
 };
-use num_enum::TryFromPrimitive;
 use p9ds::proto::{
     self, Dirent, MessageType, P9Version, Qid, QidType, Rattach, Rclunk,
     Rgetattr, Rlerror, Rlopen, Rread, Rreaddir, Rstatfs, Rwalk, Tattach,
@@ -242,7 +241,7 @@ pub trait P9Handler: Sync + Send + 'static {
         });
 
         let len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
-        let typ = MessageType::try_from_primitive(buf[4]).unwrap();
+        let typ = MessageType::try_from(buf[4]).unwrap();
 
         match typ {
             MessageType::Tversion => {

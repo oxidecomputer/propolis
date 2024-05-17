@@ -63,6 +63,11 @@ pub enum ProtocolError {
     #[error("received empty message with no discriminant")]
     UnexpectedWebsocketMessage(tungstenite::Message),
 }
+impl From<ron::de::SpannedError> for ProtocolError {
+    fn from(value: ron::de::SpannedError) -> Self {
+        Self::Ron(value.code)
+    }
+}
 
 /// Message represents the different frame types for messages
 /// exchanged in the live migration protocol.  Most structured

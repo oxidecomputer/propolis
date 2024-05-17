@@ -66,7 +66,7 @@ dlpi = { git = "https://github.com/oxidecomputer/dlpi-sys", branch = "main" }
 ispf = { git = "https://github.com/oxidecomputer/ispf" }
 libloading = "0.7"
 p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
-softnpu-lib = { git = "https://github.com/oxidecomputer/softnpu", rev = "dbab082dfa89da5db5ca2325c257089d2f130092", package = "softnpu" }
+softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
 internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
@@ -104,7 +104,7 @@ const_format = "0.2"
 crossbeam-channel = "0.5"
 ctrlc = "3.2"
 dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
-erased-serde = "0.3"
+erased-serde = "0.4"
 errno = "0.2.8"
 escargot = "0.5.8"
 expectorate = "1.0.5"
@@ -119,9 +119,8 @@ inventory = "0.3.0"
 kstat-rs = "0.2.3"
 lazy_static = "1.4"
 libc = "0.2"
-mockall = "0.11"
+mockall = "0.12"
 newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
-num_enum = "0.5.11"
 owo-colors = "4"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
@@ -131,8 +130,8 @@ quote = "1.0"
 rand = "0.8"
 reqwest = { version = "0.11.18", default-features = false }
 rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0a7d56202df99b9df1bb7e42a9716efcf5e8fef2" }
-ring = "0.16"
-ron = "0.7"
+ring = "0.17"
+ron = "0.8"
 schemars = "0.8.10"
 serde = "1.0"
 serde_arrays = "0.1"
@@ -148,12 +147,12 @@ strum = "0.26"
 syn = "1.0"
 tar = "0.4"
 tempfile = "3.2"
-termwiz = "0.20.0"
+termwiz = "0.20"
 thiserror = "1.0"
 tokio = "1"
-tokio-tungstenite = "0.20"
+tokio-tungstenite = "0.21"
 tokio-util = "0.7"
-toml = "0.7.6"
+toml = "0.7.8"
 tracing = "0.1.35"
 tracing-appender = "0.2.2"
 tracing-bunyan-formatter = "0.3.3"
