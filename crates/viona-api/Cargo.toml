@@ -10,3 +10,6 @@ doctest = false
 [dependencies]
 libc.workspace = true
 viona_api_sys.workspace = true
+
+[features]
+falcon = []
