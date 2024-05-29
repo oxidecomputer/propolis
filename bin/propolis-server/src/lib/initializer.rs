@@ -1000,38 +1000,41 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         cpus: u8,
     ) -> Result<Arc<ramfb::RamFb>, Error> {
-        let mut fwcfg = fwcfg::FwCfgBuilder::new();
+        let fwcfg = fwcfg::FwCfg::new();
         fwcfg
-            .add_legacy(
+            .insert_legacy(
                 fwcfg::LegacyId::SmpCpuCount,
-                fwcfg::FixedItem::new_u32(u32::from(cpus)),
+                fwcfg::Entry::fixed_u32(u32::from(cpus)),
             )
             .unwrap();
 
         let smbios::TableBytes { entry_point, structure_table } =
             self.generate_smbios();
         fwcfg
-            .add_named(
+            .insert_named(
                 "etc/smbios/smbios-tables",
-                fwcfg::FixedItem::new_raw(structure_table),
+                fwcfg::Entry::Bytes(structure_table),
             )
             .unwrap();
         fwcfg
-            .add_named(
+            .insert_named(
                 "etc/smbios/smbios-anchor",
-                fwcfg::FixedItem::new_raw(entry_point),
+                fwcfg::Entry::Bytes(entry_point),
             )
             .unwrap();
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),
         );
-        ramfb.attach(&mut fwcfg, &self.machine.acc_mem);
+        ramfb.attach(&self.machine.acc_mem);
+        fwcfg
+            .insert_named(ramfb::RamFb::FWCFG_ENTRY_NAME, fwcfg::Entry::RamFb)
+            .unwrap();
+        fwcfg.attach_ramfb(Some(ramfb.clone()));
 
-        let fwcfg_dev = fwcfg.finalize();
-        fwcfg_dev.attach(&self.machine.bus_pio, &self.machine.acc_mem);
+        fwcfg.attach(&self.machine.bus_pio, &self.machine.acc_mem);
 
-        self.devices.insert(fwcfg_dev.type_name().into(), fwcfg_dev);
+        self.devices.insert(fwcfg.type_name().into(), fwcfg);
         self.devices.insert(ramfb.type_name().into(), ramfb.clone());
         Ok(ramfb)
     }

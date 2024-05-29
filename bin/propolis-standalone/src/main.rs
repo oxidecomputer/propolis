@@ -25,6 +25,7 @@ use propolis::common::{GB, MB};
 use propolis::firmware::smbios;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
+use propolis::hw::qemu::fwcfg;
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{ibmpc, qemu};
 use propolis::intr_pins::FuncPin;
@@ -1193,17 +1194,25 @@ fn setup_instance(
         })?;
     }
 
-    let mut fwcfg = hw::qemu::fwcfg::FwCfgBuilder::new();
+    let fwcfg = fwcfg::FwCfg::new();
     fwcfg
-        .add_legacy(
-            hw::qemu::fwcfg::LegacyId::SmpCpuCount,
-            hw::qemu::fwcfg::FixedItem::new_u32(u32::from(cpus)),
+        .insert_legacy(
+            fwcfg::LegacyId::SmpCpuCount,
+            fwcfg::Entry::fixed_u32(u32::from(cpus)),
         )
-        .map_err(|err| Error::new(ErrorKind::Other, err))?;
+        .unwrap();
 
     let ramfb =
         hw::qemu::ramfb::RamFb::create(log.new(slog::o!("dev" => "ramfb")));
-    ramfb.attach(&mut fwcfg, &machine.acc_mem);
+    ramfb.attach(&machine.acc_mem);
+
+    fwcfg
+        .insert_named(
+            hw::qemu::ramfb::RamFb::FWCFG_ENTRY_NAME,
+            fwcfg::Entry::RamFb,
+        )
+        .unwrap();
+    fwcfg.attach_ramfb(Some(ramfb.clone()));
 
     let cpuid_profile = config::parse_cpuid(&config)?;
 
@@ -1237,22 +1246,21 @@ fn setup_instance(
         })
         .unwrap();
     fwcfg
-        .add_named(
+        .insert_named(
             "etc/smbios/smbios-tables",
-            hw::qemu::fwcfg::FixedItem::new_raw(structure_table),
+            fwcfg::Entry::Bytes(structure_table),
         )
         .unwrap();
     fwcfg
-        .add_named(
+        .insert_named(
             "etc/smbios/smbios-anchor",
-            hw::qemu::fwcfg::FixedItem::new_raw(entry_point),
+            fwcfg::Entry::Bytes(entry_point),
         )
         .unwrap();
 
-    let fwcfg_dev = fwcfg.finalize();
-    fwcfg_dev.attach(pio, &machine.acc_mem);
+    fwcfg.attach(pio, &machine.acc_mem);
 
-    guard.inventory.register(&fwcfg_dev);
+    guard.inventory.register(&fwcfg);
     guard.inventory.register(&ramfb);
 
     for vcpu in machine.vcpus.iter() {

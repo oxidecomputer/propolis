@@ -136,6 +136,9 @@ impl<'a> ReadOp<'a> {
     pub fn offset(&self) -> usize {
         self.offset
     }
+    pub fn bytes_written(&self) -> usize {
+        self.write_offset
+    }
 
     pub fn write_u8(&mut self, val: u8) {
         self.write_bytes(&val.to_le_bytes()[..]);
@@ -269,6 +272,9 @@ impl<'a> WriteOp<'a> {
     }
     pub fn offset(&self) -> usize {
         self.offset
+    }
+    pub fn bytes_read(&self) -> usize {
+        self.read_offset
     }
 
     fn read_val<const COUNT: usize>(&mut self) -> [u8; COUNT] {

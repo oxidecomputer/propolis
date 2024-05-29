@@ -29,6 +29,7 @@ erased-serde.workspace = true
 serde_json.workspace = true
 strum = { workspace = true, features = ["derive"] }
 uuid.workspace = true
+zerocopy = { workspace = true, features = ["derive", "byteorder" ] }
 crucible-client-types = { workspace = true, optional = true }
 crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }
