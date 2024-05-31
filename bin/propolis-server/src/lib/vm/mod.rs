@@ -90,13 +90,12 @@ use propolis_api_types::{
     InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
     MigrationState,
 };
-use rfb::server::VncServer;
 use slog::info;
 use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
-use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
+use crate::{server::MetricsEndpointConfig, vnc::VncServer};
 
 mod active;
 pub(crate) mod ensure;
@@ -278,7 +277,7 @@ pub(super) struct EnsureOptions {
 
     /// A reference to the process's VNC server, used to connect the server to
     /// a new VM's framebuffer.
-    pub(super) vnc_server: Arc<VncServer<PropolisVncServer>>,
+    pub(super) vnc_server: Arc<VncServer>,
 
     /// The address of this Propolis process, used by the live migration
     /// protocol to transfer serial console connections.

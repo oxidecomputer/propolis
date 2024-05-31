@@ -145,17 +145,15 @@ pub enum KeySym {
     KeypadPgUp,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("unknown keysym: 0x{0:x}")]
-pub struct KeySymError(u32);
-
 impl TryFrom<u32> for KeySym {
-    type Error = KeySymError;
+    type Error = ();
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             // SAFETY: we're within the valid ascii range
-            0..=ASCII_MAX => Ok(Ascii(unsafe { value.to_ascii_char_unchecked() })),
+            0..=ASCII_MAX => {
+                Ok(Ascii(unsafe { value.to_ascii_char_unchecked() }))
+            }
             KEYSYM_BACKSPACE => Ok(Backspace),
             KEYSYM_TAB => Ok(Tab),
             KEYSYM_RETURN_ENTER => Ok(ReturnOrEnter),
@@ -178,7 +176,7 @@ impl TryFrom<u32> for KeySym {
             KEYSYM_RIGHT => Ok(Right),
             KEYSYM_DOWN => Ok(Down),
 
-            f if (f >= KEYSYM_F1 && f <= KEYSYM_F12) => {
+            f if (KEYSYM_F1..=KEYSYM_F12).contains(&f) => {
                 let n = f - KEYSYM_F1 + 1;
                 // TODO: handle cast
                 Ok(FunctionKey(n as u8))
@@ -222,7 +220,7 @@ impl TryFrom<u32> for KeySym {
             KEYSYM_KP_PERIOD => Ok(KeypadPeriod),
             KEYSYM_KP_DELETE => Ok(KeypadDelete),
 
-            _ => Err(KeySymError(value)),
+            _ => Err(()),
         }
     }
 }

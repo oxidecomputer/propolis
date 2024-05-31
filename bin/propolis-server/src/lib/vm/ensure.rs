@@ -279,7 +279,6 @@ impl<'a> VmEnsureObjectsCreated<'a> {
     pub(crate) async fn ensure_active(self) -> VmEnsureActive<'a> {
         let vm_services = VmServices::new(
             self.log,
-            self.vm,
             &self.vm_objects,
             &self.ensure_request.properties,
             self.ensure_options,

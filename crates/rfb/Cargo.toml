@@ -1,7 +1,7 @@
 [package]
 name = "rfb"
 version = "0.0.0"
-description = "Implementation of the RFB protocol (RFC 6143), including a server implementation."
+description = "Implementation of the RFB protocol (RFC 6143)"
 readme = "README.md"
 license = "MPL-2.0"
 edition = "2021"
@@ -10,21 +10,43 @@ edition = "2021"
 name = "rfb"
 path = "src/lib.rs"
 
+# Prevent cargo from building shared code like a binary
 [[example]]
-name = "example-server"
-path = "examples/server.rs"
+name = "example-shared"
+path = "examples/shared.rs"
+crate-type = ["rlib"]
+
+[[example]]
+name = "example-socket"
+path = "examples/socket.rs"
+
+[[example]]
+name = "example-websock"
+path = "examples/websock.rs"
+required-features = ["tungstenite"]
+
 
 [dependencies]
 ascii = { version = "1.1", default-features = false }
-async-trait.workspace = true
 bitflags.workspace = true
 futures.workspace = true
-log = "0.4.17"
 thiserror.workspace = true
+rgb_frame.workspace = true
+strum = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["codec"] }
+tokio-tungstenite = { workspace = true, optional = true }
+zerocopy = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
-env_logger = "0.11"
 image = { version = "0.25.1", default-features = false, features = ["png"] }
+dropshot.workspace = true
+slog.workspace = true
+slog-envlogger = "2.2.0"
+slog-term.workspace = true
+
+[features]
+default = []
+tungstenite = ["dep:tokio-tungstenite"]
