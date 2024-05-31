@@ -1,0 +1,30 @@
+[package]
+name = "rfb"
+version = "0.0.0"
+description = "Implementation of the RFB protocol (RFC 6143), including a server implementation."
+readme = "README.md"
+license = "MPL-2.0"
+edition = "2021"
+
+[lib]
+name = "rfb"
+path = "src/lib.rs"
+
+[[example]]
+name = "example-server"
+path = "examples/server.rs"
+
+[dependencies]
+ascii = { version = "1.1", default-features = false }
+async-trait.workspace = true
+bitflags.workspace = true
+futures.workspace = true
+log = "0.4.17"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[dev-dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+env_logger = "0.11"
+image = { version = "0.25.1", default-features = false, features = ["png"] }
