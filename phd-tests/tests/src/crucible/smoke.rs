@@ -17,6 +17,33 @@ async fn boot_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
+async fn api_reboot_test(ctx: &Framework) {
+    let mut config = ctx.vm_config_builder("crucible_guest_reboot_test");
+    super::add_default_boot_disk(ctx, &mut config)?;
+
+    let mut vm = ctx.spawn_vm(&config, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+    vm.reset().await?;
+    vm.wait_to_boot().await?;
+}
+
+#[phd_testcase]
+async fn guest_reboot_test(ctx: &Framework) {
+    let mut config = ctx.vm_config_builder("crucible_guest_reboot_test");
+    super::add_default_boot_disk(ctx, &mut config)?;
+
+    let mut vm = ctx.spawn_vm(&config, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    // Don't use `run_shell_command` because the guest won't echo another prompt
+    // after this.
+    vm.send_serial_str("reboot\n").await?;
+    vm.wait_to_boot().await?;
+}
+
+#[phd_testcase]
 async fn shutdown_persistence_test(ctx: &Framework) {
     let mut config =
         ctx.vm_config_builder("crucible_shutdown_persistence_test");

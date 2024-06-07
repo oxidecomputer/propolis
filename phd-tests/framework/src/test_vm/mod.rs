@@ -849,7 +849,7 @@ impl TestVm {
 
     /// Sends `string` to the guest's serial console worker, then waits for the
     /// entire string to be sent to the guest before returning.
-    pub(crate) async fn send_serial_str(&self, string: &str) -> Result<()> {
+    pub async fn send_serial_str(&self, string: &str) -> Result<()> {
         if !string.is_empty() {
             self.send_serial_bytes(Vec::from(string.as_bytes()))?.await?;
         }
