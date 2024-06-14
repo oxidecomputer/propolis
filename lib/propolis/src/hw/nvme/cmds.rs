@@ -54,7 +54,7 @@ pub enum AdminCmd {
     /// Asynchronous Event Request Command
     AsyncEventReq,
     /// An unknown admin command
-    Unknown(SubmissionQueueEntry),
+    Unknown(#[allow(dead_code)] SubmissionQueueEntry),
 }
 
 impl AdminCmd {
@@ -141,6 +141,7 @@ impl AdminCmd {
 }
 
 /// Create I/O Completion Queue Command Parameters
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CreateIOCQCmd {
     /// PRP Entry 1 (PRP1)
@@ -181,6 +182,7 @@ pub struct CreateIOCQCmd {
 }
 
 /// Create I/O Submission Queue Command Parameters
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct CreateIOSQCmd {
     /// PRP Entry 1 (PRP1)
@@ -236,6 +238,7 @@ pub enum QueuePriority {
 }
 
 /// Get Log Page Command Parameters
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct GetLogPageCmd {
     /// Namespace Identifier (NSID)
@@ -278,6 +281,7 @@ impl GetLogPageCmd {
 /// The type of Log pages that may be retrieved with the Get Log Page command.
 ///
 /// See NVMe 1.0e Section 5.10.1, Figure 58 Get Log Page - Log Page Identifiers
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum LogPageIdent {
     /// Reserved Log Page
@@ -432,7 +436,7 @@ pub enum FeatureIdent {
     /// See NVMe 1.0e Section 7.6.1.1 Software Progress Marker
     SoftwareProgressMarker,
     /// Vendor specific feature.
-    Vendor(u8),
+    Vendor(#[allow(dead_code)] u8),
 }
 
 impl From<u8> for FeatureIdent {
@@ -631,6 +635,7 @@ impl From<FeatInterruptVectorConfig> for u32 {
 }
 
 /// A parsed NVM Command
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum NvmCmd {
     /// Commit data and metadata
