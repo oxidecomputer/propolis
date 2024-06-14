@@ -95,7 +95,8 @@ impl RawBuffer {
             "checking wait on raw serial buffer"
         );
         if let Some(idx) = self.wait_buffer.rfind(&waiter.wanted) {
-            let out = self.wait_buffer[..idx].to_owned();
+            let out = self.wait_buffer.drain(..idx).collect();
+            self.wait_buffer = self.wait_buffer.split_off(waiter.wanted.len());
 
             // Because incoming bytes from Propolis may be processed on a
             // separate task than the task that registered the wait, this
@@ -150,5 +151,68 @@ impl Drop for RawBuffer {
         if let Err(e) = self.log.flush() {
             error!(%e, "failed to flush serial console log during drop");
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    fn make_buffer() -> RawBuffer {
+        let file =
+            std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+
+        RawBuffer {
+            log: std::io::BufWriter::new(file),
+            line_buffer: String::new(),
+            wait_buffer: String::new(),
+            waiter: None,
+            parser: Parser::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_wait_consumes_buffer_contents() {
+        let mut buf = make_buffer();
+        let (tx, mut rx) = oneshot::channel();
+        buf.push_str("the quick brown fox jumped over the lazy propolis");
+        buf.satisfy_or_set_wait(OutputWaiter {
+            wanted: "jumped over".to_string(),
+            preceding_tx: tx,
+        });
+        assert_eq!(rx.try_recv().unwrap(), "the quick brown fox ");
+        assert_eq!(buf.wait_buffer, " the lazy propolis");
+
+        // Repeat the test, but register the wait before the characters are
+        // pushed.
+        buf.clear();
+        let (tx, mut rx) = oneshot::channel();
+        buf.satisfy_or_set_wait(OutputWaiter {
+            wanted: "jumped over".to_string(),
+            preceding_tx: tx,
+        });
+        buf.push_str("the quick brown fox jumped over the lazy propolis");
+        assert_eq!(rx.try_recv().unwrap(), "the quick brown fox ");
+        assert_eq!(buf.wait_buffer, " the lazy propolis");
+    }
+
+    #[tokio::test]
+    async fn successful_wait_consumes_last_match() {
+        let mut buf = make_buffer();
+        let (tx, mut rx) = oneshot::channel();
+        buf.push_str(
+            "I put some Oxide in your Oxide so you can Oxide while you Oxide",
+        );
+        buf.satisfy_or_set_wait(OutputWaiter {
+            wanted: "you".to_string(),
+            preceding_tx: tx,
+        });
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            "I put some Oxide in your Oxide so you can Oxide while "
+        );
+        assert_eq!(buf.wait_buffer, " Oxide");
     }
 }

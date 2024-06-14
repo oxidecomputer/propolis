@@ -66,13 +66,14 @@ impl BlockData {
                 }
                 Err(err) => match err {
                     ReqError::NonePending | ReqError::Paused => {
-                        let guard = self.lock.lock().unwrap();
                         // Double-check for attachment-related "error"
                         // conditions under protection of the lock before
                         // finally blocking.
-                        if check_state(att_state).is_err() {
+                        let guard = self.lock.lock().unwrap();
+                        if !att_state.is_attached() || att_state.is_stopped() {
                             return None;
                         }
+
                         let _guard = self.cv.wait(guard).unwrap();
                         continue;
                     }
