@@ -30,6 +30,8 @@
 //! components to raise events for the state driver to process (e.g. a request
 //! from a VM's chipset to reboot or halt the VM).
 
+use crate::migrate;
+
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use std::{
     collections::{BTreeMap, VecDeque},
