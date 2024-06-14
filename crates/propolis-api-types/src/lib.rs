@@ -94,12 +94,17 @@ pub struct InstanceMigrationStatus {
     pub state: MigrationState,
 }
 
-/// The statuses of the most recent live migrations a Propolis VM has
-/// participated in. Note that Propolis will continue reporting the status of a
-/// completed migration unless it is supplanted by a new migration in the same
-/// direction. This means it's possible for both the inbound and outbound
-/// migration statuses to be set, e.g. if a Propolis was initialized via
-/// migration in and is now the source of a migration out.
+/// The statuses of the most recent attempts to live migrate into and out of
+/// this Propolis.
+///
+/// If a VM is initialized by migration in and then begins to migrate out, this
+/// structure will contain statuses for both migrations. This ensures that
+/// clients can always obtain the status of a successful migration in even after
+/// a migration out begins.
+///
+/// This structure only reports the status of the most recent migration in a
+/// single direction. That is, if a migration in or out fails, and a new
+/// migration attempt begins, the new migration's status replaces the old's.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceMigrateStatusResponse {
     /// The status of the most recent attempt to initialize the current instance
@@ -107,7 +112,7 @@ pub struct InstanceMigrateStatusResponse {
     /// target.
     pub migration_in: Option<InstanceMigrationStatus>,
     /// The status of the most recent attempt to migrate out of the current
-    /// instance, or None if no such migration has ever been requested.
+    /// instance, or None if the instance has never been a migration source.
     pub migration_out: Option<InstanceMigrationStatus>,
 }
 

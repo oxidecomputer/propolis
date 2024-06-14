@@ -533,9 +533,7 @@ async fn migrate_instance(
                 // destination needs to arrive first.
                 let Some(migration) = migration else {
                     if role == "dst" {
-                        anyhow::bail!(
-                            "{role} instance's migration ID wasn't set"
-                        );
+                        anyhow::bail!("dst instance's migration ID wasn't set");
                     } else {
                         println!("src hasn't received migration request yet");
                         tokio::time::sleep(Duration::from_secs(1)).await;
