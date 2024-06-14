@@ -70,16 +70,12 @@ impl BlockData {
                         // conditions under protection of the lock before
                         // finally blocking.
                         let guard = self.lock.lock().unwrap();
-                        match check_state(att_state) {
-                            Err(ReqError::Stopped | ReqError::Detached) => {
-                                return None;
-                            }
-                            Ok(())
-                            | Err(ReqError::Paused | ReqError::NonePending) => {
-                                let _guard = self.cv.wait(guard).unwrap();
-                                continue;
-                            }
+                        if !att_state.is_attached() || att_state.is_stopped() {
+                            return None;
                         }
+
+                        let _guard = self.cv.wait(guard).unwrap();
+                        continue;
                     }
                     _ => {
                         return None;
