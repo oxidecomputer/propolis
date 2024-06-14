@@ -9,7 +9,7 @@ use std::convert::TryFrom;
 
 use anyhow::{anyhow, Result};
 use rfb::keysym::AsciiChar;
-use rfb::keysym::KeySym::{self, *};
+use rfb::keysym::KeySym::*;
 use rfb::rfb::KeyEvent;
 
 use scan_code_1::*;
@@ -64,7 +64,6 @@ pub struct ScanCodeBase {
 #[derive(Debug)]
 pub struct KeyEventRep {
     pub keysym_raw: u32,
-    pub keysym: KeySym,
     pub is_pressed: bool,
     pub scan_code_1: ScanCodeBase,
     pub scan_code_2: ScanCodeBase,
@@ -317,7 +316,6 @@ impl TryFrom<KeyEvent> for KeyEventRep {
         let sc2 = ScanCodeBase { base_val: base_val_2, prefix: prefix_2 };
 
         Ok(Self {
-            keysym: keyevent.keysym(),
             keysym_raw: keyevent.keysym_raw(),
             is_pressed: keyevent.is_pressed(),
             scan_code_1: sc1,

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-proc_macro = true
+proc-macro = true
 test = false
 doctest = false
 
