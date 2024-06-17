@@ -73,6 +73,12 @@ impl PublishedMigrationState {
     }
 }
 
+enum PublishedState {
+    Instance(ApiInstanceState),
+    Migration(PublishedMigrationState),
+    Complete(ApiInstanceState, PublishedMigrationState),
+}
+
 pub(super) struct StateDriver<
     V: super::StateDriverVmController,
     C: VcpuTaskController,
@@ -150,16 +156,12 @@ where
 
     /// Sets the published instance and/or migration state and increases the
     /// state generation number.
-    ///
-    /// # Panics
-    ///
-    /// Panics if both `instance_state` and `migration_state` are `None`.
-    fn set_published_state(
-        &mut self,
-        instance_state: Option<ApiInstanceState>,
-        migration_state: Option<PublishedMigrationState>,
-    ) {
-        assert!(instance_state.is_some() || migration_state.is_some());
+    fn set_published_state(&mut self, state: PublishedState) {
+        let (instance_state, migration_state) = match state {
+            PublishedState::Instance(i) => (Some(i), None),
+            PublishedState::Migration(m) => (None, Some(m)),
+            PublishedState::Complete(i, m) => (Some(i), Some(m)),
+        };
 
         let ApiMonitoredState {
             state: old_state,
@@ -190,7 +192,7 @@ where
     /// Publishes the supplied externally-visible instance state to the external
     /// instance state channel.
     fn set_instance_state(&mut self, state: ApiInstanceState) {
-        self.set_published_state(Some(state), None)
+        self.set_published_state(PublishedState::Instance(state));
     }
 
     /// Publishes the supplied externally-visible migration status to the
@@ -201,10 +203,9 @@ where
         migration_id: Uuid,
         state: ApiMigrationState,
     ) {
-        self.set_published_state(
-            None,
-            Some(PublishedMigrationState { state, id: migration_id, role }),
-        );
+        self.set_published_state(PublishedState::Migration(
+            PublishedMigrationState { state, id: migration_id, role },
+        ));
     }
 
     /// Publishes that an instance is migrating and sets its migration state in
@@ -221,14 +222,14 @@ where
         // been picked up off the queue. To ensure the migration is continuously
         // visible, publish the "actual" migration before consuming the pending
         // one.
-        self.set_published_state(
-            Some(ApiInstanceState::Migrating),
-            Some(PublishedMigrationState {
+        self.set_published_state(PublishedState::Complete(
+            ApiInstanceState::Migrating,
+            PublishedMigrationState {
                 state: ApiMigrationState::Sync,
                 id: migration_id,
                 role,
-            }),
-        );
+            },
+        ));
 
         self.shared_state.clear_pending_migration();
     }

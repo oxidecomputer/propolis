@@ -954,12 +954,12 @@
         ]
       },
       "InstanceMigrateStatusResponse": {
-        "description": "The statuses of the most recent live migrations a Propolis VM has participated in. Note that Propolis will continue reporting the status of a completed migration unless it is supplanted by a new migration in the same direction. This means it's possible for both the inbound and outbound migration statuses to be set, e.g. if a Propolis was initialized via migration in and is now the source of a migration out.",
+        "description": "The statuses of the most recent attempts to live migrate into and out of this Propolis.\n\nIf a VM is initialized by migration in and then begins to migrate out, this structure will contain statuses for both migrations. This ensures that clients can always obtain the status of a successful migration in even after a migration out begins.\n\nThis structure only reports the status of the most recent migration in a single direction. That is, if a migration in or out fails, and a new migration attempt begins, the new migration's status replaces the old's.",
         "type": "object",
         "properties": {
           "migration_in": {
             "nullable": true,
-            "description": "The status of the most recent attempt to initialize the current instance via migration in, or None if the instance has never been a migration target.",
+            "description": "The status of the most recent attempt to initialize the current instance via migration in, or `None` if the instance has never been a migration target.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/InstanceMigrationStatus"
@@ -968,7 +968,7 @@
           },
           "migration_out": {
             "nullable": true,
-            "description": "The status of the most recent attempt to migrate out of the current instance, or None if no such migration has ever been requested.",
+            "description": "The status of the most recent attempt to migrate out of the current instance, or `None` if the instance has never been a migration source.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/InstanceMigrationStatus"

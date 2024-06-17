@@ -108,11 +108,11 @@ pub struct InstanceMigrationStatus {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceMigrateStatusResponse {
     /// The status of the most recent attempt to initialize the current instance
-    /// via migration in, or None if the instance has never been a migration
+    /// via migration in, or `None` if the instance has never been a migration
     /// target.
     pub migration_in: Option<InstanceMigrationStatus>,
     /// The status of the most recent attempt to migrate out of the current
-    /// instance, or None if the instance has never been a migration source.
+    /// instance, or `None` if the instance has never been a migration source.
     pub migration_out: Option<InstanceMigrationStatus>,
 }
 
