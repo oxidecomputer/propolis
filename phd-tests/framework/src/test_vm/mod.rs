@@ -23,9 +23,10 @@ use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
         InstanceGetResponse, InstanceMetadata, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceSerialConsoleHistoryResponse,
-        InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
-        InstanceStateRequested, MigrationState, VersionedInstanceSpec,
+        InstanceMigrateStatusResponse, InstanceProperties,
+        InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
+        InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
+        MigrationState, VersionedInstanceSpec,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -525,9 +526,13 @@ impl TestVm {
                 let _guard = span.enter();
                 let migrate_fn = || async {
                     let state = self
-                        .get_migration_state(migration_id)
+                        .get_migration_state()
                         .await
-                        .map_err(backoff::Error::Permanent)?;
+                        .map_err(backoff::Error::Permanent)?
+                        .migration_in
+                        .expect("instance should be migrating in")
+                        .state;
+
                     match state {
                         MigrationState::Finish => {
                             info!("Migration completed successfully");
@@ -565,15 +570,8 @@ impl TestVm {
 
     pub async fn get_migration_state(
         &self,
-        migration_id: Uuid,
-    ) -> Result<MigrationState> {
-        Ok(self
-            .client
-            .instance_migrate_status()
-            .migration_id(migration_id)
-            .send()
-            .await?
-            .state)
+    ) -> Result<InstanceMigrateStatusResponse> {
+        Ok(self.client.instance_migrate_status().send().await?.into_inner())
     }
 
     pub async fn get_serial_console_history(

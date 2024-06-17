@@ -83,15 +83,37 @@ pub struct InstanceMigrateStartRequest {
     pub migration_id: Uuid,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceMigrateStatusRequest {
-    pub migration_id: Uuid,
+/// The status of an individual live migration.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct InstanceMigrationStatus {
+    /// The ID of this migration, supplied either by the external migration
+    /// requester (for targets) or the other side of the migration (for
+    /// sources).
+    pub id: Uuid,
+    /// The current phase the migration is in.
+    pub state: MigrationState,
 }
 
+/// The statuses of the most recent attempts to live migrate into and out of
+/// this Propolis.
+///
+/// If a VM is initialized by migration in and then begins to migrate out, this
+/// structure will contain statuses for both migrations. This ensures that
+/// clients can always obtain the status of a successful migration in even after
+/// a migration out begins.
+///
+/// This structure only reports the status of the most recent migration in a
+/// single direction. That is, if a migration in or out fails, and a new
+/// migration attempt begins, the new migration's status replaces the old's.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct InstanceMigrateStatusResponse {
-    pub migration_id: Uuid,
-    pub state: MigrationState,
+    /// The status of the most recent attempt to initialize the current instance
+    /// via migration in, or `None` if the instance has never been a migration
+    /// target.
+    pub migration_in: Option<InstanceMigrationStatus>,
+    /// The status of the most recent attempt to migrate out of the current
+    /// instance, or `None` if the instance has never been a migration source.
+    pub migration_out: Option<InstanceMigrationStatus>,
 }
 
 #[derive(
@@ -140,7 +162,7 @@ pub struct InstanceStateMonitorRequest {
 pub struct InstanceStateMonitorResponse {
     pub gen: u64,
     pub state: InstanceState,
-    pub migration: Option<InstanceMigrateStatusResponse>,
+    pub migration: InstanceMigrateStatusResponse,
 }
 
 /// Requested state of an Instance.

@@ -15,7 +15,6 @@ use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
-use crate::migrate::MigrateError;
 use crate::serial::history_buffer::SerialHistoryOffset;
 use crate::serial::SerialTaskControlMessage;
 use dropshot::{
@@ -944,35 +943,19 @@ async fn instance_migrate_start(
 
 #[endpoint {
     method = GET,
-    path = "/instance/migrate/{migration_id}/status"
+    path = "/instance/migration-status"
 }]
 async fn instance_migrate_status(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    path_params: Path<api::InstanceMigrateStatusRequest>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
-    let migration_id = path_params.into_inner().migration_id;
     let ctx = rqctx.context();
     match &*ctx.services.vm.lock().await {
         VmControllerState::NotCreated => Err(not_created_error()),
         VmControllerState::Created(vm) => {
-            vm.migrate_status(migration_id).map_err(Into::into).map(|state| {
-                HttpResponseOk(api::InstanceMigrateStatusResponse {
-                    migration_id,
-                    state,
-                })
-            })
+            Ok(HttpResponseOk(vm.migrate_status()))
         }
         VmControllerState::Destroyed { state_watcher, .. } => {
-            let watcher = state_watcher.borrow();
-            match &watcher.migration {
-                None => Err((MigrateError::NoMigrationInProgress).into()),
-                Some(migration_status)
-                    if migration_status.migration_id == migration_id =>
-                {
-                    Ok(HttpResponseOk(migration_status.clone()))
-                }
-                Some(_) => Err((MigrateError::UuidMismatch).into()),
-            }
+            Ok(HttpResponseOk(state_watcher.borrow().migration.clone()))
         }
     }
 }

@@ -192,20 +192,9 @@
         }
       }
     },
-    "/instance/migrate/{migration_id}/status": {
+    "/instance/migration-status": {
       "get": {
         "operationId": "instance_migrate_status",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "migration_id",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "successful operation",
@@ -965,18 +954,49 @@
         ]
       },
       "InstanceMigrateStatusResponse": {
+        "description": "The statuses of the most recent attempts to live migrate into and out of this Propolis.\n\nIf a VM is initialized by migration in and then begins to migrate out, this structure will contain statuses for both migrations. This ensures that clients can always obtain the status of a successful migration in even after a migration out begins.\n\nThis structure only reports the status of the most recent migration in a single direction. That is, if a migration in or out fails, and a new migration attempt begins, the new migration's status replaces the old's.",
         "type": "object",
         "properties": {
-          "migration_id": {
+          "migration_in": {
+            "nullable": true,
+            "description": "The status of the most recent attempt to initialize the current instance via migration in, or `None` if the instance has never been a migration target.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrationStatus"
+              }
+            ]
+          },
+          "migration_out": {
+            "nullable": true,
+            "description": "The status of the most recent attempt to migrate out of the current instance, or `None` if the instance has never been a migration source.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceMigrationStatus"
+              }
+            ]
+          }
+        }
+      },
+      "InstanceMigrationStatus": {
+        "description": "The status of an individual live migration.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The ID of this migration, supplied either by the external migration requester (for targets) or the other side of the migration (for sources).",
             "type": "string",
             "format": "uuid"
           },
           "state": {
-            "$ref": "#/components/schemas/MigrationState"
+            "description": "The current phase the migration is in.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MigrationState"
+              }
+            ]
           }
         },
         "required": [
-          "migration_id",
+          "id",
           "state"
         ]
       },
@@ -1159,12 +1179,7 @@
             "minimum": 0
           },
           "migration": {
-            "nullable": true,
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
-              }
-            ]
+            "$ref": "#/components/schemas/InstanceMigrateStatusResponse"
           },
           "state": {
             "$ref": "#/components/schemas/InstanceState"
@@ -1172,6 +1187,7 @@
         },
         "required": [
           "gen",
+          "migration",
           "state"
         ]
       },

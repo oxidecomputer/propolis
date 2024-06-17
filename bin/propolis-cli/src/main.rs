@@ -518,12 +518,38 @@ async fn migrate_instance(
     .map(|(role, client, id)| {
         tokio::spawn(async move {
             loop {
-                let state = client
-                    .instance_migrate_status()
-                    .migration_id(migration_id)
-                    .send()
-                    .await?
-                    .state;
+                let state =
+                    client.instance_migrate_status().send().await?.into_inner();
+
+                let migration = if role == "src" {
+                    state.migration_out
+                } else {
+                    state.migration_in
+                };
+
+                // The destination should start reporting migration status as
+                // soon as the ensure request completes. The source may not
+                // have a migration status yet because the request from the
+                // destination needs to arrive first.
+                let Some(migration) = migration else {
+                    if role == "dst" {
+                        anyhow::bail!("dst instance's migration ID wasn't set");
+                    } else {
+                        println!("src hasn't received migration request yet");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                if migration.id != migration_id {
+                    anyhow::bail!(
+                        "{role} instance's migration ID is wrong: \
+                                  got {}, expected {migration_id}",
+                        migration.id
+                    );
+                }
+
+                let state = migration.state;
                 println!("{}({}) migration state={:?}", role, id, state);
                 if state == MigrationState::Finish {
                     return Ok::<_, anyhow::Error>(());
