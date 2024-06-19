@@ -14,7 +14,7 @@ pub use cpuid_profile_config::CpuidProfile;
 /// Configuration for the Propolis server.
 // NOTE: This is expected to change over time; portions of the hard-coded
 // configuration will likely become more dynamic.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Config {
     pub bootrom: PathBuf,
 
