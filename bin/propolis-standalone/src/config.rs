@@ -61,6 +61,9 @@ pub struct Main {
     /// Default: None, does not exit on reboot
     #[serde(default)]
     pub exit_on_reboot: Option<u8>,
+
+    /// Request bootrom override boot order using the devices specified
+    pub boot_order: Option<Vec<String>>,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally
