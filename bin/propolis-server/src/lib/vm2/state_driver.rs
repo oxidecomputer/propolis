@@ -124,6 +124,14 @@ impl InputQueue {
             )
         }
     }
+
+    fn notify_instance_state_change(
+        &self,
+        state: super::request_queue::InstanceStateChange,
+    ) {
+        let guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_instance_state_change(state);
+    }
 }
 
 impl guest_event::GuestEventHandler for InputQueue {
@@ -192,7 +200,7 @@ pub(super) struct StateDriver {
     input_queue: Arc<InputQueue>,
     external_state_tx: super::InstanceStateTx,
     paused: bool,
-    vcpu_tasks: Option<VcpuTasks>,
+    vcpu_tasks: Option<Box<dyn VcpuTaskController>>,
     vm_lifecycle: Option<Arc<dyn lifecycle_ops::VmLifecycle>>,
     migration_src_state: crate::migrate::source::PersistentState,
 }
@@ -237,7 +245,7 @@ impl StateDriver {
             return;
         }
 
-        self.run_loop();
+        self.run_loop().await;
     }
 
     fn update_external_state(&mut self, state: ExternalStateUpdate) {
@@ -404,7 +412,7 @@ impl StateDriver {
         })
     }
 
-    fn run_loop(mut self) {
+    async fn run_loop(mut self) {
         info!(self.log, "state driver launched");
 
         loop {
@@ -480,11 +488,42 @@ impl StateDriver {
             InstanceState::Rebooting,
         ));
 
-        self.vcpu_tasks
-            .as_mut()
-            .expect("running instance has vCPUs")
-            .pause_all();
+        // Reboot is implemented as a pause -> reset -> resume transition.
+        //
+        // First, pause the vCPUs and all devices so no partially-completed
+        // work is present.
+        self.vcpu_tasks().pause_all();
+        self.vm_lifecycle().pause_devices().await;
 
-        todo!("gjc");
+        // Reset all entities and the VM's bhyve state, then reset the vCPUs.
+        // The vCPU reset must come after the bhyve reset.
+        self.vm_lifecycle().reset_devices_and_machine();
+        self.reset_vcpus();
+
+        // Resume devices so they're ready to do more work, then resume vCPUs.
+        self.vm_lifecycle().resume_devices();
+        self.vcpu_tasks().resume_all();
+
+        // Notify other consumers that the instance successfully rebooted and is
+        // now back to Running.
+        self.input_queue.notify_instance_state_change(
+            super::request_queue::InstanceStateChange::Rebooted,
+        );
+        self.update_external_state(ExternalStateUpdate::Instance(
+            InstanceState::Running,
+        ));
+    }
+
+    fn reset_vcpus(&mut self) {
+        self.vcpu_tasks().new_generation();
+        self.vm_lifecycle.as_ref().unwrap().reset_vcpu_state();
+    }
+
+    fn vcpu_tasks(&mut self) -> &mut dyn VcpuTaskController {
+        self.vcpu_tasks.as_mut().unwrap().as_mut()
+    }
+
+    fn vm_lifecycle(&self) -> &dyn lifecycle_ops::VmLifecycle {
+        self.vm_lifecycle.as_ref().unwrap().as_ref()
     }
 }
