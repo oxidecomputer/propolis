@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::{serial::Serial, vm::VmControllerError};
 
 mod guest_event;
+mod migrate_commands;
 mod request_queue;
 mod state_driver;
 
@@ -77,19 +78,13 @@ pub(super) struct ActiveVm {
 
 impl Drop for ActiveVm {
     fn drop(&mut self) {
-        let guard = self.parent.state.write().unwrap();
-        let VmState::ActiveVm(active) =
-            std::mem::replace(&mut *guard, VmState::NoVm)
-        else {
-            panic!("oops");
-        };
-
+        let mut guard = self.parent.state.write().unwrap();
         std::mem::replace(
             &mut *guard,
             VmState::Defunct(DefunctVm {
-                external_state_rx: active.external_state_rx,
-                properties: active.properties,
-                spec: active.spec,
+                external_state_rx: self.external_state_rx.clone(),
+                properties: self.properties.clone(),
+                spec: self.spec.clone(),
             }),
         );
     }
@@ -120,8 +115,10 @@ impl Vm {
 
     pub(super) fn active_vm(&self) -> Option<Arc<ActiveVm>> {
         let guard = self.vm_state();
-        if let VmState::Active(weak) = guard {
+        if let VmState::Active(weak) = &*guard {
             weak.upgrade()
+        } else {
+            None
         }
     }
 
@@ -135,30 +132,18 @@ impl Vm {
         }
     }
 
-    fn make_active(&self, active: ActiveVm) {
+    fn make_active(&self, active: Arc<ActiveVm>) {
         let mut guard = self.state.write().unwrap();
         let old = std::mem::replace(&mut *guard, VmState::NoVm);
         match old {
             VmState::WaitingToStart => {
-                std::mem::replace(&mut *guard, VmState::Active(active));
+                std::mem::replace(
+                    &mut *guard,
+                    VmState::Active(Arc::downgrade(&active)),
+                );
             }
             _ => unreachable!(
                 "only a starting VM's state worker calls make_active"
-            ),
-        }
-    }
-
-    fn make_defunct(&self) {
-        let mut guard = self.state.write().unwrap();
-        let old = std::mem::replace(&mut *guard, VmState::NoVm);
-        match old {
-            VmState::Active(vm) => {
-                let ActiveVm { external_state_rx, properties, spec, .. } = vm;
-                let defunct = DefunctVm { external_state_rx, properties, spec };
-                std::mem::replace(&mut *guard, VmState::Defunct(defunct));
-            }
-            _ => unreachable!(
-                "only an active VM's state worker calls make_defunct"
             ),
         }
     }
