@@ -110,6 +110,7 @@ pub struct MachineInitializerState {
 pub struct MachineInitializer<'a> {
     pub(crate) log: slog::Logger,
     pub(crate) machine: &'a Machine,
+    // TODO(gjc) clean up types here
     pub(crate) devices: DeviceMap,
     pub(crate) block_backends: BlockBackendMap,
     pub(crate) crucible_backends: CrucibleBackendMap,

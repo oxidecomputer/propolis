@@ -87,6 +87,8 @@ impl CrucibleBackend {
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
+        // TODO(gjc) don't call `block_on` anymore, this is going to get called
+        // from an async context now
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
             CrucibleBackend::_create(

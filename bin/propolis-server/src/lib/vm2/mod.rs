@@ -7,9 +7,11 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock, RwLockReadGuard, Weak},
+    path::PathBuf,
+    sync::{Arc, Mutex, RwLock, RwLockReadGuard, Weak},
 };
 
+use oximeter::types::ProducerRegistry;
 use propolis::{
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     vmm::Machine,
@@ -23,6 +25,7 @@ use uuid::Uuid;
 use crate::{serial::Serial, vm::VmControllerError};
 
 mod guest_event;
+mod lifecycle_ops;
 mod migrate_commands;
 mod request_queue;
 mod state_driver;
@@ -54,6 +57,27 @@ pub(crate) struct Vm {
     state: RwLock<VmState>,
 }
 
+struct VmObjects {
+    machine: Machine,
+    lifecycle_components: LifecycleMap,
+    block_backends: BlockBackendMap,
+    crucible_backends: CrucibleBackendMap,
+    com1: Arc<Serial<LpcUart>>,
+    framebuffer: Option<Arc<RamFb>>,
+    ps2ctrl: Arc<PS2Ctrl>,
+}
+
+impl VmObjects {
+    fn for_each_device(
+        &self,
+        mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
+    ) {
+        for (name, dev) in self.vm_objects.devices.iter() {
+            func(name, dev);
+        }
+    }
+}
+
 /// The state stored in a [`Vm`] when there is an actual underlying virtual
 /// machine.
 pub(super) struct ActiveVm {
@@ -65,43 +89,39 @@ pub(super) struct ActiveVm {
     properties: InstanceProperties,
     spec: InstanceSpecV0,
 
-    machine: Machine,
-    lifecycle_components: LifecycleMap,
-    block_backends: BlockBackendMap,
-    crucible_backends: CrucibleBackendMap,
-    com1: Arc<Serial<LpcUart>>,
-    framebuffer: Option<Arc<RamFb>>,
-    ps2ctrl: Arc<PS2Ctrl>,
-    migration_src_state:
-        tokio::sync::Mutex<crate::migrate::source::PersistentState>,
+    objects: VmObjects,
 }
 
 impl Drop for ActiveVm {
     fn drop(&mut self) {
         let mut guard = self.parent.state.write().unwrap();
-        std::mem::replace(
-            &mut *guard,
-            VmState::Defunct(DefunctVm {
-                external_state_rx: self.external_state_rx.clone(),
-                properties: self.properties.clone(),
-                spec: self.spec.clone(),
-            }),
-        );
+        *guard = VmState::Defunct(DefunctVm {
+            external_state_rx: self.external_state_rx.clone(),
+            properties: self.properties.clone(),
+            spec: self.spec.clone(),
+        });
     }
 }
 
-pub struct DefunctVm {
+struct DefunctVm {
     external_state_rx: InstanceStateRx,
     properties: InstanceProperties,
     spec: InstanceSpecV0,
 }
 
 #[allow(clippy::large_enum_variant)]
-pub enum VmState {
+enum VmState {
     NoVm,
     WaitingToStart,
     Active(Weak<ActiveVm>),
     Defunct(DefunctVm),
+}
+
+pub(super) struct EnsureOptions {
+    pub toml_config: Arc<crate::server::VmTomlConfig>,
+    pub use_reservoir: bool,
+    pub oximeter_registry: Option<ProducerRegistry>,
+    pub nexus_client: Option<nexus_client::Client>,
 }
 
 impl Vm {
@@ -137,10 +157,7 @@ impl Vm {
         let old = std::mem::replace(&mut *guard, VmState::NoVm);
         match old {
             VmState::WaitingToStart => {
-                std::mem::replace(
-                    &mut *guard,
-                    VmState::Active(Arc::downgrade(&active)),
-                );
+                *guard = VmState::Active(Arc::downgrade(&active))
             }
             _ => unreachable!(
                 "only a starting VM's state worker calls make_active"
@@ -152,16 +169,18 @@ impl Vm {
         self: &Arc<Self>,
         log: slog::Logger,
         ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
+        options: EnsureOptions,
     ) -> anyhow::Result<(), VmError> {
         // Take the lock for writing, since in the common case this call will be
         // creating a new VM and there's no easy way to upgrade from a reader
         // lock to a writer lock.
-        let guard = self.state.write().unwrap();
+        let mut guard = self.state.write().unwrap();
 
-        //
         if matches!(*guard, VmState::WaitingToStart | VmState::Active(_)) {
             return Err(VmError::AlreadyInitialized);
         }
+
+        *guard = VmState::WaitingToStart;
 
         let (external_tx, external_rx) =
             tokio::sync::watch::channel(InstanceStateMonitorResponse {
@@ -184,8 +203,8 @@ impl Vm {
             external_tx,
         );
 
-        let _ = tokio::spawn(async move {
-            state_driver.run(ensure_request, external_rx).await
+        tokio::spawn(async move {
+            state_driver.run(ensure_request, options, external_rx).await
         });
 
         Ok(())
