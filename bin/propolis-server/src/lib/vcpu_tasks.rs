@@ -30,7 +30,7 @@ pub struct VcpuTasks {
 }
 
 #[cfg_attr(test, mockall::automock)]
-pub(crate) trait VcpuTaskController {
+pub(crate) trait VcpuTaskController: Send {
     fn new_generation(&self);
     fn pause_all(&mut self);
     fn resume_all(&mut self);
@@ -40,7 +40,7 @@ pub(crate) trait VcpuTaskController {
 impl VcpuTasks {
     pub(crate) fn new(
         machine: &propolis::Machine,
-        event_handler: Arc<super::vm::SharedVmState>,
+        event_handler: Arc<dyn super::vm2::guest_event::GuestEventHandler>,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
         let generation = Arc::new(AtomicUsize::new(0));
@@ -72,7 +72,7 @@ impl VcpuTasks {
     fn vcpu_loop(
         vcpu: &Vcpu,
         task: propolis::tasks::TaskHdl,
-        event_handler: Arc<super::vm::SharedVmState>,
+        event_handler: Arc<dyn super::vm2::guest_event::GuestEventHandler>,
         generation: Arc<AtomicUsize>,
         log: slog::Logger,
     ) {
