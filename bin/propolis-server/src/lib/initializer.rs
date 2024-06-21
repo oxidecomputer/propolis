@@ -186,7 +186,7 @@ impl<'a> MachineInitializer<'a> {
 
     pub fn initialize_chipset(
         &mut self,
-        event_handler: &Arc<dyn super::vm::ChipsetEventHandler>,
+        event_handler: &Arc<dyn super::vm2::guest_event::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
         for (name, bridge) in &self.spec.devices.pci_pci_bridges {

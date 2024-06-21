@@ -7,8 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
-    sync::{Arc, Mutex, RwLock, RwLockReadGuard, Weak},
+    sync::{Arc, RwLock, RwLockReadGuard, Weak},
 };
 
 use oximeter::types::ProducerRegistry;
@@ -20,11 +19,10 @@ use propolis_api_types::{
     instance_spec::v0::InstanceSpecV0, InstanceProperties,
     InstanceStateMonitorResponse,
 };
-use uuid::Uuid;
 
-use crate::{serial::Serial, vm::VmControllerError};
+use crate::serial::Serial;
 
-mod guest_event;
+pub(crate) mod guest_event;
 mod lifecycle_ops;
 mod migrate_commands;
 mod request_queue;

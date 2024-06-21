@@ -20,7 +20,7 @@ use crate::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
     migrate::MigrateRole,
-    vcpu_tasks::{VcpuTaskController, VcpuTasks},
+    vcpu_tasks::VcpuTaskController,
 };
 
 use super::{
@@ -129,7 +129,7 @@ impl InputQueue {
         &self,
         state: super::request_queue::InstanceStateChange,
     ) {
-        let guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap();
         guard.external_requests.notify_instance_state_change(state);
     }
 }
@@ -301,6 +301,7 @@ impl StateDriver {
                 let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
                 let active_vm = Arc::new(super::ActiveVm {
                     parent: self.parent_vm.clone(),
+                    log: self.log.clone(),
                     state_driver_queue: self.input_queue.clone(),
                     external_state_rx,
                     properties: request.properties,
@@ -386,12 +387,12 @@ impl StateDriver {
         init.initialize_storage_devices(&chipset, options.nexus_client)?;
         let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
         init.initialize_cpus()?;
-        let vcpu_tasks = crate::vcpu_tasks::VcpuTasks::new(
+        let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
-            &(self.input_queue.clone()
-                as Arc<dyn super::guest_event::GuestEventHandler>),
+            self.input_queue.clone()
+                as Arc<dyn super::guest_event::GuestEventHandler>,
             self.log.new(slog::o!("component" => "vcpu_tasks")),
-        )?;
+        )?);
 
         let MachineInitializer {
             devices,
@@ -400,7 +401,7 @@ impl StateDriver {
             ..
         } = init;
 
-        self.vcpu_tasks = Some(vcpu_tasks);
+        self.vcpu_tasks = Some(vcpu_tasks as Box<dyn VcpuTaskController>);
         Ok(super::VmObjects {
             machine,
             lifecycle_components: devices,
@@ -428,7 +429,6 @@ impl StateDriver {
                 }
             };
 
-            let outcome = self.handle_event(event).await;
             info!(self.log, "state driver handled event"; "outcome" => ?outcome);
             if outcome == HandleEventOutcome::Exit {
                 break;
@@ -445,7 +445,7 @@ impl StateDriver {
         match event {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
-                self.do_halt();
+                self.do_halt().await;
                 HandleEventOutcome::Exit
             }
             GuestEvent::VcpuSuspendReset(_when) => {
@@ -463,7 +463,7 @@ impl StateDriver {
             }
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
-                self.do_halt();
+                self.do_halt().await;
                 HandleEventOutcome::Exit
             }
             GuestEvent::ChipsetReset => {
@@ -474,11 +474,23 @@ impl StateDriver {
         }
     }
 
-    fn handle_external_request(
+    async fn handle_external_request(
         &mut self,
         request: super::request_queue::ExternalRequest,
     ) -> HandleEventOutcome {
-        todo!("gjc");
+        match request {
+            super::request_queue::ExternalRequest::MigrateAsSource {
+                ..
+            } => todo!("gjc"),
+            super::request_queue::ExternalRequest::Reboot => {
+                self.do_reboot();
+                HandleEventOutcome::Continue
+            }
+            super::request_queue::ExternalRequest::Stop => {
+                self.do_halt();
+                HandleEventOutcome::Exit
+            }
+        }
     }
 
     async fn do_reboot(&mut self) {
@@ -514,9 +526,64 @@ impl StateDriver {
         ));
     }
 
+    async fn do_halt(&mut self) {
+        info!(self.log, "stopping instance");
+        self.update_external_state(ExternalStateUpdate::Instance(
+            InstanceState::Stopping,
+        ));
+
+        // Entities expect to be paused before being halted. Note that the VM
+        // may be paused already if it is being torn down after a successful
+        // migration out.
+        if !self.paused {
+            self.pause().await;
+        }
+
+        self.vcpu_tasks().exit_all();
+        self.vm_lifecycle().halt_devices();
+        self.publish_steady_state(InstanceState::Stopped);
+    }
+
+    async fn pause(&mut self) {
+        assert!(!self.paused);
+        self.vcpu_tasks().pause_all();
+        self.vm_lifecycle().pause_devices().await;
+        self.vm_lifecycle().pause_vm();
+        self.paused = true;
+    }
+
+    fn resume(&mut self) {
+        assert!(self.paused);
+        self.vm_lifecycle().resume_vm();
+        self.vm_lifecycle().resume_devices();
+        self.vcpu_tasks().resume_all();
+        self.paused = false;
+    }
+
     fn reset_vcpus(&mut self) {
         self.vcpu_tasks().new_generation();
         self.vm_lifecycle.as_ref().unwrap().reset_vcpu_state();
+    }
+
+    fn publish_steady_state(&mut self, state: InstanceState) {
+        let change = match state {
+            InstanceState::Running => {
+                super::request_queue::InstanceStateChange::StartedRunning
+            }
+            InstanceState::Stopped => {
+                super::request_queue::InstanceStateChange::Stopped
+            }
+            InstanceState::Failed => {
+                super::request_queue::InstanceStateChange::Failed
+            }
+            _ => panic!(
+                "Called publish_steady_state on non-terminal state {:?}",
+                state
+            ),
+        };
+
+        self.input_queue.notify_instance_state_change(change);
+        self.update_external_state(ExternalStateUpdate::Instance(state));
     }
 
     fn vcpu_tasks(&mut self) -> &mut dyn VcpuTaskController {
