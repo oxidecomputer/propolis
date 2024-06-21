@@ -38,6 +38,12 @@ impl BusNum {
         self.0
     }
 }
+
+impl From<BusNum> for u8 {
+    fn from(value: BusNum) -> Self {
+        value.get()
+    }
+}
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct DevNum(u8);
 impl DevNum {
@@ -68,6 +74,13 @@ impl DevNum {
         self.0
     }
 }
+
+impl From<DevNum> for u8 {
+    fn from(value: DevNum) -> Self {
+        value.get()
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd)]
 pub struct FuncNum(u8);
 impl FuncNum {
@@ -96,6 +109,12 @@ impl FuncNum {
     }
     pub const fn get(&self) -> u8 {
         self.0
+    }
+}
+
+impl From<FuncNum> for u8 {
+    fn from(value: FuncNum) -> Self {
+        value.get()
     }
 }
 

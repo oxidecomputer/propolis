@@ -23,6 +23,9 @@ memory = 1024
 # Exit propolis-standalone process with <code> if instance reboots (default: unset)
 # exit_on_reboot = <code>
 
+# Override boot order (via communication to OVMF bootrom)
+# boot_order = ["net0", "block0"]
+
 [block_dev.alpine_iso]
 type = "file"
 path = "/path/to/alpine-extended-3.12.0-x86_64.iso"

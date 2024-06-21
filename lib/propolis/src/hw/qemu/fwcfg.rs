@@ -91,6 +91,7 @@ pub enum LegacyX86Id {
     HpetData = 0x8004,
 }
 
+#[derive(Debug)]
 pub enum Entry {
     FileDir,
     RamFb,
@@ -1042,5 +1043,100 @@ mod test {
             pio_read::<u16>(&dev, FW_CFG_IOP_SELECTOR)
         );
         assert_eq!(0, pio_read::<u32>(&dev, FW_CFG_IOP_DMA_HI));
+    }
+}
+
+pub mod formats {
+    use super::Entry;
+    use crate::hw::pci;
+
+    /// Collect one or more device elections for use in generating a boot order
+    /// `fw_cfg` entry, suitable for consumption by OVMF bootrom.
+    pub struct BootOrder(Vec<String>);
+    impl BootOrder {
+        pub fn new() -> Self {
+            Self(Vec::new())
+        }
+
+        /// Add a generic disk
+        pub fn add_disk(&mut self, loc: pci::BusLocation) {
+            // The OVMF logic is looking for "scsi"
+            let pci_path = Self::format_pci(loc, "scsi");
+            self.0.push(format!("{pci_path}/disk@0,0"));
+        }
+
+        /// Add generic PCI device
+        ///
+        /// For example, one might add an entry for an ethernet NIC as such:
+        /// ```
+        /// # use propolis::hw::qemu::fwcfg::formats::BootOrder;
+        /// # use propolis::hw::pci::BusLocation;
+        /// # let mut bootorder = BootOrder::new();
+        /// # let bus_loc = BusLocation::new(1, 0).unwrap();
+        /// bootorder.add_pci(bus_loc, "ethernet");
+        /// ```
+        pub fn add_pci(&mut self, loc: pci::BusLocation, kind: &str) {
+            self.0.push(Self::format_pci(loc, kind));
+        }
+
+        /// Add an NVMe disk.  This assumes namespace 1, as our NVMe emulation
+        /// does not currently support multiple namespaces in a device.
+        pub fn add_nvme(&mut self, loc: pci::BusLocation, eui: u64) {
+            // The decoding in OVMF demands that the bootorder entry identify
+            // nvme devices as vendor=0x8086 and device=5845.  While that
+            // hardcoded logic exists, we must encode our entry to match, even
+            // when the device in question may bear different identity info.
+            let pci_path = Self::format_pci(loc, "pci8086,5845");
+            let ns = 1;
+            self.0.push(format!("{pci_path}/namespace@{ns:x},{eui:x}"));
+        }
+
+        /// Render the contained boot order selections into a `fw_cfg` [Entry]
+        pub fn finish(self) -> Entry {
+            let Self(mut entries) = self;
+            entries.push("HALT\0".to_owned());
+
+            Entry::Bytes(entries.join("\n").to_string().into())
+        }
+
+        fn format_pci(loc: pci::BusLocation, name: &str) -> String {
+            let (slot, func): (u8, u8) = (loc.dev.into(), loc.func.into());
+            format!("/pci@i0cf8/{name}@{slot:x},{func:x}")
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::BootOrder;
+        use crate::hw::pci::BusLocation;
+        use crate::hw::qemu::fwcfg;
+
+        #[test]
+        fn basic() {
+            let mut bo = BootOrder::new();
+
+            bo.add_disk(BusLocation::new_unchecked(1, 2));
+            bo.add_pci(BusLocation::new_unchecked(10, 3), "ethernet");
+            bo.add_nvme(BusLocation::new_unchecked(31, 4), 0x123456789abcd);
+
+            let raw = match bo.finish() {
+                fwcfg::Entry::Bytes(v) => v,
+                other => {
+                    panic!("Unexpected entry type: {other:?}");
+                }
+            };
+            let expected = [
+                "/pci@i0cf8/scsi@1,2/disk@0,0",
+                "/pci@i0cf8/ethernet@a,3",
+                "/pci@i0cf8/pci8086,5845@1f,4/namespace@1,123456789abcd",
+                // Trailing NUL is load-bearing
+                "HALT\0",
+            ];
+            let entries = std::str::from_utf8(&raw)
+                .expect("bootorder is valid utf8")
+                .split('\n')
+                .collect::<Vec<_>>();
+            assert_eq!(&expected[..], &entries[..]);
+        }
     }
 }

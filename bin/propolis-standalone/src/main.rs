@@ -952,6 +952,42 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     Ok(smb_tables.commit())
 }
 
+fn generate_bootorder(config: &config::Config) -> anyhow::Result<fwcfg::Entry> {
+    let names = config.main.boot_order.as_ref().unwrap();
+
+    let mut order = fwcfg::formats::BootOrder::new();
+    for name in names.iter() {
+        let dev = config
+            .devices
+            .get(name)
+            .ok_or(anyhow::anyhow!("Could not find device: {name}"))?;
+
+        let get_pci_path = || {
+            dev.options
+                .get("pci-path")
+                .and_then(|v| v.as_str())
+                .and_then(config::parse_bdf)
+                .expect("PCI device has valid BDF")
+        };
+
+        match dev.driver.as_str() {
+            "pci-virtio-block" => {
+                order.add_disk(get_pci_path().location);
+            }
+            "pci-nvme" => {
+                order.add_nvme(get_pci_path().location, 0);
+            }
+            driver if driver.starts_with("pci-") => {
+                order.add_pci(get_pci_path().location, "device");
+            }
+            dev => {
+                anyhow::bail!("Unsupported boot device type: {dev}");
+            }
+        }
+    }
+    Ok(order.finish())
+}
+
 fn setup_instance(
     config: config::Config,
     from_restore: bool,
@@ -1239,6 +1275,7 @@ fn setup_instance(
             rom_version: config
                 .main
                 .bootrom_version
+                .clone()
                 .unwrap_or_else(|| "v0.0.1-alpha 1".to_string()),
             num_cpus: cpus,
             cpuid_ident,
@@ -1257,6 +1294,12 @@ fn setup_instance(
             fwcfg::Entry::Bytes(entry_point),
         )
         .unwrap();
+
+    // It is "safe" to generate bootorder (if requested) now, given that PCI
+    // device configuration has been validated by preceding logic
+    if config.main.boot_order.is_some() {
+        fwcfg.insert_named("bootorder", generate_bootorder(&config)?).unwrap();
+    }
 
     fwcfg.attach(pio, &machine.acc_mem);
 
