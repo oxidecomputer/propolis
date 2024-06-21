@@ -72,9 +72,23 @@ impl VmObjects {
         &self,
         mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
     ) {
-        for (name, dev) in self.vm_objects.devices.iter() {
+        for (name, dev) in self.lifecycle_components.iter() {
             func(name, dev);
         }
+    }
+
+    fn for_each_device_fallible<E>(
+        &self,
+        mut func: impl FnMut(
+            &str,
+            &Arc<dyn propolis::common::Lifecycle>,
+        ) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        for (name, dev) in self.lifecycle_components.iter() {
+            func(name, dev)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -82,6 +96,7 @@ impl VmObjects {
 /// machine.
 pub(super) struct ActiveVm {
     parent: Arc<Vm>,
+    log: slog::Logger,
 
     state_driver_queue: Arc<state_driver::InputQueue>,
     external_state_rx: InstanceStateRx,
