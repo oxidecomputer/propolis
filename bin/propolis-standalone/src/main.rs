@@ -356,22 +356,26 @@ impl Instance {
         // Drive block backends through their necessary states too
         match state {
             State::Run if first_boot => {
-                for (_name, be) in guard.inventory.block.iter() {
-                    be.start().expect("blockdev start succeeds");
-                }
+                tokio::runtime::Handle::current().block_on(async {
+                    for (_name, be) in guard.inventory.block.iter() {
+                        be.start().await.expect("blockdev start succeeds");
+                    }
+                });
             }
             State::Halt => {
-                for (name, be) in guard.inventory.block.iter() {
-                    be.stop();
-                    if let Err(err) = be.detach() {
-                        slog::error!(
-                            log,
-                            "Error during detach of block backend {}: {:?}",
-                            name,
-                            err
-                        );
+                tokio::runtime::Handle::current().block_on(async {
+                    for (name, be) in guard.inventory.block.iter() {
+                        be.stop().await;
+                        if let Err(err) = be.detach() {
+                            slog::error!(
+                                log,
+                                "Error during detach of block backend {}: {:?}",
+                                name,
+                                err
+                            );
+                        }
                     }
-                }
+                });
             }
             _ => {}
         }

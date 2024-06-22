@@ -9,7 +9,7 @@ use crate::intr_pins::IntrPin;
 
 pub mod i440fx;
 
-pub trait Chipset {
+pub trait Chipset: Send + Sync {
     fn pci_attach(
         &self,
         bdf: Bdf,

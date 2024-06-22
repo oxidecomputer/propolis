@@ -18,6 +18,7 @@ use crate::util::ioctl;
 use crate::vmm::{MappingExt, MemCtx};
 
 use anyhow::Context;
+use futures::future::BoxFuture;
 
 // XXX: completely arb for now
 const MAX_WORKERS: usize = 32;
@@ -219,19 +220,25 @@ impl block::Backend for FileBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-    fn start(&self) -> anyhow::Result<()> {
-        self.state.attachment.start();
-        if let Err(e) = self.spawn_workers() {
+
+    fn start(&self) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async {
+            self.state.attachment.start();
+            if let Err(e) = self.spawn_workers() {
+                self.state.attachment.stop();
+                self.workers.block_until_joined();
+                Err(e).context("failure while spawning workers")
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn stop(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {
             self.state.attachment.stop();
             self.workers.block_until_joined();
-            Err(e).context("failure while spawning workers")
-        } else {
-            Ok(())
-        }
-    }
-    fn stop(&self) {
-        self.state.attachment.stop();
-        self.workers.block_until_joined();
+        })
     }
 }
 

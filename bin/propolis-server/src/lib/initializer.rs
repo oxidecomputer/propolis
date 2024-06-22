@@ -372,7 +372,7 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn create_storage_backend_from_spec(
+    async fn create_storage_backend_from_spec(
         &self,
         backend_spec: &instance_spec::v0::StorageBackendV0,
         backend_name: &str,
@@ -410,7 +410,8 @@ impl<'a> MachineInitializer<'a> {
                     self.log.new(
                         slog::o!("component" => format!("crucible-{cru_id}")),
                     ),
-                )?;
+                )
+                .await?;
 
                 let crucible = Some((be.get_uuid()?, be.clone()));
                 Ok(StorageBackendInstance { be, crucible })
@@ -481,7 +482,7 @@ impl<'a> MachineInitializer<'a> {
     ///
     /// On success, returns a map from Crucible backend IDs to Crucible
     /// backends.
-    pub fn initialize_storage_devices(
+    pub async fn initialize_storage_devices(
         &mut self,
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
@@ -538,7 +539,8 @@ impl<'a> MachineInitializer<'a> {
                     backend_spec,
                     backend_name,
                     &nexus_client,
-                )?;
+                )
+                .await?;
 
             self.block_backends.insert(backend_name.clone(), backend.clone());
             match device_interface {
