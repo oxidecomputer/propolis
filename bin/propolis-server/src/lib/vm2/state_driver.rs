@@ -384,7 +384,7 @@ impl StateDriver {
         #[cfg(feature = "falcon")]
         init.initialize_9pfs(&chipset)?;
 
-        init.initialize_storage_devices(&chipset, options.nexus_client)?;
+        init.initialize_storage_devices(&chipset, options.nexus_client).await?;
         let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
         init.initialize_cpus()?;
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(

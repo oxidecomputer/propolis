@@ -13,6 +13,7 @@ use crate::vmm::{MemCtx, SubMapping};
 
 mod file;
 pub use file::FileBackend;
+use futures::future::BoxFuture;
 
 #[cfg(feature = "crucible")]
 mod crucible;
@@ -244,7 +245,7 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// Spawning of any tasks required to do such request processing can be done
     /// as part of this start-up.
-    fn start(&self) -> anyhow::Result<()>;
+    fn start(&self) -> BoxFuture<'_, anyhow::Result<()>>;
 
     /// Stop attempting to process new [Request]s from [Device] (if attached)
     ///
@@ -253,7 +254,7 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// If any tasks were spawned as part of [Backend::start()], they should be
     /// brought to rest as part of this call.
-    fn stop(&self);
+    fn stop(&self) -> BoxFuture<'_, ()>;
 
     /// Attempt to detach from associated [Device]
     ///

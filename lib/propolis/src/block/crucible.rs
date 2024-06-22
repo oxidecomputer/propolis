@@ -16,6 +16,7 @@ use crucible::{
     BlockIO, Buffer, CrucibleError, ReplaceResult, SnapshotDetails, Volume,
 };
 use crucible_client_types::VolumeConstructionRequest;
+use futures::future::BoxFuture;
 use oximeter::types::ProducerRegistry;
 use slog::{error, info};
 use thiserror::Error;
@@ -80,26 +81,21 @@ impl WorkerState {
 }
 
 impl CrucibleBackend {
-    pub fn create(
+    pub async fn create(
         request: VolumeConstructionRequest,
         opts: block::BackendOpts,
         producer_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        // TODO(gjc) don't call `block_on` anymore, this is going to get called
-        // from an async context now
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move {
-            CrucibleBackend::_create(
-                request,
-                opts,
-                producer_registry,
-                nexus_client,
-                log,
-            )
-            .await
-        })
+        CrucibleBackend::_create(
+            request,
+            opts,
+            producer_registry,
+            nexus_client,
+            log,
+        )
+        .await
         .map_err(CrucibleError::into)
     }
 
@@ -178,42 +174,41 @@ impl CrucibleBackend {
 
     /// Create Crucible backend using the in-memory volume backend, rather than
     /// "real" Crucible downstairs instances.
-    pub fn create_mem(
+    pub async fn create_mem(
         size: u64,
         opts: block::BackendOpts,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move {
-            let block_size = u64::from(opts.block_size.ok_or_else(|| {
-                CrucibleError::GenericError(
-                    "block_size is required parameter".into(),
-                )
-            })?);
-            // Allocate and construct the volume.
-            let mem_disk = Arc::new(crucible::InMemoryBlockIO::new(
-                Uuid::new_v4(),
-                block_size,
-                size as usize,
-            ));
-            let mut volume = Volume::new(block_size, log);
-            volume.add_subvolume(mem_disk).await?;
+        let block_size = u64::from(opts.block_size.ok_or_else(|| {
+            CrucibleError::GenericError(
+                "block_size is required parameter".into(),
+            )
+        })?);
+        // Allocate and construct the volume.
+        let mem_disk = Arc::new(crucible::InMemoryBlockIO::new(
+            Uuid::new_v4(),
+            block_size,
+            size as usize,
+        ));
+        let mut volume = Volume::new(block_size, log);
+        volume
+            .add_subvolume(mem_disk)
+            .await
+            .map_err(|e| std::io::Error::from(e))?;
 
-            Ok(Arc::new(CrucibleBackend {
-                state: Arc::new(WorkerState {
-                    attachment: block::BackendAttachment::new(),
-                    volume,
-                    info: block::DeviceInfo {
-                        block_size: block_size as u32,
-                        total_size: size / block_size,
-                        read_only: opts.read_only.unwrap_or(false),
-                    },
-                    skip_flush: opts.skip_flush.unwrap_or(false),
-                }),
-                workers: TaskGroup::new(),
-            }))
-        })
-        .map_err(CrucibleError::into)
+        Ok(Arc::new(CrucibleBackend {
+            state: Arc::new(WorkerState {
+                attachment: block::BackendAttachment::new(),
+                volume,
+                info: block::DeviceInfo {
+                    block_size: block_size as u32,
+                    total_size: size / block_size,
+                    read_only: opts.read_only.unwrap_or(false),
+                },
+                skip_flush: opts.skip_flush.unwrap_or(false),
+            }),
+            workers: TaskGroup::new(),
+        }))
     }
 
     // Communicate to Nexus that we can remove the read only parent for
@@ -276,22 +271,24 @@ impl CrucibleBackend {
             .map_err(CrucibleError::into)
     }
 
-    fn spawn_workers(&self) {
+    async fn spawn_workers(&self) {
         // TODO: make this tunable?
         let worker_count = 8;
-        self.workers.extend((0..worker_count).map(|n| {
-            let worker_state = self.state.clone();
-            let worker_acc = self
-                .state
-                .attachment
-                .accessor_mem(|acc_mem| {
-                    acc_mem.child(Some(format!("crucible worker {n}")))
+        self.workers
+            .extend((0..worker_count).map(|n| {
+                let worker_state = self.state.clone();
+                let worker_acc = self
+                    .state
+                    .attachment
+                    .accessor_mem(|acc_mem| {
+                        acc_mem.child(Some(format!("crucible worker {n}")))
+                    })
+                    .expect("backend is attached");
+                tokio::spawn(async move {
+                    worker_state.process_loop(worker_acc).await
                 })
-                .expect("backend is attached");
-            tokio::spawn(
-                async move { worker_state.process_loop(worker_acc).await },
-            )
-        }))
+            }))
+            .await;
     }
 
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
@@ -306,17 +303,19 @@ impl block::Backend for CrucibleBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-    fn start(&self) -> anyhow::Result<()> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move { self.state.volume.activate().await })?;
-
-        self.state.attachment.start();
-        self.spawn_workers();
-        Ok(())
+    fn start(&self) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async {
+            self.state.volume.activate().await?;
+            self.state.attachment.start();
+            self.spawn_workers().await;
+            Ok(())
+        })
     }
-    fn stop(&self) {
-        self.state.attachment.stop();
-        self.workers.block_until_joined();
+    fn stop(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {
+            self.state.attachment.stop();
+            self.workers.block_until_joined().await;
+        })
     }
 }
 

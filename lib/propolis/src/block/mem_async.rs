@@ -7,6 +7,8 @@ use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
+
 use crate::accessors::MemAccessor;
 use crate::block;
 use crate::tasks::TaskGroup;
@@ -141,20 +143,22 @@ impl MemAsyncBackend {
         }))
     }
 
-    fn spawn_workers(&self) {
-        self.workers.extend((0..self.worker_count.get()).map(|n| {
-            let worker_state = self.work_state.clone();
-            let worker_acc = self
-                .work_state
-                .attachment
-                .accessor_mem(|acc_mem| {
-                    acc_mem.child(Some(format!("worker {n}")))
+    async fn spawn_workers(&self) {
+        self.workers
+            .extend((0..self.worker_count.get()).map(|n| {
+                let worker_state = self.work_state.clone();
+                let worker_acc = self
+                    .work_state
+                    .attachment
+                    .accessor_mem(|acc_mem| {
+                        acc_mem.child(Some(format!("worker {n}")))
+                    })
+                    .expect("backend is attached");
+                tokio::spawn(async move {
+                    worker_state.processing_loop(worker_acc).await
                 })
-                .expect("backend is attached");
-            tokio::spawn(async move {
-                worker_state.processing_loop(worker_acc).await
-            })
-        }))
+            }))
+            .await;
     }
 }
 
@@ -209,17 +213,23 @@ impl block::Backend for MemAsyncBackend {
     fn info(&self) -> block::DeviceInfo {
         self.work_state.info
     }
+
     fn attachment(&self) -> &block::BackendAttachment {
         &self.work_state.attachment
     }
-    fn start(&self) -> anyhow::Result<()> {
-        self.work_state.attachment.start();
-        self.spawn_workers();
-        Ok(())
+
+    fn start(&self) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async {
+            self.work_state.attachment.start();
+            self.spawn_workers().await;
+            Ok(())
+        })
     }
 
-    fn stop(&self) {
-        self.work_state.attachment.stop();
-        self.workers.block_until_joined();
+    fn stop(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {
+            self.work_state.attachment.stop();
+            self.workers.block_until_joined().await;
+        })
     }
 }

@@ -7,7 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures::{future::BoxFuture, stream::FuturesUnordered, Future, StreamExt};
+use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use slog::{error, info};
 
 /// Commands that the VM state driver can invoke on its active VM to pause,
@@ -35,13 +35,11 @@ pub(super) trait VmLifecycle: Send + Sync {
     fn reset_devices_and_machine(&self);
 
     /// Sends each device (and backend) a start request.
-    fn start_devices(&self) -> anyhow::Result<()>;
+    fn start_devices(&self) -> BoxFuture<'_, anyhow::Result<()>>;
 
     /// Sends each device a pause request. Returns a future that can be awaited
     /// to wait for all pause requests to complete.
-    fn pause_devices(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+    fn pause_devices(&self) -> BoxFuture<'_, ()>;
 
     /// Sends each device a resume request.
     fn resume_devices(&self);
@@ -73,30 +71,30 @@ impl VmLifecycle for super::ActiveVm {
         self.objects.machine.reinitialize().unwrap();
     }
 
-    fn start_devices(&self) -> anyhow::Result<()> {
-        self.objects.for_each_device_fallible(|name, dev| {
-            info!(self.log, "sending startup complete to {}", name);
-            let res = dev.start();
-            if let Err(e) = &res {
-                error!(self.log, "startup failed for {}: {:?}", name, e);
-            }
-            res
-        })?;
+    fn start_devices(&self) -> BoxFuture<'_, anyhow::Result<()>> {
+        Box::pin(async {
+            self.objects.for_each_device_fallible(|name, dev| {
+                info!(self.log, "sending startup complete to {}", name);
+                let res = dev.start();
+                if let Err(e) = &res {
+                    error!(self.log, "startup failed for {}: {:?}", name, e);
+                }
+                res
+            })?;
 
-        for (name, backend) in self.objects.block_backends.iter() {
-            info!(self.log, "starting block backend {}", name);
-            let res = backend.start();
-            if let Err(e) = &res {
-                error!(self.log, "Startup failed for {}: {:?}", name, e);
-                return res;
+            for (name, backend) in self.objects.block_backends.iter() {
+                info!(self.log, "starting block backend {}", name);
+                let res = backend.start().await;
+                if let Err(e) = &res {
+                    error!(self.log, "Startup failed for {}: {:?}", name, e);
+                    return res;
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn pause_devices(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+    fn pause_devices(&self) -> BoxFuture<'_, ()> {
         self.objects.for_each_device(|name, dev| {
             info!(self.log, "sending pause request to {}", name);
             dev.pause();
