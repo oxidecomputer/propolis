@@ -22,6 +22,14 @@ pub enum MigrateSourceCommand {
     /// Update the externally-visible migration state.
     UpdateState(propolis_api_types::MigrationState),
 
+    /// Determine whether a previous attempt to restore the VM's dirty bitmap
+    /// has failed.
+    QueryRedirtyingFailed,
+
+    /// Record that the guest's dirty page bitmap may be inconsistent so that
+    /// future attempts to migrate out transmit all pages.
+    RedirtyingFailed,
+
     /// Pause the instance's devices and CPUs.
     Pause,
 }
@@ -30,6 +38,10 @@ pub enum MigrateSourceCommand {
 /// response to a previous command.
 #[derive(Debug)]
 pub enum MigrateSourceResponse {
+    /// A previous migration out has (or has not) failed to restore the VM's
+    /// dirty bitmap.
+    RedirtyingFailed(bool), 
+
     /// A request to pause completed with the attached result.
     Pause(Result<(), std::io::Error>),
 }
