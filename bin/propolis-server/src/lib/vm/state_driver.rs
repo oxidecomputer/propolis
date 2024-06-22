@@ -2,324 +2,464 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::Arc;
+//! It drives the state vroom vroom
 
-use crate::migrate::{MigrateError, MigrateRole};
-use crate::vcpu_tasks::VcpuTaskController;
-
-use super::{
-    request_queue, ExternalRequest, GuestEvent, MigrateSourceCommand,
-    MigrateSourceResponse, MigrateTargetCommand, MigrateTaskEvent,
-    SharedVmState, StateDriverEvent,
+use std::{
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
 };
 
 use propolis_api_types::{
-    InstanceMigrateStatusResponse as ApiMigrateStatusResponse,
-    InstanceMigrationStatus as ApiMigrationStatus,
-    InstanceState as ApiInstanceState,
-    InstanceStateMonitorResponse as ApiMonitoredState,
-    MigrationState as ApiMigrationState,
+    instance_spec::VersionedInstanceSpec, InstanceProperties, InstanceState,
 };
-use slog::{error, info, Logger};
+use slog::info;
 use uuid::Uuid;
 
-#[usdt::provider(provider = "propolis")]
-mod probes {
-    fn state_driver_pause() {}
-    fn state_driver_resume() {}
+use crate::{
+    initializer::{
+        build_instance, MachineInitializer, MachineInitializerState,
+    },
+    migrate::MigrateRole,
+    vcpu_tasks::VcpuTaskController,
+};
+
+use super::{
+    guest_event::{self, GuestEvent},
+    lifecycle_ops, VmError,
+};
+
+struct MigrationStateUpdate {
+    state: propolis_api_types::MigrationState,
+    id: Uuid,
+    role: MigrateRole,
 }
 
-/// Tells the state driver whether or not to continue running after responding
-/// to an event.
+impl MigrationStateUpdate {
+    fn apply_to(
+        self,
+        old: propolis_api_types::InstanceMigrateStatusResponse,
+    ) -> propolis_api_types::InstanceMigrateStatusResponse {
+        let new = propolis_api_types::InstanceMigrationStatus {
+            id: self.id,
+            state: self.state,
+        };
+        match self.role {
+            MigrateRole::Destination => {
+                propolis_api_types::InstanceMigrateStatusResponse {
+                    migration_in: Some(new),
+                    migration_out: old.migration_out,
+                }
+            }
+            MigrateRole::Source => {
+                propolis_api_types::InstanceMigrateStatusResponse {
+                    migration_in: old.migration_in,
+                    migration_out: Some(new),
+                }
+            }
+        }
+    }
+}
+
+enum ExternalStateUpdate {
+    Instance(InstanceState),
+    Migration(MigrationStateUpdate),
+    Complete(InstanceState, MigrationStateUpdate),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum HandleEventOutcome {
     Continue,
     Exit,
 }
 
-/// A reason for starting a VM.
-#[derive(Debug, PartialEq, Eq)]
-enum VmStartReason {
-    MigratedIn,
-    ExplicitRequest,
+#[derive(Debug)]
+enum InputQueueEvent {
+    ExternalRequest(super::request_queue::ExternalRequest),
+    GuestEvent(GuestEvent),
 }
 
-/// A wrapper around all the data needed to describe the status of a live
-/// migration.
-struct PublishedMigrationState {
-    state: ApiMigrationState,
-    id: Uuid,
-    role: MigrateRole,
+struct InputQueueInner {
+    external_requests: super::request_queue::ExternalRequestQueue,
+    guest_events: super::guest_event::GuestEventQueue,
 }
 
-impl PublishedMigrationState {
-    /// Updates an `old` migration status response to contain information about
-    /// the migration described by `self`.
-    fn apply_to(
-        self,
-        old: ApiMigrateStatusResponse,
-    ) -> ApiMigrateStatusResponse {
-        let new = ApiMigrationStatus { id: self.id, state: self.state };
-        match self.role {
-            MigrateRole::Destination => ApiMigrateStatusResponse {
-                migration_in: Some(new),
-                migration_out: old.migration_out,
-            },
-            MigrateRole::Source => ApiMigrateStatusResponse {
-                migration_in: old.migration_in,
-                migration_out: Some(new),
-            },
-        }
-    }
-}
-
-enum PublishedState {
-    Instance(ApiInstanceState),
-    Migration(PublishedMigrationState),
-    Complete(ApiInstanceState, PublishedMigrationState),
-}
-
-pub(super) struct StateDriver<
-    V: super::StateDriverVmController,
-    C: VcpuTaskController,
-> {
-    /// A handle to the host server's tokio runtime, useful for spawning tasks
-    /// that need to interact with async code (e.g. spinning up migration
-    /// tasks).
-    runtime_hdl: tokio::runtime::Handle,
-
-    /// A reference to the command sink to which this driver should send its
-    /// requests to send messages to devices or update other VM controller
-    /// state.
-    controller: Arc<V>,
-
-    /// A reference to the state this driver shares with its VM controller.
-    shared_state: Arc<SharedVmState>,
-
-    /// The controller for this instance's vCPU tasks.
-    vcpu_tasks: C,
-
-    /// The state worker's logger.
-    log: Logger,
-
-    /// The generation number to use when publishing externally-visible state
-    /// updates.
-    state_gen: u64,
-
-    /// Whether the worker's VM's devices are paused.
-    paused: bool,
-
-    /// The sender side of the monitor that reflects the instance's current
-    /// externally-visible state (including migration state).
-    api_state_tx: tokio::sync::watch::Sender<ApiMonitoredState>,
-}
-
-impl<V, C> StateDriver<V, C>
-where
-    V: super::StateDriverVmController,
-    C: VcpuTaskController,
-{
-    /// Constructs a new state driver context.
-    pub(super) fn new(
-        runtime_hdl: tokio::runtime::Handle,
-        controller: Arc<V>,
-        shared_controller_state: Arc<SharedVmState>,
-        vcpu_tasks: C,
-        log: Logger,
-        api_state_tx: tokio::sync::watch::Sender<ApiMonitoredState>,
-    ) -> Self {
+impl InputQueueInner {
+    fn new(log: slog::Logger) -> Self {
         Self {
-            runtime_hdl,
-            controller,
-            shared_state: shared_controller_state,
-            vcpu_tasks,
-            log,
-            state_gen: 0,
-            paused: false,
-            api_state_tx,
+            external_requests: super::request_queue::ExternalRequestQueue::new(
+                log,
+            ),
+            guest_events: super::guest_event::GuestEventQueue::default(),
+        }
+    }
+}
+
+pub(super) struct InputQueue {
+    inner: Mutex<InputQueueInner>,
+    cv: Condvar,
+}
+
+impl InputQueue {
+    pub(super) fn new(log: slog::Logger) -> Self {
+        Self {
+            inner: Mutex::new(InputQueueInner::new(log)),
+            cv: Condvar::new(),
         }
     }
 
-    /// Yields the current externally-visible instance state.
-    fn get_instance_state(&self) -> ApiInstanceState {
-        self.api_state_tx.borrow().state
+    fn wait_for_next_event(&self) -> InputQueueEvent {
+        let guard = self.inner.lock().unwrap();
+        let mut guard = self
+            .cv
+            .wait_while(guard, |i| {
+                i.external_requests.is_empty() && i.guest_events.is_empty()
+            })
+            .unwrap();
+
+        if let Some(guest_event) = guard.guest_events.pop_front() {
+            InputQueueEvent::GuestEvent(guest_event)
+        } else {
+            InputQueueEvent::ExternalRequest(
+                guard.external_requests.pop_front().unwrap(),
+            )
+        }
     }
 
-    /// Retrieves the most recently published migration state from the external
-    /// migration state channel.
-    ///
-    /// This function does not return the borrowed monitor, so the state may
-    /// change again as soon as this function returns.
-    fn get_migration_status(&self) -> ApiMigrateStatusResponse {
-        self.api_state_tx.borrow().migration.clone()
+    fn notify_instance_state_change(
+        &self,
+        state: super::request_queue::InstanceStateChange,
+    ) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_instance_state_change(state);
+    }
+}
+
+impl guest_event::GuestEventHandler for InputQueue {
+    fn suspend_halt_event(&self, when: Duration) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard
+            .guest_events
+            .enqueue(guest_event::GuestEvent::VcpuSuspendHalt(when))
+        {
+            self.cv.notify_all();
+        }
     }
 
-    /// Sets the published instance and/or migration state and increases the
-    /// state generation number.
-    fn set_published_state(&mut self, state: PublishedState) {
+    fn suspend_reset_event(&self, when: Duration) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard
+            .guest_events
+            .enqueue(guest_event::GuestEvent::VcpuSuspendReset(when))
+        {
+            self.cv.notify_all();
+        }
+    }
+
+    fn suspend_triple_fault_event(&self, vcpu_id: i32, when: Duration) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.guest_events.enqueue(
+            guest_event::GuestEvent::VcpuSuspendTripleFault(vcpu_id, when),
+        ) {
+            self.cv.notify_all();
+        }
+    }
+
+    fn unhandled_vm_exit(
+        &self,
+        vcpu_id: i32,
+        exit: propolis::exits::VmExitKind,
+    ) {
+        panic!("vCPU {}: Unhandled VM exit: {:?}", vcpu_id, exit);
+    }
+
+    fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
+        panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
+    }
+}
+
+impl guest_event::ChipsetEventHandler for InputQueue {
+    fn chipset_halt(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.guest_events.enqueue(guest_event::GuestEvent::ChipsetHalt) {
+            self.cv.notify_all();
+        }
+    }
+
+    fn chipset_reset(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.guest_events.enqueue(guest_event::GuestEvent::ChipsetReset) {
+            self.cv.notify_all();
+        }
+    }
+}
+
+/// The context for a VM state driver task.
+pub(super) struct StateDriver {
+    log: slog::Logger,
+    parent_vm: Arc<super::Vm>,
+    input_queue: Arc<InputQueue>,
+    external_state_tx: super::InstanceStateTx,
+    paused: bool,
+    vcpu_tasks: Option<Box<dyn VcpuTaskController>>,
+    vm_lifecycle: Option<Arc<dyn lifecycle_ops::VmLifecycle>>,
+    migration_src_state: crate::migrate::source::PersistentState,
+}
+
+impl StateDriver {
+    pub(super) fn new(
+        log: slog::Logger,
+        vm: Arc<super::Vm>,
+        input_queue: Arc<InputQueue>,
+        external_state_tx: super::InstanceStateTx,
+    ) -> Self {
+        let log = log.new(slog::o!("component" => "state_driver"));
+        Self {
+            log,
+            parent_vm: vm,
+            input_queue,
+            external_state_tx,
+            paused: false,
+            vcpu_tasks: None,
+            vm_lifecycle: None,
+            migration_src_state: Default::default(),
+        }
+    }
+
+    pub(super) async fn run(
+        mut self,
+        ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
+        reply_tx: tokio::sync::oneshot::Sender<
+            Result<propolis_api_types::InstanceEnsureResponse, VmError>,
+        >,
+        ensure_options: super::EnsureOptions,
+        external_state_rx: super::InstanceStateRx,
+    ) {
+        match self
+            .initialize_vm(ensure_request, ensure_options, external_state_rx)
+            .await
+        {
+            Ok(active) => {
+                self.parent_vm.make_active(active.clone());
+                self.vm_lifecycle =
+                    Some(active.clone() as Arc<dyn lifecycle_ops::VmLifecycle>);
+
+                // TODO(gjc) deal with migration
+                reply_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
+                    migrate: None,
+                }));
+                self.run_loop().await;
+                active.stop_services().await;
+            }
+            Err(e) => {
+                self.parent_vm.start_failed();
+                reply_tx.send(Err(VmError::InitializationFailed(e)));
+            }
+        }
+    }
+
+    fn update_external_state(&mut self, state: ExternalStateUpdate) {
         let (instance_state, migration_state) = match state {
-            PublishedState::Instance(i) => (Some(i), None),
-            PublishedState::Migration(m) => (None, Some(m)),
-            PublishedState::Complete(i, m) => (Some(i), Some(m)),
+            ExternalStateUpdate::Instance(i) => (Some(i), None),
+            ExternalStateUpdate::Migration(m) => (None, Some(m)),
+            ExternalStateUpdate::Complete(i, m) => (Some(i), Some(m)),
         };
 
-        let ApiMonitoredState {
-            state: old_state,
+        let propolis_api_types::InstanceStateMonitorResponse {
+            state: old_instance,
             migration: old_migration,
-            ..
-        } = self.api_state_tx.borrow().clone();
+            gen: old_gen,
+        } = self.external_state_tx.borrow().clone();
 
-        let state = instance_state.unwrap_or(old_state);
+        let state = instance_state.unwrap_or(old_instance);
         let migration = if let Some(migration_state) = migration_state {
             migration_state.apply_to(old_migration)
         } else {
             old_migration
         };
 
+        let gen = old_gen + 1;
         info!(self.log, "publishing new instance state";
-              "gen" => self.state_gen,
+              "gen" => gen,
               "state" => ?state,
               "migration" => ?migration);
 
-        self.state_gen += 1;
-        let _ = self.api_state_tx.send(ApiMonitoredState {
-            gen: self.state_gen,
-            state,
-            migration,
-        });
-    }
-
-    /// Publishes the supplied externally-visible instance state to the external
-    /// instance state channel.
-    fn set_instance_state(&mut self, state: ApiInstanceState) {
-        self.set_published_state(PublishedState::Instance(state));
-    }
-
-    /// Publishes the supplied externally-visible migration status to the
-    /// instance state channel.
-    fn set_migration_state(
-        &mut self,
-        role: MigrateRole,
-        migration_id: Uuid,
-        state: ApiMigrationState,
-    ) {
-        self.set_published_state(PublishedState::Migration(
-            PublishedMigrationState { state, id: migration_id, role },
-        ));
-    }
-
-    /// Publishes that an instance is migrating and sets its migration state in
-    /// a single transaction, then consumes the pending migration information
-    /// from the shared VM state block.
-    fn publish_migration_start(
-        &mut self,
-        migration_id: Uuid,
-        role: MigrateRole,
-    ) {
-        // Order matters here. The 'pending migration' field exists so that
-        // migration status is available through the external API as soon as an
-        // external request to migrate returns, even if the migration hasn't yet
-        // been picked up off the queue. To ensure the migration is continuously
-        // visible, publish the "actual" migration before consuming the pending
-        // one.
-        self.set_published_state(PublishedState::Complete(
-            ApiInstanceState::Migrating,
-            PublishedMigrationState {
-                state: ApiMigrationState::Sync,
-                id: migration_id,
-                role,
+        let _ = self.external_state_tx.send(
+            propolis_api_types::InstanceStateMonitorResponse {
+                gen,
+                state,
+                migration,
             },
-        ));
-
-        self.shared_state.clear_pending_migration();
+        );
     }
 
-    /// Manages an instance's lifecycle once it has moved to the Running state.
-    pub(super) fn run_state_worker(
-        mut self,
-    ) -> tokio::sync::watch::Sender<ApiMonitoredState> {
-        info!(self.log, "State worker launched");
+    async fn initialize_vm(
+        &mut self,
+        request: propolis_api_types::InstanceSpecEnsureRequest,
+        options: super::EnsureOptions,
+        external_state_rx: super::InstanceStateRx,
+    ) -> anyhow::Result<Arc<super::ActiveVm>> {
+        let active_vm = match request.migrate {
+            None => {
+                let vm_objects = self
+                    .initialize_vm_from_spec(
+                        &request.properties,
+                        &request.instance_spec,
+                        options,
+                    )
+                    .await?;
+                let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
+                let active_vm = Arc::new(super::ActiveVm {
+                    parent: self.parent_vm.clone(),
+                    log: self.log.clone(),
+                    state_driver_queue: self.input_queue.clone(),
+                    external_state_rx,
+                    properties: request.properties,
+                    spec: v0_spec,
+                    objects: vm_objects,
+                });
+
+                active_vm
+            }
+            Some(_migrate_request) => todo!("gjc"),
+        };
+
+        Ok(active_vm)
+    }
+
+    /// Initializes all of the components of a VM from the supplied
+    /// specification.
+    async fn initialize_vm_from_spec(
+        &mut self,
+        properties: &InstanceProperties,
+        spec: &VersionedInstanceSpec,
+        options: super::EnsureOptions,
+    ) -> anyhow::Result<super::VmObjects> {
+        info!(self.log, "initializing new VM";
+              "spec" => #?spec,
+              "properties" => #?properties,
+              "use_reservoir" => options.use_reservoir,
+              "bootrom" => %options.toml_config.bootrom.display());
+
+        let vmm_log = self.log.new(slog::o!("component" => "vmm"));
+
+        // Set up the 'shell' instance into which the rest of this routine will
+        // add components.
+        let VersionedInstanceSpec::V0(v0_spec) = &spec;
+        let machine = build_instance(
+            &properties.vm_name(),
+            v0_spec,
+            options.use_reservoir,
+            vmm_log,
+        )?;
+
+        let mut init = MachineInitializer {
+            log: self.log.clone(),
+            machine: &machine,
+            devices: Default::default(),
+            block_backends: Default::default(),
+            crucible_backends: Default::default(),
+            spec: &v0_spec,
+            properties: &properties,
+            toml_config: &options.toml_config,
+            producer_registry: options.oximeter_registry,
+            state: MachineInitializerState::default(),
+        };
+
+        init.initialize_rom(options.toml_config.bootrom.as_path())?;
+        let chipset = init.initialize_chipset(
+            &(self.input_queue.clone()
+                as Arc<dyn super::guest_event::ChipsetEventHandler>),
+        )?;
+
+        init.initialize_rtc(&chipset)?;
+        init.initialize_hpet()?;
+
+        let com1 = Arc::new(init.initialize_uart(&chipset)?);
+        let ps2ctrl = init.initialize_ps2(&chipset)?;
+        init.initialize_qemu_debug_port()?;
+        init.initialize_qemu_pvpanic(properties.into())?;
+        init.initialize_network_devices(&chipset)?;
+
+        #[cfg(not(feature = "omicron-build"))]
+        init.initialize_test_devices(&options.toml_config.devices)?;
+        #[cfg(feature = "omicron-build")]
+        info!(
+            self.log,
+            "`omicron-build` feature enabled, ignoring any test devices"
+        );
+
+        #[cfg(feature = "falcon")]
+        init.initialize_softnpu_ports(&chipset)?;
+        #[cfg(feature = "falcon")]
+        init.initialize_9pfs(&chipset)?;
+
+        init.initialize_storage_devices(&chipset, options.nexus_client).await?;
+        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
+        init.initialize_cpus()?;
+        let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
+            &machine,
+            self.input_queue.clone()
+                as Arc<dyn super::guest_event::GuestEventHandler>,
+            self.log.new(slog::o!("component" => "vcpu_tasks")),
+        )?);
+
+        let MachineInitializer {
+            devices,
+            block_backends,
+            crucible_backends,
+            ..
+        } = init;
+
+        self.vcpu_tasks = Some(vcpu_tasks as Box<dyn VcpuTaskController>);
+        Ok(super::VmObjects {
+            machine,
+            lifecycle_components: devices,
+            block_backends,
+            crucible_backends,
+            com1,
+            framebuffer: Some(ramfb),
+            ps2ctrl,
+        })
+    }
+
+    async fn run_loop(mut self) {
+        info!(self.log, "state driver launched");
 
         loop {
-            let event = self.shared_state.wait_for_next_event();
-            info!(self.log, "State worker handling event"; "event" => ?event);
+            let event = self.input_queue.wait_for_next_event();
+            info!(self.log, "state driver handling event"; "event" => ?event);
 
-            let outcome = self.handle_event(event);
-            info!(self.log, "State worker handled event"; "outcome" => ?outcome);
-            if matches!(outcome, HandleEventOutcome::Exit) {
+            let outcome = match event {
+                InputQueueEvent::ExternalRequest(req) => {
+                    self.handle_external_request(req).await
+                }
+                InputQueueEvent::GuestEvent(event) => {
+                    self.handle_guest_event(event).await
+                }
+            };
+
+            info!(self.log, "state driver handled event"; "outcome" => ?outcome);
+            if outcome == HandleEventOutcome::Exit {
                 break;
             }
         }
 
-        info!(self.log, "State worker exiting");
-
-        self.api_state_tx
+        info!(self.log, "state driver exiting");
     }
 
-    fn handle_event(&mut self, event: StateDriverEvent) -> HandleEventOutcome {
-        let next_action = match event {
-            StateDriverEvent::Guest(guest_event) => {
-                return self.handle_guest_event(guest_event);
-            }
-            StateDriverEvent::External(external_event) => external_event,
-        };
-
-        match next_action {
-            ExternalRequest::MigrateAsTarget {
-                migration_id,
-                task,
-                start_tx,
-                command_rx,
-            } => {
-                self.migrate_as_target(
-                    migration_id,
-                    task,
-                    start_tx,
-                    command_rx,
-                );
-                HandleEventOutcome::Continue
-            }
-            ExternalRequest::Start => {
-                self.start_vm(VmStartReason::ExplicitRequest);
-                HandleEventOutcome::Continue
-            }
-            ExternalRequest::Reboot => {
-                self.do_reboot();
-                HandleEventOutcome::Continue
-            }
-            ExternalRequest::MigrateAsSource {
-                migration_id,
-                task,
-                start_tx,
-                command_rx,
-                response_tx,
-            } => {
-                self.migrate_as_source(
-                    migration_id,
-                    task,
-                    start_tx,
-                    command_rx,
-                    response_tx,
-                );
-                HandleEventOutcome::Continue
-            }
-            ExternalRequest::Stop => {
-                self.do_halt();
-                HandleEventOutcome::Exit
-            }
-        }
-    }
-
-    fn handle_guest_event(&mut self, event: GuestEvent) -> HandleEventOutcome {
+    async fn handle_guest_event(
+        &mut self,
+        event: GuestEvent,
+    ) -> HandleEventOutcome {
         match event {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
-                self.do_halt();
+                self.do_halt().await;
                 HandleEventOutcome::Exit
             }
             GuestEvent::VcpuSuspendReset(_when) => {
                 info!(self.log, "Resetting due to VM suspend event");
-                self.do_reboot();
+                self.do_reboot().await;
                 HandleEventOutcome::Continue
             }
             GuestEvent::VcpuSuspendTripleFault(vcpu_id, _when) => {
@@ -327,328 +467,123 @@ where
                     self.log,
                     "Resetting due to triple fault on vCPU {}", vcpu_id
                 );
-                self.do_reboot();
+                self.do_reboot().await;
                 HandleEventOutcome::Continue
             }
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
-                self.do_halt();
+                self.do_halt().await;
                 HandleEventOutcome::Exit
             }
             GuestEvent::ChipsetReset => {
                 info!(self.log, "Resetting due to chipset-driven reset");
-                self.do_reboot();
+                self.do_reboot().await;
                 HandleEventOutcome::Continue
             }
         }
     }
 
-    fn start_vm(&mut self, start_reason: VmStartReason) {
-        info!(self.log, "Starting instance"; "reason" => ?start_reason);
-
-        // Only move to the Starting state if this VM is starting by explicit
-        // request (as opposed to the implicit start that happens after a
-        // migration in). In this case, no one has initialized vCPU state yet,
-        // so explicitly initialize it here.
-        //
-        // In the migration-in case, remain in the Migrating state until the
-        // VM is actually running. Note that this is contractual behavior--sled
-        // agent relies on this to represent that a migrating instance is
-        // continuously running through a successful migration.
-        match start_reason {
-            VmStartReason::ExplicitRequest => {
-                self.set_instance_state(ApiInstanceState::Starting);
-                self.reset_vcpus();
+    async fn handle_external_request(
+        &mut self,
+        request: super::request_queue::ExternalRequest,
+    ) -> HandleEventOutcome {
+        match request {
+            super::request_queue::ExternalRequest::MigrateAsSource {
+                ..
+            } => todo!("gjc"),
+            super::request_queue::ExternalRequest::Reboot => {
+                self.do_reboot();
+                HandleEventOutcome::Continue
             }
-            VmStartReason::MigratedIn => {
-                assert_eq!(
-                    self.get_instance_state(),
-                    ApiInstanceState::Migrating
-                );
-                // Signal the kernel VMM to resume devices which are handled by
-                // the in-kernel emulation.  They were kept paused for
-                // consistency while migration state was loaded.
-                self.controller.resume_vm();
-            }
-        }
-
-        match self.controller.start_devices() {
-            Ok(()) => {
-                self.vcpu_tasks.resume_all();
-                self.publish_steady_state(ApiInstanceState::Running);
-            }
-            Err(e) => {
-                error!(&self.log, "Failed to start devices: {:?}", e);
-                self.publish_steady_state(ApiInstanceState::Failed);
+            super::request_queue::ExternalRequest::Stop => {
+                self.do_halt();
+                HandleEventOutcome::Exit
             }
         }
     }
 
-    fn do_reboot(&mut self) {
-        info!(self.log, "Resetting instance");
+    async fn do_reboot(&mut self) {
+        info!(self.log, "resetting instance");
 
-        self.set_instance_state(ApiInstanceState::Rebooting);
+        self.update_external_state(ExternalStateUpdate::Instance(
+            InstanceState::Rebooting,
+        ));
 
         // Reboot is implemented as a pause -> reset -> resume transition.
         //
         // First, pause the vCPUs and all devices so no partially-completed
         // work is present.
-        self.vcpu_tasks.pause_all();
-        self.controller.pause_devices();
+        self.vcpu_tasks().pause_all();
+        self.vm_lifecycle().pause_devices().await;
 
-        // Reset all the entities and the VM's bhyve state, then reset the
-        // vCPUs. The vCPU reset must come after the bhyve reset.
-        self.controller.reset_devices_and_machine();
+        // Reset all entities and the VM's bhyve state, then reset the vCPUs.
+        // The vCPU reset must come after the bhyve reset.
+        self.vm_lifecycle().reset_devices_and_machine();
         self.reset_vcpus();
 
         // Resume devices so they're ready to do more work, then resume vCPUs.
-        self.controller.resume_devices();
-        self.vcpu_tasks.resume_all();
+        self.vm_lifecycle().resume_devices();
+        self.vcpu_tasks().resume_all();
 
-        // Notify the request queue that this reboot request was processed.
-        // This does not use the `publish_steady_state` path because the queue
-        // treats an instance's initial transition to "Running" as a one-time
-        // event that's different from a return to the running state from a
-        // transient intermediate state.
-        self.notify_request_queue(request_queue::InstanceStateChange::Rebooted);
-        self.set_instance_state(ApiInstanceState::Running);
+        // Notify other consumers that the instance successfully rebooted and is
+        // now back to Running.
+        self.input_queue.notify_instance_state_change(
+            super::request_queue::InstanceStateChange::Rebooted,
+        );
+        self.update_external_state(ExternalStateUpdate::Instance(
+            InstanceState::Running,
+        ));
     }
 
-    fn do_halt(&mut self) {
-        info!(self.log, "Stopping instance");
-        self.set_instance_state(ApiInstanceState::Stopping);
+    async fn do_halt(&mut self) {
+        info!(self.log, "stopping instance");
+        self.update_external_state(ExternalStateUpdate::Instance(
+            InstanceState::Stopping,
+        ));
 
         // Entities expect to be paused before being halted. Note that the VM
         // may be paused already if it is being torn down after a successful
         // migration out.
         if !self.paused {
-            self.pause();
+            self.pause().await;
         }
 
-        self.vcpu_tasks.exit_all();
-        self.controller.halt_devices();
-        self.publish_steady_state(ApiInstanceState::Stopped);
+        self.vcpu_tasks().exit_all();
+        self.vm_lifecycle().halt_devices();
+        self.publish_steady_state(InstanceState::Stopped);
     }
 
-    fn migrate_as_target(
-        &mut self,
-        migration_id: Uuid,
-        mut task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-        start_tx: tokio::sync::oneshot::Sender<()>,
-        mut command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    ) {
-        self.publish_migration_start(migration_id, MigrateRole::Destination);
-
-        // Ensure the VM's vCPUs are activated properly so that they can enter
-        // the guest after migration. Do this before allowing the migration task
-        // to start so that reset doesn't overwrite any state written by
-        // migration.
-        self.reset_vcpus();
-
-        // Place the VM in a paused state so we can load emulated device state
-        // in a consistent manner
-        self.controller.pause_vm();
-
-        start_tx.send(()).unwrap();
-        loop {
-            let action = self.runtime_hdl.block_on(async {
-                Self::next_migrate_task_event(
-                    &mut task,
-                    &mut command_rx,
-                    &self.log,
-                )
-                .await
-            });
-
-            match action {
-                MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_ok() {
-                        // Clients that observe that migration has finished
-                        // need to observe that the instance is running before
-                        // they are guaranteed to be able to do anything else
-                        // that requires a running instance.
-                        assert!(matches!(
-                            self.get_migration_status()
-                                .migration_in
-                                .unwrap()
-                                .state,
-                            ApiMigrationState::Finish
-                        ));
-
-                        self.start_vm(VmStartReason::MigratedIn);
-                    } else {
-                        assert!(matches!(
-                            self.get_migration_status()
-                                .migration_in
-                                .unwrap()
-                                .state,
-                            ApiMigrationState::Error
-                        ));
-
-                        // Resume the kernel VM so that if this state driver is
-                        // asked to halt, the pause resulting therefrom won't
-                        // observe that the VM is already paused.
-                        self.controller.resume_vm();
-                        self.publish_steady_state(ApiInstanceState::Failed);
-                    };
-
-                    break;
-                }
-                MigrateTaskEvent::Command(
-                    MigrateTargetCommand::UpdateState(state),
-                ) => {
-                    self.set_migration_state(
-                        MigrateRole::Destination,
-                        migration_id,
-                        state,
-                    );
-                }
-            }
-        }
-    }
-
-    fn migrate_as_source(
-        &mut self,
-        migration_id: Uuid,
-        mut task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-        start_tx: tokio::sync::oneshot::Sender<()>,
-        mut command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
-        response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
-    ) {
-        self.publish_migration_start(migration_id, MigrateRole::Source);
-        start_tx.send(()).unwrap();
-
-        // Wait either for the migration task to exit or for it to ask the
-        // worker to pause or resume the instance's devices.
-        loop {
-            let action = self.runtime_hdl.block_on(async {
-                Self::next_migrate_task_event(
-                    &mut task,
-                    &mut command_rx,
-                    &self.log,
-                )
-                .await
-            });
-
-            match action {
-                // If the task exited, bubble its result back up to the main
-                // state worker loop to decide on the instance's next state.
-                //
-                // If migration failed while devices were paused, this instance
-                // is allowed to resume, so resume its components here.
-                MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_ok() {
-                        assert!(matches!(
-                            self.get_migration_status()
-                                .migration_out
-                                .unwrap()
-                                .state,
-                            ApiMigrationState::Finish
-                        ));
-
-                        self.shared_state
-                            .queue_external_request(ExternalRequest::Stop)
-                            .expect("can always queue a request to stop");
-                    } else {
-                        assert!(matches!(
-                            self.get_migration_status()
-                                .migration_out
-                                .unwrap()
-                                .state,
-                            ApiMigrationState::Error
-                        ));
-
-                        if self.paused {
-                            self.resume();
-                            self.publish_steady_state(
-                                ApiInstanceState::Running,
-                            );
-                        }
-                    }
-
-                    break;
-                }
-                MigrateTaskEvent::Command(cmd) => match cmd {
-                    MigrateSourceCommand::UpdateState(state) => {
-                        self.set_migration_state(
-                            MigrateRole::Source,
-                            migration_id,
-                            state,
-                        );
-                    }
-                    MigrateSourceCommand::Pause => {
-                        self.pause();
-                        response_tx
-                            .blocking_send(MigrateSourceResponse::Pause(Ok(())))
-                            .unwrap();
-                    }
-                },
-            }
-        }
-    }
-
-    async fn next_migrate_task_event<E>(
-        task: &mut tokio::task::JoinHandle<Result<(), MigrateError>>,
-        command_rx: &mut tokio::sync::mpsc::Receiver<E>,
-        log: &Logger,
-    ) -> MigrateTaskEvent<E> {
-        if let Some(cmd) = command_rx.recv().await {
-            return MigrateTaskEvent::Command(cmd);
-        }
-
-        // The sender side of the command channel is dropped, which means the
-        // migration task is exiting. Wait for it to finish and snag its result.
-        match task.await {
-            Ok(res) => {
-                info!(log, "Migration source task exited: {:?}", res);
-                MigrateTaskEvent::TaskExited(res)
-            }
-            Err(join_err) => {
-                if join_err.is_cancelled() {
-                    panic!("Migration task canceled");
-                } else {
-                    panic!(
-                        "Migration task panicked: {:?}",
-                        join_err.into_panic()
-                    );
-                }
-            }
-        }
-    }
-
-    fn pause(&mut self) {
+    async fn pause(&mut self) {
         assert!(!self.paused);
-        probes::state_driver_pause!(|| ());
-        self.vcpu_tasks.pause_all();
-        self.controller.pause_devices();
-        self.controller.pause_vm();
+        self.vcpu_tasks().pause_all();
+        self.vm_lifecycle().pause_devices().await;
+        self.vm_lifecycle().pause_vm();
         self.paused = true;
     }
 
     fn resume(&mut self) {
         assert!(self.paused);
-        probes::state_driver_resume!(|| ());
-        self.controller.resume_vm();
-        self.controller.resume_devices();
-        self.vcpu_tasks.resume_all();
+        self.vm_lifecycle().resume_vm();
+        self.vm_lifecycle().resume_devices();
+        self.vcpu_tasks().resume_all();
         self.paused = false;
     }
 
-    fn reset_vcpus(&self) {
-        self.vcpu_tasks.new_generation();
-        self.controller.reset_vcpu_state();
+    fn reset_vcpus(&mut self) {
+        self.vcpu_tasks().new_generation();
+        self.vm_lifecycle.as_ref().unwrap().reset_vcpu_state();
     }
 
-    fn publish_steady_state(&mut self, state: ApiInstanceState) {
+    fn publish_steady_state(&mut self, state: InstanceState) {
         let change = match state {
-            ApiInstanceState::Running => {
-                request_queue::InstanceStateChange::StartedRunning
+            InstanceState::Running => {
+                super::request_queue::InstanceStateChange::StartedRunning
             }
-            ApiInstanceState::Stopped => {
-                request_queue::InstanceStateChange::Stopped
+            InstanceState::Stopped => {
+                super::request_queue::InstanceStateChange::Stopped
             }
-            ApiInstanceState::Failed => {
-                request_queue::InstanceStateChange::Failed
+            InstanceState::Failed => {
+                super::request_queue::InstanceStateChange::Failed
             }
             _ => panic!(
                 "Called publish_steady_state on non-terminal state {:?}",
@@ -656,729 +591,15 @@ where
             ),
         };
 
-        self.notify_request_queue(change);
-        self.set_instance_state(state);
+        self.input_queue.notify_instance_state_change(change);
+        self.update_external_state(ExternalStateUpdate::Instance(state));
     }
 
-    fn notify_request_queue(
-        &self,
-        queue_change: request_queue::InstanceStateChange,
-    ) {
-        self.shared_state
-            .inner
-            .lock()
-            .unwrap()
-            .external_request_queue
-            .notify_instance_state_change(queue_change);
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use anyhow::bail;
-    use mockall::Sequence;
-
-    use super::*;
-    use crate::vcpu_tasks::MockVcpuTaskController;
-    use crate::vm::MockStateDriverVmController;
-
-    struct TestStateDriver {
-        driver:
-            StateDriver<MockStateDriverVmController, MockVcpuTaskController>,
-        state_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
+    fn vcpu_tasks(&mut self) -> &mut dyn VcpuTaskController {
+        self.vcpu_tasks.as_mut().unwrap().as_mut()
     }
 
-    impl TestStateDriver {
-        fn api_state(&self) -> ApiInstanceState {
-            self.state_rx.borrow().state
-        }
-    }
-
-    struct TestObjects {
-        vm_ctrl: MockStateDriverVmController,
-        vcpu_ctrl: MockVcpuTaskController,
-        shared_state: Arc<SharedVmState>,
-    }
-
-    fn make_state_driver(objects: TestObjects) -> TestStateDriver {
-        let logger = slog::Logger::root(slog::Discard, slog::o!());
-        let (state_tx, state_rx) =
-            tokio::sync::watch::channel(ApiMonitoredState {
-                gen: 0,
-                state: ApiInstanceState::Creating,
-                migration: ApiMigrateStatusResponse {
-                    migration_in: None,
-                    migration_out: None,
-                },
-            });
-
-        TestStateDriver {
-            driver: StateDriver::new(
-                tokio::runtime::Handle::current(),
-                Arc::new(objects.vm_ctrl),
-                objects.shared_state.clone(),
-                objects.vcpu_ctrl,
-                logger,
-                state_tx,
-            ),
-            state_rx,
-        }
-    }
-
-    /// Generates default mocks for the VM controller and vCPU task controller
-    /// that accept unlimited requests to read state.
-    fn make_default_mocks() -> TestObjects {
-        let logger = slog::Logger::root(slog::Discard, slog::o!());
-        let vm_ctrl = MockStateDriverVmController::new();
-        let vcpu_ctrl = MockVcpuTaskController::new();
-        TestObjects {
-            vm_ctrl,
-            vcpu_ctrl,
-            shared_state: Arc::new(SharedVmState::new(&logger)),
-        }
-    }
-
-    fn add_reboot_expectations(
-        vm_ctrl: &mut MockStateDriverVmController,
-        vcpu_ctrl: &mut MockVcpuTaskController,
-    ) {
-        // The reboot process requires careful ordering of steps to make sure
-        // the VM's vCPUs are put into the correct state when the machine starts
-        // up.
-        let mut seq = Sequence::new();
-
-        // First, reboot has to pause everything. It doesn't actually matter
-        // whether vCPUs or devices pause first, but there's no way to specify
-        // that these events must be sequenced before other expectations but
-        // have no ordering with respect to each other.
-        vcpu_ctrl
-            .expect_pause_all()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_pause_devices()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-
-        // The devices and--importantly--the bhyve VM itself must be reset
-        // before resetting any vCPU state (so that bhyve will accept the ioctls
-        // sent to the vCPUs during the reset process).
-        vm_ctrl
-            .expect_reset_devices_and_machine()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vcpu_ctrl
-            .expect_new_generation()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_reset_vcpu_state()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-
-        // Entities and vCPUs can technically be resumed in either order, but
-        // resuming devices first allows them to be ready when the vCPUs start
-        // creating work for them to do.
-        vm_ctrl
-            .expect_resume_devices()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vcpu_ctrl
-            .expect_resume_all()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-    }
-
-    #[tokio::test]
-    async fn guest_triple_fault_reboots() {
-        let mut test_objects = make_default_mocks();
-
-        add_reboot_expectations(
-            &mut test_objects.vm_ctrl,
-            &mut test_objects.vcpu_ctrl,
-        );
-        let mut driver = make_state_driver(test_objects);
-        driver.driver.handle_event(StateDriverEvent::Guest(
-            GuestEvent::VcpuSuspendTripleFault(
-                0,
-                std::time::Duration::default(),
-            ),
-        ));
-
-        assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-    }
-
-    #[tokio::test]
-    async fn guest_chipset_reset_reboots() {
-        let mut test_objects = make_default_mocks();
-
-        add_reboot_expectations(
-            &mut test_objects.vm_ctrl,
-            &mut test_objects.vcpu_ctrl,
-        );
-        let mut driver = make_state_driver(test_objects);
-        driver
-            .driver
-            .handle_event(StateDriverEvent::Guest(GuestEvent::ChipsetReset));
-
-        assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-    }
-
-    #[tokio::test]
-    async fn start_from_cold_boot() {
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-        let mut seq = Sequence::new();
-        vcpu_ctrl
-            .expect_new_generation()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_reset_vcpu_state()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_start_devices()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| Ok(()));
-        vcpu_ctrl
-            .expect_resume_all()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-
-        let mut driver = make_state_driver(test_objects);
-        driver
-            .driver
-            .handle_event(StateDriverEvent::External(ExternalRequest::Start));
-
-        assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-    }
-
-    #[tokio::test]
-    async fn device_start_failure_causes_instance_failure() {
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-        let mut seq = Sequence::new();
-        vcpu_ctrl
-            .expect_new_generation()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_reset_vcpu_state()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_start_devices()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| bail!("injected failure into start_devices!"));
-
-        let mut driver = make_state_driver(test_objects);
-
-        // Failure allows the instance to be preserved for debugging.
-        assert_eq!(
-            driver.driver.handle_event(StateDriverEvent::External(
-                ExternalRequest::Start
-            )),
-            HandleEventOutcome::Continue
-        );
-
-        assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
-    }
-
-    #[tokio::test]
-    async fn devices_pause_before_halting() {
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-        let mut seq = Sequence::new();
-        vcpu_ctrl
-            .expect_pause_all()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_pause_devices()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_pause_vm()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vcpu_ctrl
-            .expect_exit_all()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_halt_devices()
-            .times(1)
-            .in_sequence(&mut seq)
-            .returning(|| ());
-
-        let mut driver = make_state_driver(test_objects);
-        driver
-            .driver
-            .handle_event(StateDriverEvent::External(ExternalRequest::Stop));
-
-        assert!(matches!(driver.api_state(), ApiInstanceState::Stopped));
-    }
-
-    #[tokio::test]
-    async fn devices_pause_once_when_halting_after_migration_out() {
-        let migration_id = Uuid::new_v4();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel(1);
-        let migrate_task = tokio::spawn(async move {
-            start_rx.await.unwrap();
-            task_exit_rx.await.unwrap()
-        });
-
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-
-        // This test will simulate a migration out (with a pause command), then
-        // order the state driver to halt. This should produce exactly one set
-        // of pause commands and one set of halt commands with no resume
-        // commands.
-        vm_ctrl.expect_pause_devices().times(1).returning(|| ());
-        vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
-        vcpu_ctrl.expect_exit_all().times(1).returning(|| ());
-        vm_ctrl.expect_halt_devices().times(1).returning(|| ());
-        vm_ctrl.expect_resume_devices().never();
-        vcpu_ctrl.expect_resume_all().never();
-        vm_ctrl.expect_pause_vm().times(1).returning(|| ());
-        vm_ctrl.expect_resume_vm().never();
-
-        let mut driver = make_state_driver(test_objects);
-
-        // The state driver expects to run on an OS thread outside the async
-        // runtime so that it can call `block_on` to wait for messages from the
-        // migration task.
-        let hdl = std::thread::spawn(move || {
-            driver.driver.handle_event(StateDriverEvent::External(
-                ExternalRequest::MigrateAsSource {
-                    migration_id,
-                    task: migrate_task,
-                    start_tx,
-                    command_rx,
-                    response_tx,
-                },
-            ));
-
-            // Return the driver (which has the mocks attached) when the thread
-            // is joined so the test can continue using it.
-            driver
-        });
-
-        // Simulate a pause and the successful completion of migration.
-        command_tx.send(MigrateSourceCommand::Pause).await.unwrap();
-        let resp = response_rx.recv().await.unwrap();
-        assert!(matches!(resp, MigrateSourceResponse::Pause(Ok(()))));
-        command_tx
-            .send(MigrateSourceCommand::UpdateState(ApiMigrationState::Finish))
-            .await
-            .unwrap();
-
-        drop(command_tx);
-        task_exit_tx.send(Ok(())).unwrap();
-
-        // Wait for the call to `handle_event` to return before tearing anything
-        // else down.
-        driver = tokio::task::spawn_blocking(move || hdl.join().unwrap())
-            .await
-            .unwrap();
-
-        // The migration should appear to have finished. The state driver will
-        // queue a "stop" command to itself in this case, but because the driver
-        // is not directly processing the queue here, the test has to issue this
-        // call itself.
-        assert_eq!(
-            driver.driver.get_migration_status().migration_out.unwrap(),
-            ApiMigrationStatus {
-                id: migration_id,
-                state: ApiMigrationState::Finish
-            }
-        );
-
-        driver
-            .driver
-            .handle_event(StateDriverEvent::External(ExternalRequest::Stop));
-
-        assert!(matches!(driver.api_state(), ApiInstanceState::Stopped));
-    }
-
-    #[tokio::test]
-    async fn paused_vm_resumes_after_failed_migration_out() {
-        let migration_id = Uuid::new_v4();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel(1);
-        let migrate_task = tokio::spawn(async move {
-            start_rx.await.unwrap();
-            task_exit_rx.await.unwrap()
-        });
-
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-
-        // This test will simulate a migration out up through pausing the
-        // source, then fail migration. This should pause and resume all the
-        // devices and the vCPUs.
-        vm_ctrl.expect_pause_devices().times(1).returning(|| ());
-        vm_ctrl.expect_resume_devices().times(1).returning(|| ());
-        vcpu_ctrl.expect_pause_all().times(1).returning(|| ());
-        vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
-
-        // VMM will be paused once prior to exporting state, and then resumed
-        // afterwards when the migration fails.
-        let mut pause_seq = Sequence::new();
-        vm_ctrl
-            .expect_pause_vm()
-            .times(1)
-            .in_sequence(&mut pause_seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_resume_vm()
-            .times(1)
-            .in_sequence(&mut pause_seq)
-            .returning(|| ());
-
-        let mut driver = make_state_driver(test_objects);
-        let hdl = std::thread::spawn(move || {
-            let outcome = driver.driver.handle_event(
-                StateDriverEvent::External(ExternalRequest::MigrateAsSource {
-                    migration_id,
-                    task: migrate_task,
-                    start_tx,
-                    command_rx,
-                    response_tx,
-                }),
-            );
-
-            (driver, outcome)
-        });
-
-        // Simulate a successful pause.
-        command_tx.send(MigrateSourceCommand::Pause).await.unwrap();
-        let resp = response_rx.recv().await.unwrap();
-        assert!(matches!(resp, MigrateSourceResponse::Pause(Ok(()))));
-
-        // Simulate failure. The migration protocol must both update the state
-        // to Error and make the task return `Err`.
-        command_tx
-            .send(MigrateSourceCommand::UpdateState(ApiMigrationState::Error))
-            .await
-            .unwrap();
-        drop(command_tx);
-        task_exit_tx.send(Err(MigrateError::UnexpectedMessage)).unwrap();
-
-        // Wait for the call to `handle_event` to return.
-        let (driver, outcome) =
-            tokio::task::spawn_blocking(move || hdl.join().unwrap())
-                .await
-                .unwrap();
-
-        // The VM should be running and the state driver should continue
-        // operating normally.
-        assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-        assert_eq!(outcome, HandleEventOutcome::Continue);
-        assert_eq!(
-            driver.driver.get_migration_status().migration_out.unwrap(),
-            ApiMigrationStatus {
-                id: migration_id,
-                state: ApiMigrationState::Error
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn vm_starts_after_migration_in() {
-        let migration_id = Uuid::new_v4();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let migrate_task = tokio::spawn(async move {
-            start_rx.await.unwrap();
-            task_exit_rx.await.unwrap()
-        });
-
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-
-        vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
-        vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
-        vm_ctrl.expect_start_devices().times(1).returning(|| Ok(()));
-        vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
-
-        let mut pause_seq = Sequence::new();
-        vm_ctrl
-            .expect_pause_vm()
-            .times(1)
-            .in_sequence(&mut pause_seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_resume_vm()
-            .times(1)
-            .in_sequence(&mut pause_seq)
-            .returning(|| ());
-
-        let mut driver = make_state_driver(test_objects);
-
-        // The state driver expects to run on an OS thread outside the async
-        // runtime so that it can call `block_on` to wait for messages from the
-        // migration task.
-        let hdl = std::thread::spawn(move || {
-            driver.driver.handle_event(StateDriverEvent::External(
-                ExternalRequest::MigrateAsTarget {
-                    migration_id,
-                    task: migrate_task,
-                    start_tx,
-                    command_rx,
-                },
-            ));
-
-            driver
-        });
-
-        // Explicitly drop the command channel to signal to the driver that
-        // the migration task is completing.
-        command_tx
-            .send(MigrateTargetCommand::UpdateState(ApiMigrationState::Finish))
-            .await
-            .unwrap();
-        drop(command_tx);
-        task_exit_tx.send(Ok(())).unwrap();
-
-        // Wait for the call to `handle_event` to return before tearing anything
-        // else down.
-        let driver = tokio::task::spawn_blocking(move || hdl.join().unwrap())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            driver.driver.get_migration_status().migration_in.unwrap(),
-            ApiMigrationStatus {
-                id: migration_id,
-                state: ApiMigrationState::Finish
-            }
-        );
-        assert!(matches!(driver.api_state(), ApiInstanceState::Running));
-    }
-
-    #[tokio::test]
-    async fn failed_migration_in_fails_instance() {
-        let migration_id = Uuid::new_v4();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let migrate_task = tokio::spawn(async move {
-            start_rx.await.unwrap();
-            task_exit_rx.await.unwrap()
-        });
-
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-
-        vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
-        vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
-        vm_ctrl.expect_pause_vm().times(1).returning(|| ());
-        vm_ctrl.expect_resume_vm().times(1).returning(|| ());
-        let mut driver = make_state_driver(test_objects);
-
-        // The state driver expects to run on an OS thread outside the async
-        // runtime so that it can call `block_on` to wait for messages from the
-        // migration task.
-        let hdl = std::thread::spawn(move || {
-            let outcome = driver.driver.handle_event(
-                StateDriverEvent::External(ExternalRequest::MigrateAsTarget {
-                    migration_id,
-                    task: migrate_task,
-                    start_tx,
-                    command_rx,
-                }),
-            );
-
-            (driver, outcome)
-        });
-
-        // The migration task is required to update the migration state to
-        // "Error" before exiting when migration fails.
-        command_tx
-            .send(MigrateTargetCommand::UpdateState(ApiMigrationState::Error))
-            .await
-            .unwrap();
-        drop(command_tx);
-        task_exit_tx.send(Err(MigrateError::UnexpectedMessage)).unwrap();
-
-        // Wait for the call to `handle_event` to return.
-        let (driver, outcome) =
-            tokio::task::spawn_blocking(move || hdl.join().unwrap())
-                .await
-                .unwrap();
-
-        // The migration should appear to have failed, but the VM should be
-        // preserved for debugging.
-        assert_eq!(outcome, HandleEventOutcome::Continue);
-        assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
-        assert_eq!(
-            driver.driver.get_migration_status().migration_in.unwrap(),
-            ApiMigrationStatus {
-                id: migration_id,
-                state: ApiMigrationState::Error
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_vm_start_after_migration_in_fails_instance() {
-        let migration_id = Uuid::new_v4();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (task_exit_tx, task_exit_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let migrate_task = tokio::spawn(async move {
-            start_rx.await.unwrap();
-            task_exit_rx.await.unwrap()
-        });
-
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-
-        vcpu_ctrl.expect_new_generation().times(1).returning(|| ());
-        vm_ctrl.expect_reset_vcpu_state().times(1).returning(|| ());
-
-        let mut pause_seq = Sequence::new();
-        vm_ctrl
-            .expect_pause_vm()
-            .times(1)
-            .in_sequence(&mut pause_seq)
-            .returning(|| ());
-        vm_ctrl
-            .expect_resume_vm()
-            .times(1)
-            .in_sequence(&mut pause_seq)
-            .returning(|| ());
-
-        vm_ctrl
-            .expect_start_devices()
-            .times(1)
-            .returning(|| bail!("injected failure into start_devices!"));
-
-        let mut driver = make_state_driver(test_objects);
-
-        // The state driver expects to run on an OS thread outside the async
-        // runtime so that it can call `block_on` to wait for messages from the
-        // migration task.
-        let hdl = std::thread::spawn(move || {
-            let outcome = driver.driver.handle_event(
-                StateDriverEvent::External(ExternalRequest::MigrateAsTarget {
-                    migration_id,
-                    task: migrate_task,
-                    start_tx,
-                    command_rx,
-                }),
-            );
-
-            (driver, outcome)
-        });
-
-        // Explicitly drop the command channel to signal to the driver that
-        // the migration task is completing.
-        command_tx
-            .send(MigrateTargetCommand::UpdateState(ApiMigrationState::Finish))
-            .await
-            .unwrap();
-        drop(command_tx);
-        task_exit_tx.send(Ok(())).unwrap();
-
-        // Wait for the call to `handle_event` to return.
-        let (driver, outcome) =
-            tokio::task::spawn_blocking(move || hdl.join().unwrap())
-                .await
-                .unwrap();
-
-        // The instance should have failed, but should also be preserved for
-        // debugging.
-        assert_eq!(outcome, HandleEventOutcome::Continue);
-        assert!(matches!(driver.api_state(), ApiInstanceState::Failed));
-
-        // The migration has still succeeded in this case.
-        assert_eq!(
-            driver.driver.get_migration_status().migration_in.unwrap(),
-            ApiMigrationStatus {
-                id: migration_id,
-                state: ApiMigrationState::Finish
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn start_vm_after_migration_in_does_not_publish_starting_state() {
-        let mut test_objects = make_default_mocks();
-        let vm_ctrl = &mut test_objects.vm_ctrl;
-        let vcpu_ctrl = &mut test_objects.vcpu_ctrl;
-
-        // A call to start a VM after a successful migration should start vCPUs
-        // and devices without resetting anything.
-        vcpu_ctrl.expect_resume_all().times(1).returning(|| ());
-        vm_ctrl.expect_start_devices().times(1).returning(|| Ok(()));
-
-        // As noted below, the instance state is being magicked directly into a
-        // `Migrating` state, rather than executing the logic which would
-        // typically carry it there.  As such, `pause_vm()` will not be called
-        // as part of setup.  Since instance start _is_ being tested here, the
-        // `resume_vm()` call is expected.
-        vm_ctrl.expect_pause_vm().never();
-        vm_ctrl.expect_resume_vm().times(1).returning(|| ());
-
-        // Skip the rigmarole of standing up a fake migration. Instead, just
-        // push the driver into the state it would have after a successful
-        // migration to appease the assertions in `start_vm`.
-        //
-        // Faking an entire migration, as in the previous tests, requires the
-        // state driver to run on its own worker thread. This is fine for tests
-        // that only want to examine state after the driver has finished an
-        // operation, but this test wants to test side effects of a specific
-        // part of the state driver's actions, which are tough to synchronize
-        // with when the driver is running on another thread.
-        let mut driver = make_state_driver(test_objects);
-        driver.driver.set_instance_state(ApiInstanceState::Migrating);
-
-        // The driver starts in the Migrating state and should go directly to
-        // the Running state without passing through Starting. Because there's
-        // no way to guarantee that the test will see all intermediate states
-        // that `start_vm` publishes, instead assert that the final state of
-        // Running is correct and that the state generation only went up by 1
-        // (implying that there were no intervening transitions).
-        let migrating_gen = driver.driver.api_state_tx.borrow().gen;
-        driver.driver.start_vm(VmStartReason::MigratedIn);
-        let new_state = driver.driver.api_state_tx.borrow().clone();
-        assert!(matches!(new_state.state, ApiInstanceState::Running));
-        assert_eq!(new_state.gen, migrating_gen + 1);
+    fn vm_lifecycle(&self) -> &dyn lifecycle_ops::VmLifecycle {
+        self.vm_lifecycle.as_ref().unwrap().as_ref()
     }
 }

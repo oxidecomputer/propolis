@@ -40,7 +40,7 @@ pub(crate) trait VcpuTaskController: Send {
 impl VcpuTasks {
     pub(crate) fn new(
         machine: &propolis::Machine,
-        event_handler: Arc<dyn super::vm2::guest_event::GuestEventHandler>,
+        event_handler: Arc<dyn super::vm::guest_event::GuestEventHandler>,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
         let generation = Arc::new(AtomicUsize::new(0));
@@ -72,7 +72,7 @@ impl VcpuTasks {
     fn vcpu_loop(
         vcpu: &Vcpu,
         task: propolis::tasks::TaskHdl,
-        event_handler: Arc<dyn super::vm2::guest_event::GuestEventHandler>,
+        event_handler: Arc<dyn super::vm::guest_event::GuestEventHandler>,
         generation: Arc<AtomicUsize>,
         log: slog::Logger,
     ) {

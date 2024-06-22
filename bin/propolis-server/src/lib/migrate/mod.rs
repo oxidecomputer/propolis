@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bit_field::BitField;
@@ -18,10 +19,8 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 use uuid::Uuid;
 
-use crate::{
-    server::{DropshotEndpointContext, VmControllerState},
-    vm::{VmController, VmControllerError},
-};
+use crate::server::{DropshotEndpointContext, VmControllerState};
+use crate::vm::ActiveVm;
 
 mod codec;
 pub mod destination;
@@ -160,16 +159,6 @@ impl From<codec::ProtocolError> for MigrateError {
     }
 }
 
-impl From<VmControllerError> for MigrateError {
-    fn from(err: VmControllerError) -> Self {
-        match err {
-            VmControllerError::AlreadyMigrationSource => {
-                MigrateError::MigrationAlreadyInProgress
-            }
-            _ => MigrateError::StateMachine(err.to_string()),
-        }
-    }
-}
 impl From<MigrateStateError> for MigrateError {
     fn from(value: MigrateStateError) -> Self {
         Self::DeviceState(value.to_string())
@@ -307,6 +296,15 @@ pub async fn source_start<
     Ok(())
 }
 
+pub(crate) struct DestinationContext<
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+> {
+    pub migration_id: Uuid,
+    pub conn: WebSocketStream<T>,
+    pub local_addr: SocketAddr,
+    pub protocol: crate::migrate::protocol::Protocol,
+}
+
 /// Initiate a migration to the given source instance.
 ///
 /// This will attempt to open a websocket to the given source instance and
@@ -315,9 +313,13 @@ pub async fn source_start<
 /// migration process (destination-side).
 pub(crate) async fn dest_initiate(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-    controller: Arc<VmController>,
     migrate_info: api::InstanceMigrateInitiateRequest,
-) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
+) -> Result<
+    DestinationContext<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    MigrateError,
+> {
     let migration_id = migrate_info.migration_id;
 
     // Create a new log context for the migration
@@ -383,21 +385,13 @@ pub(crate) async fn dest_initiate(
         }
     };
     let local_addr = rqctx.server.local_addr;
-    tokio::runtime::Handle::current()
-        .spawn_blocking(move || -> Result<(), MigrateError> {
-            // Now start using the websocket for the migration protocol
-            controller.request_migration_into(
-                migration_id,
-                conn,
-                local_addr,
-                selected,
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap()?;
 
-    Ok(api::InstanceMigrateInitiateResponse { migration_id })
+    Ok(DestinationContext {
+        migration_id,
+        conn,
+        local_addr,
+        protocol: selected,
+    })
 }
 
 // We should probably turn this into some kind of ValidatedBitmap

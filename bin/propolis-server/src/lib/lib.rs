@@ -11,5 +11,4 @@ mod spec;
 mod stats;
 mod vcpu_tasks;
 mod vm;
-mod vm2;
 pub mod vnc;

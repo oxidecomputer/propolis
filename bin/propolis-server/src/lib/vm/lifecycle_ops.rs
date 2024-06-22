@@ -54,26 +54,30 @@ pub(super) trait VmLifecycle: Send + Sync {
 impl VmLifecycle for super::ActiveVm {
     fn pause_vm(&self) {
         info!(self.log, "pausing kernel VMM resources");
-        self.objects.machine.hdl.pause().expect("VM_PAUSE should succeed");
+        self.objects().machine().hdl.pause().expect("VM_PAUSE should succeed");
     }
 
     fn resume_vm(&self) {
         info!(self.log, "resuming kernel VMM resources");
-        self.objects.machine.hdl.resume().expect("VM_RESUME should succeed");
+        self.objects()
+            .machine()
+            .hdl
+            .resume()
+            .expect("VM_RESUME should succeed");
     }
 
     fn reset_devices_and_machine(&self) {
-        self.objects.for_each_device(|name, dev| {
+        self.for_each_device(|name, dev| {
             info!(self.log, "sending reset request to {}", name);
             dev.reset();
         });
 
-        self.objects.machine.reinitialize().unwrap();
+        self.objects().machine().reinitialize().unwrap();
     }
 
     fn start_devices(&self) -> BoxFuture<'_, anyhow::Result<()>> {
         Box::pin(async {
-            self.objects.for_each_device_fallible(|name, dev| {
+            self.objects().for_each_device_fallible(|name, dev| {
                 info!(self.log, "sending startup complete to {}", name);
                 let res = dev.start();
                 if let Err(e) = &res {
@@ -95,7 +99,8 @@ impl VmLifecycle for super::ActiveVm {
     }
 
     fn pause_devices(&self) -> BoxFuture<'_, ()> {
-        self.objects.for_each_device(|name, dev| {
+        let objects = self.objects();
+        objects.for_each_device(|name, dev| {
             info!(self.log, "sending pause request to {}", name);
             dev.pause();
         });
@@ -121,8 +126,7 @@ impl VmLifecycle for super::ActiveVm {
         }
 
         info!(self.log, "waiting for devices to pause");
-        let mut stream: FuturesUnordered<_> = self
-            .objects
+        let mut stream: FuturesUnordered<_> = objects
             .lifecycle_components
             .iter()
             .map(|(name, dev)| {
@@ -149,19 +153,20 @@ impl VmLifecycle for super::ActiveVm {
     }
 
     fn resume_devices(&self) {
-        self.objects.for_each_device(|name, dev| {
+        self.objects().for_each_device(|name, dev| {
             info!(self.log, "sending resume request to {}", name);
             dev.resume();
         })
     }
 
     fn halt_devices(&self) {
-        self.objects.for_each_device(|name, dev| {
+        let objects = self.objects();
+        objects.for_each_device(|name, dev| {
             info!(self.log, "sending halt request to {}", name);
             dev.halt();
         });
 
-        for (name, backend) in self.objects.block_backends.iter() {
+        for (name, backend) in objects.block_backends.iter() {
             info!(self.log, "stopping and detaching block backend {}", name);
             backend.stop();
             if let Err(err) = backend.detach() {
@@ -173,7 +178,7 @@ impl VmLifecycle for super::ActiveVm {
     }
 
     fn reset_vcpu_state(&self) {
-        for vcpu in self.objects.machine.vcpus.iter() {
+        for vcpu in self.objects().machine().vcpus.iter() {
             info!(self.log, "resetting vCPU {}", vcpu.id);
             vcpu.activate().unwrap();
             vcpu.reboot_state().unwrap();
