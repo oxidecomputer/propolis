@@ -20,9 +20,12 @@ use propolis_api_types::{
     InstanceStateMonitorResponse,
 };
 
+use rfb::server::VncServer;
 use tokio::sync::RwLockReadGuard as TokioRwLockReadGuard;
 
-use crate::serial::Serial;
+use crate::{
+    serial::Serial, server::MetricsEndpointConfig, vnc::PropolisVncServer,
+};
 
 pub(crate) mod guest_event;
 mod lifecycle_ops;
@@ -133,7 +136,7 @@ pub(super) struct ActiveVm {
     properties: InstanceProperties,
 
     objects: tokio::sync::RwLock<VmObjects>,
-    services: tokio::sync::Mutex<Option<services::VmServices>>,
+    services: services::VmServices,
 }
 
 impl ActiveVm {
@@ -170,8 +173,10 @@ enum VmState {
 pub(super) struct EnsureOptions {
     pub toml_config: Arc<crate::server::VmTomlConfig>,
     pub use_reservoir: bool,
+    pub metrics_config: Option<MetricsEndpointConfig>,
     pub oximeter_registry: Option<ProducerRegistry>,
     pub nexus_client: Option<nexus_client::Client>,
+    pub vnc_server: Arc<VncServer<PropolisVncServer>>,
 }
 
 impl Vm {

@@ -20,7 +20,6 @@ use tokio_tungstenite::{tungstenite, WebSocketStream};
 use uuid::Uuid;
 
 use crate::server::{DropshotEndpointContext, VmControllerState};
-use crate::vm::ActiveVm;
 
 mod codec;
 pub mod destination;
