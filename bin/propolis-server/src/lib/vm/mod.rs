@@ -17,10 +17,12 @@ use propolis::{
 };
 use propolis_api_types::{
     instance_spec::v0::InstanceSpecV0, InstanceProperties,
-    InstanceStateMonitorResponse,
 };
+use rfb::server::VncServer;
 
-use crate::serial::Serial;
+use crate::{
+    serial::Serial, server::MetricsEndpointConfig, vnc::PropolisVncServer,
+};
 
 pub(crate) mod guest_event;
 mod lifecycle_ops;
@@ -117,13 +119,6 @@ impl VmObjects {
 
         Ok(())
     }
-
-    pub(crate) fn device_by_name(
-        &self,
-        name: &String,
-    ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.vm_objects.devices.get(name).cloned()
-    }
 }
 
 /// The state stored in a [`Vm`] when there is an actual underlying virtual
@@ -138,7 +133,7 @@ pub(super) struct ActiveVm {
     properties: InstanceProperties,
 
     objects: tokio::sync::RwLock<VmObjects>,
-    services: tokio::sync::Mutex<Option<services::VmServices>>,
+    services: services::VmServices,
 }
 
 impl ActiveVm {
@@ -175,8 +170,10 @@ enum VmState {
 pub(super) struct EnsureOptions {
     pub toml_config: Arc<crate::server::VmTomlConfig>,
     pub use_reservoir: bool,
+    pub metrics_config: Option<MetricsEndpointConfig>,
     pub oximeter_registry: Option<ProducerRegistry>,
     pub nexus_client: Option<nexus_client::Client>,
+    pub vnc_server: Arc<VncServer<PropolisVncServer>>,
 }
 
 impl Vm {

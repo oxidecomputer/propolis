@@ -13,12 +13,10 @@ use rfb::rfb::{
     SecurityTypes,
 };
 use rfb::server::{Server, VncServer, VncServerConfig, VncServerData};
-use slog::{debug, error, info, o, trace, Logger};
+use slog::{debug, error, info, o, trace, warn, Logger};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-use crate::vm::VmController;
 
 const INITIAL_WIDTH: u16 = 1024;
 const INITIAL_HEIGHT: u16 = 768;
@@ -55,7 +53,7 @@ enum Framebuffer {
 struct PropolisVncServerInner {
     framebuffer: Framebuffer,
     ps2ctrl: Option<Arc<PS2Ctrl>>,
-    vm: Option<Arc<VmController>>,
+    vm: Option<Arc<crate::vm::Vm>>,
 }
 
 #[derive(Clone)]
@@ -83,7 +81,7 @@ impl PropolisVncServer {
         &self,
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,
-        vm: Arc<VmController>,
+        vm: Arc<crate::vm::Vm>,
     ) {
         let mut inner = self.inner.lock().await;
         inner.framebuffer = Framebuffer::Initialized(fb);
@@ -154,15 +152,23 @@ impl Server for PropolisVncServer {
 
                 let len = fb.height as usize * fb.width as usize * 4;
                 let mut buf = vec![0u8; len];
+                if let Some(vm) = inner.vm.as_ref().unwrap().active_vm() {
+                    let vm_objects = vm.objects().await;
+                    let read = tokio::task::block_in_place(|| {
+                        let machine = vm_objects.machine();
+                        let memctx = machine.acc_mem.access().unwrap();
+                        memctx.read_into(GuestAddr(fb.addr), &mut buf, len)
+                    });
 
-                let read = tokio::task::block_in_place(|| {
-                    let machine = inner.vm.as_ref().unwrap().machine();
-                    let memctx = machine.acc_mem.access().unwrap();
-                    memctx.read_into(GuestAddr(fb.addr), &mut buf, len)
-                });
-
-                assert!(read.is_some());
-                debug!(self.log, "read {} bytes from guest", read.unwrap());
+                    assert!(read.is_some());
+                    debug!(self.log, "read {} bytes from guest", read.unwrap());
+                } else {
+                    warn!(
+                        self.log,
+                        "got framebuffer init message but VM is gone"
+                    );
+                    buf = vec![0xffu8; len];
+                }
 
                 let r = Rectangle::new(
                     0,

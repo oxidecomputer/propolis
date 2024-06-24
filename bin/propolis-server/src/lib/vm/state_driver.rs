@@ -233,7 +233,7 @@ pub(super) async fn run_state_driver(
         &input_queue,
         &ensure_request.properties,
         &ensure_request.instance_spec,
-        ensure_options,
+        &ensure_options,
     )
     .await
     {
@@ -245,14 +245,23 @@ pub(super) async fn run_state_driver(
         }
     };
 
+    let services = super::services::VmServices::new(
+        &log,
+        vm,
+        &vm_objects,
+        &ensure_request.properties,
+        &ensure_options,
+    )
+    .await;
+
     let active_vm = Arc::new(super::ActiveVm {
         parent: vm.clone(),
         log: log.clone(),
-        state_driver_queue: input_queue,
+        state_driver_queue: input_queue.clone(),
         external_state_rx: external_rx,
         properties: ensure_request.properties,
         objects: tokio::sync::RwLock::new(vm_objects),
-        services: tokio::sync::Mutex::new(todo!("gjc")),
+        services,
     });
 
     let state_driver = StateDriver {
@@ -274,7 +283,7 @@ async fn initialize_vm_from_spec(
     event_queue: &Arc<InputQueue>,
     properties: &InstanceProperties,
     spec: &VersionedInstanceSpec,
-    options: super::EnsureOptions,
+    options: &super::EnsureOptions,
 ) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
     info!(log, "initializing new VM";
               "spec" => #?spec,
@@ -303,7 +312,7 @@ async fn initialize_vm_from_spec(
         spec: &v0_spec,
         properties: &properties,
         toml_config: &options.toml_config,
-        producer_registry: options.oximeter_registry,
+        producer_registry: options.oximeter_registry.clone(),
         state: MachineInitializerState::default(),
     };
 
@@ -332,7 +341,9 @@ async fn initialize_vm_from_spec(
     #[cfg(feature = "falcon")]
     init.initialize_9pfs(&chipset)?;
 
-    init.initialize_storage_devices(&chipset, options.nexus_client).await?;
+    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
+        .await?;
+
     let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
     init.initialize_cpus()?;
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
