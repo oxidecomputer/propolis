@@ -171,7 +171,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
         if let Err(e) = preamble
-            .is_migration_compatible(&*self.vm.objects().instance_spec())
+            .is_migration_compatible(&*self.vm.objects().await.instance_spec())
         {
             error!(
                 self.log(),
@@ -316,7 +316,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Devices: {devices:#?}");
 
         {
-            let objects = self.vm.objects();
+            let objects = self.vm.objects().await;
             let machine = objects.machine();
             let migrate_ctx =
                 MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
@@ -368,7 +368,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         // Take a snapshot of the host hrtime/wall clock time, then adjust
         // time data appropriately.
-        let vmm_hdl = &self.vm.objects().machine().hdl.clone();
+        let vmm_hdl = &self.vm.objects().await.machine().hdl.clone();
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -563,6 +563,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         self.vm
             .objects()
+            .await
             .com1()
             .import(&com1_history)
             .await
@@ -637,7 +638,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let objects = self.vm.objects();
+        let objects = self.vm.objects().await;
         let memctx = objects.machine().acc_mem.access().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);

@@ -148,8 +148,13 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
         // See the lengthy comment on `RamOfferDiscipline` above for more
         // details about what's going on here.
         for (&GuestAddr(gpa), dirtiness) in proto.dirt.iter().flatten() {
-            if let Err(e) =
-                proto.vm.objects().machine().hdl.set_dirty_pages(gpa, dirtiness)
+            if let Err(e) = proto
+                .vm
+                .objects()
+                .await
+                .machine()
+                .hdl
+                .set_dirty_pages(gpa, dirtiness)
             {
                 // Bad news! Our attempt to re-set the dirty bit on these
                 // pages has failed! Thus, subsequent migration attempts
@@ -243,7 +248,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         conn: WebSocketStream<T>,
     ) -> Self {
         let dirt = {
-            let can_npt_operate = vm.objects().machine().hdl.can_npt_operate();
+            let can_npt_operate =
+                vm.objects().await.machine().hdl.can_npt_operate();
 
             // TODO(gjc) the pre-pause offer phase needs to look at whether
             // redirtying has previously failed. This is done over the command
@@ -323,7 +329,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync).await;
         let preamble = Preamble::new(VersionedInstanceSpec::V0(
-            self.vm.objects().instance_spec().clone(),
+            self.vm.objects().await.instance_spec().clone(),
         ));
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
@@ -543,13 +549,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.update_state(MigrationState::Device).await;
         let mut device_states = vec![];
         {
-            let objects = self.vm.objects();
+            let objects = self.vm.objects().await;
             let machine = objects.machine();
             let migrate_ctx =
                 MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
 
             // Collect together the serialized state for all the devices
-            self.vm.for_each_device_fallible(|name, devop| {
+            objects.for_each_device_fallible(|name, devop| {
                 let mut dev = Device {
                     instance_name: name.to_string(),
                     payload: Vec::new(),
@@ -590,7 +596,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
                     }
                 }
                 Ok(())
-            }).await?;
+            })?;
         }
 
         info!(self.log(), "Device States: {device_states:#?}");
@@ -607,7 +613,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
     // Read and send over the time data
     async fn time_data(&mut self) -> Result<(), MigrateError> {
-        let vmm_hdl = &self.vm.objects().machine().hdl.clone();
+        let vmm_hdl = &self.vm.objects().await.machine().hdl.clone();
         let vm_time_data =
             vmm::time::export_time_data(vmm_hdl).map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -646,7 +652,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             _ => return Err(MigrateError::UnexpectedMessage),
         };
         let com1_history =
-            self.vm.objects().com1().export_history(remote_addr).await?;
+            self.vm.objects().await.com1().export_history(remote_addr).await?;
         self.send_msg(codec::Message::Serialized(com1_history)).await?;
         self.read_ok().await
     }
@@ -756,7 +762,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn vmm_ram_bounds(
         &mut self,
     ) -> Result<RangeInclusive<GuestAddr>, MigrateError> {
-        let objects = self.vm.objects();
+        let objects = self.vm.objects().await;
         let machine = objects.machine();
         let memctx = machine.acc_mem.access().unwrap();
         memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
@@ -769,6 +775,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     ) -> Result<(), MigrateError> {
         self.vm
             .objects()
+            .await
             .machine()
             .hdl
             .track_dirty_pages(start_gpa.0, bits)
@@ -780,7 +787,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         addr: GuestAddr,
         buf: &mut [u8],
     ) -> Result<(), MigrateError> {
-        let objects = self.vm.objects();
+        let objects = self.vm.objects().await;
         let machine = objects.machine();
         let memctx = machine.acc_mem.access().unwrap();
         let len = buf.len();
