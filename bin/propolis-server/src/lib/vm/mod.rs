@@ -62,6 +62,7 @@ pub(crate) struct Vm {
 }
 
 struct VmObjects {
+    log: slog::Logger,
     instance_spec: InstanceSpecV0,
     machine: Machine,
     lifecycle_components: LifecycleMap,
@@ -88,11 +89,15 @@ impl VmObjects {
         self.lifecycle_components.get(name).cloned()
     }
 
+    pub(crate) fn block_backends(&self) -> &BlockBackendMap {
+        &self.block_backends
+    }
+
     pub(crate) fn com1(&self) -> &Arc<Serial<LpcUart>> {
         &self.com1
     }
 
-    fn for_each_device(
+    pub(crate) fn for_each_device(
         &self,
         mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
     ) {
@@ -101,7 +106,7 @@ impl VmObjects {
         }
     }
 
-    fn for_each_device_fallible<E>(
+    pub(crate) fn for_each_device_fallible<E>(
         &self,
         mut func: impl FnMut(
             &str,
@@ -127,7 +132,7 @@ pub(super) struct ActiveVm {
 
     properties: InstanceProperties,
 
-    objects: RwLock<VmObjects>,
+    objects: tokio::sync::RwLock<VmObjects>,
     services: tokio::sync::Mutex<Option<services::VmServices>>,
 }
 
@@ -136,41 +141,15 @@ impl ActiveVm {
         &self.log
     }
 
-    pub(crate) fn objects(&self) -> RwLockReadGuard<'_, VmObjects> {
-        self.objects.read().unwrap()
-    }
-
-    pub(crate) async fn for_each_device(
+    pub(crate) async fn objects(
         &self,
-        func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
-    ) {
-        self.objects().for_each_device(func);
-    }
-
-    pub(crate) async fn for_each_device_fallible<E>(
-        &self,
-        func: impl FnMut(
-            &str,
-            &Arc<dyn propolis::common::Lifecycle>,
-        ) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E> {
-        self.objects().for_each_device_fallible(func)
+    ) -> tokio::sync::RwLockReadGuard<'_, VmObjects> {
+        self.objects.read().await
     }
 
     async fn stop_services(&self) {
         let services = self.services.lock().await.take().unwrap();
         services.stop(&self.log).await;
-    }
-}
-
-impl Drop for ActiveVm {
-    fn drop(&mut self) {
-        let mut guard = self.parent.state.write().unwrap();
-        *guard = VmState::Defunct(DefunctVm {
-            external_state_rx: self.external_state_rx.clone(),
-            properties: self.properties.clone(),
-            spec: self.objects().instance_spec.clone(),
-        });
     }
 }
 
@@ -236,6 +215,24 @@ impl Vm {
         }
     }
 
+    async fn make_defunct(&self) {
+        let mut guard = self.state.write().unwrap();
+        let old = std::mem::replace(&mut *guard, VmState::NoVm);
+        match old {
+            VmState::Active(vm) => {
+                let active = vm.upgrade().expect("state driver holds a ref");
+                *guard = VmState::Defunct(DefunctVm {
+                    external_state_rx: active.external_state_rx.clone(),
+                    properties: active.properties.clone(),
+                    spec: active.objects().await.instance_spec.clone(),
+                });
+            }
+            _ => unreachable!(
+                "only an active VM's state worker calls make_defunct"
+            ),
+        }
+    }
+
     pub async fn ensure(
         self: &Arc<Self>,
         log: slog::Logger,
@@ -253,20 +250,6 @@ impl Vm {
         }
 
         *guard = VmState::WaitingToStart;
-
-        let (external_tx, external_rx) =
-            tokio::sync::watch::channel(InstanceStateMonitorResponse {
-                gen: 1,
-                state: propolis_api_types::InstanceState::Starting,
-                migration: propolis_api_types::InstanceMigrateStatusResponse {
-                    migration_in: None,
-                    migration_out: None,
-                },
-            });
-
-        let input_queue = state_driver::InputQueue::new(
-            log.new(slog::o!("component" => "vmm_request_queue")),
-        );
 
         let state_driver = state_driver::StateDriver::new(
             log,
