@@ -50,8 +50,14 @@ pub(crate) enum VmError {
     #[error("VM ensure result channel unexpectedly closed")]
     EnsureResultClosed,
 
+    #[error("VM is currently initializing")]
+    WaitingToInitialize,
+
     #[error("VM already initialized")]
     AlreadyInitialized,
+
+    #[error("VM is currently shutting down")]
+    RundownInProgress,
 
     #[error("VM initialization failed")]
     InitializationFailed(#[source] anyhow::Error),
@@ -222,7 +228,7 @@ enum VmState {
 
     /// There is an active state driver task, but it is currently creating VM
     /// components and/or starting VM services.
-    WaitingToStart,
+    WaitingForInit,
 
     /// There is an active virtual machine. Callers may try to upgrade the
     /// contained weak reference to access its objects and services.
@@ -260,7 +266,7 @@ impl Vm {
     fn start_failed(&self) {
         let mut guard = self.inner.write().unwrap();
         match guard.state {
-            VmState::WaitingToStart => guard.state = VmState::NoVm,
+            VmState::WaitingForInit => guard.state = VmState::NoVm,
             _ => unreachable!(
                 "only a starting VM's state worker calls start_failed"
             ),
@@ -271,7 +277,7 @@ impl Vm {
         let mut guard = self.inner.write().unwrap();
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::WaitingToStart => {
+            VmState::WaitingForInit => {
                 guard.state = VmState::Active(Arc::downgrade(&active))
             }
             _ => unreachable!(
@@ -321,17 +327,16 @@ impl Vm {
         // lock to a writer lock.
         {
             let mut guard = self.inner.write().unwrap();
-            if matches!(
-                guard.state,
-                VmState::WaitingToStart
-                    | VmState::Active(_)
-                    | VmState::Rundown(_)
-            ) {
-                return Err(VmError::AlreadyInitialized);
+            match guard.state {
+                VmState::WaitingForInit => {
+                    return Err(VmError::WaitingToInitialize)
+                }
+                VmState::Active(_) => return Err(VmError::AlreadyInitialized),
+                VmState::Rundown(_) => return Err(VmError::RundownInProgress),
+                _ => {}
             }
 
-            guard.state = VmState::WaitingToStart;
-
+            guard.state = VmState::WaitingForInit;
             let vm_for_driver = self.clone();
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(

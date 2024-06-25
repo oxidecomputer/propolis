@@ -35,6 +35,8 @@ use super::migrate_commands::{MigrateSourceCommand, MigrateSourceResponse};
 /// the controller's state driver thread.
 #[derive(Debug)]
 pub enum ExternalRequest {
+    Start,
+
     /// Asks the state worker to start a migration-source task.
     MigrateAsSource {
         /// The ID of the live migration for which this VM will be the source.
@@ -125,6 +127,7 @@ enum RequestDisposition {
 /// The current disposition for each kind of incoming request.
 #[derive(Copy, Clone, Debug)]
 struct AllowedRequests {
+    start: RequestDisposition,
     migrate_as_source: RequestDisposition,
     reboot: RequestDisposition,
     stop: RequestDisposition,
@@ -143,6 +146,7 @@ impl ExternalRequestQueue {
         Self {
             queue: VecDeque::new(),
             allowed: AllowedRequests {
+                start: RequestDisposition::Enqueue,
                 migrate_as_source: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
@@ -172,6 +176,7 @@ impl ExternalRequestQueue {
         request: ExternalRequest,
     ) -> Result<(), RequestDeniedReason> {
         let disposition = match request {
+            ExternalRequest::Start => self.allowed.start,
             ExternalRequest::MigrateAsSource { .. } => {
                 self.allowed.migrate_as_source
             }
@@ -245,32 +250,49 @@ impl ExternalRequestQueue {
         use RequestDeniedReason as DenyReason;
         use RequestDisposition as Disposition;
         match reason {
+            ChangeReason::ApiRequest(ExternalRequest::Start) => {
+                let reason = DenyReason::StartInProgress;
+                AllowedRequests {
+                    start: Disposition::Ignore,
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
+                    stop: self.allowed.stop,
+                }
+            }
             ChangeReason::ApiRequest(ExternalRequest::MigrateAsSource {
                 ..
-            }) => AllowedRequests {
-                migrate_as_source: Disposition::Deny(
-                    DenyReason::AlreadyMigrationSource,
-                ),
-                reboot: Disposition::Deny(
-                    DenyReason::InvalidRequestForMigrationSource,
-                ),
-                stop: self.allowed.stop,
-            },
+            }) => {
+                assert!(matches!(self.allowed.start, Disposition::Ignore));
+
+                AllowedRequests {
+                    start: self.allowed.start,
+                    migrate_as_source: Disposition::Deny(
+                        DenyReason::AlreadyMigrationSource,
+                    ),
+                    reboot: Disposition::Deny(
+                        DenyReason::InvalidRequestForMigrationSource,
+                    ),
+                    stop: self.allowed.stop,
+                }
+            }
 
             // Requests to reboot prevent additional reboot requests from being
             // queued, but do not affect other operations.
             ChangeReason::ApiRequest(ExternalRequest::Reboot) => {
+                assert!(matches!(self.allowed.start, Disposition::Ignore));
                 AllowedRequests { reboot: Disposition::Ignore, ..self.allowed }
             }
 
             // Requests to stop the instance block other requests from being
             // queued. Additional requests to stop are ignored for idempotency.
             ChangeReason::ApiRequest(ExternalRequest::Stop) => {
+                assert!(matches!(self.allowed.start, Disposition::Ignore));
+
+                let reason = DenyReason::HaltPending;
                 AllowedRequests {
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::HaltPending,
-                    ),
-                    reboot: Disposition::Deny(DenyReason::HaltPending),
+                    start: Disposition::Deny(reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
                     stop: Disposition::Ignore,
                 }
             }
@@ -279,6 +301,7 @@ impl ExternalRequestQueue {
             // to reboot it become valid.
             ChangeReason::StateChange(InstanceStateChange::StartedRunning) => {
                 AllowedRequests {
+                    start: self.allowed.start,
                     migrate_as_source: Disposition::Enqueue,
                     reboot: Disposition::Enqueue,
                     stop: self.allowed.stop,
@@ -305,20 +328,20 @@ impl ExternalRequestQueue {
             // previous dispositions for migrate and reboot requests may not be
             // "deny".
             ChangeReason::StateChange(InstanceStateChange::Stopped) => {
+                let reason = DenyReason::InstanceNotActive;
                 AllowedRequests {
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::InstanceNotActive,
-                    ),
-                    reboot: Disposition::Deny(DenyReason::InstanceNotActive),
+                    start: Disposition::Deny(reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
                     stop: Disposition::Ignore,
                 }
             }
             ChangeReason::StateChange(InstanceStateChange::Failed) => {
+                let reason = DenyReason::InstanceFailed;
                 AllowedRequests {
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::InstanceFailed,
-                    ),
-                    reboot: Disposition::Deny(DenyReason::InstanceFailed),
+                    start: Disposition::Deny(reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
                     stop: self.allowed.stop,
                 }
             }
