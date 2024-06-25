@@ -251,16 +251,18 @@ impl Drop for ActiveVm {
             services.stop(&log).await;
 
             let tx = driver.await.expect("state driver shouldn't panic");
-            let old_state = tx.borrow();
-            let new_state = InstanceStateMonitorResponse {
-                gen: old_state.gen + 1,
-                state: propolis_api_types::InstanceState::Destroyed,
-                migration: old_state.migration.clone(),
+            let new_state = {
+                let old_state = tx.borrow();
+                InstanceStateMonitorResponse {
+                    gen: old_state.gen + 1,
+                    state: propolis_api_types::InstanceState::Destroyed,
+                    migration: old_state.migration.clone(),
+                }
             };
 
             tx.send(new_state).expect("VM in rundown should hold a receiver");
 
-            parent.complete_rundown();
+            parent.complete_rundown().await;
         });
     }
 }
@@ -381,20 +383,17 @@ impl Vm {
     }
 
     async fn set_rundown(&self) {
-        let mut guard = self.inner.write().unwrap();
-        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
-        match old {
-            VmState::Active(vm) => {
-                guard.state = VmState::Rundown(RundownVm {
-                    external_state_rx: vm.external_state_rx.clone(),
-                    properties: vm.properties.clone(),
-                    spec: vm.objects().await.instance_spec.clone(),
-                });
-            }
-            _ => unreachable!(
-                "only an active VM's state worker calls set_rundown"
-            ),
-        }
+        let vm = self
+            .active_vm()
+            .expect("VM should be active before being run down");
+
+        let new_state = VmState::Rundown(RundownVm {
+            external_state_rx: vm.external_state_rx.clone(),
+            properties: vm.properties.clone(),
+            spec: vm.objects().await.instance_spec.clone(),
+        });
+
+        self.inner.write().unwrap().state = new_state;
     }
 
     async fn complete_rundown(&self) {

@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use crate::serial::history_buffer::SerialHistoryOffset;
-use crate::serial::SerialTaskControlMessage;
 use crate::vm::VmError;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
@@ -29,21 +28,17 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::{
-    self, components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
-    VersionedInstanceSpec,
-};
+use propolis_api_types::instance_spec::{self, VersionedInstanceSpec};
 
 pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::server::VncServer;
-use slog::{error, info, o, warn, Logger};
+use slog::{error, warn, Logger};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, MappedMutexGuard, Mutex, MutexGuard};
+use tokio::sync::MutexGuard;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
-use crate::stats::virtual_machine::VirtualMachine;
 use crate::vnc::PropolisVncServer;
 
 pub(crate) type DeviceMap =
@@ -86,22 +81,13 @@ pub struct StaticConfig {
     metrics: Option<MetricsEndpointConfig>,
 }
 
-/// Objects related to Propolis's Oximeter metric production.
-pub struct OximeterState {
-    /// The metric producer server.
-    server: Option<oximeter_producer::Server>,
-
-    /// The metrics wrapper for "server-level" metrics, i.e., metrics that are
-    /// tracked by the server itself (as opposed to being tracked by a component
-    /// within an instance).
-    stats: Option<crate::stats::ServerStatsOuter>,
-}
-
 /// Context accessible from HTTP callbacks.
 pub struct DropshotEndpointContext {
     static_config: StaticConfig,
     vnc_server: Arc<VncServer<PropolisVncServer>>,
-    pub vm: Arc<crate::vm::Vm>,
+    pub(crate) vm: Arc<crate::vm::Vm>,
+
+    #[allow(dead_code)]
     log: Logger,
 }
 
@@ -273,11 +259,25 @@ async fn instance_ensure_common(
         .vm
         .ensure(rqctx.log.clone(), request, ensure_options)
         .await
-        .expect("gjc");
-
-    Ok(HttpResponseCreated(api::InstanceEnsureResponse {
-        migrate: todo!("gjc"),
-    }))
+        .map(HttpResponseCreated)
+        .map_err(|e| match e {
+            VmError::EnsureResultClosed => HttpError::for_internal_error(
+                "state driver unexpectedly dropped result channel".to_string(),
+            ),
+            VmError::WaitingToInitialize
+            | VmError::AlreadyInitialized
+            | VmError::RundownInProgress => HttpError::for_client_error(
+                Some(api::ErrorCode::AlreadyInitialized.to_string()),
+                http::StatusCode::CONFLICT,
+                "instance already initialized".to_string(),
+            ),
+            VmError::InitializationFailed(e) => HttpError::for_internal_error(
+                format!("VM initialization failed: {e}"),
+            ),
+            _ => HttpError::for_internal_error(format!(
+                "unexpected error from VM controller: {e}"
+            )),
+        })
 }
 
 #[endpoint {
@@ -355,7 +355,7 @@ async fn instance_spec_get(
 async fn instance_get(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    Ok(instance_get_common(&rqctx).await.map(|full| {
+    instance_get_common(&rqctx).await.map(|full| {
         HttpResponseOk(api::InstanceGetResponse {
             instance: api::Instance {
                 properties: full.properties,
@@ -364,7 +364,7 @@ async fn instance_get(
                 nics: vec![],
             },
         })
-    })?)
+    })
 }
 
 #[endpoint {
@@ -419,7 +419,7 @@ async fn instance_state_put(
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let ctx = rqctx.context();
     let requested_state = request.into_inner();
-    let vm = ctx.vm.active_vm().ok_or_else(|| not_created_error())?;
+    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
     let result = vm
         .put_state(requested_state)
         .map(|_| HttpResponseUpdatedNoContent {})
@@ -461,7 +461,7 @@ async fn instance_serial_history_get(
 ) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
 {
     let ctx = rqctx.context();
-    let vm = ctx.vm.active_vm().ok_or_else(|| not_created_error())?;
+    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
     let serial = vm.objects().await.com1().clone();
     let query_params = query.into_inner();
 
@@ -489,7 +489,7 @@ async fn instance_serial(
     websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
-    let vm = ctx.vm.active_vm().ok_or_else(|| not_created_error())?;
+    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
     let serial = vm.objects().await.com1().clone();
 
     // Use the default buffering paramters for the websocket configuration
@@ -586,8 +586,7 @@ async fn instance_issue_crucible_snapshot_request(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm =
-        rqctx.context().vm.active_vm().ok_or_else(|| not_created_error())?;
+    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
     let objects = vm.objects().await;
     let crucible_backends = objects.crucible_backends();
     let path_params = path_params.into_inner();
@@ -613,8 +612,7 @@ async fn disk_volume_status(
     path_params: Path<api::VolumeStatusPathParams>,
 ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
     let path_params = path_params.into_inner();
-    let vm =
-        rqctx.context().vm.active_vm().ok_or_else(|| not_created_error())?;
+    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
     let objects = vm.objects().await;
     let crucible_backends = objects.crucible_backends();
     let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
@@ -675,10 +673,9 @@ async fn instance_issue_crucible_vcr_request(
 async fn instance_issue_nmi(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm =
-        rqctx.context().vm.active_vm().ok_or_else(|| not_created_error())?;
+    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
     let objects = vm.objects().await;
-    objects.machine().inject_nmi();
+    let _ = objects.machine().inject_nmi();
 
     Ok(HttpResponseOk(()))
 }

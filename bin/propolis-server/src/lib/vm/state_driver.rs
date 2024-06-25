@@ -306,7 +306,7 @@ pub(super) async fn run_state_driver(
             // Order matters here: once the ensure result is sent, an external
             // caller needs to observe that an active VM is present.
             vm.make_active(active_vm.clone());
-            ensure_result_tx.send(Ok(
+            let _ = ensure_result_tx.send(Ok(
                 propolis_api_types::InstanceEnsureResponse { migrate: None },
             ));
 
@@ -332,7 +332,7 @@ pub(super) async fn run_state_driver(
 impl StateDriver {
     pub(super) async fn run(mut self) -> super::InstanceStateTx {
         self.run_loop().await;
-        self.parent.set_rundown();
+        self.parent.set_rundown().await;
         self.external_state_tx
     }
 
@@ -371,7 +371,7 @@ impl StateDriver {
             let (vm_objects, vcpu_tasks) = self.vm_objects_and_cpus().await;
             match start_reason {
                 VmStartReason::ExplicitRequest => {
-                    reset_vcpus(&*vm_objects, vcpu_tasks);
+                    reset_vcpus(&vm_objects, vcpu_tasks);
                 }
                 VmStartReason::MigratedIn => {
                     vm_objects.resume_vm();
@@ -447,11 +447,11 @@ impl StateDriver {
             }
             ExternalRequest::MigrateAsSource { .. } => todo!("gjc"),
             ExternalRequest::Reboot => {
-                self.do_reboot();
+                self.do_reboot().await;
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Stop => {
-                self.do_halt();
+                self.do_halt().await;
                 HandleEventOutcome::Exit
             }
             ExternalRequest::ReconfigureCrucibleVolume {
@@ -460,7 +460,7 @@ impl StateDriver {
                 new_vcr_json,
                 result_tx,
             } => {
-                result_tx.send(
+                let _ = result_tx.send(
                     self.reconfigure_crucible_volume(
                         disk_name,
                         &backend_id,
@@ -493,7 +493,7 @@ impl StateDriver {
             // Reset all entities and the VM's bhyve state, then reset the
             // vCPUs. The vCPU reset must come after the bhyve reset.
             vm_objects.reset_devices_and_machine();
-            reset_vcpus(&*vm_objects, vcpu_tasks);
+            reset_vcpus(&vm_objects, vcpu_tasks);
 
             // Resume devices so they're ready to do more work, then resume
             // vCPUs.
@@ -525,7 +525,7 @@ impl StateDriver {
         }
 
         self.vcpu_tasks.exit_all();
-        self.vm_objects().await.halt_devices();
+        self.vm_objects().await.halt_devices().await;
         self.publish_steady_state(InstanceState::Stopped);
     }
 
@@ -731,8 +731,8 @@ async fn initialize_vm_from_spec(
         devices: Default::default(),
         block_backends: Default::default(),
         crucible_backends: Default::default(),
-        spec: &v0_spec,
-        properties: &properties,
+        spec: v0_spec,
+        properties,
         toml_config: &options.toml_config,
         producer_registry: options.oximeter_registry.clone(),
         state: MachineInitializerState::default(),
