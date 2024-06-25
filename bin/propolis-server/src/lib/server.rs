@@ -17,6 +17,7 @@ use std::{collections::BTreeMap, net::SocketAddr};
 
 use crate::serial::history_buffer::SerialHistoryOffset;
 use crate::serial::SerialTaskControlMessage;
+use crate::vm::VmError;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
@@ -325,40 +326,16 @@ async fn instance_spec_ensure(
 
 async fn instance_get_common(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<(api::Instance, VersionedInstanceSpec), HttpError> {
+) -> Result<api::InstanceSpecGetResponse, HttpError> {
     let ctx = rqctx.context();
-    match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(not_created_error()),
-        VmControllerState::Created(vm) => {
-            Ok((
-                api::Instance {
-                    properties: vm.properties().clone(),
-                    state: vm.external_instance_state(),
-                    disks: vec![],
-                    // TODO: Fix this; we need a way to enumerate attached NICs.
-                    // Possibly using the inventory of the instance?
-                    //
-                    // We *could* record whatever information about the NIC we want
-                    // when they're requested (adding fields to the server), but that
-                    // would make it difficult for Propolis to update any dynamic info
-                    // (i.e., has the device faulted, etc).
-                    nics: vec![],
-                },
-                vm.instance_spec().await.clone(),
-            ))
+    ctx.vm.get().await.map_err(|e| match e {
+        VmError::NotCreated | VmError::WaitingToInitialize => {
+            not_created_error()
         }
-        VmControllerState::Destroyed {
-            last_instance,
-            last_instance_spec,
-            state_watcher,
-            ..
-        } => {
-            let watcher = state_watcher.borrow();
-            let mut last_instance = last_instance.clone();
-            last_instance.state = watcher.state;
-            Ok((*last_instance, *last_instance_spec.clone()))
-        }
-    }
+        _ => HttpError::for_internal_error(format!(
+            "error from VM controller: {e}"
+        )),
+    })
 }
 
 #[endpoint {
@@ -368,12 +345,7 @@ async fn instance_get_common(
 async fn instance_spec_get(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-    let (instance, spec) = instance_get_common(&rqctx).await?;
-    Ok(HttpResponseOk(api::InstanceSpecGetResponse {
-        properties: instance.properties,
-        state: instance.state,
-        spec,
-    }))
+    Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
 }
 
 #[endpoint {
@@ -383,8 +355,16 @@ async fn instance_spec_get(
 async fn instance_get(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    let (instance, _) = instance_get_common(&rqctx).await?;
-    Ok(HttpResponseOk(api::InstanceGetResponse { instance }))
+    Ok(instance_get_common(&rqctx).await.map(|full| {
+        HttpResponseOk(api::InstanceGetResponse {
+            instance: api::Instance {
+                properties: full.properties,
+                state: full.state,
+                disks: vec![],
+                nics: vec![],
+            },
+        })
+    })?)
 }
 
 #[endpoint {
@@ -397,19 +377,14 @@ async fn instance_state_monitor(
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
     let ctx = rqctx.context();
     let gen = request.into_inner().gen;
-    let mut state_watcher = {
-        // N.B. This lock must be dropped before entering the loop below.
-        let vm_state = ctx.services.vm.lock().await;
-        match &*vm_state {
-            VmControllerState::NotCreated => {
-                return Err(not_created_error());
-            }
-            VmControllerState::Created(vm) => vm.state_watcher().clone(),
-            VmControllerState::Destroyed { state_watcher, .. } => {
-                state_watcher.clone()
-            }
+    let mut state_watcher = ctx.vm.state_watcher().map_err(|e| match e {
+        VmError::NotCreated | VmError::WaitingToInitialize => {
+            not_created_error()
         }
-    };
+        _ => HttpError::for_internal_error(format!(
+            "error from VM controller: {e}"
+        )),
+    })?;
 
     loop {
         let last = state_watcher.borrow().clone();
@@ -444,19 +419,29 @@ async fn instance_state_put(
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let ctx = rqctx.context();
     let requested_state = request.into_inner();
-    let vm = ctx.vm().await?;
+    let vm = ctx.vm.active_vm().ok_or_else(|| not_created_error())?;
     let result = vm
         .put_state(requested_state)
         .map(|_| HttpResponseUpdatedNoContent {})
-        .map_err(|e| e.into());
+        .map_err(|e| match e {
+            VmError::NotCreated | VmError::WaitingToInitialize => {
+                not_created_error()
+            }
+            VmError::ForbiddenStateChange(reason) => HttpError::for_status(
+                Some(format!("instance state change not allowed: {}", reason)),
+                http::status::StatusCode::FORBIDDEN,
+            ),
+            _ => HttpError::for_internal_error(format!(
+                "error from VM controller: {e}"
+            )),
+        });
 
-    drop(vm);
     if result.is_ok() {
         if let api::InstanceStateRequested::Reboot = requested_state {
-            let stats = MutexGuard::map(
-                ctx.services.oximeter_state.lock().await,
-                |state| &mut state.stats,
-            );
+            let stats =
+                MutexGuard::map(vm.services().oximeter.lock().await, |state| {
+                    &mut state.stats
+                });
             if let Some(stats) = stats.as_ref() {
                 stats.count_reset();
             }
@@ -476,8 +461,8 @@ async fn instance_serial_history_get(
 ) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
 {
     let ctx = rqctx.context();
-    let vm = ctx.vm().await?;
-    let serial = vm.com1().clone();
+    let vm = ctx.vm.active_vm().ok_or_else(|| not_created_error())?;
+    let serial = vm.objects().await.com1().clone();
     let query_params = query.into_inner();
 
     let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
@@ -504,8 +489,8 @@ async fn instance_serial(
     websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
-    let vm = ctx.vm().await?;
-    let serial = vm.com1().clone();
+    let vm = ctx.vm.active_vm().ok_or_else(|| not_created_error())?;
+    let serial = vm.objects().await.com1().clone();
 
     // Use the default buffering paramters for the websocket configuration
     //
@@ -536,10 +521,8 @@ async fn instance_serial(
     }
 
     // Get serial task's handle and send it the websocket stream
-    ctx.services
-        .serial_task
-        .lock()
-        .await
+    let serial_task = vm.services().serial_task.lock().await;
+    serial_task
         .as_ref()
         .ok_or("Instance has no serial task")?
         .websocks_ch
@@ -581,15 +564,17 @@ async fn instance_migrate_status(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
     let ctx = rqctx.context();
-    match &*ctx.services.vm.lock().await {
-        VmControllerState::NotCreated => Err(not_created_error()),
-        VmControllerState::Created(vm) => {
-            Ok(HttpResponseOk(vm.migrate_status()))
-        }
-        VmControllerState::Destroyed { state_watcher, .. } => {
-            Ok(HttpResponseOk(state_watcher.borrow().migration.clone()))
-        }
-    }
+    ctx.vm
+        .state_watcher()
+        .map(|rx| HttpResponseOk(rx.borrow().migration.clone()))
+        .map_err(|e| match e {
+            VmError::NotCreated | VmError::WaitingToInitialize => {
+                not_created_error()
+            }
+            _ => HttpError::for_internal_error(format!(
+                "error from VM controller: {e}"
+            )),
+        })
 }
 
 /// Issues a snapshot request to a crucible backend.
@@ -601,8 +586,10 @@ async fn instance_issue_crucible_snapshot_request(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let inst = rqctx.context().vm().await?;
-    let crucible_backends = inst.crucible_backends();
+    let vm =
+        rqctx.context().vm.active_vm().ok_or_else(|| not_created_error())?;
+    let objects = vm.objects().await;
+    let crucible_backends = objects.crucible_backends();
     let path_params = path_params.into_inner();
 
     let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
@@ -626,10 +613,10 @@ async fn disk_volume_status(
     path_params: Path<api::VolumeStatusPathParams>,
 ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
     let path_params = path_params.into_inner();
-
-    let vm_controller = rqctx.context().vm().await?;
-
-    let crucible_backends = vm_controller.crucible_backends();
+    let vm =
+        rqctx.context().vm.active_vm().ok_or_else(|| not_created_error())?;
+    let objects = vm.objects().await;
+    let crucible_backends = objects.crucible_backends();
     let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
         let s = format!("No crucible backend for id {}", path_params.id);
         HttpError::for_not_found(Some(s.clone()), s)
@@ -726,8 +713,10 @@ async fn instance_issue_crucible_vcr_request(
 async fn instance_issue_nmi(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm = rqctx.context().vm().await?;
-    vm.inject_nmi();
+    let vm =
+        rqctx.context().vm.active_vm().ok_or_else(|| not_created_error())?;
+    let objects = vm.objects().await;
+    objects.machine().inject_nmi();
 
     Ok(HttpResponseOk(()))
 }
