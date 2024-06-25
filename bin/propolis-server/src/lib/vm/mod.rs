@@ -7,7 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock, RwLockReadGuard, Weak},
+    sync::{Arc, RwLock, Weak},
 };
 
 use oximeter::types::ProducerRegistry;
@@ -21,7 +21,6 @@ use propolis_api_types::{
 };
 
 use rfb::server::VncServer;
-use tokio::sync::RwLockReadGuard as TokioRwLockReadGuard;
 
 use crate::{
     serial::Serial, server::MetricsEndpointConfig, vnc::PropolisVncServer,
@@ -50,6 +49,9 @@ type InstanceStateRx = tokio::sync::watch::Receiver<
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VmError {
+    #[error("VM ensure result channel unexpectedly closed")]
+    EnsureResultClosed,
+
     #[error("VM already initialized")]
     AlreadyInitialized,
 
@@ -60,8 +62,12 @@ pub(crate) enum VmError {
 /// The top-level VM wrapper type. Callers are expected to wrap this in an
 /// `Arc`.
 pub(crate) struct Vm {
-    /// A reference to the VM state machine.
-    state: RwLock<VmState>,
+    inner: RwLock<VmInner>,
+}
+
+struct VmInner {
+    state: VmState,
+    driver: Option<tokio::task::JoinHandle<InstanceStateTx>>,
 }
 
 struct VmObjects {
@@ -135,7 +141,7 @@ pub(super) struct ActiveVm {
 
     properties: InstanceProperties,
 
-    objects: tokio::sync::RwLock<VmObjects>,
+    objects: Option<tokio::sync::RwLock<VmObjects>>,
     services: Option<services::VmServices>,
 }
 
@@ -147,32 +153,86 @@ impl ActiveVm {
     pub(crate) async fn objects(
         &self,
     ) -> tokio::sync::RwLockReadGuard<'_, VmObjects> {
-        self.objects.read().await
-    }
-
-    async fn stop_services(&self) {
-        self.services.stop(&self.log).await;
+        self.objects.as_ref().unwrap().read().await
     }
 }
 
-struct DefunctVm {
+impl Drop for ActiveVm {
+    fn drop(&mut self) {
+        let driver = self
+            .parent
+            .inner
+            .write()
+            .unwrap()
+            .driver
+            .take()
+            .expect("active VMs always have a driver");
+
+        let objects =
+            self.objects.take().expect("active VMs should always have objects");
+
+        let services = self
+            .services
+            .take()
+            .expect("active VMs should always have services");
+
+        let parent = self.parent.clone();
+        let log = self.log.clone();
+        tokio::spawn(async move {
+            drop(objects);
+            services.stop(&log).await;
+
+            let tx = driver.await.expect("state driver shouldn't panic");
+            let old_state = tx.borrow();
+            let new_state = InstanceStateMonitorResponse {
+                gen: old_state.gen + 1,
+                state: propolis_api_types::InstanceState::Destroyed,
+                migration: old_state.migration.clone(),
+            };
+
+            tx.send(new_state).expect("VM in rundown should hold a receiver");
+
+            parent.complete_rundown();
+        });
+    }
+}
+
+struct RundownVm {
     external_state_rx: InstanceStateRx,
     properties: InstanceProperties,
     spec: InstanceSpecV0,
 }
 
-// TODO(gjc) the shutdown process is not quite right yet, is it? it's possible
-// for a VM to go to "Defunct" before actually being completely destroyed... the
-// "destroyed" transition used to happen when the VM controller was fully
-// dropped. what we might want is to have distinct "defunct" and "destroyed"
-// states and only get to the latter when the active VM is dropped? need to
-// think about this more.
+/// An enum representing the VM state machine. The API layer's Dropshot context
+/// holds a reference to this state machine via the [`Vm`] wrapper struct.
+///
+/// When an instance is running, its components and services are stored in an
+/// [`ActiveVm`] whose lifecycle is managed by a "state driver" task. The VM is
+/// kept alive by this task's strong reference. API calls that need to access
+/// the active VM try to upgrade the state machine's weak reference to the VM.
+///
+/// When an active VM halts, the state driver moves the state machine to the
+/// `Rundown` state, preventing new API calls from obtaining new strong
+/// references to the underlying VM while allowing existing calls to finish.
+/// Eventually (barring a leak), the active VM will be dropped. This launches a
+/// task that finishes cleaning up the VM and then moves to the
+/// `RundownComplete` state, which allows a new VM to start.
 #[allow(clippy::large_enum_variant)]
 enum VmState {
+    /// This state machine has never held a VM.
     NoVm,
+
+    /// There is an active state driver task, but it is currently creating VM
+    /// components and/or starting VM services.
     WaitingToStart,
+
+    /// There is an active virtual machine. Callers may try to upgrade the
+    /// contained weak reference to access its objects and services.
     Active(Weak<ActiveVm>),
-    Defunct(DefunctVm),
+
+    /// The active VM's state driver has exited, but the
+    Rundown(RundownVm),
+    RundownComplete(RundownVm),
 }
 
 pub(super) struct EnsureOptions {
@@ -186,16 +246,13 @@ pub(super) struct EnsureOptions {
 
 impl Vm {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { state: RwLock::new(VmState::NoVm) })
-    }
-
-    fn vm_state(&self) -> RwLockReadGuard<'_, VmState> {
-        self.state.read().unwrap()
+        let inner = VmInner { state: VmState::NoVm, driver: None };
+        Arc::new(Self { inner: RwLock::new(inner) })
     }
 
     pub(super) fn active_vm(&self) -> Option<Arc<ActiveVm>> {
-        let guard = self.vm_state();
-        if let VmState::Active(weak) = &*guard {
+        let guard = self.inner.read().unwrap();
+        if let VmState::Active(weak) = &guard.state {
             weak.upgrade()
         } else {
             None
@@ -203,9 +260,9 @@ impl Vm {
     }
 
     fn start_failed(&self) {
-        let mut guard = self.state.write().unwrap();
-        match *guard {
-            VmState::WaitingToStart => *guard = VmState::NoVm,
+        let mut guard = self.inner.write().unwrap();
+        match guard.state {
+            VmState::WaitingToStart => guard.state = VmState::NoVm,
             _ => unreachable!(
                 "only a starting VM's state worker calls start_failed"
             ),
@@ -213,11 +270,11 @@ impl Vm {
     }
 
     fn make_active(&self, active: Arc<ActiveVm>) {
-        let mut guard = self.state.write().unwrap();
-        let old = std::mem::replace(&mut *guard, VmState::NoVm);
+        let mut guard = self.inner.write().unwrap();
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::WaitingToStart => {
-                *guard = VmState::Active(Arc::downgrade(&active))
+                guard.state = VmState::Active(Arc::downgrade(&active))
             }
             _ => unreachable!(
                 "only a starting VM's state worker calls make_active"
@@ -225,13 +282,13 @@ impl Vm {
         }
     }
 
-    async fn make_defunct(&self) {
-        let mut guard = self.state.write().unwrap();
-        let old = std::mem::replace(&mut *guard, VmState::NoVm);
+    async fn set_rundown(&self) {
+        let mut guard = self.inner.write().unwrap();
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::Active(vm) => {
                 let active = vm.upgrade().expect("state driver holds a ref");
-                *guard = VmState::Defunct(DefunctVm {
+                guard.state = VmState::Rundown(RundownVm {
                     external_state_rx: active.external_state_rx.clone(),
                     properties: active.properties.clone(),
                     spec: active.objects().await.instance_spec.clone(),
@@ -243,6 +300,15 @@ impl Vm {
         }
     }
 
+    async fn complete_rundown(&self) {
+        let mut guard = self.inner.write().unwrap();
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+        match old {
+            VmState::Rundown(vm) => guard.state = VmState::RundownComplete(vm),
+            _ => unreachable!("VM rundown completed from invalid prior state"),
+        }
+    }
+
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         log: slog::Logger,
@@ -250,32 +316,37 @@ impl Vm {
         options: EnsureOptions,
     ) -> anyhow::Result<propolis_api_types::InstanceEnsureResponse, VmError>
     {
+        let (ensure_reply_tx, ensure_rx) = tokio::sync::oneshot::channel();
+
         // Take the lock for writing, since in the common case this call will be
         // creating a new VM and there's no easy way to upgrade from a reader
         // lock to a writer lock.
-        let mut guard = self.state.write().unwrap();
+        {
+            let mut guard = self.inner.write().unwrap();
+            if matches!(
+                guard.state,
+                VmState::WaitingToStart
+                    | VmState::Active(_)
+                    | VmState::Rundown(_)
+            ) {
+                return Err(VmError::AlreadyInitialized);
+            }
 
-        if matches!(*guard, VmState::WaitingToStart | VmState::Active(_)) {
-            return Err(VmError::AlreadyInitialized);
+            guard.state = VmState::WaitingToStart;
+
+            let vm_for_driver = self.clone();
+            guard.driver = Some(tokio::spawn(async move {
+                state_driver::run_state_driver(
+                    log,
+                    vm_for_driver,
+                    ensure_request,
+                    ensure_reply_tx,
+                    options,
+                )
+                .await
+            }));
         }
 
-        *guard = VmState::WaitingToStart;
-
-        let state_driver = state_driver::StateDriver::new(
-            log,
-            self.clone(),
-            Arc::new(input_queue),
-            external_tx,
-        );
-
-        let (ensure_reply_tx, ensure_rx) = tokio::sync::oneshot::channel();
-
-        tokio::spawn(async move {
-            state_driver
-                .run(ensure_request, ensure_reply_tx, options, external_rx)
-                .await
-        });
-
-        ensure_rx.await
+        ensure_rx.await.map_err(|_| VmError::EnsureResultClosed)?
     }
 }

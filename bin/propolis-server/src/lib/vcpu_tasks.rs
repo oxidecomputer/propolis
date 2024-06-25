@@ -30,7 +30,7 @@ pub struct VcpuTasks {
 }
 
 #[cfg_attr(test, mockall::automock)]
-pub(crate) trait VcpuTaskController: Send {
+pub(crate) trait VcpuTaskController: Send + Sync + 'static {
     fn new_generation(&self);
     fn pause_all(&mut self);
     fn resume_all(&mut self);

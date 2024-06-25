@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 use uuid::Uuid;
 
-use crate::server::{DropshotEndpointContext, VmControllerState};
+use crate::server::DropshotEndpointContext;
 
 mod codec;
 pub mod destination;
@@ -233,11 +233,12 @@ pub async fn source_start<
     ));
     info!(log, "Migration Source");
 
-    let controller = tokio::sync::MutexGuard::try_map(
-        rqctx.context().services.vm.lock().await,
-        VmControllerState::as_controller,
-    )
-    .map_err(|_| MigrateError::InstanceNotInitialized)?;
+    let active_vm = rqctx
+        .context()
+        .vm
+        .active_vm()
+        .ok_or_else(|| MigrateError::InstanceNotInitialized)?
+        .clone();
 
     let selected = match conn.next().await {
         Some(Ok(tungstenite::Message::Text(dst_protocols))) => {
@@ -291,7 +292,8 @@ pub async fn source_start<
         }
     };
 
-    controller.request_migration_from(migration_id, conn, selected)?;
+    todo!("gjc"); // need a method on ActiveVm for this
+                  // controller.request_migration_from(migration_id, conn, selected)?;
     Ok(())
 }
 
