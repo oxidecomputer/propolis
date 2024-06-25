@@ -410,8 +410,7 @@ impl Vm {
         log: slog::Logger,
         ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
         options: EnsureOptions,
-    ) -> anyhow::Result<propolis_api_types::InstanceEnsureResponse, VmError>
-    {
+    ) -> Result<propolis_api_types::InstanceEnsureResponse, VmError> {
         let (ensure_reply_tx, ensure_rx) = tokio::sync::oneshot::channel();
 
         // Take the lock for writing, since in the common case this call will be
@@ -430,9 +429,10 @@ impl Vm {
 
             guard.state = VmState::WaitingForInit;
             let vm_for_driver = self.clone();
+            let log_for_driver = log.clone();
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(
-                    log,
+                    log_for_driver,
                     vm_for_driver,
                     ensure_request,
                     ensure_reply_tx,
