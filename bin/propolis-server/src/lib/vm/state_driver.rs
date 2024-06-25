@@ -261,7 +261,7 @@ pub(super) async fn run_state_driver(
         external_state_rx: external_rx,
         properties: ensure_request.properties,
         objects: tokio::sync::RwLock::new(vm_objects),
-        services,
+        services: Some(services),
     });
 
     let state_driver = StateDriver {
