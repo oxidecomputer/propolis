@@ -12,7 +12,7 @@ use std::{
 use propolis_api_types::{
     instance_spec::VersionedInstanceSpec, InstanceProperties, InstanceState,
 };
-use slog::info;
+use slog::{error, info};
 use uuid::Uuid;
 
 use crate::{
@@ -70,6 +70,13 @@ enum ExternalStateUpdate {
 enum HandleEventOutcome {
     Continue,
     Exit,
+}
+
+/// A reason for starting a VM.
+#[derive(Debug, PartialEq, Eq)]
+enum VmStartReason {
+    MigratedIn,
+    ExplicitRequest,
 }
 
 #[derive(Debug)]
@@ -217,52 +224,79 @@ pub(super) async fn run_state_driver(
     let (external_tx, external_rx) = tokio::sync::watch::channel(
         propolis_api_types::InstanceStateMonitorResponse {
             gen: 1,
-            state: propolis_api_types::InstanceState::Starting,
+            state: if ensure_request.migrate.is_some() {
+                propolis_api_types::InstanceState::Migrating
+            } else {
+                propolis_api_types::InstanceState::Starting
+            },
             migration: propolis_api_types::InstanceMigrateStatusResponse {
-                migration_in: None,
+                migration_in: ensure_request.migrate.as_ref().map(|req| {
+                    propolis_api_types::InstanceMigrationStatus {
+                        id: req.migration_id,
+                        state: propolis_api_types::MigrationState::Sync,
+                    }
+                }),
                 migration_out: None,
             },
         },
     );
+
     let input_queue = Arc::new(InputQueue::new(
         log.new(slog::o!("component" => "vmm_request_queue")),
     ));
 
-    let (vm_objects, vcpu_tasks) = match initialize_vm_from_spec(
-        &log,
-        &input_queue,
-        &ensure_request.properties,
-        &ensure_request.instance_spec,
-        &ensure_options,
-    )
-    .await
-    {
-        Ok(objects) => objects,
-        Err(e) => {
-            let _ =
-                ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
-            return external_tx;
+    let (vcpu_tasks, active_vm) = match ensure_request.migrate {
+        None => {
+            let (vm_objects, vcpu_tasks) = match initialize_vm_from_spec(
+                &log,
+                &input_queue,
+                &ensure_request.properties,
+                &ensure_request.instance_spec,
+                &ensure_options,
+            )
+            .await
+            {
+                Ok(objects) => objects,
+                Err(e) => {
+                    let _ = ensure_result_tx
+                        .send(Err(VmError::InitializationFailed(e)));
+                    return external_tx;
+                }
+            };
+
+            let services = super::services::VmServices::new(
+                &log,
+                &vm,
+                &vm_objects,
+                &ensure_request.properties,
+                &ensure_options,
+            )
+            .await;
+
+            let active_vm = Arc::new(super::ActiveVm {
+                parent: vm.clone(),
+                log: log.clone(),
+                state_driver_queue: input_queue.clone(),
+                external_state_rx: external_rx,
+                properties: ensure_request.properties,
+                objects: Some(tokio::sync::RwLock::new(vm_objects)),
+                services: Some(services),
+            });
+
+            // All the VM components now exist, so allow external callers to
+            // interact with the VM.
+            //
+            // Order matters here: once the ensure result is sent, an external
+            // caller needs to observe that an active VM is present.
+            vm.make_active(active_vm.clone());
+            ensure_result_tx.send(Ok(
+                propolis_api_types::InstanceEnsureResponse { migrate: None },
+            ));
+
+            (vcpu_tasks, active_vm)
         }
+        Some(_migrate) => todo!("gjc"),
     };
-
-    let services = super::services::VmServices::new(
-        &log,
-        &vm,
-        &vm_objects,
-        &ensure_request.properties,
-        &ensure_options,
-    )
-    .await;
-
-    let active_vm = Arc::new(super::ActiveVm {
-        parent: vm.clone(),
-        log: log.clone(),
-        state_driver_queue: input_queue.clone(),
-        external_state_rx: external_rx,
-        properties: ensure_request.properties,
-        objects: Some(tokio::sync::RwLock::new(vm_objects)),
-        services: Some(services),
-    });
 
     let state_driver = StateDriver {
         log: log.new(slog::o!("component" => "vmm_state_driver")),
@@ -275,161 +309,14 @@ pub(super) async fn run_state_driver(
         migration_src_state: Default::default(),
     };
 
-    state_driver.run(ensure_result_tx).await
-}
-
-async fn initialize_vm_from_spec(
-    log: &slog::Logger,
-    event_queue: &Arc<InputQueue>,
-    properties: &InstanceProperties,
-    spec: &VersionedInstanceSpec,
-    options: &super::EnsureOptions,
-) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
-    info!(log, "initializing new VM";
-              "spec" => #?spec,
-              "properties" => #?properties,
-              "use_reservoir" => options.use_reservoir,
-              "bootrom" => %options.toml_config.bootrom.display());
-
-    let vmm_log = log.new(slog::o!("component" => "vmm"));
-
-    // Set up the 'shell' instance into which the rest of this routine will
-    // add components.
-    let VersionedInstanceSpec::V0(v0_spec) = &spec;
-    let machine = build_instance(
-        &properties.vm_name(),
-        v0_spec,
-        options.use_reservoir,
-        vmm_log,
-    )?;
-
-    let mut init = MachineInitializer {
-        log: log.clone(),
-        machine: &machine,
-        devices: Default::default(),
-        block_backends: Default::default(),
-        crucible_backends: Default::default(),
-        spec: &v0_spec,
-        properties: &properties,
-        toml_config: &options.toml_config,
-        producer_registry: options.oximeter_registry.clone(),
-        state: MachineInitializerState::default(),
-    };
-
-    init.initialize_rom(options.toml_config.bootrom.as_path())?;
-    let chipset = init.initialize_chipset(
-        &(event_queue.clone()
-            as Arc<dyn super::guest_event::ChipsetEventHandler>),
-    )?;
-
-    init.initialize_rtc(&chipset)?;
-    init.initialize_hpet()?;
-
-    let com1 = Arc::new(init.initialize_uart(&chipset)?);
-    let ps2ctrl = init.initialize_ps2(&chipset)?;
-    init.initialize_qemu_debug_port()?;
-    init.initialize_qemu_pvpanic(properties.into())?;
-    init.initialize_network_devices(&chipset)?;
-
-    #[cfg(not(feature = "omicron-build"))]
-    init.initialize_test_devices(&options.toml_config.devices)?;
-    #[cfg(feature = "omicron-build")]
-    info!(log, "`omicron-build` feature enabled, ignoring any test devices");
-
-    #[cfg(feature = "falcon")]
-    init.initialize_softnpu_ports(&chipset)?;
-    #[cfg(feature = "falcon")]
-    init.initialize_9pfs(&chipset)?;
-
-    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
-        .await?;
-
-    let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-    init.initialize_cpus()?;
-    let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
-        &machine,
-        event_queue.clone() as Arc<dyn super::guest_event::GuestEventHandler>,
-        log.new(slog::o!("component" => "vcpu_tasks")),
-    )?);
-
-    let MachineInitializer {
-        devices, block_backends, crucible_backends, ..
-    } = init;
-
-    Ok((
-        VmObjects {
-            log: log.clone(),
-            instance_spec: v0_spec.clone(),
-            machine,
-            lifecycle_components: devices,
-            block_backends,
-            crucible_backends,
-            com1,
-            framebuffer: Some(ramfb),
-            ps2ctrl,
-        },
-        vcpu_tasks as Box<dyn VcpuTaskController>,
-    ))
+    state_driver.run().await
 }
 
 impl StateDriver {
-    pub(super) async fn run(
-        mut self,
-        ensure_result_tx: tokio::sync::oneshot::Sender<
-            Result<propolis_api_types::InstanceEnsureResponse, VmError>,
-        >,
-    ) -> super::InstanceStateTx {
-        self.parent.make_active(self.active_vm.clone());
-        self.update_external_state(ExternalStateUpdate::Instance(
-            InstanceState::Starting,
-        ));
-        ensure_result_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
-            migrate: None,
-        }));
-
-        // TODO(gjc) actually start the VM
-
+    pub(super) async fn run(mut self) -> super::InstanceStateTx {
         self.run_loop().await;
-
-        // TODO(gjc) get rid of these
         self.parent.set_rundown();
-
         self.external_state_tx
-    }
-
-    fn update_external_state(&mut self, state: ExternalStateUpdate) {
-        let (instance_state, migration_state) = match state {
-            ExternalStateUpdate::Instance(i) => (Some(i), None),
-            ExternalStateUpdate::Migration(m) => (None, Some(m)),
-            ExternalStateUpdate::Complete(i, m) => (Some(i), Some(m)),
-        };
-
-        let propolis_api_types::InstanceStateMonitorResponse {
-            state: old_instance,
-            migration: old_migration,
-            gen: old_gen,
-        } = self.external_state_tx.borrow().clone();
-
-        let state = instance_state.unwrap_or(old_instance);
-        let migration = if let Some(migration_state) = migration_state {
-            migration_state.apply_to(old_migration)
-        } else {
-            old_migration
-        };
-
-        let gen = old_gen + 1;
-        info!(self.log, "publishing new instance state";
-              "gen" => gen,
-              "state" => ?state,
-              "migration" => ?migration);
-
-        let _ = self.external_state_tx.send(
-            propolis_api_types::InstanceStateMonitorResponse {
-                gen,
-                state,
-                migration,
-            },
-        );
     }
 
     async fn run_loop(&mut self) {
@@ -455,6 +342,43 @@ impl StateDriver {
         }
 
         info!(self.log, "state driver exiting");
+    }
+
+    async fn start_vm(
+        &mut self,
+        start_reason: VmStartReason,
+    ) -> anyhow::Result<()> {
+        info!(self.log, "starting instance"; "reason" => ?start_reason);
+
+        let start_result = {
+            let (vm_objects, vcpu_tasks) = self.vm_objects_and_cpus().await;
+            match start_reason {
+                VmStartReason::ExplicitRequest => {
+                    reset_vcpus(&*vm_objects, vcpu_tasks);
+                }
+                VmStartReason::MigratedIn => {
+                    vm_objects.resume_vm();
+                }
+            }
+
+            let result = vm_objects.start_devices().await;
+            if result.is_ok() {
+                vcpu_tasks.resume_all();
+            }
+
+            result
+        };
+
+        match &start_result {
+            Ok(()) => self.publish_steady_state(InstanceState::Running),
+            Err(e) => {
+                error!(&self.log, "failed to start devices";
+                                 "error" => ?e);
+                self.publish_steady_state(InstanceState::Failed);
+            }
+        }
+
+        start_result
     }
 
     async fn handle_guest_event(
@@ -498,6 +422,12 @@ impl StateDriver {
         request: super::request_queue::ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
+            super::request_queue::ExternalRequest::Start => {
+                match self.start_vm(VmStartReason::ExplicitRequest).await {
+                    Ok(_) => HandleEventOutcome::Continue,
+                    Err(_) => HandleEventOutcome::Exit,
+                }
+            }
             super::request_queue::ExternalRequest::MigrateAsSource {
                 ..
             } => todo!("gjc"),
@@ -611,6 +541,41 @@ impl StateDriver {
         self.update_external_state(ExternalStateUpdate::Instance(state));
     }
 
+    fn update_external_state(&mut self, state: ExternalStateUpdate) {
+        let (instance_state, migration_state) = match state {
+            ExternalStateUpdate::Instance(i) => (Some(i), None),
+            ExternalStateUpdate::Migration(m) => (None, Some(m)),
+            ExternalStateUpdate::Complete(i, m) => (Some(i), Some(m)),
+        };
+
+        let propolis_api_types::InstanceStateMonitorResponse {
+            state: old_instance,
+            migration: old_migration,
+            gen: old_gen,
+        } = self.external_state_tx.borrow().clone();
+
+        let state = instance_state.unwrap_or(old_instance);
+        let migration = if let Some(migration_state) = migration_state {
+            migration_state.apply_to(old_migration)
+        } else {
+            old_migration
+        };
+
+        let gen = old_gen + 1;
+        info!(self.log, "publishing new instance state";
+              "gen" => gen,
+              "state" => ?state,
+              "migration" => ?migration);
+
+        let _ = self.external_state_tx.send(
+            propolis_api_types::InstanceStateMonitorResponse {
+                gen,
+                state,
+                migration,
+            },
+        );
+    }
+
     async fn vm_objects(&self) -> tokio::sync::RwLockReadGuard<'_, VmObjects> {
         self.active_vm.objects().await
     }
@@ -631,4 +596,98 @@ fn reset_vcpus(
 ) {
     vcpu_tasks.new_generation();
     vm_objects.reset_vcpu_state();
+}
+
+async fn initialize_vm_from_spec(
+    log: &slog::Logger,
+    event_queue: &Arc<InputQueue>,
+    properties: &InstanceProperties,
+    spec: &VersionedInstanceSpec,
+    options: &super::EnsureOptions,
+) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
+    info!(log, "initializing new VM";
+              "spec" => #?spec,
+              "properties" => #?properties,
+              "use_reservoir" => options.use_reservoir,
+              "bootrom" => %options.toml_config.bootrom.display());
+
+    let vmm_log = log.new(slog::o!("component" => "vmm"));
+
+    // Set up the 'shell' instance into which the rest of this routine will
+    // add components.
+    let VersionedInstanceSpec::V0(v0_spec) = &spec;
+    let machine = build_instance(
+        &properties.vm_name(),
+        v0_spec,
+        options.use_reservoir,
+        vmm_log,
+    )?;
+
+    let mut init = MachineInitializer {
+        log: log.clone(),
+        machine: &machine,
+        devices: Default::default(),
+        block_backends: Default::default(),
+        crucible_backends: Default::default(),
+        spec: &v0_spec,
+        properties: &properties,
+        toml_config: &options.toml_config,
+        producer_registry: options.oximeter_registry.clone(),
+        state: MachineInitializerState::default(),
+    };
+
+    init.initialize_rom(options.toml_config.bootrom.as_path())?;
+    let chipset = init.initialize_chipset(
+        &(event_queue.clone()
+            as Arc<dyn super::guest_event::ChipsetEventHandler>),
+    )?;
+
+    init.initialize_rtc(&chipset)?;
+    init.initialize_hpet()?;
+
+    let com1 = Arc::new(init.initialize_uart(&chipset)?);
+    let ps2ctrl = init.initialize_ps2(&chipset)?;
+    init.initialize_qemu_debug_port()?;
+    init.initialize_qemu_pvpanic(properties.into())?;
+    init.initialize_network_devices(&chipset)?;
+
+    #[cfg(not(feature = "omicron-build"))]
+    init.initialize_test_devices(&options.toml_config.devices)?;
+    #[cfg(feature = "omicron-build")]
+    info!(log, "`omicron-build` feature enabled, ignoring any test devices");
+
+    #[cfg(feature = "falcon")]
+    init.initialize_softnpu_ports(&chipset)?;
+    #[cfg(feature = "falcon")]
+    init.initialize_9pfs(&chipset)?;
+
+    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
+        .await?;
+
+    let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
+    init.initialize_cpus()?;
+    let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
+        &machine,
+        event_queue.clone() as Arc<dyn super::guest_event::GuestEventHandler>,
+        log.new(slog::o!("component" => "vcpu_tasks")),
+    )?);
+
+    let MachineInitializer {
+        devices, block_backends, crucible_backends, ..
+    } = init;
+
+    Ok((
+        VmObjects {
+            log: log.clone(),
+            instance_spec: v0_spec.clone(),
+            machine,
+            lifecycle_components: devices,
+            block_backends,
+            crucible_backends,
+            com1,
+            framebuffer: Some(ramfb),
+            ps2ctrl,
+        },
+        vcpu_tasks as Box<dyn VcpuTaskController>,
+    ))
 }
