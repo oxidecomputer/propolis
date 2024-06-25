@@ -1086,6 +1086,9 @@ pub mod formats {
             // nvme devices as vendor=0x8086 and device=5845.  While that
             // hardcoded logic exists, we must encode our entry to match, even
             // when the device in question may bear different identity info.
+            //
+            // For more details, see the TranslatePciOfwNodes() function in
+            // OvmfPkg/Library/QemuBootOrderLib/QemuBootOrderLib.c.
             let pci_path = Self::format_pci(loc, "pci8086,5845");
             let ns = 1;
             self.0.push(format!("{pci_path}/namespace@{ns:x},{eui:x}"));

@@ -981,7 +981,9 @@ fn generate_bootorder(config: &config::Config) -> anyhow::Result<fwcfg::Entry> {
                 order.add_pci(get_pci_path().location, "device");
             }
             dev => {
-                anyhow::bail!("Unsupported boot device type: {dev}");
+                anyhow::bail!(
+                    "Boot device '{name}' is unsupported device type: {dev}"
+                );
             }
         }
     }
@@ -1298,7 +1300,13 @@ fn setup_instance(
     // It is "safe" to generate bootorder (if requested) now, given that PCI
     // device configuration has been validated by preceding logic
     if config.main.boot_order.is_some() {
-        fwcfg.insert_named("bootorder", generate_bootorder(&config)?).unwrap();
+        fwcfg
+            .insert_named(
+                "bootorder",
+                generate_bootorder(&config)
+                    .context("Failed to generate boot order")?,
+            )
+            .unwrap();
     }
 
     fwcfg.attach(pio, &machine.acc_mem);
