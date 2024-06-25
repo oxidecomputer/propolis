@@ -7,7 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock, Weak},
+    sync::{Arc, RwLock},
 };
 
 use oximeter::types::ProducerRegistry;
@@ -16,11 +16,13 @@ use propolis::{
     vmm::Machine,
 };
 use propolis_api_types::{
-    instance_spec::v0::InstanceSpecV0, InstanceProperties,
-    InstanceStateMonitorResponse,
+    instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
+    InstanceProperties, InstanceStateMonitorResponse, InstanceStateRequested,
 };
 
+use request_queue::ExternalRequest;
 use rfb::server::VncServer;
+use slog::info;
 
 use crate::{
     serial::Serial, server::MetricsEndpointConfig, vnc::PropolisVncServer,
@@ -52,6 +54,9 @@ pub(crate) enum VmError {
     #[error("VM ensure result channel unexpectedly closed")]
     EnsureResultClosed,
 
+    #[error("VM not created")]
+    NotCreated,
+
     #[error("VM is currently initializing")]
     WaitingToInitialize,
 
@@ -63,6 +68,9 @@ pub(crate) enum VmError {
 
     #[error("VM initialization failed")]
     InitializationFailed(#[source] anyhow::Error),
+
+    #[error("Forbidden state change")]
+    ForbiddenStateChange(#[from] request_queue::RequestDeniedReason),
 }
 
 /// The top-level VM wrapper type. Callers are expected to wrap this in an
@@ -106,6 +114,10 @@ impl VmObjects {
 
     pub(crate) fn block_backends(&self) -> &BlockBackendMap {
         &self.block_backends
+    }
+
+    pub(crate) fn crucible_backends(&self) -> &CrucibleBackendMap {
+        &self.crucible_backends
     }
 
     pub(crate) fn com1(&self) -> &Arc<Serial<LpcUart>> {
@@ -160,6 +172,26 @@ impl ActiveVm {
         &self,
     ) -> tokio::sync::RwLockReadGuard<'_, VmObjects> {
         self.objects.as_ref().unwrap().read().await
+    }
+
+    pub(crate) fn put_state(
+        &self,
+        requested: InstanceStateRequested,
+    ) -> Result<(), VmError> {
+        info!(self.log, "requested state via API";
+              "state" => ?requested);
+
+        self.state_driver_queue
+            .queue_external_request(match requested {
+                InstanceStateRequested::Run => ExternalRequest::Start,
+                InstanceStateRequested::Stop => ExternalRequest::Stop,
+                InstanceStateRequested::Reboot => ExternalRequest::Reboot,
+            })
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn services(&self) -> &services::VmServices {
+        self.services.as_ref().expect("active VMs always have services")
     }
 }
 
@@ -232,9 +264,8 @@ enum VmState {
     /// components and/or starting VM services.
     WaitingForInit,
 
-    /// There is an active virtual machine. Callers may try to upgrade the
-    /// contained weak reference to access its objects and services.
-    Active(Weak<ActiveVm>),
+    /// There is an active virtual machine
+    Active(Arc<ActiveVm>),
 
     /// The active VM's state driver has exited, but the
     Rundown(RundownVm),
@@ -258,20 +289,51 @@ impl Vm {
 
     pub(super) fn active_vm(&self) -> Option<Arc<ActiveVm>> {
         let guard = self.inner.read().unwrap();
-        if let VmState::Active(weak) = &guard.state {
-            weak.upgrade()
+        if let VmState::Active(vm) = &guard.state {
+            Some(vm.clone())
         } else {
             None
         }
     }
 
-    fn start_failed(&self) {
-        let mut guard = self.inner.write().unwrap();
-        match guard.state {
-            VmState::WaitingForInit => guard.state = VmState::NoVm,
-            _ => unreachable!(
-                "only a starting VM's state worker calls start_failed"
-            ),
+    pub(super) async fn get(
+        &self,
+    ) -> Result<propolis_api_types::InstanceSpecGetResponse, VmError> {
+        let vm = match &self.inner.read().unwrap().state {
+            VmState::NoVm => {
+                return Err(VmError::NotCreated);
+            }
+            VmState::WaitingForInit => {
+                return Err(VmError::WaitingToInitialize);
+            }
+            VmState::Active(vm) => vm.clone(),
+            VmState::Rundown(vm) | VmState::RundownComplete(vm) => {
+                return Ok(propolis_api_types::InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: VersionedInstanceSpec::V0(vm.spec.clone()),
+                });
+            }
+        };
+
+        let spec = vm.objects().await.instance_spec().clone();
+        let state = vm.external_state_rx.borrow().clone();
+        Ok(propolis_api_types::InstanceSpecGetResponse {
+            properties: vm.properties.clone(),
+            spec: VersionedInstanceSpec::V0(spec),
+            state: state.state,
+        })
+    }
+
+    pub(super) fn state_watcher(&self) -> Result<InstanceStateRx, VmError> {
+        let guard = self.inner.read().unwrap();
+        match &guard.state {
+            VmState::NoVm => Err(VmError::NotCreated),
+            VmState::WaitingForInit => Err(VmError::WaitingToInitialize),
+            VmState::Active(vm) => Ok(vm.external_state_rx.clone()),
+            VmState::Rundown(vm) | VmState::RundownComplete(vm) => {
+                Ok(vm.external_state_rx.clone())
+            }
         }
     }
 
@@ -280,7 +342,7 @@ impl Vm {
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::WaitingForInit => {
-                guard.state = VmState::Active(Arc::downgrade(&active))
+                guard.state = VmState::Active(active.clone());
             }
             _ => unreachable!(
                 "only a starting VM's state worker calls make_active"
@@ -293,15 +355,14 @@ impl Vm {
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::Active(vm) => {
-                let active = vm.upgrade().expect("state driver holds a ref");
                 guard.state = VmState::Rundown(RundownVm {
-                    external_state_rx: active.external_state_rx.clone(),
-                    properties: active.properties.clone(),
-                    spec: active.objects().await.instance_spec.clone(),
+                    external_state_rx: vm.external_state_rx.clone(),
+                    properties: vm.properties.clone(),
+                    spec: vm.objects().await.instance_spec.clone(),
                 });
             }
             _ => unreachable!(
-                "only an active VM's state worker calls make_defunct"
+                "only an active VM's state worker calls set_rundown"
             ),
         }
     }

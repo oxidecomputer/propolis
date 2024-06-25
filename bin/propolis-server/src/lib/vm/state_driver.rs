@@ -139,6 +139,18 @@ impl InputQueue {
         let mut guard = self.inner.lock().unwrap();
         guard.external_requests.notify_instance_state_change(state);
     }
+
+    pub(super) fn queue_external_request(
+        &self,
+        request: super::request_queue::ExternalRequest,
+    ) -> Result<(), super::request_queue::RequestDeniedReason> {
+        let mut inner = self.inner.lock().unwrap();
+        let result = inner.external_requests.try_queue(request);
+        if result.is_ok() {
+            self.cv.notify_one();
+        }
+        result
+    }
 }
 
 impl guest_event::GuestEventHandler for InputQueue {

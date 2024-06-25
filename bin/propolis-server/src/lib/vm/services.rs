@@ -19,15 +19,15 @@ use crate::{
 use super::VmObjects;
 
 #[derive(Default)]
-struct OximeterState {
+pub(crate) struct OximeterState {
     server: Option<oximeter_producer::Server>,
-    stats: Option<crate::stats::ServerStatsOuter>,
+    pub stats: Option<crate::stats::ServerStatsOuter>,
 }
 
-pub(super) struct VmServices {
-    serial_task: tokio::sync::Mutex<Option<crate::serial::SerialTask>>,
-    oximeter: tokio::sync::Mutex<OximeterState>,
-    vnc_server: Arc<VncServer<PropolisVncServer>>,
+pub(crate) struct VmServices {
+    pub serial_task: tokio::sync::Mutex<Option<crate::serial::SerialTask>>,
+    pub oximeter: tokio::sync::Mutex<OximeterState>,
+    pub vnc_server: Arc<VncServer<PropolisVncServer>>,
 }
 
 impl VmServices {
