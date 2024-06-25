@@ -133,7 +133,7 @@ pub(super) struct ActiveVm {
     properties: InstanceProperties,
 
     objects: tokio::sync::RwLock<VmObjects>,
-    services: services::VmServices,
+    services: Option<services::VmServices>,
 }
 
 impl ActiveVm {
@@ -148,8 +148,7 @@ impl ActiveVm {
     }
 
     async fn stop_services(&self) {
-        let services = self.services.lock().await.take().unwrap();
-        services.stop(&self.log).await;
+        self.services.stop(&self.log).await;
     }
 }
 
@@ -159,6 +158,12 @@ struct DefunctVm {
     spec: InstanceSpecV0,
 }
 
+// TODO(gjc) the shutdown process is not quite right yet, is it? it's possible
+// for a VM to go to "Defunct" before actually being completely destroyed... the
+// "destroyed" transition used to happen when the VM controller was fully
+// dropped. what we might want is to have distinct "defunct" and "destroyed"
+// states and only get to the latter when the active VM is dropped? need to
+// think about this more.
 #[allow(clippy::large_enum_variant)]
 enum VmState {
     NoVm,
@@ -235,7 +240,7 @@ impl Vm {
         }
     }
 
-    pub async fn ensure(
+    pub(crate) async fn ensure(
         self: &Arc<Self>,
         log: slog::Logger,
         ensure_request: propolis_api_types::InstanceSpecEnsureRequest,

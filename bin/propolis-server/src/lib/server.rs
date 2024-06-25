@@ -43,7 +43,6 @@ use tokio_tungstenite::WebSocketStream;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::stats::virtual_machine::VirtualMachine;
-use crate::vm::VmController;
 use crate::vnc::PropolisVncServer;
 
 pub(crate) type DeviceMap =
@@ -76,7 +75,7 @@ impl MetricsEndpointConfig {
 /// objects.
 pub struct StaticConfig {
     /// The TOML-driven configuration for this server's instances.
-    pub vm: VmTomlConfig,
+    pub vm: Arc<VmTomlConfig>,
 
     /// Whether to use the host's guest memory reservoir to back guest memory.
     pub use_reservoir: bool,
@@ -84,93 +83,6 @@ pub struct StaticConfig {
     /// The configuration to use when setting up this server's Oximeter
     /// endpoint.
     metrics: Option<MetricsEndpointConfig>,
-}
-
-/// The state of the current VM controller in this server, if there is one, or
-/// the most recently created one, if one ever existed.
-pub enum VmControllerState {
-    /// No VM controller has ever been constructed in this server.
-    NotCreated,
-
-    /// A VM controller exists.
-    Created(Arc<VmController>),
-
-    /// No VM controller exists.
-    ///
-    /// Distinguishing this state from `NotCreated` allows the server to discard
-    /// the active `VmController` on instance stop while still being able to
-    /// service get requests for the instance. (If this were not needed, or the
-    /// server were willing to preserve the `VmController` after halt, this enum
-    /// could be replaced with an `Option`.)
-    Destroyed {
-        /// A copy of the instance properties recorded at the time the instance
-        /// was destroyed, used to serve subsequent `instance_get` requests.
-        last_instance: Box<api::Instance>,
-
-        /// A copy of the destroyed instance's spec, used to serve subsequent
-        /// `instance_spec_get` requests.
-        //
-        // TODO: Merge this into `api::Instance` when the migration to generated
-        // types is complete.
-        last_instance_spec: Box<VersionedInstanceSpec>,
-
-        /// A clone of the receiver side of the server's state watcher, used to
-        /// serve subsequent `instance_state_monitor` requests. Note that an
-        /// outgoing controller can publish new state changes even after the
-        /// server has dropped its reference to it (its state worker may
-        /// continue running for a time).
-        state_watcher:
-            tokio::sync::watch::Receiver<api::InstanceStateMonitorResponse>,
-    },
-}
-
-impl VmControllerState {
-    /// Maps this `VmControllerState` into a mutable reference to its internal
-    /// `VmController` if a controller is active.
-    pub fn as_controller(&mut self) -> Option<&mut Arc<VmController>> {
-        match self {
-            VmControllerState::NotCreated => None,
-            VmControllerState::Created(c) => Some(c),
-            VmControllerState::Destroyed { .. } => None,
-        }
-    }
-
-    /// Takes the active `VmController` if one is present and replaces it with
-    /// `VmControllerState::Destroyed`.
-    pub async fn take_controller(&mut self) -> Option<Arc<VmController>> {
-        if let VmControllerState::Created(vm) = self {
-            let state = vm.state_watcher().borrow().state;
-            let last_instance = api::Instance {
-                properties: vm.properties().clone(),
-                state,
-                disks: vec![],
-                nics: vec![],
-            };
-            let last_instance_spec = vm.instance_spec().await.clone();
-
-            // Preserve the state watcher so that subsequent updates to the VM's
-            // state are visible to calls to query/monitor that state. Note that
-            // the VM's state will change at least once more after this point:
-            // the final transition to the "destroyed" state happens only when
-            // all references to the VM have been dropped, including the one
-            // this routine just exchanged and will return.
-            let state_watcher = vm.state_watcher().clone();
-            if let VmControllerState::Created(vm) = std::mem::replace(
-                self,
-                VmControllerState::Destroyed {
-                    last_instance: Box::new(last_instance),
-                    last_instance_spec: Box::new(last_instance_spec),
-                    state_watcher,
-                },
-            ) {
-                Some(vm)
-            } else {
-                unreachable!()
-            }
-        } else {
-            None
-        }
-    }
 }
 
 /// Objects related to Propolis's Oximeter metric production.
@@ -184,66 +96,11 @@ pub struct OximeterState {
     stats: Option<crate::stats::ServerStatsOuter>,
 }
 
-/// Objects that this server creates, owns, and manipulates in response to API
-/// calls.
-pub struct ServiceProviders {
-    /// The VM controller that manages this server's Propolis instance. This is
-    /// `None` until a guest is created via `instance_ensure`.
-    pub vm: Mutex<VmControllerState>,
-
-    /// The currently active serial console handling task, if present.
-    serial_task: Mutex<Option<super::serial::SerialTask>>,
-
-    /// State related to the Propolis Oximeter server and actual statistics.
-    oximeter_state: Mutex<OximeterState>,
-
-    /// The VNC server hosted within this process. Note that this server always
-    /// exists irrespective of whether there is an instance. Creating an
-    /// instance hooks this server up to the instance's framebuffer.
-    vnc_server: Arc<VncServer<PropolisVncServer>>,
-}
-
-impl ServiceProviders {
-    /// Directs the current set of per-instance service providers to stop in an
-    /// orderly fashion, then drops them all.
-    async fn stop(&self, log: &Logger) {
-        // Stop the VNC server
-        self.vnc_server.stop().await;
-
-        if let Some(vm) = self.vm.lock().await.take_controller().await {
-            slog::info!(log, "Dropping server's VM controller reference";
-                "strong_refs" => Arc::strong_count(&vm),
-                "weak_refs" => Arc::weak_count(&vm),
-            );
-        }
-        if let Some(serial_task) = self.serial_task.lock().await.take() {
-            let _ = serial_task
-                .control_ch
-                .send(SerialTaskControlMessage::Stopping)
-                .await;
-            // Wait for the serial task to exit
-            let _ = serial_task.task.await;
-        }
-
-        // Clean up oximeter tasks and statistic state.
-        let mut oximeter_state = self.oximeter_state.lock().await;
-        if let Some(server) = oximeter_state.server.take() {
-            if let Err(e) = server.close().await {
-                error!(
-                    log,
-                    "failed to close oximeter producer server";
-                    "error" => ?e,
-                );
-            };
-        }
-        let _ = oximeter_state.stats.take();
-    }
-}
-
 /// Context accessible from HTTP callbacks.
 pub struct DropshotEndpointContext {
     static_config: StaticConfig,
-    pub services: Arc<ServiceProviders>,
+    vnc_server: Arc<VncServer<PropolisVncServer>>,
+    pub vm: Arc<crate::vm::Vm>,
     log: Logger,
 }
 
@@ -258,33 +115,14 @@ impl DropshotEndpointContext {
     ) -> Self {
         Self {
             static_config: StaticConfig {
-                vm: config,
+                vm: Arc::new(config),
                 use_reservoir,
                 metrics: metric_config,
             },
-            services: Arc::new(ServiceProviders {
-                vm: Mutex::new(VmControllerState::NotCreated),
-                serial_task: Mutex::new(None),
-                oximeter_state: Mutex::new(OximeterState {
-                    server: None,
-                    stats: None,
-                }),
-                vnc_server,
-            }),
+            vnc_server,
+            vm: crate::vm::Vm::new(),
             log,
         }
-    }
-
-    /// Get access to the VM controller for this context, emitting a consistent
-    /// error if it is absent.
-    pub(crate) async fn vm(
-        &self,
-    ) -> Result<MappedMutexGuard<Arc<VmController>>, HttpError> {
-        MutexGuard::try_map(
-            self.services.vm.lock().await,
-            VmControllerState::as_controller,
-        )
-        .map_err(|_| not_created_error())
     }
 }
 
@@ -328,69 +166,6 @@ fn instance_spec_from_request(
     }
 
     Ok(VersionedInstanceSpec::V0(spec_builder.finish()))
-}
-
-/// Register an Oximeter server reporting metrics from a new instance.
-async fn register_oximeter_producer(
-    services: Arc<ServiceProviders>,
-    cfg: MetricsEndpointConfig,
-    registry: &ProducerRegistry,
-    virtual_machine: VirtualMachine,
-    log: Logger,
-) {
-    let mut oximeter_state = services.oximeter_state.lock().await;
-    assert!(oximeter_state.stats.is_none());
-    assert!(oximeter_state.server.is_none());
-
-    // Create the server itself.
-    //
-    // The server manages all details of the registration with Nexus, so we
-    // don't need our own task for that or way to shut it down.
-    match crate::stats::start_oximeter_server(
-        virtual_machine.instance_id,
-        &cfg,
-        &log,
-        registry,
-    ) {
-        Ok(server) => {
-            info!(log, "created metric producer server");
-            let old = oximeter_state.server.replace(server);
-            assert!(old.is_none());
-        }
-        Err(err) => {
-            error!(
-                log,
-                "failed to construct metric producer server, \
-                no metrics will be available for this instance.";
-                "error" => ?err,
-            );
-        }
-    }
-
-    // Assign our own metrics production for this VM instance to the
-    // registry, letting the server actually return them to oximeter when
-    // polled.
-    let stats = match crate::stats::register_server_metrics(
-        registry,
-        virtual_machine,
-        &log,
-    )
-    .await
-    {
-        Ok(stats) => stats,
-        Err(e) => {
-            error!(
-                log,
-                "failed to register our server metrics with \
-                the ProducerRegistry, no server stats will \
-                be produced";
-                "error" => ?e,
-            );
-            return;
-        }
-    };
-    let old = oximeter_state.stats.replace(stats);
-    assert!(old.is_none());
 }
 
 /// Wrapper around a [`NexusClient`] object, which allows deferring
@@ -474,177 +249,34 @@ async fn instance_ensure_common(
     request: api::InstanceSpecEnsureRequest,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
-    let api::InstanceSpecEnsureRequest { properties, instance_spec, migrate } =
-        request;
+    let oximeter_registry = server_context
+        .static_config
+        .metrics
+        .as_ref()
+        .map(|_| ProducerRegistry::with_id(request.properties.id));
 
-    // Handle requests to an instance that has already been initialized. Treat
-    // the instances as compatible (and return Ok) if they have the same
-    // properties and return an appropriate error otherwise.
-    //
-    // TODO(#205): Consider whether to use this interface to change an
-    // instance's devices and backends at runtime.
-    if let VmControllerState::Created(existing) =
-        &*server_context.services.vm.lock().await
-    {
-        let existing_properties = existing.properties();
-        if existing_properties.id != properties.id {
-            return Err(HttpError::for_client_error(
-                Some(api::ErrorCode::AlreadyInitialized.to_string()),
-                http::status::StatusCode::CONFLICT,
-                format!(
-                    "Server already initialized with ID {}",
-                    existing_properties.id
-                ),
-            ));
-        }
-
-        if *existing_properties != properties {
-            return Err(HttpError::for_client_error(
-                Some(api::ErrorCode::AlreadyRunning.to_string()),
-                http::status::StatusCode::CONFLICT,
-                "Cannot update running server".to_string(),
-            ));
-        }
-
-        return Ok(HttpResponseCreated(api::InstanceEnsureResponse {
-            migrate: None,
-        }));
-    }
-
-    let producer_registry =
-        if let Some(cfg) = server_context.static_config.metrics.as_ref() {
-            // Create a registry and spawn tasks to register with Nexus as an
-            // oximeter metric producer.
-            //
-            // We create a registry here so that we can pass it through to Crucible
-            // below. We also spawn a task for the actual registration process
-            // (which may spin indefinitely) so that we can continue to initialize
-            // the VM instance without blocking for that to succeed.
-            let registry = ProducerRegistry::with_id(properties.id);
-            let virtual_machine = VirtualMachine::from(&properties);
-            register_oximeter_producer(
-                server_context.services.clone(),
-                cfg.clone(),
-                &registry,
-                virtual_machine,
-                rqctx.log.clone(),
-            )
-            .await;
-            Some(registry)
-        } else {
-            None
-        };
-
-    let (stop_ch, stop_recv) = oneshot::channel();
-
-    // Use our current address to generate the expected Nexus client endpoint
-    // address.
     let nexus_client =
         find_local_nexus_client(rqctx.server.local_addr, rqctx.log.clone())
             .await;
 
-    // Parts of VM initialization (namely Crucible volume attachment) make use
-    // of async processing, which itself is turned synchronous with `block_on`
-    // calls to the Tokio runtime.
-    //
-    // Since `block_on` will panic if called from an async context, as we are in
-    // now, the whole process is wrapped up in `spawn_blocking`.  It is
-    // admittedly a big kludge until this can be better refactored.
-    let vm = {
-        let properties = properties.clone();
-        let server_context = server_context.clone();
-        let log = server_context.log.clone();
-
-        // Block for VM controller setup under the current (API) runtime
-        let cur_rt_hdl = tokio::runtime::Handle::current();
-        let vm_hdl = cur_rt_hdl.spawn_blocking(move || {
-            VmController::new(
-                instance_spec,
-                properties,
-                &server_context.static_config,
-                producer_registry,
-                nexus_client,
-                log,
-                stop_ch,
-            )
-        });
-
-        vm_hdl.await.unwrap()
-    }
-    .map_err(|e| {
-        HttpError::for_internal_error(format!("failed to create instance: {e}"))
-    })?;
-
-    if let Some(ramfb) = vm.framebuffer() {
-        // Get a framebuffer description from the wrapped instance.
-        let fb_spec = ramfb.get_framebuffer_spec();
-        let vnc_fb = crate::vnc::RamFb::new(fb_spec);
-
-        // Get a reference to the PS2 controller so that we can pass keyboard input.
-        let ps2ctrl = vm.ps2ctrl().clone();
-
-        // Get a reference to the outward-facing VNC server in this process.
-        let vnc_server = server_context.services.vnc_server.clone();
-
-        // Initialize the Propolis VNC adapter with references to the VM's Instance,
-        // framebuffer, and PS2 controller.
-        vnc_server.server.initialize(vnc_fb, ps2ctrl, vm.clone()).await;
-
-        // Hook up the framebuffer notifier to update the Propolis VNC adapter
-        let notifier_server_ref = vnc_server.clone();
-        let rt = tokio::runtime::Handle::current();
-        ramfb.set_notifier(Box::new(move |config, is_valid| {
-            let vnc = notifier_server_ref.clone();
-            rt.block_on(vnc.server.update(config, is_valid, &vnc));
-        }));
-    }
-
-    let mut serial_task = server_context.services.serial_task.lock().await;
-    if serial_task.is_none() {
-        let (websocks_ch, websocks_recv) = mpsc::channel(1);
-        let (control_ch, control_recv) = mpsc::channel(1);
-
-        let serial = vm.com1().clone();
-        serial.set_task_control_sender(control_ch.clone()).await;
-        let err_log = rqctx.log.new(o!("component" => "serial task"));
-        let task = tokio::spawn(async move {
-            if let Err(e) = super::serial::instance_serial_task(
-                websocks_recv,
-                control_recv,
-                serial,
-                err_log.clone(),
-            )
-            .await
-            {
-                error!(err_log, "Failure in serial task: {}", e);
-            }
-        });
-        *serial_task =
-            Some(super::serial::SerialTask { task, control_ch, websocks_ch });
-    }
-
-    let log = server_context.log.clone();
-    let services = Arc::clone(&server_context.services);
-    tokio::task::spawn(async move {
-        // Once the VmController has signaled that it is shutting down,
-        // we'll clean up the per-instance service providers as well.
-        let _ = stop_recv.await;
-        services.stop(&log).await;
-    });
-
-    *server_context.services.vm.lock().await =
-        VmControllerState::Created(vm.clone());
-
-    let migrate = if let Some(migrate_request) = migrate {
-        let res = crate::migrate::dest_initiate(&rqctx, vm, migrate_request)
-            .await
-            .map_err(<_ as Into<HttpError>>::into)?;
-        Some(res)
-    } else {
-        None
+    let ensure_options = crate::vm::EnsureOptions {
+        toml_config: server_context.static_config.vm.clone(),
+        use_reservoir: server_context.static_config.use_reservoir,
+        metrics_config: server_context.static_config.metrics.clone(),
+        oximeter_registry,
+        nexus_client,
+        vnc_server: server_context.vnc_server.clone(),
     };
 
-    Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate }))
+    server_context
+        .vm
+        .ensure(rqctx.log.clone(), request, ensure_options)
+        .await
+        .expect("gjc");
+
+    Ok(HttpResponseCreated(api::InstanceEnsureResponse {
+        migrate: todo!("gjc"),
+    }))
 }
 
 #[endpoint {
