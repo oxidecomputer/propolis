@@ -16,7 +16,7 @@ use propolis_api_types::{
     },
     InstanceProperties, InstanceState,
 };
-use slog::{error, info};
+use slog::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -120,21 +120,23 @@ impl InputQueue {
     }
 
     fn wait_for_next_event(&self) -> InputQueueEvent {
-        let guard = self.inner.lock().unwrap();
-        let mut guard = self
-            .cv
-            .wait_while(guard, |i| {
-                i.external_requests.is_empty() && i.guest_events.is_empty()
-            })
-            .unwrap();
+        tokio::task::block_in_place(|| {
+            let guard = self.inner.lock().unwrap();
+            let mut guard = self
+                .cv
+                .wait_while(guard, |i| {
+                    i.external_requests.is_empty() && i.guest_events.is_empty()
+                })
+                .unwrap();
 
-        if let Some(guest_event) = guard.guest_events.pop_front() {
-            InputQueueEvent::GuestEvent(guest_event)
-        } else {
-            InputQueueEvent::ExternalRequest(
-                guard.external_requests.pop_front().unwrap(),
-            )
-        }
+            if let Some(guest_event) = guard.guest_events.pop_front() {
+                InputQueueEvent::GuestEvent(guest_event)
+            } else {
+                InputQueueEvent::ExternalRequest(
+                    guard.external_requests.pop_front().unwrap(),
+                )
+            }
+        })
     }
 
     fn notify_instance_state_change(
@@ -264,6 +266,8 @@ pub(super) async fn run_state_driver(
 
     let (vcpu_tasks, active_vm) = match ensure_request.migrate {
         None => {
+            trace!(log, "starting VM initialization");
+
             let (vm_objects, vcpu_tasks) = match initialize_vm_from_spec(
                 &log,
                 &input_queue,
@@ -281,6 +285,8 @@ pub(super) async fn run_state_driver(
                 }
             };
 
+            trace!(log, "initialized VM objects");
+
             let services = super::services::VmServices::new(
                 &log,
                 &vm,
@@ -289,6 +295,8 @@ pub(super) async fn run_state_driver(
                 &ensure_options,
             )
             .await;
+
+            trace!(log, "initialized VM services");
 
             let active_vm = Arc::new(super::ActiveVm {
                 parent: vm.clone(),
@@ -309,6 +317,8 @@ pub(super) async fn run_state_driver(
             let _ = ensure_result_tx.send(Ok(
                 propolis_api_types::InstanceEnsureResponse { migrate: None },
             ));
+
+            trace!(log, "made VM active");
 
             (vcpu_tasks, active_vm)
         }
