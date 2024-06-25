@@ -25,7 +25,7 @@ use crate::{
 
 use super::{
     guest_event::{self, GuestEvent},
-    VmError, VmObjects,
+    InstanceStateTx, VmError, VmObjects,
 };
 
 struct MigrationStateUpdate {
@@ -207,13 +207,13 @@ struct StateDriver {
 
 pub(super) async fn run_state_driver(
     log: slog::Logger,
-    vm: &Arc<super::Vm>,
+    vm: Arc<super::Vm>,
     ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
     ensure_result_tx: tokio::sync::oneshot::Sender<
         Result<propolis_api_types::InstanceEnsureResponse, VmError>,
     >,
     ensure_options: super::EnsureOptions,
-) {
+) -> InstanceStateTx {
     let (external_tx, external_rx) = tokio::sync::watch::channel(
         propolis_api_types::InstanceStateMonitorResponse {
             gen: 1,
@@ -241,13 +241,13 @@ pub(super) async fn run_state_driver(
         Err(e) => {
             let _ =
                 ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
-            return;
+            return external_tx;
         }
     };
 
     let services = super::services::VmServices::new(
         &log,
-        vm,
+        &vm,
         &vm_objects,
         &ensure_request.properties,
         &ensure_options,
@@ -260,7 +260,7 @@ pub(super) async fn run_state_driver(
         state_driver_queue: input_queue.clone(),
         external_state_rx: external_rx,
         properties: ensure_request.properties,
-        objects: tokio::sync::RwLock::new(vm_objects),
+        objects: Some(tokio::sync::RwLock::new(vm_objects)),
         services: Some(services),
     });
 
@@ -378,7 +378,7 @@ impl StateDriver {
         ensure_result_tx: tokio::sync::oneshot::Sender<
             Result<propolis_api_types::InstanceEnsureResponse, VmError>,
         >,
-    ) {
+    ) -> super::InstanceStateTx {
         self.parent.make_active(self.active_vm.clone());
         self.update_external_state(ExternalStateUpdate::Instance(
             InstanceState::Starting,
@@ -387,9 +387,14 @@ impl StateDriver {
             migrate: None,
         }));
 
+        // TODO(gjc) actually start the VM
+
         self.run_loop().await;
-        self.active_vm.stop_services().await;
-        self.parent.make_defunct();
+
+        // TODO(gjc) get rid of these
+        self.parent.set_rundown();
+
+        self.external_state_tx
     }
 
     fn update_external_state(&mut self, state: ExternalStateUpdate) {
