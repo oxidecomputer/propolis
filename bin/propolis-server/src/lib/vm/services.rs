@@ -43,22 +43,21 @@ impl VmServices {
                 "should have a producer registry if metrics are configured",
             );
 
-            let state =
-                register_oximeter_producer(log, cfg, registry, vm_properties)
-                    .await;
-
-            state
+            register_oximeter_producer(log, cfg, registry, vm_properties).await
         } else {
             OximeterState::default()
         };
 
         let vnc_server = ensure_options.vnc_server.clone();
         if let Some(ramfb) = &vm_objects.framebuffer {
-            vnc_server.server.initialize(
-                crate::vnc::RamFb::new(ramfb.get_framebuffer_spec()),
-                vm_objects.ps2ctrl.clone(),
-                vm.clone(),
-            );
+            vnc_server
+                .server
+                .initialize(
+                    crate::vnc::RamFb::new(ramfb.get_framebuffer_spec()),
+                    vm_objects.ps2ctrl.clone(),
+                    vm.clone(),
+                )
+                .await;
 
             let notifier_server_ref = vnc_server.clone();
             let rt = tokio::runtime::Handle::current();
@@ -115,8 +114,8 @@ async fn register_oximeter_producer(
     // don't need our own task for that or way to shut it down.
     oximeter_state.server = match crate::stats::start_oximeter_server(
         virtual_machine.instance_id,
-        &cfg,
-        &log,
+        cfg,
+        log,
         registry,
     ) {
         Ok(server) => {
@@ -140,7 +139,7 @@ async fn register_oximeter_producer(
     oximeter_state.stats = match crate::stats::register_server_metrics(
         registry,
         virtual_machine,
-        &log,
+        log,
     )
     .await
     {

@@ -77,7 +77,7 @@ impl PropolisVncServer {
         }
     }
 
-    pub async fn initialize(
+    pub(crate) async fn initialize(
         &self,
         fb: RamFb,
         ps2ctrl: Arc<PS2Ctrl>,

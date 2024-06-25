@@ -10,33 +10,6 @@ use std::{
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use slog::{error, info};
 
-pub(super) trait VmLifecycle: Send + Sync {
-    /// Resume a previously-paused VM at the kernel VMM level.  This will resume
-    /// any timers driving in-kernel-emulated devices, and allow the vCPU to run
-    /// again.
-    fn resume_vm(&self);
-
-    /// Sends a reset request to each device in the instance, then sends a
-    /// reset command to the instance's bhyve VM.
-    fn reset_devices_and_machine(&self);
-
-    /// Sends each device (and backend) a start request.
-    fn start_devices(&self) -> BoxFuture<'_, anyhow::Result<()>>;
-
-    /// Sends each device a pause request. Returns a future that can be awaited
-    /// to wait for all pause requests to complete.
-    fn pause_devices(&self) -> BoxFuture<'_, ()>;
-
-    /// Sends each device a resume request.
-    fn resume_devices(&self);
-
-    /// Sends each device (and backend) a halt request.
-    fn halt_devices(&self);
-
-    /// Resets the state of each vCPU in the instance to its on-reboot state.
-    fn reset_vcpu_state(&self);
-}
-
 impl super::VmObjects {
     /// Pause VM at the kernel VMM level, ensuring that in-kernel-emulated
     /// devices and vCPUs are brought to a consistent state.
