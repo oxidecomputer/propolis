@@ -333,7 +333,7 @@ async fn instance_get_common(
             not_created_error()
         }
         _ => HttpError::for_internal_error(format!(
-            "error from VM controller: {e}"
+            "unexpected error from VM controller: {e}"
         )),
     })
 }
@@ -382,7 +382,7 @@ async fn instance_state_monitor(
             not_created_error()
         }
         _ => HttpError::for_internal_error(format!(
-            "error from VM controller: {e}"
+            "unexpected error from VM controller: {e}"
         )),
     })?;
 
@@ -432,7 +432,7 @@ async fn instance_state_put(
                 http::status::StatusCode::FORBIDDEN,
             ),
             _ => HttpError::for_internal_error(format!(
-                "error from VM controller: {e}"
+                "unexpected error from VM controller: {e}"
             )),
         });
 
@@ -572,7 +572,7 @@ async fn instance_migrate_status(
                 not_created_error()
             }
             _ => HttpError::for_internal_error(format!(
-                "error from VM controller: {e}"
+                "unexpected error from VM controller: {e}"
             )),
         })
 }
@@ -643,66 +643,28 @@ async fn instance_issue_crucible_vcr_request(
     let request = request.into_inner();
     let new_vcr_json = request.vcr_json;
     let disk_name = request.name;
-    let log = rqctx.log.clone();
 
-    // Get the instance spec for storage backend from the disk name.  We use
-    // the VCR stored there to send to crucible along with the new VCR we want
-    // to replace it.
-    let vm_controller = rqctx.context().vm().await?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
 
-    // TODO(#205): Mutating a VM's configuration should be a first-class
-    // operation in the VM controller that synchronizes with ongoing migrations
-    // and other attempts to mutate the VM. For the time being, use the instance
-    // spec lock to exclude other concurrent attempts to reconfigure this
-    // backend.
-    let mut spec = vm_controller.instance_spec().await;
-    let VersionedInstanceSpec::V0(v0_spec) = &mut *spec;
+    vm.reconfigure_crucible_volume(disk_name, path_params.id, new_vcr_json, tx)
+        .map_err(|e| match e {
+            VmError::ForbiddenStateChange(reason) => HttpError::for_status(
+                Some(format!("instance state change not allowed: {}", reason)),
+                http::status::StatusCode::FORBIDDEN,
+            ),
+            _ => HttpError::for_internal_error(format!(
+                "unexpected error from VM controller: {e}"
+            )),
+        })?;
 
-    let (readonly, old_vcr_json) = {
-        let bes = &v0_spec.backends.storage_backends.get(&disk_name);
-        if let Some(StorageBackendV0::Crucible(bes)) = bes {
-            (bes.readonly, &bes.request_json)
-        } else {
-            let s = format!("Crucible backend for {:?} not found", disk_name);
-            return Err(HttpError::for_not_found(Some(s.clone()), s));
-        }
-    };
-
-    // Get the crucible backend so we can call the replacement method on it.
-    let crucible_backends = vm_controller.crucible_backends();
-    let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
-        let s = format!("No crucible backend for id {}", path_params.id);
-        HttpError::for_not_found(Some(s.clone()), s)
+    let result = rx.await.map_err(|_| {
+        HttpError::for_internal_error(
+            "VM worker task unexpectedly dropped result channel".to_string(),
+        )
     })?;
 
-    slog::info!(
-        log,
-        "{:?} {:?} vcr replace requested",
-        disk_name,
-        path_params.id,
-    );
-
-    // Try the replacement.
-    // Crucible does the heavy lifting here to verify that the old/new
-    // VCRs are different in just the correct way and will return error
-    // if there is any mismatch.
-    let replace_result =
-        backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(
-            |e| HttpError::for_bad_request(Some(e.to_string()), e.to_string()),
-        )?;
-
-    // Our replacement request was accepted.  We now need to update the
-    // spec stored in propolis so it matches what the downstairs now has.
-    let new_storage_backend: StorageBackendV0 =
-        StorageBackendV0::Crucible(CrucibleStorageBackend {
-            readonly,
-            request_json: new_vcr_json,
-        });
-    v0_spec.backends.storage_backends.insert(disk_name, new_storage_backend);
-
-    slog::info!(log, "Replaced the VCR in backend of {:?}", path_params.id);
-
-    Ok(HttpResponseOk(replace_result))
+    result.map(HttpResponseOk)
 }
 
 /// Issues an NMI to the instance.

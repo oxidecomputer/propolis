@@ -142,7 +142,7 @@ impl super::VmObjects {
         })
     }
 
-    pub(super) fn halt_devices(&self) {
+    pub(super) async fn halt_devices(&self) {
         self.for_each_device(|name, dev| {
             info!(self.log, "sending halt request to {}", name);
             dev.halt();
@@ -150,7 +150,7 @@ impl super::VmObjects {
 
         for (name, backend) in self.block_backends.iter() {
             info!(self.log, "stopping and detaching block backend {}", name);
-            backend.stop();
+            backend.stop().await;
             if let Err(err) = backend.detach() {
                 error!(self.log, "error detaching block backend";
                        "name" => name,

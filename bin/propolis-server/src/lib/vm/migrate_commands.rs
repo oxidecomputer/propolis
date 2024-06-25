@@ -40,7 +40,7 @@ pub enum MigrateSourceCommand {
 pub enum MigrateSourceResponse {
     /// A previous migration out has (or has not) failed to restore the VM's
     /// dirty bitmap.
-    RedirtyingFailed(bool), 
+    RedirtyingFailed(bool),
 
     /// A request to pause completed with the attached result.
     Pause(Result<(), std::io::Error>),
