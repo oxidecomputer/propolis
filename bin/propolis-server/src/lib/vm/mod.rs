@@ -22,6 +22,7 @@ use propolis_api_types::{
 use request_queue::ExternalRequest;
 use rfb::server::VncServer;
 use slog::info;
+use uuid::Uuid;
 
 use crate::{
     serial::Serial, server::MetricsEndpointConfig, vnc::PropolisVncServer,
@@ -47,6 +48,11 @@ type InstanceStateTx = tokio::sync::watch::Sender<
 type InstanceStateRx = tokio::sync::watch::Receiver<
     propolis_api_types::InstanceStateMonitorResponse,
 >;
+
+pub(crate) type CrucibleReplaceResult =
+    Result<crucible_client_types::ReplaceResult, dropshot::HttpError>;
+pub(crate) type CrucibleReplaceResultTx =
+    tokio::sync::oneshot::Sender<CrucibleReplaceResult>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VmError {
@@ -83,7 +89,7 @@ struct VmInner {
     driver: Option<tokio::task::JoinHandle<InstanceStateTx>>,
 }
 
-struct VmObjects {
+pub(crate) struct VmObjects {
     log: slog::Logger,
     instance_spec: InstanceSpecV0,
     machine: Machine,
@@ -173,6 +179,12 @@ impl ActiveVm {
         self.objects.as_ref().unwrap().read().await
     }
 
+    async fn objects_mut(
+        &self,
+    ) -> tokio::sync::RwLockWriteGuard<'_, VmObjects> {
+        self.objects.as_ref().unwrap().write().await
+    }
+
     pub(crate) fn put_state(
         &self,
         requested: InstanceStateRequested,
@@ -186,6 +198,25 @@ impl ActiveVm {
                 InstanceStateRequested::Stop => ExternalRequest::Stop,
                 InstanceStateRequested::Reboot => ExternalRequest::Reboot,
             })
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn reconfigure_crucible_volume(
+        &self,
+        disk_name: String,
+        backend_id: Uuid,
+        new_vcr_json: String,
+        result_tx: CrucibleReplaceResultTx,
+    ) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(
+                ExternalRequest::ReconfigureCrucibleVolume {
+                    disk_name,
+                    backend_id,
+                    new_vcr_json,
+                    result_tx,
+                },
+            )
             .map_err(Into::into)
     }
 

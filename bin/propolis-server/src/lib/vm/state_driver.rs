@@ -10,7 +10,11 @@ use std::{
 };
 
 use propolis_api_types::{
-    instance_spec::VersionedInstanceSpec, InstanceProperties, InstanceState,
+    instance_spec::{
+        components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
+        VersionedInstanceSpec,
+    },
+    InstanceProperties, InstanceState,
 };
 use slog::{error, info};
 use uuid::Uuid;
@@ -25,6 +29,7 @@ use crate::{
 
 use super::{
     guest_event::{self, GuestEvent},
+    request_queue::ExternalRequest,
     InstanceStateTx, VmError, VmObjects,
 };
 
@@ -81,7 +86,7 @@ enum VmStartReason {
 
 #[derive(Debug)]
 enum InputQueueEvent {
-    ExternalRequest(super::request_queue::ExternalRequest),
+    ExternalRequest(ExternalRequest),
     GuestEvent(GuestEvent),
 }
 
@@ -142,7 +147,7 @@ impl InputQueue {
 
     pub(super) fn queue_external_request(
         &self,
-        request: super::request_queue::ExternalRequest,
+        request: ExternalRequest,
     ) -> Result<(), super::request_queue::RequestDeniedReason> {
         let mut inner = self.inner.lock().unwrap();
         let result = inner.external_requests.try_queue(request);
@@ -431,25 +436,39 @@ impl StateDriver {
 
     async fn handle_external_request(
         &mut self,
-        request: super::request_queue::ExternalRequest,
+        request: ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
-            super::request_queue::ExternalRequest::Start => {
+            ExternalRequest::Start => {
                 match self.start_vm(VmStartReason::ExplicitRequest).await {
                     Ok(_) => HandleEventOutcome::Continue,
                     Err(_) => HandleEventOutcome::Exit,
                 }
             }
-            super::request_queue::ExternalRequest::MigrateAsSource {
-                ..
-            } => todo!("gjc"),
-            super::request_queue::ExternalRequest::Reboot => {
+            ExternalRequest::MigrateAsSource { .. } => todo!("gjc"),
+            ExternalRequest::Reboot => {
                 self.do_reboot();
                 HandleEventOutcome::Continue
             }
-            super::request_queue::ExternalRequest::Stop => {
+            ExternalRequest::Stop => {
                 self.do_halt();
                 HandleEventOutcome::Exit
+            }
+            ExternalRequest::ReconfigureCrucibleVolume {
+                disk_name,
+                backend_id,
+                new_vcr_json,
+                result_tx,
+            } => {
+                result_tx.send(
+                    self.reconfigure_crucible_volume(
+                        disk_name,
+                        &backend_id,
+                        new_vcr_json,
+                    )
+                    .await,
+                );
+                HandleEventOutcome::Continue
             }
         }
     }
@@ -592,6 +611,12 @@ impl StateDriver {
         self.active_vm.objects().await
     }
 
+    async fn vm_objects_mut(
+        &self,
+    ) -> tokio::sync::RwLockWriteGuard<'_, VmObjects> {
+        self.active_vm.objects_mut().await
+    }
+
     async fn vm_objects_and_cpus(
         &mut self,
     ) -> (
@@ -599,6 +624,71 @@ impl StateDriver {
         &mut dyn VcpuTaskController,
     ) {
         (self.active_vm.objects().await, self.vcpu_tasks.as_mut())
+    }
+
+    async fn reconfigure_crucible_volume(
+        &self,
+        disk_name: String,
+        backend_id: &Uuid,
+        new_vcr_json: String,
+    ) -> super::CrucibleReplaceResult {
+        info!(self.log, "request to replace Crucible VCR";
+              "disk_name" => %disk_name,
+              "backend_id" => %backend_id);
+
+        let mut objects = self.vm_objects_mut().await;
+
+        fn spec_element_not_found(disk_name: &str) -> dropshot::HttpError {
+            let msg = format!("Crucible backend for {:?} not found", disk_name);
+            dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
+        }
+
+        let (readonly, old_vcr_json) = {
+            let StorageBackendV0::Crucible(bes) = objects
+                .instance_spec
+                .backends
+                .storage_backends
+                .get(&disk_name)
+                .ok_or_else(|| spec_element_not_found(&disk_name))?
+            else {
+                return Err(spec_element_not_found(&disk_name));
+            };
+
+            (bes.readonly, &bes.request_json)
+        };
+
+        let replace_result = {
+            let backend =
+                objects.crucible_backends.get(backend_id).ok_or_else(|| {
+                    let msg =
+                        format!("No crucible backend for id {backend_id}");
+                    dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
+                })?;
+
+            backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(
+                |e| {
+                    dropshot::HttpError::for_bad_request(
+                        Some(e.to_string()),
+                        e.to_string(),
+                    )
+                },
+            )
+        }?;
+
+        let new_bes = StorageBackendV0::Crucible(CrucibleStorageBackend {
+            readonly,
+            request_json: new_vcr_json,
+        });
+
+        objects
+            .instance_spec
+            .backends
+            .storage_backends
+            .insert(disk_name, new_bes);
+
+        info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
+
+        Ok(replace_result)
     }
 }
 
