@@ -52,10 +52,10 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     };
 
     if let Err(err) = proto.run().await {
-        err_tx
+        // If the
+        let _ = err_tx
             .send(MigrateTargetCommand::UpdateState(MigrationState::Error))
-            .await
-            .unwrap();
+            .await;
 
         // We encountered an error, try to inform the remote before bailing
         // Note, we don't use `?` here as this is a best effort and we don't
@@ -179,6 +179,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
     }
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
+        self.command_tx
+            .send(MigrateTargetCommand::InitializeFromExternalSpec)
+            .await
+            .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+
+        let MigrateTargetResponse::VmObjectsInitialized(vm_objects) = self
+            .response_rx
+            .recv()
+            .await
+            .ok_or(MigrateError::StateDriverChannelClosed)?;
+
+        let vm_objects = vm_objects
+            .map_err(MigrateError::TargetInstanceInitializationFailed)?;
+
+        self.vm_objects = Some(vm_objects);
         self.update_state(MigrationState::Sync).await;
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
@@ -194,18 +209,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        self.command_tx
-            .send(MigrateTargetCommand::InitializeFromExternalSpec)
-            .await
-            .map_err(|_| MigrateError::StateDriverChannelClosed)?;
-
-        let MigrateTargetResponse::VmObjectsInitialized(vm_objects) = self
-            .response_rx
-            .recv()
-            .await
-            .ok_or(MigrateError::StateDriverChannelClosed)?;
-
-        self.vm_objects = Some(vm_objects);
         if let Err(e) = preamble.is_migration_compatible(
             self.vm_objects.as_ref().unwrap().instance_spec(),
         ) {
@@ -632,7 +635,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             // If this is an error message, lift that out
             .map(|msg| match msg.try_into()? {
                 codec::Message::Error(err) => {
-                    error!(self.log(), "remote error: {err}");
+                    error!(
+                        self.log(),
+                        "migration failed due to error from source: {err}"
+                    );
                     Err(MigrateError::RemoteError(
                         MigrateRole::Source,
                         err.to_string(),

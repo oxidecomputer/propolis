@@ -14,7 +14,8 @@ use propolis_api_types::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
         VersionedInstanceSpec,
     },
-    InstanceProperties, InstanceState, MigrationState,
+    InstanceMigrateInitiateResponse, InstanceProperties, InstanceState,
+    MigrationState,
 };
 use slog::{error, info};
 use uuid::Uuid;
@@ -236,7 +237,8 @@ pub(super) async fn run_state_driver(
         log.new(slog::o!("component" => "request_queue")),
     ));
 
-    let migrated_in = ensure_request.migrate.is_some();
+    let migration_in_id =
+        ensure_request.migrate.as_ref().map(|req| req.migration_id);
     let (vm_objects, vcpu_tasks) = match match ensure_request.migrate {
         None => {
             initialize_vm_from_spec(
@@ -294,8 +296,11 @@ pub(super) async fn run_state_driver(
     // Order matters here: once the ensure result is sent, an external
     // caller needs to observe that an active VM is present.
     vm.make_active(active_vm.clone());
-    let _ = ensure_result_tx
-        .send(Ok(propolis_api_types::InstanceEnsureResponse { migrate: None }));
+    let _ =
+        ensure_result_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
+            migrate: migration_in_id
+                .map(|id| InstanceMigrateInitiateResponse { migration_id: id }),
+        }));
 
     let state_driver = StateDriver {
         log,
@@ -308,7 +313,7 @@ pub(super) async fn run_state_driver(
         migration_src_state: Default::default(),
     };
 
-    state_driver.run(migrated_in).await
+    state_driver.run(migration_in_id.is_some()).await
 }
 
 impl StateDriver {
@@ -652,6 +657,8 @@ impl StateDriver {
 
                         self.publish_steady_state(InstanceState::Running);
                     }
+
+                    return;
                 }
 
                 // N.B. When handling a command that requires a reply, do not
@@ -899,32 +906,75 @@ async fn migrate_as_target(
         .await
     });
 
-    // Migration cannot proceed (in any protocol version) until the target
-    // kernel VMM and Propolis components have been set up. The first command
-    // from the migration task should be a request to set up these components.
-    let init_command = command_rx.recv().await.ok_or_else(|| {
-        anyhow::anyhow!("migration task unexpectedly closed channel")
-    })?;
+    async fn init_sequence(
+        log: &slog::Logger,
+        event_queue: &Arc<InputQueue>,
+        properties: &InstanceProperties,
+        spec: &VersionedInstanceSpec,
+        options: &super::EnsureOptions,
+        command_rx: &mut tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
+    ) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
+        // Migration cannot proceed (in any protocol version) until the target
+        // kernel VMM and Propolis components have been set up. The first
+        // command from the migration task should be a request to set up these
+        // components.
+        let init_command = command_rx.recv().await.ok_or_else(|| {
+            anyhow::anyhow!("migration task unexpectedly closed channel")
+        })?;
 
-    // TODO(#706) The only extant protocol version (V0 with RON encoding)
-    // assumes that migration targets get an instance spec from the caller of
-    // the `instance_ensure` API, that the target VM will be initialized from
-    // this spec, and that device state will be imported in a later migration
-    // phase. There are other ways to approach this problem:
-    //
-    // - This task can initialize a VM using the *source's* instance spec
-    //   (possibly with amended configuration supplied via the API).
-    // - This task can initialize components using device state payload
-    //   forwarded on from the migration task.
-    //
-    // For now, initialize the target VM in the conventional way.
-    let MigrateTargetCommand::InitializeFromExternalSpec = init_command else {
-        anyhow::bail!("migration protocol didn't first ask to init objects");
-    };
+        // TODO(#706) The only extant protocol version (V0 with RON encoding)
+        // assumes that migration targets get an instance spec from the caller
+        // of the `instance_ensure` API, that the target VM will be initialized
+        // from this spec, and that device state will be imported in a later
+        // migration phase. Another approach is to get an instance spec from the
+        // source, amend it with information passed to the target, execute
+        // enough of the migration protocol to get device state payloads, and
+        // initialize everything in one fell swoop using the spec and payloads
+        // as inputs.
+        //
+        // This requires a new protocol version, so for now, only look for a
+        // request to initialize the VM from the caller-provided spec.
+        let MigrateTargetCommand::InitializeFromExternalSpec = init_command
+        else {
+            error!(log, "migration protocol didn't init objects first";
+               "first_cmd" => ?init_command);
+            anyhow::bail!(
+                "migration protocol didn't first ask to init objects"
+            );
+        };
 
-    let (vm_objects, mut vcpu_tasks) =
         initialize_vm_from_spec(log, event_queue, properties, spec, options)
-            .await?;
+            .await
+    }
+
+    let (vm_objects, mut vcpu_tasks) = match init_sequence(
+        log,
+        event_queue,
+        properties,
+        spec,
+        options,
+        &mut command_rx,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = response_tx
+                .send(MigrateTargetResponse::VmObjectsInitialized(Err(
+                    e.to_string()
+                )))
+                .await;
+            external_state.update(ExternalStateUpdate::Migration(
+                MigrationStateUpdate {
+                    id: migrate_ctx.migration_id,
+                    state: MigrationState::Error,
+                    role: MigrateRole::Source,
+                },
+            ));
+
+            return Err(e);
+        }
+    };
 
     // The migration task imports device state by operating directly on the
     // newly-created VM objects. Before sending them to the task and allowing
@@ -945,7 +995,9 @@ async fn migrate_as_target(
     // this task to reclaim an owned `VmObjects` from the `Arc` wrapper.
     let vm_objects = Arc::new(vm_objects);
     if response_tx
-        .send(MigrateTargetResponse::VmObjectsInitialized(vm_objects.clone()))
+        .send(MigrateTargetResponse::VmObjectsInitialized(Ok(
+            vm_objects.clone()
+        )))
         .await
         .is_err()
     {
@@ -1009,7 +1061,7 @@ async fn next_migrate_task_event<E>(
     // migration task is exiting. Wait for it to finish and snag its result.
     match task.await {
         Ok(res) => {
-            info!(log, "Migration source task exited: {:?}", res);
+            info!(log, "Migration task exited: {:?}", res);
             MigrateTaskEvent::TaskExited(res)
         }
         Err(join_err) => {

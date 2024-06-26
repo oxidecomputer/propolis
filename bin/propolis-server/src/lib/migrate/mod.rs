@@ -87,8 +87,8 @@ pub enum MigrateError {
     UpgradeExpected,
 
     /// Attempted to migrate an uninitialized instance
-    #[error("instance is not initialized")]
-    InstanceNotInitialized,
+    #[error("failed to initialize the target VM: {0}")]
+    TargetInstanceInitializationFailed(String),
 
     /// The given UUID does not match the existing instance/migration UUID
     #[error("unexpected Uuid")]
@@ -144,11 +144,8 @@ pub enum MigrateError {
 
     /// Sending/receiving from the VM state driver command/response channels
     /// returned an error.
-    #[error("unable to communiciate with VM state driver")]
+    #[error("VM state driver unexpectedly closed channel")]
     StateDriverChannelClosed,
-
-    #[error("request to VM state driver returned failure")]
-    StateDriverResponseFailed,
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for MigrateError {
@@ -177,7 +174,7 @@ impl From<MigrateError> for HttpError {
             | MigrateError::Initiate
             | MigrateError::ProtocolParse(_, _)
             | MigrateError::NoMatchingProtocol(_, _)
-            | MigrateError::InstanceNotInitialized
+            | MigrateError::TargetInstanceInitializationFailed(_)
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
             | MigrateError::UnexpectedMessage
@@ -187,8 +184,7 @@ impl From<MigrateError> for HttpError {
             | MigrateError::DeviceState(_)
             | MigrateError::RemoteError(_, _)
             | MigrateError::StateMachine(_)
-            | MigrateError::StateDriverChannelClosed
-            | MigrateError::StateDriverResponseFailed => {
+            | MigrateError::StateDriverChannelClosed => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress

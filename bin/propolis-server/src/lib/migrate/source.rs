@@ -167,7 +167,8 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
                     .command_tx
                     .send(MigrateSourceCommand::RedirtyingFailed)
                     .await
-                    .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+                    .unwrap();
+                // .map_err(|_| MigrateError::StateDriverChannelClosed)?;
 
                 error!(
                     proto.log(),
@@ -380,13 +381,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             self.command_tx
                 .send(MigrateSourceCommand::QueryRedirtyingFailed)
                 .await
-                .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+                .unwrap();
+            // .map_err(|_| MigrateError::StateDriverChannelClosed)?;
 
-            let response = self
-                .response_rx
-                .recv()
-                .await
-                .ok_or(MigrateError::StateDriverChannelClosed)?;
+            let response = self.response_rx.recv().await.unwrap();
+            // .ok_or(MigrateError::StateDriverChannelClosed)?;
 
             match response {
                 MigrateSourceResponse::RedirtyingFailed(has_failed) => {
@@ -749,7 +748,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             // If this is an error message, lift that out
             .map(|msg| match msg {
                 codec::Message::Error(err) => {
-                    error!(self.log(), "remote error: {err}");
+                    error!(
+                        self.log(),
+                        "migration failed due to error from target: {err}"
+                    );
                     Err(MigrateError::RemoteError(
                         MigrateRole::Destination,
                         err.to_string(),
