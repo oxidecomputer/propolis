@@ -554,9 +554,10 @@ async fn instance_ensure_common(
         let properties = properties.clone();
         let server_context = server_context.clone();
         let log = server_context.log.clone();
-        let hdl = tokio::runtime::Handle::current();
-        let ctrl_hdl = hdl.clone();
-        let vm_hdl = hdl.spawn_blocking(move || {
+
+        // Block for VM controller setup under the current (API) runtime
+        let cur_rt_hdl = tokio::runtime::Handle::current();
+        let vm_hdl = cur_rt_hdl.spawn_blocking(move || {
             VmController::new(
                 instance_spec,
                 properties,
@@ -564,7 +565,6 @@ async fn instance_ensure_common(
                 producer_registry,
                 nexus_client,
                 log,
-                ctrl_hdl,
                 stop_ch,
             )
         });

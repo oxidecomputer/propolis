@@ -42,6 +42,9 @@ const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
+const MIN_RT_THREADS: usize = 8;
+const BASE_RT_THREADS: usize = 4;
+
 #[derive(Copy, Clone, Debug)]
 enum InstEvent {
     Halt,
@@ -1405,21 +1408,31 @@ fn main() -> anyhow::Result<ExitCode> {
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
 
+    // Load/parse the config first, since it's required to size the tokio runtime
+    // used to run the instance.
+    let config = if restore {
+        snapshot::restore_config(&target)
+    } else {
+        config::parse(&target)
+    }?;
+
     // Create tokio runtime, we don't use the tokio::main macro
     // since we'll block in main when we call `Instance::wait_for_state`
-    let rt =
-        tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt_threads =
+        MIN_RT_THREADS.max(BASE_RT_THREADS + config.main.cpus as usize);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(rt_threads)
+        .enable_all()
+        .thread_name("vmm-tokio")
+        .build()?;
     let _rt_guard = rt.enter();
 
     // Create the VM afresh or restore it from a snapshot
     let (inst, com1_sock) = if restore {
-        let (inst, com1_sock) = snapshot::restore(&target, &log)?;
-        (inst, com1_sock)
+        snapshot::restore(&target, config, &log)
     } else {
-        let config = config::parse(&target)?;
-        let (inst, com1_sock) = setup_instance(config, false, &log)?;
-        (inst, com1_sock)
-    };
+        setup_instance(config, false, &log)
+    }?;
 
     // Register a Ctrl-C handler so we can snapshot before exiting if needed
     let ctrlc_eq = inst.eq();

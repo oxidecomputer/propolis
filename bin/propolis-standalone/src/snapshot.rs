@@ -228,26 +228,30 @@ fn parse_mem_name(name: &str) -> anyhow::Result<(usize, usize)> {
     }
 }
 
+/// Attempt to read (and parse) the VM config from a snapshot file
+pub(crate) fn restore_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
+    let file = File::open(&path).context("Failed to open snapshot file")?;
+    let mut archive = TarArchive::new(file);
+
+    let entry = archive.named_entry(CONFIG_NAME)?;
+    let raw_bytes = entry.bytes().collect::<Result<Vec<u8>, _>>()?;
+    toml::from_str(
+        std::str::from_utf8(&raw_bytes[..])
+            .context("config should be valid utf-8")?,
+    )
+    .context("could not parse config")
+}
+
 /// Create an instance from a previously saved snapshot.
 pub(crate) fn restore(
     path: impl AsRef<Path>,
+    config: Config,
     log: &slog::Logger,
 ) -> anyhow::Result<(Instance, Arc<UDSock>)> {
     info!(log, "restoring snapshot of VM from {}", path.as_ref().display());
 
     let file = File::open(&path).context("Failed to open snapshot file")?;
     let mut archive = TarArchive::new(file);
-
-    let config: Config = {
-        let config_ent = archive.named_entry(CONFIG_NAME)?;
-        let config_bytes =
-            config_ent.bytes().collect::<Result<Vec<u8>, _>>()?;
-        toml::from_str(
-            std::str::from_utf8(&config_bytes[..])
-                .context("config should be valid utf-8")?,
-        )
-        .context("could not parse config")?
-    };
 
     // We have enough to create the instance so let's do that first
     let (inst, com1_sock) = super::setup_instance(config, true, log)
