@@ -327,7 +327,11 @@ fn create_crucible_backend(
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
-    block::CrucibleBackend::create(req, opts, None, None, log.clone()).unwrap()
+    tokio::runtime::Handle::current().block_on(async move {
+        block::CrucibleBackend::create(req, opts, None, None, log.clone())
+            .await
+            .unwrap()
+    })
 }
 
 #[cfg(feature = "crucible")]
@@ -342,7 +346,11 @@ fn create_crucible_mem_backend(
     }
     let parsed: CrucibleMemConfig = opt_deser(&be.options).unwrap();
 
-    block::CrucibleBackend::create_mem(parsed.size, opts, log.clone()).unwrap()
+    tokio::runtime::Handle::current().block_on(async move {
+        block::CrucibleBackend::create_mem(parsed.size, opts, log.clone())
+            .await
+            .unwrap()
+    })
 }
 
 #[cfg(not(feature = "crucible"))]
