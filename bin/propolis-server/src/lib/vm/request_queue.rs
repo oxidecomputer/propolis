@@ -318,8 +318,6 @@ impl ExternalRequestQueue {
             // Requests to stop the instance block other requests from being
             // queued. Additional requests to stop are ignored for idempotency.
             ChangeReason::ApiRequest(ExternalRequest::Stop) => {
-                assert!(matches!(self.allowed.start, Disposition::Ignore));
-
                 let reason = DenyReason::HaltPending;
                 AllowedRequests {
                     start: Disposition::Deny(reason),

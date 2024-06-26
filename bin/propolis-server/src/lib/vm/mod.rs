@@ -83,6 +83,7 @@ pub(crate) enum VmError {
 /// `Arc`.
 pub(crate) struct Vm {
     inner: RwLock<VmInner>,
+    log: slog::Logger,
 }
 
 struct VmInner {
@@ -151,6 +152,12 @@ impl VmObjects {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for VmObjects {
+    fn drop(&mut self) {
+        info!(self.log, "dropping VM objects");
     }
 }
 
@@ -228,6 +235,8 @@ impl ActiveVm {
 
 impl Drop for ActiveVm {
     fn drop(&mut self) {
+        info!(self.log, "dropping active VM");
+
         let driver = self
             .parent
             .inner
@@ -315,9 +324,10 @@ pub(super) struct EnsureOptions {
 }
 
 impl Vm {
-    pub fn new() -> Arc<Self> {
+    pub fn new(log: &slog::Logger) -> Arc<Self> {
+        let log = log.new(slog::o!("component" => "vm_wrapper"));
         let inner = VmInner { state: VmState::NoVm, driver: None };
-        Arc::new(Self { inner: RwLock::new(inner) })
+        Arc::new(Self { inner: RwLock::new(inner), log })
     }
 
     pub(super) fn active_vm(&self) -> Option<Arc<ActiveVm>> {
@@ -371,6 +381,7 @@ impl Vm {
     }
 
     fn make_active(&self, active: Arc<ActiveVm>) {
+        info!(self.log, "installing active VM");
         let mut guard = self.inner.write().unwrap();
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
@@ -388,6 +399,7 @@ impl Vm {
             .active_vm()
             .expect("VM should be active before being run down");
 
+        info!(self.log, "setting VM rundown");
         let new_state = VmState::Rundown(RundownVm {
             external_state_rx: vm.external_state_rx.clone(),
             properties: vm.properties.clone(),
@@ -398,6 +410,7 @@ impl Vm {
     }
 
     async fn complete_rundown(&self) {
+        info!(self.log, "completing VM rundown");
         let mut guard = self.inner.write().unwrap();
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
@@ -408,7 +421,7 @@ impl Vm {
 
     pub(crate) async fn ensure(
         self: &Arc<Self>,
-        log: slog::Logger,
+        log: &slog::Logger,
         ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
         options: EnsureOptions,
     ) -> Result<propolis_api_types::InstanceEnsureResponse, VmError> {
@@ -430,7 +443,8 @@ impl Vm {
 
             guard.state = VmState::WaitingForInit;
             let vm_for_driver = self.clone();
-            let log_for_driver = log.clone();
+            let log_for_driver =
+                log.new(slog::o!("component" => "vm_state_driver"));
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(
                     log_for_driver,
