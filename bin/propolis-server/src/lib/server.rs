@@ -251,6 +251,7 @@ async fn instance_ensure_common(
         oximeter_registry,
         nexus_client,
         vnc_server: server_context.vnc_server.clone(),
+        local_server_addr: rqctx.server.local_addr,
     };
 
     server_context

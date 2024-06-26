@@ -7,6 +7,7 @@
 
 use std::{
     collections::BTreeMap,
+    net::SocketAddr,
     sync::{Arc, RwLock},
 };
 
@@ -22,6 +23,7 @@ use propolis_api_types::{
 use request_queue::ExternalRequest;
 use rfb::server::VncServer;
 use slog::info;
+use state_publisher::{ExternalStateUpdate, StatePublisher};
 use uuid::Uuid;
 
 use crate::{
@@ -34,6 +36,7 @@ pub(crate) mod migrate_commands;
 mod request_queue;
 mod services;
 mod state_driver;
+mod state_publisher;
 
 pub(crate) type LifecycleMap =
     BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
@@ -87,7 +90,7 @@ pub(crate) struct Vm {
 
 struct VmInner {
     state: VmState,
-    driver: Option<tokio::task::JoinHandle<InstanceStateTx>>,
+    driver: Option<tokio::task::JoinHandle<StatePublisher>>,
 }
 
 pub(crate) struct VmObjects {
@@ -259,18 +262,10 @@ impl Drop for ActiveVm {
             drop(objects);
             services.stop(&log).await;
 
-            let tx = driver.await.expect("state driver shouldn't panic");
-            let new_state = {
-                let old_state = tx.borrow();
-                InstanceStateMonitorResponse {
-                    gen: old_state.gen + 1,
-                    state: propolis_api_types::InstanceState::Destroyed,
-                    migration: old_state.migration.clone(),
-                }
-            };
-
-            tx.send(new_state).expect("VM in rundown should hold a receiver");
-
+            let mut tx = driver.await.expect("state driver shouldn't panic");
+            tx.update(ExternalStateUpdate::Instance(
+                propolis_api_types::InstanceState::Destroyed,
+            ));
             parent.complete_rundown().await;
         });
     }
@@ -320,6 +315,7 @@ pub(super) struct EnsureOptions {
     pub oximeter_registry: Option<ProducerRegistry>,
     pub nexus_client: Option<nexus_client::Client>,
     pub vnc_server: Arc<VncServer<PropolisVncServer>>,
+    pub local_server_addr: SocketAddr,
 }
 
 impl Vm {

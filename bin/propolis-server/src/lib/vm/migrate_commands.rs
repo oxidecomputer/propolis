@@ -5,14 +5,25 @@
 //! Requests and responses between the VM state driver and the live migration
 //! protocol.
 
+use std::sync::Arc;
+
 use crate::migrate::MigrateError;
 
 /// A message sent from a live migration destination task to update the
 /// externally visible state of the migration attempt.
 #[derive(Clone, Copy, Debug)]
 pub enum MigrateTargetCommand {
+    /// Initialize VM objects using the instance spec supplied to the state
+    /// driver by its creator.
+    InitializeFromExternalSpec,
+
     /// Update the externally-visible migration state.
     UpdateState(propolis_api_types::MigrationState),
+}
+
+#[derive(Clone)]
+pub enum MigrateTargetResponse {
+    VmObjectsInitialized(Arc<crate::vm::VmObjects>),
 }
 
 /// A message sent from a live migration driver to the state worker, asking it
@@ -49,7 +60,7 @@ pub enum MigrateSourceResponse {
 /// An event raised by a migration task that must be handled by the state
 /// worker.
 #[derive(Debug)]
-enum MigrateTaskEvent<T> {
+pub(super) enum MigrateTaskEvent<T> {
     /// The task completed with the associated result.
     TaskExited(Result<(), MigrateError>),
 
