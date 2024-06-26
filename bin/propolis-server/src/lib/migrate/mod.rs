@@ -144,6 +144,14 @@ pub enum MigrateError {
     /// The other end of the migration ran into an error
     #[error("{0:?} migration instance encountered error: {1}")]
     RemoteError(MigrateRole, String),
+
+    /// Sending/receiving from the VM state driver command/response channels
+    /// returned an error.
+    #[error("unable to communiciate with VM state driver")]
+    StateDriverChannelClosed,
+
+    #[error("request to VM state driver returned failure")]
+    StateDriverResponseFailed,
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for MigrateError {
@@ -181,7 +189,9 @@ impl From<MigrateError> for HttpError {
             | MigrateError::TimeData(_)
             | MigrateError::DeviceState(_)
             | MigrateError::RemoteError(_, _)
-            | MigrateError::StateMachine(_) => {
+            | MigrateError::StateMachine(_)
+            | MigrateError::StateDriverChannelClosed
+            | MigrateError::StateDriverResponseFailed => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
@@ -313,8 +323,9 @@ pub(crate) struct DestinationContext<
 /// Once we've successfully established the connection, we can begin the
 /// migration process (destination-side).
 pub(crate) async fn dest_initiate(
-    rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
+    log: &slog::Logger,
     migrate_info: api::InstanceMigrateInitiateRequest,
+    local_server_addr: SocketAddr,
 ) -> Result<
     DestinationContext<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -324,7 +335,7 @@ pub(crate) async fn dest_initiate(
     let migration_id = migrate_info.migration_id;
 
     // Create a new log context for the migration
-    let log = rqctx.log.new(o!(
+    let log = log.new(o!(
         "migration_id" => migration_id.to_string(),
         "migrate_role" => "destination",
         "migrate_src_addr" => migrate_info.src_addr
@@ -385,12 +396,11 @@ pub(crate) async fn dest_initiate(
             return Err(MigrateError::Initiate);
         }
     };
-    let local_addr = rqctx.server.local_addr;
 
     Ok(DestinationContext {
         migration_id,
         conn,
-        local_addr,
+        local_addr: local_server_addr,
         protocol: selected,
     })
 }
