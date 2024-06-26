@@ -27,33 +27,40 @@ use slog::{debug, info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::migrate::MigrateError;
+/// Wraps a [`dropshot::WebsocketConnection`] for inclusion in an
+/// [`ExternalRequest`].
+//
+// A newtype is used here to allow this module's tests (which want to verify
+// queuing dispositions and don't care about request contents) to construct a
+// `MigrateAsSource` request without having to conjure up a real websocket
+// conection.
+pub(crate) struct WebsocketConnection(Option<dropshot::WebsocketConnection>);
 
-use super::migrate_commands::{MigrateSourceCommand, MigrateSourceResponse};
+impl From<dropshot::WebsocketConnection> for WebsocketConnection {
+    fn from(value: dropshot::WebsocketConnection) -> Self {
+        Self(Some(value))
+    }
+}
+
+impl WebsocketConnection {
+    /// Yields the wrapped [`dropshot::WebsocketConnection`].
+    pub(crate) fn into_inner(self) -> dropshot::WebsocketConnection {
+        // Unwrapping is safe here because the only way an external consumer can
+        // get an instance of this wrapper is to use the From impl, which always
+        // wraps a `Some`.
+        self.0.unwrap()
+    }
+}
 
 /// An external request made of a VM controller via the server API. Handled by
 /// the controller's state driver thread.
-#[derive(Debug)]
 pub enum ExternalRequest {
     Start,
 
     /// Asks the state worker to start a migration-source task.
     MigrateAsSource {
-        /// The ID of the live migration for which this VM will be the source.
         migration_id: Uuid,
-
-        /// A handle to the task that will execute the migration procedure.
-        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-
-        /// The sender side of a one-shot channel that, when signaled, tells the
-        /// migration task to start its work.
-        start_tx: tokio::sync::oneshot::Sender<()>,
-
-        /// A channel that receives commands from the migration task.
-        command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
-
-        /// A channel used to send responses to migration commands.
-        response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
+        websock: WebsocketConnection,
     },
 
     /// Resets the guest by pausing all devices, resetting them to their
@@ -87,15 +94,33 @@ pub enum ExternalRequest {
     },
 }
 
+impl std::fmt::Debug for ExternalRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start => write!(f, "Start"),
+            Self::MigrateAsSource { migration_id, .. } => f
+                .debug_struct("MigrateAsSource")
+                .field("migration_id", migration_id)
+                .finish(),
+            Self::Reboot => write!(f, "Reboot"),
+            Self::Stop => write!(f, "Stop"),
+            Self::ReconfigureCrucibleVolume {
+                disk_name, backend_id, ..
+            } => f
+                .debug_struct("ReconfigureCrucibleVolume")
+                .field("disk_name", disk_name)
+                .field("backend_id", backend_id)
+                .finish(),
+        }
+    }
+}
+
 /// A set of reasons why a request to queue an external state transition can
 /// fail.
 #[derive(Copy, Clone, Debug, Error)]
 pub enum RequestDeniedReason {
     #[error("Operation requires an active instance")]
     InstanceNotActive,
-
-    #[error("Already migrating into this instance")]
-    MigrationTargetInProgress,
 
     #[error("Instance is currently starting")]
     StartInProgress,
@@ -240,31 +265,6 @@ impl ExternalRequestQueue {
             .get_new_dispositions(DispositionChangeReason::StateChange(state));
     }
 
-    /// Indicates whether the queue would allow a request to migrate out of this
-    /// instance. This can be used to avoid setting up migration tasks for
-    /// requests that will ultimately be denied.
-    ///
-    /// # Return value
-    ///
-    /// - `Ok(true)` if the request will be queued.
-    /// - `Ok(false)` if the request is allowed for idempotency reasons but will
-    ///   not be queued.
-    /// - `Err` if the request is forbidden.
-    pub fn migrate_as_source_will_enqueue(
-        &self,
-    ) -> Result<bool, RequestDeniedReason> {
-        assert!(!matches!(
-            self.allowed.migrate_as_source,
-            RequestDisposition::Ignore
-        ));
-
-        match self.allowed.migrate_as_source {
-            RequestDisposition::Enqueue => Ok(true),
-            RequestDisposition::Ignore => unreachable!(),
-            RequestDisposition::Deny(reason) => Err(reason),
-        }
-    }
-
     /// Computes a new set of queue dispositions given the current state of the
     /// queue and the event that is changing those dispositions.
     fn get_new_dispositions(
@@ -400,16 +400,9 @@ mod test {
     }
 
     fn make_migrate_as_source_request() -> ExternalRequest {
-        let task = tokio::task::spawn(async { Ok(()) });
-        let (start_tx, _) = tokio::sync::oneshot::channel();
-        let (_, command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, _) = tokio::sync::mpsc::channel(1);
         ExternalRequest::MigrateAsSource {
             migration_id: Uuid::new_v4(),
-            task,
-            start_tx,
-            command_rx,
-            response_tx,
+            websock: WebsocketConnection(None),
         }
     }
 
@@ -420,7 +413,6 @@ mod test {
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Requests to migrate out should be allowed.
-        assert!(queue.migrate_as_source_will_enqueue().unwrap());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
 
         // Once the request is queued, other requests to migrate out are
@@ -431,7 +423,6 @@ mod test {
         // is assumed), but requests to migrate out are issued by the target
         // Propolis (which does not assume idempotency and issues only one
         // request per migration attempt).
-        assert!(queue.migrate_as_source_will_enqueue().is_err());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
 
         // If migration fails, the instance resumes running, and then another
@@ -441,14 +432,12 @@ mod test {
             Some(ExternalRequest::MigrateAsSource { .. })
         ));
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-        assert!(queue.migrate_as_source_will_enqueue().unwrap());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
 
         // A successful migration stops the instance, which forecloses on future
         // requests to migrate out.
         queue.pop_front();
         queue.notify_instance_state_change(InstanceStateChange::Stopped);
-        assert!(queue.migrate_as_source_will_enqueue().is_err());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
     }
 

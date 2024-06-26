@@ -163,10 +163,12 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
                 // phase.
                 //
                 // Record that now so we never try to do this again.
-                //
-                // TODO(gjc)
-                // proto.vm.migration_src_state().has_redirtying_ever_failed =
-                //    true;
+                proto
+                    .command_tx
+                    .send(MigrateSourceCommand::RedirtyingFailed)
+                    .await
+                    .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+
                 error!(
                     proto.log(),
                     "failed to restore dirty bits: {e}";
@@ -197,7 +199,7 @@ pub(crate) struct PersistentState {
     /// migration attempt. If this occurs, we can no longer offer only dirty
     /// pages in a subsequent migration attempt, as some pages which should be
     /// marked as dirty may not be.
-    has_redirtying_ever_failed: bool,
+    pub(crate) has_redirtying_ever_failed: bool,
 }
 
 struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
@@ -362,11 +364,43 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             vmm_ram_range
         );
 
-        // Determine whether we can offer only dirty pages, or if we must offer
-        // all pages.
+        // In the pre-pause phase, it is safe to offer only dirty pages if (1)
+        // there is some prospect of being able to restore the kernel dirty page
+        // bitmap if migration fails, and (2) a prior attempt to restore the
+        // bitmap hasn't failed (thereby rendering the bitmap's contents
+        // untrustworthy). The first prong was checked when the protocol
+        // started, but the second prong requires input from the VM state
+        // driver. If this routine is being called from the pre-pause phase, and
+        // the dirty page map looks viable, ask the state driver if it's OK to
+        // proceed with transmitting only dirty pages.
         //
         // Refer to the giant comment on `RamOfferDiscipline` above for more
         // details about this determination.
+        if *phase == MigratePhase::RamPushPrePause && self.dirt.is_some() {
+            self.command_tx
+                .send(MigrateSourceCommand::QueryRedirtyingFailed)
+                .await
+                .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+
+            let response = self
+                .response_rx
+                .recv()
+                .await
+                .ok_or(MigrateError::StateDriverChannelClosed)?;
+
+            match response {
+                MigrateSourceResponse::RedirtyingFailed(has_failed) => {
+                    if has_failed {
+                        self.dirt = None;
+                    }
+                }
+                _ => panic!(
+                    "unexpected response {:?} to request for redirtying info",
+                    response
+                ),
+            }
+        }
+
         let offer_discipline = match phase {
             // If we are in the pre-pause RAM push phase, and we don't have
             // VM_NPT_OPERATION to put back any dirty bits if the migration
