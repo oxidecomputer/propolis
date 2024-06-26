@@ -23,7 +23,7 @@ pub enum MigrateTargetCommand {
 
 #[derive(Clone)]
 pub enum MigrateTargetResponse {
-    VmObjectsInitialized(Arc<crate::vm::VmObjects>),
+    VmObjectsInitialized(Result<Arc<crate::vm::VmObjects>, String>),
 }
 
 /// A message sent from a live migration driver to the state worker, asking it
