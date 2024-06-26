@@ -86,8 +86,6 @@ pub struct DropshotEndpointContext {
     static_config: StaticConfig,
     vnc_server: Arc<VncServer<PropolisVncServer>>,
     pub(crate) vm: Arc<crate::vm::Vm>,
-
-    #[allow(dead_code)]
     log: Logger,
 }
 
@@ -107,7 +105,7 @@ impl DropshotEndpointContext {
                 metrics: metric_config,
             },
             vnc_server,
-            vm: crate::vm::Vm::new(),
+            vm: crate::vm::Vm::new(&log),
             log,
         }
     }
@@ -257,7 +255,7 @@ async fn instance_ensure_common(
 
     server_context
         .vm
-        .ensure(rqctx.log.clone(), request, ensure_options)
+        .ensure(&server_context.log, request, ensure_options)
         .await
         .map(HttpResponseCreated)
         .map_err(|e| match e {

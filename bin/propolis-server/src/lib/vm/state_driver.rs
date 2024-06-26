@@ -261,7 +261,7 @@ pub(super) async fn run_state_driver(
     );
 
     let input_queue = Arc::new(InputQueue::new(
-        log.new(slog::o!("component" => "vmm_request_queue")),
+        log.new(slog::o!("component" => "request_queue")),
     ));
 
     let (vcpu_tasks, active_vm) = match ensure_request.migrate {
@@ -326,7 +326,7 @@ pub(super) async fn run_state_driver(
     };
 
     let state_driver = StateDriver {
-        log: log.new(slog::o!("component" => "vmm_state_driver")),
+        log,
         parent: vm.clone(),
         active_vm,
         input_queue,
