@@ -206,33 +206,13 @@ struct StateDriver {
 pub(super) async fn run_state_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
+    mut external_publisher: StatePublisher,
     ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
     ensure_result_tx: tokio::sync::oneshot::Sender<
         Result<propolis_api_types::InstanceEnsureResponse, VmError>,
     >,
     ensure_options: super::EnsureOptions,
 ) -> StatePublisher {
-    let (mut external_publisher, external_rx) = StatePublisher::new(
-        &log,
-        propolis_api_types::InstanceStateMonitorResponse {
-            gen: 1,
-            state: if ensure_request.migrate.is_some() {
-                propolis_api_types::InstanceState::Migrating
-            } else {
-                propolis_api_types::InstanceState::Starting
-            },
-            migration: propolis_api_types::InstanceMigrateStatusResponse {
-                migration_in: ensure_request.migrate.as_ref().map(|req| {
-                    propolis_api_types::InstanceMigrationStatus {
-                        id: req.migration_id,
-                        state: propolis_api_types::MigrationState::Sync,
-                    }
-                }),
-                migration_out: None,
-            },
-        },
-    );
-
     let input_queue = Arc::new(InputQueue::new(
         log.new(slog::o!("component" => "request_queue")),
     ));
@@ -265,6 +245,9 @@ pub(super) async fn run_state_driver(
     } {
         Ok(objects) => objects,
         Err(e) => {
+            external_publisher
+                .update(ExternalStateUpdate::Instance(InstanceState::Failed));
+            vm.start_failed();
             let _ =
                 ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
             return external_publisher;
@@ -280,22 +263,14 @@ pub(super) async fn run_state_driver(
     )
     .await;
 
-    let active_vm = Arc::new(super::ActiveVm {
-        parent: vm.clone(),
-        log: log.clone(),
-        state_driver_queue: input_queue.clone(),
-        external_state_rx: external_rx,
-        properties: ensure_request.properties,
-        objects: Some(tokio::sync::RwLock::new(vm_objects)),
-        services: Some(services),
-    });
-
     // All the VM components now exist, so allow external callers to
     // interact with the VM.
     //
     // Order matters here: once the ensure result is sent, an external
     // caller needs to observe that an active VM is present.
-    vm.make_active(active_vm.clone());
+    let active_vm =
+        vm.make_active(&log, input_queue.clone(), vm_objects, services);
+
     let _ =
         ensure_result_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
             migrate: migration_in_id
@@ -1022,6 +997,9 @@ async fn migrate_as_target(
                     return Ok((vm_objects, vcpu_tasks));
                 }
                 Err(e) => {
+                    error!(log, "target migration task failed";
+                           "error" => %e);
+
                     vm_objects.resume_vm();
                     return Err(e.into());
                 }
