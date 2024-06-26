@@ -3,10 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use bit_field::BitField;
-use dropshot::{HttpError, RequestContext};
+use dropshot::HttpError;
 use futures::{SinkExt, StreamExt};
 use propolis::migrate::MigrateStateError;
 use propolis_api_types::{self as api, MigrationState};
@@ -18,8 +17,6 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 use uuid::Uuid;
-
-use crate::server::DropshotEndpointContext;
 
 mod codec;
 pub mod destination;
@@ -35,7 +32,7 @@ pub enum MigrateRole {
 }
 
 // N.B. Keep in sync with scripts/live-migration-times.d.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum MigratePhase {
     MigrateSync,
     Pause,
@@ -226,29 +223,29 @@ struct DevicePayload {
     pub data: String,
 }
 
+pub(crate) struct SourceContext<
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+> {
+    pub conn: WebSocketStream<T>,
+    pub protocol: crate::migrate::protocol::Protocol,
+}
+
 /// Begin the migration process (source-side).
 ///
 /// This will check protocol version and then begin the migration in a separate task.
 pub async fn source_start<
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 >(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    log: &slog::Logger,
     migration_id: Uuid,
     mut conn: WebSocketStream<T>,
-) -> Result<(), MigrateError> {
+) -> Result<SourceContext<T>, MigrateError> {
     // Create a new log context for the migration
-    let log = rqctx.log.new(o!(
+    let log = log.new(o!(
         "migration_id" => migration_id.to_string(),
         "migrate_role" => "source"
     ));
     info!(log, "Migration Source");
-
-    let active_vm = rqctx
-        .context()
-        .vm
-        .active_vm()
-        .ok_or_else(|| MigrateError::InstanceNotInitialized)?
-        .clone();
 
     let selected = match conn.next().await {
         Some(Ok(tungstenite::Message::Text(dst_protocols))) => {
@@ -302,9 +299,7 @@ pub async fn source_start<
         }
     };
 
-    todo!("gjc"); // need a method on ActiveVm for this
-                  // controller.request_migration_from(migration_id, conn, selected)?;
-    Ok(())
+    Ok(SourceContext { conn, protocol: selected })
 }
 
 pub(crate) struct DestinationContext<

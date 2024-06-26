@@ -14,7 +14,7 @@ use propolis_api_types::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
         VersionedInstanceSpec,
     },
-    InstanceProperties, InstanceState,
+    InstanceProperties, InstanceState, MigrationState,
 };
 use slog::{error, info};
 use uuid::Uuid;
@@ -33,7 +33,10 @@ use crate::{
 
 use super::{
     guest_event::{self, GuestEvent},
-    migrate_commands::{MigrateTargetResponse, MigrateTaskEvent},
+    migrate_commands::{
+        MigrateSourceCommand, MigrateSourceResponse, MigrateTargetResponse,
+        MigrateTaskEvent,
+    },
     request_queue::ExternalRequest,
     state_publisher::{MigrationStateUpdate, StatePublisher},
     VmError, VmObjects,
@@ -432,7 +435,16 @@ impl StateDriver {
                     Err(_) => HandleEventOutcome::Exit,
                 }
             }
-            ExternalRequest::MigrateAsSource { .. } => todo!("gjc"),
+            ExternalRequest::MigrateAsSource { migration_id, websock } => {
+                self.migrate_as_source(migration_id, websock.into_inner())
+                    .await;
+
+                // The callee either queues its own stop request (on a
+                // successful migration out) or resumes the VM (on a failed
+                // migration out). Either way, the main loop can just proceed to
+                // process the queue as normal.
+                HandleEventOutcome::Continue
+            }
             ExternalRequest::Reboot => {
                 self.do_reboot().await;
                 HandleEventOutcome::Continue
@@ -573,6 +585,113 @@ impl StateDriver {
         &mut dyn VcpuTaskController,
     ) {
         (self.active_vm.objects().await, self.vcpu_tasks.as_mut())
+    }
+
+    async fn migrate_as_source(
+        &mut self,
+        migration_id: Uuid,
+        websock: dropshot::WebsocketConnection,
+    ) {
+        let conn = tokio_tungstenite::WebSocketStream::from_raw_socket(
+            websock.into_inner(),
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+
+        // Negotiate the migration protocol version with the target.
+        let Ok(migrate_ctx) =
+            crate::migrate::source_start(&self.log, migration_id, conn).await
+        else {
+            return;
+        };
+
+        // Publish that migration is in progress before actually launching the
+        // migration task.
+        self.external_state.update(ExternalStateUpdate::Complete(
+            InstanceState::Migrating,
+            MigrationStateUpdate {
+                state: MigrationState::Sync,
+                id: migration_id,
+                role: MigrateRole::Source,
+            },
+        ));
+
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
+        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
+        let vm_for_task = self.active_vm.clone();
+        let mut migrate_task = tokio::spawn(async move {
+            crate::migrate::source::migrate(
+                vm_for_task,
+                command_tx,
+                response_rx,
+                migrate_ctx.conn,
+                migrate_ctx.protocol,
+            )
+            .await
+        });
+
+        loop {
+            match next_migrate_task_event(
+                &mut migrate_task,
+                &mut command_rx,
+                &self.log,
+            )
+            .await
+            {
+                MigrateTaskEvent::TaskExited(res) => {
+                    if res.is_ok() {
+                        self.active_vm
+                            .state_driver_queue
+                            .queue_external_request(ExternalRequest::Stop)
+                            .expect("can always queue a request to stop");
+                    } else {
+                        if self.paused {
+                            self.resume().await;
+                        }
+
+                        self.publish_steady_state(InstanceState::Running);
+                    }
+                }
+
+                // N.B. When handling a command that requires a reply, do not
+                //      return early if the reply fails to send. Instead,
+                //      loop back around and let the `TaskExited` path restore
+                //      the VM to the correct state.
+                MigrateTaskEvent::Command(cmd) => match cmd {
+                    MigrateSourceCommand::UpdateState(state) => {
+                        self.external_state.update(
+                            ExternalStateUpdate::Migration(
+                                MigrationStateUpdate {
+                                    id: migration_id,
+                                    state,
+                                    role: MigrateRole::Source,
+                                },
+                            ),
+                        );
+                    }
+                    MigrateSourceCommand::Pause => {
+                        self.pause().await;
+                        let _ = response_tx
+                            .send(MigrateSourceResponse::Pause(Ok(())))
+                            .await;
+                    }
+                    MigrateSourceCommand::QueryRedirtyingFailed => {
+                        let has_failed =
+                            self.migration_src_state.has_redirtying_ever_failed;
+                        let _ = response_tx
+                            .send(MigrateSourceResponse::RedirtyingFailed(
+                                has_failed,
+                            ))
+                            .await;
+                    }
+                    MigrateSourceCommand::RedirtyingFailed => {
+                        self.migration_src_state.has_redirtying_ever_failed =
+                            true;
+                    }
+                },
+            }
+        }
     }
 
     async fn reconfigure_crucible_volume(

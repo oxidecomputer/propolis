@@ -18,7 +18,7 @@ use propolis::{
 };
 use propolis_api_types::{
     instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
-    InstanceProperties, InstanceStateMonitorResponse, InstanceStateRequested,
+    InstanceProperties, InstanceStateRequested,
 };
 
 use request_queue::ExternalRequest;
@@ -60,8 +60,8 @@ pub(crate) type CrucibleReplaceResultTx =
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VmError {
-    #[error("VM ensure result channel unexpectedly closed")]
-    EnsureResultClosed,
+    #[error("VM operation result channel unexpectedly closed")]
+    ResultChannelClosed,
 
     #[error("VM not created")]
     NotCreated,
@@ -120,10 +120,6 @@ impl VmObjects {
         name: &str,
     ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
         self.lifecycle_components.get(name).cloned()
-    }
-
-    pub(crate) fn block_backends(&self) -> &BlockBackendMap {
-        &self.block_backends
     }
 
     pub(crate) fn crucible_backends(&self) -> &CrucibleBackendMap {
@@ -210,6 +206,19 @@ impl ActiveVm {
                 InstanceStateRequested::Reboot => ExternalRequest::Reboot,
             })
             .map_err(Into::into)
+    }
+
+    pub(crate) async fn request_migration_out(
+        &self,
+        migration_id: Uuid,
+        websock: dropshot::WebsocketConnection,
+    ) -> Result<(), VmError> {
+        Ok(self.state_driver_queue.queue_external_request(
+            ExternalRequest::MigrateAsSource {
+                migration_id,
+                websock: websock.into(),
+            },
+        )?)
     }
 
     pub(crate) fn reconfigure_crucible_volume(
@@ -453,6 +462,6 @@ impl Vm {
             }));
         }
 
-        ensure_rx.await.map_err(|_| VmError::EnsureResultClosed)?
+        ensure_rx.await.map_err(|_| VmError::ResultChannelClosed)?
     }
 }

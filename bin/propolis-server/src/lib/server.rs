@@ -260,7 +260,7 @@ async fn instance_ensure_common(
         .await
         .map(HttpResponseCreated)
         .map_err(|e| match e {
-            VmError::EnsureResultClosed => HttpError::for_internal_error(
+            VmError::ResultChannelClosed => HttpError::for_internal_error(
                 "state driver unexpectedly dropped result channel".to_string(),
             ),
             VmError::WaitingToInitialize
@@ -544,15 +544,10 @@ async fn instance_migrate_start(
     path_params: Path<api::InstanceMigrateStartRequest>,
     websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
+    let ctx = rqctx.context();
     let migration_id = path_params.into_inner().migration_id;
-    let conn = WebSocketStream::from_raw_socket(
-        websock.into_inner(),
-        Role::Server,
-        None,
-    )
-    .await;
-    crate::migrate::source_start(rqctx, migration_id, conn).await?;
-    Ok(())
+    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
+    Ok(vm.request_migration_out(migration_id, websock).await?)
 }
 
 #[endpoint {
