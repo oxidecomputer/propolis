@@ -280,7 +280,7 @@ impl Drop for ActiveVm {
     }
 }
 
-struct RundownVm {
+struct UninitVm {
     external_state_rx: InstanceStateRx,
     properties: InstanceProperties,
     spec: InstanceSpecV0,
@@ -304,17 +304,10 @@ struct RundownVm {
 enum VmState {
     /// This state machine has never held a VM.
     NoVm,
-
-    /// There is an active state driver task, but it is currently creating VM
-    /// components and/or starting VM services.
-    WaitingForInit,
-
-    /// There is an active virtual machine
+    WaitingForInit(UninitVm),
     Active(Arc<ActiveVm>),
-
-    /// The active VM's state driver has exited, but the
-    Rundown(RundownVm),
-    RundownComplete(RundownVm),
+    Rundown(UninitVm),
+    RundownComplete(UninitVm),
 }
 
 pub(super) struct EnsureOptions {
@@ -350,11 +343,10 @@ impl Vm {
             VmState::NoVm => {
                 return Err(VmError::NotCreated);
             }
-            VmState::WaitingForInit => {
-                return Err(VmError::WaitingToInitialize);
-            }
             VmState::Active(vm) => vm.clone(),
-            VmState::Rundown(vm) | VmState::RundownComplete(vm) => {
+            VmState::WaitingForInit(vm)
+            | VmState::Rundown(vm)
+            | VmState::RundownComplete(vm) => {
                 return Ok(propolis_api_types::InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     state: vm.external_state_rx.borrow().state,
@@ -376,25 +368,53 @@ impl Vm {
         let guard = self.inner.read().unwrap();
         match &guard.state {
             VmState::NoVm => Err(VmError::NotCreated),
-            VmState::WaitingForInit => Err(VmError::WaitingToInitialize),
             VmState::Active(vm) => Ok(vm.external_state_rx.clone()),
-            VmState::Rundown(vm) | VmState::RundownComplete(vm) => {
-                Ok(vm.external_state_rx.clone())
-            }
+            VmState::WaitingForInit(vm)
+            | VmState::Rundown(vm)
+            | VmState::RundownComplete(vm) => Ok(vm.external_state_rx.clone()),
         }
     }
 
-    fn make_active(&self, active: Arc<ActiveVm>) {
+    fn make_active(
+        self: &Arc<Self>,
+        log: &slog::Logger,
+        state_driver_queue: Arc<state_driver::InputQueue>,
+        objects: VmObjects,
+        services: services::VmServices,
+    ) -> Arc<ActiveVm> {
         info!(self.log, "installing active VM");
         let mut guard = self.inner.write().unwrap();
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::WaitingForInit => {
+            VmState::WaitingForInit(vm) => {
+                let active = Arc::new(ActiveVm {
+                    parent: self.clone(),
+                    log: log.clone(),
+                    state_driver_queue,
+                    external_state_rx: vm.external_state_rx,
+                    properties: vm.properties,
+                    objects: Some(tokio::sync::RwLock::new(objects)),
+                    services: Some(services),
+                });
+
                 guard.state = VmState::Active(active.clone());
+                active
             }
             _ => unreachable!(
                 "only a starting VM's state worker calls make_active"
             ),
+        }
+    }
+
+    fn start_failed(&self) {
+        let mut guard = self.inner.write().unwrap();
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+        match old {
+            VmState::WaitingForInit(vm) => {
+                guard.state = VmState::RundownComplete(vm)
+            }
+            _ => unreachable!(
+                "start failures should only occur before an active VM is installed")
         }
     }
 
@@ -404,7 +424,7 @@ impl Vm {
             .expect("VM should be active before being run down");
 
         info!(self.log, "setting VM rundown");
-        let new_state = VmState::Rundown(RundownVm {
+        let new_state = VmState::Rundown(UninitVm {
             external_state_rx: vm.external_state_rx.clone(),
             properties: vm.properties.clone(),
             spec: vm.objects().await.instance_spec.clone(),
@@ -429,7 +449,30 @@ impl Vm {
         ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
         options: EnsureOptions,
     ) -> Result<propolis_api_types::InstanceEnsureResponse, VmError> {
+        let log_for_driver =
+            log.new(slog::o!("component" => "vm_state_driver"));
+
         let (ensure_reply_tx, ensure_rx) = tokio::sync::oneshot::channel();
+        let (external_publisher, external_rx) = StatePublisher::new(
+            &log_for_driver,
+            propolis_api_types::InstanceStateMonitorResponse {
+                gen: 1,
+                state: if ensure_request.migrate.is_some() {
+                    propolis_api_types::InstanceState::Migrating
+                } else {
+                    propolis_api_types::InstanceState::Starting
+                },
+                migration: propolis_api_types::InstanceMigrateStatusResponse {
+                    migration_in: ensure_request.migrate.as_ref().map(|req| {
+                        propolis_api_types::InstanceMigrationStatus {
+                            id: req.migration_id,
+                            state: propolis_api_types::MigrationState::Sync,
+                        }
+                    }),
+                    migration_out: None,
+                },
+            },
+        );
 
         // Take the lock for writing, since in the common case this call will be
         // creating a new VM and there's no easy way to upgrade from a reader
@@ -437,7 +480,7 @@ impl Vm {
         {
             let mut guard = self.inner.write().unwrap();
             match guard.state {
-                VmState::WaitingForInit => {
+                VmState::WaitingForInit(_) => {
                     return Err(VmError::WaitingToInitialize)
                 }
                 VmState::Active(_) => return Err(VmError::AlreadyInitialized),
@@ -445,14 +488,20 @@ impl Vm {
                 _ => {}
             }
 
-            guard.state = VmState::WaitingForInit;
+            let VersionedInstanceSpec::V0(v0_spec) =
+                ensure_request.instance_spec.clone();
+            guard.state = VmState::WaitingForInit(UninitVm {
+                external_state_rx: external_rx.clone(),
+                properties: ensure_request.properties.clone(),
+                spec: v0_spec,
+            });
+
             let vm_for_driver = self.clone();
-            let log_for_driver =
-                log.new(slog::o!("component" => "vm_state_driver"));
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(
                     log_for_driver,
                     vm_for_driver,
+                    external_publisher,
                     ensure_request,
                     ensure_reply_tx,
                     options,

@@ -52,7 +52,6 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     };
 
     if let Err(err) = proto.run().await {
-        // If the
         let _ = err_tx
             .send(MigrateTargetCommand::UpdateState(MigrationState::Error))
             .await;
