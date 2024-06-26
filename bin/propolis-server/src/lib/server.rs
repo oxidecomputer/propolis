@@ -11,9 +11,9 @@
 
 use std::convert::TryFrom;
 use std::net::Ipv6Addr;
+use std::net::SocketAddr;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
-use std::{collections::BTreeMap, net::SocketAddr};
 
 use crate::serial::history_buffer::SerialHistoryOffset;
 use crate::vm::VmError;
@@ -40,13 +40,6 @@ use tokio_tungstenite::WebSocketStream;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
 use crate::vnc::PropolisVncServer;
-
-pub(crate) type DeviceMap =
-    BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
-pub(crate) type BlockBackendMap =
-    BTreeMap<String, Arc<dyn propolis::block::Backend>>;
-pub(crate) type CrucibleBackendMap =
-    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
 
 /// Configuration used to set this server up to provide Oximeter metrics.
 #[derive(Debug, Clone)]

@@ -250,17 +250,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
         conn: WebSocketStream<T>,
     ) -> Self {
+        // Create a (prospective) dirty page map if bhyve supports the NPT
+        // API. If this map is present and the VM hasn't recorded that it's
+        // possibly unhealthy, it will be used to offer only dirty pages during
+        // the pre-pause RAM push.
         let dirt = {
             let can_npt_operate =
                 vm.objects().await.machine().hdl.can_npt_operate();
 
-            // TODO(gjc) the pre-pause offer phase needs to look at whether
-            // redirtying has previously failed. This is done over the command
-            // channel (command_tx/response_rx) but that can't be used here
-            // because the state driver isn't actually coordinating with
-            // anything yet (the point of this function is to create the objects
-            // that need to be stuffed into a message to send to the state
-            // driver)
             if can_npt_operate {
                 Some(Default::default())
             } else {
@@ -378,15 +375,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         // Refer to the giant comment on `RamOfferDiscipline` above for more
         // details about this determination.
         if *phase == MigratePhase::RamPushPrePause && self.dirt.is_some() {
+            // The state driver should keep the command channels alive until the
+            // migration task exits, so these sends and receives should always
+            // work.
             self.command_tx
                 .send(MigrateSourceCommand::QueryRedirtyingFailed)
                 .await
                 .unwrap();
-            // .map_err(|_| MigrateError::StateDriverChannelClosed)?;
 
             let response = self.response_rx.recv().await.unwrap();
-            // .ok_or(MigrateError::StateDriverChannelClosed)?;
-
             match response {
                 MigrateSourceResponse::RedirtyingFailed(has_failed) => {
                     if has_failed {
