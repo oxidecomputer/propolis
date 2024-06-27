@@ -16,7 +16,7 @@ use crate::{
     stats::virtual_machine::VirtualMachine, vnc::PropolisVncServer,
 };
 
-use super::VmObjects;
+use super::objects::{VmObjects, VmObjectsLocked};
 
 #[derive(Default)]
 pub(crate) struct OximeterState {
@@ -48,13 +48,14 @@ impl VmServices {
             OximeterState::default()
         };
 
+        let vm_objects = vm_objects.read().await;
         let vnc_server = ensure_options.vnc_server.clone();
-        if let Some(ramfb) = &vm_objects.framebuffer {
+        if let Some(ramfb) = vm_objects.framebuffer() {
             vnc_server
                 .server
                 .initialize(
                     crate::vnc::RamFb::new(ramfb.get_framebuffer_spec()),
-                    vm_objects.ps2ctrl.clone(),
+                    vm_objects.ps2ctrl().clone(),
                     vm.clone(),
                 )
                 .await;
@@ -67,7 +68,7 @@ impl VmServices {
             }));
         }
 
-        let serial_task = start_serial_task(log, vm_objects).await;
+        let serial_task = start_serial_task(log, &vm_objects).await;
 
         Self {
             serial_task: tokio::sync::Mutex::new(Some(serial_task)),
@@ -162,7 +163,7 @@ async fn register_oximeter_producer(
 
 async fn start_serial_task(
     log: &slog::Logger,
-    vm_objects: &VmObjects,
+    vm_objects: &tokio::sync::RwLockReadGuard<'_, VmObjectsLocked>,
 ) -> crate::serial::SerialTask {
     let (websocks_ch, websocks_recv) = tokio::sync::mpsc::channel(1);
     let (control_ch, control_recv) = tokio::sync::mpsc::channel(1);

@@ -90,7 +90,7 @@ struct DestinationProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
 
     /// The VM objects into which to import the source VM's state. Only
     /// initialized after the sync phase.
-    vm_objects: Option<Arc<crate::vm::VmObjects>>,
+    vm_objects: Option<Arc<crate::vm::objects::VmObjects>>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
@@ -209,7 +209,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
         if let Err(e) = preamble.is_migration_compatible(
-            self.vm_objects.as_ref().unwrap().instance_spec(),
+            self.vm_objects.as_ref().unwrap().read().await.instance_spec(),
         ) {
             error!(
                 self.log(),
@@ -353,21 +353,26 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         info!(self.log(), "Devices: {devices:#?}");
 
-        let objects = self.vm_objects.as_ref().unwrap();
-        let migrate_ctx =
-            MigrateCtx { mem: &objects.machine().acc_mem.access().unwrap() };
-        for device in devices {
-            info!(
-                self.log(),
-                "Applying state to device {}", device.instance_name
-            );
+        {
+            let objects = self.vm_objects.as_ref().unwrap().read().await;
+            let migrate_ctx = MigrateCtx {
+                mem: &objects.machine().acc_mem.access().unwrap(),
+            };
+            for device in devices {
+                info!(
+                    self.log(),
+                    "Applying state to device {}", device.instance_name
+                );
 
-            let target = objects
-                .device_by_name(&device.instance_name)
-                .ok_or_else(|| {
-                    MigrateError::UnknownDevice(device.instance_name.clone())
-                })?;
-            self.import_device(&target, &device, &migrate_ctx)?;
+                let target = objects
+                    .device_by_name(&device.instance_name)
+                    .ok_or_else(|| {
+                        MigrateError::UnknownDevice(
+                            device.instance_name.clone(),
+                        )
+                    })?;
+                self.import_device(&target, &device, &migrate_ctx)?;
+            }
         }
 
         self.send_msg(codec::Message::Okay).await
@@ -402,7 +407,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         // Take a snapshot of the host hrtime/wall clock time, then adjust
         // time data appropriately.
-        let vmm_hdl = &self.vm_objects.as_ref().unwrap().machine().hdl.clone();
+        let vmm_hdl = &self
+            .vm_objects
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .machine()
+            .hdl
+            .clone();
+
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -598,10 +612,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         self.vm_objects
             .as_ref()
             .unwrap()
+            .read()
+            .await
             .com1()
             .import(&com1_history)
             .await
             .map_err(|e| MigrateError::Codec(e.to_string()))?;
+
         self.send_msg(codec::Message::Okay).await
     }
 
@@ -676,7 +693,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let objects = self.vm_objects.as_ref().unwrap();
+        let objects = self.vm_objects.as_ref().unwrap().read().await;
         let memctx = objects.machine().acc_mem.access().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
