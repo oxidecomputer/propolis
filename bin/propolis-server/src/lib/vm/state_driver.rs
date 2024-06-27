@@ -38,7 +38,7 @@ use super::{
         MigrateSourceCommand, MigrateSourceResponse, MigrateTargetResponse,
         MigrateTaskEvent,
     },
-    request_queue::ExternalRequest,
+    request_queue::{ExternalRequest, InstanceAutoStart},
     state_publisher::{MigrationStateUpdate, StatePublisher},
     VmError, VmObjects,
 };
@@ -68,10 +68,10 @@ struct InputQueueInner {
 }
 
 impl InputQueueInner {
-    fn new(log: slog::Logger) -> Self {
+    fn new(log: slog::Logger, auto_start: InstanceAutoStart) -> Self {
         Self {
             external_requests: super::request_queue::ExternalRequestQueue::new(
-                log,
+                log, auto_start,
             ),
             guest_events: super::guest_event::GuestEventQueue::default(),
         }
@@ -84,9 +84,12 @@ pub(super) struct InputQueue {
 }
 
 impl InputQueue {
-    pub(super) fn new(log: slog::Logger) -> Self {
+    pub(super) fn new(
+        log: slog::Logger,
+        auto_start: InstanceAutoStart,
+    ) -> Self {
         Self {
-            inner: Mutex::new(InputQueueInner::new(log)),
+            inner: Mutex::new(InputQueueInner::new(log, auto_start)),
             cv: Condvar::new(),
         }
     }
@@ -215,6 +218,10 @@ pub(super) async fn run_state_driver(
 ) -> StatePublisher {
     let input_queue = Arc::new(InputQueue::new(
         log.new(slog::o!("component" => "request_queue")),
+        match ensure_request.migrate {
+            Some(_) => InstanceAutoStart::Yes,
+            None => InstanceAutoStart::No,
+        },
     ));
 
     let migration_in_id =
