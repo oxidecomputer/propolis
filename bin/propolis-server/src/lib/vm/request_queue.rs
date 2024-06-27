@@ -30,8 +30,8 @@ use uuid::Uuid;
 /// Wraps a [`dropshot::WebsocketConnection`] for inclusion in an
 /// [`ExternalRequest`].
 //
-// A newtype is used here to allow this module's tests (which want to verify
-// queuing dispositions and don't care about request contents) to construct a
+// This newtype allowsthis module's tests (which want to verify queuing
+// dispositions and don't care about request contents) to construct a
 // `MigrateAsSource` request without having to conjure up a real websocket
 // conection.
 pub(crate) struct WebsocketConnection(Option<dropshot::WebsocketConnection>);
@@ -187,13 +187,26 @@ pub struct ExternalRequestQueue {
     log: Logger,
 }
 
+pub enum InstanceAutoStart {
+    Yes,
+    No,
+}
+
 impl ExternalRequestQueue {
     /// Creates a new queue that logs to the supplied logger.
-    pub fn new(log: Logger) -> Self {
+    pub fn new(log: Logger, auto_start: InstanceAutoStart) -> Self {
+        // If the queue is being created for an instance that will start
+        // automatically (e.g. due to a migration in), set the request
+        // disposition for future start requests to Ignore for idempotency.
+        let start = match auto_start {
+            InstanceAutoStart::Yes => RequestDisposition::Ignore,
+            InstanceAutoStart::No => RequestDisposition::Enqueue,
+        };
+
         Self {
             queue: VecDeque::new(),
             allowed: AllowedRequests {
-                start: RequestDisposition::Enqueue,
+                start,
                 migrate_as_source: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
@@ -291,7 +304,11 @@ impl ExternalRequestQueue {
             ChangeReason::ApiRequest(ExternalRequest::MigrateAsSource {
                 ..
             }) => {
-                assert!(matches!(self.allowed.start, Disposition::Ignore));
+                assert!(
+                    matches!(self.allowed.start, Disposition::Ignore),
+                    "{:?}",
+                    self.allowed
+                );
 
                 AllowedRequests {
                     start: self.allowed.start,
@@ -409,7 +426,8 @@ mod test {
     #[tokio::test]
     async fn migrate_as_source_is_not_idempotent() {
         // Simulate a running instance.
-        let mut queue = ExternalRequestQueue::new(test_logger());
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Requests to migrate out should be allowed.
@@ -443,7 +461,8 @@ mod test {
 
     #[tokio::test]
     async fn stop_requests_enqueue_after_vm_failure() {
-        let mut queue = ExternalRequestQueue::new(test_logger());
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
         queue.notify_instance_state_change(InstanceStateChange::Failed);
 
         assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
@@ -452,7 +471,8 @@ mod test {
 
     #[tokio::test]
     async fn reboot_requests_are_idempotent_except_when_stopping() {
-        let mut queue = ExternalRequestQueue::new(test_logger());
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Once the instance is started, reboot requests should be allowed, but
