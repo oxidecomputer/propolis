@@ -239,10 +239,8 @@ impl CrucibleBackend {
     }
 
     /// Retrieve the UUID identifying this Crucible backend.
-    pub fn get_uuid(&self) -> io::Result<uuid::Uuid> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async { self.state.volume.get_uuid().await })
-            .map_err(CrucibleError::into)
+    pub async fn get_uuid(&self) -> io::Result<uuid::Uuid> {
+        self.state.volume.get_uuid().await.map_err(CrucibleError::into)
     }
 
     /// Issue a snapshot request

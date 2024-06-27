@@ -412,7 +412,7 @@ impl<'a> MachineInitializer<'a> {
                 )
                 .await?;
 
-                let crucible = Some((be.get_uuid()?, be.clone()));
+                let crucible = Some((be.get_uuid().await?, be.clone()));
                 Ok(StorageBackendInstance { be, crucible })
             }
             instance_spec::v0::StorageBackendV0::File(spec) => {
