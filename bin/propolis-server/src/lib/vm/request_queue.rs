@@ -33,7 +33,7 @@ use uuid::Uuid;
 // This newtype allowsthis module's tests (which want to verify queuing
 // dispositions and don't care about request contents) to construct a
 // `MigrateAsSource` request without having to conjure up a real websocket
-// conection.
+// connection.
 pub(crate) struct WebsocketConnection(Option<dropshot::WebsocketConnection>);
 
 impl From<dropshot::WebsocketConnection> for WebsocketConnection {

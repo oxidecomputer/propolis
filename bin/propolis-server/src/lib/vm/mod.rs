@@ -460,7 +460,7 @@ impl Vm {
                 state: if ensure_request.migrate.is_some() {
                     propolis_api_types::InstanceState::Migrating
                 } else {
-                    propolis_api_types::InstanceState::Starting
+                    propolis_api_types::InstanceState::Creating
                 },
                 migration: propolis_api_types::InstanceMigrateStatusResponse {
                     migration_in: ensure_request.migrate.as_ref().map(|req| {
