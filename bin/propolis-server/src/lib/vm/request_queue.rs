@@ -30,7 +30,7 @@ use uuid::Uuid;
 /// Wraps a [`dropshot::WebsocketConnection`] for inclusion in an
 /// [`ExternalRequest`].
 //
-// This newtype allowsthis module's tests (which want to verify queuing
+// This newtype allows this module's tests (which want to verify queuing
 // dispositions and don't care about request contents) to construct a
 // `MigrateAsSource` request without having to conjure up a real websocket
 // connection.
@@ -328,7 +328,11 @@ impl ExternalRequestQueue {
             // Requests to reboot prevent additional reboot requests from being
             // queued, but do not affect other operations.
             ChangeReason::ApiRequest(ExternalRequest::Reboot) => {
-                assert!(matches!(self.allowed.start, Disposition::Ignore));
+                assert!(
+                    matches!(self.allowed.start, Disposition::Ignore),
+                    "{:?}",
+                    self.allowed
+                );
                 AllowedRequests { reboot: Disposition::Ignore, ..self.allowed }
             }
 
@@ -423,11 +427,42 @@ mod test {
         }
     }
 
+    fn make_reconfigure_crucible_request() -> ExternalRequest {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        ExternalRequest::ReconfigureCrucibleVolume {
+            disk_name: "".to_string(),
+            backend_id: Uuid::new_v4(),
+            new_vcr_json: "".to_string(),
+            result_tx: tx,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_requests_become_idempotent_after_first_request() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+
+        // The first request to start should succeed.
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+
+        // The second one should too, but only for idempotency: the queue should
+        // then have only one start request on it.
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        assert!(queue.pop_front().is_none());
+
+        // Start requests continue to be ignored even after the instance starts
+        // to run.
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(queue.pop_front().is_none());
+    }
+
     #[tokio::test]
     async fn migrate_as_source_is_not_idempotent() {
         // Simulate a running instance.
         let mut queue =
-            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Requests to migrate out should be allowed.
@@ -472,7 +507,7 @@ mod test {
     #[tokio::test]
     async fn reboot_requests_are_idempotent_except_when_stopping() {
         let mut queue =
-            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Once the instance is started, reboot requests should be allowed, but
@@ -502,5 +537,47 @@ mod test {
         assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
         queue.notify_instance_state_change(InstanceStateChange::Rebooted);
         assert!(queue.try_queue(ExternalRequest::Reboot).is_err());
+    }
+
+    #[tokio::test]
+    async fn mutation_requires_running_and_not_migrating_out() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+
+        // Mutating a VM before it has started is not allowed.
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+
+        // Merely dequeuing the start request doesn't allow mutation; the VM
+        // actually has to be running.
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+        assert!(matches!(
+            queue.pop_front(),
+            Some(ExternalRequest::ReconfigureCrucibleVolume { .. })
+        ));
+
+        // Successfully requesting migration out should block new mutation
+        // requests (they should wait for the migration to resolve and then go
+        // to the target).
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+
+        // But if the VM resumes (due to a failed migration out) these requests
+        // should succeed again.
+        assert!(queue.pop_front().is_some());
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn mutation_disallowed_after_stop() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        queue.notify_instance_state_change(InstanceStateChange::Stopped);
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
     }
 }
