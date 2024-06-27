@@ -369,14 +369,15 @@ async fn instance_state_monitor(
 ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
     let ctx = rqctx.context();
     let gen = request.into_inner().gen;
-    let mut state_watcher = ctx.vm.state_watcher().map_err(|e| match e {
-        VmError::NotCreated | VmError::WaitingToInitialize => {
-            not_created_error()
-        }
-        _ => HttpError::for_internal_error(format!(
-            "unexpected error from VM controller: {e}"
-        )),
-    })?;
+    let mut state_watcher =
+        ctx.vm.state_watcher().await.map_err(|e| match e {
+            VmError::NotCreated | VmError::WaitingToInitialize => {
+                not_created_error()
+            }
+            _ => HttpError::for_internal_error(format!(
+                "unexpected error from VM controller: {e}"
+            )),
+        })?;
 
     loop {
         let last = state_watcher.borrow().clone();
@@ -411,7 +412,7 @@ async fn instance_state_put(
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let ctx = rqctx.context();
     let requested_state = request.into_inner();
-    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
+    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
     let result = vm
         .put_state(requested_state)
         .map(|_| HttpResponseUpdatedNoContent {})
@@ -453,8 +454,8 @@ async fn instance_serial_history_get(
 ) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
 {
     let ctx = rqctx.context();
-    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
-    let serial = vm.objects().await.com1().clone();
+    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+    let serial = vm.objects().read().await.com1().clone();
     let query_params = query.into_inner();
 
     let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
@@ -481,8 +482,8 @@ async fn instance_serial(
     websock: WebsocketConnection,
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
-    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
-    let serial = vm.objects().await.com1().clone();
+    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+    let serial = vm.objects().read().await.com1().clone();
 
     // Use the default buffering paramters for the websocket configuration
     //
@@ -539,7 +540,7 @@ async fn instance_migrate_start(
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
     let migration_id = path_params.into_inner().migration_id;
-    let vm = ctx.vm.active_vm().ok_or_else(not_created_error)?;
+    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
     Ok(vm.request_migration_out(migration_id, websock).await?)
 }
 
@@ -553,6 +554,7 @@ async fn instance_migrate_status(
     let ctx = rqctx.context();
     ctx.vm
         .state_watcher()
+        .await
         .map(|rx| HttpResponseOk(rx.borrow().migration.clone()))
         .map_err(|e| match e {
             VmError::NotCreated | VmError::WaitingToInitialize => {
@@ -573,15 +575,16 @@ async fn instance_issue_crucible_snapshot_request(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
-    let objects = vm.objects().await;
-    let crucible_backends = objects.crucible_backends();
+    let vm =
+        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
+    let objects = vm.objects().read().await;
     let path_params = path_params.into_inner();
 
-    let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
-        let s = format!("no disk with id {}!", path_params.id);
-        HttpError::for_not_found(Some(s.clone()), s)
-    })?;
+    let backend =
+        objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
+            let s = format!("no disk with id {}!", path_params.id);
+            HttpError::for_not_found(Some(s.clone()), s)
+        })?;
     backend.snapshot(path_params.snapshot_id).await.map_err(|e| {
         HttpError::for_bad_request(Some(e.to_string()), e.to_string())
     })?;
@@ -599,13 +602,14 @@ async fn disk_volume_status(
     path_params: Path<api::VolumeStatusPathParams>,
 ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
     let path_params = path_params.into_inner();
-    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
-    let objects = vm.objects().await;
-    let crucible_backends = objects.crucible_backends();
-    let backend = crucible_backends.get(&path_params.id).ok_or_else(|| {
-        let s = format!("No crucible backend for id {}", path_params.id);
-        HttpError::for_not_found(Some(s.clone()), s)
-    })?;
+    let vm =
+        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
+    let objects = vm.objects().read().await;
+    let backend =
+        objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
+            let s = format!("No crucible backend for id {}", path_params.id);
+            HttpError::for_not_found(Some(s.clone()), s)
+        })?;
 
     Ok(HttpResponseOk(api::VolumeStatus {
         active: backend.volume_is_active().await.map_err(|e| {
@@ -630,7 +634,8 @@ async fn instance_issue_crucible_vcr_request(
     let disk_name = request.name;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
+    let vm =
+        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
 
     vm.reconfigure_crucible_volume(disk_name, path_params.id, new_vcr_json, tx)
         .map_err(|e| match e {
@@ -660,9 +665,9 @@ async fn instance_issue_crucible_vcr_request(
 async fn instance_issue_nmi(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm = rqctx.context().vm.active_vm().ok_or_else(not_created_error)?;
-    let objects = vm.objects().await;
-    let _ = objects.machine().inject_nmi();
+    let vm =
+        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
+    let _ = vm.objects().read().await.machine().inject_nmi();
 
     Ok(HttpResponseOk(()))
 }

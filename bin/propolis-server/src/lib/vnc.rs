@@ -152,8 +152,8 @@ impl Server for PropolisVncServer {
 
                 let len = fb.height as usize * fb.width as usize * 4;
                 let mut buf = vec![0u8; len];
-                if let Some(vm) = inner.vm.as_ref().unwrap().active_vm() {
-                    let vm_objects = vm.objects().await;
+                if let Some(vm) = inner.vm.as_ref().unwrap().active_vm().await {
+                    let vm_objects = vm.objects().read().await;
                     let read = tokio::task::block_in_place(|| {
                         let machine = vm_objects.machine();
                         let memctx = machine.acc_mem.access().unwrap();

@@ -5,35 +5,25 @@
 //! This module implements the `Vm` wrapper type that encapsulates a single
 //! instance on behalf of a Propolis server.
 
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    sync::{Arc, RwLock},
-};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
+use active::ActiveVm;
 use oximeter::types::ProducerRegistry;
-use propolis::{
-    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
-    vmm::Machine,
-};
 use propolis_api_types::{
     instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
-    InstanceProperties, InstanceStateRequested,
+    InstanceProperties,
 };
 
-use request_queue::ExternalRequest;
 use rfb::server::VncServer;
 use slog::info;
-use state_publisher::{ExternalStateUpdate, StatePublisher};
-use uuid::Uuid;
+use state_publisher::StatePublisher;
 
-use crate::{
-    serial::Serial, server::MetricsEndpointConfig, vnc::PropolisVncServer,
-};
+use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
 
+mod active;
 pub(crate) mod guest_event;
-mod lifecycle_ops;
 pub(crate) mod migrate_commands;
+pub(crate) mod objects;
 mod request_queue;
 mod services;
 mod state_driver;
@@ -85,200 +75,13 @@ pub(crate) enum VmError {
 /// The top-level VM wrapper type. Callers are expected to wrap this in an
 /// `Arc`.
 pub(crate) struct Vm {
-    inner: RwLock<VmInner>,
+    inner: tokio::sync::RwLock<VmInner>,
     log: slog::Logger,
 }
 
 struct VmInner {
     state: VmState,
     driver: Option<tokio::task::JoinHandle<StatePublisher>>,
-}
-
-pub(crate) struct VmObjects {
-    log: slog::Logger,
-    instance_spec: InstanceSpecV0,
-    machine: Machine,
-    lifecycle_components: LifecycleMap,
-    block_backends: BlockBackendMap,
-    crucible_backends: CrucibleBackendMap,
-    com1: Arc<Serial<LpcUart>>,
-    framebuffer: Option<Arc<RamFb>>,
-    ps2ctrl: Arc<PS2Ctrl>,
-}
-
-impl VmObjects {
-    pub(crate) fn instance_spec(&self) -> &InstanceSpecV0 {
-        &self.instance_spec
-    }
-
-    pub(crate) fn machine(&self) -> &Machine {
-        &self.machine
-    }
-
-    pub(crate) fn device_by_name(
-        &self,
-        name: &str,
-    ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.lifecycle_components.get(name).cloned()
-    }
-
-    pub(crate) fn crucible_backends(&self) -> &CrucibleBackendMap {
-        &self.crucible_backends
-    }
-
-    pub(crate) fn com1(&self) -> &Arc<Serial<LpcUart>> {
-        &self.com1
-    }
-
-    pub(crate) fn for_each_device(
-        &self,
-        mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
-    ) {
-        for (name, dev) in self.lifecycle_components.iter() {
-            func(name, dev);
-        }
-    }
-
-    pub(crate) fn for_each_device_fallible<E>(
-        &self,
-        mut func: impl FnMut(
-            &str,
-            &Arc<dyn propolis::common::Lifecycle>,
-        ) -> std::result::Result<(), E>,
-    ) -> std::result::Result<(), E> {
-        for (name, dev) in self.lifecycle_components.iter() {
-            func(name, dev)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl Drop for VmObjects {
-    fn drop(&mut self) {
-        info!(self.log, "dropping VM objects");
-    }
-}
-
-/// The state stored in a [`Vm`] when there is an actual underlying virtual
-/// machine.
-pub(super) struct ActiveVm {
-    parent: Arc<Vm>,
-    log: slog::Logger,
-
-    state_driver_queue: Arc<state_driver::InputQueue>,
-    external_state_rx: InstanceStateRx,
-
-    properties: InstanceProperties,
-
-    objects: Option<tokio::sync::RwLock<VmObjects>>,
-    services: Option<services::VmServices>,
-}
-
-impl ActiveVm {
-    pub(crate) fn log(&self) -> &slog::Logger {
-        &self.log
-    }
-
-    pub(crate) async fn objects(
-        &self,
-    ) -> tokio::sync::RwLockReadGuard<'_, VmObjects> {
-        self.objects.as_ref().unwrap().read().await
-    }
-
-    async fn objects_mut(
-        &self,
-    ) -> tokio::sync::RwLockWriteGuard<'_, VmObjects> {
-        self.objects.as_ref().unwrap().write().await
-    }
-
-    pub(crate) fn put_state(
-        &self,
-        requested: InstanceStateRequested,
-    ) -> Result<(), VmError> {
-        info!(self.log, "requested state via API";
-              "state" => ?requested);
-
-        self.state_driver_queue
-            .queue_external_request(match requested {
-                InstanceStateRequested::Run => ExternalRequest::Start,
-                InstanceStateRequested::Stop => ExternalRequest::Stop,
-                InstanceStateRequested::Reboot => ExternalRequest::Reboot,
-            })
-            .map_err(Into::into)
-    }
-
-    pub(crate) async fn request_migration_out(
-        &self,
-        migration_id: Uuid,
-        websock: dropshot::WebsocketConnection,
-    ) -> Result<(), VmError> {
-        Ok(self.state_driver_queue.queue_external_request(
-            ExternalRequest::MigrateAsSource {
-                migration_id,
-                websock: websock.into(),
-            },
-        )?)
-    }
-
-    pub(crate) fn reconfigure_crucible_volume(
-        &self,
-        disk_name: String,
-        backend_id: Uuid,
-        new_vcr_json: String,
-        result_tx: CrucibleReplaceResultTx,
-    ) -> Result<(), VmError> {
-        self.state_driver_queue
-            .queue_external_request(
-                ExternalRequest::ReconfigureCrucibleVolume {
-                    disk_name,
-                    backend_id,
-                    new_vcr_json,
-                    result_tx,
-                },
-            )
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn services(&self) -> &services::VmServices {
-        self.services.as_ref().expect("active VMs always have services")
-    }
-}
-
-impl Drop for ActiveVm {
-    fn drop(&mut self) {
-        info!(self.log, "dropping active VM");
-
-        let driver = self
-            .parent
-            .inner
-            .write()
-            .unwrap()
-            .driver
-            .take()
-            .expect("active VMs always have a driver");
-
-        let objects =
-            self.objects.take().expect("active VMs should always have objects");
-
-        let services = self
-            .services
-            .take()
-            .expect("active VMs should always have services");
-
-        let parent = self.parent.clone();
-        let log = self.log.clone();
-        tokio::spawn(async move {
-            drop(objects);
-            services.stop(&log).await;
-
-            let mut tx = driver.await.expect("state driver shouldn't panic");
-            tx.update(ExternalStateUpdate::Instance(
-                propolis_api_types::InstanceState::Destroyed,
-            ));
-            parent.complete_rundown().await;
-        });
-    }
 }
 
 struct UninitVm {
@@ -306,7 +109,7 @@ enum VmState {
     /// This state machine has never held a VM.
     NoVm,
     WaitingForInit(UninitVm),
-    Active(Arc<ActiveVm>),
+    Active(active::ActiveVm),
     Rundown(UninitVm),
     RundownComplete(UninitVm),
 }
@@ -325,26 +128,34 @@ impl Vm {
     pub fn new(log: &slog::Logger) -> Arc<Self> {
         let log = log.new(slog::o!("component" => "vm_wrapper"));
         let inner = VmInner { state: VmState::NoVm, driver: None };
-        Arc::new(Self { inner: RwLock::new(inner), log })
+        Arc::new(Self { inner: tokio::sync::RwLock::new(inner), log })
     }
 
-    pub(super) fn active_vm(&self) -> Option<Arc<ActiveVm>> {
-        let guard = self.inner.read().unwrap();
-        if let VmState::Active(vm) = &guard.state {
-            Some(vm.clone())
-        } else {
-            None
-        }
+    pub(super) async fn active_vm(
+        &self,
+    ) -> Option<tokio::sync::RwLockReadGuard<'_, ActiveVm>> {
+        tokio::sync::RwLockReadGuard::try_map(
+            self.inner.read().await,
+            |inner| {
+                if let VmState::Active(vm) = &inner.state {
+                    Some(vm)
+                } else {
+                    None
+                }
+            },
+        )
+        .ok()
     }
 
     pub(super) async fn get(
         &self,
     ) -> Result<propolis_api_types::InstanceSpecGetResponse, VmError> {
-        let vm = match &self.inner.read().unwrap().state {
+        let guard = self.inner.read().await;
+        let vm = match &guard.state {
             VmState::NoVm => {
                 return Err(VmError::NotCreated);
             }
-            VmState::Active(vm) => vm.clone(),
+            VmState::Active(vm) => vm,
             VmState::WaitingForInit(vm)
             | VmState::Rundown(vm)
             | VmState::RundownComplete(vm) => {
@@ -356,7 +167,7 @@ impl Vm {
             }
         };
 
-        let spec = vm.objects().await.instance_spec().clone();
+        let spec = vm.objects().read().await.instance_spec().clone();
         let state = vm.external_state_rx.borrow().clone();
         Ok(propolis_api_types::InstanceSpecGetResponse {
             properties: vm.properties.clone(),
@@ -365,8 +176,10 @@ impl Vm {
         })
     }
 
-    pub(super) fn state_watcher(&self) -> Result<InstanceStateRx, VmError> {
-        let guard = self.inner.read().unwrap();
+    pub(super) async fn state_watcher(
+        &self,
+    ) -> Result<InstanceStateRx, VmError> {
+        let guard = self.inner.read().await;
         match &guard.state {
             VmState::NoVm => Err(VmError::NotCreated),
             VmState::Active(vm) => Ok(vm.external_state_rx.clone()),
@@ -376,30 +189,26 @@ impl Vm {
         }
     }
 
-    fn make_active(
+    async fn make_active(
         self: &Arc<Self>,
         log: &slog::Logger,
         state_driver_queue: Arc<state_driver::InputQueue>,
-        objects: VmObjects,
+        objects: &Arc<objects::VmObjects>,
         services: services::VmServices,
-    ) -> Arc<ActiveVm> {
+    ) {
         info!(self.log, "installing active VM");
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::WaitingForInit(vm) => {
-                let active = Arc::new(ActiveVm {
-                    parent: self.clone(),
+                guard.state = VmState::Active(ActiveVm {
                     log: log.clone(),
                     state_driver_queue,
                     external_state_rx: vm.external_state_rx,
                     properties: vm.properties,
-                    objects: Some(tokio::sync::RwLock::new(objects)),
-                    services: Some(services),
+                    objects: objects.clone(),
+                    services,
                 });
-
-                guard.state = VmState::Active(active.clone());
-                active
             }
             _ => unreachable!(
                 "only a starting VM's state worker calls make_active"
@@ -407,8 +216,8 @@ impl Vm {
         }
     }
 
-    fn start_failed(&self) {
-        let mut guard = self.inner.write().unwrap();
+    async fn start_failed(&self) {
+        let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::WaitingForInit(vm) => {
@@ -420,23 +229,31 @@ impl Vm {
     }
 
     async fn set_rundown(&self) {
-        let vm = self
-            .active_vm()
-            .expect("VM should be active before being run down");
-
         info!(self.log, "setting VM rundown");
-        let new_state = VmState::Rundown(UninitVm {
-            external_state_rx: vm.external_state_rx.clone(),
-            properties: vm.properties.clone(),
-            spec: vm.objects().await.instance_spec.clone(),
-        });
+        let services = {
+            let mut guard = self.inner.write().await;
+            let VmState::Active(vm) =
+                std::mem::replace(&mut guard.state, VmState::NoVm)
+            else {
+                panic!("VM should be active before being run down");
+            };
 
-        self.inner.write().unwrap().state = new_state;
+            let spec = vm.objects().read().await.instance_spec().clone();
+            let ActiveVm { external_state_rx, properties, .. } = vm;
+            guard.state = VmState::Rundown(UninitVm {
+                external_state_rx,
+                properties,
+                spec,
+            });
+            vm.services
+        };
+
+        services.stop(&self.log).await;
     }
 
     async fn complete_rundown(&self) {
         info!(self.log, "completing VM rundown");
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::Rundown(vm) => guard.state = VmState::RundownComplete(vm),
@@ -479,7 +296,7 @@ impl Vm {
         // creating a new VM and there's no easy way to upgrade from a reader
         // lock to a writer lock.
         {
-            let mut guard = self.inner.write().unwrap();
+            let mut guard = self.inner.write().await;
             match guard.state {
                 VmState::WaitingForInit(_) => {
                     return Err(VmError::WaitingToInitialize)

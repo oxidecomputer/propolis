@@ -14,8 +14,8 @@ use propolis_api_types::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
         VersionedInstanceSpec,
     },
-    InstanceMigrateInitiateResponse, InstanceProperties, InstanceState,
-    MigrationState,
+    InstanceMigrateInitiateResponse, InstanceProperties,
+    InstanceSpecEnsureRequest, InstanceState, MigrationState,
 };
 use slog::{error, info};
 use uuid::Uuid;
@@ -25,9 +25,8 @@ use crate::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
     migrate::MigrateRole,
-    vcpu_tasks::VcpuTaskController,
     vm::{
-        migrate_commands::MigrateTargetCommand,
+        migrate_commands::MigrateTargetCommand, objects::InputVmObjects,
         state_publisher::ExternalStateUpdate,
     },
 };
@@ -38,9 +37,10 @@ use super::{
         MigrateSourceCommand, MigrateSourceResponse, MigrateTargetResponse,
         MigrateTaskEvent,
     },
+    objects::VmObjects,
     request_queue::{ExternalRequest, InstanceAutoStart},
     state_publisher::{MigrationStateUpdate, StatePublisher},
-    VmError, VmObjects,
+    VmError,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ enum HandleEventOutcome {
 
 /// A reason for starting a VM.
 #[derive(Debug, PartialEq, Eq)]
-enum VmStartReason {
+pub(super) enum VmStartReason {
     MigratedIn,
     ExplicitRequest,
 }
@@ -197,12 +197,10 @@ impl guest_event::ChipsetEventHandler for InputQueue {
 /// The context for a VM state driver task.
 struct StateDriver {
     log: slog::Logger,
-    parent: Arc<super::Vm>,
-    active_vm: Arc<super::ActiveVm>,
+    objects: Arc<VmObjects>,
     input_queue: Arc<InputQueue>,
     external_state: StatePublisher,
     paused: bool,
-    vcpu_tasks: Box<dyn VcpuTaskController>,
     migration_src_state: crate::migrate::source::PersistentState,
 }
 
@@ -210,51 +208,28 @@ pub(super) async fn run_state_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
     mut external_publisher: StatePublisher,
-    ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
+    ensure_request: InstanceSpecEnsureRequest,
     ensure_result_tx: tokio::sync::oneshot::Sender<
         Result<propolis_api_types::InstanceEnsureResponse, VmError>,
     >,
     ensure_options: super::EnsureOptions,
 ) -> StatePublisher {
-    let input_queue = Arc::new(InputQueue::new(
-        log.new(slog::o!("component" => "request_queue")),
-        match ensure_request.migrate {
-            Some(_) => InstanceAutoStart::Yes,
-            None => InstanceAutoStart::No,
-        },
-    ));
-
     let migration_in_id =
         ensure_request.migrate.as_ref().map(|req| req.migration_id);
-    let (vm_objects, vcpu_tasks) = match match ensure_request.migrate {
-        None => {
-            initialize_vm_from_spec(
-                &log,
-                &input_queue,
-                &ensure_request.properties,
-                &ensure_request.instance_spec,
-                &ensure_options,
-            )
-            .await
-        }
-        Some(migrate_request) => {
-            migrate_as_target(
-                &log,
-                &input_queue,
-                &ensure_request.properties,
-                &ensure_request.instance_spec,
-                &ensure_options,
-                migrate_request,
-                &mut external_publisher,
-            )
-            .await
-        }
-    } {
+    let (vm_objects, input_queue) = match build_vm(
+        &log,
+        &vm,
+        &ensure_request,
+        &ensure_options,
+        &mut external_publisher,
+    )
+    .await
+    {
         Ok(objects) => objects,
         Err(e) => {
             external_publisher
                 .update(ExternalStateUpdate::Instance(InstanceState::Failed));
-            vm.start_failed();
+            vm.start_failed().await;
             let _ =
                 ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
             return external_publisher;
@@ -275,9 +250,7 @@ pub(super) async fn run_state_driver(
     //
     // Order matters here: once the ensure result is sent, an external
     // caller needs to observe that an active VM is present.
-    let active_vm =
-        vm.make_active(&log, input_queue.clone(), vm_objects, services);
-
+    vm.make_active(&log, input_queue.clone(), &vm_objects, services).await;
     let _ =
         ensure_result_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
             migrate: migration_in_id
@@ -286,16 +259,16 @@ pub(super) async fn run_state_driver(
 
     let state_driver = StateDriver {
         log,
-        parent: vm.clone(),
-        active_vm,
+        objects: vm_objects,
         input_queue,
         external_state: external_publisher,
         paused: false,
-        vcpu_tasks,
         migration_src_state: Default::default(),
     };
 
-    state_driver.run(migration_in_id.is_some()).await
+    let external_tx = state_driver.run(migration_in_id.is_some()).await;
+    vm.set_rundown().await;
+    external_tx
 }
 
 impl StateDriver {
@@ -310,7 +283,6 @@ impl StateDriver {
             self.run_loop().await;
         }
 
-        self.parent.set_rundown().await;
         self.external_state
     }
 
@@ -344,27 +316,11 @@ impl StateDriver {
     ) -> anyhow::Result<()> {
         info!(self.log, "starting instance"; "reason" => ?start_reason);
 
-        let start_result = {
-            let (vm_objects, vcpu_tasks) = self.vm_objects_and_cpus().await;
-            match start_reason {
-                VmStartReason::ExplicitRequest => {
-                    reset_vcpus(&vm_objects, vcpu_tasks);
-                }
-                VmStartReason::MigratedIn => {
-                    vm_objects.resume_vm();
-                }
-            }
-
-            let result = vm_objects.start_devices().await;
-            if result.is_ok() {
-                vcpu_tasks.resume_all();
-            }
-
-            result
-        };
-
+        let start_result = self.objects.write().await.start(start_reason).await;
         match &start_result {
-            Ok(()) => self.publish_steady_state(InstanceState::Running),
+            Ok(()) => {
+                self.publish_steady_state(InstanceState::Running);
+            }
             Err(e) => {
                 error!(&self.log, "failed to start devices";
                                  "error" => ?e);
@@ -465,26 +421,7 @@ impl StateDriver {
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Rebooting));
 
-        {
-            let (vm_objects, vcpu_tasks) = self.vm_objects_and_cpus().await;
-
-            // Reboot is implemented as a pause -> reset -> resume transition.
-            //
-            // First, pause the vCPUs and all devices so no partially-completed
-            // work is present.
-            vcpu_tasks.pause_all();
-            vm_objects.pause_devices().await;
-
-            // Reset all entities and the VM's bhyve state, then reset the
-            // vCPUs. The vCPU reset must come after the bhyve reset.
-            vm_objects.reset_devices_and_machine();
-            reset_vcpus(&vm_objects, vcpu_tasks);
-
-            // Resume devices so they're ready to do more work, then resume
-            // vCPUs.
-            vm_objects.resume_devices();
-            vcpu_tasks.resume_all();
-        }
+        self.objects.write().await.reboot().await;
 
         // Notify other consumers that the instance successfully rebooted and is
         // now back to Running.
@@ -500,37 +437,32 @@ impl StateDriver {
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Stopping));
 
-        // Entities expect to be paused before being halted. Note that the VM
-        // may be paused already if it is being torn down after a successful
-        // migration out.
-        if !self.paused {
-            self.pause().await;
+        {
+            let mut guard = self.objects.write().await;
+
+            // Entities expect to be paused before being halted. Note that the VM
+            // may be paused already if it is being torn down after a successful
+            // migration out.
+            if !self.paused {
+                guard.pause().await;
+                self.paused = true;
+            }
+
+            guard.halt().await;
         }
 
-        self.vcpu_tasks.exit_all();
-        self.vm_objects().await.halt_devices().await;
         self.publish_steady_state(InstanceState::Stopped);
     }
 
     async fn pause(&mut self) {
         assert!(!self.paused);
-        self.vcpu_tasks.pause_all();
-        {
-            let objects = self.vm_objects().await;
-            objects.pause_devices().await;
-            objects.pause_vm();
-        }
+        self.objects.write().await.pause().await;
         self.paused = true;
     }
 
     async fn resume(&mut self) {
         assert!(self.paused);
-        {
-            let objects = self.vm_objects().await;
-            objects.resume_vm();
-            objects.resume_devices();
-        }
-        self.vcpu_tasks.resume_all();
+        self.objects.write().await.resume();
         self.paused = false;
     }
 
@@ -553,25 +485,6 @@ impl StateDriver {
 
         self.input_queue.notify_instance_state_change(change);
         self.external_state.update(ExternalStateUpdate::Instance(state));
-    }
-
-    async fn vm_objects(&self) -> tokio::sync::RwLockReadGuard<'_, VmObjects> {
-        self.active_vm.objects().await
-    }
-
-    async fn vm_objects_mut(
-        &self,
-    ) -> tokio::sync::RwLockWriteGuard<'_, VmObjects> {
-        self.active_vm.objects_mut().await
-    }
-
-    async fn vm_objects_and_cpus(
-        &mut self,
-    ) -> (
-        tokio::sync::RwLockReadGuard<'_, VmObjects>,
-        &mut dyn VcpuTaskController,
-    ) {
-        (self.active_vm.objects().await, self.vcpu_tasks.as_mut())
     }
 
     async fn migrate_as_source(
@@ -606,10 +519,10 @@ impl StateDriver {
 
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
         let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-        let vm_for_task = self.active_vm.clone();
+        let objects_for_task = self.objects.clone();
         let mut migrate_task = tokio::spawn(async move {
             crate::migrate::source::migrate(
-                vm_for_task,
+                objects_for_task,
                 command_tx,
                 response_rx,
                 migrate_ctx.conn,
@@ -618,6 +531,9 @@ impl StateDriver {
             .await
         });
 
+        // The migration task may try to acquire the VM object lock shared, so
+        // this task cannot hold it excluive while waiting for the migration
+        // task to send an event.
         loop {
             match next_migrate_task_event(
                 &mut migrate_task,
@@ -628,8 +544,7 @@ impl StateDriver {
             {
                 MigrateTaskEvent::TaskExited(res) => {
                     if res.is_ok() {
-                        self.active_vm
-                            .state_driver_queue
+                        self.input_queue
                             .queue_external_request(ExternalRequest::Stop)
                             .expect("can always queue a request to stop");
                     } else {
@@ -693,16 +608,15 @@ impl StateDriver {
               "disk_name" => %disk_name,
               "backend_id" => %backend_id);
 
-        let mut objects = self.vm_objects_mut().await;
-
         fn spec_element_not_found(disk_name: &str) -> dropshot::HttpError {
             let msg = format!("Crucible backend for {:?} not found", disk_name);
             dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
         }
 
+        let mut objects = self.objects.write().await;
         let (readonly, old_vcr_json) = {
             let StorageBackendV0::Crucible(bes) = objects
-                .instance_spec
+                .instance_spec()
                 .backends
                 .storage_backends
                 .get(&disk_name)
@@ -715,8 +629,10 @@ impl StateDriver {
         };
 
         let replace_result = {
-            let backend =
-                objects.crucible_backends.get(backend_id).ok_or_else(|| {
+            let backend = objects
+                .crucible_backends()
+                .get(backend_id)
+                .ok_or_else(|| {
                     let msg =
                         format!("No crucible backend for id {backend_id}");
                     dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
@@ -738,7 +654,7 @@ impl StateDriver {
         });
 
         objects
-            .instance_spec
+            .instance_spec_mut()
             .backends
             .storage_backends
             .insert(disk_name, new_bes);
@@ -749,21 +665,189 @@ impl StateDriver {
     }
 }
 
-fn reset_vcpus(
-    vm_objects: &VmObjects,
-    vcpu_tasks: &mut dyn VcpuTaskController,
-) {
-    vcpu_tasks.new_generation();
-    vm_objects.reset_vcpu_state();
+async fn build_vm(
+    log: &slog::Logger,
+    parent: &Arc<super::Vm>,
+    request: &InstanceSpecEnsureRequest,
+    options: &super::EnsureOptions,
+    state_publisher: &mut StatePublisher,
+) -> anyhow::Result<(Arc<VmObjects>, Arc<InputQueue>)> {
+    let input_queue = Arc::new(InputQueue::new(
+        log.new(slog::o!("component" => "request_queue")),
+        match request.migrate {
+            Some(_) => InstanceAutoStart::Yes,
+            None => InstanceAutoStart::No,
+        },
+    ));
+
+    // If the caller didn't ask to initialize by live migration in, immediately
+    // create the VM objects and return them.
+    let Some(migrate_request) = &request.migrate else {
+        let input_objects = initialize_vm_objects_from_spec(
+            log,
+            &input_queue,
+            &request.properties,
+            &request.instance_spec,
+            options,
+        )
+        .await?;
+
+        let vm_objects = Arc::new(VmObjects::new(
+            log.clone(),
+            parent.clone(),
+            input_objects,
+        ));
+
+        return Ok((vm_objects, input_queue));
+    };
+
+    // The caller has asked to initialize by live migration in. Initialize VM
+    // objects at the live migration task's request.
+    //
+    // Begin by contacting the source Propolis and obtaining the connection that
+    // the actual migration task will need.
+    let migrate_ctx = crate::migrate::dest_initiate(
+        log,
+        migrate_request,
+        options.local_server_addr,
+    )
+    .await?;
+
+    // Spin up a task to run the migration protocol proper. To avoid sending the
+    // entire VM context over to the migration task, create command and response
+    // channels to allow the migration task to delegate work back to this
+    // routine.
+    let log_for_task = log.clone();
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
+    let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
+    let mut migrate_task = tokio::spawn(async move {
+        crate::migrate::destination::migrate(
+            &log_for_task,
+            command_tx,
+            response_rx,
+            migrate_ctx.conn,
+            migrate_ctx.local_addr,
+            migrate_ctx.protocol,
+        )
+        .await
+    });
+
+    let init_command = command_rx.recv().await.ok_or_else(|| {
+        anyhow::anyhow!("migration task unexpectedly closed channel")
+    })?;
+
+    let input_objects = 'init: {
+        let MigrateTargetCommand::InitializeFromExternalSpec = init_command
+        else {
+            error!(log, "migration protocol didn't init objects first";
+                   "command" => ?init_command);
+            break 'init Err(anyhow::anyhow!(
+                "migration protocol didn't init objects first"
+            ));
+        };
+
+        initialize_vm_objects_from_spec(
+            log,
+            &input_queue,
+            &request.properties,
+            &request.instance_spec,
+            options,
+        )
+        .await
+        .map_err(Into::into)
+    };
+
+    let vm_objects = match input_objects {
+        Ok(o) => Arc::new(VmObjects::new(log.clone(), parent.clone(), o)),
+        Err(e) => {
+            let _ = response_tx
+                .send(MigrateTargetResponse::VmObjectsInitialized(Err(
+                    e.to_string()
+                )))
+                .await;
+            state_publisher.update(ExternalStateUpdate::Migration(
+                MigrationStateUpdate {
+                    id: migrate_ctx.migration_id,
+                    state: MigrationState::Error,
+                    role: MigrateRole::Source,
+                },
+            ));
+
+            return Err(e);
+        }
+    };
+
+    // The migration task imports device state by operating directly on the
+    // newly-created VM objects. Before sending them to the task, make sure the
+    // objects are ready to have state imported into them. Specifically, ensure
+    // that the VM's vCPUs are activated so they can enter the guest after
+    // migration and pause the kernel VM to allow it to import device state
+    // consistently.
+    //
+    // Drop the lock after this operation so that the migration task can acquire
+    // it.
+    {
+        let guard = vm_objects.read().await;
+        guard.reset_vcpus();
+        guard.pause_kernel_vm();
+    }
+
+    if response_tx
+        .send(MigrateTargetResponse::VmObjectsInitialized(Ok(
+            vm_objects.clone()
+        )))
+        .await
+        .is_err()
+    {
+        vm_objects.write().await.resume_kernel_vm();
+        anyhow::bail!("migration task unexpectedly closed channel");
+    }
+
+    loop {
+        let action =
+            next_migrate_task_event(&mut migrate_task, &mut command_rx, log)
+                .await;
+
+        match action {
+            MigrateTaskEvent::TaskExited(res) => match res {
+                Ok(()) => {
+                    return Ok((vm_objects, input_queue));
+                }
+                Err(e) => {
+                    error!(log, "target migration task failed";
+                           "error" => %e);
+
+                    vm_objects.write().await.resume_kernel_vm();
+                    return Err(e.into());
+                }
+            },
+            MigrateTaskEvent::Command(MigrateTargetCommand::UpdateState(
+                state,
+            )) => {
+                state_publisher.update(ExternalStateUpdate::Migration(
+                    MigrationStateUpdate {
+                        state,
+                        id: migrate_ctx.migration_id,
+                        role: MigrateRole::Destination,
+                    },
+                ));
+            }
+            MigrateTaskEvent::Command(
+                MigrateTargetCommand::InitializeFromExternalSpec,
+            ) => {
+                panic!("already received initialize-from-spec command");
+            }
+        }
+    }
 }
 
-async fn initialize_vm_from_spec(
+async fn initialize_vm_objects_from_spec(
     log: &slog::Logger,
     event_queue: &Arc<InputQueue>,
     properties: &InstanceProperties,
     spec: &VersionedInstanceSpec,
     options: &super::EnsureOptions,
-) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
+) -> anyhow::Result<InputVmObjects> {
     info!(log, "initializing new VM";
               "spec" => #?spec,
               "properties" => #?properties,
@@ -835,200 +919,17 @@ async fn initialize_vm_from_spec(
         devices, block_backends, crucible_backends, ..
     } = init;
 
-    Ok((
-        VmObjects {
-            log: log.clone(),
-            instance_spec: v0_spec.clone(),
-            machine,
-            lifecycle_components: devices,
-            block_backends,
-            crucible_backends,
-            com1,
-            framebuffer: Some(ramfb),
-            ps2ctrl,
-        },
-        vcpu_tasks as Box<dyn VcpuTaskController>,
-    ))
-}
-
-async fn migrate_as_target(
-    log: &slog::Logger,
-    event_queue: &Arc<InputQueue>,
-    properties: &InstanceProperties,
-    spec: &VersionedInstanceSpec,
-    options: &super::EnsureOptions,
-    api_request: propolis_api_types::InstanceMigrateInitiateRequest,
-    external_state: &mut StatePublisher,
-) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
-    // Use the information in the supplied migration request to connect to the
-    // migration source and negotiate the protocol verison to use.
-    let migrate_ctx = crate::migrate::dest_initiate(
-        log,
-        api_request,
-        options.local_server_addr,
-    )
-    .await?;
-
-    // Spin up a task to run the migration protocol proper. To avoid sending the
-    // entire VM context over to the migration task, create command and response
-    // channels to allow the migration task to delegate work back to this
-    // routine.
-    let log_for_task = log.clone();
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-    let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-    let mut migrate_task = tokio::spawn(async move {
-        crate::migrate::destination::migrate(
-            &log_for_task,
-            command_tx,
-            response_rx,
-            migrate_ctx.conn,
-            migrate_ctx.local_addr,
-            migrate_ctx.protocol,
-        )
-        .await
-    });
-
-    async fn init_sequence(
-        log: &slog::Logger,
-        event_queue: &Arc<InputQueue>,
-        properties: &InstanceProperties,
-        spec: &VersionedInstanceSpec,
-        options: &super::EnsureOptions,
-        command_rx: &mut tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    ) -> anyhow::Result<(VmObjects, Box<dyn VcpuTaskController>)> {
-        // Migration cannot proceed (in any protocol version) until the target
-        // kernel VMM and Propolis components have been set up. The first
-        // command from the migration task should be a request to set up these
-        // components.
-        let init_command = command_rx.recv().await.ok_or_else(|| {
-            anyhow::anyhow!("migration task unexpectedly closed channel")
-        })?;
-
-        // TODO(#706) The only extant protocol version (V0 with RON encoding)
-        // assumes that migration targets get an instance spec from the caller
-        // of the `instance_ensure` API, that the target VM will be initialized
-        // from this spec, and that device state will be imported in a later
-        // migration phase. Another approach is to get an instance spec from the
-        // source, amend it with information passed to the target, execute
-        // enough of the migration protocol to get device state payloads, and
-        // initialize everything in one fell swoop using the spec and payloads
-        // as inputs.
-        //
-        // This requires a new protocol version, so for now, only look for a
-        // request to initialize the VM from the caller-provided spec.
-        let MigrateTargetCommand::InitializeFromExternalSpec = init_command
-        else {
-            error!(log, "migration protocol didn't init objects first";
-               "first_cmd" => ?init_command);
-            anyhow::bail!(
-                "migration protocol didn't first ask to init objects"
-            );
-        };
-
-        initialize_vm_from_spec(log, event_queue, properties, spec, options)
-            .await
-    }
-
-    let (vm_objects, mut vcpu_tasks) = match init_sequence(
-        log,
-        event_queue,
-        properties,
-        spec,
-        options,
-        &mut command_rx,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            let _ = response_tx
-                .send(MigrateTargetResponse::VmObjectsInitialized(Err(
-                    e.to_string()
-                )))
-                .await;
-            external_state.update(ExternalStateUpdate::Migration(
-                MigrationStateUpdate {
-                    id: migrate_ctx.migration_id,
-                    state: MigrationState::Error,
-                    role: MigrateRole::Source,
-                },
-            ));
-
-            return Err(e);
-        }
-    };
-
-    // The migration task imports device state by operating directly on the
-    // newly-created VM objects. Before sending them to the task and allowing
-    // migration to continue, prepare the VM's vCPUs and objects to have state
-    // migrated into them.
-    //
-    // Ensure the VM's vCPUs are activated properly so that they can enter the
-    // guest after migration. Do this before allowing the migration task to
-    // continue so that reset doesn't overwrite any state written by migration.
-    //
-    // Pause the kernel VM so that emulated device state can be imported
-    // consistently.
-    reset_vcpus(&vm_objects, vcpu_tasks.as_mut());
-    vm_objects.pause_vm();
-
-    // Everything is ready, so send a reference to the newly-created VM to the
-    // migration task. When the task exits, it drops this reference, allowing
-    // this task to reclaim an owned `VmObjects` from the `Arc` wrapper.
-    let vm_objects = Arc::new(vm_objects);
-    if response_tx
-        .send(MigrateTargetResponse::VmObjectsInitialized(Ok(
-            vm_objects.clone()
-        )))
-        .await
-        .is_err()
-    {
-        vm_objects.resume_vm();
-        anyhow::bail!("migration task unexpectedly closed channel");
-    }
-
-    loop {
-        let action =
-            next_migrate_task_event(&mut migrate_task, &mut command_rx, log)
-                .await;
-
-        match action {
-            MigrateTaskEvent::TaskExited(res) => match res {
-                Ok(()) => {
-                    let Ok(vm_objects) = Arc::try_unwrap(vm_objects) else {
-                        panic!(
-                            "migration task should have dropped its VM objects",
-                        );
-                    };
-
-                    return Ok((vm_objects, vcpu_tasks));
-                }
-                Err(e) => {
-                    error!(log, "target migration task failed";
-                           "error" => %e);
-
-                    vm_objects.resume_vm();
-                    return Err(e.into());
-                }
-            },
-            MigrateTaskEvent::Command(MigrateTargetCommand::UpdateState(
-                state,
-            )) => {
-                external_state.update(ExternalStateUpdate::Migration(
-                    MigrationStateUpdate {
-                        state,
-                        id: migrate_ctx.migration_id,
-                        role: MigrateRole::Destination,
-                    },
-                ));
-            }
-            MigrateTaskEvent::Command(
-                MigrateTargetCommand::InitializeFromExternalSpec,
-            ) => {
-                panic!("already received initialize-from-spec command");
-            }
-        }
-    }
+    Ok(InputVmObjects {
+        instance_spec: v0_spec.clone(),
+        vcpu_tasks,
+        machine,
+        lifecycle_components: devices,
+        block_backends,
+        crucible_backends,
+        com1,
+        framebuffer: Some(ramfb),
+        ps2ctrl,
+    })
 }
 
 async fn next_migrate_task_event<E>(

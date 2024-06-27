@@ -315,7 +315,7 @@ pub(crate) struct DestinationContext<
 /// migration process (destination-side).
 pub(crate) async fn dest_initiate(
     log: &slog::Logger,
-    migrate_info: api::InstanceMigrateInitiateRequest,
+    migrate_info: &api::InstanceMigrateInitiateRequest,
     local_server_addr: SocketAddr,
 ) -> Result<
     DestinationContext<
