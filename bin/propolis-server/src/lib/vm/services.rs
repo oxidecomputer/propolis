@@ -18,19 +18,33 @@ use crate::{
 
 use super::objects::{VmObjects, VmObjectsLocked};
 
+/// Information used to serve Oximeter metrics.
 #[derive(Default)]
 pub(crate) struct OximeterState {
+    /// The Oximeter server to which Oximeter clients connect to query for
+    /// metrics.
     server: Option<oximeter_producer::Server>,
+
+    /// The statistics object used by the API layer to record its metrics.
     pub stats: Option<crate::stats::ServerStatsOuter>,
 }
 
+/// A collection of services visible to consumers outside this Propolis that
+/// depend on the functionality supplied by an extant VM.
 pub(crate) struct VmServices {
+    /// A VM's serial console handler task.
     pub serial_task: tokio::sync::Mutex<Option<crate::serial::SerialTask>>,
+
+    /// A VM's Oximeter server.
     pub oximeter: tokio::sync::Mutex<OximeterState>,
+
+    /// A reference to the VM's host process's VNC server.
     pub vnc_server: Arc<VncServer<PropolisVncServer>>,
 }
 
 impl VmServices {
+    /// Starts a new set of VM services using the supplied VM objects and server
+    /// configuration.
     pub(super) async fn new(
         log: &slog::Logger,
         vm: &Arc<super::Vm>,
@@ -77,6 +91,7 @@ impl VmServices {
         }
     }
 
+    /// Directs all the services in this service block to stop.
     pub(super) async fn stop(&self, log: &Logger) {
         self.vnc_server.stop().await;
 
@@ -100,6 +115,8 @@ impl VmServices {
     }
 }
 
+/// Creates an Oximeter producer and registers it with Oximeter, which will call
+/// back into the server to gather the producer's metrics.
 async fn register_oximeter_producer(
     log: &slog::Logger,
     cfg: &MetricsEndpointConfig,
@@ -161,6 +178,7 @@ async fn register_oximeter_producer(
     oximeter_state
 }
 
+/// Launches a serial console handler task.
 async fn start_serial_task(
     log: &slog::Logger,
     vm_objects: &tokio::sync::RwLockReadGuard<'_, VmObjectsLocked>,

@@ -32,20 +32,53 @@ use super::{
     },
 };
 
+/// The context needed to finish a live migration into a VM after its initial
+/// Sync phase has concluded and produced a set of VM objects (into which the
+/// migration will import the source VM's state).
 pub(super) struct MigrateAsTargetContext {
+    /// The objects into which to import state from the source.
     vm_objects: Arc<VmObjects>,
+
+    /// The logger associated with this migration.
     log: slog::Logger,
+
+    /// The migration's ID.
     migration_id: Uuid,
+
+    /// A handle to the task that's driving the migration.
     migrate_task: tokio::task::JoinHandle<Result<(), MigrateError>>,
+
+    /// Receives commands from the migration task.
     command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
+
+    /// Sends command responses to the migration task.
     response_tx: tokio::sync::mpsc::Sender<MigrateTargetResponse>,
 }
 
+/// The output of a call to [`build_vm`].
 pub(super) struct BuildVmOutput {
+    /// A reference to the VM objects created by the request to build a new VM.
     pub vm_objects: Arc<VmObjects>,
+
+    /// If the VM is initializing via migration in, the context needed to
+    /// complete that migration.
     pub migration_in: Option<MigrateAsTargetContext>,
 }
 
+/// Builds a new set of VM objects from the supplied ensure `request`.
+///
+/// If the request asks to create a new VM without migrating, this routine
+/// simply sets up the new VM's objects and returns them.
+///
+/// Callers who ask to initialize a VM via live migration expect their API calls
+/// to succeed as soon as there's an initialized VM and a running migration
+/// task, even if the migration hasn't completed yet. To facilitate this, when
+/// initializing via live migration, this routine executes only enough of the
+/// live migration protocol to create VM objects, then immediately returns those
+/// objects and a context the caller can use to finish the migration task. This
+/// allows the caller to complete any external ensure calls it has pending
+/// before completing migration and allowing the state driver to process state
+/// change requests.
 pub(super) async fn build_vm(
     log: &slog::Logger,
     parent: &Arc<super::Vm>,
@@ -108,6 +141,15 @@ pub(super) async fn build_vm(
         .await
     });
 
+    // In the initial phases of live migration, the migration protocol decides
+    // whether the source and destination VMs have compatible configurations. If
+    // they do, the migration task asks this routine to initialize a VM on its
+    // behalf. Execute this part of the protocol now in order to create a set of
+    // VM objects to return.
+    //
+    // TODO(#706): Future versions of the protocol can extend this further,
+    // specifying an instance spec and/or an initial set of device payloads that
+    // the task should use to initialize its VM objects.
     let init_command = command_rx.recv().await.ok_or_else(|| {
         (anyhow::anyhow!("migration task unexpectedly closed channel"), None)
     })?;
@@ -153,6 +195,8 @@ pub(super) async fn build_vm(
         }
     };
 
+    // The VM's objects are initialized. Return them to the caller along with a
+    // continuation context that it can use to complete migration.
     let migration_in = MigrateAsTargetContext {
         vm_objects: vm_objects.clone(),
         log: log.clone(),
@@ -165,6 +209,7 @@ pub(super) async fn build_vm(
     Ok(BuildVmOutput { vm_objects, migration_in: Some(migration_in) })
 }
 
+/// Initializes a set of Propolis components from the supplied instance spec.
 async fn initialize_vm_objects_from_spec(
     log: &slog::Logger,
     event_queue: &Arc<InputQueue>,
@@ -235,7 +280,7 @@ async fn initialize_vm_objects_from_spec(
     init.initialize_cpus()?;
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,
-        event_queue.clone() as Arc<dyn super::guest_event::GuestEventHandler>,
+        event_queue.clone() as Arc<dyn super::guest_event::VcpuEventHandler>,
         log.new(slog::o!("component" => "vcpu_tasks")),
     )?);
 
@@ -257,19 +302,20 @@ async fn initialize_vm_objects_from_spec(
 }
 
 impl MigrateAsTargetContext {
+    /// Runs a partially-completed inbound live migration to completion.
     pub(super) async fn run(
         mut self,
         state_publisher: &mut StatePublisher,
     ) -> Result<(), MigrateError> {
         // The migration task imports device state by operating directly on the
-        // newly-created VM objects. Before sending them to the task, make sure the
-        // objects are ready to have state imported into them. Specifically, ensure
-        // that the VM's vCPUs are activated so they can enter the guest after
-        // migration and pause the kernel VM to allow it to import device state
-        // consistently.
+        // newly-created VM objects. Before sending them to the task, make sure
+        // the objects are ready to have state imported into them. Specifically,
+        // ensure that the VM's vCPUs are activated so they can enter the guest
+        // after migration and pause the kernel VM to allow it to import device
+        // state consistently.
         //
-        // Drop the lock after this operation so that the migration task can acquire
-        // it.
+        // Drop the lock after this operation so that the migration task can
+        // acquire it to enumerate devices and import state into them.
         {
             let guard = self.vm_objects.read().await;
             guard.reset_vcpus();

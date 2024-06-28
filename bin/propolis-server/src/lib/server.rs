@@ -6,8 +6,8 @@
 //!
 //! Functions in this module verify parameters and convert between types (API
 //! request types to Propolis-native types and Propolis-native error types to
-//! HTTP error codes) before sending operations to other components (e.g. the VM
-//! controller) for processing.
+//! HTTP error codes) before sending operations to the VM state machine for
+//! processing.
 
 use std::convert::TryFrom;
 use std::net::Ipv6Addr;
@@ -524,10 +524,10 @@ async fn instance_serial(
         .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
 }
 
-// This endpoint is meant to only be called during a migration from the destination
-// instance to the source instance as part of the HTTP connection upgrade used to
-// establish the migration link. We don't actually want this exported via OpenAPI
-// clients.
+// This endpoint is meant to only be called during a migration from the
+// destination instance to the source instance as part of the HTTP connection
+// upgrade used to establish the migration link. We don't actually want this
+// exported via OpenAPI clients.
 #[channel {
     protocol = WEBSOCKETS,
     path = "/instance/migrate/{migration_id}/start",

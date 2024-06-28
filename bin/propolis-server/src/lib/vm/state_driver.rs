@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! It drives the state vroom vroom
+//! A task to handle requests to change a VM's state or configuration.
 
 use std::{
     sync::{Arc, Condvar, Mutex},
@@ -34,10 +34,11 @@ use super::{
     VmError,
 };
 
+/// Tells the state driver what to do after handling an event.
 #[derive(Debug, PartialEq, Eq)]
 enum HandleEventOutcome {
     Continue,
-    Exit,
+    Exit { final_state: InstanceState },
 }
 
 /// A reason for starting a VM.
@@ -47,14 +48,20 @@ pub(super) enum VmStartReason {
     ExplicitRequest,
 }
 
+/// A kind of event the state driver can handle.
 #[derive(Debug)]
 enum InputQueueEvent {
     ExternalRequest(ExternalRequest),
     GuestEvent(GuestEvent),
 }
 
+/// The lock-guarded parts of a state driver's input queue.
 struct InputQueueInner {
+    /// State change requests from the external API.
     external_requests: super::request_queue::ExternalRequestQueue,
+
+    /// State change requests from the VM's components. These take precedence
+    /// over external state change requests.
     guest_events: super::guest_event::GuestEventQueue,
 }
 
@@ -69,12 +76,14 @@ impl InputQueueInner {
     }
 }
 
+/// A queue for external state change requests and guest-driven state changes.
 pub(super) struct InputQueue {
     inner: Mutex<InputQueueInner>,
     cv: Condvar,
 }
 
 impl InputQueue {
+    /// Creates a new state driver input queue.
     pub(super) fn new(
         log: slog::Logger,
         auto_start: InstanceAutoStart,
@@ -85,7 +94,15 @@ impl InputQueue {
         }
     }
 
+    /// Waits for an event to arrive on the input queue and returns it for
+    /// processing.
+    ///
+    /// External requests and guest events are stored in separate queues. If
+    /// both queues have events when this routine is called, the guest event
+    /// queue takes precedence.
     fn wait_for_next_event(&self) -> InputQueueEvent {
+        // `block_in_place` is required to avoid blocking the executor while
+        // waiting on the condvar.
         tokio::task::block_in_place(|| {
             let guard = self.inner.lock().unwrap();
             let mut guard = self
@@ -105,6 +122,9 @@ impl InputQueue {
         })
     }
 
+    /// Notifies the external request queue that the instance's state has
+    /// changed so that it can change the dispositions for new state change
+    /// requests.
     fn notify_instance_state_change(
         &self,
         state: super::request_queue::InstanceStateChange,
@@ -113,6 +133,7 @@ impl InputQueue {
         guard.external_requests.notify_instance_state_change(state);
     }
 
+    /// Submits an external state change request to the queue.
     pub(super) fn queue_external_request(
         &self,
         request: ExternalRequest,
@@ -126,7 +147,7 @@ impl InputQueue {
     }
 }
 
-impl guest_event::GuestEventHandler for InputQueue {
+impl guest_event::VcpuEventHandler for InputQueue {
     fn suspend_halt_event(&self, when: Duration) {
         let mut guard = self.inner.lock().unwrap();
         if guard
@@ -185,21 +206,40 @@ impl guest_event::ChipsetEventHandler for InputQueue {
     }
 }
 
-/// The context for a VM state driver task.
+/// The context for a VM state driver task's main loop.
 struct StateDriver {
+    /// The state driver's associated logger.
     log: slog::Logger,
+
+    /// The VM objects this driver is managing.
     objects: Arc<VmObjects>,
+
+    /// The input queue this driver gets events from.
     input_queue: Arc<InputQueue>,
+
+    /// The channel to which this driver publishes external instance state
+    /// changes.
     external_state: StatePublisher,
+
+    /// True if the VM is paused.
     paused: bool,
+
+    /// State persisted from previous attempts to migrate out of this VM.
     migration_src_state: crate::migrate::source::PersistentState,
 }
 
+/// The values returned by a state driver task when it exits.
 pub(super) struct StateDriverOutput {
+    /// The channel this driver used to publish external instance state changes.
     pub state_publisher: StatePublisher,
+
+    /// The terminal state of this instance. When the instance completes
+    /// rundown, the parent VM publishes this state to the associated channel.
     pub final_state: InstanceState,
 }
 
+/// Creates a new set of VM objects in response to an `ensure_request` directed
+/// to the supplied `vm`.
 pub(super) async fn run_state_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
@@ -237,7 +277,8 @@ pub(super) async fn run_state_driver(
                 state_publisher.update(ExternalStateUpdate::Instance(
                     InstanceState::Failed,
                 ));
-                vm.start_failed(objects.is_some()).await;
+
+                vm.vm_init_failed(objects.is_some()).await;
                 let _ = ensure_result_tx
                     .send(Err(VmError::InitializationFailed(e)));
                 return StateDriverOutput {
@@ -268,6 +309,15 @@ pub(super) async fn run_state_driver(
                 .map(|id| InstanceMigrateInitiateResponse { migration_id: id }),
         }));
 
+    // If the VM was initialized via migration in, complete that migration now.
+    //
+    // External callers who ask to initialize an instance via migration in
+    // expect their API calls to complete once the relevant VM is initialized
+    // and the migration task has started (as opposed to when the entire
+    // migration attempt has completed), so this must happen after the ensure
+    // result is published. (Note that it's OK for the migration to fail after
+    // this point: the ensure request succeeds, but the instance goes to the
+    // Failed state and the migration appears to have failed.)
     if let Some(migration_in) = migration_in {
         if let Err(e) = migration_in.run(&mut state_publisher).await {
             error!(log, "inbound live migration task failed";
@@ -290,27 +340,31 @@ pub(super) async fn run_state_driver(
         migration_src_state: Default::default(),
     };
 
-    let state_publisher = state_driver.run(migration_in_id.is_some()).await;
+    // Run the VM until it exits, then set rundown on the parent VM so that no
+    // new external callers can access its objects or services.
+    let output = state_driver.run(migration_in_id.is_some()).await;
     vm.set_rundown().await;
-    StateDriverOutput { state_publisher, final_state: InstanceState::Destroyed }
+    output
 }
 
 impl StateDriver {
-    pub(super) async fn run(mut self, migrated_in: bool) -> StatePublisher {
+    pub(super) async fn run(mut self, migrated_in: bool) -> StateDriverOutput {
         info!(self.log, "state driver launched");
 
-        if migrated_in {
+        let final_state = if migrated_in {
             if self.start_vm(VmStartReason::MigratedIn).await.is_ok() {
-                self.run_loop().await;
+                self.run_loop().await
+            } else {
+                InstanceState::Failed
             }
         } else {
-            self.run_loop().await;
-        }
+            self.run_loop().await
+        };
 
-        self.external_state
+        StateDriverOutput { state_publisher: self.external_state, final_state }
     }
 
-    async fn run_loop(&mut self) {
+    async fn run_loop(&mut self) -> InstanceState {
         info!(self.log, "state driver entered main loop");
         loop {
             let event = self.input_queue.wait_for_next_event();
@@ -326,12 +380,16 @@ impl StateDriver {
             };
 
             info!(self.log, "state driver handled event"; "outcome" => ?outcome);
-            if outcome == HandleEventOutcome::Exit {
-                break;
+            match outcome {
+                HandleEventOutcome::Continue => {}
+                HandleEventOutcome::Exit { final_state } => {
+                    info!(self.log, "state driver exiting";
+                          "final_state" => ?final_state);
+
+                    return final_state;
+                }
             }
         }
-
-        info!(self.log, "state driver exiting");
     }
 
     async fn start_vm(
@@ -363,7 +421,9 @@ impl StateDriver {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
                 self.do_halt().await;
-                HandleEventOutcome::Exit
+                HandleEventOutcome::Exit {
+                    final_state: InstanceState::Destroyed,
+                }
             }
             GuestEvent::VcpuSuspendReset(_when) => {
                 info!(self.log, "Resetting due to VM suspend event");
@@ -381,7 +441,9 @@ impl StateDriver {
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
                 self.do_halt().await;
-                HandleEventOutcome::Exit
+                HandleEventOutcome::Exit {
+                    final_state: InstanceState::Destroyed,
+                }
             }
             GuestEvent::ChipsetReset => {
                 info!(self.log, "Resetting due to chipset-driven reset");
@@ -399,7 +461,9 @@ impl StateDriver {
             ExternalRequest::Start => {
                 match self.start_vm(VmStartReason::ExplicitRequest).await {
                     Ok(_) => HandleEventOutcome::Continue,
-                    Err(_) => HandleEventOutcome::Exit,
+                    Err(_) => HandleEventOutcome::Exit {
+                        final_state: InstanceState::Failed,
+                    },
                 }
             }
             ExternalRequest::MigrateAsSource { migration_id, websock } => {
@@ -418,7 +482,9 @@ impl StateDriver {
             }
             ExternalRequest::Stop => {
                 self.do_halt().await;
-                HandleEventOutcome::Exit
+                HandleEventOutcome::Exit {
+                    final_state: InstanceState::Destroyed,
+                }
             }
             ExternalRequest::ReconfigureCrucibleVolume {
                 disk_name,
