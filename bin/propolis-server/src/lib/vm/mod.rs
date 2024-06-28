@@ -15,6 +15,7 @@ use propolis_api_types::{
 };
 use rfb::server::VncServer;
 use slog::info;
+use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
 
 use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
@@ -80,7 +81,7 @@ pub(crate) struct Vm {
 
 struct VmInner {
     state: VmState,
-    driver: Option<tokio::task::JoinHandle<StatePublisher>>,
+    driver: Option<tokio::task::JoinHandle<StateDriverOutput>>,
 }
 
 struct UninitVm {
@@ -215,15 +216,21 @@ impl Vm {
         }
     }
 
-    async fn start_failed(&self) {
+    async fn start_failed(&self, wait_for_objects: bool) {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::WaitingForInit(vm) => {
-                guard.state = VmState::RundownComplete(vm)
+                guard.state = if wait_for_objects {
+                    VmState::Rundown(vm)
+                } else {
+                    VmState::RundownComplete(vm)
+                };
             }
             _ => unreachable!(
-                "start failures should only occur before an active VM is installed")
+                "start failures should only occur before an active VM is \
+                installed"
+            ),
         }
     }
 
@@ -260,6 +267,17 @@ impl Vm {
             }
             _ => unreachable!("VM rundown completed from invalid prior state"),
         }
+
+        let StateDriverOutput { mut state_publisher, final_state } = guard
+            .driver
+            .take()
+            .expect("driver must exist in rundown")
+            .await
+            .expect("state driver shouldn't panic");
+
+        state_publisher.update(state_publisher::ExternalStateUpdate::Instance(
+            final_state,
+        ));
     }
 
     pub(crate) async fn ensure(

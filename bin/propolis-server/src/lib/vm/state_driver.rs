@@ -204,35 +204,53 @@ struct StateDriver {
     migration_src_state: crate::migrate::source::PersistentState,
 }
 
+pub(super) struct StateDriverOutput {
+    pub state_publisher: StatePublisher,
+    pub final_state: InstanceState,
+}
+
 pub(super) async fn run_state_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
-    mut external_publisher: StatePublisher,
+    mut state_publisher: StatePublisher,
     ensure_request: InstanceSpecEnsureRequest,
     ensure_result_tx: tokio::sync::oneshot::Sender<
         Result<propolis_api_types::InstanceEnsureResponse, VmError>,
     >,
     ensure_options: super::EnsureOptions,
-) -> StatePublisher {
+) -> StateDriverOutput {
     let migration_in_id =
         ensure_request.migrate.as_ref().map(|req| req.migration_id);
-    let (vm_objects, input_queue) = match build_vm(
+
+    let input_queue = Arc::new(InputQueue::new(
+        log.new(slog::o!("component" => "request_queue")),
+        match &ensure_request.migrate {
+            Some(_) => InstanceAutoStart::Yes,
+            None => InstanceAutoStart::No,
+        },
+    ));
+
+    let vm_objects = match build_vm(
         &log,
         &vm,
         &ensure_request,
         &ensure_options,
-        &mut external_publisher,
+        &input_queue,
+        &mut state_publisher,
     )
     .await
     {
         Ok(objects) => objects,
-        Err(e) => {
-            external_publisher
+        Err((e, objects)) => {
+            state_publisher
                 .update(ExternalStateUpdate::Instance(InstanceState::Failed));
-            vm.start_failed().await;
+            vm.start_failed(objects.is_some()).await;
             let _ =
                 ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
-            return external_publisher;
+            return StateDriverOutput {
+                state_publisher,
+                final_state: InstanceState::Failed,
+            };
         }
     };
 
@@ -261,14 +279,14 @@ pub(super) async fn run_state_driver(
         log,
         objects: vm_objects,
         input_queue,
-        external_state: external_publisher,
+        external_state: state_publisher,
         paused: false,
         migration_src_state: Default::default(),
     };
 
-    let external_tx = state_driver.run(migration_in_id.is_some()).await;
+    let state_publisher = state_driver.run(migration_in_id.is_some()).await;
     vm.set_rundown().await;
-    external_tx
+    StateDriverOutput { state_publisher, final_state: InstanceState::Destroyed }
 }
 
 impl StateDriver {
@@ -670,27 +688,21 @@ async fn build_vm(
     parent: &Arc<super::Vm>,
     request: &InstanceSpecEnsureRequest,
     options: &super::EnsureOptions,
+    input_queue: &Arc<InputQueue>,
     state_publisher: &mut StatePublisher,
-) -> anyhow::Result<(Arc<VmObjects>, Arc<InputQueue>)> {
-    let input_queue = Arc::new(InputQueue::new(
-        log.new(slog::o!("component" => "request_queue")),
-        match request.migrate {
-            Some(_) => InstanceAutoStart::Yes,
-            None => InstanceAutoStart::No,
-        },
-    ));
-
+) -> anyhow::Result<Arc<VmObjects>, (anyhow::Error, Option<Arc<VmObjects>>)> {
     // If the caller didn't ask to initialize by live migration in, immediately
     // create the VM objects and return them.
     let Some(migrate_request) = &request.migrate else {
         let input_objects = initialize_vm_objects_from_spec(
             log,
-            &input_queue,
+            input_queue,
             &request.properties,
             &request.instance_spec,
             options,
         )
-        .await?;
+        .await
+        .map_err(|e| (e, None))?;
 
         let vm_objects = Arc::new(VmObjects::new(
             log.clone(),
@@ -698,7 +710,7 @@ async fn build_vm(
             input_objects,
         ));
 
-        return Ok((vm_objects, input_queue));
+        return Ok(vm_objects);
     };
 
     // The caller has asked to initialize by live migration in. Initialize VM
@@ -711,7 +723,8 @@ async fn build_vm(
         migrate_request,
         options.local_server_addr,
     )
-    .await?;
+    .await
+    .map_err(|e| (e.into(), None))?;
 
     // Spin up a task to run the migration protocol proper. To avoid sending the
     // entire VM context over to the migration task, create command and response
@@ -733,7 +746,7 @@ async fn build_vm(
     });
 
     let init_command = command_rx.recv().await.ok_or_else(|| {
-        anyhow::anyhow!("migration task unexpectedly closed channel")
+        (anyhow::anyhow!("migration task unexpectedly closed channel"), None)
     })?;
 
     let input_objects = 'init: {
@@ -748,7 +761,7 @@ async fn build_vm(
 
         initialize_vm_objects_from_spec(
             log,
-            &input_queue,
+            input_queue,
             &request.properties,
             &request.instance_spec,
             options,
@@ -773,7 +786,7 @@ async fn build_vm(
                 },
             ));
 
-            return Err(e);
+            return Err((e, None));
         }
     };
 
@@ -800,7 +813,10 @@ async fn build_vm(
         .is_err()
     {
         vm_objects.write().await.resume_kernel_vm();
-        anyhow::bail!("migration task unexpectedly closed channel");
+        return Err((
+            anyhow::anyhow!("migration task unexpectedly closed channel"),
+            Some(vm_objects),
+        ));
     }
 
     loop {
@@ -811,14 +827,14 @@ async fn build_vm(
         match action {
             MigrateTaskEvent::TaskExited(res) => match res {
                 Ok(()) => {
-                    return Ok((vm_objects, input_queue));
+                    return Ok(vm_objects);
                 }
                 Err(e) => {
                     error!(log, "target migration task failed";
                            "error" => %e);
 
                     vm_objects.write().await.resume_kernel_vm();
-                    return Err(e.into());
+                    return Err((e.into(), Some(vm_objects)));
                 }
             },
             MigrateTaskEvent::Command(MigrateTargetCommand::UpdateState(
