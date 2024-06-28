@@ -116,6 +116,22 @@ enum VmState {
     RundownComplete(UninitVm),
 }
 
+impl std::fmt::Display for VmState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::NoVm => "NoVm",
+                Self::WaitingForInit(_) => "WaitingForInit",
+                Self::Active(_) => "Active",
+                Self::Rundown(_) => "Rundown",
+                Self::RundownComplete(_) => "RundownComplete",
+            }
+        )
+    }
+}
+
 pub(super) struct EnsureOptions {
     pub toml_config: Arc<crate::server::VmTomlConfig>,
     pub use_reservoir: bool,
