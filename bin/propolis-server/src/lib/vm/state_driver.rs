@@ -273,7 +273,7 @@ pub(super) async fn run_state_driver(
             error!(log, "inbound live migration task failed";
                    "error" => ?e);
 
-            vm.start_failed(true).await;
+            vm.set_rundown().await;
             return StateDriverOutput {
                 state_publisher,
                 final_state: InstanceState::Failed,
