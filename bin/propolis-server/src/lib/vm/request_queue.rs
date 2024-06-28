@@ -412,6 +412,46 @@ impl ExternalRequestQueue {
     }
 }
 
+// It's possible for an external request queue to be dropped with outstanding
+// requests if an event from the guest shuts down the VM before the queue can be
+// drained. If this happens, notify anyone waiting on a specific request on the
+// queue that the VM is gone.
+impl Drop for ExternalRequestQueue {
+    fn drop(&mut self) {
+        for req in self.queue.drain(..) {
+            match req {
+                // Crucible VCR change requestors wait for their requests to be
+                // retired.
+                ExternalRequest::ReconfigureCrucibleVolume {
+                    result_tx,
+                    ..
+                } => {
+                    let _ =
+                        result_tx.send(Err(dropshot::HttpError::for_status(
+                            Some(
+                                "VM destroyed before request could be handled"
+                                    .to_string(),
+                            ),
+                            http::StatusCode::GONE,
+                        )));
+                }
+
+                // Requests to start, reboot, and stop are handled
+                // asynchronously (calls to change the instance's state return
+                // as soon as they're queued).
+                ExternalRequest::Start
+                | ExternalRequest::Reboot
+                | ExternalRequest::Stop => {}
+
+                // Dropping a request to migrate out drops the embedded
+                // connection to the migration target, thus notifying it that
+                // the source is gone.
+                ExternalRequest::MigrateAsSource { .. } => {}
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
