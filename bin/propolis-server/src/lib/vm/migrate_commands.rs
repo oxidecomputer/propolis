@@ -67,3 +67,31 @@ pub(super) enum MigrateTaskEvent<T> {
     /// The task sent a command requesting work.
     Command(T),
 }
+
+pub(super) async fn next_migrate_task_event<E>(
+    task: &mut tokio::task::JoinHandle<
+        Result<(), crate::migrate::MigrateError>,
+    >,
+    command_rx: &mut tokio::sync::mpsc::Receiver<E>,
+    log: &slog::Logger,
+) -> MigrateTaskEvent<E> {
+    if let Some(cmd) = command_rx.recv().await {
+        return MigrateTaskEvent::Command(cmd);
+    }
+
+    // The sender side of the command channel is dropped, which means the
+    // migration task is exiting. Wait for it to finish and snag its result.
+    match task.await {
+        Ok(res) => {
+            slog::info!(log, "Migration task exited: {:?}", res);
+            MigrateTaskEvent::TaskExited(res)
+        }
+        Err(join_err) => {
+            if join_err.is_cancelled() {
+                panic!("Migration task canceled");
+            } else {
+                panic!("Migration task panicked: {:?}", join_err.into_panic());
+            }
+        }
+    }
+}

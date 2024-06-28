@@ -27,6 +27,7 @@ pub(crate) mod migrate_commands;
 pub(crate) mod objects;
 mod request_queue;
 mod services;
+mod startup;
 mod state_driver;
 mod state_publisher;
 
