@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Types and traits for handling guest-emitted events on the VM state driver.
+
 use std::{collections::VecDeque, time::Duration};
 
 /// An event raised by some component in the instance (e.g. a vCPU or the
@@ -29,7 +31,8 @@ pub(super) struct GuestEventQueue {
     queue: VecDeque<GuestEvent>,
 }
 
-pub(crate) trait GuestEventHandler: Send + Sync {
+/// A sink for events raised by a VM's vCPU tasks.
+pub(crate) trait VcpuEventHandler: Send + Sync {
     fn suspend_halt_event(&self, when: Duration);
     fn suspend_reset_event(&self, when: Duration);
     fn suspend_triple_fault_event(&self, vcpu_id: i32, when: Duration);
@@ -41,6 +44,7 @@ pub(crate) trait GuestEventHandler: Send + Sync {
     fn io_error_event(&self, vcpu_id: i32, error: std::io::Error);
 }
 
+/// A sink for events raised by a VM's chipset.
 pub(crate) trait ChipsetEventHandler: Send + Sync {
     fn chipset_halt(&self);
     fn chipset_reset(&self);

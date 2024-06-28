@@ -21,8 +21,12 @@ pub enum MigrateTargetCommand {
     UpdateState(propolis_api_types::MigrationState),
 }
 
+/// A response sent from a migration target's state driver to its migration
+/// task.
 #[derive(Clone)]
 pub enum MigrateTargetResponse {
+    /// An attempt to initialize VM objects produced the supplied objects or
+    /// failed for the supplied reason.
     VmObjectsInitialized(Result<Arc<crate::vm::objects::VmObjects>, String>),
 }
 
@@ -68,6 +72,8 @@ pub(super) enum MigrateTaskEvent<T> {
     Command(T),
 }
 
+/// Given a migration executing in `task` that sends commands on `command_rx`,
+/// gets the next event for the task's state driver to process.
 pub(super) async fn next_migrate_task_event<E>(
     task: &mut tokio::task::JoinHandle<
         Result<(), crate::migrate::MigrateError>,

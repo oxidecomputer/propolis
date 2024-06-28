@@ -55,13 +55,12 @@ impl WebsocketConnection {
 /// An external request made of a VM controller via the server API. Handled by
 /// the controller's state driver thread.
 pub enum ExternalRequest {
+    /// Asks the state worker to start a brand-new VM (i.e. not one initialized
+    /// by live migration, which implicitly starts the VM).
     Start,
 
     /// Asks the state worker to start a migration-source task.
-    MigrateAsSource {
-        migration_id: Uuid,
-        websock: WebsocketConnection,
-    },
+    MigrateAsSource { migration_id: Uuid, websock: WebsocketConnection },
 
     /// Resets the guest by pausing all devices, resetting them to their
     /// cold-boot states, and resuming the devices. Note that this is not a
@@ -180,6 +179,7 @@ struct AllowedRequests {
     stop: RequestDisposition,
 }
 
+/// A queue for external requests to change an instance's state.
 #[derive(Debug)]
 pub struct ExternalRequestQueue {
     queue: VecDeque<ExternalRequest>,
@@ -187,6 +187,8 @@ pub struct ExternalRequestQueue {
     log: Logger,
 }
 
+/// Indicates whether this queue's creator will start the relevant instance
+/// without waiting for a Start request from the queue.
 pub enum InstanceAutoStart {
     Yes,
     No,

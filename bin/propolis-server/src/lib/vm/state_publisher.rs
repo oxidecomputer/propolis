@@ -16,13 +16,21 @@ use crate::migrate::MigrateRole;
 
 use super::{InstanceStateRx, InstanceStateTx};
 
+/// An update to an instance's migration's state.
 pub(super) struct MigrationStateUpdate {
+    /// The migration's new state.
     pub state: propolis_api_types::MigrationState,
+
+    /// The migration's ID.
     pub id: Uuid,
+
+    /// The role this VM was playing in the migration of interest.
     pub role: MigrateRole,
 }
 
 impl MigrationStateUpdate {
+    /// Applies an update to a previous migration status and returns the new
+    /// status.
     fn apply_to(
         self,
         old: InstanceMigrateStatusResponse,
@@ -41,12 +49,19 @@ impl MigrationStateUpdate {
     }
 }
 
+/// A kind of state update to publish.
 pub(super) enum ExternalStateUpdate {
+    /// Update the instance state (but not any migration state).
     Instance(InstanceState),
+
+    /// Update migration state (but not the instance's state).
     Migration(MigrationStateUpdate),
+
+    /// Update both instance and migration state.
     Complete(InstanceState, MigrationStateUpdate),
 }
 
+/// A channel to which to publish externally-visible instance state updates.
 pub(super) struct StatePublisher {
     tx: InstanceStateTx,
     log: slog::Logger,
@@ -61,6 +76,8 @@ impl StatePublisher {
         (Self { tx, log: log.clone() }, rx)
     }
 
+    /// Updates an instance's externally-visible state and publishes that state
+    /// with a successor generation number.
     pub(super) fn update(&mut self, update: ExternalStateUpdate) {
         let (instance_state, migration_state) = match update {
             ExternalStateUpdate::Instance(i) => (Some(i), None),
