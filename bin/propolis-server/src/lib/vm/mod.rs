@@ -255,7 +255,9 @@ impl Vm {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::Rundown(vm) => guard.state = VmState::RundownComplete(vm),
+            VmState::WaitingForInit(vm) | VmState::Rundown(vm) => {
+                guard.state = VmState::RundownComplete(vm)
+            }
             _ => unreachable!("VM rundown completed from invalid prior state"),
         }
     }
