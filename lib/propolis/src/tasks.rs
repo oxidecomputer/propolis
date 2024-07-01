@@ -419,37 +419,35 @@ impl Drop for CtrlHeld<'_> {
 
 /// Holds a group of tokio task [task::JoinHandle]s to be later joined as a
 /// group when they have all concluded.
-pub struct TaskGroup(Mutex<Vec<task::JoinHandle<()>>>);
+pub struct TaskGroup(tokio::sync::Mutex<Vec<task::JoinHandle<()>>>);
 impl TaskGroup {
     pub fn new() -> Self {
-        Self(Mutex::new(Vec::new()))
+        Self(tokio::sync::Mutex::new(Vec::new()))
     }
 
     /// Add to the group of contained tasks
-    pub fn extend<I>(&self, tasks: I)
+    pub async fn extend<I>(&self, tasks: I)
     where
         I: Iterator<Item = task::JoinHandle<()>>,
     {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.0.lock().await;
         guard.extend(tasks);
     }
 
     /// Block until all held tasks have been joined, returning any resulting
     /// [task::JoinError]s after doing so.
-    pub fn block_until_joined(&self) -> Option<Vec<task::JoinError>> {
-        let mut guard = self.0.lock().unwrap();
+    pub async fn block_until_joined(&self) -> Option<Vec<task::JoinError>> {
+        let mut guard = self.0.lock().await;
         let workers = std::mem::replace(&mut *guard, Vec::new());
         if workers.is_empty() {
             return None;
         }
 
-        let rt = tokio::runtime::Handle::current();
-        let errors = rt.block_on(async {
-            FuturesUnordered::from_iter(workers)
-                .filter_map(|res| futures::future::ready(res.err()))
-                .collect::<Vec<_>>()
-                .await
-        });
+        let errors = FuturesUnordered::from_iter(workers)
+            .filter_map(|res| futures::future::ready(res.err()))
+            .collect::<Vec<_>>()
+            .await;
+
         if errors.is_empty() {
             None
         } else {

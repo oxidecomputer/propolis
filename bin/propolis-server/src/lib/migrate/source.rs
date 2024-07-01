@@ -9,6 +9,7 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
 use propolis::vmm;
+use propolis_api_types::instance_spec::VersionedInstanceSpec;
 use slog::{debug, error, info, trace};
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -28,7 +29,11 @@ use crate::migrate::{
     Device, DevicePayload, MigrateError, MigratePhase, MigrateRole,
     MigrationState, PageIter,
 };
-use crate::vm::{MigrateSourceCommand, MigrateSourceResponse, VmController};
+
+use crate::vm::migrate_commands::{
+    MigrateSourceCommand, MigrateSourceResponse,
+};
+use crate::vm::objects::VmObjects;
 
 /// Specifies which pages should be offered during a RAM transfer phase.
 ///
@@ -110,7 +115,7 @@ enum RamOfferDiscipline {
 }
 
 pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
-    vm_controller: Arc<VmController>,
+    vm: Arc<VmObjects>,
     command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
     response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
     conn: WebSocketStream<T>,
@@ -119,7 +124,7 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
     let err_tx = command_tx.clone();
     let mut proto = match protocol {
         Protocol::RonV0 => {
-            SourceProtocol::new(vm_controller, command_tx, response_rx, conn)
+            SourceProtocol::new(vm, command_tx, response_rx, conn).await
         }
     };
 
@@ -142,34 +147,36 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
         //
         // See the lengthy comment on `RamOfferDiscipline` above for more
         // details about what's going on here.
-        for (&GuestAddr(gpa), dirtiness) in proto.dirt.iter().flatten() {
-            if let Err(e) = proto
-                .vm_controller
-                .machine()
-                .hdl
-                .set_dirty_pages(gpa, dirtiness)
-            {
-                // Bad news! Our attempt to re-set the dirty bit on these
-                // pages has failed! Thus, subsequent migration attempts
-                // /!\ CAN NO LONGER RELY ON DIRTY PAGE TRACKING /!\
-                // and must always offer all pages in the initial RAM push
-                // phase.
-                //
-                // Record that now so we never try to do this again.
-                proto
-                    .vm_controller
-                    .migration_src_state()
-                    .has_redirtying_ever_failed = true;
-                error!(
-                    proto.log(),
-                    "failed to restore dirty bits: {e}";
-                    "gpa" => gpa,
-                );
-                // No sense continuing to try putting back any remaining
-                // dirty bits, as we won't be using them any longer.
-                break;
-            } else {
-                debug!(proto.log(), "re-dirtied pages at {gpa:#x}",);
+        {
+            let objects = proto.vm.read().await;
+            let machine = objects.machine();
+            for (&GuestAddr(gpa), dirtiness) in proto.dirt.iter().flatten() {
+                if let Err(e) = machine.hdl.set_dirty_pages(gpa, dirtiness) {
+                    // Bad news! Our attempt to re-set the dirty bit on these
+                    // pages has failed! Thus, subsequent migration attempts
+                    // /!\ CAN NO LONGER RELY ON DIRTY PAGE TRACKING /!\
+                    // and must always offer all pages in the initial RAM push
+                    // phase.
+                    //
+                    // Record that now so we never try to do this again.
+                    proto
+                        .command_tx
+                        .send(MigrateSourceCommand::RedirtyingFailed)
+                        .await
+                        .unwrap();
+                    // .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+
+                    error!(
+                        proto.log(),
+                        "failed to restore dirty bits: {e}";
+                        "gpa" => gpa,
+                    );
+                    // No sense continuing to try putting back any remaining
+                    // dirty bits, as we won't be using them any longer.
+                    break;
+                } else {
+                    debug!(proto.log(), "re-dirtied pages at {gpa:#x}",);
+                }
             }
         }
 
@@ -187,15 +194,15 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
 #[derive(Default)]
 pub(crate) struct PersistentState {
     /// Set if we were unable to re-set dirty bits on guest pages after a failed
-    /// migration attempt. If this occurs, we can no longer offer only dirty pages
-    /// in a subsequent migration attempt, as some pages which should be marked as
-    /// dirty may not be.
-    has_redirtying_ever_failed: bool,
+    /// migration attempt. If this occurs, we can no longer offer only dirty
+    /// pages in a subsequent migration attempt, as some pages which should be
+    /// marked as dirty may not be.
+    pub(crate) has_redirtying_ever_failed: bool,
 }
 
 struct SourceProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
-    /// The VM controller for the instance of interest.
-    vm_controller: Arc<VmController>,
+    /// The source instance's VM objects.
+    vm: Arc<VmObjects>,
 
     /// The channel to use to send messages to the state worker coordinating
     /// this migration.
@@ -234,33 +241,35 @@ const PAGE_BITMAP_SIZE: usize = 4096;
 type PageBitmap = [u8; PAGE_BITMAP_SIZE];
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
-    fn new(
-        vm_controller: Arc<VmController>,
+    async fn new(
+        vm: Arc<VmObjects>,
         command_tx: tokio::sync::mpsc::Sender<MigrateSourceCommand>,
         response_rx: tokio::sync::mpsc::Receiver<MigrateSourceResponse>,
         conn: WebSocketStream<T>,
     ) -> Self {
+        // Create a (prospective) dirty page map if bhyve supports the NPT
+        // API. If this map is present and the VM hasn't recorded that it's
+        // possibly unhealthy, it will be used to offer only dirty pages during
+        // the pre-pause RAM push.
         let dirt = {
-            let can_npt_operate = vm_controller.machine().hdl.can_npt_operate();
-            let has_redirtying_ever_failed =
-                vm_controller.migration_src_state().has_redirtying_ever_failed;
-            if can_npt_operate && !has_redirtying_ever_failed {
+            let can_npt_operate =
+                vm.read().await.machine().hdl.can_npt_operate();
+
+            if can_npt_operate {
                 Some(Default::default())
             } else {
                 info!(
-                    vm_controller.log(),
-                    "guest pages are not redirtyable; will offer all pages in pre-pause RAM push";
-                    "can_npt_operate" => can_npt_operate,
-                    "has_redirtying_ever_failed" => has_redirtying_ever_failed
+                    vm.log(),
+                    "NPT operations not supported, will offer all pages pre-push";
                 );
                 None
             }
         };
-        Self { vm_controller, command_tx, response_rx, conn, dirt }
+        Self { vm, command_tx, response_rx, conn, dirt }
     }
 
     fn log(&self) -> &slog::Logger {
-        self.vm_controller.log()
+        self.vm.log()
     }
 
     async fn update_state(&mut self, state: MigrationState) {
@@ -316,8 +325,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync).await;
-        let preamble =
-            Preamble::new(self.vm_controller.instance_spec().await.clone());
+        let preamble = Preamble::new(VersionedInstanceSpec::V0(
+            self.vm.read().await.instance_spec().clone(),
+        ));
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;
@@ -349,11 +359,41 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             vmm_ram_range
         );
 
-        // Determine whether we can offer only dirty pages, or if we must offer
-        // all pages.
+        // In the pre-pause phase, it is safe to offer only dirty pages if (1)
+        // there is some prospect of being able to restore the kernel dirty page
+        // bitmap if migration fails, and (2) a prior attempt to restore the
+        // bitmap hasn't failed (thereby rendering the bitmap's contents
+        // untrustworthy). The first prong was checked when the protocol
+        // started, but the second prong requires input from the VM state
+        // driver. If this routine is being called from the pre-pause phase, and
+        // the dirty page map looks viable, ask the state driver if it's OK to
+        // proceed with transmitting only dirty pages.
         //
         // Refer to the giant comment on `RamOfferDiscipline` above for more
         // details about this determination.
+        if *phase == MigratePhase::RamPushPrePause && self.dirt.is_some() {
+            // The state driver should keep the command channels alive until the
+            // migration task exits, so these sends and receives should always
+            // work.
+            self.command_tx
+                .send(MigrateSourceCommand::QueryRedirtyingFailed)
+                .await
+                .unwrap();
+
+            let response = self.response_rx.recv().await.unwrap();
+            match response {
+                MigrateSourceResponse::RedirtyingFailed(has_failed) => {
+                    if has_failed {
+                        self.dirt = None;
+                    }
+                }
+                _ => panic!(
+                    "unexpected response {:?} to request for redirtying info",
+                    response
+                ),
+            }
+        }
+
         let offer_discipline = match phase {
             // If we are in the pre-pause RAM push phase, and we don't have
             // VM_NPT_OPERATION to put back any dirty bits if the migration
@@ -446,7 +486,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             // says to offer all pages. This ensures that pages that are
             // transferred now and not touched again will not be offered again
             // by a subsequent phase.
-            self.track_dirty(GuestAddr(gpa), &mut bits)?;
+            self.track_dirty(GuestAddr(gpa), &mut bits).await?;
 
             match offer_discipline {
                 RamOfferDiscipline::OfferAll => {
@@ -536,12 +576,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         self.update_state(MigrationState::Device).await;
         let mut device_states = vec![];
         {
-            let machine = self.vm_controller.machine();
+            let objects = self.vm.read().await;
+            let machine = objects.machine();
             let migrate_ctx =
                 MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
 
             // Collect together the serialized state for all the devices
-            self.vm_controller.for_each_device_fallible(|name, devop| {
+            objects.for_each_device_fallible(|name, devop| {
                 let mut dev = Device {
                     instance_name: name.to_string(),
                     payload: Vec::new(),
@@ -599,7 +640,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
 
     // Read and send over the time data
     async fn time_data(&mut self) -> Result<(), MigrateError> {
-        let vmm_hdl = &self.vm_controller.machine().hdl.clone();
+        let vmm_hdl = &self.vm.read().await.machine().hdl.clone();
         let vm_time_data =
             vmm::time::export_time_data(vmm_hdl).map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -638,7 +679,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             _ => return Err(MigrateError::UnexpectedMessage),
         };
         let com1_history =
-            self.vm_controller.com1().export_history(remote_addr).await?;
+            self.vm.read().await.com1().export_history(remote_addr).await?;
         self.send_msg(codec::Message::Serialized(com1_history)).await?;
         self.read_ok().await
     }
@@ -671,7 +712,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         let mut bits = [0u8; PAGE_BITMAP_SIZE];
         let step = bits.len() * 8 * PAGE_SIZE;
         for gpa in (vmm_range.start().0..vmm_range.end().0).step_by(step) {
-            self.track_dirty(GuestAddr(gpa), &mut bits).unwrap();
+            self.track_dirty(GuestAddr(gpa), &mut bits).await.unwrap();
             let pages_left_behind =
                 BitSlice::<_, Lsb0>::from_slice(&bits).count_ones() as u64;
             assert_eq!(
@@ -701,7 +742,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
             // If this is an error message, lift that out
             .map(|msg| match msg {
                 codec::Message::Error(err) => {
-                    error!(self.log(), "remote error: {err}");
+                    error!(
+                        self.log(),
+                        "migration failed due to error from target: {err}"
+                    );
                     Err(MigrateError::RemoteError(
                         MigrateRole::Destination,
                         err.to_string(),
@@ -748,17 +792,20 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
     async fn vmm_ram_bounds(
         &mut self,
     ) -> Result<RangeInclusive<GuestAddr>, MigrateError> {
-        let machine = self.vm_controller.machine();
+        let objects = self.vm.read().await;
+        let machine = objects.machine();
         let memctx = machine.acc_mem.access().unwrap();
         memctx.mem_bounds().ok_or(MigrateError::InvalidInstanceState)
     }
 
-    fn track_dirty(
+    async fn track_dirty(
         &mut self,
         start_gpa: GuestAddr,
         bits: &mut [u8],
     ) -> Result<(), MigrateError> {
-        self.vm_controller
+        self.vm
+            .read()
+            .await
             .machine()
             .hdl
             .track_dirty_pages(start_gpa.0, bits)
@@ -770,7 +817,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> SourceProtocol<T> {
         addr: GuestAddr,
         buf: &mut [u8],
     ) -> Result<(), MigrateError> {
-        let machine = self.vm_controller.machine();
+        let objects = self.vm.read().await;
+        let machine = objects.machine();
         let memctx = machine.acc_mem.access().unwrap();
         let len = buf.len();
         memctx.direct_read_into(addr, buf, len);

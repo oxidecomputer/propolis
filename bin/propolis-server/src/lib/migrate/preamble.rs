@@ -10,7 +10,6 @@ use propolis_api_types::instance_spec::{
     VersionedInstanceSpec,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::MutexGuard;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub(crate) struct Preamble {
@@ -40,10 +39,8 @@ impl Preamble {
 
     pub fn is_migration_compatible(
         &self,
-        other_spec: MutexGuard<'_, VersionedInstanceSpec>,
+        other_spec: &InstanceSpecV0,
     ) -> Result<(), MigrationCompatibilityError> {
-        let VersionedInstanceSpec::V0(other_spec) = &*other_spec;
-
         self.device_spec.can_migrate_devices_from(&other_spec.devices)?;
         let other_keys = get_spec_backend_keys(other_spec);
         if self.backend_keys.len() != other_keys.len() {

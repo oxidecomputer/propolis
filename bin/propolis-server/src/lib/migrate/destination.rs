@@ -24,34 +24,37 @@ use crate::migrate::probes;
 use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
-use crate::vm::{MigrateTargetCommand, VmController};
+use crate::vm::migrate_commands::MigrateTargetCommand;
+use crate::vm::migrate_commands::MigrateTargetResponse;
 
 use super::protocol::Protocol;
 
 /// Launches an attempt to migrate into a supplied instance using the supplied
 /// source connection.
 pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
-    vm_controller: Arc<VmController>,
+    log: &slog::Logger,
     command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
+    response_rx: tokio::sync::mpsc::Receiver<MigrateTargetResponse>,
     conn: WebSocketStream<T>,
     local_addr: SocketAddr,
     protocol: Protocol,
 ) -> Result<(), MigrateError> {
     let err_tx = command_tx.clone();
+    let log = log.new(slog::o!("component" => "migration_target_protocol"));
     let mut proto = match protocol {
         Protocol::RonV0 => DestinationProtocol::new(
-            vm_controller,
+            log,
             command_tx,
+            response_rx,
             conn,
             local_addr,
         ),
     };
 
     if let Err(err) = proto.run().await {
-        err_tx
+        let _ = err_tx
             .send(MigrateTargetCommand::UpdateState(MigrationState::Error))
-            .await
-            .unwrap();
+            .await;
 
         // We encountered an error, try to inform the remote before bailing
         // Note, we don't use `?` here as this is a best effort and we don't
@@ -67,12 +70,16 @@ pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
 }
 
 struct DestinationProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
-    /// The VM controller for the instance of interest.
-    vm_controller: Arc<VmController>,
+    /// The logger for messages from this protocol.
+    log: slog::Logger,
 
     /// The channel to use to send messages to the state worker coordinating
     /// this migration.
     command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
+
+    /// The channel that receives responses from the state worker coordinating
+    /// this migration.
+    response_rx: tokio::sync::mpsc::Receiver<MigrateTargetResponse>,
 
     /// Transport to the source Instance.
     conn: WebSocketStream<T>,
@@ -80,20 +87,32 @@ struct DestinationProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     /// Local propolis-server address
     /// (to inform the source-side where to redirect its clients)
     local_addr: SocketAddr,
+
+    /// The VM objects into which to import the source VM's state. Only
+    /// initialized after the sync phase.
+    vm_objects: Option<Arc<crate::vm::objects::VmObjects>>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
     fn new(
-        vm_controller: Arc<VmController>,
+        log: slog::Logger,
         command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
+        response_rx: tokio::sync::mpsc::Receiver<MigrateTargetResponse>,
         conn: WebSocketStream<T>,
         local_addr: SocketAddr,
     ) -> Self {
-        Self { vm_controller, command_tx, conn, local_addr }
+        Self {
+            log,
+            command_tx,
+            response_rx,
+            conn,
+            local_addr,
+            vm_objects: None,
+        }
     }
 
     fn log(&self) -> &slog::Logger {
-        self.vm_controller.log()
+        &self.log
     }
 
     async fn update_state(&mut self, state: MigrationState) {
@@ -159,6 +178,21 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
     }
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
+        self.command_tx
+            .send(MigrateTargetCommand::InitializeFromExternalSpec)
+            .await
+            .map_err(|_| MigrateError::StateDriverChannelClosed)?;
+
+        let MigrateTargetResponse::VmObjectsInitialized(vm_objects) = self
+            .response_rx
+            .recv()
+            .await
+            .ok_or(MigrateError::StateDriverChannelClosed)?;
+
+        let vm_objects = vm_objects
+            .map_err(MigrateError::TargetInstanceInitializationFailed)?;
+
+        self.vm_objects = Some(vm_objects);
         self.update_state(MigrationState::Sync).await;
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
@@ -173,9 +207,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             }
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
-        if let Err(e) = preamble
-            .is_migration_compatible(self.vm_controller.instance_spec().await)
-        {
+
+        if let Err(e) = preamble.is_migration_compatible(
+            self.vm_objects.as_ref().unwrap().read().await.instance_spec(),
+        ) {
             error!(
                 self.log(),
                 "Source and destination instance specs incompatible: {}", e
@@ -319,17 +354,17 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Devices: {devices:#?}");
 
         {
-            let machine = self.vm_controller.machine();
-            let migrate_ctx =
-                MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
+            let objects = self.vm_objects.as_ref().unwrap().read().await;
+            let migrate_ctx = MigrateCtx {
+                mem: &objects.machine().acc_mem.access().unwrap(),
+            };
             for device in devices {
                 info!(
                     self.log(),
                     "Applying state to device {}", device.instance_name
                 );
 
-                let target = self
-                    .vm_controller
+                let target = objects
                     .device_by_name(&device.instance_name)
                     .ok_or_else(|| {
                         MigrateError::UnknownDevice(
@@ -339,6 +374,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                 self.import_device(&target, &device, &migrate_ctx)?;
             }
         }
+
         self.send_msg(codec::Message::Okay).await
     }
 
@@ -371,7 +407,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         // Take a snapshot of the host hrtime/wall clock time, then adjust
         // time data appropriately.
-        let vmm_hdl = &self.vm_controller.machine().hdl.clone();
+        let vmm_hdl = &self
+            .vm_objects
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .machine()
+            .hdl
+            .clone();
+
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -564,11 +609,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             }
         };
 
-        self.vm_controller
+        self.vm_objects
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
             .com1()
             .import(&com1_history)
             .await
             .map_err(|e| MigrateError::Codec(e.to_string()))?;
+
         self.send_msg(codec::Message::Okay).await
     }
 
@@ -584,6 +634,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         // Now that control is definitely being transferred, publish that the
         // migration has succeeded.
+        drop(self.vm_objects.take());
         self.update_state(MigrationState::Finish).await;
         Ok(())
     }
@@ -600,7 +651,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             // If this is an error message, lift that out
             .map(|msg| match msg.try_into()? {
                 codec::Message::Error(err) => {
-                    error!(self.log(), "remote error: {err}");
+                    error!(
+                        self.log(),
+                        "migration failed due to error from source: {err}"
+                    );
                     Err(MigrateError::RemoteError(
                         MigrateRole::Source,
                         err.to_string(),
@@ -639,8 +693,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let machine = self.vm_controller.machine();
-        let memctx = machine.acc_mem.access().unwrap();
+        let objects = self.vm_objects.as_ref().unwrap().read().await;
+        let memctx = objects.machine().acc_mem.access().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
         Ok(())
