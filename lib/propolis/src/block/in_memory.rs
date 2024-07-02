@@ -12,7 +12,6 @@ use crate::tasks::ThreadGroup;
 use crate::vmm::{MemCtx, SubMapping};
 
 use anyhow::Context;
-use futures::future::BoxFuture;
 
 pub struct InMemoryBackend {
     state: Arc<WorkingState>,
@@ -141,6 +140,7 @@ impl InMemoryBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl block::Backend for InMemoryBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
@@ -150,24 +150,20 @@ impl block::Backend for InMemoryBackend {
         self.state.info
     }
 
-    fn start(&self) -> BoxFuture<'_, anyhow::Result<()>> {
-        Box::pin(async {
-            self.state.attachment.start();
-            if let Err(e) = self.spawn_workers() {
-                self.state.attachment.stop();
-                self.workers.block_until_joined();
-                Err(e).context("failure while spawning workers")
-            } else {
-                Ok(())
-            }
-        })
-    }
-
-    fn stop(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async {
+    async fn start(&self) -> anyhow::Result<()> {
+        self.state.attachment.start();
+        if let Err(e) = self.spawn_workers() {
             self.state.attachment.stop();
             self.workers.block_until_joined();
-        })
+            Err(e).context("failure while spawning workers")
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn stop(&self) -> () {
+        self.state.attachment.stop();
+        self.workers.block_until_joined();
     }
 }
 
