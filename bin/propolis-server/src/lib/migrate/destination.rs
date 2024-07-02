@@ -209,7 +209,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
         if let Err(e) = preamble.is_migration_compatible(
-            self.vm_objects.as_ref().unwrap().read().await.instance_spec(),
+            self.vm_objects
+                .as_ref()
+                .unwrap()
+                .lock_shared()
+                .await
+                .instance_spec(),
         ) {
             error!(
                 self.log(),
@@ -354,10 +359,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Devices: {devices:#?}");
 
         {
-            let objects = self.vm_objects.as_ref().unwrap().read().await;
-            let migrate_ctx = MigrateCtx {
-                mem: &objects.machine().acc_mem.access().unwrap(),
-            };
+            let objects = self.vm_objects.as_ref().unwrap().lock_shared().await;
+            let migrate_ctx =
+                MigrateCtx { mem: &objects.access_mem().unwrap() };
             for device in devices {
                 info!(
                     self.log(),
@@ -411,10 +415,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             .vm_objects
             .as_ref()
             .unwrap()
-            .read()
+            .lock_shared()
             .await
-            .machine()
-            .hdl
+            .vmm_hdl()
             .clone();
 
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
@@ -612,7 +615,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         self.vm_objects
             .as_ref()
             .unwrap()
-            .read()
+            .lock_shared()
             .await
             .com1()
             .import(&com1_history)
@@ -693,8 +696,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let objects = self.vm_objects.as_ref().unwrap().read().await;
-        let memctx = objects.machine().acc_mem.access().unwrap();
+        let objects = self.vm_objects.as_ref().unwrap().lock_shared().await;
+        let memctx = objects.access_mem().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
         Ok(())

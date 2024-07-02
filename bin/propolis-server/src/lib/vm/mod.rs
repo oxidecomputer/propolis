@@ -313,7 +313,7 @@ impl Vm {
             }
         };
 
-        let spec = vm.objects().read().await.instance_spec().clone();
+        let spec = vm.objects().lock_shared().await.instance_spec().clone();
         let state = vm.external_state_rx.borrow().clone();
         Ok(propolis_api_types::InstanceSpecGetResponse {
             properties: vm.properties.clone(),
@@ -422,7 +422,7 @@ impl Vm {
                 panic!("VM should be active before being run down");
             };
 
-            let spec = vm.objects().read().await.instance_spec().clone();
+            let spec = vm.objects().lock_shared().await.instance_spec().clone();
             let ActiveVm { external_state_rx, properties, .. } = vm;
             guard.state = VmState::Rundown(VmDescription {
                 external_state_rx,
