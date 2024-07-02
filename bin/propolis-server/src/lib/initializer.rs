@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
 use crate::stats::virtual_machine::VirtualMachine;
-use crate::vm::{BlockBackendMap, CrucibleBackendMap, LifecycleMap};
+use crate::vm::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
@@ -110,7 +110,7 @@ pub struct MachineInitializerState {
 pub struct MachineInitializer<'a> {
     pub(crate) log: slog::Logger,
     pub(crate) machine: &'a Machine,
-    pub(crate) devices: LifecycleMap,
+    pub(crate) devices: DeviceMap,
     pub(crate) block_backends: BlockBackendMap,
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a InstanceSpecV0,

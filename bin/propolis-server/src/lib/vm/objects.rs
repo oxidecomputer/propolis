@@ -22,8 +22,7 @@ use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::{serial::Serial, vcpu_tasks::VcpuTaskController};
 
 use super::{
-    state_driver::VmStartReason, BlockBackendMap, CrucibleBackendMap,
-    LifecycleMap,
+    state_driver::VmStartReason, BlockBackendMap, CrucibleBackendMap, DeviceMap,
 };
 
 /// A collection of components that make up a Propolis VM instance.
@@ -49,7 +48,7 @@ pub(super) struct InputVmObjects {
     pub instance_spec: InstanceSpecV0,
     pub vcpu_tasks: Box<dyn VcpuTaskController>,
     pub machine: Machine,
-    pub lifecycle_components: LifecycleMap,
+    pub lifecycle_components: DeviceMap,
     pub block_backends: BlockBackendMap,
     pub crucible_backends: CrucibleBackendMap,
     pub com1: Arc<Serial<LpcUart>>,
@@ -73,7 +72,7 @@ pub(crate) struct VmObjectsLocked {
 
     /// Maps from component names to the trait objects that implement lifecycle
     /// operations (e.g. pause and resume) for eligible components.
-    lifecycle_components: LifecycleMap,
+    lifecycle_components: DeviceMap,
 
     /// Maps from component names to trait objects that implement the block
     /// storage backend trait.
