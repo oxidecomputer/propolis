@@ -13,15 +13,18 @@ use propolis_api_types::{
     instance_spec::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
     },
-    InstanceMigrateInitiateResponse, InstanceSpecEnsureRequest, InstanceState,
-    MigrationState,
+    InstanceSpecEnsureRequest, InstanceState, MigrationState,
 };
 use slog::{error, info};
 use uuid::Uuid;
 
-use crate::{migrate::MigrateRole, vm::state_publisher::ExternalStateUpdate};
+use crate::{
+    migrate::{destination::DestinationProtocol, MigrateRole},
+    vm::state_publisher::ExternalStateUpdate,
+};
 
 use super::{
+    ensure::VmEnsureNotStarted,
     guest_event::{self, GuestEvent},
     migrate_commands::{
         next_migrate_task_event, MigrateSourceCommand, MigrateSourceResponse,
@@ -252,63 +255,58 @@ pub(super) async fn run_state_driver(
     let migration_in_id =
         ensure_request.migrate.as_ref().map(|req| req.migration_id);
 
-    let input_queue = Arc::new(InputQueue::new(
-        log.new(slog::o!("component" => "request_queue")),
-        match &ensure_request.migrate {
-            Some(_) => InstanceAutoStart::Yes,
-            None => InstanceAutoStart::No,
-        },
-    ));
-
-    let vm_objects = match super::startup::build_vm(
+    let ensure = VmEnsureNotStarted::new(
         &log,
         &vm,
         &ensure_request,
         &ensure_options,
-        &input_queue,
+        ensure_result_tx,
         &mut state_publisher,
-    )
-    .await
-    {
-        Ok(objects) => objects,
-        Err((e, objects)) => {
-            state_publisher
-                .update(ExternalStateUpdate::Instance(InstanceState::Failed));
+    );
 
-            vm.vm_init_failed(objects.is_some()).await;
-            let _ =
-                ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
-            return StateDriverOutput {
-                state_publisher,
-                final_state: InstanceState::Failed,
+    let activated_vm =
+        if let Some(migrate_request) = ensure_request.migrate.as_ref() {
+            let migration = match crate::migrate::destination::initiate(
+                &log,
+                migrate_request,
+                ensure_options.local_server_addr,
+            )
+            .await
+            {
+                Ok(mig) => mig,
+                Err(e) => {
+                    ensure.fail(e.into()).await;
+                    return StateDriverOutput {
+                        state_publisher,
+                        final_state: InstanceState::Failed,
+                    };
+                }
             };
-        }
-    };
 
-    let services = super::services::VmServices::new(
-        &log,
-        &vm,
-        &vm_objects,
-        &ensure_request.properties,
-        &ensure_options,
-    )
-    .await;
+            match migration.run(ensure).await {
+                Ok(activated) => activated,
+                Err(_) => {
+                    return StateDriverOutput {
+                        state_publisher,
+                        final_state: InstanceState::Failed,
+                    }
+                }
+            }
+        } else {
+            let Ok(created) = ensure.create_objects().await else {
+                return StateDriverOutput {
+                    state_publisher,
+                    final_state: InstanceState::Failed,
+                };
+            };
 
-    // All the VM components now exist, so allow external callers to
-    // interact with the VM.
-    //
-    // Order matters here: once the ensure result is sent, an external
-    // caller needs to observe that an active VM is present.
-    vm.make_active(&log, input_queue.clone(), &vm_objects, services).await;
-    let _ =
-        ensure_result_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
-            migrate: migration_in_id
-                .map(|id| InstanceMigrateInitiateResponse { migration_id: id }),
-        }));
+            created.ensure_active().await
+        };
 
+    let (objects, input_queue) = activated_vm.into_inner();
     let state_driver = StateDriver {
         log,
-        objects: vm_objects,
+        objects,
         input_queue,
         external_state: state_publisher,
         paused: false,

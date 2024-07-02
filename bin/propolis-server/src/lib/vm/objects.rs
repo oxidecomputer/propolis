@@ -123,7 +123,7 @@ impl VmObjects {
     ///
     /// This function is only visible within the `vm` module so that only the
     /// state driver can obtain a mutable reference to the underlying objects.
-    pub(super) async fn lock_exclusive(&self) -> VmObjectsExclusive {
+    pub(crate) async fn lock_exclusive(&self) -> VmObjectsExclusive {
         VmObjectsExclusive(self.inner.write().await)
     }
 }
