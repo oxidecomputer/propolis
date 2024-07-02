@@ -419,26 +419,29 @@ impl Drop for CtrlHeld<'_> {
 
 /// Holds a group of tokio task [task::JoinHandle]s to be later joined as a
 /// group when they have all concluded.
-pub struct TaskGroup(tokio::sync::Mutex<Vec<task::JoinHandle<()>>>);
+pub struct TaskGroup(Mutex<Vec<task::JoinHandle<()>>>);
 impl TaskGroup {
     pub fn new() -> Self {
-        Self(tokio::sync::Mutex::new(Vec::new()))
+        Self(Mutex::new(Vec::new()))
     }
 
     /// Add to the group of contained tasks
-    pub async fn extend<I>(&self, tasks: I)
+    pub fn extend<I>(&self, tasks: I)
     where
         I: Iterator<Item = task::JoinHandle<()>>,
     {
-        let mut guard = self.0.lock().await;
+        let mut guard = self.0.lock().unwrap();
         guard.extend(tasks);
     }
 
     /// Block until all held tasks have been joined, returning any resulting
     /// [task::JoinError]s after doing so.
     pub async fn block_until_joined(&self) -> Option<Vec<task::JoinError>> {
-        let mut guard = self.0.lock().await;
-        let workers = std::mem::replace(&mut *guard, Vec::new());
+        let workers = {
+            let mut guard = self.0.lock().unwrap();
+            std::mem::replace(&mut *guard, Vec::new())
+        };
+
         if workers.is_empty() {
             return None;
         }
