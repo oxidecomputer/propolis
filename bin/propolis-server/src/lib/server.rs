@@ -455,7 +455,7 @@ async fn instance_serial_history_get(
 {
     let ctx = rqctx.context();
     let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    let serial = vm.objects().read().await.com1().clone();
+    let serial = vm.objects().lock_shared().await.com1().clone();
     let query_params = query.into_inner();
 
     let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
@@ -483,7 +483,7 @@ async fn instance_serial(
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
     let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    let serial = vm.objects().read().await.com1().clone();
+    let serial = vm.objects().lock_shared().await.com1().clone();
 
     // Use the default buffering paramters for the websocket configuration
     //
@@ -577,7 +577,7 @@ async fn instance_issue_crucible_snapshot_request(
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-    let objects = vm.objects().read().await;
+    let objects = vm.objects().lock_shared().await;
     let path_params = path_params.into_inner();
 
     let backend =
@@ -604,7 +604,7 @@ async fn disk_volume_status(
     let path_params = path_params.into_inner();
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-    let objects = vm.objects().read().await;
+    let objects = vm.objects().lock_shared().await;
     let backend =
         objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
             let s = format!("No crucible backend for id {}", path_params.id);
@@ -667,7 +667,7 @@ async fn instance_issue_nmi(
 ) -> Result<HttpResponseOk<()>, HttpError> {
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-    let _ = vm.objects().read().await.machine().inject_nmi();
+    let _ = vm.objects().lock_shared().await.machine().inject_nmi();
 
     Ok(HttpResponseOk(()))
 }

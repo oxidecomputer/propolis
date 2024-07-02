@@ -317,7 +317,7 @@ impl MigrateAsTargetContext {
         // Drop the lock after this operation so that the migration task can
         // acquire it to enumerate devices and import state into them.
         {
-            let guard = self.vm_objects.read().await;
+            let guard = self.vm_objects.lock_shared().await;
             guard.reset_vcpus();
             guard.pause_kernel_vm();
         }
@@ -346,7 +346,10 @@ impl MigrateAsTargetContext {
                         error!(self.log, "target migration task failed";
                            "error" => %e);
 
-                        self.vm_objects.write().await.resume_kernel_vm();
+                        self.vm_objects
+                            .lock_exclusive()
+                            .await
+                            .resume_kernel_vm();
                         return Err(e);
                     }
                 },

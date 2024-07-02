@@ -16,7 +16,7 @@ use crate::{
     stats::virtual_machine::VirtualMachine, vnc::PropolisVncServer,
 };
 
-use super::objects::{VmObjects, VmObjectsLocked};
+use super::objects::{VmObjects, VmObjectsShared};
 
 /// Information used to serve Oximeter metrics.
 #[derive(Default)]
@@ -62,7 +62,7 @@ impl VmServices {
             OximeterState::default()
         };
 
-        let vm_objects = vm_objects.read().await;
+        let vm_objects = vm_objects.lock_shared().await;
         let vnc_server = ensure_options.vnc_server.clone();
         if let Some(ramfb) = vm_objects.framebuffer() {
             vnc_server
@@ -179,9 +179,9 @@ async fn register_oximeter_producer(
 }
 
 /// Launches a serial console handler task.
-async fn start_serial_task(
+async fn start_serial_task<'vm>(
     log: &slog::Logger,
-    vm_objects: &tokio::sync::RwLockReadGuard<'_, VmObjectsLocked>,
+    vm_objects: &VmObjectsShared<'vm>,
 ) -> crate::serial::SerialTask {
     let (websocks_ch, websocks_recv) = tokio::sync::mpsc::channel(1);
     let (control_ch, control_recv) = tokio::sync::mpsc::channel(1);

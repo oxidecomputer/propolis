@@ -5,6 +5,7 @@
 //! A collection of all of the components that make up a Propolis VM instance.
 
 use std::{
+    ops::{Deref, DerefMut},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -13,6 +14,7 @@ use std::{
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
+    vmm::VmmHdl,
     Machine,
 };
 use propolis_api_types::instance_spec::v0::InstanceSpecV0;
@@ -112,8 +114,8 @@ impl VmObjects {
     ///
     /// This function is crate-visible to allow the API layer to read (but not
     /// mutate) VM objects.
-    pub(crate) async fn read(&self) -> RwLockReadGuard<VmObjectsLocked> {
-        self.inner.read().await
+    pub(crate) async fn lock_shared(&self) -> VmObjectsShared {
+        VmObjectsShared(self.inner.read().await)
     }
 
     /// Yields an exclusive lock guard referring to the underlying object
@@ -121,8 +123,8 @@ impl VmObjects {
     ///
     /// This function is only visible within the `vm` module so that only the
     /// state driver can obtain a mutable reference to the underlying objects.
-    pub(super) async fn write(&self) -> RwLockWriteGuard<VmObjectsLocked> {
-        self.inner.write().await
+    pub(super) async fn lock_exclusive(&self) -> VmObjectsExclusive {
+        VmObjectsExclusive(self.inner.write().await)
     }
 }
 
@@ -153,9 +155,22 @@ impl VmObjectsLocked {
         &mut self.instance_spec
     }
 
-    /// Yields the VM's current kernel VMM handle.
+    /// Yields the VM's current Propolis VM aggregation.
     pub(crate) fn machine(&self) -> &Machine {
         &self.machine
+    }
+
+    /// Yields the VM's current kernel VMM handle.
+    pub(crate) fn vmm_hdl(&self) -> &Arc<VmmHdl> {
+        &self.machine.hdl
+    }
+
+    /// Yields an accessor to the VM's memory context, or None if guest memory
+    /// is not currently accessible.
+    pub(crate) fn access_mem(
+        &self,
+    ) -> Option<propolis::accessors::Guard<propolis::vmm::MemCtx>> {
+        self.machine.acc_mem.access()
     }
 
     /// Obtains a handle to the lifecycle trait object for the component with
@@ -450,5 +465,33 @@ impl Drop for VmObjects {
         tokio::spawn(async move {
             parent.complete_rundown().await;
         });
+    }
+}
+
+/// A shared lock on the contents of a [`VmObjects`].
+pub(crate) struct VmObjectsShared<'o>(RwLockReadGuard<'o, VmObjectsLocked>);
+
+/// An exclusive lock on the contents of a [`VmObjects`].
+pub(crate) struct VmObjectsExclusive<'o>(RwLockWriteGuard<'o, VmObjectsLocked>);
+
+impl Deref for VmObjectsShared<'_> {
+    type Target = VmObjectsLocked;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Deref for VmObjectsExclusive<'_> {
+    type Target = VmObjectsLocked;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for VmObjectsExclusive<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }

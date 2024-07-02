@@ -398,7 +398,8 @@ impl StateDriver {
     ) -> anyhow::Result<()> {
         info!(self.log, "starting instance"; "reason" => ?start_reason);
 
-        let start_result = self.objects.write().await.start(start_reason).await;
+        let start_result =
+            self.objects.lock_exclusive().await.start(start_reason).await;
         match &start_result {
             Ok(()) => {
                 self.publish_steady_state(InstanceState::Running);
@@ -511,7 +512,7 @@ impl StateDriver {
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Rebooting));
 
-        self.objects.write().await.reboot().await;
+        self.objects.lock_exclusive().await.reboot().await;
 
         // Notify other consumers that the instance successfully rebooted and is
         // now back to Running.
@@ -528,7 +529,7 @@ impl StateDriver {
             .update(ExternalStateUpdate::Instance(InstanceState::Stopping));
 
         {
-            let mut guard = self.objects.write().await;
+            let mut guard = self.objects.lock_exclusive().await;
 
             // Entities expect to be paused before being halted. Note that the VM
             // may be paused already if it is being torn down after a successful
@@ -546,13 +547,13 @@ impl StateDriver {
 
     async fn pause(&mut self) {
         assert!(!self.paused);
-        self.objects.write().await.pause().await;
+        self.objects.lock_exclusive().await.pause().await;
         self.paused = true;
     }
 
     async fn resume(&mut self) {
         assert!(self.paused);
-        self.objects.write().await.resume();
+        self.objects.lock_exclusive().await.resume();
         self.paused = false;
     }
 
@@ -703,7 +704,7 @@ impl StateDriver {
             dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
         }
 
-        let mut objects = self.objects.write().await;
+        let mut objects = self.objects.lock_exclusive().await;
         let (readonly, old_vcr_json) = {
             let StorageBackendV0::Crucible(bes) = objects
                 .instance_spec()
