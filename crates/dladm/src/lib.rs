@@ -39,13 +39,17 @@ impl Handle {
         })?;
 
         match datalink_class::from_repr(class) {
-            Some(datalink_class::DATALINK_CLASS_VNIC) => {
-                // acceptable value
+            Some(
+                datalink_class::DATALINK_CLASS_VNIC
+                | datalink_class::DATALINK_CLASS_MISC,
+            ) => {
+                // acceptable values: this supports both VNICs
+                // and direct use of XDE/OPTE ports.
             }
             Some(c) => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    format!("{} is not vnic class, but {:?}", name, c),
+                    format!("{} is not vnic/misc class, but {:?}", name, c),
                 ));
             }
             None => {

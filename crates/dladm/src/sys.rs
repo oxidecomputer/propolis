@@ -66,6 +66,7 @@ pub enum datalink_class {
     DATALINK_CLASS_BRIDGE = 0x40,
     DATALINK_CLASS_IPTUN = 0x80,
     DATALINK_CLASS_PART = 0x100,
+    DATALINK_CLASS_MISC = 0x400,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
