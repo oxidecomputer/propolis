@@ -29,7 +29,6 @@ use super::{
     },
     objects::VmObjects,
     request_queue::{ExternalRequest, InstanceAutoStart},
-    startup::BuildVmOutput,
     state_publisher::{MigrationStateUpdate, StatePublisher},
     VmError,
 };
@@ -261,32 +260,30 @@ pub(super) async fn run_state_driver(
         },
     ));
 
-    let BuildVmOutput { vm_objects, migration_in } =
-        match super::startup::build_vm(
-            &log,
-            &vm,
-            &ensure_request,
-            &ensure_options,
-            &input_queue,
-            &mut state_publisher,
-        )
-        .await
-        {
-            Ok(objects) => objects,
-            Err((e, objects)) => {
-                state_publisher.update(ExternalStateUpdate::Instance(
-                    InstanceState::Failed,
-                ));
+    let vm_objects = match super::startup::build_vm(
+        &log,
+        &vm,
+        &ensure_request,
+        &ensure_options,
+        &input_queue,
+        &mut state_publisher,
+    )
+    .await
+    {
+        Ok(objects) => objects,
+        Err((e, objects)) => {
+            state_publisher
+                .update(ExternalStateUpdate::Instance(InstanceState::Failed));
 
-                vm.vm_init_failed(objects.is_some()).await;
-                let _ = ensure_result_tx
-                    .send(Err(VmError::InitializationFailed(e)));
-                return StateDriverOutput {
-                    state_publisher,
-                    final_state: InstanceState::Failed,
-                };
-            }
-        };
+            vm.vm_init_failed(objects.is_some()).await;
+            let _ =
+                ensure_result_tx.send(Err(VmError::InitializationFailed(e)));
+            return StateDriverOutput {
+                state_publisher,
+                final_state: InstanceState::Failed,
+            };
+        }
+    };
 
     let services = super::services::VmServices::new(
         &log,
@@ -308,28 +305,6 @@ pub(super) async fn run_state_driver(
             migrate: migration_in_id
                 .map(|id| InstanceMigrateInitiateResponse { migration_id: id }),
         }));
-
-    // If the VM was initialized via migration in, complete that migration now.
-    //
-    // External callers who ask to initialize an instance via migration in
-    // expect their API calls to complete once the relevant VM is initialized
-    // and the migration task has started (as opposed to when the entire
-    // migration attempt has completed), so this must happen after the ensure
-    // result is published. (Note that it's OK for the migration to fail after
-    // this point: the ensure request succeeds, but the instance goes to the
-    // Failed state and the migration appears to have failed.)
-    if let Some(migration_in) = migration_in {
-        if let Err(e) = migration_in.run(&mut state_publisher).await {
-            error!(log, "inbound live migration task failed";
-                   "error" => ?e);
-
-            vm.set_rundown().await;
-            return StateDriverOutput {
-                state_publisher,
-                final_state: InstanceState::Failed,
-            };
-        }
-    }
 
     let state_driver = StateDriver {
         log,

@@ -8,62 +8,24 @@ use std::sync::Arc;
 
 use propolis_api_types::{
     instance_spec::VersionedInstanceSpec, InstanceProperties,
-    InstanceSpecEnsureRequest, MigrationState,
+    InstanceSpecEnsureRequest,
 };
-use slog::{error, info};
-use uuid::Uuid;
+use slog::info;
 
 use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
-    migrate::{MigrateError, MigrateRole},
+    migrate::destination::DestinationProtocol,
 };
 
 use super::{
-    migrate_commands::{
-        next_migrate_task_event, MigrateTargetCommand, MigrateTargetResponse,
-        MigrateTaskEvent,
-    },
     objects::{InputVmObjects, VmObjects},
     state_driver::InputQueue,
-    state_publisher::{
-        ExternalStateUpdate, MigrationStateUpdate, StatePublisher,
-    },
+    state_publisher::StatePublisher,
 };
 
-/// The context needed to finish a live migration into a VM after its initial
-/// Sync phase has concluded and produced a set of VM objects (into which the
-/// migration will import the source VM's state).
-pub(super) struct MigrateAsTargetContext {
-    /// The objects into which to import state from the source.
-    vm_objects: Arc<VmObjects>,
-
-    /// The logger associated with this migration.
-    log: slog::Logger,
-
-    /// The migration's ID.
-    migration_id: Uuid,
-
-    /// A handle to the task that's driving the migration.
-    migrate_task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-
-    /// Receives commands from the migration task.
-    command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-
-    /// Sends command responses to the migration task.
-    response_tx: tokio::sync::mpsc::Sender<MigrateTargetResponse>,
-}
-
-/// The output of a call to [`build_vm`].
-pub(super) struct BuildVmOutput {
-    /// A reference to the VM objects created by the request to build a new VM.
-    pub vm_objects: Arc<VmObjects>,
-
-    /// If the VM is initializing via migration in, the context needed to
-    /// complete that migration.
-    pub migration_in: Option<MigrateAsTargetContext>,
-}
+type BuildVmError = (anyhow::Error, Option<Arc<VmObjects>>);
 
 /// Builds a new set of VM objects from the supplied ensure `request`.
 ///
@@ -86,10 +48,8 @@ pub(super) async fn build_vm(
     options: &super::EnsureOptions,
     input_queue: &Arc<InputQueue>,
     state_publisher: &mut StatePublisher,
-) -> anyhow::Result<BuildVmOutput, (anyhow::Error, Option<Arc<VmObjects>>)> {
-    // If the caller didn't ask to initialize by live migration in, immediately
-    // create the VM objects and return them.
-    let Some(migrate_request) = &request.migrate else {
+) -> Result<Arc<VmObjects>, BuildVmError> {
+    let make_objects = async {
         let input_objects = initialize_vm_objects_from_spec(
             log,
             input_queue,
@@ -100,113 +60,50 @@ pub(super) async fn build_vm(
         .await
         .map_err(|e| (e, None))?;
 
-        let vm_objects = Arc::new(VmObjects::new(
-            log.clone(),
-            parent.clone(),
-            input_objects,
-        ));
-
-        return Ok(BuildVmOutput { vm_objects, migration_in: None });
+        Ok(Arc::new(VmObjects::new(log.clone(), parent.clone(), input_objects)))
     };
 
-    // The caller has asked to initialize by live migration in. Initialize VM
-    // objects at the live migration task's request.
-    //
-    // Begin by contacting the source Propolis and obtaining the connection that
-    // the actual migration task will need.
-    let migrate_ctx = crate::migrate::dest_initiate(
+    // If the caller didn't ask to initialize by live migration in, immediately
+    // create the VM objects and return them.
+    let Some(migrate_request) = &request.migrate else {
+        return make_objects.await;
+    };
+
+    let mut runner = crate::migrate::destination::initiate(
         log,
         migrate_request,
         options.local_server_addr,
+        state_publisher,
     )
     .await
     .map_err(|e| (e.into(), None))?;
 
-    // Spin up a task to run the migration protocol proper. To avoid sending the
-    // entire VM context over to the migration task, create command and response
-    // channels to allow the migration task to delegate work back to this
-    // routine.
-    let log_for_task = log.clone();
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-    let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-    let migrate_task = tokio::spawn(async move {
-        crate::migrate::destination::migrate(
-            &log_for_task,
-            command_tx,
-            response_rx,
-            migrate_ctx.conn,
-            migrate_ctx.local_addr,
-            migrate_ctx.protocol,
-        )
-        .await
-    });
+    runner.run_pre_vm_init().await.map_err(|e| (e.into(), None))?;
+    let vm_objects = make_objects.await?;
 
-    // In the initial phases of live migration, the migration protocol decides
-    // whether the source and destination VMs have compatible configurations. If
-    // they do, the migration task asks this routine to initialize a VM on its
-    // behalf. Execute this part of the protocol now in order to create a set of
-    // VM objects to return.
+    // The migration task imports device state by operating directly on the
+    // newly-created VM objects. Before sending them to the task, make sure
+    // the objects are ready to have state imported into them. Specifically,
+    // ensure that the VM's vCPUs are activated so they can enter the guest
+    // after migration and pause the kernel VM to allow it to import device
+    // state consistently.
     //
-    // TODO(#706): Future versions of the protocol can extend this further,
-    // specifying an instance spec and/or an initial set of device payloads that
-    // the task should use to initialize its VM objects.
-    let init_command = command_rx.recv().await.ok_or_else(|| {
-        (anyhow::anyhow!("migration task unexpectedly closed channel"), None)
-    })?;
-
-    let input_objects = 'init: {
-        let MigrateTargetCommand::InitializeFromExternalSpec = init_command
-        else {
-            error!(log, "migration protocol didn't init objects first";
-                   "command" => ?init_command);
-            break 'init Err(anyhow::anyhow!(
-                "migration protocol didn't init objects first"
-            ));
-        };
-
-        initialize_vm_objects_from_spec(
-            log,
-            input_queue,
-            &request.properties,
-            &request.instance_spec,
-            options,
-        )
-        .await
-        .map_err(Into::into)
+    // Drop the lock after this operation so that the migration task can
+    // acquire it to enumerate devices and import state into them.
+    let result = {
+        let mut guard = vm_objects.lock_exclusive().await;
+        guard.reset_vcpus();
+        guard.pause_kernel_vm();
+        runner.run_post_vm_init(&mut guard).await
     };
 
-    let vm_objects = match input_objects {
-        Ok(o) => Arc::new(VmObjects::new(log.clone(), parent.clone(), o)),
+    match result {
+        Ok(()) => Ok(vm_objects),
         Err(e) => {
-            let _ = response_tx
-                .send(MigrateTargetResponse::VmObjectsInitialized(Err(
-                    e.to_string()
-                )))
-                .await;
-            state_publisher.update(ExternalStateUpdate::Migration(
-                MigrationStateUpdate {
-                    id: migrate_ctx.migration_id,
-                    state: MigrationState::Error,
-                    role: MigrateRole::Source,
-                },
-            ));
-
-            return Err((e, None));
+            vm_objects.lock_exclusive().await.resume_kernel_vm();
+            Err((e.into(), Some(vm_objects)))
         }
-    };
-
-    // The VM's objects are initialized. Return them to the caller along with a
-    // continuation context that it can use to complete migration.
-    let migration_in = MigrateAsTargetContext {
-        vm_objects: vm_objects.clone(),
-        log: log.clone(),
-        migration_id: migrate_ctx.migration_id,
-        migrate_task,
-        command_rx,
-        response_tx,
-    };
-
-    Ok(BuildVmOutput { vm_objects, migration_in: Some(migration_in) })
+    }
 }
 
 /// Initializes a set of Propolis components from the supplied instance spec.
@@ -299,77 +196,4 @@ async fn initialize_vm_objects_from_spec(
         framebuffer: Some(ramfb),
         ps2ctrl,
     })
-}
-
-impl MigrateAsTargetContext {
-    /// Runs a partially-completed inbound live migration to completion.
-    pub(super) async fn run(
-        mut self,
-        state_publisher: &mut StatePublisher,
-    ) -> Result<(), MigrateError> {
-        // The migration task imports device state by operating directly on the
-        // newly-created VM objects. Before sending them to the task, make sure
-        // the objects are ready to have state imported into them. Specifically,
-        // ensure that the VM's vCPUs are activated so they can enter the guest
-        // after migration and pause the kernel VM to allow it to import device
-        // state consistently.
-        //
-        // Drop the lock after this operation so that the migration task can
-        // acquire it to enumerate devices and import state into them.
-        {
-            let guard = self.vm_objects.lock_shared().await;
-            guard.reset_vcpus();
-            guard.pause_kernel_vm();
-        }
-
-        self.response_tx
-            .send(MigrateTargetResponse::VmObjectsInitialized(Ok(self
-                .vm_objects
-                .clone())))
-            .await
-            .expect("migration task shouldn't exit while awaiting driver");
-
-        loop {
-            let action = next_migrate_task_event(
-                &mut self.migrate_task,
-                &mut self.command_rx,
-                &self.log,
-            )
-            .await;
-
-            match action {
-                MigrateTaskEvent::TaskExited(res) => match res {
-                    Ok(()) => {
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        error!(self.log, "target migration task failed";
-                           "error" => %e);
-
-                        self.vm_objects
-                            .lock_exclusive()
-                            .await
-                            .resume_kernel_vm();
-                        return Err(e);
-                    }
-                },
-                MigrateTaskEvent::Command(
-                    MigrateTargetCommand::UpdateState(state),
-                ) => {
-                    state_publisher.update(ExternalStateUpdate::Migration(
-                        MigrationStateUpdate {
-                            state,
-                            id: self.migration_id,
-                            role: MigrateRole::Destination,
-                        },
-                    ));
-                }
-                MigrateTaskEvent::Command(
-                    MigrateTargetCommand::InitializeFromExternalSpec,
-                ) => {
-                    panic!("already received initialize-from-spec command");
-                }
-            }
-        }
-    }
 }

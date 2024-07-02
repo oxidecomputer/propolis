@@ -102,7 +102,7 @@ mod request_queue;
 mod services;
 mod startup;
 mod state_driver;
-mod state_publisher;
+pub(crate) mod state_publisher;
 
 /// Maps component names to lifecycle trait objects that allow
 /// components to be started, paused, resumed, and halted.

@@ -2,13 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::net::SocketAddr;
-
 use bit_field::BitField;
 use dropshot::HttpError;
 use futures::{SinkExt, StreamExt};
 use propolis::migrate::MigrateStateError;
-use propolis_api_types::{self as api, MigrationState};
+use propolis_api_types::MigrationState;
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use thiserror::Error;
@@ -296,104 +294,6 @@ pub async fn source_start<
     };
 
     Ok(SourceContext { conn, protocol: selected })
-}
-
-pub(crate) struct DestinationContext<
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-> {
-    pub migration_id: Uuid,
-    pub conn: WebSocketStream<T>,
-    pub local_addr: SocketAddr,
-    pub protocol: crate::migrate::protocol::Protocol,
-}
-
-/// Initiate a migration to the given source instance.
-///
-/// This will attempt to open a websocket to the given source instance and
-/// check that the migrate protocol version is compatible ("equal" presently).
-/// Once we've successfully established the connection, we can begin the
-/// migration process (destination-side).
-pub(crate) async fn dest_initiate(
-    log: &slog::Logger,
-    migrate_info: &api::InstanceMigrateInitiateRequest,
-    local_server_addr: SocketAddr,
-) -> Result<
-    DestinationContext<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    MigrateError,
-> {
-    let migration_id = migrate_info.migration_id;
-
-    // Create a new log context for the migration
-    let log = log.new(o!(
-        "migration_id" => migration_id.to_string(),
-        "migrate_role" => "destination",
-        "migrate_src_addr" => migrate_info.src_addr
-    ));
-    info!(log, "Migration Destination");
-
-    // Build upgrade request to the source instance
-    // (we do this by hand because it's hidden from the OpenAPI spec)
-    // TODO(#165): https (wss)
-    // TODO: We need to make sure the src_addr is a valid target
-    let src_migrate_url = format!(
-        "ws://{}/instance/migrate/{}/start",
-        migrate_info.src_addr, migration_id,
-    );
-    info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
-    let (mut conn, _) =
-        tokio_tungstenite::connect_async(src_migrate_url).await?;
-
-    let dst_protocols = protocol::make_protocol_offer();
-    conn.send(tungstenite::Message::Text(dst_protocols)).await?;
-    let selected = match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(selected_protocol))) => {
-            info!(log, "source negotiated protocol {}", selected_protocol);
-            match protocol::select_protocol_from_offer(&selected_protocol) {
-                Ok(Some(selected)) => selected,
-                Ok(None) => {
-                    let offered = protocol::make_protocol_offer();
-                    error!(log, "source selected protocol not on offer";
-                           "offered" => &offered,
-                           "selected" => &selected_protocol);
-
-                    return Err(MigrateError::NoMatchingProtocol(
-                        selected_protocol,
-                        offered,
-                    ));
-                }
-                Err(e) => {
-                    error!(log, "source selected protocol failed to parse";
-                           "selected" => &selected_protocol);
-
-                    return Err(MigrateError::ProtocolParse(
-                        selected_protocol,
-                        e.to_string(),
-                    ));
-                }
-            }
-        }
-        x => {
-            conn.send(tungstenite::Message::Close(Some(CloseFrame {
-                code: CloseCode::Protocol,
-                reason: "did not respond to version handshake.".into(),
-            })))
-            .await?;
-            error!(
-                log,
-                "source instance failed to negotiate protocol version: {:?}", x
-            );
-            return Err(MigrateError::Initiate);
-        }
-    };
-
-    Ok(DestinationContext {
-        migration_id,
-        conn,
-        local_addr: local_server_addr,
-        protocol: selected,
-    })
 }
 
 // We should probably turn this into some kind of ValidatedBitmap
