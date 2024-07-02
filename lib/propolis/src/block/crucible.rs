@@ -268,7 +268,7 @@ impl CrucibleBackend {
             .map_err(CrucibleError::into)
     }
 
-    async fn spawn_workers(&self) {
+    fn spawn_workers(&self) {
         // TODO: make this tunable?
         let worker_count = 8;
         self.workers.extend((0..worker_count).map(|n| {
@@ -283,7 +283,7 @@ impl CrucibleBackend {
             tokio::spawn(
                 async move { worker_state.process_loop(worker_acc).await },
             )
-        }));
+        }))
     }
 
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
@@ -302,7 +302,7 @@ impl block::Backend for CrucibleBackend {
     async fn start(&self) -> anyhow::Result<()> {
         self.state.volume.activate().await?;
         self.state.attachment.start();
-        self.spawn_workers().await;
+        self.spawn_workers();
         Ok(())
     }
     async fn stop(&self) -> () {
