@@ -16,7 +16,6 @@ use crucible::{
     BlockIO, Buffer, CrucibleError, ReplaceResult, SnapshotDetails, Volume,
 };
 use crucible_client_types::VolumeConstructionRequest;
-use futures::future::BoxFuture;
 use oximeter::types::ProducerRegistry;
 use slog::{error, info};
 use thiserror::Error;
@@ -272,21 +271,19 @@ impl CrucibleBackend {
     async fn spawn_workers(&self) {
         // TODO: make this tunable?
         let worker_count = 8;
-        self.workers
-            .extend((0..worker_count).map(|n| {
-                let worker_state = self.state.clone();
-                let worker_acc = self
-                    .state
-                    .attachment
-                    .accessor_mem(|acc_mem| {
-                        acc_mem.child(Some(format!("crucible worker {n}")))
-                    })
-                    .expect("backend is attached");
-                tokio::spawn(async move {
-                    worker_state.process_loop(worker_acc).await
+        self.workers.extend((0..worker_count).map(|n| {
+            let worker_state = self.state.clone();
+            let worker_acc = self
+                .state
+                .attachment
+                .accessor_mem(|acc_mem| {
+                    acc_mem.child(Some(format!("crucible worker {n}")))
                 })
-            }))
-            .await;
+                .expect("backend is attached");
+            tokio::spawn(
+                async move { worker_state.process_loop(worker_acc).await },
+            )
+        }));
     }
 
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
@@ -294,6 +291,7 @@ impl CrucibleBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl block::Backend for CrucibleBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
@@ -301,19 +299,15 @@ impl block::Backend for CrucibleBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-    fn start(&self) -> BoxFuture<'_, anyhow::Result<()>> {
-        Box::pin(async {
-            self.state.volume.activate().await?;
-            self.state.attachment.start();
-            self.spawn_workers().await;
-            Ok(())
-        })
+    async fn start(&self) -> anyhow::Result<()> {
+        self.state.volume.activate().await?;
+        self.state.attachment.start();
+        self.spawn_workers().await;
+        Ok(())
     }
-    fn stop(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async {
-            self.state.attachment.stop();
-            self.workers.block_until_joined().await;
-        })
+    async fn stop(&self) -> () {
+        self.state.attachment.stop();
+        self.workers.block_until_joined().await;
     }
 }
 
