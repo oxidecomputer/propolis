@@ -106,7 +106,7 @@ mod state_publisher;
 
 /// Maps component names to lifecycle trait objects that allow
 /// components to be started, paused, resumed, and halted.
-pub(crate) type LifecycleMap =
+pub(crate) type DeviceMap =
     BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
 
 /// Maps component names to block backend trait objects.
