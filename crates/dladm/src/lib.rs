@@ -5,10 +5,12 @@
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use std::process::{Command, Stdio};
+use std::ptr::addr_of_mut;
 
 #[allow(non_camel_case_types)]
 mod sys;
 
+use libc::{c_int, c_void};
 use sys::{datalink_class, dladm_handle_t, dladm_status};
 
 pub struct Handle {
@@ -38,13 +40,16 @@ impl Handle {
             )
         })?;
 
+        let mut res = LinkInfo { link_id, ..Default::default() };
+
         match datalink_class::from_repr(class) {
-            Some(
-                datalink_class::DATALINK_CLASS_VNIC
-                | datalink_class::DATALINK_CLASS_MISC,
-            ) => {
-                // acceptable values: this supports both VNICs
-                // and direct use of XDE/OPTE ports.
+            // acceptable values: this supports both VNICs
+            // and direct use of XDE/OPTE ports.
+            Some(datalink_class::DATALINK_CLASS_VNIC) => {
+                Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
+            }
+            Some(datalink_class::DATALINK_CLASS_MISC) => {
+                self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
             }
             Some(c) => {
                 return Err(Error::new(
@@ -59,10 +64,8 @@ impl Handle {
                 ));
             }
         }
-        let mut res = LinkInfo { link_id, ..Default::default() };
-        res.link_id = link_id;
+
         res.mtu = Self::get_mtu(name).ok();
-        Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
 
         Ok(res)
     }
@@ -117,6 +120,57 @@ impl Handle {
                 Error::new(ErrorKind::Other, "cannot query mac addr")
             })?;
         mac.copy_from_slice(&addr[..]);
+        Ok(())
+    }
+    fn get_misc_mac(
+        &self,
+        linkid: sys::datalink_id_t,
+        mac: &mut [u8],
+    ) -> Result<()> {
+        unsafe extern "C" fn handle_mac(
+            arg: *mut c_void,
+            macaddr: *mut sys::dladm_macaddr_attr_t,
+        ) -> sys::boolean_t {
+            let a = &mut *(arg as *mut Arg);
+            a.n_seen += 1;
+
+            if !a.written && (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
+                a.mac.copy_from_slice(&(*macaddr).ma_addr[..ETHERADDRL]);
+                a.written = true;
+            }
+
+            sys::boolean_t::B_TRUE
+        }
+
+        struct Arg<'a> {
+            mac: &'a mut [u8],
+            n_seen: usize,
+            written: bool,
+        }
+
+        let mut state = Arg { mac, n_seen: 0, written: false };
+
+        unsafe {
+            sys::dladm_walk_macaddr(
+                self.inner,
+                linkid,
+                addr_of_mut!(state) as *mut c_void,
+                handle_mac,
+            );
+        }
+
+        if state.n_seen == 0 {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "no mac addrs found on link",
+            ));
+        } else if !state.written {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "mac addrs on link had illegal length",
+            ));
+        }
+
         Ok(())
     }
 
