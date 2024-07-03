@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 #[allow(non_camel_case_types)]
 mod sys;
 
+use libc::c_void;
 use sys::{datalink_class, dladm_handle_t, dladm_status};
 
 pub struct Handle {
@@ -23,7 +24,7 @@ impl Handle {
         Ok(Self { inner: hdl })
     }
 
-    pub fn query_vnic(&self, name: &str) -> Result<LinkInfo> {
+    pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
         let name_cstr = CString::new(name).unwrap();
         let mut link_id: sys::datalink_id_t = 0;
         let mut class: i32 = 0;
@@ -38,14 +39,21 @@ impl Handle {
             )
         })?;
 
+        let mut res = LinkInfo { link_id, ..Default::default() };
+
         match datalink_class::from_repr(class) {
+            // acceptable values: this supports both VNICs
+            // and direct use of XDE/OPTE ports.
             Some(datalink_class::DATALINK_CLASS_VNIC) => {
-                // acceptable value
+                Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
+            }
+            Some(datalink_class::DATALINK_CLASS_MISC) => {
+                self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
             }
             Some(c) => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    format!("{} is not vnic class, but {:?}", name, c),
+                    format!("{} is not vnic/misc class, but {:?}", name, c),
                 ));
             }
             None => {
@@ -55,10 +63,8 @@ impl Handle {
                 ));
             }
         }
-        let mut res = LinkInfo { link_id, ..Default::default() };
-        res.link_id = link_id;
+
         res.mtu = Self::get_mtu(name).ok();
-        Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
 
         Ok(res)
     }
@@ -113,6 +119,69 @@ impl Handle {
                 Error::new(ErrorKind::Other, "cannot query mac addr")
             })?;
         mac.copy_from_slice(&addr[..]);
+        Ok(())
+    }
+    fn get_misc_mac(
+        &self,
+        linkid: sys::datalink_id_t,
+        mac: &mut [u8],
+    ) -> Result<()> {
+        // Unfortunately, XDE/OPTE creates 'misc' type devices, as it is
+        // a pseudo device. `dladm` has no built-in commands for these,
+        // and macaddr queries for all other link types go through their
+        // dedicated `dladm show-<X>` commands. As a consequence, we have
+        // to go to libdladm/libdllink directly here.
+
+        // One-off callback function and arg struct.
+        // This will use the first seen mac address attached to the link.
+        unsafe extern "C" fn per_macaddr(
+            arg: *mut c_void,
+            macaddr: *mut sys::dladm_macaddr_attr_t,
+        ) -> sys::boolean_t {
+            let state = &mut *(arg as *mut Arg);
+            state.n_seen += 1;
+
+            if (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
+                state.mac.copy_from_slice(&(*macaddr).ma_addr[..ETHERADDRL]);
+                state.written = true;
+                sys::boolean_t::B_FALSE
+            } else {
+                // Keep going.
+                sys::boolean_t::B_TRUE
+            }
+        }
+
+        struct Arg<'a> {
+            mac: &'a mut [u8],
+            n_seen: usize,
+            written: bool,
+        }
+
+        let mut state = Arg { mac, n_seen: 0, written: false };
+
+        // SAFETY: dladm_handle_t is known to be valid, and &mut reference
+        // to state is only held inside the callback.
+        Self::handle_dladm_err(unsafe {
+            sys::dladm_walk_macaddr(
+                self.inner,
+                linkid,
+                &mut state as *mut _ as *mut c_void,
+                per_macaddr,
+            )
+        })?;
+
+        if state.n_seen == 0 {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "no mac addrs found on link",
+            ));
+        } else if !state.written {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "no mac addrs on link had correct length (6B)",
+            ));
+        }
+
         Ok(())
     }
 

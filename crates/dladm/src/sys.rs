@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use libc::c_int;
+use libc::{c_char, c_int, c_uchar, c_uint, c_void};
 use strum::FromRepr;
 
 #[cfg(target_os = "illumos")]
@@ -19,12 +19,20 @@ extern "C" {
         classp: *mut c_int,
         mediap: *mut u32,
     ) -> c_int;
+    pub fn dladm_walk_macaddr(
+        handle: dladm_handle_t,
+        linkid: datalink_id_t,
+        arg: *mut c_void,
+        callback: unsafe extern "C" fn(
+            *mut c_void,
+            *mut dladm_macaddr_attr_t,
+        ) -> boolean_t,
+    ) -> c_int;
 }
 
 #[cfg(not(target_os = "illumos"))]
 mod compat {
     #![allow(unused)]
-
     use super::*;
 
     pub unsafe extern "C" fn dladm_open(handle: *mut dladm_handle_t) -> c_int {
@@ -33,7 +41,6 @@ mod compat {
     pub unsafe extern "C" fn dladm_close(handle: dladm_handle_t) {
         panic!("illumos only");
     }
-    #[cfg(not(target_os = "illumos"))]
     pub unsafe extern "C" fn dladm_name2info(
         handle: dladm_handle_t,
         link: *const u8,
@@ -45,6 +52,17 @@ mod compat {
     ) -> c_int {
         panic!("illumos only");
     }
+    pub unsafe extern "C" fn dladm_walk_macaddr(
+        handle: dladm_handle_t,
+        linkid: datalink_id_t,
+        arg: *mut c_void,
+        callback: unsafe extern "C" fn(
+            *mut c_void,
+            *mut dladm_macaddr_attr_t,
+        ) -> boolean_t,
+    ) -> c_int {
+        panic!("illumos only");
+    }
 }
 #[cfg(not(target_os = "illumos"))]
 pub use compat::*;
@@ -53,6 +71,23 @@ pub use compat::*;
 pub enum dladm_handle {}
 pub type dladm_handle_t = *mut dladm_handle;
 pub type datalink_id_t = u32;
+#[repr(C)]
+pub struct dladm_macaddr_attr_t {
+    pub ma_slot: c_uint,
+    pub ma_flags: c_uint,
+    pub ma_addr: [c_uchar; MAXMACADDRLEN],
+    pub ma_addrlen: c_uint,
+    pub ma_client_name: [c_char; MAXNAMELEN],
+    pub ma_client_linkid: datalink_id_t,
+}
+#[repr(C)]
+pub enum boolean_t {
+    B_FALSE,
+    B_TRUE,
+}
+
+const MAXMACADDRLEN: usize = 20;
+const MAXNAMELEN: usize = 256;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
 #[repr(i32)]
@@ -66,6 +101,7 @@ pub enum datalink_class {
     DATALINK_CLASS_BRIDGE = 0x40,
     DATALINK_CLASS_IPTUN = 0x80,
     DATALINK_CLASS_PART = 0x100,
+    DATALINK_CLASS_MISC = 0x400,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
