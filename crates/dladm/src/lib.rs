@@ -142,13 +142,14 @@ impl Handle {
             let state = &mut *(arg as *mut Arg);
             state.n_seen += 1;
 
-            if !state.written && (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
+            if (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
                 state.mac.copy_from_slice(&(*macaddr).ma_addr[..ETHERADDRL]);
                 state.written = true;
+                sys::boolean_t::B_FALSE
+            } else {
+                // Keep going.
+                sys::boolean_t::B_TRUE
             }
-
-            // Keep going.
-            sys::boolean_t::B_TRUE
         }
 
         struct Arg<'a> {
@@ -165,7 +166,7 @@ impl Handle {
             sys::dladm_walk_macaddr(
                 self.inner,
                 linkid,
-                addr_of_mut!(state) as *mut c_void,
+                &mut state as *mut _ as *mut c_void,
                 per_macaddr,
             )
         })?;
