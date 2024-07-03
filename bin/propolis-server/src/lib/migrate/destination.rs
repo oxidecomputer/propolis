@@ -15,7 +15,6 @@ use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
@@ -33,10 +32,7 @@ use crate::vm::objects::VmObjectsShared;
 use crate::vm::state_publisher::{ExternalStateUpdate, MigrationStateUpdate};
 
 use super::protocol::Protocol;
-
-trait Connection: AsyncRead + AsyncWrite + Unpin + Send {}
-
-impl Connection for tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream> {}
+use super::MigrateConn;
 
 /// Implemented by each version of the target half of a live migration protocol
 /// version.
@@ -66,7 +62,7 @@ pub(crate) async fn initiate<'e>(
         "migrate_src_addr" => migrate_info.src_addr
     ));
 
-    info!(log, "Negotiating migration as destination");
+    info!(log, "negotiating migration as destination");
 
     // Build upgrade request to the source instance
     // (we do this by hand because it's hidden from the OpenAPI spec)
@@ -185,7 +181,7 @@ impl<'a> EnsureState<'a> {
 }
 
 /// The runner for version 0 of the LM protocol, using RON encoding.
-struct RonV0<'e, T: Connection> {
+struct RonV0<'e, T: MigrateConn> {
     /// The ID for this migration.
     migration_id: Uuid,
 
@@ -207,7 +203,7 @@ struct RonV0<'e, T: Connection> {
 }
 
 #[async_trait::async_trait]
-impl<'e, T: Connection + Sync> DestinationProtocol<'e> for RonV0<'e, T> {
+impl<'e, T: MigrateConn + Sync> DestinationProtocol<'e> for RonV0<'e, T> {
     async fn run<'ensure>(
         mut self,
         ensure: VmEnsureNotStarted<'ensure>,
@@ -267,7 +263,7 @@ impl<'e, T: Connection + Sync> DestinationProtocol<'e> for RonV0<'e, T> {
     }
 }
 
-impl<'ensure, T: Connection> RonV0<'ensure, T> {
+impl<'ensure, T: MigrateConn> RonV0<'ensure, T> {
     fn new(
         log: slog::Logger,
         migration_id: Uuid,

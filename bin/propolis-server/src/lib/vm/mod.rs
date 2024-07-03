@@ -97,7 +97,6 @@ use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
 mod active;
 pub(crate) mod ensure;
 pub(crate) mod guest_event;
-pub(crate) mod migrate_commands;
 pub(crate) mod objects;
 mod request_queue;
 mod services;

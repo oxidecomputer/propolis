@@ -4,17 +4,12 @@
 
 use bit_field::BitField;
 use dropshot::HttpError;
-use futures::{SinkExt, StreamExt};
 use propolis::migrate::MigrateStateError;
 use propolis_api_types::MigrationState;
 use serde::{Deserialize, Serialize};
-use slog::{error, info, o};
+use slog::error;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use tokio_tungstenite::{tungstenite, WebSocketStream};
-use uuid::Uuid;
 
 mod codec;
 pub mod destination;
@@ -22,6 +17,14 @@ mod memx;
 mod preamble;
 pub mod protocol;
 pub mod source;
+
+pub(crate) trait MigrateConn:
+    AsyncRead + AsyncWrite + Unpin + Send
+{
+}
+
+impl MigrateConn for tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream> {}
+impl MigrateConn for hyper::upgrade::Upgraded {}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MigrateRole {
@@ -139,11 +142,6 @@ pub enum MigrateError {
     /// The other end of the migration ran into an error
     #[error("{0:?} migration instance encountered error: {1}")]
     RemoteError(MigrateRole, String),
-
-    /// Sending/receiving from the VM state driver command/response channels
-    /// returned an error.
-    #[error("VM state driver unexpectedly closed channel")]
-    StateDriverChannelClosed,
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for MigrateError {
@@ -181,8 +179,7 @@ impl From<MigrateError> for HttpError {
             | MigrateError::TimeData(_)
             | MigrateError::DeviceState(_)
             | MigrateError::RemoteError(_, _)
-            | MigrateError::StateMachine(_)
-            | MigrateError::StateDriverChannelClosed => {
+            | MigrateError::StateMachine(_) => {
                 HttpError::for_internal_error(msg)
             }
             MigrateError::MigrationAlreadyInProgress
@@ -215,85 +212,6 @@ struct DevicePayload {
 
     /// Serialized device state.
     pub data: String,
-}
-
-pub(crate) struct SourceContext<
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-> {
-    pub conn: WebSocketStream<T>,
-    pub protocol: crate::migrate::protocol::Protocol,
-}
-
-/// Begin the migration process (source-side).
-///
-/// This will check protocol version and then begin the migration in a separate task.
-pub async fn source_start<
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
->(
-    log: &slog::Logger,
-    migration_id: Uuid,
-    mut conn: WebSocketStream<T>,
-) -> Result<SourceContext<T>, MigrateError> {
-    // Create a new log context for the migration
-    let log = log.new(o!(
-        "migration_id" => migration_id.to_string(),
-        "migrate_role" => "source"
-    ));
-    info!(log, "Migration Source");
-
-    let selected = match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(dst_protocols))) => {
-            info!(log, "destination offered protocols: {}", dst_protocols);
-            match protocol::select_protocol_from_offer(&dst_protocols) {
-                Ok(Some(selected)) => {
-                    info!(log, "selected protocol {:?}", selected);
-                    conn.send(tungstenite::Message::Text(
-                        selected.offer_string(),
-                    ))
-                    .await?;
-                    selected
-                }
-                Ok(None) => {
-                    let src_protocols = protocol::make_protocol_offer();
-                    error!(
-                        log,
-                        "no compatible destination protocols";
-                        "dst_protocols" => &dst_protocols,
-                        "src_protocols" => &src_protocols,
-                    );
-                    return Err(MigrateError::NoMatchingProtocol(
-                        src_protocols,
-                        dst_protocols,
-                    ));
-                }
-                Err(e) => {
-                    error!(log, "failed to parse destination protocol offer";
-                           "dst_protocols" => &dst_protocols,
-                           "error" => %e);
-                    return Err(MigrateError::ProtocolParse(
-                        dst_protocols,
-                        e.to_string(),
-                    ));
-                }
-            }
-        }
-        x => {
-            conn.send(tungstenite::Message::Close(Some(CloseFrame {
-                code: CloseCode::Protocol,
-                reason: "did not begin with version handshake.".into(),
-            })))
-            .await?;
-            error!(
-                log,
-                "destination side did not begin migration version handshake: \
-                 {:?}",
-                x
-            );
-            return Err(MigrateError::Initiate);
-        }
-    };
-
-    Ok(SourceContext { conn, protocol: selected })
 }
 
 // We should probably turn this into some kind of ValidatedBitmap

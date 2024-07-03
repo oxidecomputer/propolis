@@ -19,17 +19,15 @@ use slog::{error, info};
 use uuid::Uuid;
 
 use crate::{
-    migrate::{destination::DestinationProtocol, MigrateRole},
+    migrate::{
+        destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
+    },
     vm::state_publisher::ExternalStateUpdate,
 };
 
 use super::{
     ensure::VmEnsureNotStarted,
     guest_event::{self, GuestEvent},
-    migrate_commands::{
-        next_migrate_task_event, MigrateSourceCommand, MigrateSourceResponse,
-        MigrateTaskEvent,
-    },
     objects::VmObjects,
     request_queue::{ExternalRequest, InstanceAutoStart},
     state_publisher::{MigrationStateUpdate, StatePublisher},
@@ -518,18 +516,6 @@ impl StateDriver {
         self.publish_steady_state(InstanceState::Stopped);
     }
 
-    async fn pause(&mut self) {
-        assert!(!self.paused);
-        self.objects.lock_exclusive().await.pause().await;
-        self.paused = true;
-    }
-
-    async fn resume(&mut self) {
-        assert!(self.paused);
-        self.objects.lock_exclusive().await.resume();
-        self.paused = false;
-    }
-
     fn publish_steady_state(&mut self, state: InstanceState) {
         let change = match state {
             InstanceState::Running => {
@@ -563,11 +549,27 @@ impl StateDriver {
         )
         .await;
 
-        // Negotiate the migration protocol version with the target.
-        let Ok(migrate_ctx) =
-            crate::migrate::source_start(&self.log, migration_id, conn).await
-        else {
-            return;
+        let migration = match crate::migrate::source::initiate(
+            &self.log,
+            migration_id,
+            conn,
+            &self.objects,
+            &self.migration_src_state,
+        )
+        .await
+        {
+            Ok(migration) => migration,
+            Err(_) => {
+                self.external_state.update(ExternalStateUpdate::Migration(
+                    MigrationStateUpdate {
+                        id: migration_id,
+                        state: MigrationState::Error,
+                        role: MigrateRole::Source,
+                    },
+                ));
+
+                return;
+            }
         };
 
         // Publish that migration is in progress before actually launching the
@@ -581,83 +583,28 @@ impl StateDriver {
             },
         ));
 
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-        let objects_for_task = self.objects.clone();
-        let mut migrate_task = tokio::spawn(async move {
-            crate::migrate::source::migrate(
-                objects_for_task,
-                command_tx,
-                response_rx,
-                migrate_ctx.conn,
-                migrate_ctx.protocol,
+        match migration
+            .run(
+                &self.objects,
+                &mut self.external_state,
+                &mut self.migration_src_state,
             )
             .await
-        });
+        {
+            Ok(()) => {
+                info!(self.log, "migration out succeeded, queuing stop");
+                // On a successful migration out, the protocol promises to leave
+                // the VM objects in a paused state, so don't pause them again.
+                self.paused = true;
+                self.input_queue
+                    .queue_external_request(ExternalRequest::Stop)
+                    .expect("can always queue a request to stop");
+            }
+            Err(e) => {
+                info!(self.log, "migration out failed, resuming";
+                      "error" => ?e);
 
-        // The migration task may try to acquire the VM object lock shared, so
-        // this task cannot hold it excluive while waiting for the migration
-        // task to send an event.
-        loop {
-            match next_migrate_task_event(
-                &mut migrate_task,
-                &mut command_rx,
-                &self.log,
-            )
-            .await
-            {
-                MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_ok() {
-                        self.input_queue
-                            .queue_external_request(ExternalRequest::Stop)
-                            .expect("can always queue a request to stop");
-                    } else {
-                        if self.paused {
-                            self.resume().await;
-                        }
-
-                        self.publish_steady_state(InstanceState::Running);
-                    }
-
-                    return;
-                }
-
-                // N.B. When handling a command that requires a reply, do not
-                //      return early if the reply fails to send. Instead,
-                //      loop back around and let the `TaskExited` path restore
-                //      the VM to the correct state.
-                MigrateTaskEvent::Command(cmd) => match cmd {
-                    MigrateSourceCommand::UpdateState(state) => {
-                        self.external_state.update(
-                            ExternalStateUpdate::Migration(
-                                MigrationStateUpdate {
-                                    id: migration_id,
-                                    state,
-                                    role: MigrateRole::Source,
-                                },
-                            ),
-                        );
-                    }
-                    MigrateSourceCommand::Pause => {
-                        self.pause().await;
-                        let _ = response_tx
-                            .send(MigrateSourceResponse::Pause(Ok(())))
-                            .await;
-                    }
-                    MigrateSourceCommand::QueryRedirtyingFailed => {
-                        let has_failed =
-                            self.migration_src_state.has_redirtying_ever_failed;
-                        let _ = response_tx
-                            .send(MigrateSourceResponse::RedirtyingFailed(
-                                has_failed,
-                            ))
-                            .await;
-                    }
-                    MigrateSourceCommand::RedirtyingFailed => {
-                        self.migration_src_state.has_redirtying_ever_failed =
-                            true;
-                    }
-                },
+                self.publish_steady_state(InstanceState::Running);
             }
         }
     }
