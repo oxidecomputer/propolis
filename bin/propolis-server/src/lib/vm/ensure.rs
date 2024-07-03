@@ -4,38 +4,26 @@
 
 //! Tools for handling instance ensure requests.
 //!
-//! The types in this module aim to help contain two bits of complexity:
+//! To initialize a new VM, the server must (1) create a set of VM objects from
+//! an instance spec, (2) set up VM services that use those objects, (3) use the
+//! objects and services to drive the VM state machine to the `ActiveVm` state,
+//! and (4) notify the original caller of the "instance ensure" API of the
+//! completion of its request. If VM initialization fails, the actions required
+//! to compensate and drive the state machine to `RundownComplete` depend on how
+//! many steps were completed.
 //!
-//! 1. When a request to create a Propolis instance fails, lots of things have
-//!    to happen:
-//!    - The externally-visible instance state must move to Failed.
-//!    - The ensure request itself must return a failure status.
-//!    - The VM state machine must move into a rundown state--but which one
-//!      depends on whether instance creation got far enough to create VM
-//!      objects: if it did, the state machine must go to Rundown and wait for
-//!      the objects to be destroyed; if it didn't, the instance goes straight
-//!      to RundownComplete.
-//! 2. When initializing via live migration, the steps needed to initialize an
-//!    instance are interleaved with the live migration's phases: the ensure
-//!    request returns as soon as the VM's objects are created, but the
-//!    migration itself must complete before the VM enters its main state driver
-//!    loop.
+//! When live migrating into an instance, the live migration task interleaves
+//! initialization steps with the steps of the live migration protocol, and
+//! needs to be able to unwind initialization correctly whenever the migration
+//! protocol fails.
 //!
-//! The types in this module describe three different phases of instance
-//! initialization:
-//!
-//! 1. Not started: the VM state machine exists and an ensure request has been
-//!    received, but no VM objects have been created yet.
-//! 2. Objects created: a set of VM objects has been created, but no active
-//!    VM has yet been installed in the VM state machine.
-//! 3. VM activated: a set of VM objects has been turned into an `ActiveVm` and
-//!    installed in the VM state machine.
-//!
-//! Each phase type has a transition function that consumes the phase and tries
-//! to transition to the next phase. Each type also has an explicit `fail`
-//! method that allows an external caller (e.g. the live migration procedure) to
-//! indicate that a higher-level failure occurred and that the phase should run
-//! its cleanup code.
+//! The `VmEnsure` types in this module exist to hide the gory details of
+//! initializing and unwinding from higher-level operations like the live
+//! migration task. Each type represents a phase of the initialization process
+//! and has a routine that consumes the current phase and moves to the next
+//! phase. If a higher-level operation fails, it can call a failure handler on
+//! its current phase to unwind the whole operation and drive the VM state
+//! machine to the correct resting state.
 
 use std::sync::Arc;
 
