@@ -19,19 +19,6 @@ impl VionaFd {
 
         let mut vna_create = vioc_create { c_linkid: link_id, c_vmfd: vm_fd };
         let _ = unsafe { this.ioctl(ioctls::VNA_IOC_CREATE, &mut vna_create) }?;
-        #[cfg(feature = "falcon")]
-        if this
-            .ioctl_usize(
-                ioctls::VNA_IOC_SET_PROMISC,
-                vioc_promisc::VIONA_PROMISC_ALL_VLAN as usize,
-            )
-            .is_err()
-        {
-            // Until/unless this support is integrated into stlouis/illumos,
-            // this is an expected failure.   This is needed to use vlans,
-            // but shouldn't affect any other use case.
-            println!("failed to enable promisc mode on viona");
-        }
         Ok(this)
     }
 
