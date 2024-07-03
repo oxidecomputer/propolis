@@ -161,7 +161,7 @@ mod running_process {
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
-        // Also verify tha the target reports that it failed.
+        // Also verify that the target reports that it failed.
         let target_migration_state = target1
             .get_migration_state()
             .await?
@@ -214,7 +214,7 @@ mod running_process {
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
-        // Also verify tha the target reports that it failed.
+        // Also verify that the target reports that it failed.
         let target_migration_state = target1
             .get_migration_state()
             .await?
