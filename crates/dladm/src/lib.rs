@@ -10,7 +10,7 @@ use std::ptr::addr_of_mut;
 #[allow(non_camel_case_types)]
 mod sys;
 
-use libc::{c_int, c_void};
+use libc::c_void;
 use sys::{datalink_class, dladm_handle_t, dladm_status};
 
 pub struct Handle {
@@ -127,18 +127,27 @@ impl Handle {
         linkid: sys::datalink_id_t,
         mac: &mut [u8],
     ) -> Result<()> {
-        unsafe extern "C" fn handle_mac(
+        // Unfortunately, XDE/OPTE creates 'misc' type devices, as it is
+        // a pseudo device. `dladm` has no built-in commands for these,
+        // and macaddr queries for all other link types go through their
+        // dedicated `dladm show-<X>` commands. As a consequence, we have
+        // to go to libdladm/libdllink directly here.
+
+        // One-off callback function and arg struct.
+        // This will use the first seen mac address attached to the link.
+        unsafe extern "C" fn per_macaddr(
             arg: *mut c_void,
             macaddr: *mut sys::dladm_macaddr_attr_t,
         ) -> sys::boolean_t {
-            let a = &mut *(arg as *mut Arg);
-            a.n_seen += 1;
+            let state = &mut *(arg as *mut Arg);
+            state.n_seen += 1;
 
-            if !a.written && (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
-                a.mac.copy_from_slice(&(*macaddr).ma_addr[..ETHERADDRL]);
-                a.written = true;
+            if !state.written && (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
+                state.mac.copy_from_slice(&(*macaddr).ma_addr[..ETHERADDRL]);
+                state.written = true;
             }
 
+            // Keep going.
             sys::boolean_t::B_TRUE
         }
 
@@ -150,14 +159,16 @@ impl Handle {
 
         let mut state = Arg { mac, n_seen: 0, written: false };
 
-        unsafe {
+        // SAFETY: dladm_handle_t is known to be valid, and &mut reference
+        // to state is only held inside the callback.
+        Self::handle_dladm_err(unsafe {
             sys::dladm_walk_macaddr(
                 self.inner,
                 linkid,
                 addr_of_mut!(state) as *mut c_void,
-                handle_mac,
-            );
-        }
+                per_macaddr,
+            )
+        })?;
 
         if state.n_seen == 0 {
             return Err(Error::new(
@@ -167,7 +178,7 @@ impl Handle {
         } else if !state.written {
             return Err(Error::new(
                 ErrorKind::Other,
-                "mac addrs on link had illegal length",
+                "no mac addrs on link had correct length (6B)",
             ));
         }
 

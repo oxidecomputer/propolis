@@ -80,6 +80,7 @@ pub struct dladm_macaddr_attr_t {
     pub ma_client_name: [c_char; MAXNAMELEN],
     pub ma_client_linkid: datalink_id_t,
 }
+#[allow(unused)]
 #[repr(C)]
 pub enum boolean_t {
     B_FALSE,
