@@ -5,7 +5,6 @@
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use std::process::{Command, Stdio};
-use std::ptr::addr_of_mut;
 
 #[allow(non_camel_case_types)]
 mod sys;
