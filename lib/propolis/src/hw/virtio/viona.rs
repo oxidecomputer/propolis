@@ -105,7 +105,7 @@ impl PciVirtioViona {
         vm: &VmmHdl,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
-        let info = dlhdl.query_vnic(vnic_name)?;
+        let info = dlhdl.query_link(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 
         // TX and RX

@@ -24,7 +24,7 @@ impl Handle {
         Ok(Self { inner: hdl })
     }
 
-    pub fn query_vnic(&self, name: &str) -> Result<LinkInfo> {
+    pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
         let name_cstr = CString::new(name).unwrap();
         let mut link_id: sys::datalink_id_t = 0;
         let mut class: i32 = 0;
