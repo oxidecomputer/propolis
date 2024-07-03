@@ -34,13 +34,16 @@ use crate::vm::state_publisher::{ExternalStateUpdate, MigrationStateUpdate};
 use super::protocol::Protocol;
 use super::MigrateConn;
 
-/// Implemented by each version of the target half of a live migration protocol
-/// version.
+/// The interface to an arbitrary version of the target half of the live
+/// migration protocol.
 //
 // Use `async_trait` here to help generate a `Send` bound on the futures
 // returned by the functions in this trait.
 #[async_trait::async_trait]
 pub(crate) trait DestinationProtocol<'e> {
+    /// Runs live migration as a target, attempting to create a set of VM
+    /// objects in the process. On success, returns an "active VM" placeholder
+    /// that the caller can use to set up and start a state driver loop.
     async fn run<'ensure>(
         mut self,
         ensure: VmEnsureNotStarted<'ensure>,
@@ -49,6 +52,10 @@ pub(crate) trait DestinationProtocol<'e> {
         'e: 'ensure;
 }
 
+/// Connects to a live migration source using the migration request information
+/// in `migrate_info`, then negotiates a protocol version with that source.
+/// Returns a [`DestinationProtocol`] implementation for the negotiated version
+/// that the caller can use to run the migration.
 pub(crate) async fn initiate<'e>(
     log: &slog::Logger,
     migrate_info: &InstanceMigrateInitiateRequest,
@@ -126,12 +133,21 @@ pub(crate) async fn initiate<'e>(
     })
 }
 
+/// A helper type for abstracting away type-level differences between the
+/// different phases of instance ensure.
 enum EnsureState<'a> {
     NotStarted(VmEnsureNotStarted<'a>),
     Active(VmEnsureActive<'a>),
 }
 
 impl<'a> EnsureState<'a> {
+    /// Moves the state machine to the `Active` state by creating VM objects,
+    /// preparing them for an incoming live migration, and activating the
+    /// created objects.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the state machine is not in the `NotStarted` state.
     async fn activate(self) -> anyhow::Result<Self> {
         let not_started = match self {
             EnsureState::NotStarted(vm) => vm,
@@ -144,6 +160,8 @@ impl<'a> EnsureState<'a> {
         Ok(Self::Active(active))
     }
 
+    /// Publishes the supplied migration state to the server's external state
+    /// channel.
     fn update(&mut self, id: Uuid, state: MigrationState) {
         let publisher = match self {
             EnsureState::NotStarted(vm) => vm.state_publisher(),
@@ -155,6 +173,8 @@ impl<'a> EnsureState<'a> {
         ));
     }
 
+    /// Notifies the instance ensure helper that migration has failed and that
+    /// VM initialization should therefore also fail.
     async fn fail(self, reason: MigrateError) -> MigrateError {
         match self {
             EnsureState::NotStarted(vm) => {
@@ -170,6 +190,8 @@ impl<'a> EnsureState<'a> {
         }
     }
 
+    /// If the state machine is in the `Active` state, locks the VM objects
+    /// shared and returns the corresponding guard. Returns `None` otherwise.
     async fn vm_objects(&self) -> Option<VmObjectsShared> {
         let objects = match self {
             EnsureState::NotStarted(_) => return None,
@@ -214,11 +236,15 @@ impl<'e, T: MigrateConn + Sync> DestinationProtocol<'e> for RonV0<'e, T> {
         info!(self.log(), "entering destination migration task");
 
         let result = async {
+            // Run the sync phase to ensure that the source's instance spec is
+            // compatible with the spec supplied in the ensure parameters.
             if let Err(e) = self.run_sync_phase(ensure).await {
                 self.update_state(MigrationState::Error);
                 return Err(self.ensure_state.take().unwrap().fail(e).await);
             }
 
+            // The sync phase succeeded, so it's OK to go ahead with creating
+            // the objects in the target's instance spec.
             let new_state =
                 self.ensure_state.take().unwrap().activate().await.map_err(
                     |e| {
@@ -230,11 +256,15 @@ impl<'e, T: MigrateConn + Sync> DestinationProtocol<'e> for RonV0<'e, T> {
 
             self.ensure_state = Some(new_state);
 
+            // Now that the VM's objects exist, run the rest of the protocol to
+            // import state into them.
             if let Err(e) = self.run_import_phases().await {
                 self.update_state(MigrationState::Error);
                 return Err(self.ensure_state.take().unwrap().fail(e).await);
             }
 
+            // Everything succeeded, so extract the active ensured VM to return
+            // to the caller.
             let EnsureState::Active(vm) = self.ensure_state.take().unwrap()
             else {
                 panic!("invalid ensure state at end of migration in");
@@ -250,10 +280,10 @@ impl<'e, T: MigrateConn + Sync> DestinationProtocol<'e> for RonV0<'e, T> {
         match result {
             Ok(vm) => Ok(vm),
             Err(err) => {
-                // We encountered an error, try to inform the remote before bailing
-                // Note, we don't use `?` here as this is a best effort and we don't
-                // want an error encountered during this send to shadow the run
-                // error from the caller.
+                // We encountered an error, try to inform the remote before
+                // bailing Note, we don't use `?` here as this is a best effort
+                // and we don't want an error encountered during this send to
+                // shadow the run error from the caller.
                 if let Ok(e) = codec::Message::Error(err.clone()).try_into() {
                     let _ = self.conn.send(e).await;
                 }

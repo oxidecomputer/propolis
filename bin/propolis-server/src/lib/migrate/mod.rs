@@ -18,6 +18,7 @@ mod preamble;
 pub mod protocol;
 pub mod source;
 
+/// Trait bounds for connection objects used in live migrations.
 pub(crate) trait MigrateConn:
     AsyncRead + AsyncWrite + Unpin + Send
 {

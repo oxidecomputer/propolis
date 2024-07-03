@@ -344,8 +344,6 @@ impl Vm {
     /// creating an `ActiveVm` with the supplied input queue, VM objects, and VM
     /// services.
     ///
-    /// This routine should only be called by the state driver.
-    ///
     /// # Panics
     ///
     /// Panics if the VM is not in the `WaitingForInit` state.
@@ -376,30 +374,21 @@ impl Vm {
         }
     }
 
-    /// Moves this VM from the `WaitingForInit` state to a rundown state in
-    /// response to an instance initialization failure.
+    /// Moves this VM from the `WaitingForInit` state to the `RundownComplete`
+    /// state in response to an instance initialization failure.
     ///
-    /// This routine should only be called by the state driver.
-    ///
-    /// # Arguments
-    ///
-    /// - `wait_for_objects`: True if the caller successfully created VM
-    ///   objects that need to be destroyed before rundown can be completed.
-    ///   False if the caller did not create any VM objects.
+    /// The caller must ensure there are no active `VmObjects` that refer to
+    /// this VM.
     ///
     /// # Panics
     ///
     /// Panics if the VM is not in the `WaitingForInit` state.
-    async fn vm_init_failed(&self, wait_for_objects: bool) {
+    async fn vm_init_failed(&self) {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
             VmState::WaitingForInit(vm) => {
-                guard.state = if wait_for_objects {
-                    VmState::Rundown(vm)
-                } else {
-                    VmState::RundownComplete(vm)
-                };
+                guard.state = VmState::RundownComplete(vm)
             }
             _ => unreachable!(
                 "start failures should only occur before an active VM is \

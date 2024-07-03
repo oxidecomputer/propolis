@@ -117,8 +117,19 @@ enum RamOfferDiscipline {
     OfferDirty,
 }
 
+/// The interface to an arbitrary version of the source half of the live
+/// migration protocol.
+//
+// Use `async_trait` here to help generate a `Send` bound on the futures
+// returned by the functions in this trait.
 #[async_trait::async_trait]
 pub(crate) trait SourceProtocol {
+    /// Runs live migration out of the supplied `vm_objects`, writing back any
+    /// state that must be saved for future migration attempts to
+    /// `persistent_state`.
+    ///
+    /// This routine guarantees that the supplied `vm_objects` are paused on
+    /// success and resumed on failure.
     async fn run(
         self,
         vm_objects: &VmObjects,
@@ -127,6 +138,9 @@ pub(crate) trait SourceProtocol {
     ) -> Result<(), MigrateError>;
 }
 
+/// Negotiates a live migration protocol version with a target who has connected
+/// over `conn`. If this is successful, returns a `SourceProtocol`
+/// implementation that can be used to run the requested migration.
 pub(crate) async fn initiate<T: MigrateConn>(
     log: &slog::Logger,
     migration_id: Uuid,
@@ -219,8 +233,12 @@ pub(crate) struct PersistentState {
     pub(crate) has_redirtying_ever_failed: bool,
 }
 
+/// Context for the source side of protocol version 0 using the RON encoding.
 struct RonV0<T: MigrateConn> {
+    /// The logger to which to log messages from this migration attempt.
     log: slog::Logger,
+
+    /// The migration's ID.
     migration_id: Uuid,
 
     /// Transport to the destination Instance.

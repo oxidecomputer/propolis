@@ -61,6 +61,8 @@ use super::{
     EnsureOptions, InstanceEnsureResponseTx, VmError,
 };
 
+/// Holds state about an instance ensure request that has not yet produced any
+/// VM objects or driven the VM state machine to the `ActiveVm` state.
 pub(crate) struct VmEnsureNotStarted<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
@@ -98,6 +100,8 @@ impl<'a> VmEnsureNotStarted<'a> {
         self.state_publisher
     }
 
+    /// Creates a set of VM objects using the instance spec stored in this
+    /// ensure request, but does not install them as an active VM.
     pub(crate) async fn create_objects(
         self,
     ) -> anyhow::Result<VmEnsureObjectsCreated<'a>> {
@@ -121,6 +125,8 @@ impl<'a> VmEnsureNotStarted<'a> {
         .await
         {
             Ok(objects) => {
+                // N.B. Once these `VmObjects` exist, it is no longer safe to
+                //      call `vm_init_failed`.
                 let objects = Arc::new(VmObjects::new(
                     self.log.clone(),
                     self.vm.clone(),
@@ -136,6 +142,7 @@ impl<'a> VmEnsureNotStarted<'a> {
                     state_publisher: self.state_publisher,
                     vm_objects: objects,
                     input_queue,
+                    kernel_vm_paused: false,
                 })
             }
             Err(e) => Err(self.fail(e).await),
@@ -146,7 +153,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         self.state_publisher
             .update(ExternalStateUpdate::Instance(InstanceState::Failed));
 
-        self.vm.vm_init_failed(false).await;
+        self.vm.vm_init_failed().await;
         let _ = self
             .ensure_response_tx
             .send(Err(VmError::InitializationFailed(reason.to_string())));
@@ -155,6 +162,9 @@ impl<'a> VmEnsureNotStarted<'a> {
     }
 }
 
+/// Represents an instance ensure request that has proceeded far enough to
+/// create a set of VM objects, but that has not yet installed those objects as
+/// an `ActiveVm` or notified the requestor that its request is complete.
 pub(crate) struct VmEnsureObjectsCreated<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
@@ -164,15 +174,28 @@ pub(crate) struct VmEnsureObjectsCreated<'a> {
     state_publisher: &'a mut StatePublisher,
     vm_objects: Arc<VmObjects>,
     input_queue: Arc<InputQueue>,
+    kernel_vm_paused: bool,
 }
 
 impl<'a> VmEnsureObjectsCreated<'a> {
+    /// Prepares the VM's CPUs for an incoming live migration by activating them
+    /// (at the kernel VM level) and then pausing the kernel VM. This must be
+    /// done before importing any state into these objects.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called more than once on the same set of objects.
     pub(crate) async fn prepare_for_migration(&mut self) {
+        assert!(!self.kernel_vm_paused);
         let guard = self.vm_objects.lock_exclusive().await;
         guard.reset_vcpus();
         guard.pause_kernel_vm();
+        self.kernel_vm_paused = true;
     }
 
+    /// Uses this struct's VM objects to create a set of VM services, then
+    /// installs an active VM into the parent VM state machine and notifies the
+    /// ensure requester that its request is complete.
     pub(crate) async fn ensure_active(self) -> VmEnsureActive<'a> {
         let vm_services = VmServices::new(
             self.log,
@@ -205,15 +228,20 @@ impl<'a> VmEnsureObjectsCreated<'a> {
             state_publisher: self.state_publisher,
             vm_objects: self.vm_objects,
             input_queue: self.input_queue,
+            kernel_vm_paused: self.kernel_vm_paused,
         }
     }
 }
 
+/// Describes a set of VM objects that are fully initialized and referred to by
+/// the `ActiveVm` in a VM state machine, but for which a state driver loop has
+/// not started yet.
 pub(crate) struct VmEnsureActive<'a> {
     vm: &'a Arc<super::Vm>,
     state_publisher: &'a mut StatePublisher,
     vm_objects: Arc<VmObjects>,
     input_queue: Arc<InputQueue>,
+    kernel_vm_paused: bool,
 }
 
 impl<'a> VmEnsureActive<'a> {
@@ -225,13 +253,26 @@ impl<'a> VmEnsureActive<'a> {
         self.state_publisher
     }
 
-    pub(crate) async fn fail(self) {
+    pub(crate) async fn fail(mut self) {
+        // If a caller asked to prepare the VM objects for migration in the
+        // previous phase, make sure that operation is undone before the VM
+        // objects are torn down.
+        if self.kernel_vm_paused {
+            let guard = self.vm_objects.lock_exclusive().await;
+            guard.resume_kernel_vm();
+            self.kernel_vm_paused = false;
+        }
+
         self.state_publisher
             .update(ExternalStateUpdate::Instance(InstanceState::Failed));
 
+        // Since there are extant VM objects, move to the Rundown state. The VM
+        // will move to RundownComplete when the objects are finally dropped.
         self.vm.set_rundown().await;
     }
 
+    /// Yields the VM objects and input queue for this VM so that they can be
+    /// used to start a state driver loop.
     pub(super) fn into_inner(self) -> (Arc<VmObjects>, Arc<InputQueue>) {
         (self.vm_objects, self.input_queue)
     }
