@@ -149,9 +149,8 @@ impl<'a> EnsureState<'a> {
     ///
     /// Panics if the state machine is not in the `NotStarted` state.
     async fn activate(self) -> anyhow::Result<Self> {
-        let not_started = match self {
-            EnsureState::NotStarted(vm) => vm,
-            _ => unreachable!("can only activate a VM once"),
+        let EnsureState::NotStarted(not_started) = self else {
+            unreachable!("can only activate a VM once");
         };
 
         let mut objects_created = not_started.create_objects().await?;
@@ -193,12 +192,12 @@ impl<'a> EnsureState<'a> {
     /// If the state machine is in the `Active` state, locks the VM objects
     /// shared and returns the corresponding guard. Returns `None` otherwise.
     async fn vm_objects(&self) -> Option<VmObjectsShared> {
-        let objects = match self {
-            EnsureState::NotStarted(_) => return None,
-            EnsureState::Active(vm) => vm.vm_objects(),
-        };
-
-        Some(objects.lock_shared().await)
+        match self {
+            EnsureState::NotStarted(_) => None,
+            EnsureState::Active(vm) => {
+                Some(vm.vm_objects().lock_shared().await)
+            }
+        }
     }
 }
 
