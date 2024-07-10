@@ -468,7 +468,6 @@ mod test {
         let off = bs * 4;
         let (block, _len) = block_offset_count(off, 0, bs).unwrap();
 
-        assert_eq!(block.block_size_in_bytes(), bs as u32);
-        assert_eq!(block.bytes(), off);
+        assert_eq!(block.0, 4);
     }
 }
