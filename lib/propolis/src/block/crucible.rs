@@ -351,12 +351,11 @@ fn block_offset_count(
     off_bytes: usize,
     len_bytes: usize,
     block_size: usize,
-) -> Result<(crucible::Block, usize), Error> {
+) -> Result<(crucible::BlockIndex, usize), Error> {
     if off_bytes % block_size == 0 && len_bytes % block_size == 0 {
         Ok((
-            crucible::Block::new(
+            crucible::BlockIndex(
                 (off_bytes / block_size) as u64,
-                block_size.trailing_zeros(),
             ),
             len_bytes / block_size,
         ))
