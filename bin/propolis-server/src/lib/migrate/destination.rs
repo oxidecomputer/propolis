@@ -9,7 +9,6 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
-use propolis_api_types::instance_spec::v0::InstanceSpecV0;
 use propolis_api_types::InstanceMigrateInitiateRequest;
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
@@ -29,8 +28,9 @@ use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
 use crate::vm::ensure::{VmEnsureActive, VmEnsureNotStarted};
-use crate::vm::objects::VmObjectsShared;
-use crate::vm::state_publisher::{ExternalStateUpdate, MigrationStateUpdate};
+use crate::vm::state_publisher::{
+    ExternalStateUpdate, MigrationStateUpdate, StatePublisher,
+};
 
 use super::protocol::Protocol;
 use super::MigrateConn;
@@ -132,92 +132,6 @@ pub(crate) async fn initiate(
     })
 }
 
-/// A helper type for abstracting away type-level differences between the
-/// different phases of instance ensure.
-enum EnsureState<'a> {
-    NotStarted(VmEnsureNotStarted<'a>),
-    Active(VmEnsureActive<'a>),
-}
-
-impl<'a> EnsureState<'a> {
-    /// Moves the state machine to the `Active` state by creating VM objects,
-    /// preparing them for an incoming live migration, and activating the
-    /// created objects.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the state machine is not in the `NotStarted` state.
-    async fn activate(self) -> anyhow::Result<Self> {
-        let EnsureState::NotStarted(not_started) = self else {
-            unreachable!("can only activate a VM once");
-        };
-
-        let mut objects_created = not_started.create_objects().await?;
-        objects_created.prepare_for_migration().await;
-        let active = objects_created.ensure_active().await;
-        Ok(Self::Active(active))
-    }
-
-    /// If the wrapper is in the Active state, yields the inner
-    /// `VmEnsureActive`.
-    fn into_active(self) -> Option<VmEnsureActive<'a>> {
-        match self {
-            Self::Active(vm) => Some(vm),
-            _ => None,
-        }
-    }
-
-    /// Publishes the supplied migration state to the server's external state
-    /// channel.
-    fn update(&mut self, id: Uuid, state: MigrationState) {
-        let publisher = match self {
-            EnsureState::NotStarted(vm) => vm.state_publisher(),
-            EnsureState::Active(vm) => vm.state_publisher(),
-        };
-
-        publisher.update(ExternalStateUpdate::Migration(
-            MigrationStateUpdate { state, id, role: MigrateRole::Destination },
-        ));
-    }
-
-    /// Notifies the instance ensure helper that migration has failed and that
-    /// VM initialization should therefore also fail.
-    async fn fail(self, reason: MigrateError) -> MigrateError {
-        match self {
-            EnsureState::NotStarted(vm) => {
-                let reason = vm.fail(reason.into()).await;
-                reason
-                    .downcast::<MigrateError>()
-                    .expect("original error was a MigrateError")
-            }
-            EnsureState::Active(vm) => {
-                vm.fail().await;
-                reason
-            }
-        }
-    }
-
-    /// If the state machine is in the `Active` state, locks the VM objects
-    /// shared and returns the corresponding guard. Returns `None` otherwise.
-    async fn vm_objects(&self) -> Option<VmObjectsShared> {
-        match self {
-            EnsureState::NotStarted(_) => None,
-            EnsureState::Active(vm) => {
-                Some(vm.vm_objects().lock_shared().await)
-            }
-        }
-    }
-
-    async fn instance_spec(&self) -> InstanceSpecV0 {
-        match self {
-            EnsureState::NotStarted(vm) => vm.instance_spec().clone(),
-            EnsureState::Active(vm) => {
-                vm.vm_objects().lock_shared().await.instance_spec().clone()
-            }
-        }
-    }
-}
-
 /// The runner for version 0 of the LM protocol, using RON encoding.
 struct RonV0<T: MigrateConn> {
     /// The ID for this migration.
@@ -239,40 +153,47 @@ struct RonV0<T: MigrateConn> {
 impl<T: MigrateConn + Sync> DestinationProtocol for RonV0<T> {
     async fn run<'ensure>(
         mut self,
-        ensure: VmEnsureNotStarted<'ensure>,
+        mut ensure: VmEnsureNotStarted<'ensure>,
     ) -> Result<VmEnsureActive<'ensure>, MigrateError> {
         info!(self.log(), "entering destination migration task");
 
         let result = async {
-            let mut ensure = EnsureState::NotStarted(ensure);
-
             // Run the sync phase to ensure that the source's instance spec is
             // compatible with the spec supplied in the ensure parameters.
-            if let Err(e) = self.run_sync_phase(&mut ensure).await {
-                self.update_state(&mut ensure, MigrationState::Error);
-                return Err(ensure.fail(e).await);
+            if let Err(e) = self.run_sync_phases(&mut ensure).await {
+                self.update_state(
+                    ensure.state_publisher(),
+                    MigrationState::Error,
+                );
+                let e = ensure.fail(e.into()).await;
+                return Err(e
+                    .downcast::<MigrateError>()
+                    .expect("original error was a MigrateError"));
             }
 
             // The sync phase succeeded, so it's OK to go ahead with creating
             // the objects in the target's instance spec.
-            let mut ensure = ensure.activate().await.map_err(|e| {
-                MigrateError::TargetInstanceInitializationFailed(e.to_string())
-            })?;
+            let mut objects_created =
+                ensure.create_objects().await.map_err(|e| {
+                    MigrateError::TargetInstanceInitializationFailed(
+                        e.to_string(),
+                    )
+                })?;
+            objects_created.prepare_for_migration().await;
+            let mut ensure = objects_created.ensure_active().await;
 
             // Now that the VM's objects exist, run the rest of the protocol to
             // import state into them.
             if let Err(e) = self.run_import_phases(&mut ensure).await {
-                self.update_state(&mut ensure, MigrationState::Error);
-                return Err(ensure.fail(e).await);
+                self.update_state(
+                    ensure.state_publisher(),
+                    MigrationState::Error,
+                );
+                ensure.fail().await;
+                return Err(e);
             }
 
-            // Everything succeeded, so extract the active ensured VM to return
-            // to the caller.
-            let Some(vm) = ensure.into_active() else {
-                panic!("invalid ensure state at end of migration in");
-            };
-
-            Ok(vm)
+            Ok(ensure)
         }
         .await;
 
@@ -311,55 +232,73 @@ impl<T: MigrateConn> RonV0<T> {
 
     fn update_state(
         &self,
-        ensure_ctx: &mut EnsureState,
+        publisher: &mut StatePublisher,
         state: MigrationState,
     ) {
-        ensure_ctx.update(self.migration_id, state);
+        publisher.update(ExternalStateUpdate::Migration(
+            MigrationStateUpdate {
+                state,
+                id: self.migration_id,
+                role: MigrateRole::Destination,
+            },
+        ));
     }
 
-    async fn run_sync_phase(
+    async fn run_sync_phases(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureNotStarted<'_>,
     ) -> Result<(), MigrateError> {
-        self.run_phase(MigratePhase::MigrateSync, ensure_ctx).await?;
+        let step = MigratePhase::MigrateSync;
+
+        probes::migrate_phase_begin!(|| { step.to_string() });
+        self.sync(ensure_ctx).await?;
+        probes::migrate_phase_end!(|| { step.to_string() });
+
         Ok(())
     }
 
     async fn run_import_phases(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
         // The RAM transfer phase runs twice, once before the source pauses and
         // once after. There is no explicit pause phase on the destination,
         // though, so that step does not appear here even though there are
         // pre- and post-pause steps.
-        self.run_phase(MigratePhase::RamPushPrePause, ensure_ctx).await?;
-        self.run_phase(MigratePhase::RamPushPostPause, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::RamPushPrePause, ensure_ctx)
+            .await?;
+        self.run_import_phase(MigratePhase::RamPushPostPause, ensure_ctx)
+            .await?;
 
         // Import of the time data *must* be done before we import device
         // state: the proper functioning of device timers depends on an adjusted
         // boot_hrtime.
-        self.run_phase(MigratePhase::TimeData, ensure_ctx).await?;
-        self.run_phase(MigratePhase::DeviceState, ensure_ctx).await?;
-        self.run_phase(MigratePhase::RamPull, ensure_ctx).await?;
-        self.run_phase(MigratePhase::ServerState, ensure_ctx).await?;
-        self.run_phase(MigratePhase::Finish, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::TimeData, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::DeviceState, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::RamPull, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::ServerState, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::Finish, ensure_ctx).await?;
 
         Ok(())
     }
 
-    async fn run_phase(
+    async fn run_import_phase(
         &mut self,
         step: MigratePhase,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
         probes::migrate_phase_begin!(|| { step.to_string() });
 
         let res = match step {
-            MigratePhase::MigrateSync => self.sync(ensure_ctx).await,
+            MigratePhase::MigrateSync => {
+                unreachable!("sync phase runs before import")
+            }
 
             // no pause step on the dest side
-            MigratePhase::Pause => unreachable!(),
+            MigratePhase::Pause => {
+                unreachable!("no explicit pause phase on dest")
+            }
+
             MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
                 self.ram_push(&step, ensure_ctx).await
             }
@@ -377,9 +316,9 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn sync(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureNotStarted<'_>,
     ) -> Result<(), MigrateError> {
-        self.update_state(ensure_ctx, MigrationState::Sync);
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Sync);
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
                 Ok(ron::de::from_str(&s).map_err(codec::ProtocolError::from)?)
@@ -395,7 +334,7 @@ impl<T: MigrateConn> RonV0<T> {
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
         if let Err(e) =
-            preamble.is_migration_compatible(&ensure_ctx.instance_spec().await)
+            preamble.is_migration_compatible(ensure_ctx.instance_spec())
         {
             error!(
                 self.log(),
@@ -410,15 +349,17 @@ impl<T: MigrateConn> RonV0<T> {
     async fn ram_push(
         &mut self,
         phase: &MigratePhase,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
         match phase {
-            MigratePhase::RamPushPrePause => {
-                self.update_state(ensure_ctx, MigrationState::RamPush)
-            }
-            MigratePhase::RamPushPostPause => {
-                self.update_state(ensure_ctx, MigrationState::RamPushDirty)
-            }
+            MigratePhase::RamPushPrePause => self.update_state(
+                ensure_ctx.state_publisher(),
+                MigrationState::RamPush,
+            ),
+            MigratePhase::RamPushPostPause => self.update_state(
+                ensure_ctx.state_publisher(),
+                MigrationState::RamPushDirty,
+            ),
             _ => unreachable!("should only push RAM in a RAM push phase"),
         }
 
@@ -464,7 +405,7 @@ impl<T: MigrateConn> RonV0<T> {
             };
         }
         self.send_msg(codec::Message::MemDone).await?;
-        self.update_state(ensure_ctx, MigrationState::Pause);
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Pause);
         Ok(())
     }
 
@@ -511,7 +452,7 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn xfer_ram(
         &mut self,
-        ensure_ctx: &EnsureState<'_>,
+        ensure_ctx: &VmEnsureActive<'_>,
         start: u64,
         end: u64,
         bits: &[u8],
@@ -526,9 +467,9 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn device_state(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
-        self.update_state(ensure_ctx, MigrationState::Device);
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Device);
 
         let devices: Vec<Device> = match self.read_msg().await? {
             codec::Message::Serialized(encoded) => {
@@ -545,10 +486,7 @@ impl<T: MigrateConn> RonV0<T> {
         info!(self.log(), "Devices: {devices:#?}");
 
         {
-            let vm_objects = ensure_ctx
-                .vm_objects()
-                .await
-                .expect("VM active in device_state phase");
+            let vm_objects = ensure_ctx.vm_objects().lock_shared().await;
             let migrate_ctx =
                 MigrateCtx { mem: &vm_objects.access_mem().unwrap() };
             for device in devices {
@@ -573,7 +511,7 @@ impl<T: MigrateConn> RonV0<T> {
     // new host, and write the data out to bhvye.
     async fn time_data(
         &mut self,
-        ensure_ctx: &EnsureState<'_>,
+        ensure_ctx: &VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
         // Read time data sent by the source and deserialize
         let raw: String = match self.read_msg().await? {
@@ -601,12 +539,8 @@ impl<T: MigrateConn> RonV0<T> {
 
         // Take a snapshot of the host hrtime/wall clock time, then adjust
         // time data appropriately.
-        let vmm_hdl = &ensure_ctx
-            .vm_objects()
-            .await
-            .expect("VM active in time phase")
-            .vmm_hdl()
-            .clone();
+        let vmm_hdl =
+            &ensure_ctx.vm_objects().lock_shared().await.vmm_hdl().clone();
 
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
@@ -779,9 +713,12 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn ram_pull(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
-        self.update_state(ensure_ctx, MigrationState::RamPull);
+        self.update_state(
+            ensure_ctx.state_publisher(),
+            MigrationState::RamPull,
+        );
         self.send_msg(codec::Message::MemQuery(0, !0)).await?;
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got end {:?}", m);
@@ -790,9 +727,9 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn server_state(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
-        self.update_state(ensure_ctx, MigrationState::Server);
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Server);
         self.send_msg(codec::Message::Serialized(
             ron::to_string(&self.local_addr)
                 .map_err(codec::ProtocolError::from)?,
@@ -808,8 +745,8 @@ impl<T: MigrateConn> RonV0<T> {
 
         ensure_ctx
             .vm_objects()
+            .lock_shared()
             .await
-            .expect("VM active in server state phase")
             .com1()
             .import(&com1_history)
             .await
@@ -820,7 +757,7 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn finish(
         &mut self,
-        ensure_ctx: &mut EnsureState<'_>,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
         // Tell the source this destination is ready to run the VM.
         self.send_msg(codec::Message::Okay).await?;
@@ -833,7 +770,7 @@ impl<T: MigrateConn> RonV0<T> {
 
         // The source has acknowledged the migration is complete, so it's safe
         // to declare victory publicly.
-        self.update_state(ensure_ctx, MigrationState::Finish);
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Finish);
         Ok(())
     }
 
@@ -888,13 +825,11 @@ impl<T: MigrateConn> RonV0<T> {
 
     async fn write_guest_ram(
         &mut self,
-        ensure_ctx: &EnsureState<'_>,
+        ensure_ctx: &VmEnsureActive<'_>,
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let objects =
-            ensure_ctx.vm_objects().await.expect("VM active during RAM copy");
-
+        let objects = ensure_ctx.vm_objects().lock_shared().await;
         let memctx = objects.access_mem().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
