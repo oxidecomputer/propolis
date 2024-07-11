@@ -289,7 +289,7 @@ pub(super) async fn run_state_driver(
 }
 
 /// Processes the supplied `ensure_request` to create a set of VM objects that
-/// can be moved into new `StateDriver`.
+/// can be moved into a new `StateDriver`.
 async fn create_and_activate_vm<'a>(
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
