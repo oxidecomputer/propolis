@@ -30,7 +30,7 @@ use std::sync::Arc;
 use propolis_api_types::{
     instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateInitiateResponse,
-    InstanceProperties, InstanceSpecEnsureRequest, InstanceState,
+    InstanceSpecEnsureRequest, InstanceState,
 };
 use slog::{debug, info};
 
@@ -103,15 +103,7 @@ impl<'a> VmEnsureNotStarted<'a> {
             },
         ));
 
-        match initialize_vm_objects_from_spec(
-            self.log,
-            &input_queue,
-            &self.ensure_request.properties,
-            &self.ensure_request.instance_spec,
-            self.ensure_options,
-        )
-        .await
-        {
+        match self.initialize_vm_objects_from_spec(&input_queue).await {
             Ok(objects) => {
                 // N.B. Once these `VmObjects` exist, it is no longer safe to
                 //      call `vm_init_failed`.
@@ -147,6 +139,106 @@ impl<'a> VmEnsureNotStarted<'a> {
             .send(Err(VmError::InitializationFailed(reason.to_string())));
 
         reason
+    }
+
+    async fn initialize_vm_objects_from_spec(
+        &self,
+        event_queue: &Arc<InputQueue>,
+    ) -> anyhow::Result<InputVmObjects> {
+        let properties = &self.ensure_request.properties;
+        let spec = &self.ensure_request.instance_spec;
+        let options = self.ensure_options;
+
+        info!(self.log, "initializing new VM";
+              "spec" => #?spec,
+              "properties" => #?properties,
+              "use_reservoir" => options.use_reservoir,
+              "bootrom" => %options.toml_config.bootrom.display());
+
+        let vmm_log = self.log.new(slog::o!("component" => "vmm"));
+
+        // Set up the 'shell' instance into which the rest of this routine will
+        // add components.
+        let VersionedInstanceSpec::V0(v0_spec) = &spec;
+        let machine = build_instance(
+            &properties.vm_name(),
+            v0_spec,
+            options.use_reservoir,
+            vmm_log,
+        )?;
+
+        let mut init = MachineInitializer {
+            log: self.log.clone(),
+            machine: &machine,
+            devices: Default::default(),
+            block_backends: Default::default(),
+            crucible_backends: Default::default(),
+            spec: v0_spec,
+            properties,
+            toml_config: &options.toml_config,
+            producer_registry: options.oximeter_registry.clone(),
+            state: MachineInitializerState::default(),
+        };
+
+        init.initialize_rom(options.toml_config.bootrom.as_path())?;
+        let chipset = init.initialize_chipset(
+            &(event_queue.clone()
+                as Arc<dyn super::guest_event::ChipsetEventHandler>),
+        )?;
+
+        init.initialize_rtc(&chipset)?;
+        init.initialize_hpet()?;
+
+        let com1 = Arc::new(init.initialize_uart(&chipset)?);
+        let ps2ctrl = init.initialize_ps2(&chipset)?;
+        init.initialize_qemu_debug_port()?;
+        init.initialize_qemu_pvpanic(properties.into())?;
+        init.initialize_network_devices(&chipset)?;
+
+        #[cfg(not(feature = "omicron-build"))]
+        init.initialize_test_devices(&options.toml_config.devices)?;
+        #[cfg(feature = "omicron-build")]
+        info!(
+            self.log,
+            "`omicron-build` feature enabled, ignoring any test devices"
+        );
+
+        #[cfg(feature = "falcon")]
+        {
+            init.initialize_softnpu_ports(&chipset)?;
+            init.initialize_9pfs(&chipset)?;
+        }
+
+        init.initialize_storage_devices(&chipset, options.nexus_client.clone())
+            .await?;
+
+        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
+        init.initialize_cpus()?;
+        let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
+            &machine,
+            event_queue.clone()
+                as Arc<dyn super::guest_event::VcpuEventHandler>,
+            self.log.new(slog::o!("component" => "vcpu_tasks")),
+        )?);
+
+        let MachineInitializer {
+            devices,
+            block_backends,
+            crucible_backends,
+            ..
+        } = init;
+
+        Ok(InputVmObjects {
+            instance_spec: v0_spec.clone(),
+            vcpu_tasks,
+            machine,
+            lifecycle_components: devices,
+            block_backends,
+            crucible_backends,
+            com1,
+            framebuffer: Some(ramfb),
+            ps2ctrl,
+        })
     }
 }
 
@@ -203,6 +295,11 @@ impl<'a> VmEnsureObjectsCreated<'a> {
             )
             .await;
 
+        // The response channel may be closed if the client who asked to ensure
+        // the VM timed out or disconnected. This is OK; now that the VM is
+        // active, a new client can recover by reading the current instance
+        // state and using the state change API to send commands to the state
+        // driver.
         let _ = self.ensure_response_tx.send(Ok(InstanceEnsureResponse {
             migrate: self.ensure_request.migrate.as_ref().map(|req| {
                 InstanceMigrateInitiateResponse {
@@ -264,96 +361,4 @@ impl<'a> VmEnsureActive<'a> {
     pub(super) fn into_inner(self) -> (Arc<VmObjects>, Arc<InputQueue>) {
         (self.vm_objects, self.input_queue)
     }
-}
-
-/// Initializes a set of Propolis components from the supplied instance spec.
-async fn initialize_vm_objects_from_spec(
-    log: &slog::Logger,
-    event_queue: &Arc<InputQueue>,
-    properties: &InstanceProperties,
-    spec: &VersionedInstanceSpec,
-    options: &EnsureOptions,
-) -> anyhow::Result<InputVmObjects> {
-    info!(log, "initializing new VM";
-              "spec" => #?spec,
-              "properties" => #?properties,
-              "use_reservoir" => options.use_reservoir,
-              "bootrom" => %options.toml_config.bootrom.display());
-
-    let vmm_log = log.new(slog::o!("component" => "vmm"));
-
-    // Set up the 'shell' instance into which the rest of this routine will
-    // add components.
-    let VersionedInstanceSpec::V0(v0_spec) = &spec;
-    let machine = build_instance(
-        &properties.vm_name(),
-        v0_spec,
-        options.use_reservoir,
-        vmm_log,
-    )?;
-
-    let mut init = MachineInitializer {
-        log: log.clone(),
-        machine: &machine,
-        devices: Default::default(),
-        block_backends: Default::default(),
-        crucible_backends: Default::default(),
-        spec: v0_spec,
-        properties,
-        toml_config: &options.toml_config,
-        producer_registry: options.oximeter_registry.clone(),
-        state: MachineInitializerState::default(),
-    };
-
-    init.initialize_rom(options.toml_config.bootrom.as_path())?;
-    let chipset = init.initialize_chipset(
-        &(event_queue.clone()
-            as Arc<dyn super::guest_event::ChipsetEventHandler>),
-    )?;
-
-    init.initialize_rtc(&chipset)?;
-    init.initialize_hpet()?;
-
-    let com1 = Arc::new(init.initialize_uart(&chipset)?);
-    let ps2ctrl = init.initialize_ps2(&chipset)?;
-    init.initialize_qemu_debug_port()?;
-    init.initialize_qemu_pvpanic(properties.into())?;
-    init.initialize_network_devices(&chipset)?;
-
-    #[cfg(not(feature = "omicron-build"))]
-    init.initialize_test_devices(&options.toml_config.devices)?;
-    #[cfg(feature = "omicron-build")]
-    info!(log, "`omicron-build` feature enabled, ignoring any test devices");
-
-    #[cfg(feature = "falcon")]
-    init.initialize_softnpu_ports(&chipset)?;
-    #[cfg(feature = "falcon")]
-    init.initialize_9pfs(&chipset)?;
-
-    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
-        .await?;
-
-    let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-    init.initialize_cpus()?;
-    let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
-        &machine,
-        event_queue.clone() as Arc<dyn super::guest_event::VcpuEventHandler>,
-        log.new(slog::o!("component" => "vcpu_tasks")),
-    )?);
-
-    let MachineInitializer {
-        devices, block_backends, crucible_backends, ..
-    } = init;
-
-    Ok(InputVmObjects {
-        instance_spec: v0_spec.clone(),
-        vcpu_tasks,
-        machine,
-        lifecycle_components: devices,
-        block_backends,
-        crucible_backends,
-        com1,
-        framebuffer: Some(ramfb),
-        ps2ctrl,
-    })
 }

@@ -10,7 +10,7 @@ use propolis::migrate::{
 };
 use propolis::vmm;
 use propolis_api_types::instance_spec::VersionedInstanceSpec;
-use slog::{debug, error, info, trace};
+use slog::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io;
@@ -155,58 +155,68 @@ pub(crate) async fn initiate<T: MigrateConn>(
     ));
     info!(log, "negotiating migration as source");
 
-    let selected = match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(dst_protocols))) => {
-            info!(log, "destination offered protocols: {}", dst_protocols);
-            match protocol::select_protocol_from_offer(&dst_protocols) {
-                Ok(Some(selected)) => {
-                    info!(log, "selected protocol {:?}", selected);
-                    conn.send(tungstenite::Message::Text(
-                        selected.offer_string(),
-                    ))
-                    .await?;
-                    selected
-                }
-                Ok(None) => {
-                    let src_protocols = protocol::make_protocol_offer();
-                    error!(
-                        log,
-                        "no compatible destination protocols";
-                        "dst_protocols" => &dst_protocols,
-                        "src_protocols" => &src_protocols,
-                    );
-                    return Err(MigrateError::NoMatchingProtocol(
-                        src_protocols,
-                        dst_protocols,
-                    ));
-                }
-                Err(e) => {
-                    error!(log, "failed to parse destination protocol offer";
-                           "dst_protocols" => &dst_protocols,
-                           "error" => %e);
-                    return Err(MigrateError::ProtocolParse(
-                        dst_protocols,
-                        e.to_string(),
-                    ));
-                }
-            }
-        }
+    // The protocol should start with some text from the destination identifying
+    // the protocol versions it supports.
+    let dst_protocols = match conn.next().await {
+        Some(Ok(tungstenite::Message::Text(dst_protocols))) => dst_protocols,
         x => {
-            conn.send(tungstenite::Message::Close(Some(CloseFrame {
-                code: CloseCode::Protocol,
-                reason: "did not begin with version handshake.".into(),
-            })))
-            .await?;
             error!(
                 log,
                 "destination side did not begin migration version handshake: \
                  {:?}",
                 x
             );
+
+            // Tell the destination it misbehaved. This is best-effort.
+            if let Err(e) = conn
+                .send(tungstenite::Message::Close(Some(CloseFrame {
+                    code: CloseCode::Protocol,
+                    reason: "did not begin with version handshake.".into(),
+                })))
+                .await
+            {
+                warn!(log, "failed to send handshake failed message to source";
+                      "error" => ?e);
+            }
+
             return Err(MigrateError::Initiate);
         }
     };
 
+    // Pick the most favorable protocol from the list the destination supplied
+    // and send it back to the destination.
+    info!(log, "destination offered protocols: {}", dst_protocols);
+    let selected = match protocol::select_protocol_from_offer(&dst_protocols) {
+        Ok(Some(selected)) => {
+            conn.send(tungstenite::Message::Text(selected.offer_string()))
+                .await?;
+            selected
+        }
+        Ok(None) => {
+            let src_protocols = protocol::make_protocol_offer();
+            error!(
+                log,
+                "no compatible destination protocols";
+                "dst_protocols" => &dst_protocols,
+                "src_protocols" => &src_protocols,
+            );
+            return Err(MigrateError::NoMatchingProtocol(
+                src_protocols,
+                dst_protocols,
+            ));
+        }
+        Err(e) => {
+            error!(log, "failed to parse destination protocol offer";
+                           "dst_protocols" => &dst_protocols,
+                           "error" => %e);
+            return Err(MigrateError::ProtocolParse(
+                dst_protocols,
+                e.to_string(),
+            ));
+        }
+    };
+
+    info!(log, "selected protocol {:?}", selected);
     match selected {
         Protocol::RonV0 => Ok(RonV0::new(
             log,
@@ -391,7 +401,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
     async fn run(&mut self) -> Result<(), MigrateError> {
         info!(self.log(), "Entering Source Migration Task");
 
-        let result: Result<(), MigrateError> = async {
+        let result: Result<_, MigrateError> = async {
             self.run_phase(MigratePhase::MigrateSync).await?;
             self.run_phase(MigratePhase::RamPushPrePause).await?;
             self.run_phase(MigratePhase::Pause).await?;

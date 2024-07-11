@@ -82,50 +82,61 @@ pub(crate) async fn initiate(
     let (mut conn, _) =
         tokio_tungstenite::connect_async(src_migrate_url).await?;
 
+    // Generate a list of protocols that this target supports, then send them to
+    // the source and allow it to choose its favorite.
     let dst_protocols = super::protocol::make_protocol_offer();
     conn.send(tungstenite::Message::Text(dst_protocols)).await?;
-    let selected = match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(selected_protocol))) => {
-            info!(log, "source negotiated protocol {}", selected_protocol);
-            match super::protocol::select_protocol_from_offer(
-                &selected_protocol,
-            ) {
-                Ok(Some(selected)) => selected,
-                Ok(None) => {
-                    let offered = super::protocol::make_protocol_offer();
-                    error!(log, "source selected protocol not on offer";
-                           "offered" => &offered,
-                           "selected" => &selected_protocol);
-
-                    return Err(MigrateError::NoMatchingProtocol(
-                        selected_protocol,
-                        offered,
-                    ));
-                }
-                Err(e) => {
-                    error!(log, "source selected protocol failed to parse";
-                           "selected" => &selected_protocol);
-
-                    return Err(MigrateError::ProtocolParse(
-                        selected_protocol,
-                        e.to_string(),
-                    ));
-                }
-            }
-        }
+    let src_selected = match conn.next().await {
+        Some(Ok(tungstenite::Message::Text(selected))) => selected,
         x => {
-            conn.send(tungstenite::Message::Close(Some(CloseFrame {
-                code: CloseCode::Protocol,
-                reason: "did not respond to version handshake.".into(),
-            })))
-            .await?;
             error!(
                 log,
                 "source instance failed to negotiate protocol version: {:?}", x
             );
+
+            // Tell the source about its mistake. This is best-effort.
+            if let Err(e) = conn
+                .send(tungstenite::Message::Close(Some(CloseFrame {
+                    code: CloseCode::Protocol,
+                    reason: "did not respond to version handshake.".into(),
+                })))
+                .await
+            {
+                warn!(log, "failed to send handshake failure to source";
+                      "error" => ?e);
+            }
+
             return Err(MigrateError::Initiate);
         }
     };
+
+    // Make sure the source's selected protocol parses correctly and is in the
+    // list of protocols this target supports. If the source's choice is valid,
+    // use the protocol it picked.
+    let selected =
+        match super::protocol::select_protocol_from_offer(&src_selected) {
+            Ok(Some(selected)) => selected,
+            Ok(None) => {
+                let offered = super::protocol::make_protocol_offer();
+                error!(log, "source selected protocol not on offer";
+                           "offered" => &offered,
+                           "selected" => &src_selected);
+
+                return Err(MigrateError::NoMatchingProtocol(
+                    src_selected,
+                    offered,
+                ));
+            }
+            Err(e) => {
+                error!(log, "source selected protocol failed to parse";
+                           "selected" => &src_selected);
+
+                return Err(MigrateError::ProtocolParse(
+                    src_selected,
+                    e.to_string(),
+                ));
+            }
+        };
 
     Ok(match selected {
         Protocol::RonV0 => RonV0::new(log, migration_id, conn, local_addr),
@@ -197,12 +208,14 @@ impl<T: MigrateConn + Sync> DestinationProtocol for RonV0<T> {
         }
         .await;
 
-        info!(self.log(), "migration destination task completed";
-              "succeeded" => result.is_ok());
-
         match result {
-            Ok(vm) => Ok(vm),
+            Ok(vm) => {
+                info!(self.log(), "migration in succeeded");
+                Ok(vm)
+            }
             Err(err) => {
+                error!(self.log(), "migration in failed"; "error" => ?err);
+
                 // We encountered an error, try to inform the remote before
                 // bailing Note, we don't use `?` here as this is a best effort
                 // and we don't want an error encountered during this send to
@@ -351,18 +364,13 @@ impl<T: MigrateConn> RonV0<T> {
         phase: &MigratePhase,
         ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
-        match phase {
-            MigratePhase::RamPushPrePause => self.update_state(
-                ensure_ctx.state_publisher(),
-                MigrationState::RamPush,
-            ),
-            MigratePhase::RamPushPostPause => self.update_state(
-                ensure_ctx.state_publisher(),
-                MigrationState::RamPushDirty,
-            ),
+        let state = match phase {
+            MigratePhase::RamPushPrePause => MigrationState::RamPush,
+            MigratePhase::RamPushPostPause => MigrationState::RamPushDirty,
             _ => unreachable!("should only push RAM in a RAM push phase"),
-        }
+        };
 
+        self.update_state(ensure_ctx.state_publisher(), state);
         let (dirty, highest) = self.query_ram().await?;
         for (k, region) in dirty.as_raw_slice().chunks(4096).enumerate() {
             if region.iter().all(|&b| b == 0) {

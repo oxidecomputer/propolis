@@ -262,44 +262,58 @@ pub(super) async fn run_state_driver(
         &mut state_publisher,
     );
 
-    let activated_vm =
-        if let Some(migrate_request) = ensure_request.migrate.as_ref() {
-            let migration = match crate::migrate::destination::initiate(
-                &log,
-                migrate_request,
-                ensure_options.local_server_addr,
-            )
-            .await
-            {
-                Ok(mig) => mig,
-                Err(e) => {
-                    ensure.fail(e.into()).await;
-                    return StateDriverOutput {
-                        state_publisher,
-                        final_state: InstanceState::Failed,
-                    };
-                }
-            };
+    let activated_vm = if let Some(migrate_request) =
+        ensure_request.migrate.as_ref()
+    {
+        let migration = match crate::migrate::destination::initiate(
+            &log,
+            migrate_request,
+            ensure_options.local_server_addr,
+        )
+        .await
+        {
+            Ok(mig) => mig,
+            Err(e) => {
+                error!(
+                    log,
+                    "failed to get migration protocol, aborting state driver";
+                    "error" => ?e
+                );
 
-            match migration.run(ensure).await {
-                Ok(activated) => activated,
-                Err(_) => {
-                    return StateDriverOutput {
-                        state_publisher,
-                        final_state: InstanceState::Failed,
-                    }
-                }
-            }
-        } else {
-            let Ok(created) = ensure.create_objects().await else {
+                ensure.fail(e.into()).await;
                 return StateDriverOutput {
                     state_publisher,
                     final_state: InstanceState::Failed,
                 };
-            };
-
-            created.ensure_active().await
+            }
         };
+
+        // Delegate the rest of the activation process to the migration
+        // protocol. If the migration fails, the callee is responsible for
+        // dispatching failure messages to any API clients who are awaiting
+        // the results of their instance ensure calls.
+        match migration.run(ensure).await {
+            Ok(activated) => activated,
+            Err(e) => {
+                error!(log, "migration in failed, aborting state driver";
+                           "error" => ?e);
+
+                return StateDriverOutput {
+                    state_publisher,
+                    final_state: InstanceState::Failed,
+                };
+            }
+        }
+    } else {
+        let Ok(created) = ensure.create_objects().await else {
+            return StateDriverOutput {
+                state_publisher,
+                final_state: InstanceState::Failed,
+            };
+        };
+
+        created.ensure_active().await
+    };
 
     let (objects, input_queue) = activated_vm.into_inner();
     let state_driver = StateDriver {
