@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use propolis_api_types::{
     instance_spec::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
@@ -26,7 +27,7 @@ use crate::{
 };
 
 use super::{
-    ensure::VmEnsureNotStarted,
+    ensure::{VmEnsureActive, VmEnsureNotStarted},
     guest_event::{self, GuestEvent},
     objects::VmObjects,
     request_queue::{ExternalRequest, InstanceAutoStart},
@@ -250,69 +251,24 @@ pub(super) async fn run_state_driver(
     >,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
-    let migration_in_id =
-        ensure_request.migrate.as_ref().map(|req| req.migration_id);
-
-    let ensure = VmEnsureNotStarted::new(
+    let activated_vm = match create_and_activate_vm(
         &log,
         &vm,
-        &ensure_request,
-        &ensure_options,
-        ensure_result_tx,
         &mut state_publisher,
-    );
-
-    let activated_vm = if let Some(migrate_request) =
-        ensure_request.migrate.as_ref()
+        &ensure_request,
+        ensure_result_tx,
+        &ensure_options,
+    )
+    .await
     {
-        let migration = match crate::migrate::destination::initiate(
-            &log,
-            migrate_request,
-            ensure_options.local_server_addr,
-        )
-        .await
-        {
-            Ok(mig) => mig,
-            Err(e) => {
-                error!(
-                    log,
-                    "failed to get migration protocol, aborting state driver";
-                    "error" => ?e
-                );
-
-                ensure.fail(e.into()).await;
-                return StateDriverOutput {
-                    state_publisher,
-                    final_state: InstanceState::Failed,
-                };
-            }
-        };
-
-        // Delegate the rest of the activation process to the migration
-        // protocol. If the migration fails, the callee is responsible for
-        // dispatching failure messages to any API clients who are awaiting
-        // the results of their instance ensure calls.
-        match migration.run(ensure).await {
-            Ok(activated) => activated,
-            Err(e) => {
-                error!(log, "migration in failed, aborting state driver";
-                           "error" => ?e);
-
-                return StateDriverOutput {
-                    state_publisher,
-                    final_state: InstanceState::Failed,
-                };
-            }
-        }
-    } else {
-        let Ok(created) = ensure.create_objects().await else {
+        Ok(activated) => activated,
+        Err(e) => {
+            error!(log, "failed to activate new VM"; "error" => #%e);
             return StateDriverOutput {
                 state_publisher,
                 final_state: InstanceState::Failed,
             };
-        };
-
-        created.ensure_active().await
+        }
     };
 
     let (objects, input_queue) = activated_vm.into_inner();
@@ -327,9 +283,65 @@ pub(super) async fn run_state_driver(
 
     // Run the VM until it exits, then set rundown on the parent VM so that no
     // new external callers can access its objects or services.
-    let output = state_driver.run(migration_in_id.is_some()).await;
+    let output = state_driver.run(ensure_request.migrate.is_some()).await;
     vm.set_rundown().await;
     output
+}
+
+/// Processes the supplied `ensure_request` to create a set of VM objects that
+/// can be moved into new `StateDriver`.
+async fn create_and_activate_vm<'a>(
+    log: &'a slog::Logger,
+    vm: &'a Arc<super::Vm>,
+    state_publisher: &'a mut StatePublisher,
+    ensure_request: &'a InstanceSpecEnsureRequest,
+    ensure_result_tx: tokio::sync::oneshot::Sender<
+        Result<propolis_api_types::InstanceEnsureResponse, VmError>,
+    >,
+    ensure_options: &'a super::EnsureOptions,
+) -> anyhow::Result<VmEnsureActive<'a>> {
+    let ensure = VmEnsureNotStarted::new(
+        log,
+        vm,
+        ensure_request,
+        ensure_options,
+        ensure_result_tx,
+        state_publisher,
+    );
+
+    if let Some(migrate_request) = ensure_request.migrate.as_ref() {
+        let migration = match crate::migrate::destination::initiate(
+            log,
+            migrate_request,
+            ensure_options.local_server_addr,
+        )
+        .await
+        {
+            Ok(mig) => mig,
+            Err(e) => {
+                return Err(ensure
+                    .fail(e.into())
+                    .await
+                    .context("creating migration protocol handler"));
+            }
+        };
+
+        // Delegate the rest of the activation process to the migration
+        // protocol. If the migration fails, the callee is responsible for
+        // dispatching failure messages to any API clients who are awaiting
+        // the results of their instance ensure calls.
+        Ok(migration
+            .run(ensure)
+            .await
+            .context("running live migration protocol")?)
+    } else {
+        let created = ensure
+            .create_objects()
+            .await
+            .context("creating VM objects for new instance")?;
+
+        Ok(created.ensure_active().await)
+    }
 }
 
 impl StateDriver {
