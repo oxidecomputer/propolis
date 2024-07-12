@@ -17,7 +17,7 @@ use crate::migrate::MigrateRole;
 use super::{InstanceStateRx, InstanceStateTx};
 
 /// An update to an instance's migration's state.
-pub(super) struct MigrationStateUpdate {
+pub(crate) struct MigrationStateUpdate {
     /// The migration's new state.
     pub state: propolis_api_types::MigrationState,
 
@@ -50,7 +50,7 @@ impl MigrationStateUpdate {
 }
 
 /// A kind of state update to publish.
-pub(super) enum ExternalStateUpdate {
+pub(crate) enum ExternalStateUpdate {
     /// Update the instance state (but not any migration state).
     Instance(InstanceState),
 
@@ -62,7 +62,7 @@ pub(super) enum ExternalStateUpdate {
 }
 
 /// A channel to which to publish externally-visible instance state updates.
-pub(super) struct StatePublisher {
+pub(crate) struct StatePublisher {
     tx: InstanceStateTx,
     log: slog::Logger,
 }
@@ -78,7 +78,7 @@ impl StatePublisher {
 
     /// Updates an instance's externally-visible state and publishes that state
     /// with a successor generation number.
-    pub(super) fn update(&mut self, update: ExternalStateUpdate) {
+    pub(crate) fn update(&mut self, update: ExternalStateUpdate) {
         let (instance_state, migration_state) = match update {
             ExternalStateUpdate::Instance(i) => (Some(i), None),
             ExternalStateUpdate::Migration(m) => (None, Some(m)),

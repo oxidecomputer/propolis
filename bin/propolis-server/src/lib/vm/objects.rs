@@ -29,9 +29,6 @@ use super::{
 
 /// A collection of components that make up a Propolis VM instance.
 pub(crate) struct VmObjects {
-    /// The objects' associated logger.
-    log: slog::Logger,
-
     /// A reference to the VM state machine that created these objects. Used to
     /// complete rundown when the objects are dropped.
     parent: Arc<super::Vm>,
@@ -101,29 +98,18 @@ impl VmObjects {
         input: InputVmObjects,
     ) -> Self {
         let inner = VmObjectsLocked::new(&log, input);
-        Self { log, parent, inner: tokio::sync::RwLock::new(inner) }
-    }
-
-    /// Yields the logger associated with these objects.
-    pub(crate) fn log(&self) -> &slog::Logger {
-        &self.log
+        Self { parent, inner: tokio::sync::RwLock::new(inner) }
     }
 
     /// Yields a shared lock guard referring to the underlying object
     /// collection.
-    ///
-    /// This function is crate-visible to allow the API layer to read (but not
-    /// mutate) VM objects.
     pub(crate) async fn lock_shared(&self) -> VmObjectsShared {
         VmObjectsShared(self.inner.read().await)
     }
 
     /// Yields an exclusive lock guard referring to the underlying object
     /// collection.
-    ///
-    /// This function is only visible within the `vm` module so that only the
-    /// state driver can obtain a mutable reference to the underlying objects.
-    pub(super) async fn lock_exclusive(&self) -> VmObjectsExclusive {
+    pub(crate) async fn lock_exclusive(&self) -> VmObjectsExclusive {
         VmObjectsExclusive(self.inner.write().await)
     }
 }
@@ -286,14 +272,14 @@ impl VmObjectsLocked {
     }
 
     /// Pauses this VM's devices and its kernel VMM.
-    pub(super) async fn pause(&mut self) {
+    pub(crate) async fn pause(&mut self) {
         self.vcpu_tasks.pause_all();
         self.pause_devices().await;
         self.pause_kernel_vm();
     }
 
     /// Resumes this VM's devices and its kernel VMM.
-    pub(super) fn resume(&mut self) {
+    pub(crate) fn resume(&mut self) {
         self.resume_kernel_vm();
         self.resume_devices();
         self.vcpu_tasks.resume_all();

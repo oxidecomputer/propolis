@@ -9,27 +9,28 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use propolis_api_types::{
     instance_spec::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
     },
-    InstanceMigrateInitiateResponse, InstanceSpecEnsureRequest, InstanceState,
-    MigrationState,
+    InstanceSpecEnsureRequest, InstanceState, MigrationState,
 };
 use slog::{error, info};
 use uuid::Uuid;
 
-use crate::{migrate::MigrateRole, vm::state_publisher::ExternalStateUpdate};
+use crate::{
+    migrate::{
+        destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
+    },
+    vm::state_publisher::ExternalStateUpdate,
+};
 
 use super::{
+    ensure::{VmEnsureActive, VmEnsureNotStarted},
     guest_event::{self, GuestEvent},
-    migrate_commands::{
-        next_migrate_task_event, MigrateSourceCommand, MigrateSourceResponse,
-        MigrateTaskEvent,
-    },
     objects::VmObjects,
     request_queue::{ExternalRequest, InstanceAutoStart},
-    startup::BuildVmOutput,
     state_publisher::{MigrationStateUpdate, StatePublisher},
     VmError,
 };
@@ -250,90 +251,30 @@ pub(super) async fn run_state_driver(
     >,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
-    let migration_in_id =
-        ensure_request.migrate.as_ref().map(|req| req.migration_id);
-
-    let input_queue = Arc::new(InputQueue::new(
-        log.new(slog::o!("component" => "request_queue")),
-        match &ensure_request.migrate {
-            Some(_) => InstanceAutoStart::Yes,
-            None => InstanceAutoStart::No,
-        },
-    ));
-
-    let BuildVmOutput { vm_objects, migration_in } =
-        match super::startup::build_vm(
-            &log,
-            &vm,
-            &ensure_request,
-            &ensure_options,
-            &input_queue,
-            &mut state_publisher,
-        )
-        .await
-        {
-            Ok(objects) => objects,
-            Err((e, objects)) => {
-                state_publisher.update(ExternalStateUpdate::Instance(
-                    InstanceState::Failed,
-                ));
-
-                vm.vm_init_failed(objects.is_some()).await;
-                let _ = ensure_result_tx
-                    .send(Err(VmError::InitializationFailed(e)));
-                return StateDriverOutput {
-                    state_publisher,
-                    final_state: InstanceState::Failed,
-                };
-            }
-        };
-
-    let services = super::services::VmServices::new(
+    let activated_vm = match create_and_activate_vm(
         &log,
         &vm,
-        &vm_objects,
-        &ensure_request.properties,
+        &mut state_publisher,
+        &ensure_request,
+        ensure_result_tx,
         &ensure_options,
     )
-    .await;
-
-    // All the VM components now exist, so allow external callers to
-    // interact with the VM.
-    //
-    // Order matters here: once the ensure result is sent, an external
-    // caller needs to observe that an active VM is present.
-    vm.make_active(&log, input_queue.clone(), &vm_objects, services).await;
-    let _ =
-        ensure_result_tx.send(Ok(propolis_api_types::InstanceEnsureResponse {
-            migrate: migration_in_id
-                .map(|id| InstanceMigrateInitiateResponse { migration_id: id }),
-        }));
-
-    // If the VM was initialized via migration in, complete that migration now.
-    //
-    // External callers who ask to initialize an instance via migration in
-    // expect their API calls to complete once the relevant VM is initialized
-    // and the migration task has started (as opposed to when the entire
-    // migration attempt has completed), so this must happen after the ensure
-    // result is published. (Note that it's OK for the migration to fail after
-    // this point: the ensure request succeeds, but the instance goes to the
-    // Failed state and the migration appears to have failed.)
-    if let Some(migration_in) = migration_in {
-        if let Err(e) = migration_in.run(&mut state_publisher).await {
-            error!(log, "inbound live migration task failed";
-                   "error" => ?e);
-
-            vm.set_rundown().await;
+    .await
+    {
+        Ok(activated) => activated,
+        Err(e) => {
+            error!(log, "failed to activate new VM"; "error" => #%e);
             return StateDriverOutput {
                 state_publisher,
                 final_state: InstanceState::Failed,
             };
         }
-    }
+    };
 
+    let (objects, input_queue) = activated_vm.into_inner();
     let state_driver = StateDriver {
         log,
-        objects: vm_objects,
+        objects,
         input_queue,
         external_state: state_publisher,
         paused: false,
@@ -342,9 +283,65 @@ pub(super) async fn run_state_driver(
 
     // Run the VM until it exits, then set rundown on the parent VM so that no
     // new external callers can access its objects or services.
-    let output = state_driver.run(migration_in_id.is_some()).await;
+    let output = state_driver.run(ensure_request.migrate.is_some()).await;
     vm.set_rundown().await;
     output
+}
+
+/// Processes the supplied `ensure_request` to create a set of VM objects that
+/// can be moved into a new `StateDriver`.
+async fn create_and_activate_vm<'a>(
+    log: &'a slog::Logger,
+    vm: &'a Arc<super::Vm>,
+    state_publisher: &'a mut StatePublisher,
+    ensure_request: &'a InstanceSpecEnsureRequest,
+    ensure_result_tx: tokio::sync::oneshot::Sender<
+        Result<propolis_api_types::InstanceEnsureResponse, VmError>,
+    >,
+    ensure_options: &'a super::EnsureOptions,
+) -> anyhow::Result<VmEnsureActive<'a>> {
+    let ensure = VmEnsureNotStarted::new(
+        log,
+        vm,
+        ensure_request,
+        ensure_options,
+        ensure_result_tx,
+        state_publisher,
+    );
+
+    if let Some(migrate_request) = ensure_request.migrate.as_ref() {
+        let migration = match crate::migrate::destination::initiate(
+            log,
+            migrate_request,
+            ensure_options.local_server_addr,
+        )
+        .await
+        {
+            Ok(mig) => mig,
+            Err(e) => {
+                return Err(ensure
+                    .fail(e.into())
+                    .await
+                    .context("creating migration protocol handler"));
+            }
+        };
+
+        // Delegate the rest of the activation process to the migration
+        // protocol. If the migration fails, the callee is responsible for
+        // dispatching failure messages to any API clients who are awaiting
+        // the results of their instance ensure calls.
+        Ok(migration
+            .run(ensure)
+            .await
+            .context("running live migration protocol")?)
+    } else {
+        let created = ensure
+            .create_objects()
+            .await
+            .context("creating VM objects for new instance")?;
+
+        Ok(created.ensure_active().await)
+    }
 }
 
 impl StateDriver {
@@ -545,18 +542,6 @@ impl StateDriver {
         self.publish_steady_state(InstanceState::Stopped);
     }
 
-    async fn pause(&mut self) {
-        assert!(!self.paused);
-        self.objects.lock_exclusive().await.pause().await;
-        self.paused = true;
-    }
-
-    async fn resume(&mut self) {
-        assert!(self.paused);
-        self.objects.lock_exclusive().await.resume();
-        self.paused = false;
-    }
-
     fn publish_steady_state(&mut self, state: InstanceState) {
         let change = match state {
             InstanceState::Running => {
@@ -590,11 +575,27 @@ impl StateDriver {
         )
         .await;
 
-        // Negotiate the migration protocol version with the target.
-        let Ok(migrate_ctx) =
-            crate::migrate::source_start(&self.log, migration_id, conn).await
-        else {
-            return;
+        let migration = match crate::migrate::source::initiate(
+            &self.log,
+            migration_id,
+            conn,
+            &self.objects,
+            &self.migration_src_state,
+        )
+        .await
+        {
+            Ok(migration) => migration,
+            Err(_) => {
+                self.external_state.update(ExternalStateUpdate::Migration(
+                    MigrationStateUpdate {
+                        id: migration_id,
+                        state: MigrationState::Error,
+                        role: MigrateRole::Source,
+                    },
+                ));
+
+                return;
+            }
         };
 
         // Publish that migration is in progress before actually launching the
@@ -608,83 +609,28 @@ impl StateDriver {
             },
         ));
 
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-        let objects_for_task = self.objects.clone();
-        let mut migrate_task = tokio::spawn(async move {
-            crate::migrate::source::migrate(
-                objects_for_task,
-                command_tx,
-                response_rx,
-                migrate_ctx.conn,
-                migrate_ctx.protocol,
+        match migration
+            .run(
+                &self.objects,
+                &mut self.external_state,
+                &mut self.migration_src_state,
             )
             .await
-        });
+        {
+            Ok(()) => {
+                info!(self.log, "migration out succeeded, queuing stop");
+                // On a successful migration out, the protocol promises to leave
+                // the VM objects in a paused state, so don't pause them again.
+                self.paused = true;
+                self.input_queue
+                    .queue_external_request(ExternalRequest::Stop)
+                    .expect("can always queue a request to stop");
+            }
+            Err(e) => {
+                info!(self.log, "migration out failed, resuming";
+                      "error" => ?e);
 
-        // The migration task may try to acquire the VM object lock shared, so
-        // this task cannot hold it excluive while waiting for the migration
-        // task to send an event.
-        loop {
-            match next_migrate_task_event(
-                &mut migrate_task,
-                &mut command_rx,
-                &self.log,
-            )
-            .await
-            {
-                MigrateTaskEvent::TaskExited(res) => {
-                    if res.is_ok() {
-                        self.input_queue
-                            .queue_external_request(ExternalRequest::Stop)
-                            .expect("can always queue a request to stop");
-                    } else {
-                        if self.paused {
-                            self.resume().await;
-                        }
-
-                        self.publish_steady_state(InstanceState::Running);
-                    }
-
-                    return;
-                }
-
-                // N.B. When handling a command that requires a reply, do not
-                //      return early if the reply fails to send. Instead,
-                //      loop back around and let the `TaskExited` path restore
-                //      the VM to the correct state.
-                MigrateTaskEvent::Command(cmd) => match cmd {
-                    MigrateSourceCommand::UpdateState(state) => {
-                        self.external_state.update(
-                            ExternalStateUpdate::Migration(
-                                MigrationStateUpdate {
-                                    id: migration_id,
-                                    state,
-                                    role: MigrateRole::Source,
-                                },
-                            ),
-                        );
-                    }
-                    MigrateSourceCommand::Pause => {
-                        self.pause().await;
-                        let _ = response_tx
-                            .send(MigrateSourceResponse::Pause(Ok(())))
-                            .await;
-                    }
-                    MigrateSourceCommand::QueryRedirtyingFailed => {
-                        let has_failed =
-                            self.migration_src_state.has_redirtying_ever_failed;
-                        let _ = response_tx
-                            .send(MigrateSourceResponse::RedirtyingFailed(
-                                has_failed,
-                            ))
-                            .await;
-                    }
-                    MigrateSourceCommand::RedirtyingFailed => {
-                        self.migration_src_state.has_redirtying_ever_failed =
-                            true;
-                    }
-                },
+                self.publish_steady_state(InstanceState::Running);
             }
         }
     }
