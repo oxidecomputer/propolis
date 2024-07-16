@@ -21,10 +21,6 @@ use crate::{
 };
 
 use super::{
-    migrate_commands::{
-        next_migrate_task_event, MigrateTargetCommand, MigrateTargetResponse,
-        MigrateTaskEvent,
-    },
     objects::{InputVmObjects, VmObjects},
     state_driver::InputQueue,
     state_publisher::{
