@@ -47,7 +47,7 @@ pub(super) struct InputVmObjects {
     pub instance_spec: InstanceSpecV0,
     pub vcpu_tasks: Box<dyn VcpuTaskController>,
     pub machine: Machine,
-    pub lifecycle_components: DeviceMap,
+    pub devices: DeviceMap,
     pub block_backends: BlockBackendMap,
     pub crucible_backends: CrucibleBackendMap,
     pub com1: Arc<Serial<LpcUart>>,
@@ -71,7 +71,7 @@ pub(crate) struct VmObjectsLocked {
 
     /// Maps from component names to the trait objects that implement lifecycle
     /// operations (e.g. pause and resume) for eligible components.
-    lifecycle_components: DeviceMap,
+    devices: DeviceMap,
 
     /// Maps from component names to trait objects that implement the block
     /// storage backend trait.
@@ -122,7 +122,7 @@ impl VmObjectsLocked {
             instance_spec: input.instance_spec,
             vcpu_tasks: input.vcpu_tasks,
             machine: input.machine,
-            lifecycle_components: input.lifecycle_components,
+            devices: input.devices,
             block_backends: input.block_backends,
             crucible_backends: input.crucible_backends,
             com1: input.com1,
@@ -165,7 +165,7 @@ impl VmObjectsLocked {
         &self,
         name: &str,
     ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.lifecycle_components.get(name).cloned()
+        self.devices.get(name).cloned()
     }
 
     /// Yields the VM's current Crucible backend map.
@@ -195,7 +195,7 @@ impl VmObjectsLocked {
         &self,
         mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
     ) {
-        for (name, dev) in self.lifecycle_components.iter() {
+        for (name, dev) in self.devices.iter() {
             func(name, dev);
         }
     }
@@ -210,7 +210,7 @@ impl VmObjectsLocked {
             &Arc<dyn propolis::common::Lifecycle>,
         ) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
-        for (name, dev) in self.lifecycle_components.iter() {
+        for (name, dev) in self.devices.iter() {
             func(name, dev)?;
         }
 
@@ -371,7 +371,7 @@ impl VmObjectsLocked {
 
         info!(self.log, "waiting for devices to pause");
         let mut stream: FuturesUnordered<_> = self
-            .lifecycle_components
+            .devices
             .iter()
             .map(|(name, dev)| {
                 info!(self.log, "got paused future from dev {}", name);

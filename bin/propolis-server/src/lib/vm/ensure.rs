@@ -232,7 +232,7 @@ impl<'a> VmEnsureNotStarted<'a> {
             instance_spec: v0_spec.clone(),
             vcpu_tasks,
             machine,
-            lifecycle_components: devices,
+            devices,
             block_backends,
             crucible_backends,
             com1,
