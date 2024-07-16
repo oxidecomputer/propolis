@@ -455,17 +455,21 @@ impl Vm {
         info!(self.log, "completing VM rundown");
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
-        match old {
+
+        // Extract the run-down VM's tokio runtime so that it can be shut down
+        // on a separate thread (runtimes must be dropped in a non-async
+        // context).
+        //
+        // The runtime can't be dropped until this routine extracts the final VM
+        // state from the state driver task.
+        let rt = match old {
             VmState::Rundown(mut vm) => {
-                // Tokio runtimes can't be dropped from an async context, so
-                // move the stashed state driver runtime onto an OS thread to
-                // drop it.
                 let rt = vm.tokio_rt.take().expect("rundown VM has a runtime");
-                std::thread::spawn(move || drop(rt));
                 guard.state = VmState::RundownComplete(vm);
+                rt
             }
             _ => unreachable!("VM rundown completed from invalid prior state"),
-        }
+        };
 
         let StateDriverOutput { mut state_publisher, final_state } = guard
             .driver
@@ -477,6 +481,8 @@ impl Vm {
         state_publisher.update(state_publisher::ExternalStateUpdate::Instance(
             final_state,
         ));
+
+        std::thread::spawn(move || drop(rt));
     }
 
     /// Attempts to move this VM to the `Active` state by setting up a state
