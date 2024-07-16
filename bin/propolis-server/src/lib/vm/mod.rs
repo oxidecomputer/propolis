@@ -298,16 +298,13 @@ impl Vm {
     pub(super) async fn active_vm(
         &self,
     ) -> Option<RwLockReadGuard<'_, ActiveVm>> {
-        RwLockReadGuard::try_map(
-            self.inner.read().await,
-            |inner| {
-                if let VmState::Active(vm) = &inner.state {
-                    Some(vm)
-                } else {
-                    None
-                }
-            },
-        )
+        RwLockReadGuard::try_map(self.inner.read().await, |inner| {
+            if let VmState::Active(vm) = &inner.state {
+                Some(vm)
+            } else {
+                None
+            }
+        })
         .ok()
     }
 
