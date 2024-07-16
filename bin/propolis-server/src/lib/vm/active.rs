@@ -39,6 +39,10 @@ pub(crate) struct ActiveVm {
     /// Services that interact with VM users or the control plane outside the
     /// Propolis API (e.g. the serial console, VNC, and metrics reporting).
     pub(super) services: VmServices,
+
+    /// The runtime on which this VM's state driver and any tasks spawned by
+    /// the VM's components will run.
+    pub(super) tokio_rt: tokio::runtime::Runtime,
 }
 
 impl ActiveVm {
