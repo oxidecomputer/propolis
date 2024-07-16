@@ -30,9 +30,9 @@ use super::{
     ensure::{VmEnsureActive, VmEnsureNotStarted},
     guest_event::{self, GuestEvent},
     objects::VmObjects,
-    request_queue::{ExternalRequest, InstanceAutoStart},
+    request_queue::{self, ExternalRequest, InstanceAutoStart},
     state_publisher::{MigrationStateUpdate, StatePublisher},
-    VmError,
+    InstanceEnsureResponseTx,
 };
 
 /// Tells the state driver what to do after handling an event.
@@ -59,7 +59,7 @@ enum InputQueueEvent {
 /// The lock-guarded parts of a state driver's input queue.
 struct InputQueueInner {
     /// State change requests from the external API.
-    external_requests: super::request_queue::ExternalRequestQueue,
+    external_requests: request_queue::ExternalRequestQueue,
 
     /// State change requests from the VM's components. These take precedence
     /// over external state change requests.
@@ -69,7 +69,7 @@ struct InputQueueInner {
 impl InputQueueInner {
     fn new(log: slog::Logger, auto_start: InstanceAutoStart) -> Self {
         Self {
-            external_requests: super::request_queue::ExternalRequestQueue::new(
+            external_requests: request_queue::ExternalRequestQueue::new(
                 log, auto_start,
             ),
             guest_events: super::guest_event::GuestEventQueue::default(),
@@ -128,7 +128,7 @@ impl InputQueue {
     /// requests.
     fn notify_instance_state_change(
         &self,
-        state: super::request_queue::InstanceStateChange,
+        state: request_queue::InstanceStateChange,
     ) {
         let mut guard = self.inner.lock().unwrap();
         guard.external_requests.notify_instance_state_change(state);
@@ -138,7 +138,7 @@ impl InputQueue {
     pub(super) fn queue_external_request(
         &self,
         request: ExternalRequest,
-    ) -> Result<(), super::request_queue::RequestDeniedReason> {
+    ) -> Result<(), request_queue::RequestDeniedReason> {
         let mut inner = self.inner.lock().unwrap();
         let result = inner.external_requests.try_queue(request);
         if result.is_ok() {
@@ -246,9 +246,7 @@ pub(super) async fn run_state_driver(
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
     ensure_request: InstanceSpecEnsureRequest,
-    ensure_result_tx: tokio::sync::oneshot::Sender<
-        Result<propolis_api_types::InstanceEnsureResponse, VmError>,
-    >,
+    ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
     let activated_vm = match create_and_activate_vm(
@@ -295,9 +293,7 @@ async fn create_and_activate_vm<'a>(
     vm: &'a Arc<super::Vm>,
     state_publisher: &'a mut StatePublisher,
     ensure_request: &'a InstanceSpecEnsureRequest,
-    ensure_result_tx: tokio::sync::oneshot::Sender<
-        Result<propolis_api_types::InstanceEnsureResponse, VmError>,
-    >,
+    ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: &'a super::EnsureOptions,
 ) -> anyhow::Result<VmEnsureActive<'a>> {
     let ensure = VmEnsureNotStarted::new(
@@ -514,7 +510,7 @@ impl StateDriver {
         // Notify other consumers that the instance successfully rebooted and is
         // now back to Running.
         self.input_queue.notify_instance_state_change(
-            super::request_queue::InstanceStateChange::Rebooted,
+            request_queue::InstanceStateChange::Rebooted,
         );
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Running));
@@ -545,14 +541,12 @@ impl StateDriver {
     fn publish_steady_state(&mut self, state: InstanceState) {
         let change = match state {
             InstanceState::Running => {
-                super::request_queue::InstanceStateChange::StartedRunning
+                request_queue::InstanceStateChange::StartedRunning
             }
             InstanceState::Stopped => {
-                super::request_queue::InstanceStateChange::Stopped
+                request_queue::InstanceStateChange::Stopped
             }
-            InstanceState::Failed => {
-                super::request_queue::InstanceStateChange::Failed
-            }
+            InstanceState::Failed => request_queue::InstanceStateChange::Failed,
             _ => panic!(
                 "Called publish_steady_state on non-terminal state {:?}",
                 state

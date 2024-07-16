@@ -84,12 +84,16 @@ use active::ActiveVm;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
     instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
-    InstanceProperties,
+    InstanceEnsureResponse, InstanceMigrateStatusResponse,
+    InstanceMigrationStatus, InstanceProperties, InstanceSpecEnsureRequest,
+    InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
+    MigrationState,
 };
 use rfb::server::VncServer;
 use slog::info;
 use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
+use tokio::sync::{RwLock, RwLockReadGuard};
 
 use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
 
@@ -117,15 +121,12 @@ pub(crate) type CrucibleBackendMap =
 
 /// Type alias for the sender side of the channel that receives
 /// externally-visible instance state updates.
-type InstanceStateTx = tokio::sync::watch::Sender<
-    propolis_api_types::InstanceStateMonitorResponse,
->;
+type InstanceStateTx = tokio::sync::watch::Sender<InstanceStateMonitorResponse>;
 
 /// Type alias for the receiver side of the channel that receives
 /// externally-visible instance state updates.
-type InstanceStateRx = tokio::sync::watch::Receiver<
-    propolis_api_types::InstanceStateMonitorResponse,
->;
+type InstanceStateRx =
+    tokio::sync::watch::Receiver<InstanceStateMonitorResponse>;
 
 /// Type alias for the results sent by the state driver in response to a request
 /// to change a Crucible backend's configuration.
@@ -137,9 +138,10 @@ pub(crate) type CrucibleReplaceResult =
 pub(crate) type CrucibleReplaceResultTx =
     tokio::sync::oneshot::Sender<CrucibleReplaceResult>;
 
-type InstanceEnsureResponseTx = tokio::sync::oneshot::Sender<
-    Result<propolis_api_types::InstanceEnsureResponse, VmError>,
->;
+/// Type alias for the sender side of a channel that receives the results of
+/// instance-ensure API calls.
+type InstanceEnsureResponseTx =
+    tokio::sync::oneshot::Sender<Result<InstanceEnsureResponse, VmError>>;
 
 /// The minimum number of threads to spawn in the Tokio runtime that runs the
 /// state driver and any other VM-related tasks.
@@ -186,7 +188,7 @@ pub(crate) struct Vm {
     /// acquire this lock shared.
     ///
     /// Routines that drive the VM state machine acquire this lock exclusive.
-    inner: tokio::sync::RwLock<VmInner>,
+    inner: RwLock<VmInner>,
 
     /// A logger for this VM.
     log: slog::Logger,
@@ -288,15 +290,15 @@ impl Vm {
     pub fn new(log: &slog::Logger) -> Arc<Self> {
         let log = log.new(slog::o!("component" => "vm_wrapper"));
         let inner = VmInner { state: VmState::NoVm, driver: None };
-        Arc::new(Self { inner: tokio::sync::RwLock::new(inner), log })
+        Arc::new(Self { inner: RwLock::new(inner), log })
     }
 
     /// If the VM is `Active`, yields a shared lock guard with a reference to
     /// the relevant `ActiveVm`. Returns `None` if there is no active VM.
     pub(super) async fn active_vm(
         &self,
-    ) -> Option<tokio::sync::RwLockReadGuard<'_, ActiveVm>> {
-        tokio::sync::RwLockReadGuard::try_map(
+    ) -> Option<RwLockReadGuard<'_, ActiveVm>> {
+        RwLockReadGuard::try_map(
             self.inner.read().await,
             |inner| {
                 if let VmState::Active(vm) = &inner.state {
@@ -311,9 +313,7 @@ impl Vm {
 
     /// Returns the state, properties, and instance spec for the instance most
     /// recently wrapped by this `Vm`.
-    pub(super) async fn get(
-        &self,
-    ) -> Result<propolis_api_types::InstanceSpecGetResponse, VmError> {
+    pub(super) async fn get(&self) -> Result<InstanceSpecGetResponse, VmError> {
         let guard = self.inner.read().await;
         let vm = match &guard.state {
             VmState::NoVm => {
@@ -323,7 +323,7 @@ impl Vm {
             VmState::WaitingForInit(vm)
             | VmState::Rundown(vm)
             | VmState::RundownComplete(vm) => {
-                return Ok(propolis_api_types::InstanceSpecGetResponse {
+                return Ok(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     state: vm.external_state_rx.borrow().state,
                     spec: VersionedInstanceSpec::V0(vm.spec.clone()),
@@ -333,7 +333,7 @@ impl Vm {
 
         let spec = vm.objects().lock_shared().await.instance_spec().clone();
         let state = vm.external_state_rx.borrow().clone();
-        Ok(propolis_api_types::InstanceSpecGetResponse {
+        Ok(InstanceSpecGetResponse {
             properties: vm.properties.clone(),
             spec: VersionedInstanceSpec::V0(spec),
             state: state.state,
@@ -489,9 +489,9 @@ impl Vm {
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         log: &slog::Logger,
-        ensure_request: propolis_api_types::InstanceSpecEnsureRequest,
+        ensure_request: InstanceSpecEnsureRequest,
         options: EnsureOptions,
-    ) -> Result<propolis_api_types::InstanceEnsureResponse, VmError> {
+    ) -> Result<InstanceEnsureResponse, VmError> {
         let log_for_driver =
             log.new(slog::o!("component" => "vm_state_driver"));
 
@@ -507,18 +507,18 @@ impl Vm {
         // the channel will move to the state driver task.
         let (external_publisher, external_rx) = StatePublisher::new(
             &log_for_driver,
-            propolis_api_types::InstanceStateMonitorResponse {
+            InstanceStateMonitorResponse {
                 gen: 1,
                 state: if ensure_request.migrate.is_some() {
-                    propolis_api_types::InstanceState::Migrating
+                    InstanceState::Migrating
                 } else {
-                    propolis_api_types::InstanceState::Creating
+                    InstanceState::Creating
                 },
-                migration: propolis_api_types::InstanceMigrateStatusResponse {
+                migration: InstanceMigrateStatusResponse {
                     migration_in: ensure_request.migrate.as_ref().map(|req| {
-                        propolis_api_types::InstanceMigrationStatus {
+                        InstanceMigrationStatus {
                             id: req.migration_id,
-                            state: propolis_api_types::MigrationState::Sync,
+                            state: MigrationState::Sync,
                         }
                     }),
                     migration_out: None,

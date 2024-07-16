@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
+use propolis_api_types::InstanceProperties;
 use rfb::server::VncServer;
 use slog::{error, info, Logger};
 
@@ -49,7 +50,7 @@ impl VmServices {
         log: &slog::Logger,
         vm: &Arc<super::Vm>,
         vm_objects: &VmObjects,
-        vm_properties: &propolis_api_types::InstanceProperties,
+        vm_properties: &InstanceProperties,
         ensure_options: &super::EnsureOptions,
     ) -> Self {
         let oximeter_state = if let Some(cfg) = &ensure_options.metrics_config {
@@ -121,7 +122,7 @@ async fn register_oximeter_producer(
     log: &slog::Logger,
     cfg: &MetricsEndpointConfig,
     registry: &ProducerRegistry,
-    vm_properties: &propolis_api_types::InstanceProperties,
+    vm_properties: &InstanceProperties,
 ) -> OximeterState {
     let mut oximeter_state = OximeterState::default();
     let virtual_machine = VirtualMachine::from(vm_properties);
