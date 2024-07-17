@@ -119,8 +119,8 @@ pub(crate) async fn initiate(
             Ok(None) => {
                 let offered = super::protocol::make_protocol_offer();
                 error!(log, "source selected protocol not on offer";
-                           "offered" => &offered,
-                           "selected" => &src_selected);
+                       "offered" => &offered,
+                       "selected" => &src_selected);
 
                 return Err(MigrateError::NoMatchingProtocol(
                     src_selected,
@@ -129,7 +129,7 @@ pub(crate) async fn initiate(
             }
             Err(e) => {
                 error!(log, "source selected protocol failed to parse";
-                           "selected" => &src_selected);
+                       "selected" => &src_selected);
 
                 return Err(MigrateError::ProtocolParse(
                     src_selected,

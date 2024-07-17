@@ -14,11 +14,12 @@ use std::{collections::VecDeque, time::Duration};
 /// vCPUs running in-kernel are kicked out for the suspend state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GuestEvent {
-    /// VM entered halt state
+    /// Fired when the bhyve VM enters its halt state.
     VcpuSuspendHalt(Duration),
-    /// VM entered reboot state
+    /// Fired when the bhyve VM enters its reset state.
     VcpuSuspendReset(Duration),
-    /// vCPU encounted triple-fault
+    /// Fired when the bhyve VM resets due to a triple fault. The first element
+    /// identifies the vCPU that sent this notification.
     VcpuSuspendTripleFault(i32, Duration),
     /// Chipset signaled halt condition
     ChipsetHalt,

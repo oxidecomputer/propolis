@@ -31,13 +31,14 @@
 //! In the happy case where new VMs always start successfully, this state
 //! machine transitions as follows:
 //!
-//! - New state machines start in the `NoVm` state.
-//! - A request to create a new VM moves to the `WaitingForInit` state.
-//! - Once all of the VM's components are created, the VM moves to `Active`.
-//! - When the VM stops, the VM moves to `Rundown`.
+//! - New state machines start in [`VmState::NoVm`].
+//! - A request to create a new VM moves to [`VmState::WaitingForInit`].
+//! - Once all of the VM's components are created, the VM moves to
+//!   [`VmState::Active`].
+//! - When the VM stops, the VM moves to [`VmState::Rundown`].
 //! - When all references to the VM's components are dropped, the VM moves to
-//!   `RundownComplete`. A request to create a new VM will move back to
-//!   `WaitingForInit`.
+//!   [`VmState::RundownComplete`]. A request to create a new VM will move back
+//!   to `WaitingForInit`.
 //!
 //! In any state except `NoVm`, the state machine holds enough state to describe
 //! the most recent VM known to the state machine, whether it is being created
@@ -93,7 +94,7 @@ use rfb::server::VncServer;
 use slog::info;
 use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
 use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
 
@@ -121,12 +122,11 @@ pub(crate) type CrucibleBackendMap =
 
 /// Type alias for the sender side of the channel that receives
 /// externally-visible instance state updates.
-type InstanceStateTx = tokio::sync::watch::Sender<InstanceStateMonitorResponse>;
+type InstanceStateTx = watch::Sender<InstanceStateMonitorResponse>;
 
 /// Type alias for the receiver side of the channel that receives
 /// externally-visible instance state updates.
-type InstanceStateRx =
-    tokio::sync::watch::Receiver<InstanceStateMonitorResponse>;
+type InstanceStateRx = watch::Receiver<InstanceStateMonitorResponse>;
 
 /// Type alias for the results sent by the state driver in response to a request
 /// to change a Crucible backend's configuration.
@@ -136,12 +136,12 @@ pub(crate) type CrucibleReplaceResult =
 /// Type alias for the sender side of a channel that receives Crucible backend
 /// reconfiguration results.
 pub(crate) type CrucibleReplaceResultTx =
-    tokio::sync::oneshot::Sender<CrucibleReplaceResult>;
+    oneshot::Sender<CrucibleReplaceResult>;
 
 /// Type alias for the sender side of a channel that receives the results of
 /// instance-ensure API calls.
 type InstanceEnsureResponseTx =
-    tokio::sync::oneshot::Sender<Result<InstanceEnsureResponse, VmError>>;
+    oneshot::Sender<Result<InstanceEnsureResponse, VmError>>;
 
 /// The minimum number of threads to spawn in the Tokio runtime that runs the
 /// state driver and any other VM-related tasks.
@@ -187,7 +187,7 @@ pub(crate) struct Vm {
     /// Routines that need to read VM properties or obtain a `VmObjects` handle
     /// acquire this lock shared.
     ///
-    /// Routines that drive the VM state machine acquire this lock exclusive.
+    /// Routines that drive the VM state machine acquire this lock exclusively.
     inner: RwLock<VmInner>,
 
     /// A logger for this VM.
@@ -260,29 +260,29 @@ impl std::fmt::Display for VmState {
 pub(super) struct EnsureOptions {
     /// A reference to the VM configuration specified in the config TOML passed
     /// to this propolis-server process.
-    pub toml_config: Arc<crate::server::VmTomlConfig>,
+    pub(super) toml_config: Arc<crate::server::VmTomlConfig>,
 
     /// True if VMs should allocate memory from the kernel VMM reservoir.
-    pub use_reservoir: bool,
+    pub(super) use_reservoir: bool,
 
     /// Configuration used to serve Oximeter metrics from this server.
-    pub metrics_config: Option<MetricsEndpointConfig>,
+    pub(super) metrics_config: Option<MetricsEndpointConfig>,
 
     /// An Oximeter producer registry to pass to components that will emit
     /// Oximeter metrics.
-    pub oximeter_registry: Option<ProducerRegistry>,
+    pub(super) oximeter_registry: Option<ProducerRegistry>,
 
     /// A Nexus client handle to pass to components that can make upcalls to
     /// Nexus.
-    pub nexus_client: Option<nexus_client::Client>,
+    pub(super) nexus_client: Option<nexus_client::Client>,
 
     /// A reference to the process's VNC server, used to connect the server to
     /// a new VM's framebuffer.
-    pub vnc_server: Arc<VncServer<PropolisVncServer>>,
+    pub(super) vnc_server: Arc<VncServer<PropolisVncServer>>,
 
     /// The address of this Propolis process, used by the live migration
     /// protocol to transfer serial console connections.
-    pub local_server_addr: SocketAddr,
+    pub(super) local_server_addr: SocketAddr,
 }
 
 impl Vm {
@@ -312,29 +312,33 @@ impl Vm {
     /// recently wrapped by this `Vm`.
     pub(super) async fn get(&self) -> Result<InstanceSpecGetResponse, VmError> {
         let guard = self.inner.read().await;
-        let vm = match &guard.state {
-            VmState::NoVm => {
-                return Err(VmError::NotCreated);
+        match &guard.state {
+            // If no VM has ever been created, there's nothing to get.
+            VmState::NoVm => Err(VmError::NotCreated),
+
+            // If the VM is active, pull the required data out of its objects.
+            VmState::Active(vm) => {
+                let spec =
+                    vm.objects().lock_shared().await.instance_spec().clone();
+                let state = vm.external_state_rx.borrow().clone();
+                Ok(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    spec: VersionedInstanceSpec::V0(spec),
+                    state: state.state,
+                })
             }
-            VmState::Active(vm) => vm,
+
+            // If the VM is not active yet, or there is only a
+            // previously-run-down VM, return the state saved in the state
+            // machine.
             VmState::WaitingForInit(vm)
             | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => {
-                return Ok(InstanceSpecGetResponse {
-                    properties: vm.properties.clone(),
-                    state: vm.external_state_rx.borrow().state,
-                    spec: VersionedInstanceSpec::V0(vm.spec.clone()),
-                });
-            }
-        };
-
-        let spec = vm.objects().lock_shared().await.instance_spec().clone();
-        let state = vm.external_state_rx.borrow().clone();
-        Ok(InstanceSpecGetResponse {
-            properties: vm.properties.clone(),
-            spec: VersionedInstanceSpec::V0(spec),
-            state: state.state,
-        })
+            | VmState::RundownComplete(vm) => Ok(InstanceSpecGetResponse {
+                properties: vm.properties.clone(),
+                state: vm.external_state_rx.borrow().state,
+                spec: VersionedInstanceSpec::V0(vm.spec.clone()),
+            }),
+        }
     }
 
     /// Yields a handle to the most recent instance state receiver wrapped by
@@ -381,8 +385,9 @@ impl Vm {
                     tokio_rt: vm.tokio_rt.expect("WaitingForInit has runtime"),
                 });
             }
-            _ => unreachable!(
-                "only a starting VM's state worker calls make_active"
+            state => unreachable!(
+                "only a starting VM's state worker calls make_active \
+                (current state: {state})"
             ),
         }
     }
@@ -403,9 +408,9 @@ impl Vm {
             VmState::WaitingForInit(vm) => {
                 guard.state = VmState::RundownComplete(vm)
             }
-            _ => unreachable!(
+            state => unreachable!(
                 "start failures should only occur before an active VM is \
-                installed"
+                installed (current state: {state})"
             ),
         }
     }
@@ -421,10 +426,13 @@ impl Vm {
         info!(self.log, "setting VM rundown");
         let services = {
             let mut guard = self.inner.write().await;
-            let VmState::Active(vm) =
-                std::mem::replace(&mut guard.state, VmState::NoVm)
-            else {
-                panic!("VM should be active before being run down");
+            let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+            let vm = match old {
+                VmState::Active(vm) => vm,
+                state => panic!(
+                    "VM should be active before being run down (current state: \
+                    {state})"
+                ),
             };
 
             let spec = vm.objects().lock_shared().await.instance_spec().clone();
@@ -458,7 +466,9 @@ impl Vm {
                 guard.state = VmState::RundownComplete(vm);
                 rt
             }
-            _ => unreachable!("VM rundown completed from invalid prior state"),
+            state => unreachable!(
+                "VM rundown completed from invalid prior state {state}"
+            ),
         };
 
         let StateDriverOutput { mut state_publisher, final_state } = guard
@@ -497,7 +507,7 @@ impl Vm {
         // until that task has disposed of the initialization request. Create a
         // channel to allow the state driver task to send back an ensure result
         // at the appropriate moment.
-        let (ensure_reply_tx, ensure_rx) = tokio::sync::oneshot::channel();
+        let (ensure_reply_tx, ensure_rx) = oneshot::channel();
 
         // The external state receiver needs to exist as soon as this routine
         // returns, so create the appropriate channel here. The sender side of

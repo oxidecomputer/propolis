@@ -334,7 +334,7 @@ impl VmObjectsLocked {
             info!(self.log, "starting block backend {}", name);
             let res = backend.start().await;
             if let Err(e) = &res {
-                error!(self.log, "Startup failed for {}: {:?}", name, e);
+                error!(self.log, "startup failed for {}: {:?}", name, e);
                 return res;
             }
         }
@@ -362,10 +362,9 @@ impl VmObjectsLocked {
                 cx: &mut Context<'_>,
             ) -> Poll<Self::Output> {
                 let mut_self = self.get_mut();
-                match Pin::new(&mut mut_self.future).poll(cx) {
-                    Poll::Pending => Poll::Pending,
-                    Poll::Ready(()) => Poll::Ready(mut_self.name.clone()),
-                }
+                Pin::new(&mut mut_self.future)
+                    .poll(cx)
+                    .map(|_| mut_self.name.clone())
             }
         }
 
@@ -379,18 +378,11 @@ impl VmObjectsLocked {
             })
             .collect();
 
-        loop {
-            match stream.next().await {
-                Some(name) => {
-                    info!(self.log, "dev {} completed pause", name);
-                }
-
-                None => {
-                    info!(self.log, "all devices paused");
-                    break;
-                }
-            }
+        while let Some(name) = stream.next().await {
+            info!(self.log, "dev {} completed pause", name);
         }
+
+        info!(self.log, "all devices paused");
     }
 
     /// Resumes all of a VM's devices.
