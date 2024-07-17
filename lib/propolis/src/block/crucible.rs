@@ -87,27 +87,10 @@ impl CrucibleBackend {
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        CrucibleBackend::_create(
-            request,
-            opts,
-            producer_registry,
-            nexus_client,
-            log,
-        )
-        .await
-        .map_err(CrucibleError::into)
-    }
-
-    async fn _create(
-        request: VolumeConstructionRequest,
-        opts: block::BackendOpts,
-        producer_registry: Option<ProducerRegistry>,
-        nexus_client: Option<NexusClient>,
-        log: slog::Logger,
-    ) -> Result<Arc<Self>, crucible::CrucibleError> {
         // Construct the volume.
-        let volume =
-            Volume::construct(request, producer_registry, log.clone()).await?;
+        let volume = Volume::construct(request, producer_registry, log.clone())
+            .await
+            .map_err(|e| io::Error::from(CrucibleError::from(e)))?;
 
         // Decide if we need to scrub this volume or not.
         if volume.has_read_only_parent() {
