@@ -230,11 +230,12 @@ impl ExternalRequestQueue {
     }
 
     /// Indicates whether the queue is empty.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
-    /// Asks to place the supplied request on the queue. If the requests is
+    /// Asks to place the supplied request on the queue. If the request is
     /// enqueued, updates the dispositions to use for future requests.
     pub fn try_queue(
         &mut self,

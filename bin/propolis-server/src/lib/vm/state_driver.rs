@@ -5,7 +5,7 @@
 //! A task to handle requests to change a VM's state or configuration.
 
 use std::{
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -17,6 +17,7 @@ use propolis_api_types::{
     InstanceSpecEnsureRequest, InstanceState, MigrationState,
 };
 use slog::{error, info};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::{
@@ -79,8 +80,16 @@ impl InputQueueInner {
 
 /// A queue for external state change requests and guest-driven state changes.
 pub(super) struct InputQueue {
+    /// Contains the input queue's sub-queues, one for external state change
+    /// requests and one for events emitted by the VM.
     inner: Mutex<InputQueueInner>,
-    cv: Condvar,
+
+    /// Notifies the state driver that a new event is present on the queue.
+    ///
+    /// Notifiers must use [`Notify::notify_one`] when signaling this `Notify`
+    /// to guarantee the state driver does not miss incoming messages. See the
+    /// comments in [`InputQueue::wait_for_next_event`].
+    notify: Notify,
 }
 
 impl InputQueue {
@@ -91,7 +100,7 @@ impl InputQueue {
     ) -> Self {
         Self {
             inner: Mutex::new(InputQueueInner::new(log, auto_start)),
-            cv: Condvar::new(),
+            notify: Notify::new(),
         }
     }
 
@@ -101,26 +110,29 @@ impl InputQueue {
     /// External requests and guest events are stored in separate queues. If
     /// both queues have events when this routine is called, the guest event
     /// queue takes precedence.
-    fn wait_for_next_event(&self) -> InputQueueEvent {
-        // `block_in_place` is required to avoid blocking the executor while
-        // waiting on the condvar.
-        tokio::task::block_in_place(|| {
-            let guard = self.inner.lock().unwrap();
-            let mut guard = self
-                .cv
-                .wait_while(guard, |i| {
-                    i.external_requests.is_empty() && i.guest_events.is_empty()
-                })
-                .unwrap();
-
-            if let Some(guest_event) = guard.guest_events.pop_front() {
-                InputQueueEvent::GuestEvent(guest_event)
-            } else {
-                InputQueueEvent::ExternalRequest(
-                    guard.external_requests.pop_front().unwrap(),
-                )
+    ///
+    /// # Synchronization
+    ///
+    /// This routine assumes that it is only ever called by one task (the state
+    /// driver). If multiple threads call this routine simultaneously, they may
+    /// miss wakeups and not return when new events are pushed to the queue or
+    /// cause a panic (see below).
+    async fn wait_for_next_event(&self) -> InputQueueEvent {
+        loop {
+            {
+                let mut guard = self.inner.lock().unwrap();
+                if let Some(guest_event) = guard.guest_events.pop_front() {
+                    return InputQueueEvent::GuestEvent(guest_event);
+                } else if let Some(req) = guard.external_requests.pop_front() {
+                    return InputQueueEvent::ExternalRequest(req);
+                }
             }
-        })
+
+            // Notifiers in this module must use `notify_one` so that their
+            // notifications will not be lost if they arrive after this routine
+            // checks the queues but before it actually polls the notify.
+            self.notify.notified().await;
+        }
     }
 
     /// Notifies the external request queue that the instance's state has
@@ -142,7 +154,7 @@ impl InputQueue {
         let mut inner = self.inner.lock().unwrap();
         let result = inner.external_requests.try_queue(request);
         if result.is_ok() {
-            self.cv.notify_one();
+            self.notify.notify_one();
         }
         result
     }
@@ -155,7 +167,7 @@ impl guest_event::VcpuEventHandler for InputQueue {
             .guest_events
             .enqueue(guest_event::GuestEvent::VcpuSuspendHalt(when))
         {
-            self.cv.notify_all();
+            self.notify.notify_one();
         }
     }
 
@@ -165,7 +177,7 @@ impl guest_event::VcpuEventHandler for InputQueue {
             .guest_events
             .enqueue(guest_event::GuestEvent::VcpuSuspendReset(when))
         {
-            self.cv.notify_all();
+            self.notify.notify_one();
         }
     }
 
@@ -174,7 +186,7 @@ impl guest_event::VcpuEventHandler for InputQueue {
         if guard.guest_events.enqueue(
             guest_event::GuestEvent::VcpuSuspendTripleFault(vcpu_id, when),
         ) {
-            self.cv.notify_all();
+            self.notify.notify_one();
         }
     }
 
@@ -195,14 +207,14 @@ impl guest_event::ChipsetEventHandler for InputQueue {
     fn chipset_halt(&self) {
         let mut guard = self.inner.lock().unwrap();
         if guard.guest_events.enqueue(guest_event::GuestEvent::ChipsetHalt) {
-            self.cv.notify_all();
+            self.notify.notify_one();
         }
     }
 
     fn chipset_reset(&self) {
         let mut guard = self.inner.lock().unwrap();
         if guard.guest_events.enqueue(guest_event::GuestEvent::ChipsetReset) {
-            self.cv.notify_all();
+            self.notify.notify_one();
         }
     }
 }
@@ -360,7 +372,7 @@ impl StateDriver {
     async fn run_loop(&mut self) -> InstanceState {
         info!(self.log, "state driver entered main loop");
         loop {
-            let event = self.input_queue.wait_for_next_event();
+            let event = self.input_queue.wait_for_next_event().await;
             info!(self.log, "state driver handling event"; "event" => ?event);
 
             let outcome = match event {

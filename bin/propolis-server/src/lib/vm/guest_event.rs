@@ -64,8 +64,4 @@ impl GuestEventQueue {
     pub(super) fn pop_front(&mut self) -> Option<GuestEvent> {
         self.queue.pop_front()
     }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
 }
