@@ -290,7 +290,7 @@ impl block::Backend for CrucibleBackend {
     }
     async fn stop(&self) -> () {
         self.state.attachment.stop();
-        self.workers.block_until_joined().await;
+        self.workers.join_all().await;
     }
 }
 

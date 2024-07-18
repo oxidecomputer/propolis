@@ -223,6 +223,6 @@ impl block::Backend for MemAsyncBackend {
 
     async fn stop(&self) -> () {
         self.work_state.attachment.stop();
-        self.workers.block_until_joined().await;
+        self.workers.join_all().await;
     }
 }

@@ -434,9 +434,13 @@ impl TaskGroup {
         guard.extend(tasks);
     }
 
-    /// Block until all held tasks have been joined, returning any resulting
-    /// [task::JoinError]s after doing so.
-    pub async fn block_until_joined(&self) -> Option<Vec<task::JoinError>> {
+    /// Waits until all the workers in this task group have completed.
+    ///
+    /// # Return value
+    ///
+    /// `None` if all the tasks completed successfully. `Some` if at least one
+    /// task failed; the wrapped value is a `Vec` of all of the returned errors.
+    pub async fn join_all(&self) -> Option<Vec<task::JoinError>> {
         let workers = {
             let mut guard = self.0.lock().unwrap();
             std::mem::replace(&mut *guard, Vec::new())
