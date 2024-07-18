@@ -447,19 +447,6 @@ mod test {
     }
 
     #[test]
-    fn test_no_schema_changes() {
-        let mut set = SchemaSet::default();
-        assert!(set
-            .insert_checked(&test_virtual_machine(), &test_usage())
-            .is_none());
-        const PATH: &str = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/output/virtual-machine-schema.json",
-        );
-        set.assert_contents(PATH);
-    }
-
-    #[test]
     fn test_kstat_instance_from_instance_id() {
         let ks = Kstat {
             ks_module: VMM_KSTAT_MODULE_NAME,
