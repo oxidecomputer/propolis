@@ -27,54 +27,40 @@ use slog::{debug, info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::migrate::MigrateError;
+/// Wraps a [`dropshot::WebsocketConnection`] for inclusion in an
+/// [`ExternalRequest`].
+//
+// This newtype allows this module's tests (which want to verify queuing
+// dispositions and don't care about request contents) to construct a
+// `MigrateAsSource` request without having to conjure up a real websocket
+// connection.
+pub(crate) struct WebsocketConnection(Option<dropshot::WebsocketConnection>);
 
-use super::{
-    MigrateSourceCommand, MigrateSourceResponse, MigrateTargetCommand,
-};
+impl From<dropshot::WebsocketConnection> for WebsocketConnection {
+    fn from(value: dropshot::WebsocketConnection) -> Self {
+        Self(Some(value))
+    }
+}
+
+impl WebsocketConnection {
+    /// Yields the wrapped [`dropshot::WebsocketConnection`].
+    pub(crate) fn into_inner(self) -> dropshot::WebsocketConnection {
+        // Unwrapping is safe here because the only way an external consumer can
+        // get an instance of this wrapper is to use the From impl, which always
+        // wraps a `Some`.
+        self.0.unwrap()
+    }
+}
 
 /// An external request made of a VM controller via the server API. Handled by
 /// the controller's state driver thread.
-#[derive(Debug)]
 pub enum ExternalRequest {
-    /// Initializes the VM through live migration by running a
-    /// migration-destination task.
-    MigrateAsTarget {
-        /// The ID of the live migration to use when initializing.
-        migration_id: Uuid,
-
-        /// A handle to the task that will execute the migration procedure.
-        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-
-        /// The sender side of a one-shot channel that, when signaled, tells the
-        /// migration task to start its work.
-        start_tx: tokio::sync::oneshot::Sender<()>,
-
-        /// A channel that receives commands from the migration task.
-        command_rx: tokio::sync::mpsc::Receiver<MigrateTargetCommand>,
-    },
-
-    /// Resets all the VM's devices and CPUs, then starts the VM.
+    /// Asks the state worker to start a brand-new VM (i.e. not one initialized
+    /// by live migration, which implicitly starts the VM).
     Start,
 
     /// Asks the state worker to start a migration-source task.
-    MigrateAsSource {
-        /// The ID of the live migration for which this VM will be the source.
-        migration_id: Uuid,
-
-        /// A handle to the task that will execute the migration procedure.
-        task: tokio::task::JoinHandle<Result<(), MigrateError>>,
-
-        /// The sender side of a one-shot channel that, when signaled, tells the
-        /// migration task to start its work.
-        start_tx: tokio::sync::oneshot::Sender<()>,
-
-        /// A channel that receives commands from the migration task.
-        command_rx: tokio::sync::mpsc::Receiver<MigrateSourceCommand>,
-
-        /// A channel used to send responses to migration commands.
-        response_tx: tokio::sync::mpsc::Sender<MigrateSourceResponse>,
-    },
+    MigrateAsSource { migration_id: Uuid, websock: WebsocketConnection },
 
     /// Resets the guest by pausing all devices, resetting them to their
     /// cold-boot states, and resuming the devices. Note that this is not a
@@ -84,6 +70,48 @@ pub enum ExternalRequest {
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
     Stop,
+
+    /// Attempts to update the volume construction request for the supplied
+    /// Crucible volume.
+    ///
+    /// TODO: Due to https://github.com/oxidecomputer/crucible/issues/871, this
+    /// is only allowed once the VM is started and the volume has activated, but
+    /// it should be allowed even before the VM has started.
+    ReconfigureCrucibleVolume {
+        /// The name of the Crucible backend component in the instance spec.
+        disk_name: String,
+
+        /// The ID of the Crucible backend in the VM's Crucible backend map.
+        backend_id: Uuid,
+
+        /// The new volume construction request to supply to the Crucible
+        /// upstairs.
+        new_vcr_json: String,
+
+        /// The sink for the result of this operation.
+        result_tx: super::CrucibleReplaceResultTx,
+    },
+}
+
+impl std::fmt::Debug for ExternalRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start => write!(f, "Start"),
+            Self::MigrateAsSource { migration_id, .. } => f
+                .debug_struct("MigrateAsSource")
+                .field("migration_id", migration_id)
+                .finish(),
+            Self::Reboot => write!(f, "Reboot"),
+            Self::Stop => write!(f, "Stop"),
+            Self::ReconfigureCrucibleVolume {
+                disk_name, backend_id, ..
+            } => f
+                .debug_struct("ReconfigureCrucibleVolume")
+                .field("disk_name", disk_name)
+                .field("backend_id", backend_id)
+                .finish(),
+        }
+    }
 }
 
 /// A set of reasons why a request to queue an external state transition can
@@ -92,9 +120,6 @@ pub enum ExternalRequest {
 pub enum RequestDeniedReason {
     #[error("Operation requires an active instance")]
     InstanceNotActive,
-
-    #[error("Already migrating into this instance")]
-    MigrationTargetInProgress,
 
     #[error("Instance is currently starting")]
     StartInProgress,
@@ -147,13 +172,14 @@ enum RequestDisposition {
 /// The current disposition for each kind of incoming request.
 #[derive(Copy, Clone, Debug)]
 struct AllowedRequests {
-    migrate_as_target: RequestDisposition,
     start: RequestDisposition,
     migrate_as_source: RequestDisposition,
     reboot: RequestDisposition,
+    mutate: RequestDisposition,
     stop: RequestDisposition,
 }
 
+/// A queue for external requests to change an instance's state.
 #[derive(Debug)]
 pub struct ExternalRequestQueue {
     queue: VecDeque<ExternalRequest>,
@@ -161,18 +187,35 @@ pub struct ExternalRequestQueue {
     log: Logger,
 }
 
+/// Indicates whether this queue's creator will start the relevant instance
+/// without waiting for a Start request from the queue.
+pub enum InstanceAutoStart {
+    Yes,
+    No,
+}
+
 impl ExternalRequestQueue {
     /// Creates a new queue that logs to the supplied logger.
-    pub fn new(log: Logger) -> Self {
+    pub fn new(log: Logger, auto_start: InstanceAutoStart) -> Self {
+        // If the queue is being created for an instance that will start
+        // automatically (e.g. due to a migration in), set the request
+        // disposition for future start requests to Ignore for idempotency.
+        let start = match auto_start {
+            InstanceAutoStart::Yes => RequestDisposition::Ignore,
+            InstanceAutoStart::No => RequestDisposition::Enqueue,
+        };
+
         Self {
             queue: VecDeque::new(),
             allowed: AllowedRequests {
-                migrate_as_target: RequestDisposition::Enqueue,
-                start: RequestDisposition::Enqueue,
+                start,
                 migrate_as_source: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
                 reboot: RequestDisposition::Deny(
+                    RequestDeniedReason::InstanceNotActive,
+                ),
+                mutate: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
                 stop: RequestDisposition::Enqueue,
@@ -187,25 +230,26 @@ impl ExternalRequestQueue {
     }
 
     /// Indicates whether the queue is empty.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
-    /// Asks to place the supplied request on the queue. If the requests is
+    /// Asks to place the supplied request on the queue. If the request is
     /// enqueued, updates the dispositions to use for future requests.
     pub fn try_queue(
         &mut self,
         request: ExternalRequest,
     ) -> Result<(), RequestDeniedReason> {
         let disposition = match request {
-            ExternalRequest::MigrateAsTarget { .. } => {
-                self.allowed.migrate_as_target
-            }
             ExternalRequest::Start => self.allowed.start,
             ExternalRequest::MigrateAsSource { .. } => {
                 self.allowed.migrate_as_source
             }
             ExternalRequest::Reboot => self.allowed.reboot,
+            ExternalRequest::ReconfigureCrucibleVolume { .. } => {
+                self.allowed.mutate
+            }
 
             // Requests to stop always succeed. Note that a request to stop a VM
             // that hasn't started should still be queued to the state worker so
@@ -237,51 +281,6 @@ impl ExternalRequestQueue {
             .get_new_dispositions(DispositionChangeReason::StateChange(state));
     }
 
-    /// Indicates whether the queue would allow a request to migrate into this
-    /// instance. This can be used to avoid setting up migration tasks for
-    /// requests that will ultimately be denied.
-    ///
-    /// # Return value
-    ///
-    /// - `Ok(true)` if the request will be queued.
-    /// - `Ok(false)` if the request is allowed for idempotency reasons but will
-    ///   not be queued.
-    /// - `Err` if the request is forbidden.
-    pub fn migrate_as_target_will_enqueue(
-        &self,
-    ) -> Result<bool, RequestDeniedReason> {
-        match self.allowed.migrate_as_target {
-            RequestDisposition::Enqueue => Ok(true),
-            RequestDisposition::Ignore => Ok(false),
-            RequestDisposition::Deny(reason) => Err(reason),
-        }
-    }
-
-    /// Indicates whether the queue would allow a request to migrate out of this
-    /// instance. This can be used to avoid setting up migration tasks for
-    /// requests that will ultimately be denied.
-    ///
-    /// # Return value
-    ///
-    /// - `Ok(true)` if the request will be queued.
-    /// - `Ok(false)` if the request is allowed for idempotency reasons but will
-    ///   not be queued.
-    /// - `Err` if the request is forbidden.
-    pub fn migrate_as_source_will_enqueue(
-        &self,
-    ) -> Result<bool, RequestDeniedReason> {
-        assert!(!matches!(
-            self.allowed.migrate_as_source,
-            RequestDisposition::Ignore
-        ));
-
-        match self.allowed.migrate_as_source {
-            RequestDisposition::Enqueue => Ok(true),
-            RequestDisposition::Ignore => unreachable!(),
-            RequestDisposition::Deny(reason) => Err(reason),
-        }
-    }
-
     /// Computes a new set of queue dispositions given the current state of the
     /// queue and the event that is changing those dispositions.
     fn get_new_dispositions(
@@ -295,59 +294,34 @@ impl ExternalRequestQueue {
         use RequestDeniedReason as DenyReason;
         use RequestDisposition as Disposition;
         match reason {
-            // Starting the instance, whether via migration or cold boot,
-            // forecloses on further attempts to migrate in. For idempotency,
-            // further requests to start are allowed when an instance-starting
-            // transition is enqueued.
-            ChangeReason::ApiRequest(ExternalRequest::MigrateAsTarget {
-                ..
-            })
-            | ChangeReason::ApiRequest(ExternalRequest::Start) => {
-                let (migrate_as_target_disposition, deny_reason) = match reason
-                {
-                    // If this is a request to migrate in, make sure future
-                    // requests to migrate in are handled idempotently.
-                    ChangeReason::ApiRequest(
-                        ExternalRequest::MigrateAsTarget { .. },
-                    ) => (
-                        Disposition::Ignore,
-                        DenyReason::MigrationTargetInProgress,
-                    ),
-                    ChangeReason::ApiRequest(ExternalRequest::Start) => (
-                        Disposition::Deny(DenyReason::StartInProgress),
-                        DenyReason::StartInProgress,
-                    ),
-                    _ => unreachable!(),
-                };
-
+            ChangeReason::ApiRequest(ExternalRequest::Start) => {
+                let reason = DenyReason::StartInProgress;
                 AllowedRequests {
-                    migrate_as_target: migrate_as_target_disposition,
                     start: Disposition::Ignore,
-                    migrate_as_source: Disposition::Deny(deny_reason),
-                    reboot: Disposition::Deny(deny_reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
+                    mutate: Disposition::Deny(reason),
                     stop: self.allowed.stop,
                 }
             }
             ChangeReason::ApiRequest(ExternalRequest::MigrateAsSource {
                 ..
             }) => {
-                assert!(matches!(self.allowed.start, Disposition::Ignore));
-
-                // Requests to migrate into the instance should not be enqueued
-                // from this point, but whether they're dropped or ignored
-                // depends on how the instance was originally initialized.
-                assert!(!matches!(
-                    self.allowed.migrate_as_target,
-                    Disposition::Enqueue
-                ));
+                assert!(
+                    matches!(self.allowed.start, Disposition::Ignore),
+                    "{:?}",
+                    self.allowed
+                );
 
                 AllowedRequests {
-                    migrate_as_target: self.allowed.migrate_as_target,
                     start: self.allowed.start,
                     migrate_as_source: Disposition::Deny(
                         DenyReason::AlreadyMigrationSource,
                     ),
                     reboot: Disposition::Deny(
+                        DenyReason::InvalidRequestForMigrationSource,
+                    ),
+                    mutate: Disposition::Deny(
                         DenyReason::InvalidRequestForMigrationSource,
                     ),
                     stop: self.allowed.stop,
@@ -357,39 +331,41 @@ impl ExternalRequestQueue {
             // Requests to reboot prevent additional reboot requests from being
             // queued, but do not affect other operations.
             ChangeReason::ApiRequest(ExternalRequest::Reboot) => {
-                assert!(matches!(self.allowed.start, Disposition::Ignore));
-                assert!(!matches!(
-                    self.allowed.migrate_as_target,
-                    Disposition::Enqueue
-                ));
-
+                assert!(
+                    matches!(self.allowed.start, Disposition::Ignore),
+                    "{:?}",
+                    self.allowed
+                );
                 AllowedRequests { reboot: Disposition::Ignore, ..self.allowed }
             }
 
             // Requests to stop the instance block other requests from being
             // queued. Additional requests to stop are ignored for idempotency.
             ChangeReason::ApiRequest(ExternalRequest::Stop) => {
+                let reason = DenyReason::HaltPending;
                 AllowedRequests {
-                    migrate_as_target: Disposition::Deny(
-                        DenyReason::HaltPending,
-                    ),
-                    start: Disposition::Deny(DenyReason::HaltPending),
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::HaltPending,
-                    ),
-                    reboot: Disposition::Deny(DenyReason::HaltPending),
+                    start: Disposition::Deny(reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
+                    mutate: Disposition::Deny(reason),
                     stop: Disposition::Ignore,
                 }
             }
+
+            // Requests to mutate VM configuration don't move the VM state
+            // machine and don't change any request dispositions.
+            ChangeReason::ApiRequest(
+                ExternalRequest::ReconfigureCrucibleVolume { .. },
+            ) => self.allowed,
 
             // When an instance begins running, requests to migrate out of it or
             // to reboot it become valid.
             ChangeReason::StateChange(InstanceStateChange::StartedRunning) => {
                 AllowedRequests {
-                    migrate_as_target: self.allowed.migrate_as_target,
                     start: self.allowed.start,
                     migrate_as_source: Disposition::Enqueue,
                     reboot: Disposition::Enqueue,
+                    mutate: Disposition::Enqueue,
                     stop: self.allowed.stop,
                 }
             }
@@ -414,30 +390,64 @@ impl ExternalRequestQueue {
             // previous dispositions for migrate and reboot requests may not be
             // "deny".
             ChangeReason::StateChange(InstanceStateChange::Stopped) => {
+                let reason = DenyReason::InstanceNotActive;
                 AllowedRequests {
-                    migrate_as_target: Disposition::Deny(
-                        DenyReason::InstanceNotActive,
-                    ),
-                    start: Disposition::Deny(DenyReason::InstanceNotActive),
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::InstanceNotActive,
-                    ),
-                    reboot: Disposition::Deny(DenyReason::InstanceNotActive),
+                    start: Disposition::Deny(reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
+                    mutate: Disposition::Deny(reason),
                     stop: Disposition::Ignore,
                 }
             }
             ChangeReason::StateChange(InstanceStateChange::Failed) => {
+                let reason = DenyReason::InstanceFailed;
                 AllowedRequests {
-                    migrate_as_target: Disposition::Deny(
-                        DenyReason::InstanceFailed,
-                    ),
-                    start: Disposition::Deny(DenyReason::InstanceFailed),
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::InstanceFailed,
-                    ),
-                    reboot: Disposition::Deny(DenyReason::InstanceFailed),
+                    start: Disposition::Deny(reason),
+                    migrate_as_source: Disposition::Deny(reason),
+                    reboot: Disposition::Deny(reason),
+                    mutate: Disposition::Deny(reason),
                     stop: self.allowed.stop,
                 }
+            }
+        }
+    }
+}
+
+// It's possible for an external request queue to be dropped with outstanding
+// requests if an event from the guest shuts down the VM before the queue can be
+// drained. If this happens, notify anyone waiting on a specific request on the
+// queue that the VM is gone.
+impl Drop for ExternalRequestQueue {
+    fn drop(&mut self) {
+        for req in self.queue.drain(..) {
+            match req {
+                // Crucible VCR change requestors wait for their requests to be
+                // retired.
+                ExternalRequest::ReconfigureCrucibleVolume {
+                    result_tx,
+                    ..
+                } => {
+                    let _ =
+                        result_tx.send(Err(dropshot::HttpError::for_status(
+                            Some(
+                                "VM destroyed before request could be handled"
+                                    .to_string(),
+                            ),
+                            http::StatusCode::GONE,
+                        )));
+                }
+
+                // Requests to start, reboot, and stop are handled
+                // asynchronously (calls to change the instance's state return
+                // as soon as they're queued).
+                ExternalRequest::Start
+                | ExternalRequest::Reboot
+                | ExternalRequest::Stop => {}
+
+                // Dropping a request to migrate out drops the embedded
+                // connection to the migration target, thus notifying it that
+                // the source is gone.
+                ExternalRequest::MigrateAsSource { .. } => {}
             }
         }
     }
@@ -453,77 +463,52 @@ mod test {
         slog::Logger::root(slog::Discard, slog::o!())
     }
 
-    fn make_migrate_as_target_request() -> ExternalRequest {
-        let task = tokio::task::spawn(async { Ok(()) });
-        let (start_tx, _) = tokio::sync::oneshot::channel();
-        let (_, command_rx) = tokio::sync::mpsc::channel(1);
-        ExternalRequest::MigrateAsTarget {
-            migration_id: Uuid::new_v4(),
-            task,
-            start_tx,
-            command_rx,
-        }
-    }
-
     fn make_migrate_as_source_request() -> ExternalRequest {
-        let task = tokio::task::spawn(async { Ok(()) });
-        let (start_tx, _) = tokio::sync::oneshot::channel();
-        let (_, command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, _) = tokio::sync::mpsc::channel(1);
         ExternalRequest::MigrateAsSource {
             migration_id: Uuid::new_v4(),
-            task,
-            start_tx,
-            command_rx,
-            response_tx,
+            websock: WebsocketConnection(None),
+        }
+    }
+
+    fn make_reconfigure_crucible_request() -> ExternalRequest {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        ExternalRequest::ReconfigureCrucibleVolume {
+            disk_name: "".to_string(),
+            backend_id: Uuid::new_v4(),
+            new_vcr_json: "".to_string(),
+            result_tx: tx,
         }
     }
 
     #[tokio::test]
-    async fn migrate_as_target_is_idempotent() {
-        let mut queue = ExternalRequestQueue::new(test_logger());
+    async fn start_requests_become_idempotent_after_first_request() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
 
-        // Requests to migrate as a target should queue normally at first.
-        assert!(queue.migrate_as_target_will_enqueue().unwrap());
-
-        // After queuing such a request, subsequent requests should be allowed
-        // without enqueuing anything.
-        assert!(queue.try_queue(make_migrate_as_target_request()).is_ok());
-        assert!(!queue.migrate_as_target_will_enqueue().unwrap());
-
-        // Pop the request and tell the queue the instance is running.
-        assert!(matches!(
-            queue.pop_front(),
-            Some(ExternalRequest::MigrateAsTarget { .. })
-        ));
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-
-        // Because the instance was started via migration in, future requests
-        // to migrate in should be allowed.
-        assert!(queue.try_queue(make_migrate_as_target_request()).is_ok());
-        assert!(!queue.migrate_as_target_will_enqueue().unwrap());
-    }
-
-    #[tokio::test]
-    async fn migrate_as_target_is_forbidden_after_cold_boot() {
-        let mut queue = ExternalRequestQueue::new(test_logger());
+        // The first request to start should succeed.
         assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
-        assert!(queue.migrate_as_target_will_enqueue().is_err());
-        assert!(queue.try_queue(make_migrate_as_target_request()).is_err());
+        // The second one should too, but only for idempotency: the queue should
+        // then have only one start request on it.
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        assert!(queue.pop_front().is_none());
+
+        // Start requests continue to be ignored even after the instance starts
+        // to run.
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(queue.pop_front().is_none());
     }
 
     #[tokio::test]
     async fn migrate_as_source_is_not_idempotent() {
         // Simulate a running instance.
-        let mut queue = ExternalRequestQueue::new(test_logger());
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Requests to migrate out should be allowed.
-        assert!(queue.migrate_as_source_will_enqueue().unwrap());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
 
         // Once the request is queued, other requests to migrate out are
@@ -534,7 +519,6 @@ mod test {
         // is assumed), but requests to migrate out are issued by the target
         // Propolis (which does not assume idempotency and issues only one
         // request per migration attempt).
-        assert!(queue.migrate_as_source_will_enqueue().is_err());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
 
         // If migration fails, the instance resumes running, and then another
@@ -544,22 +528,19 @@ mod test {
             Some(ExternalRequest::MigrateAsSource { .. })
         ));
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-        assert!(queue.migrate_as_source_will_enqueue().unwrap());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
 
         // A successful migration stops the instance, which forecloses on future
         // requests to migrate out.
         queue.pop_front();
         queue.notify_instance_state_change(InstanceStateChange::Stopped);
-        assert!(queue.migrate_as_source_will_enqueue().is_err());
         assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
     }
 
     #[tokio::test]
     async fn stop_requests_enqueue_after_vm_failure() {
-        let mut queue = ExternalRequestQueue::new(test_logger());
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
         queue.notify_instance_state_change(InstanceStateChange::Failed);
 
         assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
@@ -568,9 +549,8 @@ mod test {
 
     #[tokio::test]
     async fn reboot_requests_are_idempotent_except_when_stopping() {
-        let mut queue = ExternalRequestQueue::new(test_logger());
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         // Once the instance is started, reboot requests should be allowed, but
@@ -600,5 +580,47 @@ mod test {
         assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
         queue.notify_instance_state_change(InstanceStateChange::Rebooted);
         assert!(queue.try_queue(ExternalRequest::Reboot).is_err());
+    }
+
+    #[tokio::test]
+    async fn mutation_requires_running_and_not_migrating_out() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+
+        // Mutating a VM before it has started is not allowed.
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+
+        // Merely dequeuing the start request doesn't allow mutation; the VM
+        // actually has to be running.
+        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+        assert!(matches!(
+            queue.pop_front(),
+            Some(ExternalRequest::ReconfigureCrucibleVolume { .. })
+        ));
+
+        // Successfully requesting migration out should block new mutation
+        // requests (they should wait for the migration to resolve and then go
+        // to the target).
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+
+        // But if the VM resumes (due to a failed migration out) these requests
+        // should succeed again.
+        assert!(queue.pop_front().is_some());
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn mutation_disallowed_after_stop() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        queue.notify_instance_state_change(InstanceStateChange::Stopped);
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
     }
 }

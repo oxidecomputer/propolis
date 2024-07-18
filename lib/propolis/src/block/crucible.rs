@@ -80,37 +80,17 @@ impl WorkerState {
 }
 
 impl CrucibleBackend {
-    pub fn create(
+    pub async fn create(
         request: VolumeConstructionRequest,
         opts: block::BackendOpts,
         producer_registry: Option<ProducerRegistry>,
         nexus_client: Option<NexusClient>,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move {
-            CrucibleBackend::_create(
-                request,
-                opts,
-                producer_registry,
-                nexus_client,
-                log,
-            )
-            .await
-        })
-        .map_err(CrucibleError::into)
-    }
-
-    async fn _create(
-        request: VolumeConstructionRequest,
-        opts: block::BackendOpts,
-        producer_registry: Option<ProducerRegistry>,
-        nexus_client: Option<NexusClient>,
-        log: slog::Logger,
-    ) -> Result<Arc<Self>, crucible::CrucibleError> {
         // Construct the volume.
-        let volume =
-            Volume::construct(request, producer_registry, log.clone()).await?;
+        let volume = Volume::construct(request, producer_registry, log.clone())
+            .await
+            .map_err(|e| io::Error::from(CrucibleError::from(e)))?;
 
         // Decide if we need to scrub this volume or not.
         if volume.has_read_only_parent() {
@@ -176,42 +156,41 @@ impl CrucibleBackend {
 
     /// Create Crucible backend using the in-memory volume backend, rather than
     /// "real" Crucible downstairs instances.
-    pub fn create_mem(
+    pub async fn create_mem(
         size: u64,
         opts: block::BackendOpts,
         log: slog::Logger,
     ) -> io::Result<Arc<Self>> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move {
-            let block_size = u64::from(opts.block_size.ok_or_else(|| {
-                CrucibleError::GenericError(
-                    "block_size is required parameter".into(),
-                )
-            })?);
-            // Allocate and construct the volume.
-            let mem_disk = Arc::new(crucible::InMemoryBlockIO::new(
-                Uuid::new_v4(),
-                block_size,
-                size as usize,
-            ));
-            let mut volume = Volume::new(block_size, log);
-            volume.add_subvolume(mem_disk).await?;
+        let block_size = u64::from(opts.block_size.ok_or_else(|| {
+            CrucibleError::GenericError(
+                "block_size is required parameter".into(),
+            )
+        })?);
+        // Allocate and construct the volume.
+        let mem_disk = Arc::new(crucible::InMemoryBlockIO::new(
+            Uuid::new_v4(),
+            block_size,
+            size as usize,
+        ));
+        let mut volume = Volume::new(block_size, log);
+        volume
+            .add_subvolume(mem_disk)
+            .await
+            .map_err(|e| std::io::Error::from(e))?;
 
-            Ok(Arc::new(CrucibleBackend {
-                state: Arc::new(WorkerState {
-                    attachment: block::BackendAttachment::new(),
-                    volume,
-                    info: block::DeviceInfo {
-                        block_size: block_size as u32,
-                        total_size: size / block_size,
-                        read_only: opts.read_only.unwrap_or(false),
-                    },
-                    skip_flush: opts.skip_flush.unwrap_or(false),
-                }),
-                workers: TaskGroup::new(),
-            }))
-        })
-        .map_err(CrucibleError::into)
+        Ok(Arc::new(CrucibleBackend {
+            state: Arc::new(WorkerState {
+                attachment: block::BackendAttachment::new(),
+                volume,
+                info: block::DeviceInfo {
+                    block_size: block_size as u32,
+                    total_size: size / block_size,
+                    read_only: opts.read_only.unwrap_or(false),
+                },
+                skip_flush: opts.skip_flush.unwrap_or(false),
+            }),
+            workers: TaskGroup::new(),
+        }))
     }
 
     // Communicate to Nexus that we can remove the read only parent for
@@ -242,10 +221,8 @@ impl CrucibleBackend {
     }
 
     /// Retrieve the UUID identifying this Crucible backend.
-    pub fn get_uuid(&self) -> io::Result<uuid::Uuid> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async { self.state.volume.get_uuid().await })
-            .map_err(CrucibleError::into)
+    pub async fn get_uuid(&self) -> io::Result<uuid::Uuid> {
+        self.state.volume.get_uuid().await.map_err(CrucibleError::into)
     }
 
     /// Issue a snapshot request
@@ -297,6 +274,7 @@ impl CrucibleBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl block::Backend for CrucibleBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
@@ -304,17 +282,15 @@ impl block::Backend for CrucibleBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-    fn start(&self) -> anyhow::Result<()> {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async move { self.state.volume.activate().await })?;
-
+    async fn start(&self) -> anyhow::Result<()> {
+        self.state.volume.activate().await?;
         self.state.attachment.start();
         self.spawn_workers();
         Ok(())
     }
-    fn stop(&self) {
+    async fn stop(&self) -> () {
         self.state.attachment.stop();
-        self.workers.block_until_joined();
+        self.workers.join_all().await;
     }
 }
 

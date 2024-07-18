@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::server::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 use crate::stats::virtual_machine::VirtualMachine;
+use crate::vm::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
@@ -185,7 +185,7 @@ impl<'a> MachineInitializer<'a> {
 
     pub fn initialize_chipset(
         &mut self,
-        event_handler: &Arc<dyn super::vm::ChipsetEventHandler>,
+        event_handler: &Arc<dyn super::vm::guest_event::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
         for (name, bridge) in &self.spec.devices.pci_pci_bridges {
@@ -371,7 +371,7 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn create_storage_backend_from_spec(
+    async fn create_storage_backend_from_spec(
         &self,
         backend_spec: &instance_spec::v0::StorageBackendV0,
         backend_name: &str,
@@ -409,9 +409,10 @@ impl<'a> MachineInitializer<'a> {
                     self.log.new(
                         slog::o!("component" => format!("crucible-{cru_id}")),
                     ),
-                )?;
+                )
+                .await?;
 
-                let crucible = Some((be.get_uuid()?, be.clone()));
+                let crucible = Some((be.get_uuid().await?, be.clone()));
                 Ok(StorageBackendInstance { be, crucible })
             }
             instance_spec::v0::StorageBackendV0::File(spec) => {
@@ -480,7 +481,7 @@ impl<'a> MachineInitializer<'a> {
     ///
     /// On success, returns a map from Crucible backend IDs to Crucible
     /// backends.
-    pub fn initialize_storage_devices(
+    pub async fn initialize_storage_devices(
         &mut self,
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
@@ -537,7 +538,8 @@ impl<'a> MachineInitializer<'a> {
                     backend_spec,
                     backend_name,
                     &nexus_client,
-                )?;
+                )
+                .await?;
 
             self.block_backends.insert(backend_name.clone(), backend.clone());
             match device_interface {

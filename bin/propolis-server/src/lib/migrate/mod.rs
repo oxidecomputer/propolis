@@ -2,26 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::Arc;
-
 use bit_field::BitField;
-use dropshot::{HttpError, RequestContext};
-use futures::{SinkExt, StreamExt};
+use dropshot::HttpError;
 use propolis::migrate::MigrateStateError;
-use propolis_api_types::{self as api, MigrationState};
+use propolis_api_types::MigrationState;
 use serde::{Deserialize, Serialize};
-use slog::{error, info, o};
+use slog::error;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use tokio_tungstenite::{tungstenite, WebSocketStream};
-use uuid::Uuid;
-
-use crate::{
-    server::{DropshotEndpointContext, VmControllerState},
-    vm::{VmController, VmControllerError},
-};
 
 mod codec;
 pub mod destination;
@@ -30,6 +18,15 @@ mod preamble;
 pub mod protocol;
 pub mod source;
 
+/// Trait bounds for connection objects used in live migrations.
+pub(crate) trait MigrateConn:
+    AsyncRead + AsyncWrite + Unpin + Send
+{
+}
+
+impl MigrateConn for tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream> {}
+impl MigrateConn for hyper::upgrade::Upgraded {}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MigrateRole {
     Source,
@@ -37,7 +34,7 @@ pub enum MigrateRole {
 }
 
 // N.B. Keep in sync with scripts/live-migration-times.d.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum MigratePhase {
     MigrateSync,
     Pause,
@@ -92,8 +89,8 @@ pub enum MigrateError {
     UpgradeExpected,
 
     /// Attempted to migrate an uninitialized instance
-    #[error("instance is not initialized")]
-    InstanceNotInitialized,
+    #[error("failed to initialize the target VM: {0}")]
+    TargetInstanceInitializationFailed(String),
 
     /// The given UUID does not match the existing instance/migration UUID
     #[error("unexpected Uuid")]
@@ -160,16 +157,6 @@ impl From<codec::ProtocolError> for MigrateError {
     }
 }
 
-impl From<VmControllerError> for MigrateError {
-    fn from(err: VmControllerError) -> Self {
-        match err {
-            VmControllerError::AlreadyMigrationSource => {
-                MigrateError::MigrationAlreadyInProgress
-            }
-            _ => MigrateError::StateMachine(err.to_string()),
-        }
-    }
-}
 impl From<MigrateStateError> for MigrateError {
     fn from(value: MigrateStateError) -> Self {
         Self::DeviceState(value.to_string())
@@ -184,7 +171,7 @@ impl From<MigrateError> for HttpError {
             | MigrateError::Initiate
             | MigrateError::ProtocolParse(_, _)
             | MigrateError::NoMatchingProtocol(_, _)
-            | MigrateError::InstanceNotInitialized
+            | MigrateError::TargetInstanceInitializationFailed(_)
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
             | MigrateError::UnexpectedMessage
@@ -226,178 +213,6 @@ struct DevicePayload {
 
     /// Serialized device state.
     pub data: String,
-}
-
-/// Begin the migration process (source-side).
-///
-/// This will check protocol version and then begin the migration in a separate task.
-pub async fn source_start<
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
->(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    migration_id: Uuid,
-    mut conn: WebSocketStream<T>,
-) -> Result<(), MigrateError> {
-    // Create a new log context for the migration
-    let log = rqctx.log.new(o!(
-        "migration_id" => migration_id.to_string(),
-        "migrate_role" => "source"
-    ));
-    info!(log, "Migration Source");
-
-    let controller = tokio::sync::MutexGuard::try_map(
-        rqctx.context().services.vm.lock().await,
-        VmControllerState::as_controller,
-    )
-    .map_err(|_| MigrateError::InstanceNotInitialized)?;
-
-    let selected = match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(dst_protocols))) => {
-            info!(log, "destination offered protocols: {}", dst_protocols);
-            match protocol::select_protocol_from_offer(&dst_protocols) {
-                Ok(Some(selected)) => {
-                    info!(log, "selected protocol {:?}", selected);
-                    conn.send(tungstenite::Message::Text(
-                        selected.offer_string(),
-                    ))
-                    .await?;
-                    selected
-                }
-                Ok(None) => {
-                    let src_protocols = protocol::make_protocol_offer();
-                    error!(
-                        log,
-                        "no compatible destination protocols";
-                        "dst_protocols" => &dst_protocols,
-                        "src_protocols" => &src_protocols,
-                    );
-                    return Err(MigrateError::NoMatchingProtocol(
-                        src_protocols,
-                        dst_protocols,
-                    ));
-                }
-                Err(e) => {
-                    error!(log, "failed to parse destination protocol offer";
-                           "dst_protocols" => &dst_protocols,
-                           "error" => %e);
-                    return Err(MigrateError::ProtocolParse(
-                        dst_protocols,
-                        e.to_string(),
-                    ));
-                }
-            }
-        }
-        x => {
-            conn.send(tungstenite::Message::Close(Some(CloseFrame {
-                code: CloseCode::Protocol,
-                reason: "did not begin with version handshake.".into(),
-            })))
-            .await?;
-            error!(
-                log,
-                "destination side did not begin migration version handshake: \
-                 {:?}",
-                x
-            );
-            return Err(MigrateError::Initiate);
-        }
-    };
-
-    controller.request_migration_from(migration_id, conn, selected)?;
-    Ok(())
-}
-
-/// Initiate a migration to the given source instance.
-///
-/// This will attempt to open a websocket to the given source instance and
-/// check that the migrate protocol version is compatible ("equal" presently).
-/// Once we've successfully established the connection, we can begin the
-/// migration process (destination-side).
-pub(crate) async fn dest_initiate(
-    rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-    controller: Arc<VmController>,
-    migrate_info: api::InstanceMigrateInitiateRequest,
-) -> Result<api::InstanceMigrateInitiateResponse, MigrateError> {
-    let migration_id = migrate_info.migration_id;
-
-    // Create a new log context for the migration
-    let log = rqctx.log.new(o!(
-        "migration_id" => migration_id.to_string(),
-        "migrate_role" => "destination",
-        "migrate_src_addr" => migrate_info.src_addr
-    ));
-    info!(log, "Migration Destination");
-
-    // Build upgrade request to the source instance
-    // (we do this by hand because it's hidden from the OpenAPI spec)
-    // TODO(#165): https (wss)
-    // TODO: We need to make sure the src_addr is a valid target
-    let src_migrate_url = format!(
-        "ws://{}/instance/migrate/{}/start",
-        migrate_info.src_addr, migration_id,
-    );
-    info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
-    let (mut conn, _) =
-        tokio_tungstenite::connect_async(src_migrate_url).await?;
-
-    let dst_protocols = protocol::make_protocol_offer();
-    conn.send(tungstenite::Message::Text(dst_protocols)).await?;
-    let selected = match conn.next().await {
-        Some(Ok(tungstenite::Message::Text(selected_protocol))) => {
-            info!(log, "source negotiated protocol {}", selected_protocol);
-            match protocol::select_protocol_from_offer(&selected_protocol) {
-                Ok(Some(selected)) => selected,
-                Ok(None) => {
-                    let offered = protocol::make_protocol_offer();
-                    error!(log, "source selected protocol not on offer";
-                           "offered" => &offered,
-                           "selected" => &selected_protocol);
-
-                    return Err(MigrateError::NoMatchingProtocol(
-                        selected_protocol,
-                        offered,
-                    ));
-                }
-                Err(e) => {
-                    error!(log, "source selected protocol failed to parse";
-                           "selected" => &selected_protocol);
-
-                    return Err(MigrateError::ProtocolParse(
-                        selected_protocol,
-                        e.to_string(),
-                    ));
-                }
-            }
-        }
-        x => {
-            conn.send(tungstenite::Message::Close(Some(CloseFrame {
-                code: CloseCode::Protocol,
-                reason: "did not respond to version handshake.".into(),
-            })))
-            .await?;
-            error!(
-                log,
-                "source instance failed to negotiate protocol version: {:?}", x
-            );
-            return Err(MigrateError::Initiate);
-        }
-    };
-    let local_addr = rqctx.server.local_addr;
-    tokio::runtime::Handle::current()
-        .spawn_blocking(move || -> Result<(), MigrateError> {
-            // Now start using the websocket for the migration protocol
-            controller.request_migration_into(
-                migration_id,
-                conn,
-                local_addr,
-                selected,
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap()?;
-
-    Ok(api::InstanceMigrateInitiateResponse { migration_id })
 }
 
 // We should probably turn this into some kind of ValidatedBitmap

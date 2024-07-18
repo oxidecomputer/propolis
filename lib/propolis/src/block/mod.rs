@@ -233,6 +233,7 @@ pub trait Device: Send + Sync + 'static {
 
 /// Top-level trait for block backends which will attach to [Device]s in order
 /// to process [Request]s posted by the guest.
+#[async_trait::async_trait]
 pub trait Backend: Send + Sync + 'static {
     /// Access to the [BackendAttachment] representing this backend.
     fn attachment(&self) -> &BackendAttachment;
@@ -244,7 +245,7 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// Spawning of any tasks required to do such request processing can be done
     /// as part of this start-up.
-    fn start(&self) -> anyhow::Result<()>;
+    async fn start(&self) -> anyhow::Result<()>;
 
     /// Stop attempting to process new [Request]s from [Device] (if attached)
     ///
@@ -253,7 +254,7 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// If any tasks were spawned as part of [Backend::start()], they should be
     /// brought to rest as part of this call.
-    fn stop(&self);
+    async fn stop(&self) -> ();
 
     /// Attempt to detach from associated [Device]
     ///

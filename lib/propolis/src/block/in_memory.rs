@@ -140,14 +140,17 @@ impl InMemoryBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl block::Backend for InMemoryBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
     }
+
     fn info(&self) -> block::DeviceInfo {
         self.state.info
     }
-    fn start(&self) -> anyhow::Result<()> {
+
+    async fn start(&self) -> anyhow::Result<()> {
         self.state.attachment.start();
         if let Err(e) = self.spawn_workers() {
             self.state.attachment.stop();
@@ -157,7 +160,8 @@ impl block::Backend for InMemoryBackend {
             Ok(())
         }
     }
-    fn stop(&self) {
+
+    async fn stop(&self) -> () {
         self.state.attachment.stop();
         self.workers.block_until_joined();
     }

@@ -434,22 +434,27 @@ impl TaskGroup {
         guard.extend(tasks);
     }
 
-    /// Block until all held tasks have been joined, returning any resulting
-    /// [task::JoinError]s after doing so.
-    pub fn block_until_joined(&self) -> Option<Vec<task::JoinError>> {
-        let mut guard = self.0.lock().unwrap();
-        let workers = std::mem::replace(&mut *guard, Vec::new());
+    /// Waits until all the workers in this task group have completed.
+    ///
+    /// # Return value
+    ///
+    /// `None` if all the tasks completed successfully. `Some` if at least one
+    /// task failed; the wrapped value is a `Vec` of all of the returned errors.
+    pub async fn join_all(&self) -> Option<Vec<task::JoinError>> {
+        let workers = {
+            let mut guard = self.0.lock().unwrap();
+            std::mem::replace(&mut *guard, Vec::new())
+        };
+
         if workers.is_empty() {
             return None;
         }
 
-        let rt = tokio::runtime::Handle::current();
-        let errors = rt.block_on(async {
-            FuturesUnordered::from_iter(workers)
-                .filter_map(|res| futures::future::ready(res.err()))
-                .collect::<Vec<_>>()
-                .await
-        });
+        let errors = FuturesUnordered::from_iter(workers)
+            .filter_map(|res| futures::future::ready(res.err()))
+            .collect::<Vec<_>>()
+            .await;
+
         if errors.is_empty() {
             None
         } else {

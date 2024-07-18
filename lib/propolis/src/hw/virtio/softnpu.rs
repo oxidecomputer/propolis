@@ -978,7 +978,7 @@ impl P9Handler for SoftNpuP9Handler {
         // may discover us from trying to use us as some sort of normal P9
         // file system. It also helps clients that are actually looking for the
         // SoftNpu P9 device to identify us as such.
-        msg.version = "9P2000.P4".to_owned();
+        "9P2000.P4".clone_into(&mut msg.version);
 
         let mut out = ispf::to_bytes_le(&msg).unwrap();
         let buf = out.as_mut_slice();

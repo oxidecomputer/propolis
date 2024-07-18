@@ -976,10 +976,20 @@ async fn try_ensure_vm_destroyed(client: &Client) {
         .send()
         .await
     {
-        error!(
-            %error,
-            "error stopping VM to move it to Destroyed"
-        );
+        // If the put fails because the instance was already run down, there's
+        // nothing else to do. If it fails for some other reason, there's
+        // nothing else that *can* be done, but the error is unusual and should
+        // be logged.
+        match error.status() {
+            Some(http::status::StatusCode::FAILED_DEPENDENCY) => {}
+            _ => {
+                error!(
+                    %error,
+                    "error stopping VM to move it to Destroyed"
+                );
+            }
+        }
+
         return;
     }
 

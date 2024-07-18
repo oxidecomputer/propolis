@@ -3072,6 +3072,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "http 0.2.12",
  "libc",
  "propolis-client",
  "propolis-server-config",
@@ -3421,6 +3422,7 @@ name = "propolis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bhyve_api",
  "bitflags 2.5.0",
  "bitstruct",

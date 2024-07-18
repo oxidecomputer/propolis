@@ -2,1181 +2,589 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Implements the VM controller: the public interface to a single Propolis
-//! instance.
+//! Implements the [`Vm`] type, which encapsulates a single Propolis virtual
+//! machine instance and provides a public interface thereto to the Propolis
+//! Dropshot server.
 //!
-//! The VM controller serves two purposes. First, it collects all of the objects
-//! describing a single Propolis VM (the Propolis `Instance` itself, the
-//! instance's spec, direct references to components in the instance, etc.).
-//! Second, it records requests and events that affect how a VM moves through
-//! the stages of its lifecycle, i.e. how and when it boots, reboots, migrates,
-//! and stops.
+//! The VM state machine looks like this:
 //!
-//! Each VM controller has a single "state driver" thread that processes
-//! requests and events recorded by its controller and acts on the underlying
-//! Propolis instance to move the VM into the appropriate states. Doing this
-//! work on a single thread ensures that a VM can only undergo one state change
-//! at a time, that there are no races to start/pause/resume/halt a VM's
-//! components, and that there is a single source of truth as to a VM's current
-//! state (and as to the steps that are required to move it to a different
-//! state). Operations like live migration that require components to pause and
-//! resume coordinate directly with the state driver thread.
+//! ```text
+//!            [NoVm]
+//!              |
+//!              |
+//!              v
+//! +---- WaitingForInit <----+
+//! |            |            |
+//! |            |            |
+//! |            v            |
+//! |         Active          |
+//! |            |            |
+//! |            |            |
+//! |            v            |
+//! +-------> Rundown         |
+//! |            |            |
+//! |            |            |
+//! |            v            |
+//! +---> RundownComplete ----+
+//! ```
 //!
-//! The VM controller's public API allows a Propolis Dropshot server to query a
-//! VM's current state, to ask to change that state, and to obtain references to
-//! objects in a VM as needed to handle other requests made of the server (e.g.
-//! requests to connect to an instance's serial console or to take a disk
-//! snapshot). The controller also implements traits that allow a VM's
-//! components to raise events for the state driver to process (e.g. a request
-//! from a VM's chipset to reboot or halt the VM).
+//! In the happy case where new VMs always start successfully, this state
+//! machine transitions as follows:
+//!
+//! - New state machines start in [`VmState::NoVm`].
+//! - A request to create a new VM moves to [`VmState::WaitingForInit`].
+//! - Once all of the VM's components are created, the VM moves to
+//!   [`VmState::Active`].
+//! - When the VM stops, the VM moves to [`VmState::Rundown`].
+//! - When all references to the VM's components are dropped, the VM moves to
+//!   [`VmState::RundownComplete`]. A request to create a new VM will move back
+//!   to `WaitingForInit`.
+//!
+//! In any state except `NoVm`, the state machine holds enough state to describe
+//! the most recent VM known to the state machine, whether it is being created
+//! (`WaitingForInit`), running (`Active`), or being torn down (`Rundown` and
+//! `RundownComplete`).
+//!
+//! In the `Active` state, the VM wrapper holds an [`active::ActiveVm`] and
+//! allows API-layer callers to obtain references to it. These callers use these
+//! references to ask to change a VM's state or change its configuration. An
+//! active VM holds a reference to a [`objects::VmObjects`] structure that
+//! bundles up all of the Propolis components (kernel VM, devices, and backends)
+//! that make up an instance and a spec that describes that instance; API-layer
+//! callers may use this structure to read the instance's properties and query
+//! component state, but cannot mutate the VM's structure this way.
+//!
+//! Requests to change a VM's state or configuration (and events from a running
+//! guest that might change a VM's state, like an in-guest shutdown or reboot
+//! request or a triple fault) are placed in an [input
+//! queue](state_driver::InputQueue) that is serviced by a single "state driver"
+//! task. When an instance stops, this task moves the state machine to the
+//! `Rundown` state, which renders new API-layer callers unable to clone new
+//! references to the VM's `VmObjects`. When all outstanding references to the
+//! objects are dropped, the VM moves to the `RundownComplete` state, obtains
+//! the final instance state from the (joined) state driver task, and publishes
+//! that state. At that point the VM may be reinitialized.
+//!
+//! The VM state machine delegates VM creation to the state driver task. This
+//! task can fail to initialize a VM in two ways:
+//!
+//! 1. It may fail to create all of the VM's component objects (e.g. due to
+//!    bad configuration or resource exhaustion).
+//! 2. It may successfully create all of the VM's component objects, but then
+//!    fail to populate their initial state via live migration from another
+//!    instance.
+//!
+//! In the former case, where no VM objects are ever created, the state driver
+//! moves the state machine directly from `WaitingForInit` to `RundownComplete`.
+//! In the latter case, the driver moves to `Rundown` and allows `VmObjects`
+//! teardown to drive the state machine to `RundownComplete`.
 
-use crate::migrate;
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
-use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
-use std::{
-    collections::{BTreeMap, VecDeque},
-    fmt::Debug,
-    net::SocketAddr,
-    pin::Pin,
-    sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
-    task::{Context, Poll},
-    thread::JoinHandle,
-    time::Duration,
-};
-
-use anyhow::Context as AnyhowContext;
+use active::ActiveVm;
 use oximeter::types::ProducerRegistry;
-use propolis::{
-    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
-    vmm::Machine,
-};
 use propolis_api_types::{
-    instance_spec::VersionedInstanceSpec,
-    InstanceMigrateStatusResponse as ApiMigrateStatusResponse,
-    InstanceMigrationStatus as ApiMigrationStatus, InstanceProperties,
-    InstanceState as ApiInstanceState,
-    InstanceStateMonitorResponse as ApiMonitoredState,
-    InstanceStateRequested as ApiInstanceStateRequested,
-    MigrationState as ApiMigrationState,
+    instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
+    InstanceEnsureResponse, InstanceMigrateStatusResponse,
+    InstanceMigrationStatus, InstanceProperties, InstanceSpecEnsureRequest,
+    InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
+    MigrationState,
 };
-use slog::{debug, error, info, Logger};
-use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::oneshot;
-use tokio_tungstenite::WebSocketStream;
-use uuid::Uuid;
+use rfb::server::VncServer;
+use slog::info;
+use state_driver::StateDriverOutput;
+use state_publisher::StatePublisher;
+use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
-use crate::{
-    initializer::{
-        build_instance, MachineInitializer, MachineInitializerState,
-    },
-    migrate::{MigrateError, MigrateRole},
-    serial::Serial,
-    server::{BlockBackendMap, CrucibleBackendMap, DeviceMap, StaticConfig},
-    vm::request_queue::ExternalRequest,
-};
+use crate::{server::MetricsEndpointConfig, vnc::PropolisVncServer};
 
-use self::request_queue::{ExternalRequestQueue, RequestDeniedReason};
-pub use nexus_client::Client as NexusClient;
-
+mod active;
+pub(crate) mod ensure;
+pub(crate) mod guest_event;
+pub(crate) mod objects;
 mod request_queue;
+mod services;
 mod state_driver;
+pub(crate) mod state_publisher;
 
-/// Minimum thread count for the Tokio runtime driving the VMM tasks
+/// Maps component names to lifecycle trait objects that allow
+/// components to be started, paused, resumed, and halted.
+pub(crate) type DeviceMap =
+    BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
+
+/// Maps component names to block backend trait objects.
+pub(crate) type BlockBackendMap =
+    BTreeMap<String, Arc<dyn propolis::block::Backend>>;
+
+/// Maps component names to Crucible backend objects.
+pub(crate) type CrucibleBackendMap =
+    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
+
+/// Type alias for the sender side of the channel that receives
+/// externally-visible instance state updates.
+type InstanceStateTx = watch::Sender<InstanceStateMonitorResponse>;
+
+/// Type alias for the receiver side of the channel that receives
+/// externally-visible instance state updates.
+type InstanceStateRx = watch::Receiver<InstanceStateMonitorResponse>;
+
+/// Type alias for the results sent by the state driver in response to a request
+/// to change a Crucible backend's configuration.
+pub(crate) type CrucibleReplaceResult =
+    Result<crucible_client_types::ReplaceResult, dropshot::HttpError>;
+
+/// Type alias for the sender side of a channel that receives Crucible backend
+/// reconfiguration results.
+pub(crate) type CrucibleReplaceResultTx =
+    oneshot::Sender<CrucibleReplaceResult>;
+
+/// Type alias for the sender side of a channel that receives the results of
+/// instance-ensure API calls.
+type InstanceEnsureResponseTx =
+    oneshot::Sender<Result<InstanceEnsureResponse, VmError>>;
+
+/// The minimum number of threads to spawn in the Tokio runtime that runs the
+/// state driver and any other VM-related tasks.
 const VMM_MIN_RT_THREADS: usize = 8;
+
+/// When creating a new VM, add the VM's vCPU count to this value, then spawn
+/// that many threads on its Tokio runtime or [`VMM_MIN_RT_THREADS`], whichever
+/// is greater.
 const VMM_BASE_RT_THREADS: usize = 4;
 
-#[derive(Debug, Error)]
-pub enum VmControllerError {
-    #[error("The requested operation requires an active instance")]
-    InstanceNotActive,
+/// Errors generated by the VM controller and its subcomponents.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum VmError {
+    #[error("VM operation result channel unexpectedly closed")]
+    ResultChannelClosed,
 
-    #[error("The instance has a pending request to halt")]
-    InstanceHaltPending,
+    #[error("VM not created")]
+    NotCreated,
 
-    #[error("Instance is already a migration source")]
-    AlreadyMigrationSource,
+    #[error("VM is currently initializing")]
+    WaitingToInitialize,
 
-    #[error("Cannot request state {0:?} while migration is in progress")]
-    InvalidRequestForMigrationSource(ApiInstanceStateRequested),
+    #[error("VM already initialized")]
+    AlreadyInitialized,
 
-    #[error("A migration into this instance is in progress")]
-    MigrationTargetInProgress,
+    #[error("VM is currently shutting down")]
+    RundownInProgress,
 
-    #[error("Another live migration into this instance already occurred")]
-    MigrationTargetPreviouslyCompleted,
+    #[error("VM initialization failed: {0}")]
+    InitializationFailed(String),
 
-    #[error("The most recent attempt to migrate into this instance failed")]
-    MigrationTargetFailed,
+    #[error("Forbidden state change")]
+    ForbiddenStateChange(#[from] request_queue::RequestDeniedReason),
 
-    #[error("Can't migrate into a running instance")]
-    TooLateToBeMigrationTarget,
-
-    #[error("Failed to queue requested state change: {0}")]
-    StateChangeRequestDenied(#[from] request_queue::RequestDeniedReason),
-
-    #[error("Migration protocol error: {0:?}")]
-    MigrationProtocolError(#[from] MigrateError),
-
-    #[error("Failed to start vCPU workers")]
-    VcpuWorkerCreationFailed(#[from] super::vcpu_tasks::VcpuTaskError),
-
-    #[error("Failed to create state worker: {0}")]
-    StateWorkerCreationFailed(std::io::Error),
+    #[error("Failed to initialize VM's tokio runtime")]
+    TokioRuntimeInitializationFailed(#[source] std::io::Error),
 }
 
-impl From<VmControllerError> for dropshot::HttpError {
-    fn from(vm_error: VmControllerError) -> Self {
-        use dropshot::HttpError;
-        match vm_error {
-            VmControllerError::AlreadyMigrationSource
-            | VmControllerError::InvalidRequestForMigrationSource(_)
-            | VmControllerError::MigrationTargetInProgress
-            | VmControllerError::MigrationTargetFailed
-            | VmControllerError::TooLateToBeMigrationTarget
-            | VmControllerError::StateChangeRequestDenied(_)
-            | VmControllerError::InstanceNotActive
-            | VmControllerError::InstanceHaltPending
-            | VmControllerError::MigrationTargetPreviouslyCompleted => {
-                HttpError::for_status(
-                    Some(format!("Instance operation failed: {}", vm_error)),
-                    http::status::StatusCode::FORBIDDEN,
-                )
-            }
-            VmControllerError::MigrationProtocolError(_)
-            | VmControllerError::VcpuWorkerCreationFailed(_)
-            | VmControllerError::StateWorkerCreationFailed(_) => {
-                HttpError::for_internal_error(format!(
-                    "Instance operation failed: {}",
-                    vm_error
-                ))
-            }
-        }
-    }
+/// The top-level VM wrapper type.
+pub(crate) struct Vm {
+    /// Lock wrapper for the VM state machine's contents.
+    ///
+    /// Routines that need to read VM properties or obtain a `VmObjects` handle
+    /// acquire this lock shared.
+    ///
+    /// Routines that drive the VM state machine acquire this lock exclusively.
+    inner: RwLock<VmInner>,
+
+    /// A logger for this VM.
+    log: slog::Logger,
 }
 
-/// A collection of objects that describe an instance and references to that
-/// instance and its components.
-pub(crate) struct VmObjects {
-    /// The underlying Propolis `Machine` this controller is managing.
-    machine: Option<Machine>,
+/// Holds a VM state machine and state driver task handle.
+struct VmInner {
+    /// The VM's current state.
+    state: VmState,
 
-    /// The instance properties supplied when this controller was created.
+    /// A handle to the VM's current state driver task, if it has one.
+    driver: Option<tokio::task::JoinHandle<StateDriverOutput>>,
+}
+
+/// Describes a past or future VM and its properties.
+struct VmDescription {
+    /// Records the VM's last externally-visible state.
+    external_state_rx: InstanceStateRx,
+
+    /// The VM's API-level instance properties.
     properties: InstanceProperties,
 
-    /// The instance spec used to create this controller's VM.
-    spec: tokio::sync::Mutex<VersionedInstanceSpec>,
+    /// The VM's last-known instance specification.
+    spec: InstanceSpecV0,
 
-    /// Map of the emulated devices associated with the VM
-    devices: DeviceMap,
-
-    /// Map of the instance's active block backends.
-    block_backends: BlockBackendMap,
-
-    /// Map of the instance's active Crucible backends.
-    crucible_backends: CrucibleBackendMap,
-
-    /// A wrapper around the instance's first COM port, suitable for providing a
-    /// connection to a guest's serial console.
-    com1: Arc<Serial<LpcUart>>,
-
-    /// An optional reference to the guest's framebuffer.
-    framebuffer: Option<Arc<RamFb>>,
-
-    /// A reference to the guest's PS/2 controller.
-    ps2ctrl: Arc<PS2Ctrl>,
-
-    /// A notification receiver to which the state worker publishes the most
-    /// recent instance state information.
-    monitor_rx: tokio::sync::watch::Receiver<ApiMonitoredState>,
+    /// The runtime on which the VM's state driver is running (or on which it
+    /// ran).
+    tokio_rt: Option<tokio::runtime::Runtime>,
 }
 
-/// A message sent from a live migration destination task to update the
-/// externally visible state of the migration attempt.
-#[derive(Clone, Copy, Debug)]
-pub enum MigrateTargetCommand {
-    /// Update the externally-visible migration state.
-    UpdateState(ApiMigrationState),
+/// The states in the VM state machine. See the module comment for more details.
+#[allow(clippy::large_enum_variant)]
+enum VmState {
+    /// This state machine has never held a VM.
+    NoVm,
+
+    /// A new state driver is attempting to initialize objects for a VM with the
+    /// ecnlosed description.
+    WaitingForInit(VmDescription),
+
+    /// The VM is active, and callers can obtain a handle to its objects.
+    Active(active::ActiveVm),
+
+    /// The previous VM is shutting down, but its objects have not been fully
+    /// destroyed yet.
+    Rundown(VmDescription),
+
+    /// The previous VM and its objects have been cleaned up.
+    RundownComplete(VmDescription),
 }
 
-/// A message sent from a live migration driver to the state worker, asking it
-/// to act on source instance components on the task's behalf.
-#[derive(Clone, Copy, Debug)]
-pub enum MigrateSourceCommand {
-    /// Update the externally-visible migration state.
-    UpdateState(ApiMigrationState),
-
-    /// Pause the instance's devices and CPUs.
-    Pause,
-}
-
-/// A message sent from the state worker to the live migration driver in
-/// response to a previous command.
-#[derive(Debug)]
-pub enum MigrateSourceResponse {
-    /// A request to pause completed with the attached result.
-    Pause(Result<(), std::io::Error>),
-}
-
-/// An event raised by a migration task that must be handled by the state
-/// worker.
-#[derive(Debug)]
-enum MigrateTaskEvent<T> {
-    /// The task completed with the associated result.
-    TaskExited(Result<(), MigrateError>),
-
-    /// The task sent a command requesting work.
-    Command(T),
-}
-
-/// An event raised by some component in the instance (e.g. a vCPU or the
-/// chipset) that the state worker must handle.
-///
-/// The vCPU-sourced events carry a time element (duration since VM boot) as
-/// emitted by the kernel vmm.  This is used to deduplicate events when all
-/// vCPUs running in-kernel are kicked out for the suspend state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GuestEvent {
-    /// VM entered halt state
-    VcpuSuspendHalt(Duration),
-    /// VM entered reboot state
-    VcpuSuspendReset(Duration),
-    /// vCPU encounted triple-fault
-    VcpuSuspendTripleFault(i32, Duration),
-    /// Chipset signaled halt condition
-    ChipsetHalt,
-    /// Chipset signaled reboot condition
-    ChipsetReset,
-}
-
-/// Shared instance state guarded by the controller's state mutex. This state is
-/// accessed from the controller API and the VM's state worker.
-#[derive(Debug)]
-struct SharedVmStateInner {
-    external_request_queue: ExternalRequestQueue,
-
-    /// The state worker's queue of unprocessed events from guest devices.
-    guest_event_queue: VecDeque<GuestEvent>,
-
-    /// The expected ID of the next live migration this instance will
-    /// participate in (either in or out). If this is `Some`, external callers
-    /// who query migration state will observe that a live migration is in
-    /// progress even if the state driver has yet to pick up the live migration
-    /// tasks from its queue.
-    pending_migration_id: Option<(Uuid, MigrateRole)>,
-}
-
-impl SharedVmStateInner {
-    fn new(parent_log: &Logger) -> Self {
-        let queue_log =
-            parent_log.new(slog::o!("component" => "external_request_queue"));
-        Self {
-            external_request_queue: ExternalRequestQueue::new(queue_log),
-            guest_event_queue: VecDeque::new(),
-            pending_migration_id: None,
-        }
+impl std::fmt::Display for VmState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::NoVm => "NoVm",
+                Self::WaitingForInit(_) => "WaitingForInit",
+                Self::Active(_) => "Active",
+                Self::Rundown(_) => "Rundown",
+                Self::RundownComplete(_) => "RundownComplete",
+            }
+        )
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct SharedVmState {
-    inner: Mutex<SharedVmStateInner>,
-    cv: Condvar,
+/// Parameters to an instance ensure operation.
+pub(super) struct EnsureOptions {
+    /// A reference to the VM configuration specified in the config TOML passed
+    /// to this propolis-server process.
+    pub(super) toml_config: Arc<crate::server::VmTomlConfig>,
+
+    /// True if VMs should allocate memory from the kernel VMM reservoir.
+    pub(super) use_reservoir: bool,
+
+    /// Configuration used to serve Oximeter metrics from this server.
+    pub(super) metrics_config: Option<MetricsEndpointConfig>,
+
+    /// An Oximeter producer registry to pass to components that will emit
+    /// Oximeter metrics.
+    pub(super) oximeter_registry: Option<ProducerRegistry>,
+
+    /// A Nexus client handle to pass to components that can make upcalls to
+    /// Nexus.
+    pub(super) nexus_client: Option<nexus_client::Client>,
+
+    /// A reference to the process's VNC server, used to connect the server to
+    /// a new VM's framebuffer.
+    pub(super) vnc_server: Arc<VncServer<PropolisVncServer>>,
+
+    /// The address of this Propolis process, used by the live migration
+    /// protocol to transfer serial console connections.
+    pub(super) local_server_addr: SocketAddr,
 }
 
-/// A VM controller: a wrapper around a Propolis instance that supplies the
-/// functions needed for the Propolis server to implement its own API.
-pub struct VmController {
-    /// A collection of objects that don't change once an instance is ensured:
-    /// the instance itself, a description of it, and convenience references to
-    /// some of its members (used to avoid rummaging through the instance's
-    /// inventory).
-    vm_objects: VmObjects,
+impl Vm {
+    /// Creates a new VM.
+    pub fn new(log: &slog::Logger) -> Arc<Self> {
+        let log = log.new(slog::o!("component" => "vm_wrapper"));
+        let inner = VmInner { state: VmState::NoVm, driver: None };
+        Arc::new(Self { inner: RwLock::new(inner), log })
+    }
 
-    /// A wrapper for the runtime state of this instance, managed by the state
-    /// worker thread. This also serves as a sink for hardware events (e.g. from
-    /// vCPUs and the chipset), so it is wrapped in an Arc so that it can be
-    /// shared with those events' sources.
-    worker_state: Arc<SharedVmState>,
+    /// If the VM is `Active`, yields a shared lock guard with a reference to
+    /// the relevant `ActiveVm`. Returns `None` if there is no active VM.
+    pub(super) async fn active_vm(
+        &self,
+    ) -> Option<RwLockReadGuard<'_, ActiveVm>> {
+        RwLockReadGuard::try_map(self.inner.read().await, |inner| {
+            if let VmState::Active(vm) = &inner.state {
+                Some(vm)
+            } else {
+                None
+            }
+        })
+        .ok()
+    }
 
-    /// A handle to the state worker thread for this instance.
-    worker_thread: Mutex<
-        Option<JoinHandle<tokio::sync::watch::Sender<ApiMonitoredState>>>,
-    >,
+    /// Returns the state, properties, and instance spec for the instance most
+    /// recently wrapped by this `Vm`.
+    pub(super) async fn get(&self) -> Result<InstanceSpecGetResponse, VmError> {
+        let guard = self.inner.read().await;
+        match &guard.state {
+            // If no VM has ever been created, there's nothing to get.
+            VmState::NoVm => Err(VmError::NotCreated),
 
-    /// This controller's logger.
-    log: Logger,
+            // If the VM is active, pull the required data out of its objects.
+            VmState::Active(vm) => {
+                let spec =
+                    vm.objects().lock_shared().await.instance_spec().clone();
+                let state = vm.external_state_rx.borrow().clone();
+                Ok(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    spec: VersionedInstanceSpec::V0(spec),
+                    state: state.state,
+                })
+            }
 
-    /// The Tokio runtime in which VMM-related processing is to be handled.
+            // If the VM is not active yet, or there is only a
+            // previously-run-down VM, return the state saved in the state
+            // machine.
+            VmState::WaitingForInit(vm)
+            | VmState::Rundown(vm)
+            | VmState::RundownComplete(vm) => Ok(InstanceSpecGetResponse {
+                properties: vm.properties.clone(),
+                state: vm.external_state_rx.borrow().state,
+                spec: VersionedInstanceSpec::V0(vm.spec.clone()),
+            }),
+        }
+    }
+
+    /// Yields a handle to the most recent instance state receiver wrapped by
+    /// this `Vm`.
+    pub(super) async fn state_watcher(
+        &self,
+    ) -> Result<InstanceStateRx, VmError> {
+        let guard = self.inner.read().await;
+        match &guard.state {
+            VmState::NoVm => Err(VmError::NotCreated),
+            VmState::Active(vm) => Ok(vm.external_state_rx.clone()),
+            VmState::WaitingForInit(vm)
+            | VmState::Rundown(vm)
+            | VmState::RundownComplete(vm) => Ok(vm.external_state_rx.clone()),
+        }
+    }
+
+    /// Moves this VM from the `WaitingForInit` state to the `Active` state,
+    /// creating an `ActiveVm` with the supplied input queue, VM objects, and VM
+    /// services.
     ///
-    /// This includes things such as device emulation, (block) backend
-    /// processing, and migration workloads.  It is held in an [Option] only to
-    /// facilitate runtime shutdown when the [VmController] is dropped.
-    vmm_runtime: Option<tokio::runtime::Runtime>,
-
-    /// Migration source state persisted across multiple migration attempts.
-    migration_src_state: Mutex<migrate::source::PersistentState>,
-
-    /// A weak reference to this controller, suitable for upgrading and passing
-    /// to tasks the controller spawns.
-    this: Weak<Self>,
-}
-
-impl SharedVmState {
-    fn new(parent_log: &Logger) -> Self {
-        Self {
-            inner: Mutex::new(SharedVmStateInner::new(parent_log)),
-            cv: Condvar::new(),
-        }
-    }
-
-    fn queue_external_request(
-        &self,
-        request: ExternalRequest,
-    ) -> Result<(), RequestDeniedReason> {
-        let mut inner = self.inner.lock().unwrap();
-        let result = inner.external_request_queue.try_queue(request);
-        if result.is_ok() {
-            self.cv.notify_one();
-        }
-        result
-    }
-
-    fn wait_for_next_event(&self) -> StateDriverEvent {
-        let guard = self.inner.lock().unwrap();
-        let mut guard = self
-            .cv
-            .wait_while(guard, |i| {
-                i.external_request_queue.is_empty()
-                    && i.guest_event_queue.is_empty()
-            })
-            .unwrap();
-
-        if let Some(guest_event) = guard.guest_event_queue.pop_front() {
-            StateDriverEvent::Guest(guest_event)
-        } else {
-            StateDriverEvent::External(
-                guard.external_request_queue.pop_front().unwrap(),
-            )
-        }
-    }
-
-    /// Add a guest event to the queue, so long as it does not appear to be a
-    /// duplicate of an existing event.
-    fn enqueue_guest_event(&self, event: GuestEvent) {
-        let mut inner = self.inner.lock().unwrap();
-        if !inner.guest_event_queue.iter().any(|ev| *ev == event) {
-            // Only queue event if nothing else in the queue is a direct match
-            inner.guest_event_queue.push_back(event);
-            self.cv.notify_one();
-        }
-    }
-
-    pub fn suspend_halt_event(&self, when: Duration) {
-        self.enqueue_guest_event(GuestEvent::VcpuSuspendHalt(when));
-    }
-
-    pub fn suspend_reset_event(&self, when: Duration) {
-        self.enqueue_guest_event(GuestEvent::VcpuSuspendReset(when));
-    }
-
-    pub fn suspend_triple_fault_event(&self, vcpu_id: i32, when: Duration) {
-        self.enqueue_guest_event(GuestEvent::VcpuSuspendTripleFault(
-            vcpu_id, when,
-        ));
-    }
-
-    pub fn unhandled_vm_exit(
-        &self,
-        vcpu_id: i32,
-        exit: propolis::exits::VmExitKind,
+    /// # Panics
+    ///
+    /// Panics if the VM is not in the `WaitingForInit` state.
+    async fn make_active(
+        self: &Arc<Self>,
+        log: &slog::Logger,
+        state_driver_queue: Arc<state_driver::InputQueue>,
+        objects: &Arc<objects::VmObjects>,
+        services: services::VmServices,
     ) {
-        panic!("vCPU {}: Unhandled VM exit: {:?}", vcpu_id, exit);
+        info!(self.log, "installing active VM");
+        let mut guard = self.inner.write().await;
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+        match old {
+            VmState::WaitingForInit(vm) => {
+                guard.state = VmState::Active(ActiveVm {
+                    log: log.clone(),
+                    state_driver_queue,
+                    external_state_rx: vm.external_state_rx,
+                    properties: vm.properties,
+                    objects: objects.clone(),
+                    services,
+                    tokio_rt: vm.tokio_rt.expect("WaitingForInit has runtime"),
+                });
+            }
+            state => unreachable!(
+                "only a starting VM's state worker calls make_active \
+                (current state: {state})"
+            ),
+        }
     }
 
-    pub fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
-        panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
+    /// Moves this VM from the `WaitingForInit` state to the `RundownComplete`
+    /// state in response to an instance initialization failure.
+    ///
+    /// The caller must ensure there are no active `VmObjects` that refer to
+    /// this VM.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the VM is not in the `WaitingForInit` state.
+    async fn vm_init_failed(&self) {
+        let mut guard = self.inner.write().await;
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+        match old {
+            VmState::WaitingForInit(vm) => {
+                guard.state = VmState::RundownComplete(vm)
+            }
+            state => unreachable!(
+                "start failures should only occur before an active VM is \
+                installed (current state: {state})"
+            ),
+        }
     }
 
-    pub fn clear_pending_migration(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.pending_migration_id = None;
-    }
-}
+    /// Moves this VM from the `Active` state to the `Rundown` state.
+    ///
+    /// This routine should only be called by the state driver.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the VM is not in the `Active` state.
+    async fn set_rundown(&self) {
+        info!(self.log, "setting VM rundown");
+        let services = {
+            let mut guard = self.inner.write().await;
+            let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+            let vm = match old {
+                VmState::Active(vm) => vm,
+                state => panic!(
+                    "VM should be active before being run down (current state: \
+                    {state})"
+                ),
+            };
 
-/// Functions called by a Propolis chipset to notify another component that an
-/// event occurred.
-pub trait ChipsetEventHandler: Send + Sync {
-    fn chipset_halt(&self);
-    fn chipset_reset(&self);
-}
-
-impl ChipsetEventHandler for SharedVmState {
-    fn chipset_halt(&self) {
-        self.enqueue_guest_event(GuestEvent::ChipsetHalt);
-    }
-
-    fn chipset_reset(&self) {
-        self.enqueue_guest_event(GuestEvent::ChipsetReset);
-    }
-}
-
-impl VmController {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        instance_spec: VersionedInstanceSpec,
-        properties: InstanceProperties,
-        &StaticConfig { vm: ref toml_config, use_reservoir, .. }: &StaticConfig,
-        producer_registry: Option<ProducerRegistry>,
-        nexus_client: Option<NexusClient>,
-        log: Logger,
-        stop_ch: oneshot::Sender<()>,
-    ) -> anyhow::Result<Arc<Self>> {
-        let vmm_rt = Self::spawn_runtime(&properties)?;
-
-        // All subsequent work should be run under our VMM runtime
-        let _rt_guard = vmm_rt.enter();
-
-        let bootrom = &toml_config.bootrom;
-        info!(log, "initializing new VM";
-              "spec" => #?instance_spec,
-              "properties" => #?properties,
-              "use_reservoir" => use_reservoir,
-              "bootrom" => %bootrom.display());
-
-        let vmm_log = log.new(slog::o!("component" => "vmm"));
-
-        // Set up the 'shell' instance into which the rest of this routine will
-        // add components.
-        let VersionedInstanceSpec::V0(v0_spec) = &instance_spec;
-        let machine = build_instance(
-            &properties.vm_name(),
-            v0_spec,
-            use_reservoir,
-            vmm_log,
-        )?;
-
-        // Create the state monitor channel and the worker state struct that
-        // depends on it. The state struct can then be passed to device
-        // initialization as an event sink.
-        let (monitor_tx, monitor_rx) =
-            tokio::sync::watch::channel(ApiMonitoredState {
-                gen: 0,
-                state: ApiInstanceState::Creating,
-                migration: ApiMigrateStatusResponse {
-                    migration_in: None,
-                    migration_out: None,
-                },
+            let spec = vm.objects().lock_shared().await.instance_spec().clone();
+            let ActiveVm { external_state_rx, properties, tokio_rt, .. } = vm;
+            guard.state = VmState::Rundown(VmDescription {
+                external_state_rx,
+                properties,
+                spec,
+                tokio_rt: Some(tokio_rt),
             });
-
-        let worker_state = Arc::new(SharedVmState::new(&log));
-
-        // Create and initialize devices in the new instance.
-        let mut init = MachineInitializer {
-            log: log.clone(),
-            machine: &machine,
-            devices: DeviceMap::new(),
-            block_backends: BlockBackendMap::new(),
-            crucible_backends: CrucibleBackendMap::new(),
-            spec: v0_spec,
-            properties: &properties,
-            toml_config,
-            producer_registry,
-            state: MachineInitializerState::default(),
+            vm.services
         };
 
-        init.initialize_rom(bootrom.as_path())?;
-        let chipset = init.initialize_chipset(
-            &(worker_state.clone() as Arc<dyn ChipsetEventHandler>),
-        )?;
-        init.initialize_rtc(&chipset)?;
-        init.initialize_hpet()?;
-
-        let com1 = Arc::new(init.initialize_uart(&chipset)?);
-        let ps2ctrl = init.initialize_ps2(&chipset)?;
-        init.initialize_qemu_debug_port()?;
-        init.initialize_qemu_pvpanic((&properties).into())?;
-        init.initialize_network_devices(&chipset)?;
-
-        #[cfg(not(feature = "omicron-build"))]
-        init.initialize_test_devices(&toml_config.devices)?;
-        #[cfg(feature = "omicron-build")]
-        info!(
-            log,
-            "`omicron-build` feature enabled, ignoring any test devices"
-        );
-
-        #[cfg(feature = "falcon")]
-        init.initialize_softnpu_ports(&chipset)?;
-        #[cfg(feature = "falcon")]
-        init.initialize_9pfs(&chipset)?;
-        init.initialize_storage_devices(&chipset, nexus_client)?;
-        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-        init.initialize_cpus()?;
-        let vcpu_tasks = super::vcpu_tasks::VcpuTasks::new(
-            &machine,
-            worker_state.clone(),
-            log.new(slog::o!("component" => "vcpu_tasks")),
-        )?;
-
-        let MachineInitializer {
-            devices,
-            block_backends,
-            crucible_backends,
-            ..
-        } = init;
-
-        // The instance is fully set up; pass it to the new controller.
-        let shared_state_for_worker = worker_state.clone();
-        let rt_hdl = vmm_rt.handle().clone();
-        let controller = Arc::new_cyclic(|this| Self {
-            vm_objects: VmObjects {
-                machine: Some(machine),
-                properties,
-                spec: tokio::sync::Mutex::new(instance_spec),
-                devices,
-                block_backends,
-                crucible_backends,
-                com1,
-                framebuffer: Some(ramfb),
-                ps2ctrl,
-                monitor_rx,
-            },
-            worker_state,
-            worker_thread: Mutex::new(None),
-            migration_src_state: Default::default(),
-            log: log.new(slog::o!("component" => "vm_controller")),
-            vmm_runtime: Some(vmm_rt),
-            this: this.clone(),
-        });
-
-        // Now that the controller exists, launch the state worker that will
-        // drive state transitions for this instance. When the VM halts, the
-        // worker will exit and drop its reference to the controller.
-        let ctrl_for_worker = controller.clone();
-        let log_for_worker =
-            log.new(slog::o!("component" => "vm_state_worker"));
-        let worker_thread = std::thread::Builder::new()
-            .name("vm_state_worker".to_string())
-            .spawn(move || {
-                let driver = state_driver::StateDriver::new(
-                    rt_hdl,
-                    ctrl_for_worker,
-                    shared_state_for_worker,
-                    vcpu_tasks,
-                    log_for_worker,
-                    monitor_tx,
-                );
-
-                let monitor_tx = driver.run_state_worker();
-
-                // Signal back to the server state once the worker has exited.
-                let _ = stop_ch.send(());
-                monitor_tx
-            })
-            .map_err(VmControllerError::StateWorkerCreationFailed)?;
-
-        *controller.worker_thread.lock().unwrap() = Some(worker_thread);
-        Ok(controller)
+        services.stop(&self.log).await;
     }
 
-    pub fn properties(&self) -> &InstanceProperties {
-        &self.vm_objects.properties
-    }
-
-    pub fn machine(&self) -> &Machine {
-        // Unwrap safety: The machine is created when the controller is created
-        // and removed only when the controller is dropped.
-        self.vm_objects
-            .machine
-            .as_ref()
-            .expect("VM controller always has a valid machine")
-    }
-
-    pub(crate) fn migration_src_state(
-        &self,
-    ) -> MutexGuard<'_, migrate::source::PersistentState> {
-        self.migration_src_state.lock().unwrap()
-    }
-
-    pub async fn instance_spec(
-        &self,
-    ) -> tokio::sync::MutexGuard<'_, VersionedInstanceSpec> {
-        self.vm_objects.spec.lock().await
-    }
-
-    pub fn com1(&self) -> &Arc<Serial<LpcUart>> {
-        &self.vm_objects.com1
-    }
-
-    pub fn framebuffer(&self) -> Option<&Arc<RamFb>> {
-        self.vm_objects.framebuffer.as_ref()
-    }
-
-    pub fn ps2ctrl(&self) -> &Arc<PS2Ctrl> {
-        &self.vm_objects.ps2ctrl
-    }
-
-    pub fn crucible_backends(
-        &self,
-    ) -> &BTreeMap<Uuid, Arc<propolis::block::CrucibleBackend>> {
-        &self.vm_objects.crucible_backends
-    }
-
-    pub fn log(&self) -> &Logger {
-        &self.log
-    }
-    pub fn rt_hdl(&self) -> &tokio::runtime::Handle {
-        self.vmm_runtime
-            .as_ref()
-            .expect("vmm_runtime is populated until VmController is dropped")
-            .handle()
-    }
-
-    pub fn external_instance_state(&self) -> ApiInstanceState {
-        self.vm_objects.monitor_rx.borrow().state
-    }
-
-    pub fn inject_nmi(&self) {
-        if let Some(machine) = &self.vm_objects.machine {
-            match machine.inject_nmi() {
-                Ok(_) => {
-                    info!(self.log, "Sending NMI to instance");
-                }
-                Err(e) => {
-                    error!(self.log, "Could not send NMI to instance: {}", e);
-                }
-            };
-        }
-    }
-
-    pub fn state_watcher(
-        &self,
-    ) -> &tokio::sync::watch::Receiver<ApiMonitoredState> {
-        &self.vm_objects.monitor_rx
-    }
-
-    /// Asks to queue a request to start a source migration task for this VM.
-    /// The migration will have the supplied `migration_id` and will obtain its
-    /// connection to the target by calling `upgrade_fn` to obtain a future that
-    /// yields the necessary connection.
+    /// Moves this VM from the `Rundown` state to the `RundownComplete` state.
     ///
-    /// This routine fails if the VM was not marked as a migration source or if
-    /// it has another pending request that precludes migration. Note that this
-    /// routine does not fail if the future returned from `upgrade_fn` fails to
-    /// produce a connection to the destination.
+    /// This routine should only be called when dropping VM objects.
     ///
-    /// On success, clients may query the instance's migration status to
-    /// determine how the migration has progressed.
-    pub fn request_migration_from<
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    >(
-        &self,
-        migration_id: Uuid,
-        conn: WebSocketStream<T>,
-        protocol: crate::migrate::protocol::Protocol,
-    ) -> Result<(), VmControllerError> {
-        let mut inner = self.worker_state.inner.lock().unwrap();
-
-        // Check that the request can be enqueued before setting up the
-        // migration task.
-        if !inner.external_request_queue.migrate_as_source_will_enqueue()? {
-            return Ok(());
-        }
-
-        let migration_request =
-            self.launch_source_migration_task(migration_id, conn, protocol);
-
-        // Unwrap is safe because the queue state was checked under the lock.
-        inner.external_request_queue.try_queue(migration_request).unwrap();
-        self.worker_state.cv.notify_one();
-        Ok(())
-    }
-
-    /// Launches a task that will execute a live migration out of this VM.
-    /// Returns a state change request message to queue to the state driver,
-    /// which will coordinate with this task to run the migration.
-    fn launch_source_migration_task<
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    >(
-        &self,
-        migration_id: Uuid,
-        conn: WebSocketStream<T>,
-        protocol: crate::migrate::protocol::Protocol,
-    ) -> ExternalRequest {
-        let log_for_task =
-            self.log.new(slog::o!("component" => "migrate_source_task"));
-        let ctrl_for_task = self.this.upgrade().unwrap();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
-
-        // The migration process uses async operations when communicating with
-        // the migration target. Run that work on the async runtime.
-        info!(self.log, "Launching migration source task");
-        let task = self.rt_hdl().spawn(async move {
-            info!(log_for_task, "Waiting to be told to start");
-            start_rx.await.unwrap();
-
-            info!(log_for_task, "Starting migration procedure");
-            if let Err(e) = crate::migrate::source::migrate(
-                ctrl_for_task,
-                command_tx,
-                response_rx,
-                conn,
-                protocol,
-            )
-            .await
-            {
-                error!(log_for_task, "Migration task failed: {}", e);
-                return Err(e);
+    /// # Panics
+    ///
+    /// Panics if the VM is not in the `Rundown` state.
+    async fn complete_rundown(&self) {
+        info!(self.log, "completing VM rundown");
+        let mut guard = self.inner.write().await;
+        let old = std::mem::replace(&mut guard.state, VmState::NoVm);
+        let rt = match old {
+            VmState::Rundown(mut vm) => {
+                let rt = vm.tokio_rt.take().expect("rundown VM has a runtime");
+                guard.state = VmState::RundownComplete(vm);
+                rt
             }
+            state => unreachable!(
+                "VM rundown completed from invalid prior state {state}"
+            ),
+        };
 
-            Ok(())
-        });
-
-        ExternalRequest::MigrateAsSource {
-            migration_id,
-            task,
-            start_tx,
-            command_rx,
-            response_tx,
-        }
-    }
-
-    /// Asks to queue a request to start a destination migration task for this
-    /// VM. The migration will have the supplied `migration_id` and will obtain
-    /// its connection to the source by calling `upgrade_fn` to obtain a future
-    /// that yields the necessary connection.
-    ///
-    /// This routine fails if the VM has already begun to run or if a previous
-    /// migration in was attempted (regardless of its outcome). Note that this
-    /// routine does not fail if the future returned from `upgrade_fn`
-    /// subsequently fails to produce a connection to the destination (though
-    /// the migration attempt will then fail).
-    ///
-    /// On success, clients may query the instance's migration status to
-    /// determine how the migration has progressed.
-    pub fn request_migration_into<
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    >(
-        &self,
-        migration_id: Uuid,
-        conn: WebSocketStream<T>,
-        local_addr: SocketAddr,
-        protocol: crate::migrate::protocol::Protocol,
-    ) -> Result<(), VmControllerError> {
-        let mut inner = self.worker_state.inner.lock().unwrap();
-        if !inner.external_request_queue.migrate_as_target_will_enqueue()? {
-            return Ok(());
-        }
-
-        // Check that the request can be enqueued before setting up the
-        // migration task.
-        let migration_request = self.launch_target_migration_task(
-            migration_id,
-            conn,
-            local_addr,
-            protocol,
-        );
-
-        // Unwrap is safe because the queue state was checked under the lock.
-        inner.external_request_queue.try_queue(migration_request).unwrap();
-        self.worker_state.cv.notify_one();
-        Ok(())
-    }
-
-    /// Launches a task that will execute a live migration into this VM.
-    /// Returns a state change request message to queue to the state driver,
-    /// which will coordinate with this task to run the migration.
-    fn launch_target_migration_task<
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    >(
-        &self,
-        migration_id: Uuid,
-        conn: WebSocketStream<T>,
-        local_addr: SocketAddr,
-        protocol: crate::migrate::protocol::Protocol,
-    ) -> ExternalRequest {
-        let log_for_task =
-            self.log.new(slog::o!("component" => "migrate_source_task"));
-        let ctrl_for_task = self.this.upgrade().unwrap();
-        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(1);
-
-        // The migration process uses async operations when communicating with
-        // the migration target. Run that work on the async runtime.
-        info!(self.log, "Launching migration target task");
-        let task = self.rt_hdl().spawn(async move {
-            info!(log_for_task, "Waiting to be told to start");
-            start_rx.await.unwrap();
-
-            info!(log_for_task, "Starting migration procedure");
-            if let Err(e) = crate::migrate::destination::migrate(
-                ctrl_for_task,
-                command_tx,
-                conn,
-                local_addr,
-                protocol,
-            )
-            .await
-            {
-                error!(log_for_task, "Migration task failed: {}", e);
-                return Err(e);
-            }
-
-            Ok(())
-        });
-
-        ExternalRequest::MigrateAsTarget {
-            migration_id,
-            task,
-            start_tx,
-            command_rx,
-        }
-    }
-
-    /// Handles a request to change the wrapped instance's state.
-    pub fn put_state(
-        &self,
-        requested: ApiInstanceStateRequested,
-    ) -> Result<(), VmControllerError> {
-        info!(self.log(), "Requested state {:?} via API", requested);
-
-        self.worker_state
-            .queue_external_request(match requested {
-                ApiInstanceStateRequested::Run => ExternalRequest::Start,
-                ApiInstanceStateRequested::Stop => ExternalRequest::Stop,
-                ApiInstanceStateRequested::Reboot => ExternalRequest::Reboot,
-            })
-            .map_err(Into::into)
-    }
-
-    pub fn migrate_status(&self) -> ApiMigrateStatusResponse {
-        let mut published =
-            self.vm_objects.monitor_rx.borrow().migration.clone();
-
-        // There's a window between the point where a request to migrate returns
-        // and the point where the state worker actually picks up the migration
-        // and publishes its state. To ensure that migrations are visible as
-        // soon as they're queued, pick up the queued migration (if there is
-        // one) and insert it into the output in the appropriate position. The
-        // state driver will consume the pending migration before actually
-        // executing it.
-        let inner = self.worker_state.inner.lock().unwrap();
-        if let Some((id, role)) = inner.pending_migration_id {
-            match role {
-                MigrateRole::Destination => {
-                    published.migration_in = Some(ApiMigrationStatus {
-                        id,
-                        state: ApiMigrationState::Sync,
-                    });
-                }
-                MigrateRole::Source => {
-                    published.migration_out = Some(ApiMigrationStatus {
-                        id,
-                        state: ApiMigrationState::Sync,
-                    });
-                }
-            }
-        }
-
-        published
-    }
-
-    pub(crate) fn for_each_device(
-        &self,
-        mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
-    ) {
-        for (name, dev) in self.vm_objects.devices.iter() {
-            func(name, dev);
-        }
-    }
-
-    pub(crate) fn for_each_device_fallible<F, E>(
-        &self,
-        mut func: F,
-    ) -> std::result::Result<(), E>
-    where
-        F: FnMut(
-            &str,
-            &Arc<dyn propolis::common::Lifecycle>,
-        ) -> std::result::Result<(), E>,
-    {
-        for (name, dev) in self.vm_objects.devices.iter() {
-            func(name, dev)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn device_by_name(
-        &self,
-        name: &String,
-    ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.vm_objects.devices.get(name).cloned()
-    }
-
-    /// Spawn a Tokio runtime in which to run the VMM-related (device emulation,
-    /// block backends, etc) tasks for an instance.
-    pub(crate) fn spawn_runtime(
-        properties: &InstanceProperties,
-    ) -> anyhow::Result<tokio::runtime::Runtime> {
-        // For now, just base the runtime size on vCPU count
-        let thread_count = usize::max(
-            VMM_MIN_RT_THREADS,
-            VMM_BASE_RT_THREADS + properties.vcpus as usize,
-        );
-
-        tokio::runtime::Builder::new_multi_thread()
-            .thread_name("tokio-rt-vmm")
-            .worker_threads(thread_count)
-            .enable_all()
-            .build()
-            .context("spawning tokio runtime for VMM")
-    }
-}
-
-impl Drop for VmController {
-    fn drop(&mut self) {
-        info!(self.log, "Dropping VM controller");
-        let machine = self
-            .vm_objects
-            .machine
+        let StateDriverOutput { mut state_publisher, final_state } = guard
+            .driver
             .take()
-            .expect("VM controller should have an instance at drop");
+            .expect("driver must exist in rundown")
+            .await
+            .expect("state driver shouldn't panic");
 
-        // Destroy the underlying kernel VMM resource
-        let hdl = machine.destroy();
-        let _ = hdl.destroy();
+        state_publisher.update(state_publisher::ExternalStateUpdate::Instance(
+            final_state,
+        ));
 
-        // Detach block backends so they can do any final clean-up
-        debug!(self.log, "Detaching block backends");
-        for backend in self.vm_objects.block_backends.values() {
-            let _ = backend.attachment().detach();
-        }
+        // Shut down the runtime without blocking to wait for tasks to complete
+        // (since blocking is illegal in an async context).
+        //
+        // This must happen after the state driver task has successfully joined
+        // (otherwise it might be canceled and will fail to yield the VM's final
+        // state).
+        rt.shutdown_background();
+    }
 
-        // A fully-initialized controller is kept alive in part by its worker
-        // thread, which owns the sender side of the controller's state-change
-        // notification channel. Since the controller is being dropped, the
-        // worker is gone, so reclaim the sender from it and use it to publish
-        // that the controller is being destroyed.
-        if let Some(thread) = self.worker_thread.lock().unwrap().take() {
-            let api_state = thread.join().unwrap();
-            let old_state = api_state.borrow().clone();
+    /// Attempts to move this VM to the `Active` state by setting up a state
+    /// driver task and directing it to initialize a new VM.
+    pub(crate) async fn ensure(
+        self: &Arc<Self>,
+        log: &slog::Logger,
+        ensure_request: InstanceSpecEnsureRequest,
+        options: EnsureOptions,
+    ) -> Result<InstanceEnsureResponse, VmError> {
+        let log_for_driver =
+            log.new(slog::o!("component" => "vm_state_driver"));
 
-            // Preserve the instance's state if it failed so that clients can
-            // distinguish gracefully-stopped instances from failed instances.
-            if matches!(old_state.state, ApiInstanceState::Failed) {
-                return;
-            }
+        // This routine will create a state driver task that actually
+        // initializes the VM. The external instance-ensure API shouldn't return
+        // until that task has disposed of the initialization request. Create a
+        // channel to allow the state driver task to send back an ensure result
+        // at the appropriate moment.
+        let (ensure_reply_tx, ensure_rx) = oneshot::channel();
 
-            let gen = old_state.gen + 1;
-            let _ = api_state.send(ApiMonitoredState {
-                gen,
-                state: ApiInstanceState::Destroyed,
-                ..old_state
+        // The external state receiver needs to exist as soon as this routine
+        // returns, so create the appropriate channel here. The sender side of
+        // the channel will move to the state driver task.
+        let (external_publisher, external_rx) = StatePublisher::new(
+            &log_for_driver,
+            InstanceStateMonitorResponse {
+                gen: 1,
+                state: if ensure_request.migrate.is_some() {
+                    InstanceState::Migrating
+                } else {
+                    InstanceState::Creating
+                },
+                migration: InstanceMigrateStatusResponse {
+                    migration_in: ensure_request.migrate.as_ref().map(|req| {
+                        InstanceMigrationStatus {
+                            id: req.migration_id,
+                            state: MigrationState::Sync,
+                        }
+                    }),
+                    migration_out: None,
+                },
+            },
+        );
+
+        // Take the lock for writing, since in the common case this call will be
+        // creating a new VM and there's no easy way to upgrade from a reader
+        // lock to a writer lock.
+        {
+            let mut guard = self.inner.write().await;
+            match guard.state {
+                VmState::WaitingForInit(_) => {
+                    return Err(VmError::WaitingToInitialize);
+                }
+                VmState::Active(_) => return Err(VmError::AlreadyInitialized),
+                VmState::Rundown(_) => return Err(VmError::RundownInProgress),
+                _ => {}
+            };
+
+            let VersionedInstanceSpec::V0(v0_spec) =
+                ensure_request.instance_spec.clone();
+
+            let thread_count = usize::max(
+                VMM_MIN_RT_THREADS,
+                VMM_BASE_RT_THREADS + v0_spec.devices.board.cpus as usize,
+            );
+
+            let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+                .thread_name("tokio-rt-vmm")
+                .worker_threads(thread_count)
+                .enable_all()
+                .build()
+                .map_err(VmError::TokioRuntimeInitializationFailed)?;
+
+            let properties = ensure_request.properties.clone();
+            let vm_for_driver = self.clone();
+            guard.driver = Some(tokio_rt.spawn(async move {
+                state_driver::run_state_driver(
+                    log_for_driver,
+                    vm_for_driver,
+                    external_publisher,
+                    ensure_request,
+                    ensure_reply_tx,
+                    options,
+                )
+                .await
+            }));
+
+            guard.state = VmState::WaitingForInit(VmDescription {
+                external_state_rx: external_rx.clone(),
+                properties,
+                spec: v0_spec,
+                tokio_rt: Some(tokio_rt),
             });
         }
 
-        // Tokio will be upset if the VMM runtime is implicitly shutdown (via
-        // drop) in blocking context.  We avoid such troubles by doing an
-        // explicit background shutdown.
-        let rt = self.vmm_runtime.take().expect("vmm_runtime is populated");
-        rt.shutdown_background();
-    }
-}
-
-/// An event that a VM's state driver must process.
-#[derive(Debug)]
-enum StateDriverEvent {
-    /// An event that was raised from within the guest.
-    Guest(GuestEvent),
-
-    /// An event that was raised by an external entity (e.g. an API call to the
-    /// server).
-    External(ExternalRequest),
-}
-
-/// Commands issued by the state driver back to its VM controller. These are
-/// abstracted into a trait to allow them to be mocked out for testing without
-/// having to supply mock implementations of the rest of the VM controller's
-/// functionality.
-#[cfg_attr(test, mockall::automock)]
-trait StateDriverVmController {
-    /// Pause VM at the kernel VMM level, ensuring that in-kernel-emulated
-    /// devices and vCPUs are brought to a consistent state.
-    ///
-    /// When the VM is paused, attempts to run its vCPUs (via `VM_RUN` ioctl)
-    /// will fail.  A corresponding `resume_vm()` call must be made prior to
-    /// allowing vCPU tasks to run.
-    fn pause_vm(&self);
-
-    /// Resume a previously-paused VM at the kernel VMM level.  This will resume
-    /// any timers driving in-kernel-emulated devices, and allow the vCPU to run
-    /// again.
-    fn resume_vm(&self);
-
-    /// Sends a reset request to each device in the instance, then sends a
-    /// reset command to the instance's bhyve VM.
-    fn reset_devices_and_machine(&self);
-
-    /// Sends each device (and backend) a start request.
-    fn start_devices(&self) -> anyhow::Result<()>;
-
-    /// Sends each device a pause request, then waits for all these requests to
-    /// complete.
-    fn pause_devices(&self);
-
-    /// Sends each device a resume request.
-    fn resume_devices(&self);
-
-    /// Sends each device (and backend) a halt request.
-    fn halt_devices(&self);
-
-    /// Resets the state of each vCPU in the instance to its on-reboot state.
-    fn reset_vcpu_state(&self);
-}
-
-impl StateDriverVmController for VmController {
-    fn pause_vm(&self) {
-        info!(self.log, "Pausing kernel VMM resources");
-        self.machine().hdl.pause().expect("VM_PAUSE should succeed")
-    }
-
-    fn resume_vm(&self) {
-        info!(self.log, "Resuming kernel VMM resources");
-        self.machine().hdl.resume().expect("VM_RESUME should succeed")
-    }
-
-    fn reset_devices_and_machine(&self) {
-        let _rtguard = self.rt_hdl().enter();
-        self.for_each_device(|name, dev| {
-            info!(self.log, "Sending reset request to {}", name);
-            dev.reset();
-        });
-
-        self.machine().reinitialize().unwrap();
-    }
-
-    fn start_devices(&self) -> anyhow::Result<()> {
-        let _rtguard = self.rt_hdl().enter();
-        self.for_each_device_fallible(|name, dev| {
-            info!(self.log, "Sending startup complete to {}", name);
-            let res = dev.start();
-            if let Err(e) = &res {
-                error!(self.log, "Startup failed for {}: {:?}", name, e);
-            }
-            res
-        })?;
-        for (name, backend) in self.vm_objects.block_backends.iter() {
-            debug!(self.log, "Starting block backend {}", name);
-            let res = backend.start();
-            if let Err(e) = &res {
-                error!(self.log, "Startup failed for {}: {:?}", name, e);
-                return res;
-            }
-        }
-        Ok(())
-    }
-
-    fn pause_devices(&self) {
-        let _rtguard = self.rt_hdl().enter();
-        self.for_each_device(|name, dev| {
-            info!(self.log, "Sending pause request to {}", name);
-            dev.pause();
-        });
-
-        // Create a Future that returns the name of the device that has finished
-        // pausing: this allows keeping track of which devices have and haven't
-        // completed pausing yet.
-        struct NamedFuture {
-            name: String,
-            future: BoxFuture<'static, ()>,
-        }
-
-        impl std::future::Future for NamedFuture {
-            type Output = String;
-
-            fn poll(
-                self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-            ) -> Poll<Self::Output> {
-                let mut_self = self.get_mut();
-                match Pin::new(&mut mut_self.future).poll(cx) {
-                    Poll::Pending => Poll::Pending,
-                    Poll::Ready(()) => Poll::Ready(mut_self.name.clone()),
-                }
-            }
-        }
-
-        info!(self.log, "Waiting for devices to pause");
-        self.rt_hdl().block_on(async {
-            let mut stream: FuturesUnordered<_> = self
-                .vm_objects
-                .devices
-                .iter()
-                .map(|(name, dev)| {
-                    info!(self.log, "Got paused future from dev {}", name);
-                    NamedFuture { name: name.to_string(), future: dev.paused() }
-                })
-                .collect();
-
-            loop {
-                match stream.next().await {
-                    Some(name) => {
-                        info!(self.log, "dev {} completed pause", name);
-                    }
-
-                    None => {
-                        // done
-                        info!(self.log, "all devices paused");
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    fn resume_devices(&self) {
-        let _rtguard = self.rt_hdl().enter();
-        self.for_each_device(|name, dev| {
-            info!(self.log, "Sending resume request to {}", name);
-            dev.resume();
-        });
-    }
-
-    fn halt_devices(&self) {
-        let _rtguard = self.rt_hdl().enter();
-        self.for_each_device(|name, dev| {
-            info!(self.log, "Sending halt request to {}", name);
-            dev.halt();
-        });
-        for (name, backend) in self.vm_objects.block_backends.iter() {
-            debug!(self.log, "Stopping and detaching block backend {}", name);
-            backend.stop();
-            if let Err(err) = backend.detach() {
-                error!(
-                    self.log,
-                    "Error while detaching block backend {name}: {err:?}",
-                );
-            }
-        }
-    }
-
-    fn reset_vcpu_state(&self) {
-        for vcpu in self.machine().vcpus.iter() {
-            info!(self.log, "Resetting vCPU {}", vcpu.id);
-            vcpu.activate().unwrap();
-            vcpu.reboot_state().unwrap();
-            if vcpu.is_bsp() {
-                info!(self.log, "Resetting BSP vCPU {}", vcpu.id);
-                vcpu.set_run_state(propolis::bhyve_api::VRS_RUN, None).unwrap();
-                vcpu.set_reg(
-                    propolis::bhyve_api::vm_reg_name::VM_REG_GUEST_RIP,
-                    0xfff0,
-                )
-                .unwrap();
-            }
-        }
+        // Wait for the state driver task to dispose of this request.
+        ensure_rx.await.map_err(|_| VmError::ResultChannelClosed)?
     }
 }

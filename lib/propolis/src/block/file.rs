@@ -211,6 +211,7 @@ impl FileBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl block::Backend for FileBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.state.attachment
@@ -219,7 +220,8 @@ impl block::Backend for FileBackend {
     fn info(&self) -> DeviceInfo {
         self.state.info
     }
-    fn start(&self) -> anyhow::Result<()> {
+
+    async fn start(&self) -> anyhow::Result<()> {
         self.state.attachment.start();
         if let Err(e) = self.spawn_workers() {
             self.state.attachment.stop();
@@ -229,7 +231,8 @@ impl block::Backend for FileBackend {
             Ok(())
         }
     }
-    fn stop(&self) {
+
+    async fn stop(&self) -> () {
         self.state.attachment.stop();
         self.workers.block_until_joined();
     }

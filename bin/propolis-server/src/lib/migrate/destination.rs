@@ -9,13 +9,16 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
+use propolis_api_types::InstanceMigrateInitiateRequest;
 use slog::{error, info, trace, warn};
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::{tungstenite, WebSocketStream};
+use uuid::Uuid;
 
 use crate::migrate::codec;
 use crate::migrate::memx;
@@ -24,57 +27,132 @@ use crate::migrate::probes;
 use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
-use crate::vm::{MigrateTargetCommand, VmController};
+use crate::vm::ensure::{VmEnsureActive, VmEnsureNotStarted};
+use crate::vm::state_publisher::{
+    ExternalStateUpdate, MigrationStateUpdate, StatePublisher,
+};
 
 use super::protocol::Protocol;
+use super::MigrateConn;
 
-/// Launches an attempt to migrate into a supplied instance using the supplied
-/// source connection.
-pub async fn migrate<T: AsyncRead + AsyncWrite + Unpin + Send>(
-    vm_controller: Arc<VmController>,
-    command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
-    conn: WebSocketStream<T>,
-    local_addr: SocketAddr,
-    protocol: Protocol,
-) -> Result<(), MigrateError> {
-    let err_tx = command_tx.clone();
-    let mut proto = match protocol {
-        Protocol::RonV0 => DestinationProtocol::new(
-            vm_controller,
-            command_tx,
-            conn,
-            local_addr,
-        ),
-    };
-
-    if let Err(err) = proto.run().await {
-        err_tx
-            .send(MigrateTargetCommand::UpdateState(MigrationState::Error))
-            .await
-            .unwrap();
-
-        // We encountered an error, try to inform the remote before bailing
-        // Note, we don't use `?` here as this is a best effort and we don't
-        // want an error encountered during this send to shadow the run error
-        // from the caller.
-        if let Ok(e) = codec::Message::Error(err.clone()).try_into() {
-            let _ = proto.conn.send(e).await;
-        }
-        return Err(err);
-    }
-
-    Ok(())
+/// The interface to an arbitrary version of the target half of the live
+/// migration protocol.
+//
+// Use `async_trait` here to help generate a `Send` bound on the futures
+// returned by the functions in this trait.
+#[async_trait::async_trait]
+pub(crate) trait DestinationProtocol {
+    /// Runs live migration as a target, attempting to create a set of VM
+    /// objects in the process. On success, returns an "active VM" placeholder
+    /// that the caller can use to set up and start a state driver loop.
+    async fn run<'ensure>(
+        mut self,
+        ensure: VmEnsureNotStarted<'ensure>,
+    ) -> Result<VmEnsureActive<'ensure>, MigrateError>;
 }
 
-struct DestinationProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
-    /// The VM controller for the instance of interest.
-    vm_controller: Arc<VmController>,
+/// Connects to a live migration source using the migration request information
+/// in `migrate_info`, then negotiates a protocol version with that source.
+/// Returns a [`DestinationProtocol`] implementation for the negotiated version
+/// that the caller can use to run the migration.
+pub(crate) async fn initiate(
+    log: &slog::Logger,
+    migrate_info: &InstanceMigrateInitiateRequest,
+    local_addr: SocketAddr,
+) -> Result<impl DestinationProtocol, MigrateError> {
+    let migration_id = migrate_info.migration_id;
+
+    let log = log.new(slog::o!(
+        "migration_id" => migration_id.to_string(),
+        "migrate_role" => "destination",
+        "migrate_src_addr" => migrate_info.src_addr
+    ));
+
+    info!(log, "negotiating migration as destination");
+
+    // Build upgrade request to the source instance
+    // (we do this by hand because it's hidden from the OpenAPI spec)
+    // TODO(#165): https (wss)
+    // TODO: We need to make sure the src_addr is a valid target
+    let src_migrate_url = format!(
+        "ws://{}/instance/migrate/{}/start",
+        migrate_info.src_addr, migration_id,
+    );
+    info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
+    let (mut conn, _) =
+        tokio_tungstenite::connect_async(src_migrate_url).await?;
+
+    // Generate a list of protocols that this target supports, then send them to
+    // the source and allow it to choose its favorite.
+    let dst_protocols = super::protocol::make_protocol_offer();
+    conn.send(tungstenite::Message::Text(dst_protocols)).await?;
+    let src_selected = match conn.next().await {
+        Some(Ok(tungstenite::Message::Text(selected))) => selected,
+        x => {
+            error!(
+                log,
+                "source instance failed to negotiate protocol version: {:?}", x
+            );
+
+            // Tell the source about its mistake. This is best-effort.
+            if let Err(e) = conn
+                .send(tungstenite::Message::Close(Some(CloseFrame {
+                    code: CloseCode::Protocol,
+                    reason: "did not respond to version handshake.".into(),
+                })))
+                .await
+            {
+                warn!(log, "failed to send handshake failure to source";
+                      "error" => ?e);
+            }
+
+            return Err(MigrateError::Initiate);
+        }
+    };
+
+    // Make sure the source's selected protocol parses correctly and is in the
+    // list of protocols this target supports. If the source's choice is valid,
+    // use the protocol it picked.
+    let selected =
+        match super::protocol::select_protocol_from_offer(&src_selected) {
+            Ok(Some(selected)) => selected,
+            Ok(None) => {
+                let offered = super::protocol::make_protocol_offer();
+                error!(log, "source selected protocol not on offer";
+                       "offered" => &offered,
+                       "selected" => &src_selected);
+
+                return Err(MigrateError::NoMatchingProtocol(
+                    src_selected,
+                    offered,
+                ));
+            }
+            Err(e) => {
+                error!(log, "source selected protocol failed to parse";
+                       "selected" => &src_selected);
+
+                return Err(MigrateError::ProtocolParse(
+                    src_selected,
+                    e.to_string(),
+                ));
+            }
+        };
+
+    Ok(match selected {
+        Protocol::RonV0 => RonV0::new(log, migration_id, conn, local_addr),
+    })
+}
+
+/// The runner for version 0 of the LM protocol, using RON encoding.
+struct RonV0<T: MigrateConn> {
+    /// The ID for this migration.
+    migration_id: Uuid,
+
+    /// The logger for messages from this protocol.
+    log: slog::Logger,
 
     /// The channel to use to send messages to the state worker coordinating
     /// this migration.
-    command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
-
-    /// Transport to the source Instance.
     conn: WebSocketStream<T>,
 
     /// Local propolis-server address
@@ -82,49 +160,166 @@ struct DestinationProtocol<T: AsyncRead + AsyncWrite + Unpin + Send> {
     local_addr: SocketAddr,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
+#[async_trait::async_trait]
+impl<T: MigrateConn + Sync> DestinationProtocol for RonV0<T> {
+    async fn run<'ensure>(
+        mut self,
+        mut ensure: VmEnsureNotStarted<'ensure>,
+    ) -> Result<VmEnsureActive<'ensure>, MigrateError> {
+        info!(self.log(), "entering destination migration task");
+
+        let result = async {
+            // Run the sync phase to ensure that the source's instance spec is
+            // compatible with the spec supplied in the ensure parameters.
+            if let Err(e) = self.run_sync_phases(&mut ensure).await {
+                self.update_state(
+                    ensure.state_publisher(),
+                    MigrationState::Error,
+                );
+                let e = ensure.fail(e.into()).await;
+                return Err(e
+                    .downcast::<MigrateError>()
+                    .expect("original error was a MigrateError"));
+            }
+
+            // The sync phase succeeded, so it's OK to go ahead with creating
+            // the objects in the target's instance spec.
+            let mut objects_created =
+                ensure.create_objects().await.map_err(|e| {
+                    MigrateError::TargetInstanceInitializationFailed(
+                        e.to_string(),
+                    )
+                })?;
+            objects_created.prepare_for_migration().await;
+            let mut ensure = objects_created.ensure_active().await;
+
+            // Now that the VM's objects exist, run the rest of the protocol to
+            // import state into them.
+            if let Err(e) = self.run_import_phases(&mut ensure).await {
+                self.update_state(
+                    ensure.state_publisher(),
+                    MigrationState::Error,
+                );
+                ensure.fail().await;
+                return Err(e);
+            }
+
+            Ok(ensure)
+        }
+        .await;
+
+        match result {
+            Ok(vm) => {
+                info!(self.log(), "migration in succeeded");
+                Ok(vm)
+            }
+            Err(err) => {
+                error!(self.log(), "migration in failed"; "error" => ?err);
+
+                // We encountered an error, try to inform the remote before
+                // bailing Note, we don't use `?` here as this is a best effort
+                // and we don't want an error encountered during this send to
+                // shadow the run error from the caller.
+                if let Ok(e) = codec::Message::Error(err.clone()).try_into() {
+                    let _ = self.conn.send(e).await;
+                }
+                Err(err)
+            }
+        }
+    }
+}
+
+impl<T: MigrateConn> RonV0<T> {
     fn new(
-        vm_controller: Arc<VmController>,
-        command_tx: tokio::sync::mpsc::Sender<MigrateTargetCommand>,
+        log: slog::Logger,
+        migration_id: Uuid,
         conn: WebSocketStream<T>,
         local_addr: SocketAddr,
     ) -> Self {
-        Self { vm_controller, command_tx, conn, local_addr }
+        Self { log, migration_id, conn, local_addr }
     }
 
     fn log(&self) -> &slog::Logger {
-        self.vm_controller.log()
+        &self.log
     }
 
-    async fn update_state(&mut self, state: MigrationState) {
-        // When migrating into an instance, the VM state worker blocks waiting
-        // for the disposition of the migration attempt, so the channel should
-        // never be closed before the attempt completes.
-        self.command_tx
-            .send(MigrateTargetCommand::UpdateState(state))
-            .await
-            .unwrap();
+    fn update_state(
+        &self,
+        publisher: &mut StatePublisher,
+        state: MigrationState,
+    ) {
+        publisher.update(ExternalStateUpdate::Migration(
+            MigrationStateUpdate {
+                state,
+                id: self.migration_id,
+                role: MigrateRole::Destination,
+            },
+        ));
     }
 
-    async fn run_phase(
+    async fn run_sync_phases(
+        &mut self,
+        ensure_ctx: &mut VmEnsureNotStarted<'_>,
+    ) -> Result<(), MigrateError> {
+        let step = MigratePhase::MigrateSync;
+
+        probes::migrate_phase_begin!(|| { step.to_string() });
+        self.sync(ensure_ctx).await?;
+        probes::migrate_phase_end!(|| { step.to_string() });
+
+        Ok(())
+    }
+
+    async fn run_import_phases(
+        &mut self,
+        ensure_ctx: &mut VmEnsureActive<'_>,
+    ) -> Result<(), MigrateError> {
+        // The RAM transfer phase runs twice, once before the source pauses and
+        // once after. There is no explicit pause phase on the destination,
+        // though, so that step does not appear here even though there are
+        // pre- and post-pause steps.
+        self.run_import_phase(MigratePhase::RamPushPrePause, ensure_ctx)
+            .await?;
+        self.run_import_phase(MigratePhase::RamPushPostPause, ensure_ctx)
+            .await?;
+
+        // Import of the time data *must* be done before we import device
+        // state: the proper functioning of device timers depends on an adjusted
+        // boot_hrtime.
+        self.run_import_phase(MigratePhase::TimeData, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::DeviceState, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::RamPull, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::ServerState, ensure_ctx).await?;
+        self.run_import_phase(MigratePhase::Finish, ensure_ctx).await?;
+
+        Ok(())
+    }
+
+    async fn run_import_phase(
         &mut self,
         step: MigratePhase,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
         probes::migrate_phase_begin!(|| { step.to_string() });
 
         let res = match step {
-            MigratePhase::MigrateSync => self.sync().await,
+            MigratePhase::MigrateSync => {
+                unreachable!("sync phase runs before import")
+            }
 
             // no pause step on the dest side
-            MigratePhase::Pause => unreachable!(),
-            MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
-                self.ram_push(&step).await
+            MigratePhase::Pause => {
+                unreachable!("no explicit pause phase on dest")
             }
-            MigratePhase::DeviceState => self.device_state().await,
-            MigratePhase::TimeData => self.time_data().await,
-            MigratePhase::RamPull => self.ram_pull().await,
-            MigratePhase::ServerState => self.server_state().await,
-            MigratePhase::Finish => self.finish().await,
+
+            MigratePhase::RamPushPrePause | MigratePhase::RamPushPostPause => {
+                self.ram_push(&step, ensure_ctx).await
+            }
+            MigratePhase::DeviceState => self.device_state(ensure_ctx).await,
+            MigratePhase::TimeData => self.time_data(ensure_ctx).await,
+            MigratePhase::RamPull => self.ram_pull(ensure_ctx).await,
+            MigratePhase::ServerState => self.server_state(ensure_ctx).await,
+            MigratePhase::Finish => self.finish(ensure_ctx).await,
         };
 
         probes::migrate_phase_end!(|| { step.to_string() });
@@ -132,34 +327,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         res
     }
 
-    async fn run(&mut self) -> Result<(), MigrateError> {
-        info!(self.log(), "Entering Destination Migration Task");
-
-        self.run_phase(MigratePhase::MigrateSync).await?;
-
-        // The RAM transfer phase runs twice, once before the source pauses and
-        // once after. There is no explicit pause phase on the destination,
-        // though, so that step does not appear here even though there are
-        // pre- and post-pause steps.
-        self.run_phase(MigratePhase::RamPushPrePause).await?;
-        self.run_phase(MigratePhase::RamPushPostPause).await?;
-
-        // Import of the time data *must* be done before we import device
-        // state: the proper functioning of device timers depends on an adjusted
-        // boot_hrtime.
-        self.run_phase(MigratePhase::TimeData).await?;
-        self.run_phase(MigratePhase::DeviceState).await?;
-        self.run_phase(MigratePhase::RamPull).await?;
-        self.run_phase(MigratePhase::ServerState).await?;
-        self.run_phase(MigratePhase::Finish).await?;
-
-        info!(self.log(), "Destination Migration Successful");
-
-        Ok(())
-    }
-
-    async fn sync(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::Sync).await;
+    async fn sync(
+        &mut self,
+        ensure_ctx: &mut VmEnsureNotStarted<'_>,
+    ) -> Result<(), MigrateError> {
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Sync);
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
                 Ok(ron::de::from_str(&s).map_err(codec::ProtocolError::from)?)
@@ -173,8 +345,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             }
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
-        if let Err(e) = preamble
-            .is_migration_compatible(self.vm_controller.instance_spec().await)
+
+        if let Err(e) =
+            preamble.is_migration_compatible(ensure_ctx.instance_spec())
         {
             error!(
                 self.log(),
@@ -189,17 +362,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
     async fn ram_push(
         &mut self,
         phase: &MigratePhase,
+        ensure_ctx: &mut VmEnsureActive<'_>,
     ) -> Result<(), MigrateError> {
-        match phase {
-            MigratePhase::RamPushPrePause => {
-                self.update_state(MigrationState::RamPush).await
-            }
-            MigratePhase::RamPushPostPause => {
-                self.update_state(MigrationState::RamPushDirty).await
-            }
+        let state = match phase {
+            MigratePhase::RamPushPrePause => MigrationState::RamPush,
+            MigratePhase::RamPushPostPause => MigrationState::RamPushDirty,
             _ => unreachable!("should only push RAM in a RAM push phase"),
-        }
+        };
 
+        self.update_state(ensure_ctx.state_publisher(), state);
         let (dirty, highest) = self.query_ram().await?;
         for (k, region) in dirty.as_raw_slice().chunks(4096).enumerate() {
             if region.iter().all(|&b| b == 0) {
@@ -236,13 +407,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
                     // space or non-existent RAM regions.  While we de facto
                     // do not because of the way access is implemented, we
                     // should probably disallow it at the protocol level.
-                    self.xfer_ram(start, end, &bits).await?;
+                    self.xfer_ram(ensure_ctx, start, end, &bits).await?;
                 }
                 _ => return Err(MigrateError::UnexpectedMessage),
             };
         }
         self.send_msg(codec::Message::MemDone).await?;
-        self.update_state(MigrationState::Pause).await;
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Pause);
         Ok(())
     }
 
@@ -289,6 +460,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
     async fn xfer_ram(
         &mut self,
+        ensure_ctx: &VmEnsureActive<'_>,
         start: u64,
         end: u64,
         bits: &[u8],
@@ -296,13 +468,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "ram_push: xfer RAM between {} and {}", start, end);
         for addr in PageIter::new(start, end, bits) {
             let bytes = self.read_page().await?;
-            self.write_guest_ram(GuestAddr(addr), &bytes).await?;
+            self.write_guest_ram(ensure_ctx, GuestAddr(addr), &bytes).await?;
         }
         Ok(())
     }
 
-    async fn device_state(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::Device).await;
+    async fn device_state(
+        &mut self,
+        ensure_ctx: &mut VmEnsureActive<'_>,
+    ) -> Result<(), MigrateError> {
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Device);
 
         let devices: Vec<Device> = match self.read_msg().await? {
             codec::Message::Serialized(encoded) => {
@@ -319,32 +494,33 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         info!(self.log(), "Devices: {devices:#?}");
 
         {
-            let machine = self.vm_controller.machine();
+            let vm_objects = ensure_ctx.vm_objects().lock_shared().await;
             let migrate_ctx =
-                MigrateCtx { mem: &machine.acc_mem.access().unwrap() };
+                MigrateCtx { mem: &vm_objects.access_mem().unwrap() };
             for device in devices {
                 info!(
                     self.log(),
                     "Applying state to device {}", device.instance_name
                 );
 
-                let target = self
-                    .vm_controller
+                let target = vm_objects
                     .device_by_name(&device.instance_name)
                     .ok_or_else(|| {
-                        MigrateError::UnknownDevice(
-                            device.instance_name.clone(),
-                        )
-                    })?;
+                    MigrateError::UnknownDevice(device.instance_name.clone())
+                })?;
                 self.import_device(&target, &device, &migrate_ctx)?;
             }
         }
+
         self.send_msg(codec::Message::Okay).await
     }
 
     // Get the guest time data from the source, make updates to it based on the
     // new host, and write the data out to bhvye.
-    async fn time_data(&mut self) -> Result<(), MigrateError> {
+    async fn time_data(
+        &mut self,
+        ensure_ctx: &VmEnsureActive<'_>,
+    ) -> Result<(), MigrateError> {
         // Read time data sent by the source and deserialize
         let raw: String = match self.read_msg().await? {
             codec::Message::Serialized(encoded) => encoded,
@@ -371,7 +547,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
         // Take a snapshot of the host hrtime/wall clock time, then adjust
         // time data appropriately.
-        let vmm_hdl = &self.vm_controller.machine().hdl.clone();
+        let vmm_hdl =
+            &ensure_ctx.vm_objects().lock_shared().await.vmm_hdl().clone();
+
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
@@ -541,16 +719,25 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         Ok(())
     }
 
-    async fn ram_pull(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::RamPull).await;
+    async fn ram_pull(
+        &mut self,
+        ensure_ctx: &mut VmEnsureActive<'_>,
+    ) -> Result<(), MigrateError> {
+        self.update_state(
+            ensure_ctx.state_publisher(),
+            MigrationState::RamPull,
+        );
         self.send_msg(codec::Message::MemQuery(0, !0)).await?;
         let m = self.read_msg().await?;
         info!(self.log(), "ram_pull: got end {:?}", m);
         self.send_msg(codec::Message::MemDone).await
     }
 
-    async fn server_state(&mut self) -> Result<(), MigrateError> {
-        self.update_state(MigrationState::Server).await;
+    async fn server_state(
+        &mut self,
+        ensure_ctx: &mut VmEnsureActive<'_>,
+    ) -> Result<(), MigrateError> {
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Server);
         self.send_msg(codec::Message::Serialized(
             ron::to_string(&self.local_addr)
                 .map_err(codec::ProtocolError::from)?,
@@ -564,15 +751,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             }
         };
 
-        self.vm_controller
+        ensure_ctx
+            .vm_objects()
+            .lock_shared()
+            .await
             .com1()
             .import(&com1_history)
             .await
             .map_err(|e| MigrateError::Codec(e.to_string()))?;
+
         self.send_msg(codec::Message::Okay).await
     }
 
-    async fn finish(&mut self) -> Result<(), MigrateError> {
+    async fn finish(
+        &mut self,
+        ensure_ctx: &mut VmEnsureActive<'_>,
+    ) -> Result<(), MigrateError> {
         // Tell the source this destination is ready to run the VM.
         self.send_msg(codec::Message::Okay).await?;
 
@@ -582,9 +776,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
         // that it should resume the VM.
         self.read_ok().await?;
 
-        // Now that control is definitely being transferred, publish that the
-        // migration has succeeded.
-        self.update_state(MigrationState::Finish).await;
+        // The source has acknowledged the migration is complete, so it's safe
+        // to declare victory publicly.
+        self.update_state(ensure_ctx.state_publisher(), MigrationState::Finish);
         Ok(())
     }
 
@@ -600,7 +794,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
             // If this is an error message, lift that out
             .map(|msg| match msg.try_into()? {
                 codec::Message::Error(err) => {
-                    error!(self.log(), "remote error: {err}");
+                    error!(
+                        self.log(),
+                        "migration failed due to error from source: {err}"
+                    );
                     Err(MigrateError::RemoteError(
                         MigrateRole::Source,
                         err.to_string(),
@@ -636,11 +833,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> DestinationProtocol<T> {
 
     async fn write_guest_ram(
         &mut self,
+        ensure_ctx: &VmEnsureActive<'_>,
         addr: GuestAddr,
         buf: &[u8],
     ) -> Result<(), MigrateError> {
-        let machine = self.vm_controller.machine();
-        let memctx = machine.acc_mem.access().unwrap();
+        let objects = ensure_ctx.vm_objects().lock_shared().await;
+        let memctx = objects.access_mem().unwrap();
         let len = buf.len();
         memctx.write_from(addr, buf, len);
         Ok(())

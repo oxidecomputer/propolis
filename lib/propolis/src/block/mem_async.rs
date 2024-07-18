@@ -205,21 +205,24 @@ impl Drop for MmapSeg {
 unsafe impl Send for MmapSeg {}
 unsafe impl Sync for MmapSeg {}
 
+#[async_trait::async_trait]
 impl block::Backend for MemAsyncBackend {
     fn info(&self) -> block::DeviceInfo {
         self.work_state.info
     }
+
     fn attachment(&self) -> &block::BackendAttachment {
         &self.work_state.attachment
     }
-    fn start(&self) -> anyhow::Result<()> {
+
+    async fn start(&self) -> anyhow::Result<()> {
         self.work_state.attachment.start();
         self.spawn_workers();
         Ok(())
     }
 
-    fn stop(&self) {
+    async fn stop(&self) -> () {
         self.work_state.attachment.stop();
-        self.workers.block_until_joined();
+        self.workers.join_all().await;
     }
 }

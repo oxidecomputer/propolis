@@ -161,6 +161,15 @@ mod running_process {
             .unwrap_err();
         info!(%error, "first migration failed as expected");
 
+        // Also verify that the target reports that it failed.
+        let target_migration_state = target1
+            .get_migration_state()
+            .await?
+            .migration_in
+            .expect("target should have a migration-in status")
+            .state;
+        assert_eq!(target_migration_state, MigrationState::Error);
+
         // try again. this time, it should work!
         target2
             .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
@@ -204,6 +213,15 @@ mod running_process {
             .await
             .unwrap_err();
         info!(%error, "first migration failed as expected");
+
+        // Also verify that the target reports that it failed.
+        let target_migration_state = target1
+            .get_migration_state()
+            .await?
+            .migration_in
+            .expect("target should have a migration-in status")
+            .state;
+        assert_eq!(target_migration_state, MigrationState::Error);
 
         // try again. this time, it should work!
         target2
