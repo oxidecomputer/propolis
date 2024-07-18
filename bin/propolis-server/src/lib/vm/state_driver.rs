@@ -128,9 +128,13 @@ impl InputQueue {
                 }
             }
 
-            // Notifiers in this module must use `notify_one` so that their
-            // notifications will not be lost if they arrive after this routine
-            // checks the queues but before it actually polls the notify.
+            // It's safe not to use `Notified::enable` here because (1) only one
+            // thread (the state driver) can call `wait_for_next_event` on a
+            // given input queue, and (2) all the methods of signaling the queue
+            // use `notify_one`, which buffers a permit if no one is waiting
+            // when the signal arrives. This means that if a notification is
+            // sent after the lock is dropped but before `notified()` is called
+            // here, the ensuing wait will be satisfied immediately.
             self.notify.notified().await;
         }
     }
