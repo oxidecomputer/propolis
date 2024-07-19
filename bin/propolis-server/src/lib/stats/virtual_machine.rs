@@ -415,7 +415,6 @@ mod test {
     use crate::stats::virtual_machine::OXIMETER_IDLE_STATE;
     use crate::stats::virtual_machine::OXIMETER_RUN_STATE;
     use crate::stats::virtual_machine::OXIMETER_WAITING_STATE;
-    use oximeter::schema::SchemaSet;
     use oximeter::types::Cumulative;
     use oximeter::Datum;
     use oximeter::FieldValue;
