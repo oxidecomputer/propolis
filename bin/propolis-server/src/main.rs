@@ -179,6 +179,7 @@ fn main() -> anyhow::Result<()> {
                 bind_address: propolis_addr,
                 request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 default_handler_task_mode: HandlerTaskMode::Detached,
+                log_headers: vec![],
             };
 
             let log = build_logger();

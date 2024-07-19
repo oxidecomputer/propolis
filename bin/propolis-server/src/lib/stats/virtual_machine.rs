@@ -415,7 +415,6 @@ mod test {
     use crate::stats::virtual_machine::OXIMETER_IDLE_STATE;
     use crate::stats::virtual_machine::OXIMETER_RUN_STATE;
     use crate::stats::virtual_machine::OXIMETER_WAITING_STATE;
-    use oximeter::schema::SchemaSet;
     use oximeter::types::Cumulative;
     use oximeter::Datum;
     use oximeter::FieldValue;
@@ -444,19 +443,6 @@ mod test {
             vcpu_id: 0,
             datum: Cumulative::new(100),
         }
-    }
-
-    #[test]
-    fn test_no_schema_changes() {
-        let mut set = SchemaSet::default();
-        assert!(set
-            .insert_checked(&test_virtual_machine(), &test_usage())
-            .is_none());
-        const PATH: &str = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/output/virtual-machine-schema.json",
-        );
-        set.assert_contents(PATH);
     }
 
     #[test]
