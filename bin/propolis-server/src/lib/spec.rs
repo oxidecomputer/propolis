@@ -619,6 +619,10 @@ mod test {
         InstanceMetadata {
             silo_id: uuid::uuid!("556a67f8-8b14-4659-bd9f-d8f85ecd36bf"),
             project_id: uuid::uuid!("75f60038-daeb-4a1d-916a-5fa5b7237299"),
+            sled_id: uuid::uuid!("43a789ac-a0dd-4e1e-ac33-acdada142faa"),
+            sled_serial: "some-gimlet".into(),
+            sled_revision: 1,
+            sled_model: "abcd".into(),
         }
     }
 

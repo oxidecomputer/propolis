@@ -89,6 +89,26 @@ enum Command {
         /// A UUID to use for the instance's project, attached to instance metrics.
         #[clap(long)]
         project_id: Option<TypedUuid<ProjectKind>>,
+
+        /// A UUID to use for the instance's hosting sled, attached to instance
+        /// metrics.
+        #[clap(long)]
+        sled_id: Option<TypedUuid<SledKind>>,
+
+        /// A model number to use for the instance's hosting sled, attached to
+        /// instance metrics.
+        #[clap(long)]
+        sled_model: Option<String>,
+
+        /// A revision number to use for the instance's hosting sled, attached to
+        /// instance metrics.
+        #[clap(long)]
+        sled_revision: Option<u32>,
+
+        /// A serial number to use for the instance's hosting sled, attached to
+        /// instance metrics.
+        #[clap(long)]
+        sled_serial: Option<String>,
     },
 
     /// Get the properties of a propolis instance
@@ -208,6 +228,15 @@ impl TypedUuidKind for SiloKind {
     }
 }
 
+enum SledKind {}
+
+impl TypedUuidKind for SledKind {
+    fn tag() -> TypedUuidTag {
+        const TAG: TypedUuidTag = TypedUuidTag::new("sled");
+        TAG
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn new_instance(
     client: &Client,
@@ -219,14 +248,22 @@ async fn new_instance(
     cloud_init_bytes: Option<String>,
     silo_id: TypedUuid<SiloKind>,
     project_id: TypedUuid<ProjectKind>,
+    sled_id: TypedUuid<SledKind>,
+    sled_model: String,
+    sled_revision: u32,
+    sled_serial: String,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
         name,
         description: "propolis-cli generated instance".to_string(),
         metadata: InstanceMetadata {
-            silo_id: silo_id.into_untyped_uuid(),
             project_id: project_id.into_untyped_uuid(),
+            silo_id: silo_id.into_untyped_uuid(),
+            sled_id: sled_id.into_untyped_uuid(),
+            sled_serial,
+            sled_revision,
+            sled_model,
         },
         // TODO: Use real UUID
         image_id: Uuid::default(),
@@ -633,6 +670,10 @@ async fn main() -> anyhow::Result<()> {
             cloud_init,
             silo_id,
             project_id,
+            sled_id,
+            sled_model,
+            sled_revision,
+            sled_serial,
         } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
@@ -657,6 +698,10 @@ async fn main() -> anyhow::Result<()> {
                 cloud_init_bytes,
                 silo_id.unwrap_or_else(TypedUuid::new_v4),
                 project_id.unwrap_or_else(TypedUuid::new_v4),
+                sled_id.unwrap_or_else(TypedUuid::new_v4),
+                sled_model.unwrap_or_else(|| String::from("fake-gimlet")),
+                sled_revision.unwrap_or(1),
+                sled_serial.unwrap_or_else(|| String::from("fake-serial")),
             )
             .await?
         }

@@ -36,6 +36,10 @@ pub struct InstancePathParams {
 pub struct InstanceMetadata {
     pub silo_id: Uuid,
     pub project_id: Uuid,
+    pub sled_id: Uuid,
+    pub sled_serial: String,
+    pub sled_revision: u32,
+    pub sled_model: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

@@ -57,7 +57,6 @@ impl VmServices {
             let registry = ensure_options.oximeter_registry.as_ref().expect(
                 "should have a producer registry if metrics are configured",
             );
-
             register_oximeter_producer(log, cfg, registry, vm_properties).await
         } else {
             OximeterState::default()
@@ -132,7 +131,7 @@ async fn register_oximeter_producer(
     // The server manages all details of the registration with Nexus, so we
     // don't need our own task for that or way to shut it down.
     oximeter_state.server = match crate::stats::start_oximeter_server(
-        virtual_machine.instance_id,
+        virtual_machine.target.instance_id,
         cfg,
         log,
         registry,

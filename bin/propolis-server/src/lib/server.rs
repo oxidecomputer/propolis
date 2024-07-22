@@ -10,6 +10,7 @@
 //! processing.
 
 use std::convert::TryFrom;
+use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV6;
@@ -46,16 +47,22 @@ use crate::vnc::PropolisVncServer;
 pub struct MetricsEndpointConfig {
     /// The address at which the Oximeter endpoint will be hosted (i.e., this
     /// server's address).
-    pub propolis_addr: SocketAddr,
+    pub listen_addr: IpAddr,
 
     /// The address of the Nexus instance with which we should register our own
     /// server's address.
-    pub metric_addr: SocketAddr,
+    ///
+    /// If this is None _and the listen address is IPv6_, then internal DNS will
+    /// be used to register for metrics.
+    pub registration_addr: Option<SocketAddr>,
 }
 
 impl MetricsEndpointConfig {
-    pub fn new(propolis_addr: SocketAddr, metric_addr: SocketAddr) -> Self {
-        Self { propolis_addr, metric_addr }
+    pub fn new(
+        listen_addr: IpAddr,
+        registration_addr: Option<SocketAddr>,
+    ) -> Self {
+        Self { listen_addr, registration_addr }
     }
 }
 
@@ -211,12 +218,12 @@ async fn find_local_nexus_client(
         Ok(lnc) => match lnc.get().await {
             Ok(client) => Some(client),
             Err(e) => {
-                warn!(log, "Failed to determine Nexus: endpoint {}", e);
+                warn!(log, "Failed to resolve Nexus endpoint"; "error" => ?e);
                 None
             }
         },
         Err(e) => {
-            warn!(log, "Failed to get Nexus client: {}", e);
+            warn!(log, "Failed to create Nexus client"; "error" => ?e);
             None
         }
     }

@@ -76,6 +76,7 @@ omicron-zone-package = "0.9.0"
 oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
 oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }

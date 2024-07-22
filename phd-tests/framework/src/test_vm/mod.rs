@@ -292,6 +292,10 @@ impl TestVm {
             metadata: InstanceMetadata {
                 project_id: Uuid::new_v4(),
                 silo_id: Uuid::new_v4(),
+                sled_id: Uuid::new_v4(),
+                sled_model: "pheidippides".into(),
+                sled_revision: 1,
+                sled_serial: "abcd".into(),
             },
             description: "Pheidippides-managed VM".to_string(),
             image_id: Uuid::default(),

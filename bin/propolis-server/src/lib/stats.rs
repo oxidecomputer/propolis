@@ -11,7 +11,7 @@ use oximeter::{
     Metric, MetricsError, Producer,
 };
 use oximeter_producer::{Config, Error, Server};
-use slog::{info, Logger};
+use slog::Logger;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -128,10 +128,6 @@ impl Producer for ServerStatsOuter {
 /// - `registry`: The oximeter [`ProducerRegistry`] that the spawned server will
 /// use to return metric data to oximeter on request.
 ///
-/// This method attempts to register a _single time_ with Nexus. Callers should
-/// arrange for this to be called continuously if desired, such as with a
-/// backoff policy.
-///
 /// The returned server will attempt to register with Nexus in a background
 /// task, and will periodically renew that registration. The returned server is
 /// running, and need not be poked or renewed to successfully serve metric data.
@@ -142,14 +138,8 @@ pub fn start_oximeter_server(
     registry: &ProducerRegistry,
 ) -> Result<Server, Error> {
     // Request an ephemeral port on which to serve metrics.
-    let producer_address = SocketAddr::new(config.propolis_addr.ip(), 0);
-    let registration_address = config.metric_addr;
-    info!(
-        log,
-        "Attempting to register with Nexus as a metric producer";
-        "producer_address" => %producer_address,
-        "nexus_address" => %registration_address,
-    );
+    let producer_address = SocketAddr::new(config.listen_addr, 0);
+    let registration_address = config.registration_addr;
 
     let server_info = ProducerEndpoint {
         id,
@@ -172,7 +162,7 @@ pub fn start_oximeter_server(
     const MAX_REQUEST_SIZE: usize = 1024 * 1024;
     let config = Config {
         server_info,
-        registration_address: Some(registration_address),
+        registration_address,
         request_body_max_bytes: MAX_REQUEST_SIZE,
         log: producer_log,
     };
@@ -194,6 +184,7 @@ pub async fn register_server_metrics(
     virtual_machine: VirtualMachine,
     log: &Logger,
 ) -> anyhow::Result<ServerStatsOuter> {
+    // TODO(ben): Fetch sled-agent identifiers here, or before and pass them in.
     let stats = ServerStats::new(virtual_machine.clone());
 
     let stats_outer = ServerStatsOuter {

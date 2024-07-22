@@ -913,11 +913,30 @@
           "silo_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "sled_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sled_model": {
+            "type": "string"
+          },
+          "sled_revision": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "sled_serial": {
+            "type": "string"
           }
         },
         "required": [
           "project_id",
-          "silo_id"
+          "silo_id",
+          "sled_id",
+          "sled_model",
+          "sled_revision",
+          "sled_serial"
         ]
       },
       "InstanceMigrateInitiateRequest": {
