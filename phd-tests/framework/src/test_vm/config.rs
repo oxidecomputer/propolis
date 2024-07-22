@@ -8,8 +8,12 @@ use std::sync::Arc;
 use anyhow::Context;
 use propolis_client::{
     instance_spec::SpecBuilderV0,
-    types::{NvmeDisk, PciPath, SerialPortNumber, StorageDeviceV0, VirtioDisk},
+    types::{
+        InstanceMetadata, NvmeDisk, PciPath, SerialPortNumber, StorageDeviceV0,
+        VirtioDisk,
+    },
 };
+use uuid::Uuid;
 
 use crate::{
     disk::{DiskConfig, DiskSource},
@@ -230,12 +234,24 @@ impl VmConfig {
 
         let instance_spec = spec_builder.finish();
 
+        // Generate random identifiers for this instance's timeseries metadata.
+        let sled_id = Uuid::new_v4();
+        let metadata = InstanceMetadata {
+            project_id: Uuid::new_v4(),
+            silo_id: Uuid::new_v4(),
+            sled_id,
+            sled_model: "pheidippes".into(),
+            sled_revision: 1,
+            sled_serial: sled_id.to_string(),
+        };
+
         Ok(VmSpec {
             vm_name: self.vm_name.clone(),
             instance_spec,
             disk_handles,
             guest_os_kind,
             config_toml_contents,
+            metadata,
         })
     }
 }

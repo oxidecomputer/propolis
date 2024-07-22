@@ -26,6 +26,8 @@ progenitor::generate_api!(
         PciPath = { derives = [
             Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Serialize, Deserialize
         ] },
+
+        InstanceMetadata = { derives = [ PartialEq ] },
     }
 );
 

@@ -8,11 +8,14 @@ use crate::{
     disk::{self, DiskConfig},
     guest_os::GuestOsKind,
 };
-use propolis_client::types::{InstanceSpecV0, StorageBackendV0};
+use propolis_client::types::{
+    InstanceMetadata, InstanceSpecV0, StorageBackendV0,
+};
+use uuid::Uuid;
 
 /// The set of objects needed to start and run a guest in a `TestVm`.
 #[derive(Clone)]
-pub(crate) struct VmSpec {
+pub struct VmSpec {
     pub vm_name: String,
 
     /// The instance spec to pass to the VM when starting the guest.
@@ -26,6 +29,9 @@ pub(crate) struct VmSpec {
 
     /// The contents of the config TOML to write to run this VM.
     pub config_toml_contents: String,
+
+    /// Metadata used to track instance timeseries data.
+    pub metadata: InstanceMetadata,
 }
 
 impl VmSpec {
@@ -55,5 +61,16 @@ impl VmSpec {
                 Some(_) | None => {}
             }
         }
+    }
+
+    /// Generate new sled-identifiers for self.
+    ///
+    /// This creates new metadata for the instance appropriate for a successor
+    /// VM. In that case, the sled identifiers will be different, but the
+    /// project / instance identifiers should be the same.
+    pub(crate) fn refresh_sled_identifiers(&mut self) {
+        let id = Uuid::new_v4();
+        self.metadata.sled_id = id;
+        self.metadata.sled_serial = id.to_string();
     }
 }

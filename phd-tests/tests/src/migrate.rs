@@ -413,34 +413,37 @@ async fn migration_ensures_instance_metadata(ctx: &Framework) {
         .await?;
     source.launch().await?;
     source.wait_to_boot().await?;
+    let expected_metadata = source.vm_spec().metadata;
     let source_metadata = source.get_spec().await?.properties.metadata;
+    assert_eq!(
+        expected_metadata, source_metadata,
+        "Source instance was not populated with the correct instance metadata"
+    );
 
     // Migrate the instance to a new server, and refetch the metadata.
     target
         .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
         .await?;
+    let expected_metadata = target.vm_spec().metadata;
     let target_metadata = target.get_spec().await?.properties.metadata;
-
-    // The project / silo ID should be the same, since these are properties of
-    // the instance itself.
     assert_eq!(
-        source_metadata.project_id, target_metadata.project_id,
-        "Source / target project IDs should be the same after a migration"
-    );
-    assert_eq!(
-        source_metadata.silo_id, target_metadata.silo_id,
-        "Source / target project IDs should be the same after a migration"
+        expected_metadata, target_metadata,
+        "Target instance was not populated with the correct instance metadata"
     );
 
-    // We're using the same fake model / revision, but the serial and ID should
-    // be different for this sled.
-    assert_ne!(
-        source_metadata.sled_id, target_metadata.sled_id,
-        "Source / target sled IDs should be different after a migration",
-    );
+    // Check that the source / target sled identifiers are different.
+    //
+    // In general, we expect that the sled serial and ID _should_ be different;
+    // the model and revision _may_ be different (if migrating to a different
+    // class of compute sled entirely); and that the project / silo IDs should
+    // be the same. That's the job of the control plane, though, not Propolis,
+    // so here we just check that the sled serial and UUIDs are different.
     assert_ne!(
         source_metadata.sled_serial, target_metadata.sled_serial,
-        "Source / target sled serial numbers should be \
-        different after a migration",
+        "Source and target serial numbers should be different"
+    );
+    assert_ne!(
+        source_metadata.sled_id, target_metadata.sled_id,
+        "Source and target UUIDs should be different"
     );
 }
