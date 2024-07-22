@@ -18,6 +18,9 @@ use oximeter::{types::Cumulative, FieldType, FieldValue, Sample, Target};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+// NOTE: TOML definitions of timeseries are centralized in Omicron, so this file
+// lives in that repo, at
+// `./omicron/oximeter/oximeter/schema/virtual-machine.toml`.
 oximeter::use_timeseries!("virtual-machine.toml");
 use self::virtual_machine::{
     VcpuUsage, VirtualMachine as VirtualMachineTarget,

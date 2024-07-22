@@ -396,3 +396,51 @@ async fn run_serial_history_test(
     )
     .await
 }
+
+#[phd_testcase]
+async fn migration_ensures_instance_metadata(ctx: &Framework) {
+    // Create a source instance, and fetch the instance metadata its metrics are
+    // generated with.
+    let mut source = ctx
+        .spawn_default_vm("migration_ensures_instance_metadata_source")
+        .await?;
+    let mut target = ctx
+        .spawn_successor_vm(
+            "migration_ensures_instance_metadata_target",
+            &source,
+            None,
+        )
+        .await?;
+    source.launch().await?;
+    source.wait_to_boot().await?;
+    let source_metadata = source.get_spec().await?.properties.metadata;
+
+    // Migrate the instance to a new server, and refetch the metadata.
+    target
+        .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+        .await?;
+    let target_metadata = target.get_spec().await?.properties.metadata;
+
+    // The project / silo ID should be the same, since these are properties of
+    // the instance itself.
+    assert_eq!(
+        source_metadata.project_id, target_metadata.project_id,
+        "Source / target project IDs should be the same after a migration"
+    );
+    assert_eq!(
+        source_metadata.silo_id, target_metadata.silo_id,
+        "Source / target project IDs should be the same after a migration"
+    );
+
+    // We're using the same fake model / revision, but the serial and ID should
+    // be different for this sled.
+    assert_ne!(
+        source_metadata.sled_id, target_metadata.sled_id,
+        "Source / target sled IDs should be different after a migration",
+    );
+    assert_ne!(
+        source_metadata.sled_serial, target_metadata.sled_serial,
+        "Source / target sled serial numbers should be \
+        different after a migration",
+    );
+}

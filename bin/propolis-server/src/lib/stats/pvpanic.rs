@@ -8,6 +8,9 @@ use oximeter::{types::Sample, Metric, MetricsError, Producer};
 use propolis::hw::qemu::pvpanic;
 use std::sync::Arc;
 
+// NOTE: TOML definitions of timeseries are centralized in Omicron, so this file
+// lives in that repo, at
+// `./omicron/oximeter/oximeter/schema/virtual-machine.toml`.
 oximeter::use_timeseries!("virtual-machine.toml");
 use self::virtual_machine::{PvPanicGuestHandled, PvPanicHostHandled};
 

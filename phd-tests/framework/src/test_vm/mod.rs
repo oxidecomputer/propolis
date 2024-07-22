@@ -131,6 +131,16 @@ enum VmState {
     Ensured { serial: SerialConsole },
 }
 
+/// Arguments provided to the `TestVm::migrate_from()` method to describe the
+/// migration source.
+#[derive(Clone, Debug)]
+pub struct MigrateArgs {
+    /// The initiation request telling the destination how to contact the source
+    pub migrate: InstanceMigrateInitiateRequest,
+    /// The instance / sled metadata for the source instance
+    pub source_metadata: InstanceMetadata,
+}
+
 /// A virtual machine running in a Propolis server. Test cases create these VMs
 /// using the [`factory::VmFactory`] embedded in their test contexts.
 ///
@@ -142,6 +152,7 @@ pub struct TestVm {
     client: Client,
     server: Option<server::PropolisServer>,
     spec: VmSpec,
+    metadata: InstanceMetadata,
     environment_spec: EnvironmentSpec,
     data_dir: Utf8PathBuf,
 
@@ -229,6 +240,17 @@ impl TestVm {
                 )
             })?;
 
+        // Generate random identifiers for this sled;
+        let metadata = InstanceMetadata {
+            project_id: Uuid::new_v4(),
+            silo_id: Uuid::new_v4(),
+            sled_id: Uuid::new_v4(),
+            sled_model: "pheidippides".into(),
+            sled_revision: 1,
+            // Use the full socket address as a fake but unique serial number
+            sled_serial: params.server_addr.to_string(),
+        };
+
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
@@ -244,6 +266,7 @@ impl TestVm {
             client,
             server: Some(server),
             spec: vm_spec,
+            metadata,
             environment_spec,
             data_dir,
             guest_os,
@@ -273,7 +296,7 @@ impl TestVm {
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn instance_ensure_internal<'a>(
         &self,
-        migrate: Option<InstanceMigrateInitiateRequest>,
+        migrate: Option<MigrateArgs>,
         console_source: InstanceConsoleSource<'a>,
     ) -> Result<SerialConsole> {
         let (vcpus, memory_mib) = match self.state {
@@ -286,17 +309,36 @@ impl TestVm {
             }
         };
 
+        let (migrate, metadata) = match migrate {
+            Some(MigrateArgs { migrate, source_metadata }) => {
+                // We're migrating from the source instance, so we need to make
+                // sure that we inherit the correct metadata for the instance
+                // from it. This is a bit contrived, but models the situation in
+                // which the sled-agent provides its own sled-identifiers but
+                // the same project / silo identifiers.
+                (
+                    Some(migrate),
+                    InstanceMetadata {
+                        sled_id: self.metadata.sled_id,
+                        sled_model: self.metadata.sled_model.clone(),
+                        sled_revision: self.metadata.sled_revision,
+                        sled_serial: self.metadata.sled_serial.clone(),
+                        // This should take project / silo ID from the source
+                        ..source_metadata
+                    },
+                )
+            }
+            None => {
+                // In this case, there is no migration, and so we can simply
+                // use our own values for the resulting instance.
+                (None, self.metadata.clone())
+            }
+        };
+
         let properties = InstanceProperties {
             id: self.id,
             name: format!("phd-vm-{}", self.id),
-            metadata: InstanceMetadata {
-                project_id: Uuid::new_v4(),
-                silo_id: Uuid::new_v4(),
-                sled_id: Uuid::new_v4(),
-                sled_model: "pheidippides".into(),
-                sled_revision: 1,
-                sled_serial: "abcd".into(),
-            },
+            metadata,
             description: "Pheidippides-managed VM".to_string(),
             image_id: Uuid::default(),
             bootrom_id: Uuid::default(),
@@ -513,13 +555,18 @@ impl TestVm {
                     server_addr
                 );
 
+                let args = MigrateArgs {
+                    migrate: InstanceMigrateInitiateRequest {
+                        migration_id,
+                        src_addr: server_addr.to_string(),
+                        src_uuid: Uuid::default(),
+                    },
+                    source_metadata: source.metadata.clone(),
+                };
+
                 let serial = self
                     .instance_ensure_internal(
-                        Some(InstanceMigrateInitiateRequest {
-                            migration_id,
-                            src_addr: server_addr.to_string(),
-                            src_uuid: Uuid::default(),
-                        }),
+                        Some(args),
                         InstanceConsoleSource::InheritFrom(source),
                     )
                     .await?;
