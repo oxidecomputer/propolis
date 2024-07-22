@@ -245,11 +245,12 @@ fn build_metric_configuration(
                 if the Propolis server is provided a \
                 non-localhost IPv6 address"
             );
-            Some(MetricsEndpointConfig::new(listen_addr, None))
+            Some(MetricsEndpointConfig { listen_addr, registration_addr: None })
         }
-        MetricRegistration::WithAddr(addr) => {
-            Some(MetricsEndpointConfig::new(listen_addr, Some(addr)))
-        }
+        MetricRegistration::WithAddr(addr) => Some(MetricsEndpointConfig {
+            listen_addr,
+            registration_addr: Some(addr),
+        }),
     };
     Ok(cfg)
 }

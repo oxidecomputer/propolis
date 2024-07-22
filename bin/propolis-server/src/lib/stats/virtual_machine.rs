@@ -19,8 +19,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 oximeter::use_timeseries!("virtual-machine.toml");
-use self::virtual_machine::VcpuUsage;
-use self::virtual_machine::VirtualMachine as VirtualMachineTarget;
+use self::virtual_machine::{
+    VcpuUsage, VirtualMachine as VirtualMachineTarget,
+};
 
 #[cfg(all(not(test), target_os = "illumos"))]
 mod kstat_types {

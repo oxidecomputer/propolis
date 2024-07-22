@@ -246,25 +246,13 @@ async fn new_instance(
     memory: u64,
     disks: Vec<DiskRequest>,
     cloud_init_bytes: Option<String>,
-    silo_id: TypedUuid<SiloKind>,
-    project_id: TypedUuid<ProjectKind>,
-    sled_id: TypedUuid<SledKind>,
-    sled_model: String,
-    sled_revision: u32,
-    sled_serial: String,
+    metadata: InstanceMetadata,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
         name,
         description: "propolis-cli generated instance".to_string(),
-        metadata: InstanceMetadata {
-            project_id: project_id.into_untyped_uuid(),
-            silo_id: silo_id.into_untyped_uuid(),
-            sled_id: sled_id.into_untyped_uuid(),
-            sled_serial,
-            sled_revision,
-            sled_model,
-        },
+        metadata,
         // TODO: Use real UUID
         image_id: Uuid::default(),
         // TODO: Use real UUID
@@ -688,6 +676,22 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
+            let metadata = InstanceMetadata {
+                project_id: project_id
+                    .unwrap_or_else(TypedUuid::new_v4)
+                    .into_untyped_uuid(),
+                silo_id: silo_id
+                    .unwrap_or_else(TypedUuid::new_v4)
+                    .into_untyped_uuid(),
+                sled_id: sled_id
+                    .unwrap_or_else(TypedUuid::new_v4)
+                    .into_untyped_uuid(),
+                sled_model: sled_model
+                    .unwrap_or_else(|| String::from("fake-gimlet")),
+                sled_revision: sled_revision.unwrap_or(1),
+                sled_serial: sled_serial
+                    .unwrap_or_else(|| String::from("fake-serial")),
+            };
             new_instance(
                 &client,
                 name.to_string(),
@@ -696,12 +700,7 @@ async fn main() -> anyhow::Result<()> {
                 memory,
                 disks,
                 cloud_init_bytes,
-                silo_id.unwrap_or_else(TypedUuid::new_v4),
-                project_id.unwrap_or_else(TypedUuid::new_v4),
-                sled_id.unwrap_or_else(TypedUuid::new_v4),
-                sled_model.unwrap_or_else(|| String::from("fake-gimlet")),
-                sled_revision.unwrap_or(1),
-                sled_serial.unwrap_or_else(|| String::from("fake-serial")),
+                metadata,
             )
             .await?
         }

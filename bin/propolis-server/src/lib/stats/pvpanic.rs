@@ -9,8 +9,7 @@ use propolis::hw::qemu::pvpanic;
 use std::sync::Arc;
 
 oximeter::use_timeseries!("virtual-machine.toml");
-use self::virtual_machine::PvPanicGuestHandled;
-use self::virtual_machine::PvPanicHostHandled;
+use self::virtual_machine::{PvPanicGuestHandled, PvPanicHostHandled};
 
 #[derive(Clone, Debug)]
 pub struct PvpanicProducer {

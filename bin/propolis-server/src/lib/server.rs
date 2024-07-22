@@ -57,15 +57,6 @@ pub struct MetricsEndpointConfig {
     pub registration_addr: Option<SocketAddr>,
 }
 
-impl MetricsEndpointConfig {
-    pub fn new(
-        listen_addr: IpAddr,
-        registration_addr: Option<SocketAddr>,
-    ) -> Self {
-        Self { listen_addr, registration_addr }
-    }
-}
-
 /// Static configuration for objects owned by this server. The server obtains
 /// this configuration at startup time and refers to it when manipulating its
 /// objects.
