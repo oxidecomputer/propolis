@@ -344,9 +344,13 @@ impl VmObjectsLocked {
 
     /// Pauses all of a VM's devices.
     async fn pause_devices(&self) {
-        self.for_each_device(|name, dev| {
-            info!(self.log, "sending pause request to {}", name);
-            dev.pause();
+        // Take care not to wedge the runtime with any device pause
+        // implementations which might block.
+        tokio::task::block_in_place(|| {
+            self.for_each_device(|name, dev| {
+                info!(self.log, "sending pause request to {}", name);
+                dev.pause();
+            });
         });
 
         struct NamedFuture {
@@ -396,9 +400,13 @@ impl VmObjectsLocked {
     /// Stops all of a VM's devices and detaches its block backends from their
     /// devices.
     async fn halt_devices(&self) {
-        self.for_each_device(|name, dev| {
-            info!(self.log, "sending halt request to {}", name);
-            dev.halt();
+        // Take care not to wedge the runtime with any device halt
+        // implementations which might block.
+        tokio::task::block_in_place(|| {
+            self.for_each_device(|name, dev| {
+                info!(self.log, "sending halt request to {}", name);
+                dev.halt();
+            });
         });
 
         for (name, backend) in self.block_backends.iter() {
