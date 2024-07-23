@@ -68,6 +68,12 @@ impl VmSpec {
     /// This creates new metadata for the instance appropriate for a successor
     /// VM. In that case, the sled identifiers will be different, but the
     /// project / instance identifiers should be the same.
+    ///
+    /// This models the case we're interested in during a migration: the
+    /// sled-agent will provide the same silo / project / instance IDs to that
+    /// destination Propolis, but it will have different sled identifiers,
+    /// because the hosting sled differs. In general, all the IDs could be
+    /// different, but we only change the actual ID and serial number here.
     pub(crate) fn refresh_sled_identifiers(&mut self) {
         let id = Uuid::new_v4();
         self.metadata.sled_id = id;

@@ -432,12 +432,6 @@ async fn migration_ensures_instance_metadata(ctx: &Framework) {
     );
 
     // Check that the source / target sled identifiers are different.
-    //
-    // In general, we expect that the sled serial and ID _should_ be different;
-    // the model and revision _may_ be different (if migrating to a different
-    // class of compute sled entirely); and that the project / silo IDs should
-    // be the same. That's the job of the control plane, though, not Propolis,
-    // so here we just check that the sled serial and UUIDs are different.
     assert_ne!(
         source_metadata.sled_serial, target_metadata.sled_serial,
         "Source and target serial numbers should be different"

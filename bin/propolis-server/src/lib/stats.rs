@@ -184,7 +184,6 @@ pub async fn register_server_metrics(
     virtual_machine: VirtualMachine,
     log: &Logger,
 ) -> anyhow::Result<ServerStatsOuter> {
-    // TODO(ben): Fetch sled-agent identifiers here, or before and pass them in.
     let stats = ServerStats::new(virtual_machine.clone());
 
     let stats_outer = ServerStatsOuter {
