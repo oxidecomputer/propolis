@@ -396,3 +396,48 @@ async fn run_serial_history_test(
     )
     .await
 }
+
+#[phd_testcase]
+async fn migration_ensures_instance_metadata(ctx: &Framework) {
+    // Create a source instance, and fetch the instance metadata its metrics are
+    // generated with.
+    let mut source = ctx
+        .spawn_default_vm("migration_ensures_instance_metadata_source")
+        .await?;
+    let mut target = ctx
+        .spawn_successor_vm(
+            "migration_ensures_instance_metadata_target",
+            &source,
+            None,
+        )
+        .await?;
+    source.launch().await?;
+    source.wait_to_boot().await?;
+    let expected_metadata = source.vm_spec().metadata;
+    let source_metadata = source.get_spec().await?.properties.metadata;
+    assert_eq!(
+        expected_metadata, source_metadata,
+        "Source instance was not populated with the correct instance metadata"
+    );
+
+    // Migrate the instance to a new server, and refetch the metadata.
+    target
+        .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+        .await?;
+    let expected_metadata = target.vm_spec().metadata;
+    let target_metadata = target.get_spec().await?.properties.metadata;
+    assert_eq!(
+        expected_metadata, target_metadata,
+        "Target instance was not populated with the correct instance metadata"
+    );
+
+    // Check that the source / target sled identifiers are different.
+    assert_ne!(
+        source_metadata.sled_serial, target_metadata.sled_serial,
+        "Source and target serial numbers should be different"
+    );
+    assert_ne!(
+        source_metadata.sled_id, target_metadata.sled_id,
+        "Source and target UUIDs should be different"
+    );
+}

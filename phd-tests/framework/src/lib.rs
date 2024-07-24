@@ -283,6 +283,12 @@ impl Framework {
         // handle to change its active generation number mid-test, and this
         // won't automatically be reflected in the VM's instance spec.
         vm_spec.refresh_crucible_backends();
+
+        // Create new metadata for an instance based on this predecessor. It
+        // should have the same project and silo IDs, but the sled identifiers
+        // will be different.
+        vm_spec.refresh_sled_identifiers();
+
         TestVm::new(
             self,
             vm_spec,
