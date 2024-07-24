@@ -13,7 +13,7 @@ use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
-use rfb::rfb::KeyEvent;
+use rfb::proto::KeyEvent;
 
 use super::keyboard::KeyEventRep;
 
@@ -348,8 +348,8 @@ impl PS2Ctrl {
                 // ignore any unrecognized keys
                 probes::ps2ctrl_keyevent_dropped!(|| {
                     let set = if translate { 1 } else { 2 };
-                    let is_pressed = if ke.is_pressed() { 1 } else { 0 };
-                    (ke.keysym_raw(), is_pressed, set)
+                    let is_pressed = if ke.is_pressed { 1 } else { 0 };
+                    (ke.keysym_raw, is_pressed, set)
                 });
                 return;
             }

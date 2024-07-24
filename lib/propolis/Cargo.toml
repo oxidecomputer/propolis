@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 pin-project-lite.workspace = true
 anyhow.workspace = true
+rgb_frame.workspace = true
 rfb.workspace = true
 slog.workspace = true
 serde.workspace = true

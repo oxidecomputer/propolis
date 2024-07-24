@@ -32,7 +32,7 @@ use propolis_api_types as api;
 use propolis_api_types::instance_spec::{self, VersionedInstanceSpec};
 
 pub use propolis_server_config::Config as VmTomlConfig;
-use rfb::server::VncServer;
+use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use thiserror::Error;
 use tokio::sync::MutexGuard;
@@ -40,7 +40,7 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
-use crate::vnc::PropolisVncServer;
+use crate::vnc::{self, VncServer};
 
 /// Configuration used to set this server up to provide Oximeter metrics.
 #[derive(Debug, Clone)]
@@ -75,7 +75,7 @@ pub struct StaticConfig {
 /// Context accessible from HTTP callbacks.
 pub struct DropshotEndpointContext {
     static_config: StaticConfig,
-    vnc_server: Arc<VncServer<PropolisVncServer>>,
+    pub vnc_server: Arc<VncServer>,
     pub(crate) vm: Arc<crate::vm::Vm>,
     log: Logger,
 }
@@ -84,11 +84,11 @@ impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
         config: VmTomlConfig,
-        vnc_server: Arc<VncServer<PropolisVncServer>>,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
     ) -> Self {
+        let vnc_server = VncServer::new(log.clone());
         Self {
             static_config: StaticConfig {
                 vm: Arc::new(config),
@@ -522,6 +522,41 @@ async fn instance_serial(
         .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
 }
 
+#[channel {
+    protocol = WEBSOCKETS,
+    path = "/instance/vnc",
+    unpublished = true,
+}]
+async fn instance_vnc(
+    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    _query: Query<()>,
+    websock: WebsocketConnection,
+) -> dropshot::WebsocketChannelResult {
+    let ctx = rqctx.context();
+
+    let ws_stream = WebSocketStream::from_raw_socket(
+        websock.into_inner(),
+        Role::Server,
+        None,
+    )
+    .await;
+
+    if let Err(e) = ctx
+        .vnc_server
+        .connect(
+            Box::new(BinaryWs::new(ws_stream)) as Box<dyn vnc::Connection>,
+            rqctx.request_id.clone(),
+        )
+        .await
+    {
+        // Log the error, but since the request has already been upgraded, there
+        // is no sense in trying to emit a formal error to the client
+        error!(rqctx.log, "VNC initialization failed: {:?}", e);
+    }
+
+    Ok(())
+}
+
 // This endpoint is meant to only be called during a migration from the
 // destination instance to the source instance as part of the HTTP connection
 // upgrade used to establish the migration link. We don't actually want this
@@ -687,6 +722,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     api.register(disk_volume_status).unwrap();
     api.register(instance_issue_crucible_vcr_request).unwrap();
     api.register(instance_issue_nmi).unwrap();
+    api.register(instance_vnc).unwrap();
 
     api
 }

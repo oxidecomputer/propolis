@@ -10,7 +10,7 @@ use std::convert::TryFrom;
 use anyhow::{anyhow, Result};
 use rfb::keysym::AsciiChar;
 use rfb::keysym::KeySym::*;
-use rfb::rfb::KeyEvent;
+use rfb::proto::KeyEvent;
 
 use scan_code_1::*;
 use scan_code_2::*;
@@ -104,7 +104,7 @@ impl TryFrom<KeyEvent> for KeyEventRep {
     type Error = anyhow::Error;
 
     fn try_from(keyevent: KeyEvent) -> Result<Self, Self::Error> {
-        let (base_val_1, base_val_2) = match keyevent.keysym() {
+        let (base_val_1, base_val_2) = match keyevent.keysym {
             Ascii(ascii_char) => match ascii_char {
                 AsciiChar::BackSpace => (SC1_BACKSPACE, SC2_BACKSPACE),
                 AsciiChar::Tab => (SC1_TAB, SC2_TAB),
@@ -294,18 +294,18 @@ impl TryFrom<KeyEvent> for KeyEventRep {
         if matches!((base_val_1, base_val_2), (0x0, 0x0)) {
             return Err(anyhow!(
                 "unrecognized keysym value: 0x{:x}",
-                keyevent.keysym_raw()
+                keyevent.keysym_raw
             ));
         }
 
-        let prefix_1 = match keyevent.keysym() {
+        let prefix_1 = match keyevent.keysym {
             AltRight | ControlRight | Home | Insert | End | PageUp
             | PageDown | KeypadSlash | KeypadEnter | SuperLeft | SuperRight
             | Left | Right | Up | Down => Some(vec![SC1_EXTENDED_PREFIX_0]),
             _ => None,
         };
 
-        let prefix_2 = match keyevent.keysym() {
+        let prefix_2 = match keyevent.keysym {
             AltRight | ControlRight | Home | Insert | End | PageUp
             | PageDown | KeypadSlash | KeypadEnter | SuperLeft | SuperRight
             | Left | Right | Up | Down => Some(vec![SC2_EXTENDED_PREFIX_0]),
@@ -316,8 +316,8 @@ impl TryFrom<KeyEvent> for KeyEventRep {
         let sc2 = ScanCodeBase { base_val: base_val_2, prefix: prefix_2 };
 
         Ok(Self {
-            keysym_raw: keyevent.keysym_raw(),
-            is_pressed: keyevent.is_pressed(),
+            keysym_raw: keyevent.keysym_raw,
+            is_pressed: keyevent.is_pressed,
             scan_code_1: sc1,
             scan_code_2: sc2,
         })

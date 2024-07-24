@@ -48,6 +48,8 @@ dladm = { path = "crates/dladm" }
 propolis-server-config = { path = "crates/propolis-server-config" }
 propolis_api_types = { path = "crates/propolis-api-types" }
 propolis_types = { path = "crates/propolis-types" }
+rfb = { path = "crates/rfb" }
+rgb_frame = { path = "crates/rgb-frame" }
 viona_api = { path = "crates/viona-api" }
 viona_api_sys = { path = "crates/viona-api/sys" }
 
@@ -111,6 +113,7 @@ escargot = "0.5.8"
 expectorate = "1.0.5"
 fatfs = "0.3.6"
 futures = "0.3"
+futures-util = "0.3.21"
 flate2 = "1.0.28"
 hex = "0.4.3"
 http = "0.2.9"
@@ -130,7 +133,6 @@ progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "ma
 quote = "1.0"
 rand = "0.8"
 reqwest = { version = "0.11.18", default-features = false }
-rfb = { git = "https://github.com/oxidecomputer/rfb", rev = "0a7d56202df99b9df1bb7e42a9716efcf5e8fef2" }
 ring = "0.17"
 ron = "0.8"
 schemars = "0.8.10"

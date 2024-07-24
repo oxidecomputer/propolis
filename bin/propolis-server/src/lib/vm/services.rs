@@ -9,12 +9,11 @@ use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::InstanceProperties;
-use rfb::server::VncServer;
 use slog::{error, info, Logger};
 
 use crate::{
     serial::SerialTaskControlMessage, server::MetricsEndpointConfig,
-    stats::virtual_machine::VirtualMachine, vnc::PropolisVncServer,
+    stats::virtual_machine::VirtualMachine, vnc::VncServer,
 };
 
 use super::objects::{VmObjects, VmObjectsShared};
@@ -40,7 +39,7 @@ pub(crate) struct VmServices {
     pub oximeter: tokio::sync::Mutex<OximeterState>,
 
     /// A reference to the VM's host process's VNC server.
-    pub vnc_server: Arc<VncServer<PropolisVncServer>>,
+    pub vnc_server: Arc<VncServer>,
 }
 
 impl VmServices {
@@ -48,7 +47,6 @@ impl VmServices {
     /// configuration.
     pub(super) async fn new(
         log: &slog::Logger,
-        vm: &Arc<super::Vm>,
         vm_objects: &VmObjects,
         vm_properties: &InstanceProperties,
         ensure_options: &super::EnsureOptions,
@@ -65,21 +63,7 @@ impl VmServices {
         let vm_objects = vm_objects.lock_shared().await;
         let vnc_server = ensure_options.vnc_server.clone();
         if let Some(ramfb) = vm_objects.framebuffer() {
-            vnc_server
-                .server
-                .initialize(
-                    crate::vnc::RamFb::new(ramfb.get_framebuffer_spec()),
-                    vm_objects.ps2ctrl().clone(),
-                    vm.clone(),
-                )
-                .await;
-
-            let notifier_server_ref = vnc_server.clone();
-            let rt = tokio::runtime::Handle::current();
-            ramfb.set_notifier(Box::new(move |config, is_valid| {
-                let vnc = notifier_server_ref.clone();
-                rt.block_on(vnc.server.update(config, is_valid, &vnc));
-            }));
+            vnc_server.attach(vm_objects.ps2ctrl().clone(), ramfb.clone());
         }
 
         let serial_task = start_serial_task(log, &vm_objects).await;

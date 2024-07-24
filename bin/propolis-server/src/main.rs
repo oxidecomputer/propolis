@@ -2,23 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use anyhow::{anyhow, Context};
-use clap::Parser;
-use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
-use futures::join;
-use propolis::usdt::register_probes;
-use slog::{info, Logger};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use propolis::usdt::register_probes;
 use propolis_server::{
     config,
     server::{self, MetricsEndpointConfig},
-    vnc::setup_vnc,
+    vnc,
 };
+
+use anyhow::{anyhow, Context};
+use clap::Parser;
+use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
+use slog::{info, Logger};
 
 /// Threads to spawn for tokio runtime handling the API (dropshot, etc)
 const API_RT_THREADS: usize = 4;
@@ -94,12 +94,9 @@ enum Args {
         #[clap(long, default_value_t = MetricRegistration::Disable)]
         metrics_addr: MetricRegistration,
 
-        #[clap(
-            name = "VNC_IP:PORT",
-            default_value_t = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5900),
-            action
-        )]
-        vnc_addr: SocketAddr,
+        /// IP:Port for raw TCP access to VNC console
+        #[clap(name = "VNC_IP:PORT", action)]
+        vnc_addr: Option<SocketAddr>,
 
         /// Logging level for the server
         #[clap(long, default_value_t = slog::Level::Info, value_parser = parse_log_level)]
@@ -123,7 +120,7 @@ fn run_server(
     config_app: config::Config,
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
-    vnc_addr: SocketAddr,
+    vnc_addr: Option<SocketAddr>,
     log: slog::Logger,
 ) -> anyhow::Result<()> {
     use propolis::api_version;
@@ -139,13 +136,10 @@ fn run_server(
         Err(e).context("API version checks")?;
     }
 
-    let vnc_server = setup_vnc(&log, vnc_addr);
-    let vnc_server_hdl = vnc_server.clone();
     let use_reservoir = config::reservoir_decide(&log);
 
     let context = server::DropshotEndpointContext::new(
         config_app,
-        vnc_server,
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
@@ -161,6 +155,15 @@ fn run_server(
         .build()?;
     let _guard = api_runtime.enter();
 
+    // Start TCP listener for VNC, if requested
+    let tcp_vnc = match vnc_addr {
+        Some(addr) => Some(api_runtime.block_on(async {
+            vnc::TcpSock::new(context.vnc_server.clone(), addr, log.clone())
+                .await
+        })?),
+        None => None,
+    };
+
     info!(log, "Starting server...");
 
     let server = HttpServerStarter::new(
@@ -172,10 +175,14 @@ fn run_server(
     .map_err(|error| anyhow!("Failed to start server: {}", error))?
     .start();
 
-    let server_res =
-        api_runtime.block_on(async { join!(server, vnc_server_hdl.start()).0 });
+    let result = api_runtime.block_on(server);
 
-    server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
+    // Clean up any VNC TCP socket
+    if let Some(vnc) = tcp_vnc {
+        api_runtime.block_on(async { vnc.halt().await });
+    }
+
+    result.map_err(|e| anyhow!("Server exited with an error: {}", e))
 }
 
 fn build_logger(level: slog::Level) -> slog::Logger {
