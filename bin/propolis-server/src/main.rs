@@ -7,7 +7,7 @@ use clap::Parser;
 use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
 use futures::join;
 use propolis::usdt::register_probes;
-use slog::{debug, info, Logger};
+use slog::{info, Logger};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ use propolis_server::{
 const API_RT_THREADS: usize = 4;
 
 /// Configuration for metric registration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum MetricRegistration {
     Disable,
     Dns,
@@ -45,19 +45,19 @@ impl FromStr for MetricRegistration {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "disable" => Ok(Self::Disable),
-            "dns" => Ok(Self::Dns),
-            other => {
-                let Ok(addr) = other.parse() else {
-                    anyhow::bail!(
-                        "Metric registration must be 'disable', \
-                        'dns', or an explicit socket address \
-                        written as `IP:port`",
-                    );
-                };
-                Ok(Self::WithAddr(addr))
-            }
+        if s.eq_ignore_ascii_case("disable") {
+            Ok(Self::Disable)
+        } else if s.eq_ignore_ascii_case("dns") {
+            Ok(Self::Dns)
+        } else {
+            let Ok(addr) = s.parse() else {
+                anyhow::bail!(
+                    "Metric registration must be 'disable', \
+                    'dns', or an explicit socket address \
+                    written as `IP:port`",
+                );
+            };
+            Ok(Self::WithAddr(addr))
         }
     }
 }
@@ -231,7 +231,7 @@ fn build_metric_configuration(
 ) -> anyhow::Result<Option<MetricsEndpointConfig>> {
     let cfg = match metrics_addr {
         MetricRegistration::Disable => {
-            debug!(
+            info!(
                 log,
                 "metric registration is disabled, no metric \
                 data will be produced by this server",

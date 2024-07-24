@@ -97,18 +97,18 @@ enum Command {
 
         /// A model number to use for the instance's hosting sled, attached to
         /// instance metrics.
-        #[clap(long)]
-        sled_model: Option<String>,
+        #[clap(long, default_value_t = String::from("fake-gimlet"))]
+        sled_model: String,
 
         /// A revision number to use for the instance's hosting sled, attached to
         /// instance metrics.
-        #[clap(long)]
-        sled_revision: Option<u32>,
+        #[clap(long, default_value_t = 1)]
+        sled_revision: u32,
 
         /// A serial number to use for the instance's hosting sled, attached to
         /// instance metrics.
-        #[clap(long)]
-        sled_serial: Option<String>,
+        #[clap(long, default_value_t = String::from("fake-serial"))]
+        sled_serial: String,
     },
 
     /// Get the properties of a propolis instance
@@ -686,11 +686,9 @@ async fn main() -> anyhow::Result<()> {
                 sled_id: sled_id
                     .unwrap_or_else(TypedUuid::new_v4)
                     .into_untyped_uuid(),
-                sled_model: sled_model
-                    .unwrap_or_else(|| String::from("fake-gimlet")),
-                sled_revision: sled_revision.unwrap_or(1),
-                sled_serial: sled_serial
-                    .unwrap_or_else(|| String::from("fake-serial")),
+                sled_model,
+                sled_revision,
+                sled_serial,
             };
             new_instance(
                 &client,
