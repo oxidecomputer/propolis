@@ -5,27 +5,31 @@
 //! Helper functions for building instance specs from server parameters.
 
 use crate::config;
+use builder::SpecBuilder;
 use config_toml::ConfigTomlError;
+use propolis_api_types::instance_spec::components::backends::{
+    BlobStorageBackend, CrucibleStorageBackend, VirtioNetworkBackend,
+};
+use propolis_api_types::instance_spec::components::board::{Chipset, I440Fx};
+use propolis_api_types::instance_spec::components::devices::{
+    NvmeDisk, QemuPvpanic, SerialPortNumber, VirtioDisk, VirtioNic,
+};
 use propolis_api_types::instance_spec::{
-    components,
-    v0::{
-        builder::{SpecBuilder, SpecBuilderError},
-        *,
-    },
-    PciPath,
+    components::board::Board, v0::*, PciPath,
 };
 use propolis_api_types::{
     self as api, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
+mod builder;
 mod config_toml;
 
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub enum ServerSpecBuilderError {
     #[error(transparent)]
-    InnerBuilderError(#[from] SpecBuilderError),
+    InnerBuilderError(#[from] builder::SpecBuilderError),
 
     #[error(
         "Could not translate PCI slot {0} for device type {1:?} to a PCI path"
@@ -115,12 +119,13 @@ impl ServerSpecBuilder {
                 },
             )?;
 
-        let mut builder =
-            SpecBuilder::new(properties.vcpus, properties.memory, enable_pcie);
+        let mut builder = SpecBuilder::new(Board {
+            cpus: properties.vcpus,
+            memory_mb: properties.memory,
+            chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
+        });
 
-        builder.add_pvpanic_device(components::devices::QemuPvpanic {
-            enable_isa: true,
-        })?;
+        builder.add_pvpanic_device(QemuPvpanic { enable_isa: true })?;
 
         Ok(Self { builder })
     }
@@ -133,17 +138,14 @@ impl ServerSpecBuilder {
     ) -> Result<(), ServerSpecBuilderError> {
         let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
-        let device_spec =
-            NetworkDeviceV0::VirtioNic(components::devices::VirtioNic {
-                backend_name: backend_name.clone(),
-                pci_path,
-            });
+        let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
+            backend_name: backend_name.clone(),
+            pci_path,
+        });
 
-        let backend_spec = NetworkBackendV0::Virtio(
-            components::backends::VirtioNetworkBackend {
-                vnic_name: nic.name.to_string(),
-            },
-        );
+        let backend_spec = NetworkBackendV0::Virtio(VirtioNetworkBackend {
+            vnic_name: nic.name.to_string(),
+        });
 
         self.builder.add_network_device(
             device_name,
@@ -164,35 +166,26 @@ impl ServerSpecBuilder {
         let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
         let backend_name = disk.name.clone();
 
-        let backend_spec = StorageBackendV0::Crucible(
-            components::backends::CrucibleStorageBackend {
-                request_json: serde_json::to_string(
-                    &disk.volume_construction_request,
-                )
-                .map_err(|e| {
-                    ServerSpecBuilderError::SerializationError(
-                        disk.name.clone(),
-                        e,
-                    )
-                })?,
-                readonly: disk.read_only,
-            },
-        );
+        let backend_spec = StorageBackendV0::Crucible(CrucibleStorageBackend {
+            request_json: serde_json::to_string(
+                &disk.volume_construction_request,
+            )
+            .map_err(|e| {
+                ServerSpecBuilderError::SerializationError(disk.name.clone(), e)
+            })?,
+            readonly: disk.read_only,
+        });
 
         let device_name = disk.name.clone();
         let device_spec = match disk.device.as_ref() {
-            "virtio" => {
-                StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
-                    backend_name: disk.name.to_string(),
-                    pci_path,
-                })
-            }
-            "nvme" => {
-                StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
-                    backend_name: disk.name.to_string(),
-                    pci_path,
-                })
-            }
+            "virtio" => StorageDeviceV0::VirtioDisk(VirtioDisk {
+                backend_name: disk.name.to_string(),
+                pci_path,
+            }),
+            "nvme" => StorageDeviceV0::NvmeDisk(NvmeDisk {
+                backend_name: disk.name.to_string(),
+                pci_path,
+            }),
             _ => {
                 return Err(ServerSpecBuilderError::UnrecognizedStorageDevice(
                     disk.device.clone(),
@@ -219,18 +212,16 @@ impl ServerSpecBuilder {
         let name = "cloud-init";
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         let backend_name = name.to_string();
-        let backend_spec =
-            StorageBackendV0::Blob(components::backends::BlobStorageBackend {
-                base64,
-                readonly: true,
-            });
+        let backend_spec = StorageBackendV0::Blob(BlobStorageBackend {
+            base64,
+            readonly: true,
+        });
 
         let device_name = name.to_string();
-        let device_spec =
-            StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
-                backend_name: name.to_string(),
-                pci_path,
-            });
+        let device_spec = StorageDeviceV0::VirtioDisk(VirtioDisk {
+            backend_name: name.to_string(),
+            pci_path,
+        });
 
         self.builder.add_storage_device(
             device_name,
@@ -407,7 +398,7 @@ impl ServerSpecBuilder {
     /// Adds a serial port specification to the spec under construction.
     pub fn add_serial_port(
         &mut self,
-        port: components::devices::SerialPortNumber,
+        port: SerialPortNumber,
     ) -> Result<(), ServerSpecBuilderError> {
         self.builder.add_serial_port(port)?;
         Ok(())
@@ -495,15 +486,13 @@ mod test {
                 })
                 .err(),
             Some(ServerSpecBuilderError::InnerBuilderError(
-                SpecBuilderError::PciPathInUse(_)
+                builder::SpecBuilderError::PciPathInUse(_)
             ))
         ));
     }
 
     #[test]
     fn duplicate_serial_port() {
-        use components::devices::SerialPortNumber;
-
         let mut builder = default_spec_builder().unwrap();
         assert!(builder.add_serial_port(SerialPortNumber::Com1).is_ok());
         assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());
@@ -512,7 +501,7 @@ mod test {
         assert!(matches!(
             builder.add_serial_port(SerialPortNumber::Com1).err(),
             Some(ServerSpecBuilderError::InnerBuilderError(
-                SpecBuilderError::SerialPortInUse(_)
+                builder::SpecBuilderError::SerialPortInUse(_)
             ))
         ));
     }

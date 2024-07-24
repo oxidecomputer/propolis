@@ -39,13 +39,13 @@ pub enum ConfigTomlError {
     #[error("failed to parse PCI path string {0:?}")]
     PciPathParseFailed(String, #[source] std::io::Error),
 
-    #[error("invalid storage device kind {kind:?} for device {name}")]
+    #[error("invalid storage device kind {kind:?} for device {name:?}")]
     InvalidStorageDeviceType { kind: String, name: String },
 
     #[error("no backend name for storage device {0:?}")]
     NoBackendNameForStorageDevice(String),
 
-    #[error("invalid storage backend kind {kind:?} for backend {name}")]
+    #[error("invalid storage backend kind {kind:?} for backend {name:?}")]
     InvalidStorageBackendType { kind: String, name: String },
 
     #[error("couldn't get path for file backend {0:?}")]
