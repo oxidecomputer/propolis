@@ -21,7 +21,7 @@ use propolis_api_types::{
 use thiserror::Error;
 
 mod api_request;
-mod builder;
+pub(crate) mod builder;
 mod config_toml;
 
 /// Describes a storage device/backend pair parsed from an input source like an
@@ -47,9 +47,6 @@ struct ParsedNetworkDevice {
 pub(crate) enum ServerSpecBuilderError {
     #[error(transparent)]
     InnerBuilderError(#[from] builder::SpecBuilderError),
-
-    #[error("Device {0} requested missing backend {1}")]
-    DeviceMissingBackend(String, String),
 
     #[error("error parsing config TOML")]
     ConfigToml(#[from] ConfigTomlError),
@@ -146,158 +143,51 @@ impl ServerSpecBuilder {
         Ok(())
     }
 
-    fn add_network_device_from_config(
-        &mut self,
-        name: &str,
-        device: &config::Device,
-    ) -> Result<(), ServerSpecBuilderError> {
-        self.builder.add_network_device(
-            config_toml::parse_network_device_from_config(name, device)?,
-        )?;
-
-        Ok(())
-    }
-
-    fn add_pci_bridge_from_config(
-        &mut self,
-        bridge: &config::PciBridge,
-    ) -> Result<(), ServerSpecBuilderError> {
-        let parsed = config_toml::parse_pci_bridge_from_config(bridge)?;
-        self.builder.add_pci_bridge(parsed.name, parsed.bridge)?;
-        Ok(())
-    }
-
     /// Adds all the devices and backends specified in the supplied
     /// configuration TOML to the spec under construction.
     pub fn add_devices_from_config(
         &mut self,
         config: &config::Config,
     ) -> Result<(), ServerSpecBuilderError> {
-        for (device_name, device) in config.devices.iter() {
-            let driver = device.driver.as_str();
-            match driver {
-                // If this is a storage device, parse its "block_dev" property
-                // to get the name of its corresponding backend.
-                "pci-virtio-block" | "pci-nvme" => {
-                    let device_spec =
-                        config_toml::parse_storage_device_from_config(
-                            device_name,
-                            device,
-                        )?;
-
-                    let backend_name = match &device_spec {
-                        StorageDeviceV0::VirtioDisk(disk) => {
-                            disk.backend_name.clone()
-                        }
-                        StorageDeviceV0::NvmeDisk(disk) => {
-                            disk.backend_name.clone()
-                        }
-                    };
-
-                    let backend_config = config
-                        .block_devs
-                        .get(&backend_name)
-                        .ok_or_else(|| {
-                        ServerSpecBuilderError::DeviceMissingBackend(
-                            device_name.clone(),
-                            backend_name.clone(),
-                        )
-                    })?;
-
-                    let backend_spec =
-                        config_toml::parse_storage_backend_from_config(
-                            &backend_name,
-                            backend_config,
-                        )?;
-
-                    self.builder.add_storage_device(ParsedStorageDevice {
-                        device_name: device_name.clone(),
-                        device_spec,
-                        backend_name,
-                        backend_spec,
-                    })?;
-                }
-                "pci-virtio-viona" => {
-                    self.add_network_device_from_config(device_name, device)?
-                }
-                #[cfg(feature = "falcon")]
-                "softnpu-pci-port" => {
-                    self.add_softnpu_pci_port_from_config(device_name, device)?
-                }
-                #[cfg(feature = "falcon")]
-                "softnpu-port" => {
-                    self.add_softnpu_device_from_config(device_name, device)?
-                }
-                #[cfg(feature = "falcon")]
-                "softnpu-p9" => {
-                    self.add_softnpu_p9_from_config(device_name, device)?
-                }
-                #[cfg(feature = "falcon")]
-                "pci-virtio-9p" => {
-                    self.add_p9fs_from_config(device_name, device)?
-                }
-                _ => {
-                    return Err(ServerSpecBuilderError::ConfigToml(
-                        ConfigTomlError::UnrecognizedDeviceType(
-                            driver.to_owned(),
-                        ),
-                    ))
-                }
-            }
+        let parsed = config_toml::ParsedConfig::try_from(config)?;
+        for disk in parsed.disks {
+            self.builder.add_storage_device(disk)?;
         }
 
-        for bridge in config.pci_bridges.iter() {
-            self.add_pci_bridge_from_config(bridge)?;
+        for nic in parsed.nics {
+            self.builder.add_network_device(nic)?;
         }
 
-        Ok(())
-    }
+        for bridge in parsed.pci_bridges {
+            self.builder.add_pci_bridge(bridge.name, bridge.bridge)?;
+        }
 
-    #[cfg(feature = "falcon")]
-    fn add_softnpu_p9_from_config(
-        &mut self,
-        name: &str,
-        device: &config::Device,
-    ) -> Result<(), ServerSpecBuilderError> {
-        self.builder.set_softnpu_p9(
-            config_toml::parse_softnpu_p9_from_config(name, device)?,
-        )?;
+        #[cfg(feature = "falcon")]
+        self.add_parsed_softnpu_devices(parsed.softnpu)?;
 
         Ok(())
     }
 
     #[cfg(feature = "falcon")]
-    fn add_softnpu_pci_port_from_config(
+    fn add_parsed_softnpu_devices(
         &mut self,
-        name: &str,
-        device: &config::Device,
+        devices: config_toml::ParsedSoftNpu,
     ) -> Result<(), ServerSpecBuilderError> {
-        self.builder.set_softnpu_pci_port(
-            config_toml::parse_softnpu_pci_port_from_config(name, device)?,
-        )?;
+        for pci_port in devices.pci_ports {
+            self.builder.set_softnpu_pci_port(pci_port)?;
+        }
 
-        Ok(())
-    }
+        for port in devices.ports {
+            self.builder.add_softnpu_port(port.name.clone(), port)?;
+        }
 
-    #[cfg(feature = "falcon")]
-    fn add_softnpu_device_from_config(
-        &mut self,
-        name: &str,
-        device: &config::Device,
-    ) -> Result<(), ServerSpecBuilderError> {
-        let port = config_toml::parse_softnpu_port_from_config(name, device)?;
-        self.builder.add_softnpu_port(name.to_string(), port)?;
-        Ok(())
-    }
+        for p9 in devices.p9_devices {
+            self.builder.set_softnpu_p9(p9)?;
+        }
 
-    #[cfg(feature = "falcon")]
-    fn add_p9fs_from_config(
-        &mut self,
-        name: &str,
-        device: &config::Device,
-    ) -> Result<(), ServerSpecBuilderError> {
-        self.builder
-            .set_p9fs(config_toml::parse_p9fs_from_config(name, device)?)?;
+        for p9fs in devices.p9fs {
+            self.builder.set_p9fs(p9fs)?;
+        }
 
         Ok(())
     }

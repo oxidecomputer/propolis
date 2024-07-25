@@ -25,7 +25,7 @@ use propolis_api_types::instance_spec::components::devices::{
 
 use crate::config;
 
-use super::ParsedNetworkDevice;
+use super::{ParsedNetworkDevice, ParsedStorageDevice};
 
 #[derive(Debug, Error)]
 pub(crate) enum ConfigTomlError {
@@ -50,6 +50,9 @@ pub(crate) enum ConfigTomlError {
     #[error("invalid storage backend kind {kind:?} for backend {name:?}")]
     InvalidStorageBackendType { kind: String, name: String },
 
+    #[error("couldn't find storage device {device}'s backend {backend}")]
+    StorageDeviceBackendNotFound { device: String, backend: String },
+
     #[error("couldn't get path for file backend {0:?}")]
     InvalidFileBackendPath(String),
 
@@ -66,6 +69,119 @@ pub(crate) enum ConfigTomlError {
     #[cfg(feature = "falcon")]
     #[error("failed to get source for p9 device {0:?}")]
     NoP9Target(String),
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Default)]
+pub(super) struct ParsedSoftNpu {
+    pub(super) pci_ports: Vec<SoftNpuPciPort>,
+    pub(super) ports: Vec<SoftNpuPort>,
+    pub(super) p9_devices: Vec<SoftNpuP9>,
+    pub(super) p9fs: Vec<P9fs>,
+}
+
+#[derive(Default)]
+pub(super) struct ParsedConfig {
+    pub(super) disks: Vec<ParsedStorageDevice>,
+    pub(super) nics: Vec<ParsedNetworkDevice>,
+    pub(super) pci_bridges: Vec<ParsedPciPciBridge>,
+
+    #[cfg(feature = "falcon")]
+    pub(super) softnpu: ParsedSoftNpu,
+}
+
+impl TryFrom<&config::Config> for ParsedConfig {
+    type Error = ConfigTomlError;
+
+    fn try_from(config: &config::Config) -> Result<Self, Self::Error> {
+        let mut parsed = Self::default();
+        for (device_name, device) in config.devices.iter() {
+            let driver = device.driver.as_str();
+            match driver {
+                // If this is a storage device, parse its "block_dev" property
+                // to get the name of its corresponding backend.
+                "pci-virtio-block" | "pci-nvme" => {
+                    let device_spec =
+                        parse_storage_device_from_config(device_name, device)?;
+
+                    let backend_name = match &device_spec {
+                        StorageDeviceV0::VirtioDisk(disk) => {
+                            disk.backend_name.clone()
+                        }
+                        StorageDeviceV0::NvmeDisk(disk) => {
+                            disk.backend_name.clone()
+                        }
+                    };
+
+                    let backend_config =
+                        config.block_devs.get(&backend_name).ok_or_else(
+                            || ConfigTomlError::StorageDeviceBackendNotFound {
+                                device: device_name.to_owned(),
+                                backend: backend_name.to_owned(),
+                            },
+                        )?;
+
+                    let backend_spec = parse_storage_backend_from_config(
+                        &backend_name,
+                        backend_config,
+                    )?;
+
+                    parsed.disks.push(ParsedStorageDevice {
+                        device_name: device_name.to_owned(),
+                        device_spec,
+                        backend_name,
+                        backend_spec,
+                    });
+                }
+                "pci-virtio-viona" => {
+                    parsed.nics.push(parse_network_device_from_config(
+                        device_name,
+                        device,
+                    )?);
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-pci-port" => {
+                    parsed.softnpu.pci_ports.push(
+                        parse_softnpu_pci_port_from_config(
+                            device_name,
+                            device,
+                        )?,
+                    );
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-port" => {
+                    parsed.softnpu.ports.push(parse_softnpu_port_from_config(
+                        device_name,
+                        device,
+                    )?);
+                }
+                #[cfg(feature = "falcon")]
+                "softnpu-p9" => {
+                    parsed.softnpu.p9_devices.push(
+                        parse_softnpu_p9_from_config(device_name, device)?,
+                    );
+                }
+                #[cfg(feature = "falcon")]
+                "pci-virtio-9p" => {
+                    parsed
+                        .softnpu
+                        .p9fs
+                        .push(parse_p9fs_from_config(device_name, device)?);
+                }
+                _ => {
+                    return Err(ConfigTomlError::UnrecognizedDeviceType(
+                        driver.to_owned(),
+                    ))
+                }
+            }
+        }
+
+        for bridge in config.pci_bridges.iter() {
+            parsed.pci_bridges.push(parse_pci_bridge_from_config(bridge)?);
+        }
+
+        Ok(parsed)
+    }
 }
 
 pub(super) fn parse_storage_backend_from_config(
