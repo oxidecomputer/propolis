@@ -9,7 +9,9 @@ use std::str::{FromStr, ParseBoolError};
 use propolis_api_types::instance_spec::{
     components::{
         backends::{FileStorageBackend, VirtioNetworkBackend},
-        devices::{NvmeDisk, PciPciBridge, VirtioDisk, VirtioNic},
+        devices::{
+            NvmeDisk, PciPciBridge as BridgeSpec, VirtioDisk, VirtioNic,
+        },
     },
     v0::{
         NetworkBackendV0, NetworkDeviceV0, StorageBackendV0, StorageDeviceV0,
@@ -20,15 +22,18 @@ use thiserror::Error;
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::devices::{
-    P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort,
+    P9fs, SoftNpuP9, SoftNpuPciPort,
 };
+
+#[cfg(feature = "falcon")]
+use super::SoftNpuPort;
 
 use crate::config;
 
-use super::{ParsedNetworkDevice, ParsedStorageDevice};
+use super::{Disk, Nic, PciPciBridge};
 
 #[cfg(feature = "falcon")]
-use super::ParsedSoftNpu;
+use super::SoftNpu;
 
 #[derive(Debug, Error)]
 pub(crate) enum ConfigTomlError {
@@ -77,12 +82,12 @@ pub(crate) enum ConfigTomlError {
 #[derive(Default)]
 pub(super) struct ParsedConfig {
     pub(super) enable_pcie: bool,
-    pub(super) disks: Vec<ParsedStorageDevice>,
-    pub(super) nics: Vec<ParsedNetworkDevice>,
-    pub(super) pci_bridges: Vec<ParsedPciPciBridge>,
+    pub(super) disks: Vec<Disk>,
+    pub(super) nics: Vec<Nic>,
+    pub(super) pci_bridges: Vec<PciPciBridge>,
 
     #[cfg(feature = "falcon")]
-    pub(super) softnpu: ParsedSoftNpu,
+    pub(super) softnpu: SoftNpu,
 }
 
 impl TryFrom<&config::Config> for ParsedConfig {
@@ -135,7 +140,7 @@ impl TryFrom<&config::Config> for ParsedConfig {
                         backend_config,
                     )?;
 
-                    parsed.disks.push(ParsedStorageDevice {
+                    parsed.disks.push(Disk {
                         device_name: device_name.to_owned(),
                         device_spec,
                         backend_name,
@@ -150,12 +155,11 @@ impl TryFrom<&config::Config> for ParsedConfig {
                 }
                 #[cfg(feature = "falcon")]
                 "softnpu-pci-port" => {
-                    parsed.softnpu.pci_ports.push(
-                        parse_softnpu_pci_port_from_config(
+                    parsed.softnpu.pci_port =
+                        Some(parse_softnpu_pci_port_from_config(
                             device_name,
                             device,
-                        )?,
-                    );
+                        )?);
                 }
                 #[cfg(feature = "falcon")]
                 "softnpu-port" => {
@@ -166,16 +170,14 @@ impl TryFrom<&config::Config> for ParsedConfig {
                 }
                 #[cfg(feature = "falcon")]
                 "softnpu-p9" => {
-                    parsed.softnpu.p9_devices.push(
+                    parsed.softnpu.p9_device = Some(
                         parse_softnpu_p9_from_config(device_name, device)?,
                     );
                 }
                 #[cfg(feature = "falcon")]
                 "pci-virtio-9p" => {
-                    parsed
-                        .softnpu
-                        .p9fs
-                        .push(parse_p9fs_from_config(device_name, device)?);
+                    parsed.softnpu.p9fs =
+                        Some(parse_p9fs_from_config(device_name, device)?);
                 }
                 _ => {
                     return Err(ConfigTomlError::UnrecognizedDeviceType(
@@ -284,7 +286,7 @@ pub(super) fn parse_storage_device_from_config(
 pub(super) fn parse_network_device_from_config(
     name: &str,
     device: &config::Device,
-) -> Result<ParsedNetworkDevice, ConfigTomlError> {
+) -> Result<Nic, ConfigTomlError> {
     let vnic_name = device
         .get_string("vnic")
         .ok_or_else(|| ConfigTomlError::NoVnicName(name.to_owned()))?;
@@ -306,34 +308,20 @@ pub(super) fn parse_network_device_from_config(
         pci_path,
     });
 
-    Ok(ParsedNetworkDevice {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
-}
-
-pub(super) struct ParsedPciPciBridge {
-    pub(super) name: String,
-    pub(super) bridge: PciPciBridge,
+    Ok(Nic { device_name, device_spec, backend_name, backend_spec })
 }
 
 pub(super) fn parse_pci_bridge_from_config(
     bridge: &config::PciBridge,
-) -> Result<ParsedPciPciBridge, ConfigTomlError> {
-    let name = format!("pci-bridge-{}", bridge.downstream_bus);
+) -> Result<PciPciBridge, ConfigTomlError> {
     let pci_path = PciPath::from_str(&bridge.pci_path).map_err(|e| {
         ConfigTomlError::PciPathParseFailed(bridge.pci_path.to_string(), e)
     })?;
 
-    Ok(ParsedPciPciBridge {
-        name,
-        bridge: PciPciBridge {
-            downstream_bus: bridge.downstream_bus,
-            pci_path,
-        },
-    })
+    Ok(PciPciBridge(BridgeSpec {
+        downstream_bus: bridge.downstream_bus,
+        pci_path,
+    }))
 }
 
 #[cfg(feature = "falcon")]
@@ -365,6 +353,8 @@ pub(super) fn parse_softnpu_port_from_config(
     name: &str,
     device: &config::Device,
 ) -> Result<SoftNpuPort, ConfigTomlError> {
+    use propolis_api_types::instance_spec::components::backends::DlpiNetworkBackend;
+
     let vnic_name = device
         .get_string("vnic")
         .ok_or_else(|| ConfigTomlError::NoVnicName(name.to_owned()))?;
@@ -372,6 +362,7 @@ pub(super) fn parse_softnpu_port_from_config(
     Ok(SoftNpuPort {
         name: name.to_owned(),
         backend_name: vnic_name.to_owned(),
+        backend_spec: DlpiNetworkBackend { vnic_name: vnic_name.to_owned() },
     })
 }
 

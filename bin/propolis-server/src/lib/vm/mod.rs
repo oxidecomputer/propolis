@@ -82,13 +82,13 @@
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use active::ActiveVm;
+use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
     instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateStatusResponse,
-    InstanceMigrationStatus, InstanceProperties, InstanceSpecEnsureRequest,
-    InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
-    MigrationState,
+    InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
+    InstanceState, InstanceStateMonitorResponse, MigrationState,
 };
 use slog::info;
 use state_driver::StateDriverOutput;
@@ -503,7 +503,7 @@ impl Vm {
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         log: &slog::Logger,
-        ensure_request: InstanceSpecEnsureRequest,
+        ensure_request: VmEnsureRequest,
         options: EnsureOptions,
     ) -> Result<InstanceEnsureResponse, VmError> {
         let log_for_driver =
@@ -554,8 +554,8 @@ impl Vm {
                 _ => {}
             };
 
-            let VersionedInstanceSpec::V0(v0_spec) =
-                ensure_request.instance_spec.clone();
+            let v0_spec: InstanceSpecV0 =
+                ensure_request.instance_spec.clone().into();
 
             let thread_count = usize::max(
                 VMM_MIN_RT_THREADS,

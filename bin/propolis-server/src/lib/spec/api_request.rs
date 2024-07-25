@@ -25,7 +25,7 @@ use propolis_api_types::{
 };
 use thiserror::Error;
 
-use super::{ParsedNetworkDevice, ParsedStorageDevice};
+use super::{Disk, Nic};
 
 #[derive(Debug, Error)]
 pub(crate) enum DeviceRequestError {
@@ -71,7 +71,7 @@ fn slot_to_pci_path(
 
 pub(super) fn parse_disk_from_request(
     disk: &DiskRequest,
-) -> Result<ParsedStorageDevice, DeviceRequestError> {
+) -> Result<Disk, DeviceRequestError> {
     let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
     let backend_name = format!("{}-backend", disk.name);
     let device_spec = match disk.device.as_ref() {
@@ -100,17 +100,12 @@ pub(super) fn parse_disk_from_request(
         readonly: disk.read_only,
     });
 
-    Ok(ParsedStorageDevice {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
+    Ok(Disk { device_name, device_spec, backend_name, backend_spec })
 }
 
 pub(super) fn parse_cloud_init_from_request(
     base64: String,
-) -> Result<ParsedStorageDevice, DeviceRequestError> {
+) -> Result<Disk, DeviceRequestError> {
     let name = "cloud-init";
     let pci_path = slot_to_pci_path(Slot(0), SlotType::CloudInit)?;
     let backend_name = name.to_string();
@@ -123,17 +118,12 @@ pub(super) fn parse_cloud_init_from_request(
         pci_path,
     });
 
-    Ok(ParsedStorageDevice {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
+    Ok(Disk { device_name, device_spec, backend_name, backend_spec })
 }
 
 pub(super) fn parse_nic_from_request(
     nic: &NetworkInterfaceRequest,
-) -> Result<ParsedNetworkDevice, DeviceRequestError> {
+) -> Result<Nic, DeviceRequestError> {
     let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
     let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
     let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
@@ -146,12 +136,7 @@ pub(super) fn parse_nic_from_request(
         vnic_name: nic.name.to_string(),
     });
 
-    Ok(ParsedNetworkDevice {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
+    Ok(Nic { device_name, device_spec, backend_name, backend_spec })
 }
 
 #[cfg(test)]
@@ -161,9 +146,7 @@ mod test {
 
     use super::*;
 
-    fn check_parsed_storage_device_backend_pointer(
-        parsed: &ParsedStorageDevice,
-    ) {
+    fn check_parsed_storage_device_backend_pointer(parsed: &Disk) {
         let device_to_backend = match &parsed.device_spec {
             StorageDeviceV0::VirtioDisk(d) => d.backend_name.clone(),
             StorageDeviceV0::NvmeDisk(d) => d.backend_name.clone(),

@@ -14,7 +14,7 @@ use propolis_api_types::{
     instance_spec::{
         components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
     },
-    InstanceSpecEnsureRequest, InstanceState, MigrationState,
+    InstanceState, MigrationState,
 };
 use slog::{error, info};
 use tokio::sync::Notify;
@@ -28,7 +28,7 @@ use crate::{
 };
 
 use super::{
-    ensure::{VmEnsureActive, VmEnsureNotStarted},
+    ensure::{VmEnsureActive, VmEnsureNotStarted, VmEnsureRequest},
     guest_event::{self, GuestEvent},
     objects::VmObjects,
     request_queue::{self, ExternalRequest, InstanceAutoStart},
@@ -261,7 +261,7 @@ pub(super) async fn run_state_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
-    ensure_request: InstanceSpecEnsureRequest,
+    ensure_request: VmEnsureRequest,
     ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
@@ -308,7 +308,7 @@ async fn create_and_activate_vm<'a>(
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
     state_publisher: &'a mut StatePublisher,
-    ensure_request: &'a InstanceSpecEnsureRequest,
+    ensure_request: &'a VmEnsureRequest,
     ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: &'a super::EnsureOptions,
 ) -> anyhow::Result<VmEnsureActive<'a>> {

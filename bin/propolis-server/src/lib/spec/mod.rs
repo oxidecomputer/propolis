@@ -2,44 +2,113 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Helper functions for building instance specs from server parameters.
+//! Instance specs describe how to configure a VM and what components it has.
+//!
+//! This module defines an "internal" spec type for the server's instance
+//! initialization code to use. This spec type is not `Serialize` and is not
+//! meant to be sent over the wire in API requests or the migration protocol.
+//! This allows the internal representation to change freely between versions
+//! (so long as it can consistently be converted to and from the wire-format
+//! spec in the [`propolis_api_types`] crate); this, in turn, allows this
+//! representation to take forms that might otherwise be hard to change in a
+//! backward-compatible way.
 
-use propolis_api_types::instance_spec::{v0::*, PciPath};
+use propolis_api_types::instance_spec::{
+    components::{
+        board::Board,
+        devices::{
+            PciPciBridge as PciPciBridgeSpec, QemuPvpanic as QemuPvpanicSpec,
+        },
+    },
+    v0::*,
+    PciPath,
+};
 
 #[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::components::devices::{
-    P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort,
+use propolis_api_types::instance_spec::components::{
+    backends::DlpiNetworkBackend,
+    devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
 mod api_request;
+pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 mod config_toml;
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Spec {
+    board: Board,
+    disks: Vec<Disk>,
+    nics: Vec<Nic>,
+
+    // TODO(#735): Preserve device names for identification purposes.
+    serial: [SerialPort; 4],
+
+    // TODO(#735): Preserve device names for identification purposes.
+    pci_pci_bridges: Vec<PciPciBridge>,
+    pvpanic: Option<QemuPvpanic>,
+
+    #[cfg(feature = "falcon")]
+    softnpu: SoftNpu,
+}
+
 /// Describes a storage device/backend pair parsed from an input source like an
 /// API request or a config TOML entry.
-struct ParsedStorageDevice {
-    device_name: String,
-    device_spec: StorageDeviceV0,
-    backend_name: String,
-    backend_spec: StorageBackendV0,
+#[derive(Clone, Debug)]
+pub struct Disk {
+    pub device_name: String,
+    pub device_spec: StorageDeviceV0,
+    pub backend_name: String,
+    pub backend_spec: StorageBackendV0,
 }
 
 /// Describes a network device/backend pair parsed from an input source like an
 /// API request or a config TOML entry.
-struct ParsedNetworkDevice {
-    device_name: String,
-    device_spec: NetworkDeviceV0,
-    backend_name: String,
-    backend_spec: NetworkBackendV0,
+#[derive(Clone, Debug)]
+pub struct Nic {
+    pub device_name: String,
+    pub device_spec: NetworkDeviceV0,
+    pub backend_name: String,
+    pub backend_spec: NetworkBackendV0,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SerialPort {
+    #[default]
+    Disabled,
+    Enabled,
+
+    #[cfg(feature = "falcon")]
+    SoftNpu,
+}
+
+#[derive(Clone, Debug)]
+pub struct QemuPvpanic(pub QemuPvpanicSpec);
+
+#[derive(Clone, Debug)]
+pub struct PciPciBridge(pub PciPciBridgeSpec);
+
+impl PciPciBridge {
+    pub fn name(&self) -> String {
+        format!("pci-bridge-{}", self.0.downstream_bus)
+    }
 }
 
 #[cfg(feature = "falcon")]
-#[derive(Default)]
-struct ParsedSoftNpu {
-    pci_ports: Vec<SoftNpuPciPort>,
-    ports: Vec<SoftNpuPort>,
-    p9_devices: Vec<SoftNpuP9>,
-    p9fs: Vec<P9fs>,
+#[derive(Clone, Debug)]
+pub struct SoftNpuPort {
+    pub name: String,
+    pub backend_name: String,
+    pub backend_spec: DlpiNetworkBackend,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Clone, Debug, Default)]
+pub struct SoftNpu {
+    pub pci_port: Option<SoftNpuPciPort>,
+    pub ports: Vec<SoftNpuPort>,
+    pub p9_device: Option<SoftNpuP9>,
+    pub p9fs: Option<P9fs>,
 }
 
 /// Generates NIC device and backend names from the NIC's PCI path. This is
