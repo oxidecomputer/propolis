@@ -5,25 +5,42 @@
 //! Helper functions for building instance specs from server parameters.
 
 use crate::config;
+use api_request::DeviceRequestError;
 use builder::SpecBuilder;
 use config_toml::ConfigTomlError;
-use propolis_api_types::instance_spec::components::backends::{
-    BlobStorageBackend, CrucibleStorageBackend, VirtioNetworkBackend,
-};
 use propolis_api_types::instance_spec::components::board::{Chipset, I440Fx};
 use propolis_api_types::instance_spec::components::devices::{
-    NvmeDisk, QemuPvpanic, SerialPortNumber, VirtioDisk, VirtioNic,
+    QemuPvpanic, SerialPortNumber,
 };
 use propolis_api_types::instance_spec::{
     components::board::Board, v0::*, PciPath,
 };
 use propolis_api_types::{
-    self as api, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
+    DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
+mod api_request;
 mod builder;
 mod config_toml;
+
+/// Describes a storage device/backend pair parsed from an input source like an
+/// API request or a config TOMl entry.
+struct ParsedStorageDevice {
+    device_name: String,
+    device_spec: StorageDeviceV0,
+    backend_name: String,
+    backend_spec: StorageBackendV0,
+}
+
+/// Describes a network device/backend pair parsed from an input source like an
+/// API request or a config TOMl entry.
+struct ParsedNetworkDevice {
+    device_name: String,
+    device_spec: NetworkDeviceV0,
+    backend_name: String,
+    backend_spec: NetworkBackendV0,
+}
 
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -31,52 +48,14 @@ pub(crate) enum ServerSpecBuilderError {
     #[error(transparent)]
     InnerBuilderError(#[from] builder::SpecBuilderError),
 
-    #[error(
-        "Could not translate PCI slot {0} for device type {1:?} to a PCI path"
-    )]
-    PciSlotInvalid(u8, SlotType),
-
-    #[error("Unrecognized storage device interface {0}")]
-    UnrecognizedStorageDevice(String),
-
     #[error("Device {0} requested missing backend {1}")]
     DeviceMissingBackend(String, String),
 
     #[error("error parsing config TOML")]
     ConfigToml(#[from] ConfigTomlError),
 
-    #[error("Error serializing {0} into spec element: {1}")]
-    SerializationError(String, serde_json::error::Error),
-}
-
-/// A type of PCI device. Device numbers on the PCI bus are partitioned by slot
-/// type. If a client asks to attach a device of type X to PCI slot Y, the
-/// server will assign the Yth device number in X's partition. The partitioning
-/// scheme is defined by the implementation of the `slot_to_pci_path` utility
-/// function.
-#[derive(Clone, Copy, Debug)]
-pub enum SlotType {
-    Nic,
-    Disk,
-    CloudInit,
-}
-
-/// Translates a device type and PCI slot (as presented in an instance creation
-/// request) into a concrete PCI path. See the documentation for [`SlotType`].
-pub(crate) fn slot_to_pci_path(
-    slot: api::Slot,
-    ty: SlotType,
-) -> Result<PciPath, ServerSpecBuilderError> {
-    match ty {
-        // Slots for NICS: 0x08 -> 0x0F
-        SlotType::Nic if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x8, 0),
-        // Slots for Disks: 0x10 -> 0x17
-        SlotType::Disk if slot.0 <= 7 => PciPath::new(0, slot.0 + 0x10, 0),
-        // Slot for CloudInit
-        SlotType::CloudInit if slot.0 == 0 => PciPath::new(0, slot.0 + 0x18, 0),
-        _ => return Err(ServerSpecBuilderError::PciSlotInvalid(slot.0, ty)),
-    }
-    .map_err(|_| ServerSpecBuilderError::PciSlotInvalid(slot.0, ty))
+    #[error("error parsing device in ensure request")]
+    DeviceRequest(#[from] DeviceRequestError),
 }
 
 /// Generates NIC device and backend names from the NIC's PCI path. This is
@@ -136,23 +115,8 @@ impl ServerSpecBuilder {
         &mut self,
         nic: &NetworkInterfaceRequest,
     ) -> Result<(), ServerSpecBuilderError> {
-        let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
-        let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
-        let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
-            backend_name: backend_name.clone(),
-            pci_path,
-        });
-
-        let backend_spec = NetworkBackendV0::Virtio(VirtioNetworkBackend {
-            vnic_name: nic.name.to_string(),
-        });
-
-        self.builder.add_network_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
-        )?;
+        self.builder
+            .add_network_device(api_request::parse_nic_from_request(nic)?)?;
 
         Ok(())
     }
@@ -163,42 +127,8 @@ impl ServerSpecBuilder {
         &mut self,
         disk: &DiskRequest,
     ) -> Result<(), ServerSpecBuilderError> {
-        let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
-        let backend_name = disk.name.clone();
-
-        let backend_spec = StorageBackendV0::Crucible(CrucibleStorageBackend {
-            request_json: serde_json::to_string(
-                &disk.volume_construction_request,
-            )
-            .map_err(|e| {
-                ServerSpecBuilderError::SerializationError(disk.name.clone(), e)
-            })?,
-            readonly: disk.read_only,
-        });
-
-        let device_name = disk.name.clone();
-        let device_spec = match disk.device.as_ref() {
-            "virtio" => StorageDeviceV0::VirtioDisk(VirtioDisk {
-                backend_name: disk.name.to_string(),
-                pci_path,
-            }),
-            "nvme" => StorageDeviceV0::NvmeDisk(NvmeDisk {
-                backend_name: disk.name.to_string(),
-                pci_path,
-            }),
-            _ => {
-                return Err(ServerSpecBuilderError::UnrecognizedStorageDevice(
-                    disk.device.clone(),
-                ))
-            }
-        };
-
-        self.builder.add_storage_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
-        )?;
+        self.builder
+            .add_storage_device(api_request::parse_disk_from_request(disk)?)?;
 
         Ok(())
     }
@@ -209,25 +139,8 @@ impl ServerSpecBuilder {
         &mut self,
         base64: String,
     ) -> Result<(), ServerSpecBuilderError> {
-        let name = "cloud-init";
-        let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
-        let backend_name = name.to_string();
-        let backend_spec = StorageBackendV0::Blob(BlobStorageBackend {
-            base64,
-            readonly: true,
-        });
-
-        let device_name = name.to_string();
-        let device_spec = StorageDeviceV0::VirtioDisk(VirtioDisk {
-            backend_name: name.to_string(),
-            pci_path,
-        });
-
         self.builder.add_storage_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
+            api_request::parse_cloud_init_from_request(base64)?,
         )?;
 
         Ok(())
@@ -238,14 +151,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-        let parsed =
-            config_toml::parse_network_device_from_config(name, device)?;
-
         self.builder.add_network_device(
-            parsed.device_name,
-            parsed.device_spec,
-            parsed.backend_name,
-            parsed.backend_spec,
+            config_toml::parse_network_device_from_config(name, device)?,
         )?;
 
         Ok(())
@@ -303,12 +210,12 @@ impl ServerSpecBuilder {
                             backend_config,
                         )?;
 
-                    self.builder.add_storage_device(
-                        device_name.clone(),
+                    self.builder.add_storage_device(ParsedStorageDevice {
+                        device_name: device_name.clone(),
                         device_spec,
                         backend_name,
                         backend_spec,
-                    )?;
+                    })?;
                 }
                 "pci-virtio-viona" => {
                     self.add_network_device_from_config(device_name, device)?
@@ -524,7 +431,7 @@ mod test {
                         },
                 })
                 .err(),
-            Some(ServerSpecBuilderError::UnrecognizedStorageDevice(_))
+            Some(ServerSpecBuilderError::DeviceRequest(_))
         ));
     }
 }

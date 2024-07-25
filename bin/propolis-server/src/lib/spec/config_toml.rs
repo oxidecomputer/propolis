@@ -25,6 +25,8 @@ use propolis_api_types::instance_spec::components::devices::{
 
 use crate::config;
 
+use super::ParsedNetworkDevice;
+
 #[derive(Debug, Error)]
 pub(crate) enum ConfigTomlError {
     #[error("unrecognized device type {0:?}")]
@@ -152,13 +154,6 @@ pub(super) fn parse_storage_device_from_config(
             StorageDeviceV0::NvmeDisk(NvmeDisk { backend_name, pci_path })
         }
     })
-}
-
-pub(super) struct ParsedNetworkDevice {
-    pub(super) device_name: String,
-    pub(super) device_spec: NetworkDeviceV0,
-    pub(super) backend_name: String,
-    pub(super) backend_spec: NetworkBackendV0,
 }
 
 pub(super) fn parse_network_device_from_config(
