@@ -63,9 +63,9 @@ impl BackingFile {
 impl Drop for BackingFile {
     fn drop(&mut self) {
         // ZFS clones are cleaned up by their own drop impls.
-        if let BackingFile::HardCopy(path) = self {
+        if let BackingFile::HardCopy(ref path) = self {
             debug!(%path, "deleting hard copy of guest disk image");
-            if let Err(e) = std::fs::remove_file(&path) {
+            if let Err(e) = std::fs::remove_file(path) {
                 error!(
                     ?e,
                     %path,

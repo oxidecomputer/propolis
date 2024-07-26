@@ -123,7 +123,8 @@ impl HistoryBuffer {
 
     /// Returns a tuple containing:
     /// - an iterator of serial console bytes from the live buffer.
-    /// - the absolute byte index since instance start at which the iterator *begins*.
+    /// - the absolute byte index since instance start at which the iterator
+    ///   *begins*.
     pub fn contents_iter(
         &self,
         byte_offset: SerialHistoryOffset,
@@ -131,7 +132,8 @@ impl HistoryBuffer {
         let (from_start, from_end) =
             self.offsets_from_start_and_end(byte_offset);
 
-        // determine whether we should pull from beginning or rolling (or if we're straddling both)
+        // determine whether we should pull from beginning or rolling (or if
+        // we're straddling both)
         if self.total_bytes == self.rolling.len() + self.beginning.len() {
             // still contiguous
             Ok((
@@ -169,11 +171,15 @@ impl HistoryBuffer {
     }
 
     /// Returns a tuple containing:
-    /// - a `Vec` of the requested range of serial console bytes from the live buffer.
-    /// - the absolute byte index since instance start at which the `Vec<u8>` *ends*.
-    /// given a `byte_offset` indicating the index from which the returned `Vec<u8>` should start,
-    /// and a `max_bytes` parameter, specifying a maximum length for the returned `Vec<u8>`, which
-    /// will be `DEFAULT_MAX_LENGTH` if left unspecified.
+    /// - a `Vec` of the requested range of serial console bytes from the live
+    ///   buffer.
+    /// - the absolute byte index since instance start at which the `Vec<u8>`
+    ///   *ends*.
+    ///
+    /// This given that `byte_offset` indicates the index from which the
+    /// returned `Vec<u8>` should start, and a `max_bytes` parameter, specifies
+    /// a maximum length for the returned `Vec<u8>`, which will be
+    /// `DEFAULT_MAX_LENGTH` if left unspecified.
     pub fn contents_vec(
         &self,
         byte_offset: SerialHistoryOffset,
@@ -196,7 +202,8 @@ impl HistoryBuffer {
                 if self.total_bytes > offset {
                     (offset, self.total_bytes - offset)
                 } else {
-                    // if asking for a byte offset we haven't reached yet, just start from the end.
+                    // if asking for a byte offset we haven't reached yet, just
+                    // start from the end.
                     (self.total_bytes, 0)
                 }
             }
@@ -204,7 +211,8 @@ impl HistoryBuffer {
                 if self.total_bytes > offset {
                     (self.total_bytes - offset, offset)
                 } else {
-                    // if asking for the most recent N > total_bytes, just start from the beginning.
+                    // if asking for the most recent N > total_bytes, just start
+                    // from the beginning.
                     (0, self.total_bytes)
                 }
             }

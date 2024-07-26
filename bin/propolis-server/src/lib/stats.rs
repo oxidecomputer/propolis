@@ -121,12 +121,12 @@ impl Producer for ServerStatsOuter {
 ///
 /// - `id`: The ID of the instance for whom this server is being started.
 /// - `config`: The metrics config options, including our address (on which we
-/// serve metrics for oximeter to collect), and the registration address (a
-/// Nexus instance through which we request registration as an oximeter
-/// producer).
+///    serve metrics for oximeter to collect), and the registration address (a
+///    Nexus instance through which we request registration as an oximeter
+///    producer).
 /// - `log`: A logger to use when logging from this routine.
 /// - `registry`: The oximeter [`ProducerRegistry`] that the spawned server will
-/// use to return metric data to oximeter on request.
+///    use to return metric data to oximeter on request.
 ///
 /// The returned server will attempt to register with Nexus in a background
 /// task, and will periodically renew that registration. The returned server is
