@@ -14,12 +14,11 @@ use oximeter::{
 };
 use oximeter_instruments::kstat::KstatSampler;
 use oximeter_producer::{Config, Error, Server};
-use propolis_api_types::{
-    instance_spec::v0::InstanceSpecV0, InstanceProperties,
-};
+use propolis_api_types::InstanceProperties;
 use slog::Logger;
 use uuid::Uuid;
 
+use crate::spec;
 use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
 
 mod network_interface;
@@ -190,11 +189,11 @@ pub fn start_oximeter_server(
 pub(crate) fn create_kstat_sampler(
     log: &Logger,
     properties: &InstanceProperties,
-    spec: &InstanceSpecV0,
+    spec: &spec::Spec,
 ) -> Option<KstatSampler> {
     let kstat_limit = usize::try_from(
         (u32::from(properties.vcpus) * KSTAT_LIMIT_PER_VCPU)
-            + (spec.devices.network_devices.len() as u32 * SAMPLE_BUFFER),
+            + (spec.nics.len() as u32 * SAMPLE_BUFFER),
     )
     .unwrap();
 

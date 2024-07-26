@@ -13,9 +13,7 @@ use propolis_api_types::instance_spec::{
             NvmeDisk, PciPciBridge as BridgeSpec, VirtioDisk, VirtioNic,
         },
     },
-    v0::{
-        NetworkBackendV0, NetworkDeviceV0, StorageBackendV0, StorageDeviceV0,
-    },
+    v0::{NetworkDeviceV0, StorageBackendV0, StorageDeviceV0},
     PciPath,
 };
 use thiserror::Error;
@@ -296,9 +294,7 @@ pub(super) fn parse_network_device_from_config(
         .ok_or_else(|| ConfigTomlError::InvalidPciPath(name.to_owned()))?;
 
     let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
-    let backend_spec = NetworkBackendV0::Virtio(VirtioNetworkBackend {
-        vnic_name: vnic_name.to_owned(),
-    });
+    let backend_spec = VirtioNetworkBackend { vnic_name: vnic_name.to_owned() };
 
     let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
         backend_name: backend_name.clone(),

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
+use crate::spec;
 use crate::stats::{
     track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
     VirtualMachine,
@@ -38,15 +39,15 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
-use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
+use propolis_api_types::instance_spec;
 use propolis_api_types::InstanceProperties;
 use slog::info;
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
-fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
-    let memsize = spec.devices.board.memory_mb as usize * MB;
+fn get_spec_guest_ram_limits(spec: &spec::Spec) -> (usize, usize) {
+    let memsize = spec.board.memory_mb as usize * MB;
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
     (lowmem, highmem)
@@ -54,7 +55,7 @@ fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
 
 pub fn build_instance(
     name: &str,
-    spec: &InstanceSpecV0,
+    spec: &spec::Spec,
     use_reservoir: bool,
     _log: slog::Logger,
 ) -> Result<Machine> {
@@ -65,7 +66,7 @@ pub fn build_instance(
         track_dirty: true,
     };
     let mut builder = Builder::new(name, create_opts)?
-        .max_cpus(spec.devices.board.cpus)?
+        .max_cpus(spec.board.cpus)?
         .add_mem_region(0, lowmem, "lowmem")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
         .add_mmio_region(0xc000_0000_usize, 0x2000_0000_usize, "dev32")?
@@ -118,7 +119,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) devices: DeviceMap,
     pub(crate) block_backends: BlockBackendMap,
     pub(crate) crucible_backends: CrucibleBackendMap,
-    pub(crate) spec: &'a InstanceSpecV0,
+    pub(crate) spec: &'a spec::Spec,
     pub(crate) properties: &'a InstanceProperties,
     pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
@@ -194,15 +195,16 @@ impl<'a> MachineInitializer<'a> {
         event_handler: &Arc<dyn super::vm::guest_event::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
-        for (name, bridge) in &self.spec.devices.pci_pci_bridges {
+        for bridge in &self.spec.pci_pci_bridges {
             let desc = pci::topology::BridgeDescription::new(
-                pci::topology::LogicalBusId(bridge.downstream_bus),
-                bridge.pci_path.try_into().map_err(|e| {
+                pci::topology::LogicalBusId(bridge.0.downstream_bus),
+                bridge.0.pci_path.try_into().map_err(|e| {
                     Error::new(
                         ErrorKind::InvalidInput,
                         format!(
                             "Couldn't get PCI BDF for bridge {}: {}",
-                            name, e
+                            bridge.name(),
+                            e
                         ),
                     )
                 })?,
@@ -212,7 +214,7 @@ impl<'a> MachineInitializer<'a> {
         let pci::topology::FinishedTopology { topology: pci_topology, bridges } =
             pci_builder.finish(self.machine)?;
 
-        match self.spec.devices.board.chipset {
+        match self.spec.board.chipset {
             instance_spec::components::board::Chipset::I440Fx(i440fx) => {
                 let power_ref = Arc::downgrade(event_handler);
                 let reset_ref = Arc::downgrade(event_handler);
@@ -295,22 +297,25 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
-        use instance_spec::components::devices::SerialPortNumber;
-
         let mut com1 = None;
-        for (name, serial_spec) in &self.spec.devices.serial_ports {
-            let (irq, port) = match serial_spec.num {
-                SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
-                SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
-                SerialPortNumber::Com3 => (ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
-                SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
+        for (index, serial_spec) in self.spec.serial.iter().enumerate() {
+            if *serial_spec != spec::SerialPort::Enabled {
+                continue;
+            }
+
+            let (name, irq, port) = match index {
+                0 => ("com1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
+                1 => ("com2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
+                2 => ("com3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
+                3 => ("com4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
+                _ => unreachable!(),
             };
 
             let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, &self.machine.bus_pio, port);
-            self.devices.insert(name.clone(), dev.clone());
-            if matches!(serial_spec.num, SerialPortNumber::Com1) {
+            self.devices.insert(name.to_owned(), dev.clone());
+            if index == 0 {
                 assert!(com1.is_none());
                 com1 = Some(dev);
             }
@@ -353,8 +358,8 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         virtual_machine: VirtualMachine,
     ) -> Result<(), anyhow::Error> {
-        if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
-            if spec.enable_isa {
+        if let Some(spec) = &self.spec.pvpanic {
+            if spec.0.enable_isa {
                 let pvpanic = QemuPvpanic::create(
                     self.log.new(slog::o!("dev" => "qemu-pvpanic")),
                 );
@@ -497,16 +502,17 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        'devloop: for (name, device_spec) in &self.spec.devices.storage_devices
-        {
+        'devloop: for disk in &self.spec.disks {
             info!(
                 self.log,
                 "Creating storage device {} with properties {:?}",
-                name,
-                device_spec
+                disk.device_name,
+                disk.device_spec
             );
 
-            let (device_interface, backend_name, pci_path) = match device_spec {
+            let (device_interface, backend_name, pci_path) = match &disk
+                .device_spec
+            {
                 instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
                     (DeviceInterface::Virtio, &disk.backend_name, disk.pci_path)
                 }
@@ -515,34 +521,19 @@ impl<'a> MachineInitializer<'a> {
                 }
             };
 
-            let backend_spec = self
-                .spec
-                .backends
-                .storage_backends
-                .get(backend_name)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Backend {} not found for storage device {}",
-                            backend_name, name
-                        ),
-                    )
-                })?;
-
             let bdf: pci::Bdf = pci_path.try_into().map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidInput,
                     format!(
                         "Couldn't get PCI BDF for storage device {}: {}",
-                        name, e
+                        disk.device_name, e
                     ),
                 )
             })?;
 
             let StorageBackendInstance { be: backend, crucible } = self
                 .create_storage_backend_from_spec(
-                    backend_spec,
+                    &disk.backend_spec,
                     backend_name,
                     &nexus_client,
                 )
@@ -562,12 +553,11 @@ impl<'a> MachineInitializer<'a> {
                 DeviceInterface::Nvme => {
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
+                    let component = format!("nvme-{}", disk.device_name);
                     let nvme = nvme::PciNvme::create(
-                        name.to_string(),
+                        disk.device_name.to_string(),
                         mdts,
-                        self.log.new(
-                            slog::o!("component" => format!("nvme-{}", name)),
-                        ),
+                        self.log.new(slog::o!("component" => component)),
                     );
                     self.devices
                         .insert(format!("pci-nvme-{bdf}"), nvme.clone());
@@ -643,49 +633,24 @@ impl<'a> MachineInitializer<'a> {
         let mut interface_ids: Option<NetworkInterfaceIds> =
             self.kstat_sampler.as_ref().map(|_| Vec::new());
 
-        for (name, vnic_spec) in &self.spec.devices.network_devices {
-            info!(self.log, "Creating vNIC {}", name);
-            let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
-                vnic_spec;
+        for nic in &self.spec.nics {
+            info!(self.log, "Creating vNIC {}", nic.device_name);
 
-            let backend_spec = self
-                .spec
-                .backends
-                .network_backends
-                .get(&vnic_spec.backend_name)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Backend {} not found for vNIC {}",
-                            vnic_spec.backend_name, name
-                        ),
-                    )
-                })?;
+            let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
+                &nic.device_spec;
+
             let bdf: pci::Bdf = vnic_spec.pci_path.try_into().map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidInput,
-                    format!("Couldn't get PCI BDF for vNIC {}: {}", name, e),
+                    format!(
+                        "Couldn't get PCI BDF for vNIC {}: {}",
+                        nic.device_name, e
+                    ),
                 )
             })?;
 
-            let vnic_name = match backend_spec {
-                instance_spec::v0::NetworkBackendV0::Virtio(spec) => {
-                    &spec.vnic_name
-                }
-                instance_spec::v0::NetworkBackendV0::Dlpi(_) => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Network backend must be virtio for vNIC {}",
-                            name,
-                        ),
-                    ));
-                }
-            };
-
             let viona = virtio::PciVirtioViona::new(
-                vnic_name,
+                &nic.backend_spec.vnic_name,
                 0x100,
                 &self.machine.hdl,
             )?;
@@ -767,56 +732,29 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
+        let softnpu = &self.spec.softnpu;
+
         // Check to make sure we actually have both a pci port and at least one
         // regular SoftNpu port, otherwise just return.
-        let pci_port = match &self.spec.devices.softnpu_pci_port {
+        let pci_port = match &softnpu.pci_port {
             Some(tfp) => tfp,
             None => return Ok(()),
         };
-        if self.spec.devices.softnpu_ports.is_empty() {
+        if softnpu.ports.is_empty() {
             return Ok(());
         }
 
-        let mut ports: Vec<&instance_spec::components::devices::SoftNpuPort> =
-            self.spec.devices.softnpu_ports.values().collect();
+        // Get a Vec of references to the ports which will then be sorted by
+        // port name.
+        let mut ports: Vec<_> = softnpu.ports.iter().collect();
 
         // SoftNpu ports are named <topology>_<node>_vnic<N> by falcon, where
         // <N> indicates the intended order.
-        ports.sort_by_key(|p| &p.name);
-
-        let mut data_links: Vec<String> = Vec::new();
-        for x in &ports {
-            let backend = self
-                .spec
-                .backends
-                .network_backends
-                .get(&x.backend_name)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Backend {} not found for softnpu port",
-                            x.backend_name
-                        ),
-                    )
-                })?;
-
-            let vnic = match &backend {
-                instance_spec::v0::NetworkBackendV0::Dlpi(dlpi) => {
-                    &dlpi.vnic_name
-                }
-                _ => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Softnpu port must have DLPI backend: {}",
-                            x.backend_name
-                        ),
-                    ));
-                }
-            };
-            data_links.push(vnic.clone());
-        }
+        ports.sort_by_key(|p| p.name.as_str());
+        let data_links = ports
+            .iter()
+            .map(|port| port.backend_spec.vnic_name.clone())
+            .collect();
 
         // Set up an LPC uart for ASIC management comms from the guest.
         //
@@ -834,17 +772,15 @@ impl<'a> MachineInitializer<'a> {
         let p9_handler = virtio::softnpu::SoftNpuP9Handler::new(
             "/dev/softnpufs".to_owned(),
             "/dev/softnpufs".to_owned(),
-            self.spec.devices.softnpu_ports.len() as u16,
+            ports.len() as u16,
             pipeline.clone(),
             self.log.clone(),
         );
         let vio9p =
             virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
         self.devices.insert("softnpu-p9fs".to_string(), vio9p.clone());
-        let bdf: pci::Bdf = self
-            .spec
-            .devices
-            .softnpu_p9
+        let bdf = softnpu
+            .p9_device
             .as_ref()
             .ok_or_else(|| {
                 Error::new(
@@ -903,11 +839,11 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
+        let softnpu = &self.spec.softnpu;
         // Check that there is actually a p9fs device to register, if not bail
         // early.
-        let p9fs = match &self.spec.devices.p9fs {
-            Some(p9fs) => p9fs,
-            None => return Ok(()),
+        let Some(p9fs) = &softnpu.p9fs else {
+            return Ok(());
         };
 
         let bdf: pci::Bdf = p9fs.pci_path.try_into().map_err(|e| {

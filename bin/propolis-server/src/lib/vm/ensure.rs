@@ -30,9 +30,8 @@ use std::sync::Arc;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis_api_types::{
-    instance_spec::v0::InstanceSpecV0, InstanceEnsureResponse,
-    InstanceMigrateInitiateRequest, InstanceMigrateInitiateResponse,
-    InstanceProperties, InstanceState,
+    InstanceEnsureResponse, InstanceMigrateInitiateRequest,
+    InstanceMigrateInitiateResponse, InstanceProperties, InstanceState,
 };
 use slog::{debug, info};
 
@@ -168,10 +167,9 @@ impl<'a> VmEnsureNotStarted<'a> {
 
         // Set up the 'shell' instance into which the rest of this routine will
         // add components.
-        let v0_spec: InstanceSpecV0 = self.instance_spec().clone().into();
         let machine = build_instance(
             &properties.vm_name(),
-            &v0_spec,
+            spec,
             options.use_reservoir,
             vmm_log,
         )?;
@@ -182,7 +180,7 @@ impl<'a> VmEnsureNotStarted<'a> {
             devices: Default::default(),
             block_backends: Default::default(),
             crucible_backends: Default::default(),
-            spec: &v0_spec,
+            spec,
             properties,
             toml_config: &options.toml_config,
             producer_registry: options.oximeter_registry.clone(),
@@ -190,7 +188,7 @@ impl<'a> VmEnsureNotStarted<'a> {
             kstat_sampler: initialize_kstat_sampler(
                 self.log,
                 properties,
-                &v0_spec,
+                self.instance_spec(),
                 options.oximeter_registry.clone(),
             ),
         };
@@ -227,10 +225,8 @@ impl<'a> VmEnsureNotStarted<'a> {
         init.initialize_storage_devices(&chipset, options.nexus_client.clone())
             .await?;
 
-        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-
+        let ramfb = init.initialize_fwcfg(self.instance_spec().board.cpus)?;
         init.initialize_cpus().await?;
-
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
             event_queue.clone()
@@ -246,7 +242,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         } = init;
 
         Ok(InputVmObjects {
-            instance_spec: v0_spec.clone(),
+            instance_spec: spec.clone(),
             vcpu_tasks,
             machine,
             devices,
@@ -383,7 +379,7 @@ impl<'a> VmEnsureActive<'a> {
 fn initialize_kstat_sampler(
     log: &slog::Logger,
     properties: &InstanceProperties,
-    spec: &InstanceSpecV0,
+    spec: &spec::Spec,
     producer_registry: Option<ProducerRegistry>,
 ) -> Option<KstatSampler> {
     let registry = producer_registry?;

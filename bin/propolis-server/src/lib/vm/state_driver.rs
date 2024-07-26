@@ -661,50 +661,49 @@ impl StateDriver {
         }
 
         let mut objects = self.objects.lock_exclusive().await;
-        let (readonly, old_vcr_json) = {
-            let StorageBackendV0::Crucible(bes) = objects
-                .instance_spec()
-                .backends
-                .storage_backends
-                .get(&disk_name)
-                .ok_or_else(|| spec_element_not_found(&disk_name))?
-            else {
-                return Err(spec_element_not_found(&disk_name));
-            };
+        let backend = objects
+            .crucible_backends()
+            .get(backend_id)
+            .ok_or_else(|| {
+                let msg = format!("No crucible backend for id {backend_id}");
+                dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
+            })?
+            .clone();
 
-            (bes.readonly, &bes.request_json)
+        // TODO(gjc) would be better off with a map in the spec type, but this
+        // will do for now
+        let Some(disk) = objects
+            .instance_spec_mut()
+            .disks
+            .iter_mut()
+            .find(|disk| disk.device_name == disk_name)
+        else {
+            return Err(spec_element_not_found(&disk_name));
         };
 
-        let replace_result = {
-            let backend = objects
-                .crucible_backends()
-                .get(backend_id)
-                .ok_or_else(|| {
-                    let msg =
-                        format!("No crucible backend for id {backend_id}");
-                    dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
-                })?;
-
-            backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(
-                |e| {
-                    dropshot::HttpError::for_bad_request(
-                        Some(e.to_string()),
-                        e.to_string(),
-                    )
-                },
-            )
-        }?;
-
-        let new_bes = StorageBackendV0::Crucible(CrucibleStorageBackend {
+        let StorageBackendV0::Crucible(CrucibleStorageBackend {
+            request_json: old_vcr_json,
             readonly,
-            request_json: new_vcr_json,
-        });
+        }) = &disk.backend_spec
+        else {
+            return Err(spec_element_not_found(&disk_name));
+        };
 
-        objects
-            .instance_spec_mut()
-            .backends
-            .storage_backends
-            .insert(disk_name, new_bes);
+        let replace_result = backend
+            .vcr_replace(old_vcr_json, &new_vcr_json)
+            .await
+            .map_err(|e| {
+                dropshot::HttpError::for_bad_request(
+                    Some(e.to_string()),
+                    e.to_string(),
+                )
+            })?;
+
+        disk.backend_spec =
+            StorageBackendV0::Crucible(CrucibleStorageBackend {
+                readonly: *readonly,
+                request_json: new_vcr_json,
+            });
 
         info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
 

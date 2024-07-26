@@ -7,14 +7,12 @@
 
 use propolis_api_types::instance_spec::{
     components::devices::{SerialPort as SerialPortSpec, SerialPortNumber},
-    v0::{InstanceSpecV0, NetworkDeviceV0, StorageDeviceV0},
+    v0::{InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0, StorageDeviceV0},
 };
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::{
-    components::devices::SoftNpuPort as SoftNpuPortSpec, v0::NetworkBackendV0,
-};
+use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
 
 #[cfg(feature = "falcon")]
 use crate::spec::SoftNpuPort;
@@ -34,6 +32,9 @@ pub(crate) enum ApiSpecParseError {
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(String),
+
+    #[error("network backend for guest NIC {0} is not a viona backend")]
+    GuestNicInvalidBackend(String),
 
     #[cfg(feature = "falcon")]
     #[error("network backend for device {0} is not a DLPI backend")]
@@ -69,10 +70,10 @@ impl From<Spec> for InstanceSpecV0 {
 
             assert!(_old.is_none());
 
-            let _old = spec
-                .backends
-                .network_backends
-                .insert(nic.backend_name, nic.backend_spec);
+            let _old = spec.backends.network_backends.insert(
+                nic.backend_name,
+                NetworkBackendV0::Virtio(nic.backend_spec),
+            );
 
             assert!(_old.is_none());
         }
@@ -183,6 +184,12 @@ impl TryFrom<InstanceSpecV0> for Spec {
                         device_name.clone(),
                     )
                 })?;
+
+            let NetworkBackendV0::Virtio(backend_spec) = backend_spec else {
+                return Err(ApiSpecParseError::GuestNicInvalidBackend(
+                    device_name,
+                ));
+            };
 
             builder.add_network_device(Nic {
                 device_name,

@@ -15,10 +15,7 @@ use propolis_api_types::{
             },
             devices::{NvmeDisk, VirtioDisk, VirtioNic},
         },
-        v0::{
-            NetworkBackendV0, NetworkDeviceV0, StorageBackendV0,
-            StorageDeviceV0,
-        },
+        v0::{NetworkDeviceV0, StorageBackendV0, StorageDeviceV0},
         PciPath,
     },
     DiskRequest, NetworkInterfaceRequest, Slot,
@@ -132,10 +129,7 @@ pub(super) fn parse_nic_from_request(
         pci_path,
     });
 
-    let backend_spec = NetworkBackendV0::Virtio(VirtioNetworkBackend {
-        vnic_name: nic.name.to_string(),
-    });
-
+    let backend_spec = VirtioNetworkBackend { vnic_name: nic.name.to_string() };
     Ok(Nic { device_name, device_spec, backend_name, backend_spec })
 }
 

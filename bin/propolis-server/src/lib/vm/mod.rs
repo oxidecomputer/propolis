@@ -85,17 +85,17 @@ use active::ActiveVm;
 use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
-    instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
-    InstanceEnsureResponse, InstanceMigrateStatusResponse,
-    InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
-    InstanceState, InstanceStateMonitorResponse, MigrationState,
+    instance_spec::VersionedInstanceSpec, InstanceEnsureResponse,
+    InstanceMigrateStatusResponse, InstanceMigrationStatus, InstanceProperties,
+    InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
+    MigrationState,
 };
 use slog::info;
 use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
-use crate::{server::MetricsEndpointConfig, vnc::VncServer};
+use crate::{server::MetricsEndpointConfig, spec, vnc::VncServer};
 
 mod active;
 pub(crate) mod ensure;
@@ -219,7 +219,7 @@ struct VmDescription {
     properties: InstanceProperties,
 
     /// The VM's last-known instance specification.
-    spec: InstanceSpecV0,
+    spec: spec::Spec,
 
     /// The runtime on which the VM's state driver is running (or on which it
     /// ran).
@@ -330,7 +330,7 @@ impl Vm {
                 let state = vm.external_state_rx.borrow().clone();
                 Ok(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: VersionedInstanceSpec::V0(spec),
+                    spec: VersionedInstanceSpec::V0(spec.into()),
                     state: state.state,
                 })
             }
@@ -343,7 +343,7 @@ impl Vm {
             | VmState::RundownComplete(vm) => Ok(InstanceSpecGetResponse {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
-                spec: VersionedInstanceSpec::V0(vm.spec.clone()),
+                spec: VersionedInstanceSpec::V0(vm.spec.clone().into()),
             }),
         }
     }
@@ -554,12 +554,10 @@ impl Vm {
                 _ => {}
             };
 
-            let v0_spec: InstanceSpecV0 =
-                ensure_request.instance_spec.clone().into();
-
             let thread_count = usize::max(
                 VMM_MIN_RT_THREADS,
-                VMM_BASE_RT_THREADS + v0_spec.devices.board.cpus as usize,
+                VMM_BASE_RT_THREADS
+                    + ensure_request.instance_spec.board.cpus as usize,
             );
 
             let tokio_rt = tokio::runtime::Builder::new_multi_thread()
@@ -570,6 +568,7 @@ impl Vm {
                 .map_err(VmError::TokioRuntimeInitializationFailed)?;
 
             let properties = ensure_request.properties.clone();
+            let spec = ensure_request.instance_spec.clone();
             let vm_for_driver = self.clone();
             guard.driver = Some(tokio_rt.spawn(async move {
                 state_driver::run_state_driver(
@@ -586,7 +585,7 @@ impl Vm {
             guard.state = VmState::WaitingForInit(VmDescription {
                 external_state_rx: external_rx.clone(),
                 properties,
-                spec: v0_spec,
+                spec,
                 tokio_rt: Some(tokio_rt),
             });
         }
