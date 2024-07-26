@@ -6,7 +6,7 @@
 //! crate to the internal [`super::Spec`] representation.
 
 use propolis_api_types::instance_spec::{
-    components::devices::{SerialPort as SerialPortSpec, SerialPortNumber},
+    components::devices::{SerialPort as SerialPortDesc, SerialPortNumber},
     v0::{InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0, StorageDeviceV0},
 };
 use thiserror::Error;
@@ -19,7 +19,7 @@ use crate::spec::SoftNpuPort;
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    Disk, Nic, PciPciBridge, QemuPvpanic, SerialPort, Spec,
+    Disk, Nic, QemuPvpanic, SerialPortUser, Spec,
 };
 
 #[derive(Debug, Error)]
@@ -46,11 +46,11 @@ impl From<Spec> for InstanceSpecV0 {
         let mut spec = InstanceSpecV0::default();
 
         spec.devices.board = val.board;
-        for disk in val.disks {
+        for (disk_name, disk) in val.disks {
             let _old = spec
                 .devices
                 .storage_devices
-                .insert(disk.device_name, disk.device_spec);
+                .insert(disk_name, disk.device_spec);
 
             assert!(_old.is_none());
 
@@ -62,11 +62,9 @@ impl From<Spec> for InstanceSpecV0 {
             assert!(_old.is_none());
         }
 
-        for nic in val.nics {
-            let _old = spec
-                .devices
-                .network_devices
-                .insert(nic.device_name, nic.device_spec);
+        for (nic_name, nic) in val.nics {
+            let _old =
+                spec.devices.network_devices.insert(nic_name, nic.device_spec);
 
             assert!(_old.is_none());
 
@@ -78,44 +76,41 @@ impl From<Spec> for InstanceSpecV0 {
             assert!(_old.is_none());
         }
 
-        for (index, serial) in val.serial.iter().enumerate() {
-            if *serial == SerialPort::Enabled {
-                let _old = spec.devices.serial_ports.insert(
-                    format!("com{}", index + 1),
-                    SerialPortSpec {
-                        num: match index {
-                            0 => SerialPortNumber::Com1,
-                            1 => SerialPortNumber::Com2,
-                            2 => SerialPortNumber::Com3,
-                            3 => SerialPortNumber::Com4,
-                            _ => unreachable!(),
-                        },
-                    },
-                );
+        for (num, user) in val.serial.iter() {
+            if *user == SerialPortUser::Standard {
+                let name = match num {
+                    SerialPortNumber::Com1 => "com1",
+                    SerialPortNumber::Com2 => "com2",
+                    SerialPortNumber::Com3 => "com3",
+                    SerialPortNumber::Com4 => "com4",
+                };
+
+                let _old = spec
+                    .devices
+                    .serial_ports
+                    .insert(name.to_owned(), SerialPortDesc { num: *num });
 
                 assert!(_old.is_none());
             }
         }
 
-        for bridge in val.pci_pci_bridges {
-            let _old =
-                spec.devices.pci_pci_bridges.insert(bridge.name(), bridge.0);
-
+        for (bridge_name, bridge) in val.pci_pci_bridges {
+            let _old = spec.devices.pci_pci_bridges.insert(bridge_name, bridge);
             assert!(_old.is_none());
         }
 
-        spec.devices.qemu_pvpanic = val.pvpanic.map(|pvpanic| pvpanic.0);
+        spec.devices.qemu_pvpanic = val.pvpanic.map(|pvpanic| pvpanic.spec);
 
         #[cfg(feature = "falcon")]
         {
             spec.devices.softnpu_pci_port = val.softnpu.pci_port;
             spec.devices.softnpu_p9 = val.softnpu.p9_device;
             spec.devices.p9fs = val.softnpu.p9fs;
-            for port in val.softnpu.ports {
+            for (port_name, port) in val.softnpu.ports {
                 let _old = spec.devices.softnpu_ports.insert(
-                    port.name.clone(),
+                    port_name.clone(),
                     SoftNpuPortSpec {
-                        name: port.name,
+                        name: port_name,
                         backend_name: port.backend_name.clone(),
                     },
                 );
@@ -157,12 +152,10 @@ impl TryFrom<InstanceSpecV0> for Spec {
                     )
                 })?;
 
-            builder.add_storage_device(Disk {
+            builder.add_storage_device(
                 device_name,
-                device_spec,
-                backend_name,
-                backend_spec,
-            })?;
+                Disk { device_spec, backend_name, backend_spec },
+            )?;
         }
 
         if let Some(backend) = value.backends.storage_backends.keys().next() {
@@ -191,12 +184,10 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 ));
             };
 
-            builder.add_network_device(Nic {
+            builder.add_network_device(
                 device_name,
-                device_spec,
-                backend_name,
-                backend_spec,
-            })?;
+                Nic { device_spec, backend_name, backend_spec },
+            )?;
         }
 
         // SoftNPU ports can have network backends, so consume the SoftNPU
@@ -232,11 +223,10 @@ impl TryFrom<InstanceSpecV0> for Spec {
                     return Err(ApiSpecParseError::NotDlpiBackend(port_name));
                 };
 
-                builder.add_softnpu_port(SoftNpuPort {
-                    name: port_name,
-                    backend_name,
-                    backend_spec,
-                })?;
+                builder.add_softnpu_port(
+                    port_name,
+                    SoftNpuPort { backend_name, backend_spec },
+                )?;
             }
         }
 
@@ -249,13 +239,15 @@ impl TryFrom<InstanceSpecV0> for Spec {
             builder.add_serial_port(serial_port.num)?;
         }
 
-        // TODO(gjc) do more to preserve names
-        for bridge in value.devices.pci_pci_bridges.into_values() {
-            builder.add_pci_bridge(PciPciBridge(bridge))?;
+        for (name, bridge) in value.devices.pci_pci_bridges {
+            builder.add_pci_bridge(name, bridge)?;
         }
 
         if let Some(pvpanic) = value.devices.qemu_pvpanic {
-            builder.add_pvpanic_device(QemuPvpanic(pvpanic))?;
+            builder.add_pvpanic_device(QemuPvpanic {
+                name: "pvpanic".to_string(),
+                spec: pvpanic,
+            })?;
         }
 
         Ok(builder.finish())

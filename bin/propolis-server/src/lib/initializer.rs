@@ -40,6 +40,7 @@ use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec;
+use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
 use slog::info;
 
@@ -195,16 +196,15 @@ impl<'a> MachineInitializer<'a> {
         event_handler: &Arc<dyn super::vm::guest_event::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
-        for bridge in &self.spec.pci_pci_bridges {
+        for (name, bridge) in &self.spec.pci_pci_bridges {
             let desc = pci::topology::BridgeDescription::new(
-                pci::topology::LogicalBusId(bridge.0.downstream_bus),
-                bridge.0.pci_path.try_into().map_err(|e| {
+                pci::topology::LogicalBusId(bridge.downstream_bus),
+                bridge.pci_path.try_into().map_err(|e| {
                     Error::new(
                         ErrorKind::InvalidInput,
                         format!(
                             "Couldn't get PCI BDF for bridge {}: {}",
-                            bridge.name(),
-                            e
+                            name, e
                         ),
                     )
                 })?,
@@ -298,24 +298,31 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
         let mut com1 = None;
-        for (index, serial_spec) in self.spec.serial.iter().enumerate() {
-            if *serial_spec != spec::SerialPort::Enabled {
+        for (num, user) in self.spec.serial.iter() {
+            if *user != spec::SerialPortUser::Standard {
                 continue;
             }
 
-            let (name, irq, port) = match index {
-                0 => ("com1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
-                1 => ("com2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
-                2 => ("com3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
-                3 => ("com4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
-                _ => unreachable!(),
+            let (name, irq, port) = match num {
+                SerialPortNumber::Com1 => {
+                    ("com1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
+                }
+                SerialPortNumber::Com2 => {
+                    ("com2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
+                }
+                SerialPortNumber::Com3 => {
+                    ("com3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
+                }
+                SerialPortNumber::Com4 => {
+                    ("com4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
+                }
             };
 
             let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, &self.machine.bus_pio, port);
             self.devices.insert(name.to_owned(), dev.clone());
-            if index == 0 {
+            if *num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
                 com1 = Some(dev);
             }
@@ -358,8 +365,8 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         virtual_machine: VirtualMachine,
     ) -> Result<(), anyhow::Error> {
-        if let Some(spec) = &self.spec.pvpanic {
-            if spec.0.enable_isa {
+        if let Some(pvpanic) = &self.spec.pvpanic {
+            if pvpanic.spec.enable_isa {
                 let pvpanic = QemuPvpanic::create(
                     self.log.new(slog::o!("dev" => "qemu-pvpanic")),
                 );
@@ -502,11 +509,11 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        'devloop: for disk in &self.spec.disks {
+        'devloop: for (disk_name, disk) in &self.spec.disks {
             info!(
                 self.log,
                 "Creating storage device {} with properties {:?}",
-                disk.device_name,
+                disk_name,
                 disk.device_spec
             );
 
@@ -526,7 +533,7 @@ impl<'a> MachineInitializer<'a> {
                     ErrorKind::InvalidInput,
                     format!(
                         "Couldn't get PCI BDF for storage device {}: {}",
-                        disk.device_name, e
+                        disk_name, e
                     ),
                 )
             })?;
@@ -553,9 +560,9 @@ impl<'a> MachineInitializer<'a> {
                 DeviceInterface::Nvme => {
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
-                    let component = format!("nvme-{}", disk.device_name);
+                    let component = format!("nvme-{}", disk_name);
                     let nvme = nvme::PciNvme::create(
-                        disk.device_name.to_string(),
+                        disk_name.to_owned(),
                         mdts,
                         self.log.new(slog::o!("component" => component)),
                     );
@@ -633,9 +640,8 @@ impl<'a> MachineInitializer<'a> {
         let mut interface_ids: Option<NetworkInterfaceIds> =
             self.kstat_sampler.as_ref().map(|_| Vec::new());
 
-        for nic in &self.spec.nics {
-            info!(self.log, "Creating vNIC {}", nic.device_name);
-
+        for (device_name, nic) in &self.spec.nics {
+            info!(self.log, "Creating vNIC {}", device_name);
             let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
                 &nic.device_spec;
 
@@ -644,7 +650,7 @@ impl<'a> MachineInitializer<'a> {
                     ErrorKind::InvalidInput,
                     format!(
                         "Couldn't get PCI BDF for vNIC {}: {}",
-                        nic.device_name, e
+                        device_name, e
                     ),
                 )
             })?;
@@ -750,10 +756,10 @@ impl<'a> MachineInitializer<'a> {
 
         // SoftNpu ports are named <topology>_<node>_vnic<N> by falcon, where
         // <N> indicates the intended order.
-        ports.sort_by_key(|p| p.name.as_str());
+        ports.sort_by_key(|p| p.0.as_str());
         let data_links = ports
             .iter()
-            .map(|port| port.backend_spec.vnic_name.clone())
+            .map(|port| port.1.backend_spec.vnic_name.clone())
             .collect();
 
         // Set up an LPC uart for ASIC management comms from the guest.

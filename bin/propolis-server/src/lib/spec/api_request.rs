@@ -22,7 +22,7 @@ use propolis_api_types::{
 };
 use thiserror::Error;
 
-use super::{Disk, Nic};
+use super::{Disk, Nic, ParsedDiskRequest, ParsedNicRequest};
 
 #[derive(Debug, Error)]
 pub(crate) enum DeviceRequestError {
@@ -68,7 +68,7 @@ fn slot_to_pci_path(
 
 pub(super) fn parse_disk_from_request(
     disk: &DiskRequest,
-) -> Result<Disk, DeviceRequestError> {
+) -> Result<ParsedDiskRequest, DeviceRequestError> {
     let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
     let backend_name = format!("{}-backend", disk.name);
     let device_spec = match disk.device.as_ref() {
@@ -97,30 +97,35 @@ pub(super) fn parse_disk_from_request(
         readonly: disk.read_only,
     });
 
-    Ok(Disk { device_name, device_spec, backend_name, backend_spec })
+    Ok(ParsedDiskRequest {
+        name: device_name,
+        disk: Disk { device_spec, backend_name, backend_spec },
+    })
 }
 
 pub(super) fn parse_cloud_init_from_request(
     base64: String,
-) -> Result<Disk, DeviceRequestError> {
+) -> Result<ParsedDiskRequest, DeviceRequestError> {
     let name = "cloud-init";
     let pci_path = slot_to_pci_path(Slot(0), SlotType::CloudInit)?;
     let backend_name = name.to_string();
     let backend_spec =
         StorageBackendV0::Blob(BlobStorageBackend { base64, readonly: true });
 
-    let device_name = name.to_string();
     let device_spec = StorageDeviceV0::VirtioDisk(VirtioDisk {
         backend_name: name.to_string(),
         pci_path,
     });
 
-    Ok(Disk { device_name, device_spec, backend_name, backend_spec })
+    Ok(ParsedDiskRequest {
+        name: name.to_owned(),
+        disk: Disk { device_spec, backend_name, backend_spec },
+    })
 }
 
 pub(super) fn parse_nic_from_request(
     nic: &NetworkInterfaceRequest,
-) -> Result<Nic, DeviceRequestError> {
+) -> Result<ParsedNicRequest, DeviceRequestError> {
     let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
     let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
     let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
@@ -130,7 +135,10 @@ pub(super) fn parse_nic_from_request(
     });
 
     let backend_spec = VirtioNetworkBackend { vnic_name: nic.name.to_string() };
-    Ok(Nic { device_name, device_spec, backend_name, backend_spec })
+    Ok(ParsedNicRequest {
+        name: device_name,
+        nic: Nic { device_spec, backend_name, backend_spec },
+    })
 }
 
 #[cfg(test)]

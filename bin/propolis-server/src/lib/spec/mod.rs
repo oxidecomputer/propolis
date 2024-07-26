@@ -13,12 +13,14 @@
 //! representation to take forms that might otherwise be hard to change in a
 //! backward-compatible way.
 
+use std::collections::HashMap;
+
 use propolis_api_types::instance_spec::{
     components::{
         backends::VirtioNetworkBackend,
         board::Board,
         devices::{
-            PciPciBridge as PciPciBridgeSpec, QemuPvpanic as QemuPvpanicSpec,
+            PciPciBridge, QemuPvpanic as QemuPvpanicDesc, SerialPortNumber,
         },
     },
     v0::*,
@@ -39,14 +41,12 @@ mod config_toml;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,
-    pub disks: Vec<Disk>,
-    pub nics: Vec<Nic>,
+    pub disks: HashMap<String, Disk>,
+    pub nics: HashMap<String, Nic>,
 
-    // TODO(#735): Preserve device names for identification purposes.
-    pub serial: [SerialPort; 4],
+    pub serial: HashMap<SerialPortNumber, SerialPortUser>,
 
-    // TODO(#735): Preserve device names for identification purposes.
-    pub pci_pci_bridges: Vec<PciPciBridge>,
+    pub pci_pci_bridges: HashMap<String, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
 
     #[cfg(feature = "falcon")]
@@ -57,7 +57,6 @@ pub(crate) struct Spec {
 /// API request or a config TOML entry.
 #[derive(Clone, Debug)]
 pub struct Disk {
-    pub device_name: String,
     pub device_spec: StorageDeviceV0,
     pub backend_name: String,
     pub backend_spec: StorageBackendV0,
@@ -65,38 +64,29 @@ pub struct Disk {
 
 #[derive(Clone, Debug)]
 pub struct Nic {
-    pub device_name: String,
     pub device_spec: NetworkDeviceV0,
     pub backend_name: String,
     pub backend_spec: VirtioNetworkBackend,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SerialPort {
-    #[default]
-    Disabled,
-    Enabled,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerialPortUser {
+    Standard,
 
     #[cfg(feature = "falcon")]
     SoftNpu,
 }
 
 #[derive(Clone, Debug)]
-pub struct QemuPvpanic(pub QemuPvpanicSpec);
-
-#[derive(Clone, Debug)]
-pub struct PciPciBridge(pub PciPciBridgeSpec);
-
-impl PciPciBridge {
-    pub fn name(&self) -> String {
-        format!("pci-bridge-{}", self.0.downstream_bus)
-    }
+pub struct QemuPvpanic {
+    #[allow(dead_code)]
+    pub name: String,
+    pub spec: QemuPvpanicDesc,
 }
 
 #[cfg(feature = "falcon")]
 #[derive(Clone, Debug)]
 pub struct SoftNpuPort {
-    pub name: String,
     pub backend_name: String,
     pub backend_spec: DlpiNetworkBackend,
 }
@@ -105,7 +95,37 @@ pub struct SoftNpuPort {
 #[derive(Clone, Debug, Default)]
 pub struct SoftNpu {
     pub pci_port: Option<SoftNpuPciPort>,
-    pub ports: Vec<SoftNpuPort>,
+    pub ports: HashMap<String, SoftNpuPort>,
+    pub p9_device: Option<SoftNpuP9>,
+    pub p9fs: Option<P9fs>,
+}
+
+struct ParsedDiskRequest {
+    name: String,
+    disk: Disk,
+}
+
+struct ParsedNicRequest {
+    name: String,
+    nic: Nic,
+}
+
+struct ParsedPciBridgeRequest {
+    name: String,
+    bridge: PciPciBridge,
+}
+
+#[cfg(feature = "falcon")]
+struct ParsedSoftNpuPort {
+    name: String,
+    port: SoftNpuPort,
+}
+
+#[cfg(feature = "falcon")]
+#[derive(Default)]
+struct ParsedSoftNpu {
+    pub pci_port: Option<SoftNpuPciPort>,
+    pub ports: Vec<ParsedSoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
 }

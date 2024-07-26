@@ -143,9 +143,10 @@ fn instance_spec_from_request(
     #[cfg(feature = "falcon")]
     spec_builder.set_softnpu_com4()?;
 
-    spec_builder.add_pvpanic_device(spec::QemuPvpanic(QemuPvpanic {
-        enable_isa: true,
-    }))?;
+    spec_builder.add_pvpanic_device(spec::QemuPvpanic {
+        name: "pvpanic".to_string(),
+        spec: QemuPvpanic { enable_isa: true },
+    })?;
 
     Ok(spec_builder.finish())
 }

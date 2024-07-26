@@ -670,13 +670,7 @@ impl StateDriver {
             })?
             .clone();
 
-        // TODO(gjc) would be better off with a map in the spec type, but this
-        // will do for now
-        let Some(disk) = objects
-            .instance_spec_mut()
-            .disks
-            .iter_mut()
-            .find(|disk| disk.device_name == disk_name)
+        let Some(disk) = objects.instance_spec_mut().disks.get_mut(&disk_name)
         else {
             return Err(spec_element_not_found(&disk_name));
         };

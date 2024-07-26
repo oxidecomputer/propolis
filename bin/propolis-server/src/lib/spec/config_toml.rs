@@ -9,9 +9,7 @@ use std::str::{FromStr, ParseBoolError};
 use propolis_api_types::instance_spec::{
     components::{
         backends::{FileStorageBackend, VirtioNetworkBackend},
-        devices::{
-            NvmeDisk, PciPciBridge as BridgeSpec, VirtioDisk, VirtioNic,
-        },
+        devices::{NvmeDisk, PciPciBridge, VirtioDisk, VirtioNic},
     },
     v0::{NetworkDeviceV0, StorageBackendV0, StorageDeviceV0},
     PciPath,
@@ -23,15 +21,14 @@ use propolis_api_types::instance_spec::components::devices::{
     P9fs, SoftNpuP9, SoftNpuPciPort,
 };
 
-#[cfg(feature = "falcon")]
-use super::SoftNpuPort;
-
 use crate::config;
 
-use super::{Disk, Nic, PciPciBridge};
+use super::{
+    Disk, Nic, ParsedDiskRequest, ParsedNicRequest, ParsedPciBridgeRequest,
+};
 
 #[cfg(feature = "falcon")]
-use super::SoftNpu;
+use super::{ParsedSoftNpu, ParsedSoftNpuPort, SoftNpuPort};
 
 #[derive(Debug, Error)]
 pub(crate) enum ConfigTomlError {
@@ -80,12 +77,12 @@ pub(crate) enum ConfigTomlError {
 #[derive(Default)]
 pub(super) struct ParsedConfig {
     pub(super) enable_pcie: bool,
-    pub(super) disks: Vec<Disk>,
-    pub(super) nics: Vec<Nic>,
-    pub(super) pci_bridges: Vec<PciPciBridge>,
+    pub(super) disks: Vec<ParsedDiskRequest>,
+    pub(super) nics: Vec<ParsedNicRequest>,
+    pub(super) pci_bridges: Vec<ParsedPciBridgeRequest>,
 
     #[cfg(feature = "falcon")]
-    pub(super) softnpu: SoftNpu,
+    pub(super) softnpu: ParsedSoftNpu,
 }
 
 impl TryFrom<&config::Config> for ParsedConfig {
@@ -138,11 +135,9 @@ impl TryFrom<&config::Config> for ParsedConfig {
                         backend_config,
                     )?;
 
-                    parsed.disks.push(Disk {
-                        device_name: device_name.to_owned(),
-                        device_spec,
-                        backend_name,
-                        backend_spec,
+                    parsed.disks.push(ParsedDiskRequest {
+                        name: device_name.to_owned(),
+                        disk: Disk { device_spec, backend_name, backend_spec },
                     });
                 }
                 "pci-virtio-viona" => {
@@ -284,7 +279,7 @@ pub(super) fn parse_storage_device_from_config(
 pub(super) fn parse_network_device_from_config(
     name: &str,
     device: &config::Device,
-) -> Result<Nic, ConfigTomlError> {
+) -> Result<ParsedNicRequest, ConfigTomlError> {
     let vnic_name = device
         .get_string("vnic")
         .ok_or_else(|| ConfigTomlError::NoVnicName(name.to_owned()))?;
@@ -304,20 +299,27 @@ pub(super) fn parse_network_device_from_config(
         pci_path,
     });
 
-    Ok(Nic { device_name, device_spec, backend_name, backend_spec })
+    Ok(ParsedNicRequest {
+        name: device_name,
+        nic: Nic { device_spec, backend_name, backend_spec },
+    })
 }
 
 pub(super) fn parse_pci_bridge_from_config(
     bridge: &config::PciBridge,
-) -> Result<PciPciBridge, ConfigTomlError> {
+) -> Result<ParsedPciBridgeRequest, ConfigTomlError> {
     let pci_path = PciPath::from_str(&bridge.pci_path).map_err(|e| {
         ConfigTomlError::PciPathParseFailed(bridge.pci_path.to_string(), e)
     })?;
 
-    Ok(PciPciBridge(BridgeSpec {
-        downstream_bus: bridge.downstream_bus,
-        pci_path,
-    }))
+    let name = format!("pci-bridge-{}", bridge.pci_path);
+    Ok(ParsedPciBridgeRequest {
+        name,
+        bridge: PciPciBridge {
+            downstream_bus: bridge.downstream_bus,
+            pci_path,
+        },
+    })
 }
 
 #[cfg(feature = "falcon")]
@@ -348,17 +350,21 @@ pub(super) fn parse_softnpu_pci_port_from_config(
 pub(super) fn parse_softnpu_port_from_config(
     name: &str,
     device: &config::Device,
-) -> Result<SoftNpuPort, ConfigTomlError> {
+) -> Result<ParsedSoftNpuPort, ConfigTomlError> {
     use propolis_api_types::instance_spec::components::backends::DlpiNetworkBackend;
 
     let vnic_name = device
         .get_string("vnic")
         .ok_or_else(|| ConfigTomlError::NoVnicName(name.to_owned()))?;
 
-    Ok(SoftNpuPort {
+    Ok(ParsedSoftNpuPort {
         name: name.to_owned(),
-        backend_name: vnic_name.to_owned(),
-        backend_spec: DlpiNetworkBackend { vnic_name: vnic_name.to_owned() },
+        port: SoftNpuPort {
+            backend_name: vnic_name.to_owned(),
+            backend_spec: DlpiNetworkBackend {
+                vnic_name: vnic_name.to_owned(),
+            },
+        },
     })
 }
 

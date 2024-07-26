@@ -10,7 +10,7 @@ use propolis_api_types::{
     instance_spec::{
         components::{
             board::{Board, Chipset, I440Fx},
-            devices::SerialPortNumber,
+            devices::{PciPciBridge, SerialPortNumber},
         },
         v0::{NetworkDeviceV0, StorageDeviceV0},
         PciPath,
@@ -24,16 +24,16 @@ use propolis_api_types::instance_spec::components::devices::{
     P9fs, SoftNpuP9, SoftNpuPciPort,
 };
 
-use crate::config;
+use crate::{config, spec::SerialPortUser};
 
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    Disk, Nic, PciPciBridge, QemuPvpanic,
+    Disk, Nic, QemuPvpanic,
 };
 
 #[cfg(feature = "falcon")]
-use super::{SoftNpu, SoftNpuPort};
+use super::{ParsedSoftNpu, SoftNpuPort};
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -112,7 +112,8 @@ impl SpecBuilder {
         &mut self,
         nic: &NetworkInterfaceRequest,
     ) -> Result<(), SpecBuilderError> {
-        self.add_network_device(api_request::parse_nic_from_request(nic)?)?;
+        let parsed = api_request::parse_nic_from_request(nic)?;
+        self.add_network_device(parsed.name, parsed.nic)?;
         Ok(())
     }
 
@@ -122,7 +123,8 @@ impl SpecBuilder {
         &mut self,
         disk: &DiskRequest,
     ) -> Result<(), SpecBuilderError> {
-        self.add_storage_device(api_request::parse_disk_from_request(disk)?)?;
+        let parsed = api_request::parse_disk_from_request(disk)?;
+        self.add_storage_device(parsed.name, parsed.disk)?;
         Ok(())
     }
 
@@ -132,10 +134,8 @@ impl SpecBuilder {
         &mut self,
         base64: String,
     ) -> Result<(), SpecBuilderError> {
-        self.add_storage_device(api_request::parse_cloud_init_from_request(
-            base64,
-        )?)?;
-
+        let parsed = api_request::parse_cloud_init_from_request(base64)?;
+        self.add_storage_device(parsed.name, parsed.disk)?;
         Ok(())
     }
 
@@ -151,15 +151,15 @@ impl SpecBuilder {
         i440fx.enable_pcie = parsed.enable_pcie;
 
         for disk in parsed.disks {
-            self.add_storage_device(disk)?;
+            self.add_storage_device(disk.name, disk.disk)?;
         }
 
         for nic in parsed.nics {
-            self.add_network_device(nic)?;
+            self.add_network_device(nic.name, nic.nic)?;
         }
 
         for bridge in parsed.pci_bridges {
-            self.add_pci_bridge(bridge)?;
+            self.add_pci_bridge(bridge.name, bridge.bridge)?;
         }
 
         #[cfg(feature = "falcon")]
@@ -171,14 +171,14 @@ impl SpecBuilder {
     #[cfg(feature = "falcon")]
     fn add_parsed_softnpu_devices(
         &mut self,
-        devices: SoftNpu,
+        devices: ParsedSoftNpu,
     ) -> Result<(), SpecBuilderError> {
         if let Some(pci_port) = devices.pci_port {
             self.set_softnpu_pci_port(pci_port)?;
         }
 
         for port in devices.ports {
-            self.add_softnpu_port(port)?;
+            self.add_softnpu_port(port.name, port.port)?;
         }
 
         if let Some(p9) = devices.p9_device {
@@ -209,10 +209,11 @@ impl SpecBuilder {
     /// Adds a storage device with an associated backend.
     pub(super) fn add_storage_device(
         &mut self,
+        disk_name: String,
         disk: Disk,
     ) -> Result<&Self, SpecBuilderError> {
-        if self.component_names.contains(&disk.device_name) {
-            return Err(SpecBuilderError::ComponentNameInUse(disk.device_name));
+        if self.component_names.contains(&disk_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(disk_name));
         }
 
         if self.component_names.contains(&disk.backend_name) {
@@ -222,19 +223,21 @@ impl SpecBuilder {
         }
 
         self.register_pci_device(disk.device_spec.pci_path())?;
-        self.component_names.insert(disk.device_name.clone());
+        self.component_names.insert(disk_name.clone());
         self.component_names.insert(disk.backend_name.clone());
-        self.spec.disks.push(disk);
+        let _old = self.spec.disks.insert(disk_name, disk);
+        assert!(_old.is_none());
         Ok(self)
     }
 
     /// Adds a network device with an associated backend.
     pub(super) fn add_network_device(
         &mut self,
+        nic_name: String,
         nic: Nic,
     ) -> Result<&Self, SpecBuilderError> {
-        if self.component_names.contains(&nic.device_name) {
-            return Err(SpecBuilderError::ComponentNameInUse(nic.device_name));
+        if self.component_names.contains(&nic_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(nic_name));
         }
 
         if self.component_names.contains(&nic.backend_name) {
@@ -242,24 +245,26 @@ impl SpecBuilder {
         }
 
         self.register_pci_device(nic.device_spec.pci_path())?;
-        self.component_names.insert(nic.device_name.clone());
+        self.component_names.insert(nic_name.clone());
         self.component_names.insert(nic.backend_name.clone());
-        self.spec.nics.push(nic);
+        let _old = self.spec.nics.insert(nic_name, nic);
+        assert!(_old.is_none());
         Ok(self)
     }
 
     /// Adds a PCI-PCI bridge.
     pub fn add_pci_bridge(
         &mut self,
+        name: String,
         bridge: PciPciBridge,
     ) -> Result<&Self, SpecBuilderError> {
-        let name = bridge.name();
         if self.component_names.contains(&name) {
             return Err(SpecBuilderError::ComponentNameInUse(name));
         }
 
-        self.register_pci_device(bridge.0.pci_path)?;
-        self.spec.pci_pci_bridges.push(bridge);
+        self.register_pci_device(bridge.pci_path)?;
+        let _old = self.spec.pci_pci_bridges.insert(name, bridge);
+        assert!(_old.is_none());
         Ok(self)
     }
 
@@ -268,17 +273,9 @@ impl SpecBuilder {
         &mut self,
         port: SerialPortNumber,
     ) -> Result<&Self, SpecBuilderError> {
-        let idx = match port {
-            SerialPortNumber::Com1 => 0,
-            SerialPortNumber::Com2 => 1,
-            SerialPortNumber::Com3 => 2,
-            SerialPortNumber::Com4 => 3,
-        };
-
-        if self.spec.serial[idx] != super::SerialPort::Disabled {
+        if self.spec.serial.insert(port, SerialPortUser::Standard).is_some() {
             Err(SpecBuilderError::SerialPortInUse(port))
         } else {
-            self.spec.serial[idx] = super::SerialPort::Enabled;
             Ok(self)
         }
     }
@@ -297,10 +294,10 @@ impl SpecBuilder {
 
     #[cfg(feature = "falcon")]
     pub fn set_softnpu_com4(&mut self) -> Result<&Self, SpecBuilderError> {
-        if self.spec.serial[3] != super::SerialPort::Disabled {
-            Err(SpecBuilderError::SerialPortInUse(SerialPortNumber::Com4))
+        let port = SerialPortNumber::Com4;
+        if self.spec.serial.insert(port, SerialPortUser::SoftNpu).is_some() {
+            Err(SpecBuilderError::SerialPortInUse(port))
         } else {
-            self.spec.serial[3] = super::SerialPort::SoftNpu;
             Ok(self)
         }
     }
@@ -335,10 +332,11 @@ impl SpecBuilder {
     #[cfg(feature = "falcon")]
     pub fn add_softnpu_port(
         &mut self,
+        port_name: String,
         port: SoftNpuPort,
     ) -> Result<&Self, SpecBuilderError> {
-        if self.component_names.contains(&port.name) {
-            return Err(SpecBuilderError::ComponentNameInUse(port.name));
+        if self.component_names.contains(&port_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(port_name));
         }
 
         if self.component_names.contains(&port.backend_name) {
@@ -347,7 +345,8 @@ impl SpecBuilder {
             ));
         }
 
-        self.spec.softnpu.ports.push(port);
+        let _old = self.spec.softnpu.ports.insert(port_name, port);
+        assert!(_old.is_none());
         Ok(self)
     }
 
