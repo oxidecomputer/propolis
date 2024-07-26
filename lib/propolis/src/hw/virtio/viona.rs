@@ -481,7 +481,16 @@ impl MigrateMulti for PciVirtioViona {
         offer: &mut PayloadOffers,
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        <dyn PciVirtio>::import(self, offer, ctx)
+        <dyn PciVirtio>::import(self, offer, ctx)?;
+
+        let feat = self.virtio_state.negotiated_features();
+        self.hdl.set_features(feat).map_err(|e| {
+            MigrateStateError::ImportFailed(format!(
+                "error while setting viona features ({feat:x}): {e:?}"
+            ))
+        })?;
+
+        Ok(())
     }
 }
 

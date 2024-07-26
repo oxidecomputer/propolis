@@ -123,10 +123,7 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
     }
     fn interrupt_mode_change(&self, mode: pci::IntrMode) {
         let vs = self.virtio_state();
-        vs.set_intr_mode(self.pci_state(), mode.into());
-
-        // Make sure the correct legacy register map is used
-        vs.map_which.store(mode == pci::IntrMode::Msix, Ordering::SeqCst);
+        vs.set_intr_mode(self.pci_state(), mode.into(), false);
     }
     fn msi_update(&self, info: pci::MsiUpdate) {
         let vs = self.virtio_state();
@@ -423,7 +420,7 @@ impl PciVirtioState {
         }
     }
 
-    /// Indicate to the guest that the VirtIO device has encounted an error of
+    /// Indicate to the guest that the VirtIO device has encountered an error of
     /// some sort and requires a reset.
     pub fn set_needs_reset(&self, _dev: &dyn VirtioDevice) {
         let mut state = self.state.lock().unwrap();
@@ -471,7 +468,12 @@ impl PciVirtioState {
         ps.reset(dev);
     }
 
-    fn set_intr_mode(&self, pci_state: &pci::DeviceState, new_mode: IntrMode) {
+    fn set_intr_mode(
+        &self,
+        pci_state: &pci::DeviceState,
+        new_mode: IntrMode,
+        is_import: bool,
+    ) {
         let mut state = self.state.lock().unwrap();
         let old_mode = state.intr_mode;
         if new_mode == old_mode {
@@ -502,9 +504,11 @@ impl PciVirtioState {
         }
 
         state.intr_mode = new_mode;
+        // Make sure the correct legacy register map is used
+        self.map_which.store(new_mode == IntrMode::Msi, Ordering::SeqCst);
         match new_mode {
             IntrMode::IsrLintr => {
-                self.isr_state.enable();
+                self.isr_state.enable(is_import);
             }
             IntrMode::Msi => {
                 let hdl = pci_state.msix_hdl().unwrap();
@@ -574,7 +578,7 @@ impl MigrateMulti for PciVirtioState {
         state.nego_feat = dev.nego_feat;
         state.msix_cfg_vec = dev.msix_cfg_vec;
         state.msix_queue_vec = dev.msix_queue_vec;
-        self.isr_state.write(dev.isr_queue, dev.isr_cfg);
+        self.isr_state.import(dev.isr_queue, dev.isr_cfg);
 
         // VirtQueue state
         for (vq, vq_input) in self.queues.iter().zip(input.queues.into_iter()) {
@@ -607,16 +611,12 @@ impl MigrateMulti for dyn PciVirtio {
         let ps = self.pci_state();
         let vs = self.virtio_state();
 
-        // Keep Virtio in ISR-only mode (no lintr-pin or MSIs) during import so
-        // it does not spuriously emit any observable interrupt events until all
-        // of the state can be made consistent prior to any re-enabling.
-        vs.set_intr_mode(ps, IntrMode::IsrOnly);
-
         MigrateMulti::import(vs, offer, ctx)?;
         MigrateMulti::import(ps, offer, ctx)?;
 
-        // Reconcile interrupt mode now that PCI state is populated too
-        vs.set_intr_mode(ps, ps.get_intr_mode().into());
+        // Now that PCI state is populated, apply its calculated interrupt mode
+        // to the VirtIO state.
+        vs.set_intr_mode(ps, ps.get_intr_mode().into(), true);
 
         Ok(())
     }
@@ -625,7 +625,9 @@ impl MigrateMulti for dyn PciVirtio {
 #[derive(Default)]
 struct IsrInner {
     disabled: bool,
+    /// Is an ISR asserted for virtqueue(s) in this device?
     intr_queue: bool,
+    /// Is an ISR asserted for a config change in this device?
     intr_cfg: bool,
     pin: Option<Arc<dyn IntrPin>>,
 }
@@ -634,12 +636,10 @@ impl IsrInner {
         self.intr_queue || self.intr_cfg
     }
 }
-struct IsrState {
-    inner: Mutex<IsrInner>,
-}
+struct IsrState(Mutex<IsrInner>);
 impl IsrState {
     fn new() -> Arc<Self> {
-        Arc::new(Self { inner: Mutex::new(IsrInner::default()) })
+        Arc::new(Self(Mutex::new(IsrInner::default())))
     }
     /// Raise queue ISR condition
     fn raise_queue(&self) {
@@ -667,19 +667,25 @@ impl IsrState {
     }
     /// Read ISR value.  Returns (`intr_queue`, `intr_cfg`)
     fn read(&self) -> (bool, bool) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.0.lock().unwrap();
         (inner.intr_queue, inner.intr_cfg)
     }
-    /// Write ISR value
-    fn write(&self, intr_queue: bool, intr_cfg: bool) {
-        self.sync_pin(|inner| {
-            inner.intr_queue = intr_queue;
-            inner.intr_cfg = intr_cfg;
-        });
+    /// Import ISR value
+    ///
+    /// Sets the internal ISR value without propagating the state to the
+    /// underlying pin, as is necessary when doing a migration related import of
+    /// various device states.
+    fn import(&self, intr_queue: bool, intr_cfg: bool) {
+        let mut inner = self.0.lock().unwrap();
+        inner.intr_queue = intr_queue;
+        inner.intr_cfg = intr_cfg;
+        if let Some(pin) = inner.pin.as_ref() {
+            pin.import_state(inner.raised());
+        }
     }
     /// Sync ISR state with any associated interrupt pin
     fn sync_pin(&self, f: impl FnOnce(&mut IsrInner)) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.0.lock().unwrap();
 
         let raised_before = inner.raised();
         f(&mut inner);
@@ -701,7 +707,7 @@ impl IsrState {
     }
     /// Disable state emission via interrupt pin
     fn disable(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.0.lock().unwrap();
         if !inner.disabled {
             if let Some(pin) = inner.pin.as_ref() {
                 pin.deassert();
@@ -710,10 +716,10 @@ impl IsrState {
         }
     }
     /// Enable state emission via interrupt pin
-    fn enable(&self) {
-        let mut inner = self.inner.lock().unwrap();
+    fn enable(&self, is_import: bool) {
+        let mut inner = self.0.lock().unwrap();
         if inner.disabled {
-            if inner.intr_queue || inner.intr_cfg {
+            if inner.raised() && !is_import {
                 if let Some(pin) = inner.pin.as_ref() {
                     pin.assert();
                 }
@@ -721,26 +727,28 @@ impl IsrState {
             inner.disabled = false;
         }
     }
-    /// Set underlying interrupt pin. (Must be performed only once)
+    /// Set underlying interrupt pin.
+    ///
+    /// # Panics
+    /// If called more than once on a given [IsrState]
     fn set_pin(&self, pin: Arc<dyn IntrPin>) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.0.lock().unwrap();
         let old = inner.pin.replace(pin);
-        // XXX: strict for now
-        assert!(old.is_none());
+        // Loosen this in the future if/when PCI device attachment logic becomes
+        // more sophisticated.
+        assert!(old.is_none(), "set_pin() should not be called more than once");
     }
 }
 
-struct IsrIntr {
-    state: Weak<IsrState>,
-}
+struct IsrIntr(Weak<IsrState>);
 impl IsrIntr {
     fn new(state: &Arc<IsrState>) -> Box<Self> {
-        Box::new(Self { state: Arc::downgrade(state) })
+        Box::new(Self(Arc::downgrade(state)))
     }
 }
 impl VirtioIntr for IsrIntr {
     fn notify(&self) {
-        if let Some(state) = Weak::upgrade(&self.state) {
+        if let Some(state) = Weak::upgrade(&self.0) {
             state.raise_queue()
         }
     }
