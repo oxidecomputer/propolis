@@ -15,14 +15,16 @@ use propolis_api_types::{
             },
             devices::{NvmeDisk, VirtioDisk, VirtioNic},
         },
-        v0::{NetworkDeviceV0, StorageBackendV0, StorageDeviceV0},
         PciPath,
     },
     DiskRequest, NetworkInterfaceRequest, Slot,
 };
 use thiserror::Error;
 
-use super::{Disk, Nic, ParsedDiskRequest, ParsedNicRequest};
+use super::{
+    Disk, Nic, ParsedDiskRequest, ParsedNicRequest, StorageBackend,
+    StorageDevice,
+};
 
 #[derive(Debug, Error)]
 pub(crate) enum DeviceRequestError {
@@ -72,11 +74,11 @@ pub(super) fn parse_disk_from_request(
     let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
     let backend_name = format!("{}-backend", disk.name);
     let device_spec = match disk.device.as_ref() {
-        "virtio" => StorageDeviceV0::VirtioDisk(VirtioDisk {
+        "virtio" => StorageDevice::Virtio(VirtioDisk {
             backend_name: backend_name.clone(),
             pci_path,
         }),
-        "nvme" => StorageDeviceV0::NvmeDisk(NvmeDisk {
+        "nvme" => StorageDevice::Nvme(NvmeDisk {
             backend_name: backend_name.clone(),
             pci_path,
         }),
@@ -89,7 +91,7 @@ pub(super) fn parse_disk_from_request(
     };
 
     let device_name = disk.name.clone();
-    let backend_spec = StorageBackendV0::Crucible(CrucibleStorageBackend {
+    let backend_spec = StorageBackend::Crucible(CrucibleStorageBackend {
         request_json: serde_json::to_string(&disk.volume_construction_request)
             .map_err(|e| {
                 DeviceRequestError::SerializationError(disk.name.clone(), e)
@@ -110,9 +112,9 @@ pub(super) fn parse_cloud_init_from_request(
     let pci_path = slot_to_pci_path(Slot(0), SlotType::CloudInit)?;
     let backend_name = name.to_string();
     let backend_spec =
-        StorageBackendV0::Blob(BlobStorageBackend { base64, readonly: true });
+        StorageBackend::Blob(BlobStorageBackend { base64, readonly: true });
 
-    let device_spec = StorageDeviceV0::VirtioDisk(VirtioDisk {
+    let device_spec = StorageDevice::Virtio(VirtioDisk {
         backend_name: name.to_string(),
         pci_path,
     });
@@ -128,11 +130,11 @@ pub(super) fn parse_nic_from_request(
 ) -> Result<ParsedNicRequest, DeviceRequestError> {
     let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
     let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
-    let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
+    let device_spec = VirtioNic {
         backend_name: backend_name.clone(),
         interface_id: nic.interface_id,
         pci_path,
-    });
+    };
 
     let backend_spec = VirtioNetworkBackend { vnic_name: nic.name.to_string() };
     Ok(ParsedNicRequest {
@@ -148,13 +150,13 @@ mod test {
 
     use super::*;
 
-    fn check_parsed_storage_device_backend_pointer(parsed: &Disk) {
-        let device_to_backend = match &parsed.device_spec {
-            StorageDeviceV0::VirtioDisk(d) => d.backend_name.clone(),
-            StorageDeviceV0::NvmeDisk(d) => d.backend_name.clone(),
+    fn check_parsed_storage_device_backend_pointer(parsed: &ParsedDiskRequest) {
+        let device_to_backend = match &parsed.disk.device_spec {
+            StorageDevice::Virtio(d) => d.backend_name.clone(),
+            StorageDevice::Nvme(d) => d.backend_name.clone(),
         };
 
-        assert_eq!(device_to_backend, parsed.backend_name);
+        assert_eq!(device_to_backend, parsed.disk.backend_name);
     }
 
     #[test]
@@ -186,8 +188,8 @@ mod test {
         };
 
         let parsed = parse_nic_from_request(&req).unwrap();
-        let NetworkDeviceV0::VirtioNic(nic) = &parsed.device_spec;
-        assert_eq!(nic.backend_name, parsed.backend_name);
+        let VirtioNic { backend_name, .. } = &parsed.nic.device_spec;
+        assert_eq!(*backend_name, parsed.nic.backend_name);
     }
 
     #[test]

@@ -50,21 +50,23 @@ impl From<Spec> for InstanceSpecV0 {
             let _old = spec
                 .devices
                 .storage_devices
-                .insert(disk_name, disk.device_spec);
+                .insert(disk_name, disk.device_spec.into());
 
             assert!(_old.is_none());
 
             let _old = spec
                 .backends
                 .storage_backends
-                .insert(disk.backend_name, disk.backend_spec);
+                .insert(disk.backend_name, disk.backend_spec.into());
 
             assert!(_old.is_none());
         }
 
         for (nic_name, nic) in val.nics {
-            let _old =
-                spec.devices.network_devices.insert(nic_name, nic.device_spec);
+            let _old = spec
+                .devices
+                .network_devices
+                .insert(nic_name, NetworkDeviceV0::VirtioNic(nic.device_spec));
 
             assert!(_old.is_none());
 
@@ -154,7 +156,11 @@ impl TryFrom<InstanceSpecV0> for Spec {
 
             builder.add_storage_device(
                 device_name,
-                Disk { device_spec, backend_name, backend_spec },
+                Disk {
+                    device_spec: device_spec.into(),
+                    backend_name,
+                    backend_spec: backend_spec.into(),
+                },
             )?;
         }
 
@@ -163,10 +169,8 @@ impl TryFrom<InstanceSpecV0> for Spec {
         }
 
         for (device_name, device_spec) in value.devices.network_devices {
-            let backend_name = match &device_spec {
-                NetworkDeviceV0::VirtioNic(nic) => &nic.backend_name,
-            };
-
+            let NetworkDeviceV0::VirtioNic(device_spec) = device_spec;
+            let backend_name = &device_spec.backend_name;
             let (backend_name, backend_spec) = value
                 .backends
                 .network_backends

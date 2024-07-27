@@ -17,13 +17,17 @@ use std::collections::HashMap;
 
 use propolis_api_types::instance_spec::{
     components::{
-        backends::VirtioNetworkBackend,
+        backends::{
+            BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
+            VirtioNetworkBackend,
+        },
         board::Board,
         devices::{
-            PciPciBridge, QemuPvpanic as QemuPvpanicDesc, SerialPortNumber,
+            NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
+            SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
-    v0::*,
+    v0::{StorageBackendV0, StorageDeviceV0},
     PciPath,
 };
 
@@ -56,15 +60,75 @@ pub(crate) struct Spec {
 /// Describes a storage device/backend pair parsed from an input source like an
 /// API request or a config TOML entry.
 #[derive(Clone, Debug)]
+pub enum StorageDevice {
+    Virtio(VirtioDisk),
+    Nvme(NvmeDisk),
+}
+
+impl StorageDevice {
+    pub fn pci_path(&self) -> PciPath {
+        match self {
+            StorageDevice::Virtio(disk) => disk.pci_path,
+            StorageDevice::Nvme(disk) => disk.pci_path,
+        }
+    }
+}
+
+impl From<StorageDevice> for StorageDeviceV0 {
+    fn from(value: StorageDevice) -> Self {
+        match value {
+            StorageDevice::Virtio(d) => Self::VirtioDisk(d),
+            StorageDevice::Nvme(d) => Self::NvmeDisk(d),
+        }
+    }
+}
+
+impl From<StorageDeviceV0> for StorageDevice {
+    fn from(value: StorageDeviceV0) -> Self {
+        match value {
+            StorageDeviceV0::VirtioDisk(d) => Self::Virtio(d),
+            StorageDeviceV0::NvmeDisk(d) => Self::Nvme(d),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum StorageBackend {
+    Crucible(CrucibleStorageBackend),
+    File(FileStorageBackend),
+    Blob(BlobStorageBackend),
+}
+
+impl From<StorageBackend> for StorageBackendV0 {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::Crucible(be),
+            StorageBackend::File(be) => Self::File(be),
+            StorageBackend::Blob(be) => Self::Blob(be),
+        }
+    }
+}
+
+impl From<StorageBackendV0> for StorageBackend {
+    fn from(value: StorageBackendV0) -> Self {
+        match value {
+            StorageBackendV0::Crucible(be) => Self::Crucible(be),
+            StorageBackendV0::File(be) => Self::File(be),
+            StorageBackendV0::Blob(be) => Self::Blob(be),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Disk {
-    pub device_spec: StorageDeviceV0,
+    pub device_spec: StorageDevice,
     pub backend_name: String,
-    pub backend_spec: StorageBackendV0,
+    pub backend_spec: StorageBackend,
 }
 
 #[derive(Clone, Debug)]
 pub struct Nic {
-    pub device_spec: NetworkDeviceV0,
+    pub device_spec: VirtioNic,
     pub backend_name: String,
     pub backend_spec: VirtioNetworkBackend,
 }

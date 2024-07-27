@@ -11,7 +11,6 @@ use propolis_api_types::instance_spec::{
         backends::{FileStorageBackend, VirtioNetworkBackend},
         devices::{NvmeDisk, PciPciBridge, VirtioDisk, VirtioNic},
     },
-    v0::{NetworkDeviceV0, StorageBackendV0, StorageDeviceV0},
     PciPath,
 };
 use thiserror::Error;
@@ -25,6 +24,7 @@ use crate::config;
 
 use super::{
     Disk, Nic, ParsedDiskRequest, ParsedNicRequest, ParsedPciBridgeRequest,
+    StorageBackend, StorageDevice,
 };
 
 #[cfg(feature = "falcon")]
@@ -114,12 +114,10 @@ impl TryFrom<&config::Config> for ParsedConfig {
                         parse_storage_device_from_config(device_name, device)?;
 
                     let backend_name = match &device_spec {
-                        StorageDeviceV0::VirtioDisk(disk) => {
+                        StorageDevice::Virtio(disk) => {
                             disk.backend_name.clone()
                         }
-                        StorageDeviceV0::NvmeDisk(disk) => {
-                            disk.backend_name.clone()
-                        }
+                        StorageDevice::Nvme(disk) => disk.backend_name.clone(),
                     };
 
                     let backend_config =
@@ -191,9 +189,9 @@ impl TryFrom<&config::Config> for ParsedConfig {
 pub(super) fn parse_storage_backend_from_config(
     name: &str,
     backend: &config::BlockDevice,
-) -> Result<StorageBackendV0, ConfigTomlError> {
+) -> Result<StorageBackend, ConfigTomlError> {
     let backend_spec = match backend.bdtype.as_str() {
-        "file" => StorageBackendV0::File(FileStorageBackend {
+        "file" => StorageBackend::File(FileStorageBackend {
             path: backend
                 .options
                 .get("path")
@@ -233,7 +231,7 @@ pub(super) fn parse_storage_backend_from_config(
 pub(super) fn parse_storage_device_from_config(
     name: &str,
     device: &config::Device,
-) -> Result<StorageDeviceV0, ConfigTomlError> {
+) -> Result<StorageDevice, ConfigTomlError> {
     enum Interface {
         Virtio,
         Nvme,
@@ -268,10 +266,10 @@ pub(super) fn parse_storage_device_from_config(
 
     Ok(match interface {
         Interface::Virtio => {
-            StorageDeviceV0::VirtioDisk(VirtioDisk { backend_name, pci_path })
+            StorageDevice::Virtio(VirtioDisk { backend_name, pci_path })
         }
         Interface::Nvme => {
-            StorageDeviceV0::NvmeDisk(NvmeDisk { backend_name, pci_path })
+            StorageDevice::Nvme(NvmeDisk { backend_name, pci_path })
         }
     })
 }
@@ -290,14 +288,13 @@ pub(super) fn parse_network_device_from_config(
 
     let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
     let backend_spec = VirtioNetworkBackend { vnic_name: vnic_name.to_owned() };
-
-    let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
+    let device_spec = VirtioNic {
         backend_name: backend_name.clone(),
-        // We don't allow for configuration to specify the interface_id, so we
-        // generate a new one.
+        // NICs added by the configuration TOML have no control plane-
+        // supplied correlation IDs.
         interface_id: uuid::Uuid::nil(),
         pci_path,
-    });
+    };
 
     Ok(ParsedNicRequest {
         name: device_name,

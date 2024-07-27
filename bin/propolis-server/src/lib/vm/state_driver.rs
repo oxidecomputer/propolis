@@ -11,10 +11,8 @@ use std::{
 
 use anyhow::Context;
 use propolis_api_types::{
-    instance_spec::{
-        components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
-    },
-    InstanceState, MigrationState,
+    instance_spec::components::backends::CrucibleStorageBackend, InstanceState,
+    MigrationState,
 };
 use slog::{error, info};
 use tokio::sync::Notify;
@@ -24,6 +22,7 @@ use crate::{
     migrate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
+    spec::StorageBackend,
     vm::state_publisher::ExternalStateUpdate,
 };
 
@@ -675,7 +674,7 @@ impl StateDriver {
             return Err(spec_element_not_found(&disk_name));
         };
 
-        let StorageBackendV0::Crucible(CrucibleStorageBackend {
+        let StorageBackend::Crucible(CrucibleStorageBackend {
             request_json: old_vcr_json,
             readonly,
         }) = &disk.backend_spec
@@ -693,11 +692,10 @@ impl StateDriver {
                 )
             })?;
 
-        disk.backend_spec =
-            StorageBackendV0::Crucible(CrucibleStorageBackend {
-                readonly: *readonly,
-                request_json: new_vcr_json,
-            });
+        disk.backend_spec = StorageBackend::Crucible(CrucibleStorageBackend {
+            readonly: *readonly,
+            request_json: new_vcr_json,
+        });
 
         info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
 

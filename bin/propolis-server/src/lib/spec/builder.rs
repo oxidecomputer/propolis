@@ -12,7 +12,6 @@ use propolis_api_types::{
             board::{Board, Chipset, I440Fx},
             devices::{PciPciBridge, SerialPortNumber},
         },
-        v0::{NetworkDeviceV0, StorageDeviceV0},
         PciPath,
     },
     DiskRequest, InstanceProperties, NetworkInterfaceRequest,
@@ -62,27 +61,6 @@ pub(crate) struct SpecBuilder {
     spec: super::Spec,
     pci_paths: BTreeSet<PciPath>,
     component_names: BTreeSet<String>,
-}
-
-trait PciComponent {
-    fn pci_path(&self) -> PciPath;
-}
-
-impl PciComponent for StorageDeviceV0 {
-    fn pci_path(&self) -> PciPath {
-        match self {
-            StorageDeviceV0::VirtioDisk(disk) => disk.pci_path,
-            StorageDeviceV0::NvmeDisk(disk) => disk.pci_path,
-        }
-    }
-}
-
-impl PciComponent for NetworkDeviceV0 {
-    fn pci_path(&self) -> PciPath {
-        match self {
-            NetworkDeviceV0::VirtioNic(nic) => nic.pci_path,
-        }
-    }
 }
 
 impl SpecBuilder {
@@ -244,7 +222,7 @@ impl SpecBuilder {
             return Err(SpecBuilderError::ComponentNameInUse(nic.backend_name));
         }
 
-        self.register_pci_device(nic.device_spec.pci_path())?;
+        self.register_pci_device(nic.device_spec.pci_path)?;
         self.component_names.insert(nic_name.clone());
         self.component_names.insert(nic.backend_name.clone());
         let _old = self.spec.nics.insert(nic_name, nic);

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::spec;
+use crate::spec::{self, StorageBackend};
 use crate::stats::{
     track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
     VirtualMachine,
@@ -391,12 +391,12 @@ impl<'a> MachineInitializer<'a> {
 
     async fn create_storage_backend_from_spec(
         &self,
-        backend_spec: &instance_spec::v0::StorageBackendV0,
+        backend_spec: &StorageBackend,
         backend_name: &str,
         nexus_client: &Option<NexusClient>,
     ) -> Result<StorageBackendInstance, Error> {
         match backend_spec {
-            instance_spec::v0::StorageBackendV0::Crucible(spec) => {
+            StorageBackend::Crucible(spec) => {
                 info!(self.log, "Creating Crucible disk";
                       "backend_name" => backend_name);
 
@@ -433,7 +433,7 @@ impl<'a> MachineInitializer<'a> {
                 let crucible = Some((be.get_uuid().await?, be.clone()));
                 Ok(StorageBackendInstance { be, crucible })
             }
-            instance_spec::v0::StorageBackendV0::File(spec) => {
+            StorageBackend::File(spec) => {
                 info!(self.log, "Creating file disk backend";
                       "path" => &spec.path);
 
@@ -459,7 +459,7 @@ impl<'a> MachineInitializer<'a> {
 
                 Ok(StorageBackendInstance { be, crucible: None })
             }
-            instance_spec::v0::StorageBackendV0::Blob(spec) => {
+            StorageBackend::Blob(spec) => {
                 let bytes = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
                     &spec.base64,
@@ -520,10 +520,10 @@ impl<'a> MachineInitializer<'a> {
             let (device_interface, backend_name, pci_path) = match &disk
                 .device_spec
             {
-                instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
+                spec::StorageDevice::Virtio(disk) => {
                     (DeviceInterface::Virtio, &disk.backend_name, disk.pci_path)
                 }
-                instance_spec::v0::StorageDeviceV0::NvmeDisk(disk) => {
+                spec::StorageDevice::Nvme(disk) => {
                     (DeviceInterface::Nvme, &disk.backend_name, disk.pci_path)
                 }
             };
@@ -642,18 +642,16 @@ impl<'a> MachineInitializer<'a> {
 
         for (device_name, nic) in &self.spec.nics {
             info!(self.log, "Creating vNIC {}", device_name);
-            let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
-                &nic.device_spec;
-
-            let bdf: pci::Bdf = vnic_spec.pci_path.try_into().map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    format!(
-                        "Couldn't get PCI BDF for vNIC {}: {}",
-                        device_name, e
-                    ),
-                )
-            })?;
+            let bdf: pci::Bdf =
+                nic.device_spec.pci_path.try_into().map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Couldn't get PCI BDF for vNIC {}: {}",
+                            device_name, e
+                        ),
+                    )
+                })?;
 
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,
@@ -665,7 +663,7 @@ impl<'a> MachineInitializer<'a> {
 
             // Only push to interface_ids if kstat_sampler exists
             if let Some(ref mut ids) = interface_ids {
-                ids.push((vnic_spec.interface_id, viona.instance_id()?));
+                ids.push((nic.device_spec.interface_id, viona.instance_id()?));
             }
 
             chipset.pci_attach(bdf, viona);
