@@ -92,7 +92,7 @@ enum Args {
         ///
         /// IP:port - Register with the explicitly-provided socket address.
         #[clap(long, default_value_t = MetricRegistration::Disable)]
-        metrics_addr: MetricRegistration,
+        metric_addr: MetricRegistration,
 
         /// IP:Port for raw TCP access to VNC console
         #[clap(name = "VNC_IP:PORT", action)]
@@ -233,10 +233,10 @@ fn is_valid_listen_addr_for_dns(listen_addr: IpAddr) -> bool {
 /// This will return None if metrics are explicitly disabled.
 fn build_metric_configuration(
     log: &Logger,
-    metrics_addr: MetricRegistration,
+    metric_addr: MetricRegistration,
     listen_addr: IpAddr,
 ) -> anyhow::Result<Option<MetricsEndpointConfig>> {
-    let cfg = match metrics_addr {
+    let cfg = match metric_addr {
         MetricRegistration::Disable => {
             info!(
                 log,
@@ -272,7 +272,7 @@ fn main() -> anyhow::Result<()> {
     match args {
         Args::OpenApi => run_openapi()
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
-        Args::Run { cfg, propolis_addr, metrics_addr, vnc_addr, log_level } => {
+        Args::Run { cfg, propolis_addr, metric_addr, vnc_addr, log_level } => {
             let config = config::parse(cfg)?;
 
             // Dropshot configuration.
@@ -287,7 +287,7 @@ fn main() -> anyhow::Result<()> {
 
             let metric_config = build_metric_configuration(
                 &log,
-                metrics_addr,
+                metric_addr,
                 propolis_addr.ip(),
             )?;
 
