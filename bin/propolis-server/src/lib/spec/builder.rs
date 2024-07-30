@@ -4,7 +4,7 @@
 
 //! A builder for instance specs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use propolis_api_types::{
     instance_spec::{
@@ -28,7 +28,7 @@ use crate::{config, spec::SerialPortDevice};
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    Disk, Nic, QemuPvpanic,
+    Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
@@ -60,6 +60,7 @@ pub(crate) enum SpecBuilderError {
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
     pci_paths: BTreeSet<PciPath>,
+    serial_ports: HashSet<SerialPortNumber>,
     component_names: BTreeSet<String>,
 }
 
@@ -241,6 +242,7 @@ impl SpecBuilder {
         }
 
         self.register_pci_device(bridge.pci_path)?;
+        self.component_names.insert(name.clone());
         let _old = self.spec.pci_pci_bridges.insert(name, bridge);
         assert!(_old.is_none());
         Ok(self)
@@ -249,35 +251,60 @@ impl SpecBuilder {
     /// Adds a serial port.
     pub fn add_serial_port(
         &mut self,
-        port: SerialPortNumber,
+        name: String,
+        num: SerialPortNumber,
     ) -> Result<&Self, SpecBuilderError> {
-        if self.spec.serial.insert(port, SerialPortDevice::Uart).is_some() {
-            Err(SpecBuilderError::SerialPortInUse(port))
-        } else {
-            Ok(self)
+        if self.component_names.contains(&name) {
+            return Err(SpecBuilderError::ComponentNameInUse(name));
         }
+
+        if self.serial_ports.contains(&num) {
+            return Err(SpecBuilderError::SerialPortInUse(num));
+        }
+
+        let desc = SerialPort { num, device: SerialPortDevice::Uart };
+        self.spec.serial.insert(name.clone(), desc);
+        self.component_names.insert(name);
+        self.serial_ports.insert(num);
+        Ok(self)
     }
 
     pub fn add_pvpanic_device(
         &mut self,
         pvpanic: QemuPvpanic,
     ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&pvpanic.name) {
+            return Err(SpecBuilderError::ComponentNameInUse(pvpanic.name));
+        }
+
         if self.spec.pvpanic.is_some() {
             return Err(SpecBuilderError::PvpanicInUse);
         }
 
+        self.component_names.insert(pvpanic.name.clone());
         self.spec.pvpanic = Some(pvpanic);
         Ok(self)
     }
 
     #[cfg(feature = "falcon")]
-    pub fn set_softnpu_com4(&mut self) -> Result<&Self, SpecBuilderError> {
-        let port = SerialPortNumber::Com4;
-        if self.spec.serial.insert(port, SerialPortDevice::SoftNpu).is_some() {
-            Err(SpecBuilderError::SerialPortInUse(port))
-        } else {
-            Ok(self)
+    pub fn set_softnpu_com4(
+        &mut self,
+        name: String,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&name) {
+            return Err(SpecBuilderError::ComponentNameInUse(name));
         }
+
+        let num = SerialPortNumber::Com4;
+        if self.serial_ports.contains(&num) {
+            return Err(SpecBuilderError::SerialPortInUse(num));
+        }
+
+        let desc = SerialPort { num, device: SerialPortDevice::SoftNpu };
+        self.spec.serial.insert(name.clone(), desc);
+        self.component_names.insert(name);
+        self.serial_ports.insert(num);
+        Ok(self)
     }
 
     #[cfg(feature = "falcon")]
@@ -403,11 +430,21 @@ mod test {
     #[test]
     fn duplicate_serial_port() {
         let mut builder = test_builder();
-        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com3).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com4).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_err());
+        assert!(builder
+            .add_serial_port("com1".to_owned(), SerialPortNumber::Com1)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com2".to_owned(), SerialPortNumber::Com2)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com3".to_owned(), SerialPortNumber::Com3)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com4".to_owned(), SerialPortNumber::Com4)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com1".to_owned(), SerialPortNumber::Com1)
+            .is_err());
     }
 
     #[test]

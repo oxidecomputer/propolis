@@ -58,7 +58,7 @@ pub(crate) struct Spec {
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
 
-    pub serial: HashMap<SerialPortNumber, SerialPortDevice>,
+    pub serial: HashMap<String, SerialPort>,
 
     pub pci_pci_bridges: HashMap<String, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
@@ -150,6 +150,12 @@ pub enum SerialPortDevice {
 
     #[cfg(feature = "falcon")]
     SoftNpu,
+}
+
+#[derive(Clone, Debug)]
+pub struct SerialPort {
+    pub num: SerialPortNumber,
+    pub device: SerialPortDevice,
 }
 
 #[derive(Clone, Debug)]
