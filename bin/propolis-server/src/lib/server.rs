@@ -131,7 +131,7 @@ fn instance_spec_from_request(
 
     if let Some(boot_settings) = request.boot_settings.as_ref() {
         for item in boot_settings.order.iter() {
-            spec_builder.add_boot_option(item)?;
+            spec_builder.add_boot_option(item.clone())?;
         }
     }
 

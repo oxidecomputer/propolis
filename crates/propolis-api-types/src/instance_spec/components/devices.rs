@@ -108,7 +108,6 @@ pub struct QemuPvpanic {
 // Structs for Falcon devices. These devices don't support live migration.
 //
 
-#[cfg(feature = "falcon")]
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPciPort {
@@ -116,7 +115,6 @@ pub struct SoftNpuPciPort {
     pub pci_path: PciPath,
 }
 
-#[cfg(feature = "falcon")]
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
@@ -127,7 +125,6 @@ pub struct SoftNpuPort {
     pub backend_name: String,
 }
 
-#[cfg(feature = "falcon")]
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuP9 {
@@ -135,7 +132,6 @@ pub struct SoftNpuP9 {
     pub pci_path: PciPath,
 }
 
-#[cfg(feature = "falcon")]
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct P9fs {

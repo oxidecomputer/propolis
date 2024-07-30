@@ -8,6 +8,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::BootSettings;
+
 /// An Intel 440FX-compatible chipset.
 #[derive(
     Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
@@ -35,7 +37,7 @@ pub enum Chipset {
 }
 
 /// A VM's mainboard.
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
     /// The number of virtual logical processors attached to this VM.
@@ -46,6 +48,9 @@ pub struct Board {
 
     /// The chipset to expose to guest software.
     pub chipset: Chipset,
+
+    /// The boot device order to supply to the guest.
+    pub boot_settings: BootSettings,
     // TODO: Guest platform and CPU feature identification.
     // TODO: NUMA topology.
 }
@@ -56,6 +61,7 @@ impl Default for Board {
             cpus: 0,
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+            boot_settings: BootSettings { order: vec![] },
         }
     }
 }

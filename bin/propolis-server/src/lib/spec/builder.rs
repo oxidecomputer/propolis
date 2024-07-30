@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use propolis_api_types::{
     instance_spec::{
         components::{
-            board::{Board, Chipset, I440Fx},
+            board::{Board as ApiBoard, Chipset, I440Fx},
             devices::{PciPciBridge, SerialPortNumber},
         },
         PciPath,
@@ -28,7 +28,7 @@ use crate::{config, spec::SerialPortDevice};
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    Disk, Nic, QemuPvpanic, SerialPort,
+    Board, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
@@ -84,9 +84,9 @@ impl SpecBuilder {
         }
     }
 
-    pub(super) fn with_board(board: Board) -> Self {
+    pub(super) fn with_board(api_board: &ApiBoard) -> Self {
         Self {
-            spec: super::Spec { board, ..Default::default() },
+            spec: super::Spec { board: api_board.into(), ..Default::default() },
             ..Default::default()
         }
     }
@@ -116,16 +116,18 @@ impl SpecBuilder {
     /// Add a boot option to the boot option list of the spec under construction.
     pub fn add_boot_option(
         &mut self,
-        item: &BootOrderEntry,
+        item: BootOrderEntry,
     ) -> Result<(), SpecBuilderError> {
         if !self.spec.disks.contains_key(item.name.as_str()) {
             return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
         }
 
-        let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
+        let boot_settings = self
+            .spec
+            .boot_settings
+            .get_or_insert(BootSettings { order: Vec::new() });
 
-        boot_order
-            .push(crate::spec::BootOrderEntry { name: item.name.clone() });
+        boot_settings.order.push(item.into());
 
         Ok(())
     }

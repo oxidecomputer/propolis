@@ -22,15 +22,16 @@ use propolis_api_types::instance_spec::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        board::Board,
+        board::{Chipset, I440Fx},
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
-    v0::{StorageBackendV0, StorageDeviceV0},
+    v0::ComponentV0,
     PciPath,
 };
+use thiserror::Error;
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
@@ -42,6 +43,10 @@ mod api_request;
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 mod config_toml;
+
+#[derive(Debug, Error)]
+#[error("input component type can't convert to output type")]
+pub struct ComponentTypeMismatch;
 
 /// An instance specification that describes a VM's configuration and
 /// components.
@@ -57,7 +62,7 @@ pub(crate) struct Spec {
     pub board: Board,
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
-    pub boot_order: Option<Vec<BootOrderEntry>>,
+    pub boot_settings: Option<BootSettings>,
 
     pub serial: HashMap<String, SerialPort>,
 
@@ -68,9 +73,69 @@ pub(crate) struct Spec {
     pub softnpu: SoftNpu,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct Board {
+    pub cpus: u8,
+    pub memory_mb: u64,
+    pub chipset: Chipset,
+}
+
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            cpus: 0,
+            memory_mb: 0,
+            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+        }
+    }
+}
+
+impl From<&propolis_api_types::instance_spec::components::board::Board>
+    for Board
+{
+    fn from(
+        value: &propolis_api_types::instance_spec::components::board::Board,
+    ) -> Self {
+        Board {
+            cpus: value.cpus,
+            memory_mb: value.memory_mb,
+            chipset: value.chipset,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BootSettings {
+    pub order: Vec<BootOrderEntry>,
+}
+
+impl From<propolis_api_types::BootSettings> for BootSettings {
+    fn from(value: propolis_api_types::BootSettings) -> Self {
+        Self { order: value.order.into_iter().map(Into::into).collect() }
+    }
+}
+
+impl From<BootSettings> for propolis_api_types::BootSettings {
+    fn from(value: BootSettings) -> Self {
+        Self { order: value.order.into_iter().map(Into::into).collect() }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BootOrderEntry {
     pub name: String,
+}
+
+impl From<propolis_api_types::BootOrderEntry> for BootOrderEntry {
+    fn from(value: propolis_api_types::BootOrderEntry) -> Self {
+        Self { name: value.name }
+    }
+}
+
+impl From<BootOrderEntry> for propolis_api_types::BootOrderEntry {
+    fn from(value: BootOrderEntry) -> Self {
+        Self { name: value.name }
+    }
 }
 
 /// Describes the device half of a [`Disk`].
@@ -103,7 +168,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for StorageDeviceV0 {
+impl From<StorageDevice> for ComponentV0 {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -112,11 +177,14 @@ impl From<StorageDevice> for StorageDeviceV0 {
     }
 }
 
-impl From<StorageDeviceV0> for StorageDevice {
-    fn from(value: StorageDeviceV0) -> Self {
+impl TryFrom<ComponentV0> for StorageDevice {
+    type Error = ComponentTypeMismatch;
+
+    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
         match value {
-            StorageDeviceV0::VirtioDisk(d) => Self::Virtio(d),
-            StorageDeviceV0::NvmeDisk(d) => Self::Nvme(d),
+            ComponentV0::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            ComponentV0::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            _ => Err(ComponentTypeMismatch),
         }
     }
 }
@@ -147,22 +215,25 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for StorageBackendV0 {
+impl From<StorageBackend> for ComponentV0 {
     fn from(value: StorageBackend) -> Self {
         match value {
-            StorageBackend::Crucible(be) => Self::Crucible(be),
-            StorageBackend::File(be) => Self::File(be),
-            StorageBackend::Blob(be) => Self::Blob(be),
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
         }
     }
 }
 
-impl From<StorageBackendV0> for StorageBackend {
-    fn from(value: StorageBackendV0) -> Self {
+impl TryFrom<ComponentV0> for StorageBackend {
+    type Error = ComponentTypeMismatch;
+
+    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
         match value {
-            StorageBackendV0::Crucible(be) => Self::Crucible(be),
-            StorageBackendV0::File(be) => Self::File(be),
-            StorageBackendV0::Blob(be) => Self::Blob(be),
+            ComponentV0::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
+            ComponentV0::FileStorageBackend(be) => Ok(Self::File(be)),
+            ComponentV0::BlobStorageBackend(be) => Ok(Self::Blob(be)),
+            _ => Err(ComponentTypeMismatch),
         }
     }
 }
