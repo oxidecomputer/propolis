@@ -195,15 +195,15 @@ impl SpecBuilder {
             return Err(SpecBuilderError::ComponentNameInUse(disk_name));
         }
 
-        if self.component_names.contains(&disk.backend_name) {
+        if self.component_names.contains(disk.device_spec.backend_name()) {
             return Err(SpecBuilderError::ComponentNameInUse(
-                disk.backend_name,
+                disk.device_spec.backend_name().to_owned(),
             ));
         }
 
         self.register_pci_device(disk.device_spec.pci_path())?;
         self.component_names.insert(disk_name.clone());
-        self.component_names.insert(disk.backend_name.clone());
+        self.component_names.insert(disk.device_spec.backend_name().to_owned());
         let _old = self.spec.disks.insert(disk_name, disk);
         assert!(_old.is_none());
         Ok(self)
@@ -219,13 +219,15 @@ impl SpecBuilder {
             return Err(SpecBuilderError::ComponentNameInUse(nic_name));
         }
 
-        if self.component_names.contains(&nic.backend_name) {
-            return Err(SpecBuilderError::ComponentNameInUse(nic.backend_name));
+        if self.component_names.contains(&nic.device_spec.backend_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(
+                nic.device_spec.backend_name,
+            ));
         }
 
         self.register_pci_device(nic.device_spec.pci_path)?;
         self.component_names.insert(nic_name.clone());
-        self.component_names.insert(nic.backend_name.clone());
+        self.component_names.insert(nic.device_spec.backend_name.clone());
         let _old = self.spec.nics.insert(nic_name, nic);
         assert!(_old.is_none());
         Ok(self)

@@ -72,16 +72,13 @@ pub(super) fn parse_disk_from_request(
     disk: &DiskRequest,
 ) -> Result<ParsedDiskRequest, DeviceRequestError> {
     let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
+    let device_name = disk.name.clone();
     let backend_name = format!("{}-backend", disk.name);
     let device_spec = match disk.device.as_ref() {
-        "virtio" => StorageDevice::Virtio(VirtioDisk {
-            backend_name: backend_name.clone(),
-            pci_path,
-        }),
-        "nvme" => StorageDevice::Nvme(NvmeDisk {
-            backend_name: backend_name.clone(),
-            pci_path,
-        }),
+        "virtio" => {
+            StorageDevice::Virtio(VirtioDisk { backend_name, pci_path })
+        }
+        "nvme" => StorageDevice::Nvme(NvmeDisk { backend_name, pci_path }),
         _ => {
             return Err(DeviceRequestError::InvalidStorageInterface(
                 disk.device.clone(),
@@ -90,7 +87,6 @@ pub(super) fn parse_disk_from_request(
         }
     };
 
-    let device_name = disk.name.clone();
     let backend_spec = StorageBackend::Crucible(CrucibleStorageBackend {
         request_json: serde_json::to_string(&disk.volume_construction_request)
             .map_err(|e| {
@@ -101,7 +97,7 @@ pub(super) fn parse_disk_from_request(
 
     Ok(ParsedDiskRequest {
         name: device_name,
-        disk: Disk { device_spec, backend_name, backend_spec },
+        disk: Disk { device_spec, backend_spec },
     })
 }
 
@@ -110,18 +106,16 @@ pub(super) fn parse_cloud_init_from_request(
 ) -> Result<ParsedDiskRequest, DeviceRequestError> {
     let name = "cloud-init";
     let pci_path = slot_to_pci_path(Slot(0), SlotType::CloudInit)?;
-    let backend_name = name.to_string();
+    let backend_name = "cloud-init-backend".to_string();
     let backend_spec =
         StorageBackend::Blob(BlobStorageBackend { base64, readonly: true });
 
-    let device_spec = StorageDevice::Virtio(VirtioDisk {
-        backend_name: name.to_string(),
-        pci_path,
-    });
+    let device_spec =
+        StorageDevice::Virtio(VirtioDisk { backend_name, pci_path });
 
     Ok(ParsedDiskRequest {
         name: name.to_owned(),
-        disk: Disk { device_spec, backend_name, backend_spec },
+        disk: Disk { device_spec, backend_spec },
     })
 }
 
@@ -139,63 +133,6 @@ pub(super) fn parse_nic_from_request(
     let backend_spec = VirtioNetworkBackend { vnic_name: nic.name.to_string() };
     Ok(ParsedNicRequest {
         name: device_name,
-        nic: Nic { device_spec, backend_name, backend_spec },
+        nic: Nic { device_spec, backend_spec },
     })
-}
-
-#[cfg(test)]
-mod test {
-    use propolis_api_types::VolumeConstructionRequest;
-    use uuid::Uuid;
-
-    use super::*;
-
-    fn check_parsed_storage_device_backend_pointer(parsed: &ParsedDiskRequest) {
-        let device_to_backend = match &parsed.disk.device_spec {
-            StorageDevice::Virtio(d) => d.backend_name.clone(),
-            StorageDevice::Nvme(d) => d.backend_name.clone(),
-        };
-
-        assert_eq!(device_to_backend, parsed.disk.backend_name);
-    }
-
-    #[test]
-    fn parsed_disk_devices_point_to_backends() {
-        let vcr = VolumeConstructionRequest::File {
-            id: Uuid::nil(),
-            block_size: 512,
-            path: "".to_string(),
-        };
-
-        let req = DiskRequest {
-            name: "my-disk".to_string(),
-            slot: Slot(0),
-            read_only: false,
-            device: "nvme".to_string(),
-            volume_construction_request: vcr,
-        };
-
-        let parsed = parse_disk_from_request(&req).unwrap();
-        check_parsed_storage_device_backend_pointer(&parsed);
-    }
-
-    #[test]
-    fn parsed_network_devices_point_to_backends() {
-        let req = NetworkInterfaceRequest {
-            name: "vnic".to_string(),
-            interface_id: uuid::Uuid::new_v4(),
-            slot: Slot(0),
-        };
-
-        let parsed = parse_nic_from_request(&req).unwrap();
-        let VirtioNic { backend_name, .. } = &parsed.nic.device_spec;
-        assert_eq!(*backend_name, parsed.nic.backend_name);
-    }
-
-    #[test]
-    fn parsed_cloud_init_devices_point_to_backends() {
-        let base64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
-        let parsed = parse_cloud_init_from_request(base64).unwrap();
-        check_parsed_storage_device_backend_pointer(&parsed);
-    }
 }

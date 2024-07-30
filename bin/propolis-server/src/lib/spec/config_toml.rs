@@ -113,15 +113,9 @@ impl TryFrom<&config::Config> for ParsedConfig {
                     let device_spec =
                         parse_storage_device_from_config(device_name, device)?;
 
-                    let backend_name = match &device_spec {
-                        StorageDevice::Virtio(disk) => {
-                            disk.backend_name.clone()
-                        }
-                        StorageDevice::Nvme(disk) => disk.backend_name.clone(),
-                    };
-
+                    let backend_name = device_spec.backend_name();
                     let backend_config =
-                        config.block_devs.get(&backend_name).ok_or_else(
+                        config.block_devs.get(backend_name).ok_or_else(
                             || ConfigTomlError::StorageDeviceBackendNotFound {
                                 device: device_name.to_owned(),
                                 backend: backend_name.to_owned(),
@@ -129,13 +123,13 @@ impl TryFrom<&config::Config> for ParsedConfig {
                         )?;
 
                     let backend_spec = parse_storage_backend_from_config(
-                        &backend_name,
+                        backend_name,
                         backend_config,
                     )?;
 
                     parsed.disks.push(ParsedDiskRequest {
                         name: device_name.to_owned(),
-                        disk: Disk { device_spec, backend_name, backend_spec },
+                        disk: Disk { device_spec, backend_spec },
                     });
                 }
                 "pci-virtio-viona" => {
@@ -298,7 +292,7 @@ pub(super) fn parse_network_device_from_config(
 
     Ok(ParsedNicRequest {
         name: device_name,
-        nic: Nic { device_spec, backend_name, backend_spec },
+        nic: Nic { device_spec, backend_spec },
     })
 }
 
