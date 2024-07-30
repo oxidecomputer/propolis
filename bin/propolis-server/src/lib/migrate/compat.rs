@@ -383,3 +383,370 @@ impl CompatComponent for PciPciBridge {
         .map_err(ComponentIncompatibility::PciPciBridge)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types::instance_spec::components::{
+        backends::{
+            CrucibleStorageBackend, FileStorageBackend, VirtioNetworkBackend,
+        },
+        board::I440Fx,
+        devices::{
+            NvmeDisk, QemuPvpanic as QemuPvpanicDesc, VirtioDisk, VirtioNic,
+        },
+    };
+    use spec::{QemuPvpanic, StorageDevice};
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn new_spec() -> spec::Spec {
+        let mut spec = spec::Spec::default();
+        spec.board.cpus = 2;
+        spec.board.memory_mb = 512;
+        spec
+    }
+
+    fn file_backend() -> spec::StorageBackend {
+        spec::StorageBackend::File(FileStorageBackend {
+            path: "/tmp/file.raw".to_owned(),
+            readonly: false,
+        })
+    }
+
+    fn crucible_backend() -> spec::StorageBackend {
+        spec::StorageBackend::Crucible(CrucibleStorageBackend {
+            request_json: "{}".to_owned(),
+            readonly: false,
+        })
+    }
+
+    fn nic() -> spec::Nic {
+        spec::Nic {
+            device_spec: VirtioNic {
+                pci_path: PciPath::new(0, 16, 0).unwrap(),
+                interface_id: Uuid::new_v4(),
+                backend_name: "vnic".to_owned(),
+            },
+            backend_spec: VirtioNetworkBackend {
+                vnic_name: "vnic0".to_owned(),
+            },
+        }
+    }
+
+    fn serial_port() -> spec::SerialPort {
+        spec::SerialPort {
+            num: SerialPortNumber::Com1,
+            user: SerialPortUser::Standard,
+        }
+    }
+
+    fn bridge() -> PciPciBridge {
+        PciPciBridge {
+            downstream_bus: 1,
+            pci_path: PciPath::new(0, 24, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn cpu_mismatch() {
+        let s1 = new_spec();
+        let mut s2 = s1.clone();
+        s2.board.cpus += 1;
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn memory_mismatch() {
+        let s1 = new_spec();
+        let mut s2 = s1.clone();
+        s2.board.memory_mb *= 2;
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn pcie_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        s1.board.chipset = Chipset::I440Fx(I440Fx { enable_pcie: false });
+        s2.board.chipset = Chipset::I440Fx(I440Fx { enable_pcie: true });
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn pvpanic_name_mismatch() {
+        let mut s1 = new_spec();
+        s1.pvpanic = Some(QemuPvpanic {
+            name: "pvpanic1".to_string(),
+            spec: QemuPvpanicDesc { enable_isa: true },
+        });
+        let mut s2 = s1.clone();
+        s2.pvpanic.as_mut().unwrap().name = "pvpanic2".to_string();
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn pvpanic_enable_isa_mismatch() {
+        let mut s1 = new_spec();
+        s1.pvpanic = Some(QemuPvpanic {
+            name: "pvpanic".to_string(),
+            spec: QemuPvpanicDesc { enable_isa: true },
+        });
+        let mut s2 = s1.clone();
+        s2.pvpanic.as_mut().unwrap().spec.enable_isa = false;
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn compatible_disks() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let disk = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_string(),
+            }),
+            backend_spec: crucible_backend(),
+        };
+
+        s1.disks.insert("disk".to_owned(), disk.clone());
+        s2.disks.insert("disk".to_owned(), disk);
+        assert!(s1.is_migration_compatible(&s2).is_ok());
+    }
+
+    #[test]
+    fn disk_name_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: crucible_backend(),
+        };
+
+        s1.disks.insert("disk1".to_owned(), d1.clone());
+        s2.disks.insert("disk2".to_owned(), d1);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn disk_length_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: crucible_backend(),
+        };
+
+        s1.disks.insert("disk1".to_owned(), d1.clone());
+        s2.disks.insert("disk1".to_owned(), d1.clone());
+        s2.disks.insert("disk2".to_owned(), d1);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn disk_interface_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: crucible_backend(),
+        };
+
+        let mut d2 = d1.clone();
+        d2.device_spec = StorageDevice::Nvme(NvmeDisk {
+            pci_path: PciPath::new(0, 4, 0).unwrap(),
+            backend_name: "backend".to_owned(),
+        });
+
+        s1.disks.insert("disk".to_owned(), d1);
+        s2.disks.insert("disk".to_owned(), d2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn disk_pci_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: crucible_backend(),
+        };
+
+        let mut d2 = d1.clone();
+        d2.device_spec = StorageDevice::Virtio(VirtioDisk {
+            pci_path: PciPath::new(0, 5, 0).unwrap(),
+            backend_name: "backend".to_owned(),
+        });
+
+        s1.disks.insert("disk".to_owned(), d1);
+        s2.disks.insert("disk".to_owned(), d2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn disk_backend_name_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: crucible_backend(),
+        };
+
+        let mut d2 = d1.clone();
+        d2.device_spec = StorageDevice::Virtio(VirtioDisk {
+            pci_path: PciPath::new(0, 4, 0).unwrap(),
+            backend_name: "other_backend".to_owned(),
+        });
+
+        s1.disks.insert("disk".to_owned(), d1);
+        s2.disks.insert("disk".to_owned(), d2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn disk_backend_kind_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: file_backend(),
+        };
+
+        let mut d2 = d1.clone();
+        d2.backend_spec = crucible_backend();
+        s1.disks.insert("disk".to_owned(), d1);
+        s2.disks.insert("disk".to_owned(), d2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn disk_backend_readonly_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let d1 = spec::Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                pci_path: PciPath::new(0, 4, 0).unwrap(),
+                backend_name: "backend".to_owned(),
+            }),
+            backend_spec: file_backend(),
+        };
+
+        let mut d2 = d1.clone();
+        d2.backend_spec = spec::StorageBackend::File(FileStorageBackend {
+            path: "/tmp/file.raw".to_owned(),
+            readonly: true,
+        });
+
+        s1.disks.insert("disk".to_owned(), d1);
+        s2.disks.insert("disk".to_owned(), d2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn compatible_nics() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let nic = nic();
+        s1.nics.insert("nic".to_owned(), nic.clone());
+        s2.nics.insert("nic".to_owned(), nic);
+        assert!(s1.is_migration_compatible(&s2).is_ok());
+    }
+
+    #[test]
+    fn nic_pci_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let n1 = nic();
+        let mut n2 = n1.clone();
+        n2.device_spec.pci_path = PciPath::new(0, 24, 0).unwrap();
+        s1.nics.insert("nic".to_owned(), n1);
+        s2.nics.insert("nic".to_owned(), n2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn nic_backend_name_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let n1 = nic();
+        let mut n2 = n1.clone();
+        "other_backend".clone_into(&mut n2.device_spec.backend_name);
+        s1.nics.insert("nic".to_owned(), n1);
+        s2.nics.insert("nic".to_owned(), n2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn compatible_serial_ports() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let serial = serial_port();
+        s1.serial.insert("com1".to_owned(), serial.clone());
+        s2.serial.insert("com1".to_owned(), serial);
+        assert!(s1.is_migration_compatible(&s2).is_ok());
+    }
+
+    #[test]
+    fn serial_port_number_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let serial1 = serial_port();
+        let mut serial2 = serial1.clone();
+        serial2.num = SerialPortNumber::Com2;
+        s1.serial.insert("com1".to_owned(), serial1);
+        s2.serial.insert("com1".to_owned(), serial2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn compatible_bridges() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let bridge = bridge();
+        s1.pci_pci_bridges.insert("bridge1".to_owned(), bridge);
+        s2.pci_pci_bridges.insert("bridge1".to_owned(), bridge);
+        assert!(s1.is_migration_compatible(&s2).is_ok());
+    }
+
+    #[test]
+    fn bridge_downstream_bus_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let b1 = bridge();
+        let mut b2 = b1;
+        b2.downstream_bus += 1;
+        s1.pci_pci_bridges.insert("bridge1".to_owned(), b1);
+        s2.pci_pci_bridges.insert("bridge1".to_owned(), b2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn bridge_pci_path_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let b1 = bridge();
+        let mut b2 = b1;
+        b2.pci_path = PciPath::new(0, 30, 0).unwrap();
+        s1.pci_pci_bridges.insert("bridge1".to_owned(), b1);
+        s2.pci_pci_bridges.insert("bridge1".to_owned(), b2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+}
