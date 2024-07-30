@@ -4,7 +4,7 @@
 
 //! Abstractions for disks with an in-memory backend.
 
-use propolis_client::types::{BlobStorageBackend, StorageBackendV0};
+use propolis_client::types::{BlobStorageBackend, ComponentV0};
 
 use super::DiskConfig;
 use crate::disk::DeviceName;
@@ -34,13 +34,13 @@ impl DiskConfig for InMemoryDisk {
         &self.device_name
     }
 
-    fn backend_spec(&self) -> StorageBackendV0 {
+    fn backend_spec(&self) -> ComponentV0 {
         let base64 = base64::Engine::encode(
             &base64::engine::general_purpose::STANDARD,
             self.contents.as_slice(),
         );
 
-        StorageBackendV0::Blob(BlobStorageBackend {
+        ComponentV0::BlobStorageBackend(BlobStorageBackend {
             base64,
             readonly: self.readonly,
         })

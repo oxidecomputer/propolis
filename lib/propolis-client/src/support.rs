@@ -18,9 +18,7 @@ use tokio_tungstenite::tungstenite::{Error as WSError, Message as WSMessage};
 // re-export as an escape hatch for crate-version-matching problems
 pub use tokio_tungstenite::{tungstenite, WebSocketStream};
 
-use crate::types::{
-    Chipset, I440Fx, NetworkDeviceV0, PciPath, StorageDeviceV0,
-};
+use crate::types::{Chipset, I440Fx, PciPath};
 use crate::Client as PropolisClient;
 
 const PCI_DEV_PER_BUS: u8 = 32;
@@ -45,22 +43,6 @@ impl PciPath {
 impl Default for Chipset {
     fn default() -> Self {
         Self::I440Fx(I440Fx { enable_pcie: false })
-    }
-}
-
-impl NetworkDeviceV0 {
-    pub fn pci_path(&self) -> PciPath {
-        match self {
-            NetworkDeviceV0::VirtioNic(dev) => dev.pci_path,
-        }
-    }
-}
-impl StorageDeviceV0 {
-    pub fn pci_path(&self) -> PciPath {
-        match self {
-            StorageDeviceV0::VirtioDisk(dev) => dev.pci_path,
-            StorageDeviceV0::NvmeDisk(dev) => dev.pci_path,
-        }
     }
 }
 

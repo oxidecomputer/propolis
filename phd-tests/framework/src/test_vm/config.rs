@@ -6,12 +6,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context;
-use propolis_client::{
-    instance_spec::SpecBuilderV0,
-    types::{
-        InstanceMetadata, NvmeDisk, PciPath, SerialPortNumber, StorageDeviceV0,
-        VirtioDisk,
-    },
+use propolis_client::types::{
+    Board, BootOrderEntry, BootSettings, Chipset, ComponentV0,
+    InstanceMetadata, InstanceSpecV0, NvmeDisk, PciPath, SerialPort,
+    SerialPortNumber, VirtioDisk,
 };
 use uuid::Uuid;
 
@@ -258,8 +256,15 @@ impl<'dr> VmConfig<'dr> {
             );
         }
 
-        let mut spec_builder =
-            SpecBuilderV0::new(self.cpus, self.memory_mib, false);
+        let mut spec = InstanceSpecV0 {
+            board: Board {
+                cpus: self.cpus,
+                memory_mb: self.memory_mib,
+                chipset: Chipset::default(),
+                boot_settings: BootSettings::default(),
+            },
+            ..Default::default()
+        };
 
         // Iterate over the collection of disks and handles and add spec
         // elements for all of them. This assumes the disk handles were created
@@ -272,41 +277,39 @@ impl<'dr> VmConfig<'dr> {
             let device_name = hdl.device_name().clone();
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
-                DiskInterface::Virtio => {
-                    StorageDeviceV0::VirtioDisk(VirtioDisk {
-                        backend_name: backend_name.clone().into_string(),
-                        pci_path,
-                    })
-                }
-                DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(NvmeDisk {
+                DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
+                    backend_name: backend_name.clone().into_string(),
+                    pci_path,
+                }),
+                DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
                     backend_name: backend_name.clone().into_string(),
                     pci_path,
                 }),
             };
 
-            spec_builder
-                .add_storage_device(
-                    device_name.into_string(),
-                    device_spec,
-                    backend_name.into_string(),
-                    backend_spec,
-                )
-                .context("adding storage device to spec")?;
+            let _old =
+                spec.components.insert(device_name.into_string(), device_spec);
+            assert!(_old.is_none());
+            let _old = spec
+                .components
+                .insert(backend_name.into_string(), backend_spec);
+            assert!(_old.is_none());
         }
 
-        spec_builder
-            .add_serial_port(SerialPortNumber::Com1)
-            .context("adding serial port to spec")?;
+        let _old = spec.components.insert(
+            "com1".to_string(),
+            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
+        );
+        assert!(_old.is_none());
 
         if let Some(boot_order) = self.boot_order.as_ref() {
-            spec_builder
-                .set_boot_order(
-                    boot_order.iter().map(|x| x.to_string()).collect(),
-                )
-                .context("adding boot order to spec")?;
+            spec.board.boot_settings = BootSettings {
+                order: boot_order
+                    .iter()
+                    .map(|item| BootOrderEntry { name: item.to_string() })
+                    .collect(),
+            };
         }
-
-        let instance_spec = spec_builder.finish();
 
         // Generate random identifiers for this instance's timeseries metadata.
         let sled_id = Uuid::new_v4();
@@ -321,7 +324,7 @@ impl<'dr> VmConfig<'dr> {
 
         Ok(VmSpec {
             vm_name: self.vm_name.clone(),
-            instance_spec,
+            instance_spec: spec,
             disk_handles,
             guest_os_kind,
             config_toml_contents,

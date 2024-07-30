@@ -457,27 +457,6 @@
   },
   "components": {
     "schemas": {
-      "BackendSpecV0": {
-        "type": "object",
-        "properties": {
-          "network_backends": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/NetworkBackendV0"
-            }
-          },
-          "storage_backends": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/StorageBackendV0"
-            }
-          }
-        },
-        "required": [
-          "network_backends",
-          "storage_backends"
-        ]
-      },
       "BlobStorageBackend": {
         "description": "A storage backend for a disk whose initial contents are given explicitly by the specification.",
         "type": "object",
@@ -501,6 +480,14 @@
         "description": "A VM's mainboard.",
         "type": "object",
         "properties": {
+          "boot_settings": {
+            "description": "The boot device order to supply to the guest.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BootSettings"
+              }
+            ]
+          },
           "chipset": {
             "description": "The chipset to expose to guest software.",
             "allOf": [
@@ -523,6 +510,7 @@
           }
         },
         "required": [
+          "boot_settings",
           "chipset",
           "cpus",
           "memory_mb"
@@ -576,6 +564,295 @@
             "required": [
               "type",
               "value"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ComponentV0": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioDisk"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "VirtioDisk"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/NvmeDisk"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "NvmeDisk"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioNic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "VirtioNic"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SerialPort"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "SerialPort"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/PciPciBridge"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "PciPciBridge"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/QemuPvpanic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "QemuPvpanic"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SoftNpuPciPort"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "SoftNpuPciPort"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SoftNpuPort"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "SoftNpuPort"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SoftNpuP9"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "SoftNpuP9"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/P9fs"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "P9fs"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/CrucibleStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "CrucibleStorageBackend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/FileStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "FileStorageBackend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/BlobStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "BlobStorageBackend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioNetworkBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "VirtioNetworkBackend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/DlpiNetworkBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "DlpiNetworkBackend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
             ],
             "additionalProperties": false
           }
@@ -649,62 +926,6 @@
         "required": [
           "readonly",
           "request_json"
-        ],
-        "additionalProperties": false
-      },
-      "DeviceSpecV0": {
-        "type": "object",
-        "properties": {
-          "board": {
-            "$ref": "#/components/schemas/Board"
-          },
-          "boot_settings": {
-            "nullable": true,
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/BootSettings"
-              }
-            ]
-          },
-          "network_devices": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/NetworkDeviceV0"
-            }
-          },
-          "pci_pci_bridges": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/PciPciBridge"
-            }
-          },
-          "qemu_pvpanic": {
-            "nullable": true,
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/QemuPvpanic"
-              }
-            ]
-          },
-          "serial_ports": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/SerialPort"
-            }
-          },
-          "storage_devices": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/StorageDeviceV0"
-            }
-          }
-        },
-        "required": [
-          "board",
-          "network_devices",
-          "pci_pci_bridges",
-          "serial_ports",
-          "storage_devices"
         ],
         "additionalProperties": false
       },
@@ -1191,16 +1412,19 @@
       "InstanceSpecV0": {
         "type": "object",
         "properties": {
-          "backends": {
-            "$ref": "#/components/schemas/BackendSpecV0"
+          "board": {
+            "$ref": "#/components/schemas/Board"
           },
-          "devices": {
-            "$ref": "#/components/schemas/DeviceSpecV0"
+          "components": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ComponentV0"
+            }
           }
         },
         "required": [
-          "backends",
-          "devices"
+          "board",
+          "components"
         ],
         "additionalProperties": false
       },
@@ -1292,71 +1516,6 @@
           "Error"
         ]
       },
-      "NetworkBackendV0": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/VirtioNetworkBackend"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "Virtio"
-                ]
-              }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/DlpiNetworkBackend"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "Dlpi"
-                ]
-              }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
-      "NetworkDeviceV0": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/VirtioNic"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "VirtioNic"
-                ]
-              }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
       "NetworkInterface": {
         "type": "object",
         "properties": {
@@ -1435,6 +1594,40 @@
         "required": [
           "backend_name",
           "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "P9fs": {
+        "type": "object",
+        "properties": {
+          "chunk_size": {
+            "description": "The chunk size to use in the 9P protocol. Vanilla Helios images should use 8192. Falcon Helios base images and Linux can use up to 65536.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this P9 filesystem.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          },
+          "source": {
+            "description": "The host source path to mount into the guest.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The 9P target filesystem tag.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_size",
+          "pci_path",
+          "source",
+          "target"
         ],
         "additionalProperties": false
       },
@@ -1546,108 +1739,57 @@
         "format": "uint8",
         "minimum": 0
       },
-      "StorageBackendV0": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/CrucibleStorageBackend"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "Crucible"
-                ]
+      "SoftNpuP9": {
+        "type": "object",
+        "properties": {
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this port.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
               }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/FileStorageBackend"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "File"
-                ]
-              }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/BlobStorageBackend"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "Blob"
-                ]
-              }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
+            ]
           }
-        ]
+        },
+        "required": [
+          "pci_path"
+        ],
+        "additionalProperties": false
       },
-      "StorageDeviceV0": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/VirtioDisk"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "VirtioDisk"
-                ]
+      "SoftNpuPciPort": {
+        "type": "object",
+        "properties": {
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this port.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
               }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "component": {
-                "$ref": "#/components/schemas/NvmeDisk"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "NvmeDisk"
-                ]
-              }
-            },
-            "required": [
-              "component",
-              "type"
-            ],
-            "additionalProperties": false
+            ]
           }
-        ]
+        },
+        "required": [
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "SoftNpuPort": {
+        "type": "object",
+        "properties": {
+          "backend_name": {
+            "description": "The name of the device's backend.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the SoftNpu port.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend_name",
+          "name"
+        ],
+        "additionalProperties": false
       },
       "VersionedInstanceSpec": {
         "description": "A versioned instance spec.",
