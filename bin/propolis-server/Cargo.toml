@@ -80,4 +80,4 @@ default = []
 omicron-build = ["propolis/omicron-build"]
 
 # Falcon builds require corresponding bits turned on in the dependency libs
-falcon = ["propolis/falcon", "propolis_api_types/falcon"]
+falcon = ["propolis/falcon"]
