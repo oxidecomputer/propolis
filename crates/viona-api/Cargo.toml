@@ -12,4 +12,4 @@ libc.workspace = true
 viona_api_sys.workspace = true
 
 [features]
-falcon = []
+falcon = ["viona_api_sys/falcon"]
