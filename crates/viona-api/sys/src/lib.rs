@@ -74,6 +74,7 @@ mod structs {
         VIONA_PROMISC_NONE = 0,
         VIONA_PROMISC_MULTI,
         VIONA_PROMISC_ALL,
+        #[cfg(feature = "falcon")]
         VIONA_PROMISC_ALL_VLAN,
     }
 }
