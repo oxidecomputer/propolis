@@ -159,7 +159,6 @@ use serde::{Deserialize, Serialize};
 pub use propolis_types::PciPath;
 
 pub mod components;
-pub mod migration;
 pub mod v0;
 
 /// Type alias for keys in the instance spec's maps.

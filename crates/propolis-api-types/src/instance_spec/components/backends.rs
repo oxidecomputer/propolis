@@ -6,10 +6,8 @@
 //! its components to talk to other services supplied by the host OS or the
 //! larger rack.
 
-use crate::instance_spec::migration::MigrationElement;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// A Crucible storage backend.
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -27,28 +25,6 @@ pub struct CrucibleStorageBackend {
 
     /// Indicates whether the storage is read-only.
     pub readonly: bool,
-}
-
-impl MigrationElement for CrucibleStorageBackend {
-    fn kind(&self) -> &'static str {
-        "CrucibleStorageBackend"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
-    {
-        if self.readonly != other.readonly {
-            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
-                "read-only mismatch (self: {}, other: {})",
-                self.readonly, other.readonly,
-            ))
-            .into())
-        } else {
-            Ok(())
-        }
-    }
 }
 
 impl std::fmt::Debug for CrucibleStorageBackend {
@@ -73,28 +49,6 @@ pub struct FileStorageBackend {
     pub readonly: bool,
 }
 
-impl MigrationElement for FileStorageBackend {
-    fn kind(&self) -> &'static str {
-        "FileStorageBackend"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
-    {
-        if self.readonly != other.readonly {
-            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
-                "read-only mismatch (self: {}, other: {})",
-                self.readonly, other.readonly,
-            ))
-            .into())
-        } else {
-            Ok(())
-        }
-    }
-}
-
 /// A storage backend for a disk whose initial contents are given explicitly
 /// by the specification.
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -116,28 +70,6 @@ impl std::fmt::Debug for BlobStorageBackend {
     }
 }
 
-impl MigrationElement for BlobStorageBackend {
-    fn kind(&self) -> &'static str {
-        "BlobStorageBackend"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
-    {
-        if self.readonly != other.readonly {
-            Err(MigrationCompatibilityError::ComponentConfiguration(format!(
-                "read-only mismatch (self: {}, other: {})",
-                self.readonly, other.readonly,
-            ))
-            .into())
-        } else {
-            Ok(())
-        }
-    }
-}
-
 /// A network backend associated with a virtio-net (viona) VNIC on the host.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -146,44 +78,10 @@ pub struct VirtioNetworkBackend {
     pub vnic_name: String,
 }
 
-impl MigrationElement for VirtioNetworkBackend {
-    fn kind(&self) -> &'static str {
-        "VirtioNetworkBackend"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        _other: &Self,
-    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
-    {
-        Ok(())
-    }
-}
-
 /// A network backend associated with a DLPI VNIC on the host.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DlpiNetworkBackend {
     /// The name of the VNIC to use as a backend.
     pub vnic_name: String,
-}
-
-impl MigrationElement for DlpiNetworkBackend {
-    fn kind(&self) -> &'static str {
-        "DlpiNetworkBackend"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        _other: &Self,
-    ) -> Result<(), crate::instance_spec::migration::ElementCompatibilityError>
-    {
-        Ok(())
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum MigrationCompatibilityError {
-    #[error("component configurations incompatible: {0}")]
-    ComponentConfiguration(String),
 }
