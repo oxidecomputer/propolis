@@ -47,15 +47,15 @@ ls $runner
 ls $artifacts
 ls $propolis
 
-args=()
-args+=($runner '--emit-bunyan' 'run')
-args+=('--propolis-server-cmd' $propolis)
-args+=('--base-propolis-branch' 'master')
-args+=('--crucible-downstairs-commit' 'auto')
-args+=('--artifact-toml-path' $artifacts)
-args+=('--tmp-directory' $tmpdir)
-args+=('--artifact-directory' $artifactdir)
-args+=($@)
+args=(
+    $runner '--emit-bunyan' 'run'
+    '--propolis-server-cmd' $propolis
+    '--crucible-downstairs-commit' 'auto'
+    '--artifact-toml-path' $artifacts
+    '--tmp-directory' $tmpdir
+    '--artifact-directory' $artifactdir
+    $@
+)
 
 # Disable errexit so that we still upload logs on failure
 set +e
