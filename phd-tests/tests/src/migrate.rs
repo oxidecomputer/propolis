@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::time::Duration;
+
 use phd_framework::{
     artifacts, lifecycle::Action, test_vm::MigrationTimeout, TestVm,
 };
 use phd_testcase::*;
-use propolis_client::types::MigrationState;
+use propolis_client::types::{InstanceState, MigrationState};
 use tracing::info;
 use uuid::Uuid;
 
@@ -440,4 +442,29 @@ async fn migration_ensures_instance_metadata(ctx: &Framework) {
         source_metadata.sled_id, target_metadata.sled_id,
         "Source and target UUIDs should be different"
     );
+}
+
+#[phd_testcase]
+async fn vm_reaches_destroyed_after_migration_out(ctx: &Framework) {
+    let mut source = ctx
+        .spawn_default_vm("vm_reaches_destroyed_after_migration_out_source")
+        .await?;
+
+    let mut target = ctx
+        .spawn_successor_vm(
+            "vm_reaches_destroyed_after_migration_out_target",
+            &source,
+            None,
+        )
+        .await?;
+
+    source.launch().await?;
+    source.wait_to_boot().await?;
+    target
+        .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
+        .await?;
+
+    source
+        .wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
+        .await?;
 }
