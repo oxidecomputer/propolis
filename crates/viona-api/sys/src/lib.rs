@@ -70,7 +70,7 @@ mod structs {
     }
 
     #[repr(C)]
-    pub enum vioc_promisc {
+    pub enum vioc_promisc_t {
         VIONA_PROMISC_NONE = 0,
         VIONA_PROMISC_MULTI,
         VIONA_PROMISC_ALL,

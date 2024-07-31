@@ -110,7 +110,7 @@ impl PciVirtioViona {
 
         #[cfg(feature = "falcon")]
         if let Err(e) =
-            hdl.set_promisc(viona_api::vioc_promisc::VIONA_PROMISC_ALL_VLAN)
+            hdl.set_promisc(viona_api::vioc_promisc_t::VIONA_PROMISC_ALL_VLAN)
         {
             // Until/unless this support is integrated into stlouis/illumos,
             // this is an expected failure.   This is needed to use vlans,
@@ -650,7 +650,7 @@ impl VionaHdl {
 
     /// Set the desired promiscuity level on this interface.
     #[cfg(feature = "falcon")]
-    fn set_promisc(&self, p: viona_api::vioc_promisc) -> io::Result<()> {
+    fn set_promisc(&self, p: viona_api::vioc_promisc_t) -> io::Result<()> {
         self.0.ioctl_usize(viona_api::VNA_IOC_SET_PROMISC, p as usize)?;
         Ok(())
     }
