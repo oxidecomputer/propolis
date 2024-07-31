@@ -76,6 +76,7 @@ impl VionaFd {
                 | ioctls::VNA_IOC_RING_PAUSE
                 | ioctls::VNA_IOC_RING_INTR_CLR
                 | ioctls::VNA_IOC_VERSION
+                | ioctls::VNA_IOC_SET_PROMISC
         )
     }
 }

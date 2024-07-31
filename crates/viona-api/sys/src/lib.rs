@@ -22,6 +22,7 @@ pub mod ioctls {
     pub const VNA_IOC_SET_FEATURES: i32 = VNA_IOC | 0x21;
     pub const VNA_IOC_GET_FEATURES: i32 = VNA_IOC | 0x22;
     pub const VNA_IOC_SET_NOTIFY_IOP: i32 = VNA_IOC | 0x23;
+    pub const VNA_IOC_SET_PROMISC: i32 = VNA_IOC | 0x24;
 }
 
 pub const VIONA_VQ_MAX: u16 = 2;
@@ -66,6 +67,15 @@ mod structs {
         pub vrs_used_idx: u16,
         pub vrs_qsize: u16,
         pub vrs_qaddr: u64,
+    }
+
+    #[repr(C)]
+    pub enum viona_promisc_t {
+        VIONA_PROMISC_NONE = 0,
+        VIONA_PROMISC_MULTI,
+        VIONA_PROMISC_ALL,
+        #[cfg(feature = "falcon")]
+        VIONA_PROMISC_ALL_VLAN,
     }
 }
 

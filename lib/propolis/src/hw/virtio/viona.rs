@@ -108,6 +108,16 @@ impl PciVirtioViona {
         let info = dlhdl.query_link(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 
+        #[cfg(feature = "falcon")]
+        if let Err(e) =
+            hdl.set_promisc(viona_api::viona_promisc_t::VIONA_PROMISC_ALL_VLAN)
+        {
+            // Until/unless this support is integrated into stlouis/illumos,
+            // this is an expected failure.   This is needed to use vlans,
+            // but shouldn't affect any other use case.
+            eprintln!("failed to enable promisc mode on {vnic_name}: {e:?}");
+        }
+
         // TX and RX
         let queue_count = NonZeroU16::new(2).unwrap();
         // interrupts for TX, RX, and device config
@@ -637,7 +647,15 @@ impl VionaHdl {
         self.0.ioctl_usize(viona_api::VNA_IOC_RING_INTR_CLR, idx as usize)?;
         Ok(())
     }
+
+    /// Set the desired promiscuity level on this interface.
+    #[cfg(feature = "falcon")]
+    fn set_promisc(&self, p: viona_api::viona_promisc_t) -> io::Result<()> {
+        self.0.ioctl_usize(viona_api::VNA_IOC_SET_PROMISC, p as usize)?;
+        Ok(())
+    }
 }
+
 impl AsRawFd for VionaHdl {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
