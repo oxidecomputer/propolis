@@ -48,6 +48,7 @@ tar -czvf target/debug/phd-runner.tar.gz \
 banner copy
 pfexec mkdir -p $outdir
 pfexec chown "$UID" $outdir
+cp .github/buildomat/phd-run-with-args.sh $outdir/phd-run-with-args.sh
 mv target/debug/propolis-server-debug.tar.gz \
 	$outdir/propolis-server-debug.tar.gz
 mv target/debug/phd-runner.tar.gz $outdir/phd-runner.tar.gz
