@@ -32,40 +32,41 @@ pub enum DiskInterface {
 pub enum DiskBackend {
     File,
     Crucible { min_disk_size_gib: u64, block_size: crate::disk::BlockSize },
+    InMemory { readonly: bool },
 }
 
 #[derive(Clone, Debug)]
-struct DiskRequest {
+struct DiskRequest<'a> {
     interface: DiskInterface,
     backend: DiskBackend,
-    source_artifact: String,
+    source: DiskSource<'a>,
     pci_device_num: u8,
 }
 
-pub struct VmConfig {
+pub struct VmConfig<'dr> {
     vm_name: String,
     cpus: u8,
     memory_mib: u64,
     bootrom_artifact: String,
-    boot_disk: DiskRequest,
-    data_disks: Vec<DiskRequest>,
+    boot_disk: DiskRequest<'dr>,
+    data_disks: Vec<DiskRequest<'dr>>,
     devices: BTreeMap<String, propolis_server_config::Device>,
 }
 
 const MIGRATION_FAILURE_DEVICE: &str = "test-migration-failure";
 
-impl VmConfig {
+impl<'dr> VmConfig<'dr> {
     pub(crate) fn new(
         vm_name: &str,
         cpus: u8,
         memory_mib: u64,
         bootrom: &str,
-        guest_artifact: &str,
+        guest_artifact: &'dr str,
     ) -> Self {
         let boot_disk = DiskRequest {
             interface: DiskInterface::Nvme,
             backend: DiskBackend::File,
-            source_artifact: guest_artifact.to_owned(),
+            source: DiskSource::Artifact(guest_artifact),
             pci_device_num: 4,
         };
 
@@ -120,7 +121,7 @@ impl VmConfig {
 
     pub fn boot_disk(
         &mut self,
-        artifact: &str,
+        artifact: &'dr str,
         interface: DiskInterface,
         backend: DiskBackend,
         pci_device_num: u8,
@@ -128,15 +129,16 @@ impl VmConfig {
         self.boot_disk = DiskRequest {
             interface,
             backend,
-            source_artifact: artifact.to_owned(),
+            source: DiskSource::Artifact(artifact),
             pci_device_num,
         };
+
         self
     }
 
     pub fn data_disk(
         &mut self,
-        artifact: &str,
+        source: DiskSource<'dr>,
         interface: DiskInterface,
         backend: DiskBackend,
         pci_device_num: u8,
@@ -144,7 +146,7 @@ impl VmConfig {
         self.data_disks.push(DiskRequest {
             interface,
             backend,
-            source_artifact: artifact.to_owned(),
+            source,
             pci_device_num,
         });
         self
@@ -170,9 +172,13 @@ impl VmConfig {
             })
             .context("serializing Propolis server config")?;
 
+        let DiskSource::Artifact(boot_artifact) = self.boot_disk.source else {
+            unreachable!("boot disks always use artifacts as sources");
+        };
+
         let (_, guest_os_kind) = framework
             .artifact_store
-            .get_guest_os_image(&self.boot_disk.source_artifact)
+            .get_guest_os_image(boot_artifact)
             .await
             .context("getting guest OS kind for boot disk")?;
 
@@ -256,32 +262,41 @@ impl VmConfig {
     }
 }
 
-async fn make_disk(
+async fn make_disk<'req>(
     name: String,
     framework: &Framework,
-    req: &DiskRequest,
+    req: &DiskRequest<'req>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
-    let source = DiskSource::Artifact(&req.source_artifact);
     Ok(match req.backend {
         DiskBackend::File => framework
             .disk_factory
-            .create_file_backed_disk(name, source)
+            .create_file_backed_disk(name, &req.source)
             .await
             .with_context(|| {
-                format!(
-                    "creating new file-backed disk from '{}'",
-                    &req.source_artifact
-                )
+                format!("creating new file-backed disk from {:?}", req.source,)
             })? as Arc<dyn DiskConfig>,
         DiskBackend::Crucible { min_disk_size_gib, block_size } => framework
             .disk_factory
-            .create_crucible_disk(name, source, min_disk_size_gib, block_size)
+            .create_crucible_disk(
+                name,
+                &req.source,
+                min_disk_size_gib,
+                block_size,
+            )
             .await
             .with_context(|| {
                 format!(
-                    "creating new Crucible-backed disk from '{}'",
-                    &req.source_artifact
+                    "creating new Crucible-backed disk from {:?}",
+                    req.source,
                 )
+            })?
+            as Arc<dyn DiskConfig>,
+        DiskBackend::InMemory { readonly } => framework
+            .disk_factory
+            .create_in_memory_disk(name, &req.source, readonly)
+            .await
+            .with_context(|| {
+                format!("creating new in-memory disk from {:?}", req.source)
             })?
             as Arc<dyn DiskConfig>,
     })
