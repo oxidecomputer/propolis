@@ -9,27 +9,9 @@ progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     derives = [schemars::JsonSchema],
     patch = {
-        InstanceMetadata = {
-            derives = [
-                Clone,
-                schemars::JsonSchema,
-                Serialize,
-                Deserialize,
-                Eq,
-                PartialEq,
-            ]
-        },
-        InstanceProperties = {
-            derives = [
-                Clone,
-                schemars::JsonSchema,
-                Serialize,
-                Deserialize,
-                Eq,
-                PartialEq,
-            ]
-        },
-        Slot = { derives = [Copy, Clone, schemars::JsonSchema, Serialize, Deserialize] },
+        InstanceMetadata = { derives = [Clone, Eq, PartialEq] },
+        InstanceProperties = { derives = [ Clone, Eq, PartialEq ] },
+        Slot = { derives = [Copy] },
     },
 );
 
