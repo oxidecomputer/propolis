@@ -3136,6 +3136,7 @@ dependencies = [
  "hex",
  "http 0.2.12",
  "libc",
+ "newtype_derive",
  "propolis-client",
  "propolis-server-config",
  "rand",

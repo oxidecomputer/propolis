@@ -9,6 +9,7 @@ use std::io::{Cursor, Write};
 
 use anyhow::Context;
 use fatfs::{FileSystem, FormatVolumeOptions, FsOptions};
+use newtype_derive::*;
 use thiserror::Error;
 
 /// The maximum size of disk this module can create. This is fixed to put an
@@ -34,8 +35,15 @@ const ROOT_DIRECTORY_ENTRIES: usize = 512;
 const TABLES_PER_VOLUME: usize = 2;
 
 /// A number of disk sectors.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct Sectors(usize);
+
+NewtypeAdd! { () struct Sectors(usize); }
+NewtypeAddAssign! { () struct Sectors(usize); }
+NewtypeSub! { () struct Sectors(usize); }
+NewtypeSubAssign! { () struct Sectors(usize); }
+NewtypeMul! { () struct Sectors(usize); }
+NewtypeMul! { (usize) struct Sectors(usize); }
 
 impl Sectors {
     /// Yields the number of sectors needed to hold the supplied quantity of
@@ -73,7 +81,7 @@ impl Sectors {
 /// less than or equal to 4,084 sectors. The number of clusters will never be
 /// greater than this, so the filesystem will always be FAT12, which makes it
 /// possible to compute its overhead size.
-const fn overhead_sectors() -> Sectors {
+fn overhead_sectors() -> Sectors {
     let dir_entry_bytes = ROOT_DIRECTORY_ENTRIES * BYTES_PER_DIRECTORY_ENTRY;
     let dir_entry_sectors = Sectors::needed_for_bytes(dir_entry_bytes);
 
@@ -92,12 +100,13 @@ const fn overhead_sectors() -> Sectors {
     // The total overhead size is one sector (for the BPB) plus the sectors
     // needed for regions 2 and 3 (the tables themselves and the root directory
     // entries). Note that there are multiple tables per volume!
-    Sectors(1 + (TABLES_PER_VOLUME * sectors_per_table.0) + dir_entry_sectors.0)
+    Sectors(1) + (sectors_per_table * TABLES_PER_VOLUME) + dir_entry_sectors
 }
 
-const fn usable_sectors() -> Sectors {
-    let total = Sectors::needed_for_bytes(MAX_DISK_SIZE_BYTES);
-    Sectors(total.0 - overhead_sectors().0)
+/// Yields the number of sectors in this module's FAT volumes that can be used
+/// by files.
+fn total_usable_sectors() -> Sectors {
+    Sectors::needed_for_bytes(MAX_DISK_SIZE_BYTES) - overhead_sectors()
 }
 
 #[derive(Clone, Debug)]
@@ -119,13 +128,13 @@ pub enum Error {
 #[derive(Clone, Default, Debug)]
 pub struct FatFilesystem {
     files: Vec<File>,
-    sectors_used: Sectors,
+    sectors_remaining: Sectors,
 }
 
 impl FatFilesystem {
     /// Creates a new file collection.
     pub fn new() -> Self {
-        Self { files: vec![], sectors_used: Sectors(0) }
+        Self { files: vec![], sectors_remaining: total_usable_sectors() }
     }
 
     /// Adds a file with the supplied `contents` that will appear in the
@@ -140,13 +149,12 @@ impl FatFilesystem {
     ) -> Result<(), Error> {
         let bytes = contents.as_bytes();
         let sectors_needed = Sectors::needed_for_bytes(bytes.len());
-        let sectors_available = usable_sectors().0 - self.sectors_used.0;
-        if sectors_available < sectors_needed.0 {
-            Err(Error::NoSpace(sectors_needed.0, sectors_available))
+        if sectors_needed > self.sectors_remaining {
+            Err(Error::NoSpace(sectors_needed.0, self.sectors_remaining.0))
         } else {
             self.files
                 .push(File { path: path.to_owned(), contents: bytes.to_vec() });
-            self.sectors_used.0 += sectors_needed.0;
+            self.sectors_remaining -= sectors_needed;
             Ok(())
         }
     }
@@ -158,7 +166,7 @@ impl FatFilesystem {
             .map(|f| Sectors::needed_for_bytes(f.contents.len()).0)
             .sum();
 
-        assert!(file_sectors <= usable_sectors().0);
+        assert!(file_sectors <= total_usable_sectors().0);
 
         // `fatfs` requires that the output volume has at least 42 sectors, no
         // matter what.
