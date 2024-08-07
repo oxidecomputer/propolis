@@ -24,7 +24,7 @@ progenitor::generate_api!(
         Slot = { derives = [schemars::JsonSchema] },
 
         PciPath = { derives = [
-            Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd
+            Copy, Ord, Eq, PartialEq, PartialOrd
         ] },
 
         InstanceMetadata = { derives = [ PartialEq ] },
