@@ -36,10 +36,8 @@ pub enum DiskError {
     #[error("Disk factory has no Crucible downstairs artifact")]
     NoCrucibleDownstairs,
 
-    #[error(
-        "can't create a disk of the requested type with the requested source"
-    )]
-    SourceNotSupported,
+    #[error("can't create a {0} disk from source of type {1}")]
+    SourceNotSupported(String, String),
 
     #[error(transparent)]
     PortAllocatorError(#[from] PortAllocatorError),
@@ -96,6 +94,16 @@ pub enum DiskSource<'a> {
 
     /// A disk with the contents of the supplied filesystem.
     FatFilesystem(fat::FatFilesystem),
+}
+
+impl DiskSource<'_> {
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            DiskSource::Blank(_) => "blank",
+            DiskSource::Artifact(_) => "artifact",
+            DiskSource::FatFilesystem(_) => "filesystem",
+        }
+    }
 }
 
 /// A factory that provides tests with the means to create a disk they can
@@ -184,7 +192,10 @@ impl DiskFactory {
             // the supplied disk contents to it, but for now this isn't
             // supported.
             DiskSource::Blank(_) | DiskSource::FatFilesystem(_) => {
-                return Err(DiskError::SourceNotSupported);
+                return Err(DiskError::SourceNotSupported(
+                    "file-backed".to_owned(),
+                    source.kind().to_owned(),
+                ));
             }
         };
 
@@ -238,7 +249,10 @@ impl DiskFactory {
             // importing them directly into the Crucible regions), but for now
             // this isn't supported.
             DiskSource::FatFilesystem(_) => {
-                return Err(DiskError::SourceNotSupported);
+                return Err(DiskError::SourceNotSupported(
+                    "Crucible-backed".to_owned(),
+                    source.kind().to_owned(),
+                ));
             }
         };
 
@@ -271,7 +285,9 @@ impl DiskFactory {
         let contents = match source {
             DiskSource::Artifact(name) => {
                 let (path, _) = self.get_guest_artifact_info(name).await?;
-                std::fs::read(path)?
+                std::fs::read(&path).with_context(|| {
+                    format!("reading source artifact {} from {}", name, path)
+                })?
             }
             DiskSource::Blank(size) => vec![0; *size],
             DiskSource::FatFilesystem(fs) => fs.as_bytes()?,
