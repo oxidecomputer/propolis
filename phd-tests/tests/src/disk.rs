@@ -7,7 +7,7 @@ use phd_framework::{
     test_vm::{DiskBackend, DiskInterface},
 };
 use phd_testcase::*;
-use tracing::info;
+use tracing::{info, warn};
 
 #[phd_testcase]
 async fn in_memory_backend_smoke_test(ctx: &Framework) {
@@ -27,18 +27,26 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    // /dev/disk/by-path contains a set of symlinks that redirect device PCI
-    // paths to their device nodes under /dev. Here, the in-memory disk is
-    // supposed to be a virtio disk at 0/24/0 (note that the output PCI path is
-    // in hex). If this doesn't map to /dev/vda, then the subsequent mount
-    // command isn't going to work, so fail the test.
+    // Some guests expose a /dev/disk/by-path directory that contains symlinks
+    // mapping PCI paths to the underlying device nodes under /dev. If this is
+    // present, check the mapping for a virtio disk at 0.24.0.
     //
-    // The device naming scheme is up to the guest, so if this assumption fails
-    // for some guest, it's always possible to have the test parse the output of
-    // `ls` to figure out the actual path to mount.
-    let ls = vm.run_shell_command("ls -la /dev/disk/by-path").await?;
-    info!(%ls, "guest disk device paths");
-    assert!(ls.contains("virtio-pci-0000:00:18.0 -> ../../vda"));
+    // The commands after this try to mount the in-memory disk and assume that
+    // its device is located at /dev/vda. If the by-path directory is present,
+    // try to check that the disk is located there and fail the test early if
+    // it's not. If the by-path directory is missing, put up a warning and hope
+    // for the best.
+    let dev_disk = vm.run_shell_command("ls /dev/disk").await?;
+    if dev_disk.contains("by-path") {
+        let ls = vm.run_shell_command("ls -la /dev/disk/by-path").await?;
+        info!(%ls, "guest disk device paths");
+        assert!(ls.contains("virtio-pci-0000:00:18.0 -> ../../vda"));
+    } else {
+        warn!(
+            "guest doesn't support /dev/disk/by-path, did not verify device \
+            path"
+        );
+    }
 
     vm.run_shell_command("mkdir /phd").await?;
 
