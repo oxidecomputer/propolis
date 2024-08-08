@@ -4,9 +4,8 @@
 
 //! Helper functions for building instance specs from server parameters.
 
-use std::str::FromStr;
-
 use crate::config;
+use config_toml::ConfigTomlError;
 use propolis_api_types::instance_spec::{
     components,
     v0::{
@@ -20,14 +19,13 @@ use propolis_api_types::{
 };
 use thiserror::Error;
 
+mod config_toml;
+
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub enum ServerSpecBuilderError {
     #[error(transparent)]
     InnerBuilderError(#[from] SpecBuilderError),
-
-    #[error("The string {0} could not be converted to a PCI path")]
-    PciPathNotParseable(String),
 
     #[error(
         "Could not translate PCI slot {0} for device type {1:?} to a PCI path"
@@ -37,14 +35,11 @@ pub enum ServerSpecBuilderError {
     #[error("Unrecognized storage device interface {0}")]
     UnrecognizedStorageDevice(String),
 
-    #[error("Unrecognized storage backend type {0}")]
-    UnrecognizedStorageBackend(String),
-
     #[error("Device {0} requested missing backend {1}")]
     DeviceMissingBackend(String, String),
 
-    #[error("Error in server config TOML: {0}")]
-    ConfigTomlError(String),
+    #[error("error parsing config TOML")]
+    ConfigToml(#[from] ConfigTomlError),
 
     #[error("Error serializing {0} into spec element: {1}")]
     SerializationError(String, serde_json::error::Error),
@@ -94,109 +89,6 @@ fn pci_path_to_nic_names(path: PciPath) -> (String, String) {
     (format!("vnic-{}", path), format!("vnic-{}-backend", path))
 }
 
-fn make_storage_backend_from_config(
-    name: &str,
-    backend: &config::BlockDevice,
-) -> Result<StorageBackendV0, ServerSpecBuilderError> {
-    let backend_spec = match backend.bdtype.as_str() {
-        "file" => {
-            StorageBackendV0::File(components::backends::FileStorageBackend {
-                path: backend
-                    .options
-                    .get("path")
-                    .ok_or_else(|| {
-                        ServerSpecBuilderError::ConfigTomlError(format!(
-                            "Couldn't get path for file backend {}",
-                            name
-                        ))
-                    })?
-                    .as_str()
-                    .ok_or_else(|| {
-                        ServerSpecBuilderError::ConfigTomlError(format!(
-                            "Couldn't parse path for file backend {}",
-                            name
-                        ))
-                    })?
-                    .to_string(),
-                readonly: match backend.options.get("readonly") {
-                    Some(toml::Value::Boolean(ro)) => Some(*ro),
-                    Some(toml::Value::String(v)) => v.parse().ok(),
-                    _ => None,
-                }
-                .unwrap_or(false),
-            })
-        }
-        _ => {
-            return Err(ServerSpecBuilderError::UnrecognizedStorageBackend(
-                backend.bdtype.clone(),
-            ));
-        }
-    };
-
-    Ok(backend_spec)
-}
-
-fn make_storage_device_from_config(
-    name: &str,
-    device: &config::Device,
-) -> Result<StorageDeviceV0, ServerSpecBuilderError> {
-    enum DeviceInterface {
-        Virtio,
-        Nvme,
-    }
-
-    let interface = match device.driver.as_str() {
-        "pci-virtio-block" => DeviceInterface::Virtio,
-        "pci-nvme" => DeviceInterface::Nvme,
-        _ => {
-            return Err(ServerSpecBuilderError::ConfigTomlError(format!(
-                "storage device {} has invalid driver {}",
-                name, device.driver
-            )))
-        }
-    };
-
-    let backend_name = device
-        .options
-        .get("block_dev")
-        .ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Couldn't get block_dev for storage device {}",
-                name
-            ))
-        })?
-        .as_str()
-        .ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Couldn't parse block_dev for storage device {}",
-                name
-            ))
-        })?
-        .to_owned();
-
-    let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
-        ServerSpecBuilderError::ConfigTomlError(format!(
-            "Failed to get PCI path for storage device {}",
-            name
-        ))
-    })?;
-
-    Ok(match interface {
-        DeviceInterface::Virtio => {
-            StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
-                backend_name,
-                pci_path,
-            })
-        }
-        DeviceInterface::Nvme => {
-            StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
-                backend_name,
-                pci_path,
-            })
-        }
-    })
-}
-
 /// A helper for building instance specs out of component parts.
 pub struct ServerSpecBuilder {
     builder: SpecBuilder,
@@ -214,10 +106,11 @@ impl ServerSpecBuilder {
                 || Ok(false),
                 |v| {
                     v.as_bool().ok_or_else(|| {
-                        ServerSpecBuilderError::ConfigTomlError(format!(
-                            "Invalid value {} for enable-pcie flag in chipset",
-                            v
-                        ))
+                        ServerSpecBuilderError::ConfigToml(
+                            ConfigTomlError::EnablePcieParseFailed(
+                                v.to_string(),
+                            ),
+                        )
                     })
                 },
             )?;
@@ -354,38 +247,14 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-        let vnic_name = device.get_string("vnic").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get vNIC name for device {}",
-                name
-            ))
-        })?;
-
-        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get PCI path for network device {}",
-                name
-            ))
-        })?;
-
-        let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
-        let backend_spec = NetworkBackendV0::Virtio(
-            components::backends::VirtioNetworkBackend {
-                vnic_name: vnic_name.to_string(),
-            },
-        );
-
-        let device_spec =
-            NetworkDeviceV0::VirtioNic(components::devices::VirtioNic {
-                backend_name: backend_name.clone(),
-                pci_path,
-            });
+        let parsed =
+            config_toml::parse_network_device_from_config(name, device)?;
 
         self.builder.add_network_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
+            parsed.device_name,
+            parsed.device_spec,
+            parsed.backend_name,
+            parsed.backend_spec,
         )?;
 
         Ok(())
@@ -395,19 +264,8 @@ impl ServerSpecBuilder {
         &mut self,
         bridge: &config::PciBridge,
     ) -> Result<(), ServerSpecBuilderError> {
-        let name = format!("pci-bridge-{}", bridge.downstream_bus);
-        let pci_path = PciPath::from_str(&bridge.pci_path).map_err(|_| {
-            ServerSpecBuilderError::PciPathNotParseable(bridge.pci_path.clone())
-        })?;
-
-        self.builder.add_pci_bridge(
-            name,
-            components::devices::PciPciBridge {
-                downstream_bus: bridge.downstream_bus,
-                pci_path,
-            },
-        )?;
-
+        let parsed = config_toml::parse_pci_bridge_from_config(bridge)?;
+        self.builder.add_pci_bridge(parsed.name, parsed.bridge)?;
         Ok(())
     }
 
@@ -424,7 +282,10 @@ impl ServerSpecBuilder {
                 // to get the name of its corresponding backend.
                 "pci-virtio-block" | "pci-nvme" => {
                     let device_spec =
-                        make_storage_device_from_config(device_name, device)?;
+                        config_toml::parse_storage_device_from_config(
+                            device_name,
+                            device,
+                        )?;
 
                     let backend_name = match &device_spec {
                         StorageDeviceV0::VirtioDisk(disk) => {
@@ -445,10 +306,11 @@ impl ServerSpecBuilder {
                         )
                     })?;
 
-                    let backend_spec = make_storage_backend_from_config(
-                        &backend_name,
-                        backend_config,
-                    )?;
+                    let backend_spec =
+                        config_toml::parse_storage_backend_from_config(
+                            &backend_name,
+                            backend_config,
+                        )?;
 
                     self.builder.add_storage_device(
                         device_name.clone(),
@@ -477,8 +339,10 @@ impl ServerSpecBuilder {
                     self.add_p9fs_from_config(device_name, device)?
                 }
                 _ => {
-                    return Err(ServerSpecBuilderError::ConfigTomlError(
-                        format!("Unrecognized device type {}", driver),
+                    return Err(ServerSpecBuilderError::ConfigToml(
+                        ConfigTomlError::UnrecognizedDeviceType(
+                            driver.to_owned(),
+                        ),
                     ))
                 }
             }
@@ -497,15 +361,10 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get PCI path for storage device {}",
-                name
-            ))
-        })?;
+        self.builder.set_softnpu_p9(
+            config_toml::parse_softnpu_p9_from_config(name, device)?,
+        )?;
 
-        self.builder
-            .set_softnpu_p9(components::devices::SoftNpuP9 { pci_path })?;
         Ok(())
     }
 
@@ -515,15 +374,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get PCI path for network device {}",
-                name
-            ))
-        })?;
-
         self.builder.set_softnpu_pci_port(
-            components::devices::SoftNpuPciPort { pci_path },
+            config_toml::parse_softnpu_pci_port_from_config(name, device)?,
         )?;
 
         Ok(())
@@ -535,21 +387,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-        let vnic_name = device.get_string("vnic").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to parse vNIC name for device {}",
-                name
-            ))
-        })?;
-
-        self.builder.add_softnpu_port(
-            name.to_string(),
-            components::devices::SoftNpuPort {
-                name: name.to_string(),
-                backend_name: vnic_name.to_string(),
-            },
-        )?;
-
+        let port = config_toml::parse_softnpu_port_from_config(name, device)?;
+        self.builder.add_softnpu_port(name.to_string(), port)?;
         Ok(())
     }
 
@@ -559,34 +398,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
-        let source: String = device.get("source").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get source for p9 device {}",
-                name
-            ))
-        })?;
-
-        let target: String = device.get("target").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get target for p9 device {}",
-                name
-            ))
-        })?;
-
-        let chunk_size: u32 = device.get("chunk_size").unwrap_or(65536);
-        let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
-            ServerSpecBuilderError::ConfigTomlError(format!(
-                "Failed to get PCI path for p9 device {}",
-                name
-            ))
-        })?;
-
-        self.builder.set_p9fs(components::devices::P9fs {
-            source,
-            target,
-            chunk_size,
-            pci_path,
-        })?;
+        self.builder
+            .set_p9fs(config_toml::parse_p9fs_from_config(name, device)?)?;
 
         Ok(())
     }
