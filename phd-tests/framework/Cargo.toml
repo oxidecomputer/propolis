@@ -16,6 +16,7 @@ bhyve_api.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 cfg-if.workspace = true
 errno.workspace = true
+fatfs.workspace = true
 futures.workspace = true
 flate2.workspace = true
 hex.workspace = true

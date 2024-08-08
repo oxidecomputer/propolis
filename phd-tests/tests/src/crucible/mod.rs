@@ -13,10 +13,10 @@ use phd_testcase::{
 mod migrate;
 mod smoke;
 
-fn add_crucible_boot_disk_or_skip(
+fn add_crucible_boot_disk_or_skip<'a>(
     ctx: &Framework,
-    config: &mut VmConfig,
-    artifact: &str,
+    config: &mut VmConfig<'a>,
+    artifact: &'a str,
     interface: DiskInterface,
     pci_slot: u8,
     min_disk_size_gib: u64,
@@ -36,9 +36,9 @@ fn add_crucible_boot_disk_or_skip(
     Ok(())
 }
 
-fn add_default_boot_disk(
-    ctx: &Framework,
-    config: &mut VmConfig,
+fn add_default_boot_disk<'a>(
+    ctx: &'a Framework,
+    config: &mut VmConfig<'a>,
 ) -> phd_testcase::Result<()> {
     add_crucible_boot_disk_or_skip(
         ctx,

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
+use in_memory::InMemoryDisk;
 use propolis_client::types::StorageBackendV0;
 use thiserror::Error;
 
@@ -25,7 +26,9 @@ use crate::{
 use self::{crucible::CrucibleDisk, file::FileBackedDisk};
 
 pub mod crucible;
+pub mod fat;
 mod file;
+pub mod in_memory;
 
 /// Errors that can arise while working with disks.
 #[derive(Debug, Error)]
@@ -33,11 +36,19 @@ pub enum DiskError {
     #[error("Disk factory has no Crucible downstairs artifact")]
     NoCrucibleDownstairs,
 
+    #[error(
+        "can't create a disk of the requested type with the requested source"
+    )]
+    SourceNotSupported,
+
     #[error(transparent)]
     PortAllocatorError(#[from] PortAllocatorError),
 
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    #[error(transparent)]
+    FatFilesystemError(#[from] fat::Error),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
@@ -75,10 +86,16 @@ pub trait DiskConfig: std::fmt::Debug + Send + Sync {
 }
 
 /// The possible sources for a disk's initial data.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum DiskSource<'a> {
+    /// A blank disk with the supplied size, in bytes.
+    Blank(usize),
+
     /// A disk backed by the guest image artifact with the supplied key.
     Artifact(&'a str),
+
+    /// A disk with the contents of the supplied filesystem.
+    FatFilesystem(fat::FatFilesystem),
 }
 
 /// A factory that provides tests with the means to create a disk they can
@@ -158,9 +175,19 @@ impl DiskFactory {
     pub(crate) async fn create_file_backed_disk<'d>(
         &self,
         name: String,
-        source: DiskSource<'d>,
+        source: &DiskSource<'d>,
     ) -> Result<Arc<FileBackedDisk>, DiskError> {
-        let DiskSource::Artifact(artifact_name) = source;
+        let artifact_name = match source {
+            DiskSource::Artifact(name) => name,
+            // It's possible in theory to have a file-backed disk that isn't
+            // backed by an artifact by creating a temporary file and copying
+            // the supplied disk contents to it, but for now this isn't
+            // supported.
+            DiskSource::Blank(_) | DiskSource::FatFilesystem(_) => {
+                return Err(DiskError::SourceNotSupported);
+            }
+        };
+
         let (artifact_path, guest_os) =
             self.get_guest_artifact_info(artifact_name).await?;
 
@@ -183,22 +210,37 @@ impl DiskFactory {
     ///   If the source data is stored as a file on the local disk, the
     ///   resulting disk's `VolumeConstructionRequest`s will specify that this
     ///   file should be used as a read-only parent volume.
-    /// - min_disk_size_gib: The disk's minimum size in GiB. If the size of the
-    ///   `source` artifact is larger than the minimum size, the disk will be
-    ///   the size of the source artifact, instead.
+    /// - min_disk_size_gib: The disk's minimum size in GiB. The disk's actual
+    ///   size is the larger of this size and the source's size.
     /// - block_size: The disk's block size.
     pub(crate) async fn create_crucible_disk<'d>(
         &self,
         name: String,
-        source: DiskSource<'d>,
-        min_disk_size_gib: u64,
+        source: &DiskSource<'d>,
+        mut min_disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
         let binary_path = self.artifact_store.get_crucible_downstairs().await?;
 
-        let DiskSource::Artifact(artifact_name) = source;
-        let (artifact_path, guest_os) =
-            self.get_guest_artifact_info(artifact_name).await?;
+        let (artifact_path, guest_os) = match source {
+            DiskSource::Artifact(name) => {
+                let (path, os) = self.get_guest_artifact_info(name).await?;
+                (Some(path), Some(os))
+            }
+            DiskSource::Blank(size) => {
+                min_disk_size_gib = min_disk_size_gib
+                    .max(u64::try_from(*size).map_err(anyhow::Error::from)?);
+                (None, None)
+            }
+            // It's possible in theory to have a Crucible-backed disk with
+            // caller-supplied initial contents by writing those contents out to
+            // intermediate files and using them as a read-only parent (or just
+            // importing them directly into the Crucible regions), but for now
+            // this isn't supported.
+            DiskSource::FatFilesystem(_) => {
+                return Err(DiskError::SourceNotSupported);
+            }
+        };
 
         let mut ports = [0u16; 3];
         for port in &mut ports {
@@ -212,11 +254,29 @@ impl DiskFactory {
             &binary_path.as_std_path(),
             &ports,
             &self.storage_dir,
-            Some(&artifact_path),
-            Some(guest_os),
+            artifact_path.as_ref(),
+            guest_os,
             self.log_mode,
         )
         .map(Arc::new)
         .map_err(Into::into)
+    }
+
+    pub(crate) async fn create_in_memory_disk<'d>(
+        &self,
+        name: String,
+        source: &DiskSource<'d>,
+        readonly: bool,
+    ) -> Result<Arc<InMemoryDisk>, DiskError> {
+        let contents = match source {
+            DiskSource::Artifact(name) => {
+                let (path, _) = self.get_guest_artifact_info(name).await?;
+                std::fs::read(path)?
+            }
+            DiskSource::Blank(size) => vec![0; *size],
+            DiskSource::FatFilesystem(fs) => fs.as_bytes()?,
+        };
+
+        Ok(Arc::new(InMemoryDisk::new(name, contents, readonly)))
     }
 }

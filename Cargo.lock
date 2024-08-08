@@ -3130,6 +3130,7 @@ dependencies = [
  "camino",
  "cfg-if",
  "errno 0.2.8",
+ "fatfs",
  "flate2",
  "futures",
  "hex",

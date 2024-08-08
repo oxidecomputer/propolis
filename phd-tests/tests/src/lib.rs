@@ -5,6 +5,7 @@
 pub use phd_testcase;
 
 mod crucible;
+mod disk;
 mod framework;
 mod hw;
 mod migrate;
