@@ -11,20 +11,20 @@ progenitor::generate_api!(
     tags = Separate,
     patch = {
         // Add `Default` to types related to instance specs
-        InstanceSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        BackendSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        DeviceSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        Board = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
+        InstanceSpecV0 = { derives = [Default] },
+        BackendSpecV0 = { derives = [Default] },
+        DeviceSpecV0 = { derives = [Default] },
+        Board = { derives = [Default] },
 
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema
-        DiskRequest = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
-        VolumeConstructionRequest = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
-        CrucibleOpts = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
-        Slot = { derives = [Copy, Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
+        DiskRequest = { derives = [schemars::JsonSchema] },
+        VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
+        CrucibleOpts = { derives = [schemars::JsonSchema] },
+        Slot = { derives = [schemars::JsonSchema] },
 
         PciPath = { derives = [
-            Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Serialize, Deserialize
+            Copy, Ord, Eq, PartialEq, PartialOrd
         ] },
 
         InstanceMetadata = { derives = [ PartialEq ] },
@@ -38,20 +38,20 @@ progenitor::generate_api!(
     tags = Separate,
     patch = {
         // Add `Default` to types related to instance specs
-        InstanceSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        BackendSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        DeviceSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        Board = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
+        InstanceSpecV0 = { derives = [Default] },
+        BackendSpecV0 = { derives = [Default] },
+        DeviceSpecV0 = { derives = [Default] },
+        Board = { derives = [Default] },
 
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema
-        DiskRequest = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
-        VolumeConstructionRequest = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
-        CrucibleOpts = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
-        Slot = { derives = [Copy, Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
+        DiskRequest = { derives = [schemars::JsonSchema] },
+        VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
+        CrucibleOpts = { derives = [schemars::JsonSchema] },
+        Slot = { derives = [schemars::JsonSchema] },
 
         PciPath = { derives = [
-            Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Serialize, Deserialize
+            Copy, Ord, Eq, PartialEq, PartialOrd
         ] },
 
         InstanceMetadata = { derives = [ PartialEq ] },
