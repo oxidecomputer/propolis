@@ -184,7 +184,15 @@ impl TestVm {
         let guest_os_kind = spec.guest_os_kind;
 
         let vm_name = &spec.vm_name;
-        info!(%vm_name, ?spec.instance_spec, ?guest_os_kind, ?environment);
+
+        // TODO(#735): It would be nice to log the instance spec here too, but
+        // this is extremely noisy for disks with an in-memory disk backend. The
+        // problem is that this spec is a propolis-client generated type with a
+        // derived Debug impl. This can be fixed by making propolis-client
+        // re-export the instance spec types from propolis_api_types (instead of
+        // generating them) so that it can pick up the latter crate's explicit
+        // Debug impls for verbose component types.
+        info!(%vm_name, ?guest_os_kind, ?environment);
 
         match environment
             .build(framework)
@@ -378,7 +386,6 @@ impl TestVm {
 
         info!(
             ?instance_description.instance,
-            ?self.spec.instance_spec,
             "Started instance"
         );
 

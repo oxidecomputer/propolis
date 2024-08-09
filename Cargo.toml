@@ -124,6 +124,7 @@ kstat-rs = "0.2.3"
 lazy_static = "1.4"
 libc = "0.2"
 mockall = "0.12"
+newtype_derive = "0.1.6"
 newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
 owo-colors = "4"
 pin-project-lite = "0.2.13"

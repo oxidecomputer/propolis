@@ -246,9 +246,9 @@ impl Framework {
     /// Spawns a new test VM using the supplied `config`. If `environment` is
     /// `Some`, the VM is spawned using the supplied environment; otherwise it
     /// is spawned using the default `environment_builder`.
-    pub async fn spawn_vm(
+    pub async fn spawn_vm<'dr>(
         &self,
-        config: &VmConfig,
+        config: &VmConfig<'dr>,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
         TestVm::new(
