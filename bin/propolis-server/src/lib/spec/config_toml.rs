@@ -27,42 +27,42 @@ use crate::config;
 
 #[derive(Debug, Error)]
 pub enum ConfigTomlError {
-    #[error("unrecognized device type {0}")]
+    #[error("unrecognized device type {0:?}")]
     UnrecognizedDeviceType(String),
 
-    #[error("invalid value {0} for enable-pcie flag in chipset")]
+    #[error("invalid value {0:?} for enable-pcie flag in chipset")]
     EnablePcieParseFailed(String),
 
-    #[error("failed to get PCI path for device {0}")]
+    #[error("failed to get PCI path for device {0:?}")]
     InvalidPciPath(String),
 
-    #[error("failed to parse PCI path string {0}")]
-    PciPathParseFailed(String),
+    #[error("failed to parse PCI path string {0:?}")]
+    PciPathParseFailed(String, #[source] std::io::Error),
 
-    #[error("invalid storage device type {0} for device {1}")]
-    InvalidStorageDeviceType(String, String),
+    #[error("invalid storage device kind {kind:?} for device {name}")]
+    InvalidStorageDeviceType { kind: String, name: String },
 
-    #[error("no backend name for storage device {0}")]
+    #[error("no backend name for storage device {0:?}")]
     NoBackendNameForStorageDevice(String),
 
-    #[error("invalid storage backend type {0} for backend {1}")]
-    InvalidStorageBackendType(String, String),
+    #[error("invalid storage backend kind {kind:?} for backend {name}")]
+    InvalidStorageBackendType { kind: String, name: String },
 
-    #[error("couldn't get path for file backend {0}")]
+    #[error("couldn't get path for file backend {0:?}")]
     InvalidFileBackendPath(String),
 
-    #[error("failed to parse read-only option for file backend {0}")]
-    FileBackendReadonlyParseFailed(String, ParseBoolError),
+    #[error("failed to parse read-only option for file backend {0:?}")]
+    FileBackendReadonlyParseFailed(String, #[source] ParseBoolError),
 
-    #[error("failed to get VNIC name for device {0}")]
+    #[error("failed to get VNIC name for device {0:?}")]
     NoVnicName(String),
 
     #[cfg(feature = "falcon")]
-    #[error("failed to get source for p9 device {0}")]
+    #[error("failed to get source for p9 device {0:?}")]
     NoP9Source(String),
 
     #[cfg(feature = "falcon")]
-    #[error("failed to get source for p9 device {0}")]
+    #[error("failed to get source for p9 device {0:?}")]
     NoP9Target(String),
 }
 
@@ -98,10 +98,10 @@ pub(super) fn parse_storage_backend_from_config(
             .unwrap_or(false),
         }),
         _ => {
-            return Err(ConfigTomlError::InvalidStorageBackendType(
-                backend.bdtype.clone(),
-                name.to_owned(),
-            ));
+            return Err(ConfigTomlError::InvalidStorageBackendType {
+                kind: backend.bdtype.clone(),
+                name: name.to_owned(),
+            });
         }
     };
 
@@ -121,10 +121,10 @@ pub(super) fn parse_storage_device_from_config(
         "pci-virtio-block" => Interface::Virtio,
         "pci-nvme" => Interface::Nvme,
         _ => {
-            return Err(ConfigTomlError::InvalidStorageDeviceType(
-                device.driver.clone(),
-                name.to_owned(),
-            ));
+            return Err(ConfigTomlError::InvalidStorageDeviceType {
+                kind: device.driver.clone(),
+                name: name.to_owned(),
+            });
         }
     };
 
@@ -200,8 +200,8 @@ pub(super) fn parse_pci_bridge_from_config(
     bridge: &config::PciBridge,
 ) -> Result<ParsedPciPciBridge, ConfigTomlError> {
     let name = format!("pci-bridge-{}", bridge.downstream_bus);
-    let pci_path = PciPath::from_str(&bridge.pci_path).map_err(|_| {
-        ConfigTomlError::PciPathParseFailed(bridge.pci_path.to_string())
+    let pci_path = PciPath::from_str(&bridge.pci_path).map_err(|e| {
+        ConfigTomlError::PciPathParseFailed(bridge.pci_path.to_string(), e)
     })?;
 
     Ok(ParsedPciPciBridge {
