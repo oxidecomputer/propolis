@@ -118,9 +118,10 @@ struct File {
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(
-        "insufficient space for new file: {0} sectors required, {1} available"
+        "insufficient space for new file: {required} sectors required, \
+        {available} available"
     )]
-    NoSpace(usize, usize),
+    NoSpace { required: usize, available: usize },
 }
 
 /// Builds a collection of files that can be extruded as an array of bytes
@@ -150,7 +151,10 @@ impl FatFilesystem {
         let bytes = contents.as_bytes();
         let sectors_needed = Sectors::needed_for_bytes(bytes.len());
         if sectors_needed > self.sectors_remaining {
-            Err(Error::NoSpace(sectors_needed.0, self.sectors_remaining.0))
+            Err(Error::NoSpace {
+                required: sectors_needed.0,
+                available: self.sectors_remaining.0,
+            })
         } else {
             self.files
                 .push(File { path: path.to_owned(), contents: bytes.to_vec() });

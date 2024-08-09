@@ -36,8 +36,8 @@ pub enum DiskError {
     #[error("Disk factory has no Crucible downstairs artifact")]
     NoCrucibleDownstairs,
 
-    #[error("can't create a {0} disk from source of type {1}")]
-    SourceNotSupported(String, String),
+    #[error("can't create a {disk_type} disk from source of type {src}")]
+    SourceNotSupported { disk_type: &'static str, src: &'static str },
 
     #[error(transparent)]
     PortAllocatorError(#[from] PortAllocatorError),
@@ -192,10 +192,10 @@ impl DiskFactory {
             // the supplied disk contents to it, but for now this isn't
             // supported.
             DiskSource::Blank(_) | DiskSource::FatFilesystem(_) => {
-                return Err(DiskError::SourceNotSupported(
-                    "file-backed".to_owned(),
-                    source.kind().to_owned(),
-                ));
+                return Err(DiskError::SourceNotSupported {
+                    disk_type: "file-backed",
+                    src: source.kind(),
+                });
             }
         };
 
@@ -249,10 +249,10 @@ impl DiskFactory {
             // importing them directly into the Crucible regions), but for now
             // this isn't supported.
             DiskSource::FatFilesystem(_) => {
-                return Err(DiskError::SourceNotSupported(
-                    "Crucible-backed".to_owned(),
-                    source.kind().to_owned(),
-                ));
+                return Err(DiskError::SourceNotSupported {
+                    disk_type: "Crucible-backed",
+                    src: source.kind(),
+                });
             }
         };
 
