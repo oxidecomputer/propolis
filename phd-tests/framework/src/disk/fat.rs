@@ -109,14 +109,19 @@ fn total_usable_sectors() -> Sectors {
     Sectors::needed_for_bytes(MAX_DISK_SIZE_BYTES) - overhead_sectors()
 }
 
+/// Represents a file that should be inserted into the file system when it's
+/// created.
 #[derive(Clone, Debug)]
 struct File {
-    path: String,
+    name: String,
     contents: Vec<u8>,
 }
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("supplied filename {0} contains path separator")]
+    PathSeparatorInFilename(String),
+
     #[error(
         "insufficient space for new file: {required} sectors required, \
         {available} available"
@@ -138,16 +143,26 @@ impl FatFilesystem {
         Self { files: vec![], sectors_remaining: total_usable_sectors() }
     }
 
-    /// Adds a file with the supplied `contents` that will appear in the
-    /// resulting file system in the supplied `path`.
-    ///
-    /// N.B. `path` is interpreted relative to the root of the file system and
-    ///      should not have a leading '/'.
+    /// Adds a file with the supplied `contents` that will appear in the root
+    /// directory of the generated file system. The given `filename` must not
+    /// contain any path separators (the `/` character).
     pub fn add_file_from_str(
         &mut self,
-        path: &str,
+        filename: &str,
         contents: &str,
     ) -> Result<(), Error> {
+        // The `fatfs` crate will break paths containing separators into their
+        // component directories before trying to create the requested file in
+        // the appropriate leaf directory. This struct's interface (i.e.
+        // FatFilesystem's, not anything in `fatfs`) doesn't give callers a way
+        // to create directories, so creating a file with a '/' character in the
+        // filename will lead to unexpected behavior (an error at disk
+        // generation time at best, or a misnamed or missing file at worst).
+        // Return an error to callers who supply such filenames.
+        if filename.contains('/') {
+            return Err(Error::PathSeparatorInFilename(filename.to_owned()));
+        }
+
         let bytes = contents.as_bytes();
         let sectors_needed = Sectors::needed_for_bytes(bytes.len());
         if sectors_needed > self.sectors_remaining {
@@ -156,8 +171,11 @@ impl FatFilesystem {
                 available: self.sectors_remaining.0,
             })
         } else {
-            self.files
-                .push(File { path: path.to_owned(), contents: bytes.to_vec() });
+            self.files.push(File {
+                name: filename.to_owned(),
+                contents: bytes.to_vec(),
+            });
+
             self.sectors_remaining -= sectors_needed;
             Ok(())
         }
@@ -207,11 +225,11 @@ impl FatFilesystem {
             let root_dir = fs.root_dir();
             for file in &self.files {
                 root_dir
-                    .create_file(&file.path)
-                    .with_context(|| format!("creating file {}", file.path))?
+                    .create_file(&file.name)
+                    .with_context(|| format!("creating file {}", file.name))?
                     .write_all(file.contents.as_slice())
                     .with_context(|| {
-                        format!("writing contents of file {}", file.path)
+                        format!("writing contents of file {}", file.name)
                     })?;
             }
         }
