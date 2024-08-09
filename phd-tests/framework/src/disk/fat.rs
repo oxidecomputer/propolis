@@ -215,3 +215,35 @@ impl FatFilesystem {
         Ok(disk.into_inner())
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn cannot_add_file_too_large_for_disk() {
+        let mut fs = FatFilesystem::new();
+        assert!(fs
+            .add_file_from_str("too_big", &"a".repeat(MAX_DISK_SIZE_BYTES))
+            .is_err());
+    }
+
+    #[test]
+    fn cannot_exceed_disk_size_limit_with_multiple_files() {
+        let mut fs = FatFilesystem::new();
+        for idx in 0..total_usable_sectors().0 {
+            assert!(
+                fs.add_file_from_str(
+                    &format!("file{idx}"),
+                    &"a".repeat(BYTES_PER_SECTOR)
+                )
+                .is_ok(),
+                "adding file {idx}"
+            );
+        }
+
+        assert!(fs
+            .add_file_from_str("file", &"a".repeat(BYTES_PER_SECTOR))
+            .is_err());
+    }
+}
