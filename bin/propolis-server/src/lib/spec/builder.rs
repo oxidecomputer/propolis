@@ -28,7 +28,7 @@ use propolis_api_types::instance_spec::components::{
 /// Errors that can arise while building an instance spec from component parts.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Error)]
-pub enum SpecBuilderError {
+pub(crate) enum SpecBuilderError {
     #[error("A device with name {0} already exists")]
     DeviceNameInUse(String),
 

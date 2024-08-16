@@ -26,7 +26,7 @@ use propolis_api_types::instance_spec::components::devices::{
 use crate::config;
 
 #[derive(Debug, Error)]
-pub enum ConfigTomlError {
+pub(crate) enum ConfigTomlError {
     #[error("unrecognized device type {0:?}")]
     UnrecognizedDeviceType(String),
 

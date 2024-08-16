@@ -27,7 +27,7 @@ mod config_toml;
 
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
-pub enum ServerSpecBuilderError {
+pub(crate) enum ServerSpecBuilderError {
     #[error(transparent)]
     InnerBuilderError(#[from] builder::SpecBuilderError),
 
