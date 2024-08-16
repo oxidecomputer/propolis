@@ -27,27 +27,16 @@ use crate::instance_spec::{
         ElementCompatibilityError, MigrationCollection,
         MigrationCompatibilityError, MigrationElement,
     },
-    PciPath, SpecKey,
+    SpecKey,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-pub mod builder;
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "type", content = "component")]
 pub enum StorageDeviceV0 {
     VirtioDisk(components::devices::VirtioDisk),
     NvmeDisk(components::devices::NvmeDisk),
-}
-
-impl StorageDeviceV0 {
-    fn pci_path(&self) -> PciPath {
-        match self {
-            Self::VirtioDisk(disk) => disk.pci_path,
-            Self::NvmeDisk(disk) => disk.pci_path,
-        }
-    }
 }
 
 impl MigrationElement for StorageDeviceV0 {
@@ -81,14 +70,6 @@ impl MigrationElement for StorageDeviceV0 {
 #[serde(deny_unknown_fields, tag = "type", content = "component")]
 pub enum NetworkDeviceV0 {
     VirtioNic(components::devices::VirtioNic),
-}
-
-impl NetworkDeviceV0 {
-    fn pci_path(&self) -> PciPath {
-        match self {
-            Self::VirtioNic(nic) => nic.pci_path,
-        }
-    }
 }
 
 impl MigrationElement for NetworkDeviceV0 {

@@ -2,16 +2,33 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! A builder for V0 instance specs.
+//! A builder for instance specs.
 
 use std::collections::BTreeSet;
 
-use crate::instance_spec::{components, v0::*, PciPath};
+use propolis_api_types::instance_spec::{
+    components::{
+        board::Board,
+        devices::{PciPciBridge, QemuPvpanic, SerialPort, SerialPortNumber},
+    },
+    v0::{
+        DeviceSpecV0, InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0,
+        StorageBackendV0, StorageDeviceV0,
+    },
+    PciPath,
+};
 use thiserror::Error;
 
+#[cfg(feature = "falcon")]
+use propolis_api_types::instance_spec::components::{
+    backends::DlpiNetworkBackend,
+    devices::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort},
+};
+
 /// Errors that can arise while building an instance spec from component parts.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Error)]
-pub enum SpecBuilderError {
+pub(crate) enum SpecBuilderError {
     #[error("A device with name {0} already exists")]
     DeviceNameInUse(String),
 
@@ -22,35 +39,45 @@ pub enum SpecBuilderError {
     PciPathInUse(PciPath),
 
     #[error("Serial port {0:?} is already specified")]
-    SerialPortInUse(components::devices::SerialPortNumber),
+    SerialPortInUse(SerialPortNumber),
 
+    #[cfg(feature = "falcon")]
     #[error("SoftNpu port {0:?} is already specified")]
     SoftNpuPortInUse(String),
 }
 
-/// A builder that constructs instance specs incrementally and catches basic
-/// errors, such as specifying duplicate component names or specifying multiple
-/// devices with the same PCI path.
-pub struct SpecBuilder {
+pub(super) struct SpecBuilder {
     spec: InstanceSpecV0,
     pci_paths: BTreeSet<PciPath>,
 }
 
-impl SpecBuilder {
-    /// Creates a new instance spec with the supplied board configuration.
-    pub fn new(cpus: u8, memory_mb: u64, enable_pcie: bool) -> Self {
-        let board = components::board::Board {
-            cpus,
-            memory_mb,
-            chipset: components::board::Chipset::I440Fx(
-                components::board::I440Fx { enable_pcie },
-            ),
-        };
+trait PciComponent {
+    fn pci_path(&self) -> PciPath;
+}
 
+impl PciComponent for StorageDeviceV0 {
+    fn pci_path(&self) -> PciPath {
+        match self {
+            StorageDeviceV0::VirtioDisk(disk) => disk.pci_path,
+            StorageDeviceV0::NvmeDisk(disk) => disk.pci_path,
+        }
+    }
+}
+
+impl PciComponent for NetworkDeviceV0 {
+    fn pci_path(&self) -> PciPath {
+        match self {
+            NetworkDeviceV0::VirtioNic(nic) => nic.pci_path,
+        }
+    }
+}
+
+impl SpecBuilder {
+    pub(super) fn new(board: Board) -> Self {
         Self {
             spec: InstanceSpecV0 {
                 devices: DeviceSpecV0 { board, ..Default::default() },
-                ..Default::default()
+                backends: Default::default(),
             },
             pci_paths: Default::default(),
         }
@@ -71,7 +98,7 @@ impl SpecBuilder {
     }
 
     /// Adds a storage device with an associated backend.
-    pub fn add_storage_device(
+    pub(super) fn add_storage_device(
         &mut self,
         device_name: String,
         device_spec: StorageDeviceV0,
@@ -135,7 +162,7 @@ impl SpecBuilder {
     pub fn add_pci_bridge(
         &mut self,
         bridge_name: String,
-        bridge_spec: components::devices::PciPciBridge,
+        bridge_spec: PciPciBridge,
     ) -> Result<&Self, SpecBuilderError> {
         if self.spec.devices.pci_pci_bridges.contains_key(&bridge_name) {
             return Err(SpecBuilderError::DeviceNameInUse(bridge_name));
@@ -152,7 +179,7 @@ impl SpecBuilder {
     /// Adds a serial port.
     pub fn add_serial_port(
         &mut self,
-        port: components::devices::SerialPortNumber,
+        port: SerialPortNumber,
     ) -> Result<&Self, SpecBuilderError> {
         if self
             .spec
@@ -160,13 +187,13 @@ impl SpecBuilder {
             .serial_ports
             .insert(
                 match port {
-                    components::devices::SerialPortNumber::Com1 => "com1",
-                    components::devices::SerialPortNumber::Com2 => "com2",
-                    components::devices::SerialPortNumber::Com3 => "com3",
-                    components::devices::SerialPortNumber::Com4 => "com4",
+                    SerialPortNumber::Com1 => "com1",
+                    SerialPortNumber::Com2 => "com2",
+                    SerialPortNumber::Com3 => "com3",
+                    SerialPortNumber::Com4 => "com4",
                 }
                 .to_string(),
-                components::devices::SerialPort { num: port },
+                SerialPort { num: port },
             )
             .is_some()
         {
@@ -176,10 +203,9 @@ impl SpecBuilder {
         }
     }
 
-    /// Adds a QEMU pvpanic device.
     pub fn add_pvpanic_device(
         &mut self,
-        pvpanic: components::devices::QemuPvpanic,
+        pvpanic: QemuPvpanic,
     ) -> Result<&Self, SpecBuilderError> {
         if self.spec.devices.qemu_pvpanic.is_some() {
             return Err(SpecBuilderError::DeviceNameInUse(
@@ -195,7 +221,7 @@ impl SpecBuilder {
     #[cfg(feature = "falcon")]
     pub fn set_softnpu_pci_port(
         &mut self,
-        pci_port: components::devices::SoftNpuPciPort,
+        pci_port: SoftNpuPciPort,
     ) -> Result<&Self, SpecBuilderError> {
         self.register_pci_device(pci_port.pci_path)?;
         self.spec.devices.softnpu_pci_port = Some(pci_port);
@@ -203,14 +229,31 @@ impl SpecBuilder {
     }
 
     #[cfg(feature = "falcon")]
+    pub fn set_softnpu_p9(
+        &mut self,
+        p9: SoftNpuP9,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(p9.pci_path)?;
+        self.spec.devices.softnpu_p9 = Some(p9);
+        Ok(self)
+    }
+
+    #[cfg(feature = "falcon")]
+    pub fn set_p9fs(&mut self, p9fs: P9fs) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(p9fs.pci_path)?;
+        self.spec.devices.p9fs = Some(p9fs);
+        Ok(self)
+    }
+
+    #[cfg(feature = "falcon")]
     pub fn add_softnpu_port(
         &mut self,
         key: String,
-        port: components::devices::SoftNpuPort,
+        port: SoftNpuPort,
     ) -> Result<&Self, SpecBuilderError> {
         let _old = self.spec.backends.network_backends.insert(
             port.backend_name.clone(),
-            NetworkBackendV0::Dlpi(components::backends::DlpiNetworkBackend {
+            NetworkBackendV0::Dlpi(DlpiNetworkBackend {
                 vnic_name: port.backend_name.clone(),
             }),
         );
@@ -220,26 +263,6 @@ impl SpecBuilder {
         } else {
             Ok(self)
         }
-    }
-
-    #[cfg(feature = "falcon")]
-    pub fn set_softnpu_p9(
-        &mut self,
-        p9: components::devices::SoftNpuP9,
-    ) -> Result<&Self, SpecBuilderError> {
-        self.register_pci_device(p9.pci_path)?;
-        self.spec.devices.softnpu_p9 = Some(p9);
-        Ok(self)
-    }
-
-    #[cfg(feature = "falcon")]
-    pub fn set_p9fs(
-        &mut self,
-        p9fs: components::devices::P9fs,
-    ) -> Result<&Self, SpecBuilderError> {
-        self.register_pci_device(p9fs.pci_path)?;
-        self.spec.devices.p9fs = Some(p9fs);
-        Ok(self)
     }
 
     /// Yields the completed spec, consuming the builder.
