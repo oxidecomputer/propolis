@@ -25,7 +25,7 @@ pub(crate) mod builder;
 mod config_toml;
 
 /// Describes a storage device/backend pair parsed from an input source like an
-/// API request or a config TOMl entry.
+/// API request or a config TOML entry.
 struct ParsedStorageDevice {
     device_name: String,
     device_spec: StorageDeviceV0,
@@ -34,7 +34,7 @@ struct ParsedStorageDevice {
 }
 
 /// Describes a network device/backend pair parsed from an input source like an
-/// API request or a config TOMl entry.
+/// API request or a config TOML entry.
 struct ParsedNetworkDevice {
     device_name: String,
     device_spec: NetworkDeviceV0,

@@ -50,7 +50,7 @@ pub(crate) enum ConfigTomlError {
     #[error("invalid storage backend kind {kind:?} for backend {name:?}")]
     InvalidStorageBackendType { kind: String, name: String },
 
-    #[error("couldn't find storage device {device}'s backend {backend}")]
+    #[error("couldn't find storage device {device:?}'s backend {backend:?}")]
     StorageDeviceBackendNotFound { device: String, backend: String },
 
     #[error("couldn't get path for file backend {0:?}")]
