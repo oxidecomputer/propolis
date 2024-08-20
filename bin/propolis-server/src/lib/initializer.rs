@@ -12,15 +12,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
 use crate::stats::{
-    create_kstat_sampler, track_vcpu_kstats, virtual_disk::VirtualDiskProducer,
-    virtual_machine::VirtualMachine,
+    create_kstat_sampler, track_network_interface_kstats, track_vcpu_kstats,
+    VirtualDiskProducer, VirtualMachine,
 };
-use crate::vm::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
+use crate::vm::{
+    BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
+};
 use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
-
 use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
@@ -41,7 +42,7 @@ use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
 use propolis_api_types::InstanceProperties;
 use slog::info;
 
-// Arbitrary ROM limit for now
+/// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
 fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
@@ -628,10 +629,20 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    pub fn initialize_network_devices(
+    /// Initialize network devices, add them to the device map, and attach them
+    /// to the chipset.
+    ///
+    /// If a KstatSampler is provided, this function will also track network
+    /// interface statistics.
+    pub async fn initialize_network_devices(
         &mut self,
         chipset: &RegisteredChipset,
+        kstat_sampler: &Option<KstatSampler>,
     ) -> Result<(), Error> {
+        // Only create the vector if the kstat_sampler exists.
+        let mut interface_ids: Option<NetworkInterfaceIds> =
+            kstat_sampler.as_ref().map(|_| Vec::new());
+
         for (name, vnic_spec) in &self.spec.devices.network_devices {
             info!(self.log, "Creating vNIC {}", name);
             let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
@@ -680,8 +691,27 @@ impl<'a> MachineInitializer<'a> {
             )?;
             self.devices
                 .insert(format!("pci-virtio-viona-{}", bdf), viona.clone());
+
+            // Only push to interface_ids if kstat_sampler exists
+            if let Some(ref mut ids) = interface_ids {
+                ids.push((vnic_spec.interface_id, viona.instance_id()?));
+            }
+
             chipset.pci_attach(bdf, viona);
         }
+
+        if let Some(sampler) = kstat_sampler.as_ref() {
+            if let Some(interface_ids) = interface_ids {
+                track_network_interface_kstats(
+                    &self.log,
+                    sampler,
+                    self.properties,
+                    interface_ids,
+                )
+                .await
+            }
+        }
+
         Ok(())
     }
 
@@ -1088,6 +1118,9 @@ impl<'a> MachineInitializer<'a> {
         Ok(ramfb)
     }
 
+    /// Initialize virtual CPUs by first setting their capabilities, inserting
+    /// them into the device map, and then, if a kstat sampler is provided,
+    /// tracking their kstats.
     pub async fn initialize_cpus(
         &mut self,
         kstat_sampler: &Option<KstatSampler>,
@@ -1109,8 +1142,12 @@ impl<'a> MachineInitializer<'a> {
         let Some(registry) = &self.producer_registry else {
             return None;
         };
-        let sampler =
-            create_kstat_sampler(&self.log, u32::from(self.properties.vcpus))?;
+        let sampler = create_kstat_sampler(
+            &self.log,
+            u32::from(self.properties.vcpus),
+            self.spec.devices.network_devices.len() as u32,
+        )?;
+
         match registry.register_producer(sampler.clone()) {
             Ok(_) => Some(sampler),
             Err(e) => {

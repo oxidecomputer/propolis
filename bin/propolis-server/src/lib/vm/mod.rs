@@ -111,6 +111,9 @@ pub(crate) mod state_publisher;
 pub(crate) type DeviceMap =
     BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
 
+/// Mapping of NIC identifiers to viona device instance IDs.
+pub(crate) type NetworkInterfaceIds = Vec<(uuid::Uuid, KstatInstanceId)>;
+
 /// Maps component names to block backend trait objects.
 pub(crate) type BlockBackendMap =
     BTreeMap<String, Arc<dyn propolis::block::Backend>>;
@@ -136,6 +139,10 @@ pub(crate) type CrucibleReplaceResult =
 /// reconfiguration results.
 pub(crate) type CrucibleReplaceResultTx =
     oneshot::Sender<CrucibleReplaceResult>;
+
+/// PCI device instance ID type to which a per-component Kstat (kernal stat)
+/// instance ID maps to.
+type KstatInstanceId = u32;
 
 /// Type alias for the sender side of a channel that receives the results of
 /// instance-ensure API calls.

@@ -199,7 +199,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         let ps2ctrl = init.initialize_ps2(&chipset)?;
         init.initialize_qemu_debug_port()?;
         init.initialize_qemu_pvpanic(properties.into())?;
-        init.initialize_network_devices(&chipset)?;
+        init.initialize_network_devices(&chipset, &maybe_kstat_sampler).await?;
 
         #[cfg(not(feature = "omicron-build"))]
         init.initialize_test_devices(&options.toml_config.devices)?;
@@ -219,7 +219,9 @@ impl<'a> VmEnsureNotStarted<'a> {
             .await?;
 
         let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
+
         init.initialize_cpus(&maybe_kstat_sampler).await?;
+
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
             event_queue.clone()

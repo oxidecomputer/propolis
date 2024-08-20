@@ -96,6 +96,10 @@ pub struct VirtioNic {
     /// The name of the device's backend.
     pub backend_name: String,
 
+    /// The interface ID of the device from the requested NIC to which we are
+    /// binding.
+    pub interface_id: uuid::Uuid,
+
     /// The PCI path at which to attach this device.
     pub pci_path: PciPath,
 }
@@ -361,6 +365,7 @@ mod test {
     fn compatible_virtio_nic() {
         let d1 = VirtioNic {
             backend_name: "storage_backend".to_string(),
+            interface_id: uuid::Uuid::new_v4(),
             pci_path: PciPath::new(0, 5, 0).unwrap(),
         };
         assert!(d1.can_migrate_from_element(&d1).is_ok());
@@ -370,6 +375,7 @@ mod test {
     fn incompatible_virtio_nic() {
         let d1 = VirtioNic {
             backend_name: "storage_backend".to_string(),
+            interface_id: uuid::Uuid::new_v4(),
             pci_path: PciPath::new(0, 5, 0).unwrap(),
         };
 
