@@ -11,19 +11,21 @@ use propolis_api_types::instance_spec::{
         board::Board,
         devices::{PciPciBridge, QemuPvpanic, SerialPort, SerialPortNumber},
     },
-    v0::{
-        DeviceSpecV0, InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0,
-        StorageBackendV0, StorageDeviceV0,
-    },
+    v0::{DeviceSpecV0, InstanceSpecV0, NetworkDeviceV0, StorageDeviceV0},
     PciPath,
 };
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::components::{
-    backends::DlpiNetworkBackend,
-    devices::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort},
+use propolis_api_types::instance_spec::{
+    components::{
+        backends::DlpiNetworkBackend,
+        devices::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort},
+    },
+    v0::NetworkBackendV0,
 };
+
+use super::{ParsedNetworkDevice, ParsedStorageDevice};
 
 /// Errors that can arise while building an instance spec from component parts.
 #[allow(clippy::enum_variant_names)]
@@ -46,7 +48,7 @@ pub(crate) enum SpecBuilderError {
     SoftNpuPortInUse(String),
 }
 
-pub(super) struct SpecBuilder {
+pub(crate) struct SpecBuilder {
     spec: InstanceSpecV0,
     pci_paths: BTreeSet<PciPath>,
 }
@@ -100,10 +102,12 @@ impl SpecBuilder {
     /// Adds a storage device with an associated backend.
     pub(super) fn add_storage_device(
         &mut self,
-        device_name: String,
-        device_spec: StorageDeviceV0,
-        backend_name: String,
-        backend_spec: StorageBackendV0,
+        ParsedStorageDevice {
+            device_name,
+            device_spec,
+            backend_name,
+            backend_spec,
+        }: ParsedStorageDevice,
     ) -> Result<&Self, SpecBuilderError> {
         if self.spec.devices.storage_devices.contains_key(&device_name) {
             return Err(SpecBuilderError::DeviceNameInUse(device_name));
@@ -128,12 +132,14 @@ impl SpecBuilder {
     }
 
     /// Adds a network device with an associated backend.
-    pub fn add_network_device(
+    pub(super) fn add_network_device(
         &mut self,
-        device_name: String,
-        device_spec: NetworkDeviceV0,
-        backend_name: String,
-        backend_spec: NetworkBackendV0,
+        ParsedNetworkDevice {
+            device_name,
+            device_spec,
+            backend_name,
+            backend_spec,
+        }: ParsedNetworkDevice,
     ) -> Result<&Self, SpecBuilderError> {
         if self.spec.devices.network_devices.contains_key(&device_name) {
             return Err(SpecBuilderError::DeviceNameInUse(device_name));
