@@ -14,10 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::serial::history_buffer::{HistoryBuffer, SerialHistoryOffset};
+use dropshot::WebsocketConnectionRaw;
 use futures::future::Fuse;
 use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
-use hyper::upgrade::Upgraded;
 use propolis::chardev::{pollers, Sink, Source};
 use propolis_api_types::InstanceSerialConsoleControlMessage;
 use slog::{info, warn, Logger};
@@ -78,11 +78,14 @@ pub struct SerialTask {
     /// clients of a migration
     pub control_ch: mpsc::Sender<SerialTaskControlMessage>,
     /// Channel used to send new client connections to the streaming task
-    pub websocks_ch: mpsc::Sender<WebSocketStream<Upgraded>>,
+    pub websocks_ch:
+        mpsc::Sender<WebSocketStream<dropshot::WebsocketConnectionRaw>>,
 }
 
 pub async fn instance_serial_task<Device: Sink + Source>(
-    mut websocks_recv: mpsc::Receiver<WebSocketStream<Upgraded>>,
+    mut websocks_recv: mpsc::Receiver<
+        WebSocketStream<dropshot::WebsocketConnectionRaw>,
+    >,
     mut control_recv: mpsc::Receiver<SerialTaskControlMessage>,
     serial: Arc<Serial<Device>>,
     log: Logger,
@@ -94,11 +97,11 @@ pub async fn instance_serial_task<Device: Sink + Source>(
 
     let mut ws_sinks: HashMap<
         usize,
-        SplitSink<WebSocketStream<Upgraded>, Message>,
+        SplitSink<WebSocketStream<dropshot::WebsocketConnectionRaw>, Message>,
     > = HashMap::new();
     let mut ws_streams: HashMap<
         usize,
-        futures::stream::SplitStream<WebSocketStream<Upgraded>>,
+        futures::stream::SplitStream<WebSocketStream<WebsocketConnectionRaw>>,
     > = HashMap::new();
 
     let (send_ch, mut recv_ch) = mpsc::channel(4);

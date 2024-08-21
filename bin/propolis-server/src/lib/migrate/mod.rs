@@ -25,7 +25,7 @@ pub(crate) trait MigrateConn:
 }
 
 impl MigrateConn for tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream> {}
-impl MigrateConn for hyper::upgrade::Upgraded {}
+impl MigrateConn for dropshot::WebsocketConnectionRaw {}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MigrateRole {
